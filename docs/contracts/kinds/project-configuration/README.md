@@ -118,10 +118,13 @@ bound to the database engine that would replay it. Declaring the list replaces
 the default list rather than extending it, so a project that names one prefix
 has exactly one.
 
-The declaration is readable today and is not yet consulted. Discovery,
-placement, and pipeline identity still use the hardcoded directories, so
-declaring a layout that differs from the defaults changes nothing at runtime.
-See [layout.md](./layout.md) for the survey of those hardcoded rules.
+Discovery, placement, and the directories inside `repo/` are all resolved
+through one resolver rather than repeated as literals. What that resolver is
+given is still the platform defaults: nothing reads a project's own `layout`
+into it yet, so declaring a layout that differs from the defaults changes
+nothing at runtime. Pipeline identity is separate again -- `file_rel_path` is
+persisted with its source root already in it, and is not resolved. See
+[layout.md](./layout.md) for the survey those rules came from.
 
 ## Integration Map
 
@@ -132,7 +135,7 @@ file operations.
 | Section | User-facing writer | Runtime reader or effect |
 | --- | --- | --- |
 | `spec.profile` | Project creation and Settings > General | Project lists, headers, and app metadata |
-| `spec.layout` | No writer; hand-authored in `repo/zebflow.yaml` | None yet. The declaration is readable through `ZebflowJson::layout()`; no consumer reads it, and the directories remain hardcoded |
+| `spec.layout` | No writer; hand-authored in `repo/zebflow.yaml` | None yet. Every consumer resolves its directory through `ResolvedProjectLayout`, but the layout a project is given is built from the platform defaults, not from its own declaration |
 | `spec.rwe` | Settings > Policy and Settings > Libraries | RWE compilation, rendering, assets, and editor libraries |
 | `spec.pipelines` | Settings > General and Settings > Logs | Node timeout and bounded invocation retention |
 | `spec.runtime` | Project creation and explicit project configuration edits | Runtime synchronization and placement planning |

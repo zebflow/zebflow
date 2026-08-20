@@ -27,12 +27,12 @@ use crate::platform::model::{
     CreateHubTokenRequest, CreateProjectRequest, HubAccessGrant, HubAssetGallery,
     HubAssetGalleryImage, HubAssetMedia, HubAssetPackage, HubAssetVersion, HubAuthority,
     HubPublisher, HubToken, PlatformHubRepository, PlatformServiceInstance, ProjectFileLayout,
-    ProjectHubRepository, ProjectRuntimeSelectionRequest, now_ts, slug_segment,
+    ProjectHubRepository, ProjectRuntimeSelectionRequest, ResolvedProjectLayout, now_ts,
+    slug_segment,
 };
 use crate::platform::policy::package::{
-    DatabaseInitializationReport, INITIAL_DATA_DIRS, PackagePolicyEntry, PackageReviewOptions,
-    PackageSafetyReview, initial_data_engine_for_rel_path, review_package_entries,
-    split_initial_data_sql,
+    DatabaseInitializationReport, PackagePolicyEntry, PackageReviewOptions, PackageSafetyReview,
+    initial_data_engine_for_rel_path, review_package_entries, split_initial_data_sql,
 };
 use crate::platform::policy::report::PolicyRiskLevel;
 use crate::platform::sekejap;
@@ -2078,6 +2078,10 @@ impl HubService {
             description.trim().to_string()
         };
         review_publish_artifact(
+            &self
+                .projects
+                .project_layout(&source_owner, &source_project)?
+                .repo_layout,
             package_id,
             version,
             preview,
@@ -2106,32 +2110,38 @@ impl HubService {
             return Ok(HubPackageInitialization::default());
         }
 
+        let layout = self
+            .projects
+            .project_layout(source_owner, source_project)?
+            .repo_layout;
+        let schema_document_rel = layout.schema_document_rel();
+
         options.include_libraries.sort();
         options.include_libraries.dedup();
         options.initial_data_paths = options
             .initial_data_paths
             .into_iter()
             .map(|path| normalize_repo_rel(&path))
-            .filter(|path| initial_data_engine_for_path(path).is_some())
+            .filter(|path| initial_data_engine_for_path(&layout, path).is_some())
             .collect();
         options.initial_data_paths.sort();
         options.initial_data_paths.dedup();
 
         if !options.include_sekejap_schema {
-            preview.entries.retain(|entry| {
-                !normalize_repo_rel(&entry.rel_path).starts_with("schemas/sekejap/")
-            });
+            preview
+                .entries
+                .retain(|entry| !layout.is_schema_rel_path(&normalize_repo_rel(&entry.rel_path)));
         } else if !preview
             .entries
             .iter()
-            .any(|entry| normalize_repo_rel(&entry.rel_path) == "schemas/sekejap/schema.json")
+            .any(|entry| normalize_repo_rel(&entry.rel_path) == schema_document_rel)
         {
             let export = sekejap::export_schema(&self.data_root, source_owner, source_project)?;
             if !export.tables.is_empty() {
                 let content = String::from_utf8(sekejap::encode_schema_export(export)?)
                     .map_err(|err| PlatformError::new("HUB_PUBLISH", err.to_string()))?;
                 preview.entries.push(text_export_entry(
-                    "schemas/sekejap/schema.json",
+                    &schema_document_rel,
                     "sekejap schema",
                     "Portable Sekejap schema",
                     content,
@@ -2159,7 +2169,7 @@ impl HubService {
             preview
                 .entries
                 .iter()
-                .filter_map(initial_data_step_from_entry)
+                .filter_map(|entry| initial_data_step_from_entry(&layout, entry))
                 .filter(|step| {
                     options
                         .initial_data_paths
@@ -2200,12 +2210,18 @@ impl HubService {
     ) -> Result<Vec<HubPackageInitialDataStep>, PlatformError> {
         let layout = self.projects.project_layout(owner, project)?;
         let mut steps = Vec::new();
-        for (prefix, engine) in INITIAL_DATA_DIRS {
-            let root = layout.repo_dir.join(prefix);
+        for dir in &layout.repo_layout.initial_data {
+            let root = layout.repo_dir.join(&dir.path);
             if !root.is_dir() {
                 continue;
             }
-            collect_initial_data_steps(&layout.repo_dir, &root, engine, &mut steps)?;
+            collect_initial_data_steps(
+                &layout.repo_layout,
+                &layout.repo_dir,
+                &root,
+                &dir.engine,
+                &mut steps,
+            )?;
         }
         steps.sort_by(|a, b| a.path.cmp(&b.path));
         steps.dedup_by(|a, b| a.path == b.path);
@@ -2529,8 +2545,12 @@ impl HubService {
         let _install_guard = install_lock
             .lock()
             .unwrap_or_else(|error| error.into_inner());
-        let install_root =
-            install_root_for_target_folder(package_id, &payload.asset_kind, target_folder);
+        let install_root = install_root_for_target_folder(
+            &layout.repo_layout,
+            package_id,
+            &payload.asset_kind,
+            target_folder,
+        );
         // A node bundle is a materialized artifact, so it installs under data/.
         // Everything else is project source and installs under repo/.
         let install_base = if payload.asset_kind == HUB_ASSET_KIND_NODE_BUNDLE {
@@ -2541,10 +2561,15 @@ impl HubService {
         // Every entry's bytes — carried and referenced alike — are produced and
         // verified here, before the first write. A digest mismatch or a missing
         // artifact returns now, with the project untouched.
-        let prepared =
-            prepare_hub_install_entries(&install_base, &install_root, &payload.files, artifacts)?;
-        validate_prepared_pipeline_sources(&prepared)?;
-        refuse_prepared_install_violations(&prepared)?;
+        let prepared = prepare_hub_install_entries(
+            &layout.repo_layout,
+            &install_base,
+            &install_root,
+            &payload.files,
+            artifacts,
+        )?;
+        validate_prepared_pipeline_sources(&layout.repo_layout, &prepared)?;
+        refuse_prepared_install_violations(&layout.repo_layout, &prepared)?;
         let previous_lock = if payload.asset_kind == HUB_ASSET_KIND_NODE_BUNDLE {
             Some(self.dependency_lock.read(&target_owner, &target_project)?)
         } else {
@@ -2566,9 +2591,7 @@ impl HubService {
             }
         }
         for entry in &prepared {
-            if entry.install_rel.ends_with(".zf.json")
-                && entry.install_rel.starts_with("pipelines/")
-            {
+            if layout.repo_layout.is_pipeline_rel_path(&entry.install_rel) {
                 let source = String::from_utf8(entry.bytes.clone()).map_err(|error| {
                     PlatformError::new(
                         "HUB_INSTALL",
@@ -2692,9 +2715,11 @@ impl HubService {
         project: &str,
         entries: &[PreparedHubInstallEntry],
     ) -> Result<(), PlatformError> {
-        for entry in entries.iter().filter(|entry| {
-            entry.install_rel.starts_with("pipelines/") && entry.install_rel.ends_with(".zf.json")
-        }) {
+        let layout = self.projects.project_layout(owner, project)?;
+        for entry in entries
+            .iter()
+            .filter(|entry| layout.repo_layout.is_pipeline_rel_path(&entry.install_rel))
+        {
             if let Some(previous) = &entry.previous {
                 let source = String::from_utf8(previous.clone()).map_err(|error| {
                     PlatformError::new(
@@ -2736,8 +2761,12 @@ impl HubService {
         artifacts: &HubArtifactChannel,
     ) -> Result<HubInstallReview, PlatformError> {
         let layout = self.projects.project_layout(target_owner, target_project)?;
-        let install_root =
-            install_root_for_target_folder(package_id, &payload.asset_kind, target_folder);
+        let install_root = install_root_for_target_folder(
+            &layout.repo_layout,
+            package_id,
+            &payload.asset_kind,
+            target_folder,
+        );
         // The same choice the install makes, so what the review calls an
         // overwrite is what the install would actually overwrite.
         let install_base = if payload.asset_kind == HUB_ASSET_KIND_NODE_BUNDLE {
@@ -2751,14 +2780,15 @@ impl HubService {
         let mut policy_entries = Vec::new();
 
         for entry in &payload.files {
-            let install_rel = install_rel_path_under_folder(&install_root, &entry.rel_path);
+            let install_rel =
+                install_rel_path_under_folder(&layout.repo_layout, &install_root, &entry.rel_path);
             let dest_abs = install_base.join(&install_rel);
             if dest_abs.exists() {
                 files_overwritten.push(install_rel.clone());
             } else {
                 files_added.push(install_rel.clone());
             }
-            if install_rel.ends_with(".zf.json") && install_rel.starts_with("pipelines/") {
+            if layout.repo_layout.is_pipeline_rel_path(&install_rel) {
                 pipelines_registered.push(install_rel.clone());
             }
             // Keyed on the destination, never the manifest path: the install
@@ -2766,8 +2796,12 @@ impl HubService {
             // the install would register.
             policy_entries.push(package_policy_entry(&install_rel, entry, artifacts));
         }
-        let mut policy =
-            review_package_entries(&policy_entries, Vec::new(), PackageReviewOptions::default());
+        let mut policy = review_package_entries(
+            &layout.repo_layout,
+            &policy_entries,
+            Vec::new(),
+            PackageReviewOptions::default(),
+        );
         policy.risk_level = install_risk_level(&policy, !files_overwritten.is_empty());
 
         Ok(HubInstallReview {
@@ -3422,11 +3456,16 @@ impl HubService {
                 "platform hub install only supports project bundles",
             ));
         }
-        let review = refuse_unreviewable_project_bundle(&artifact.files, artifacts)?;
+        // A bundle is reviewed before the project it creates exists, so the
+        // review asks the layout that project will resolve to.
+        let new_project_layout = ResolvedProjectLayout::platform_default();
+        let review =
+            refuse_unreviewable_project_bundle(&new_project_layout, &artifact.files, artifacts)?;
         // The gate above read every entry the bundle carries, including the
         // ones this scope is about to drop, so narrowing the install here can
         // only shrink what has already been found installable.
-        let skipped_files = take_entries_outside_scope(&mut artifact.files, scope);
+        let skipped_files =
+            take_entries_outside_scope(&new_project_layout, &mut artifact.files, scope);
 
         let base_project = slug_segment(package_id);
         if base_project.is_empty() {
@@ -3711,7 +3750,7 @@ impl HubService {
         entries: &mut Vec<HubPackageFile>,
         warnings: &mut Vec<String>,
     ) -> Result<(), PlatformError> {
-        let normalized = normalize_template_repo_rel(rel_path);
+        let normalized = normalize_template_repo_rel(&layout.repo_layout, rel_path);
         if normalized.is_empty() || !seen.insert(normalized.clone()) {
             return Ok(());
         }
@@ -4300,6 +4339,7 @@ fn validate_hub_gallery(
 
 #[allow(clippy::too_many_arguments)]
 fn review_publish_artifact(
+    layout: &ResolvedProjectLayout,
     package_id: String,
     version: String,
     preview: HubExportPreview,
@@ -4317,6 +4357,7 @@ fn review_publish_artifact(
         .map(|entry| package_policy_entry(&entry.rel_path, entry, artifacts))
         .collect::<Vec<_>>();
     let policy = review_package_entries(
+        layout,
         &policy_entries,
         preview.warnings.clone(),
         PackageReviewOptions {
@@ -4723,14 +4764,12 @@ fn normalize_repo_rel(input: &str) -> String {
     trimmed.replace('\\', "/")
 }
 
-fn normalize_template_repo_rel(input: &str) -> String {
+fn normalize_template_repo_rel(layout: &ResolvedProjectLayout, input: &str) -> String {
     let rel = normalize_repo_rel(input);
-    if rel.is_empty() {
-        rel
-    } else if rel.starts_with("pipelines/") {
+    if rel.is_empty() || layout.is_in_source(&rel) {
         rel
     } else {
-        format!("pipelines/{rel}")
+        layout.source_rel(&rel)
     }
 }
 
@@ -4869,11 +4908,14 @@ fn resolve_local_import(
     };
     for rel in candidates {
         let rel = normalize_repo_rel(&rel);
-        let abs = layout
-            .repo_pipelines_dir
-            .join(rel.strip_prefix("pipelines/").unwrap_or(rel.as_str()));
+        let abs = layout.repo_source_dir().join(
+            layout
+                .repo_layout
+                .strip_source(&rel)
+                .unwrap_or(rel.as_str()),
+        );
         if abs.is_file() {
-            return Some(normalize_template_repo_rel(&rel));
+            return Some(normalize_template_repo_rel(&layout.repo_layout, &rel));
         }
         let repo_abs = layout.repo_dir.join(&rel);
         if repo_abs.is_file() {
@@ -4922,18 +4964,23 @@ fn file_kind_from_path(path: &Path) -> String {
 }
 
 fn install_root_for_target_folder(
+    layout: &ResolvedProjectLayout,
     package_id: &str,
     asset_kind: &str,
     target_folder: &str,
 ) -> String {
     let folder = target_folder.trim();
     if !folder.is_empty() {
-        return normalize_install_target_folder(folder, asset_kind);
+        return normalize_install_target_folder(layout, folder, asset_kind);
     }
-    default_install_target_folder(package_id, asset_kind)
+    default_install_target_folder(layout, package_id, asset_kind)
 }
 
-fn normalize_install_target_folder(target_folder: &str, asset_kind: &str) -> String {
+fn normalize_install_target_folder(
+    layout: &ResolvedProjectLayout,
+    target_folder: &str,
+    asset_kind: &str,
+) -> String {
     let folder = normalize_repo_rel(target_folder);
     if folder.is_empty() {
         return ".".to_string();
@@ -4943,16 +4990,20 @@ fn normalize_install_target_folder(target_folder: &str, asset_kind: &str) -> Str
             asset_kind,
             HUB_ASSET_KIND_PIPELINE_BUNDLE | HUB_ASSET_KIND_TEMPLATE_BUNDLE
         )
-        && !folder.starts_with("pipelines/")
+        && !layout.is_in_source(&folder)
     {
-        return format!("pipelines/{folder}");
+        return layout.source_rel(&folder);
     }
     folder
 }
 
-fn install_rel_path_under_folder(install_root: &str, rel_path: &str) -> String {
+fn install_rel_path_under_folder(
+    layout: &ResolvedProjectLayout,
+    install_root: &str,
+    rel_path: &str,
+) -> String {
     let root = normalize_repo_rel(install_root);
-    let rel = install_entry_rel_inside_folder(rel_path);
+    let rel = install_entry_rel_inside_folder(layout, rel_path);
     if root.is_empty() || root == "." {
         rel
     } else {
@@ -4960,9 +5011,9 @@ fn install_rel_path_under_folder(install_root: &str, rel_path: &str) -> String {
     }
 }
 
-fn install_entry_rel_inside_folder(rel_path: &str) -> String {
+fn install_entry_rel_inside_folder(layout: &ResolvedProjectLayout, rel_path: &str) -> String {
     let rel = normalize_repo_rel(rel_path);
-    if let Some(rest) = rel.strip_prefix("pipelines/") {
+    if let Some(rest) = layout.strip_source(&rel) {
         rest.to_string()
     } else if let Some(rest) = rel.strip_prefix("templates/") {
         rest.to_string()
@@ -4971,12 +5022,16 @@ fn install_entry_rel_inside_folder(rel_path: &str) -> String {
     }
 }
 
-fn default_install_target_folder(package_id: &str, asset_kind: &str) -> String {
+fn default_install_target_folder(
+    layout: &ResolvedProjectLayout,
+    package_id: &str,
+    asset_kind: &str,
+) -> String {
     if matches!(
         asset_kind,
         HUB_ASSET_KIND_PIPELINE_BUNDLE | HUB_ASSET_KIND_TEMPLATE_BUNDLE
     ) {
-        format!("pipelines/hub/{package_id}")
+        layout.source_rel(&format!("hub/{package_id}"))
     } else if asset_kind == HUB_ASSET_KIND_NODE_BUNDLE {
         format!("nodes/{package_id}")
     } else {
@@ -5024,6 +5079,7 @@ fn hub_entry_bytes(
 }
 
 fn prepare_hub_install_entries(
+    layout: &ResolvedProjectLayout,
     install_base: &Path,
     install_root: &str,
     files: &[HubPackageFile],
@@ -5032,7 +5088,7 @@ fn prepare_hub_install_entries(
     let mut seen = HashSet::new();
     let mut prepared = Vec::with_capacity(files.len());
     for entry in files {
-        let install_rel = install_rel_path_under_folder(install_root, &entry.rel_path);
+        let install_rel = install_rel_path_under_folder(layout, install_root, &entry.rel_path);
         if !seen.insert(install_rel.clone()) {
             return Err(PlatformError::new(
                 "HUB_INSTALL",
@@ -5086,6 +5142,7 @@ fn prepare_hub_install_entries(
 /// deciding. This one is not for showing; it is the refusal that cannot be
 /// skipped.
 fn refuse_prepared_install_violations(
+    layout: &ResolvedProjectLayout,
     entries: &[PreparedHubInstallEntry],
 ) -> Result<(), PlatformError> {
     let policy_entries = entries
@@ -5102,8 +5159,12 @@ fn refuse_prepared_install_violations(
             unreadable: String::new(),
         })
         .collect::<Vec<_>>();
-    let review =
-        review_package_entries(&policy_entries, Vec::new(), PackageReviewOptions::default());
+    let review = review_package_entries(
+        layout,
+        &policy_entries,
+        Vec::new(),
+        PackageReviewOptions::default(),
+    );
     if !review.is_installable() {
         return Err(PlatformError::new(
             "HUB_INSTALL_REFUSED",
@@ -5117,11 +5178,13 @@ fn refuse_prepared_install_violations(
 }
 
 fn validate_prepared_pipeline_sources(
+    layout: &ResolvedProjectLayout,
     entries: &[PreparedHubInstallEntry],
 ) -> Result<(), PlatformError> {
-    for entry in entries.iter().filter(|entry| {
-        entry.install_rel.starts_with("pipelines/") && entry.install_rel.ends_with(".zf.json")
-    }) {
+    for entry in entries
+        .iter()
+        .filter(|entry| layout.is_pipeline_rel_path(&entry.install_rel))
+    {
         decode_pipeline_graph(&entry.bytes).map_err(|error| {
             PlatformError::new(
                 "HUB_INSTALL",
@@ -5296,6 +5359,7 @@ fn verify_hub_artifact_bytes(bytes: &[u8], expected: &str) -> Result<(), Platfor
 /// installable however hostile they are, because no content detector produces a
 /// violation yet -- the review reports those as warnings and a risk level.
 fn refuse_unreviewable_project_bundle(
+    layout: &ResolvedProjectLayout,
     files: &[HubPackageFile],
     artifacts: &HubArtifactChannel,
 ) -> Result<PackageSafetyReview, PlatformError> {
@@ -5303,7 +5367,12 @@ fn refuse_unreviewable_project_bundle(
         .iter()
         .map(|entry| package_policy_entry(&normalize_repo_rel(&entry.rel_path), entry, artifacts))
         .collect::<Vec<_>>();
-    let review = review_package_entries(&entries, Vec::new(), PackageReviewOptions::default());
+    let review = review_package_entries(
+        layout,
+        &entries,
+        Vec::new(),
+        PackageReviewOptions::default(),
+    );
     if !review.is_installable() {
         return Err(PlatformError::new(
             "HUB_REMOTE_INSTALL_REFUSED",
@@ -5320,11 +5389,13 @@ fn refuse_unreviewable_project_bundle(
 }
 
 /// Whether this bundle entry is schema or seed SQL rather than source.
-fn install_entry_is_schema(rel_path: &str) -> bool {
+fn install_entry_is_schema(layout: &ResolvedProjectLayout, rel_path: &str) -> bool {
     let rel = normalize_repo_rel(rel_path);
-    rel.starts_with("schemas/sekejap/")
+    layout.is_schema_rel_path(&rel)
+        // The SQLite export has no entry on the layout contract, so it is still
+        // named here rather than resolved.
         || rel.starts_with("schemas/sqlite/")
-        || initial_data_engine_for_path(&rel).is_some()
+        || initial_data_engine_for_path(layout, &rel).is_some()
 }
 
 /// Files the project needs whatever else the scope drops.
@@ -5342,6 +5413,7 @@ fn install_entry_is_project_configuration(rel_path: &str) -> bool {
 
 /// Removes the entries this scope does not install, and names them.
 fn take_entries_outside_scope(
+    layout: &ResolvedProjectLayout,
     files: &mut Vec<HubPackageFile>,
     scope: HubInstallScope,
 ) -> Vec<String> {
@@ -5350,7 +5422,7 @@ fn take_entries_outside_scope(
         let rel = normalize_repo_rel(&entry.rel_path);
         let keep = if install_entry_is_project_configuration(&rel) {
             true
-        } else if install_entry_is_schema(&rel) {
+        } else if install_entry_is_schema(layout, &rel) {
             scope.include_schema
         } else {
             scope.include_code
@@ -5370,9 +5442,10 @@ fn reindex_project_bundle_pipelines(
     project: &str,
     entries: &[HubPackageFile],
 ) -> Result<(), PlatformError> {
+    let layout = hub.projects.project_layout(owner, project)?;
     for entry in entries {
         let rel_path = normalize_repo_rel(&entry.rel_path);
-        if !rel_path.starts_with("pipelines/") || !rel_path.ends_with(".zf.json") {
+        if !layout.repo_layout.is_pipeline_rel_path(&rel_path) {
             continue;
         }
         let Some(source) = entry_text(entry) else {
@@ -5499,13 +5572,19 @@ fn install_risk_level(policy: &PackageSafetyReview, has_overwrites: bool) -> Str
 /// The list and the reading of it live with the safety review, so the report a
 /// user approves and the execution that follows can never disagree about which
 /// files are initial data.
-fn initial_data_engine_for_path(rel_path: &str) -> Option<&'static str> {
-    initial_data_engine_for_rel_path(&normalize_repo_rel(rel_path))
+fn initial_data_engine_for_path<'a>(
+    layout: &'a ResolvedProjectLayout,
+    rel_path: &str,
+) -> Option<&'a str> {
+    initial_data_engine_for_rel_path(layout, &normalize_repo_rel(rel_path))
 }
 
-fn initial_data_step_from_entry(entry: &HubPackageFile) -> Option<HubPackageInitialDataStep> {
+fn initial_data_step_from_entry(
+    layout: &ResolvedProjectLayout,
+    entry: &HubPackageFile,
+) -> Option<HubPackageInitialDataStep> {
     let rel = normalize_repo_rel(&entry.rel_path);
-    let engine = initial_data_engine_for_path(&rel)?;
+    let engine = initial_data_engine_for_path(layout, &rel)?;
     let sql = entry_text(entry)?;
     Some(HubPackageInitialDataStep {
         engine: engine.to_string(),
@@ -5524,7 +5603,7 @@ fn execute_project_initial_data(
 ) -> Result<(), PlatformError> {
     for step in steps {
         let rel = normalize_repo_rel(&step.path);
-        let Some(engine) = initial_data_engine_for_path(&rel) else {
+        let Some(engine) = initial_data_engine_for_path(&layout.repo_layout, &rel) else {
             return Err(PlatformError::new(
                 "HUB_INITIAL_DATA_INVALID",
                 format!("initial data path '{}' is not allowed", step.path),
@@ -5562,6 +5641,7 @@ fn execute_project_initial_data(
 }
 
 fn collect_initial_data_steps(
+    layout: &ResolvedProjectLayout,
     repo_dir: &Path,
     dir: &Path,
     engine: &str,
@@ -5571,7 +5651,7 @@ fn collect_initial_data_steps(
         let entry = entry?;
         let path = entry.path();
         if path.is_dir() {
-            collect_initial_data_steps(repo_dir, &path, engine, steps)?;
+            collect_initial_data_steps(layout, repo_dir, &path, engine, steps)?;
             continue;
         }
         if path
@@ -5586,7 +5666,7 @@ fn collect_initial_data_steps(
             .strip_prefix(repo_dir)
             .map_err(|err| PlatformError::new("HUB_INITIAL_DATA", err.to_string()))?;
         let rel = normalize_repo_rel(&rel.to_string_lossy());
-        if initial_data_engine_for_path(&rel) != Some(engine) {
+        if initial_data_engine_for_path(layout, &rel) != Some(engine) {
             continue;
         }
         let sql = fs::read_to_string(&path)?;
@@ -6389,6 +6469,7 @@ mod tests {
         );
 
         let error = refuse_unreviewable_project_bundle(
+            &ResolvedProjectLayout::platform_default(),
             &package.files,
             &HubArtifactChannel::unresolvable(CHANNEL_WITHOUT_AN_ARTIFACT_LOCATION),
         )
@@ -6413,6 +6494,7 @@ mod tests {
         let package = pipeline_package(HUB_ASSET_KIND_PROJECT_BUNDLE, carried_pipeline_entry());
 
         refuse_unreviewable_project_bundle(
+            &ResolvedProjectLayout::platform_default(),
             &package.files,
             &HubArtifactChannel::unresolvable(CHANNEL_WITHOUT_AN_ARTIFACT_LOCATION),
         )

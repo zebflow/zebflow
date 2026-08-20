@@ -10,8 +10,9 @@ use serde_json::{Value, json};
 
 use crate::contracts::kinds::decode_pipeline_graph;
 use crate::platform::model::{
-    DescribeProjectDbConnectionRequest, PipelineMeta, TemplateCreateKind, TemplateCreateRequest,
-    TemplateSaveRequest, TemplateTreeItem,
+    DescribeProjectDbConnectionRequest, PIPELINE_DEFINITION_EXTENSION, PipelineMeta,
+    ResolvedProjectLayout, TemplateCreateKind, TemplateCreateRequest, TemplateSaveRequest,
+    TemplateTreeItem,
 };
 use crate::platform::services::PlatformService;
 
@@ -1561,8 +1562,16 @@ impl PlatformOps {
             return OpsResult::err("from_path and to_path must not be empty");
         }
 
-        let from_is_pipeline = pipeline_path_heuristic(from_path);
-        let to_is_pipeline = pipeline_path_heuristic(to_path);
+        let layout = match self
+            .platform
+            .file
+            .ensure_project_layout(&self.owner, &self.project)
+        {
+            Err(e) => return OpsResult::err(e.to_string()),
+            Ok(l) => l,
+        };
+        let from_is_pipeline = pipeline_path_heuristic(&layout.repo_layout, from_path);
+        let to_is_pipeline = pipeline_path_heuristic(&layout.repo_layout, to_path);
 
         if from_is_pipeline != to_is_pipeline {
             return OpsResult::err(
@@ -1671,7 +1680,7 @@ impl PlatformOps {
             Ok(l) => l,
         };
 
-        let root = &layout.repo_pipelines_dir;
+        let root = &layout.repo_source_dir();
         let from_abs = root.join(from_path);
         let to_abs = root.join(to_path);
 
@@ -1718,8 +1727,13 @@ fn template_type_tag(rel_path: &str) -> &'static str {
 }
 
 /// Returns true if the path looks like a pipeline file.
-fn pipeline_path_heuristic(path: &str) -> bool {
-    path.ends_with(".zf.json") || path.starts_with("pipelines/")
+///
+/// Deliberately wider than the layout's own pipeline test: a caller naming a
+/// destination inside the source root but without the extension is still
+/// asking to move a pipeline, and the two halves must both be satisfiable for
+/// the move to be refused as cross-domain.
+fn pipeline_path_heuristic(layout: &ResolvedProjectLayout, path: &str) -> bool {
+    path.ends_with(PIPELINE_DEFINITION_EXTENSION) || layout.is_in_source(path)
 }
 
 /// Parses JSON source, sets the `"id"` field to `new_file_rel_path`, returns pretty-printed JSON.
@@ -1948,7 +1962,7 @@ impl PlatformOps {
             .ensure_project_layout(&self.owner, &self.project)
         {
             Ok(layout) => {
-                let shared_ui_dir = layout.repo_pipelines_dir.join("shared").join("ui");
+                let shared_ui_dir = layout.repo_source_dir().join("shared").join("ui");
                 let entries =
                     crate::platform::catalog::CatalogService::list_ui_with_presence(&shared_ui_dir);
                 OpsResult::ok(serde_json::to_string_pretty(&entries).unwrap_or_default())
@@ -1964,7 +1978,7 @@ impl PlatformOps {
             .ensure_project_layout(&self.owner, &self.project)
         {
             Ok(layout) => {
-                let shared_ui_dir = layout.repo_pipelines_dir.join("shared").join("ui");
+                let shared_ui_dir = layout.repo_source_dir().join("shared").join("ui");
                 match crate::platform::catalog::CatalogService::install_ui(
                     &names,
                     &shared_ui_dir,

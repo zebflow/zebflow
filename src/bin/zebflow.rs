@@ -602,7 +602,7 @@ async fn install_remote_project_asset(
             .unwrap_or(false)
             && rel_path
                 .to_str()
-                .map(|value| value.starts_with("pipelines/") && value.ends_with(".zf.json"))
+                .map(|value| layout.repo_layout.is_pipeline_rel_path(value))
                 .unwrap_or(false)
         {
             let rel_string = rel_path.to_string_lossy().to_string();

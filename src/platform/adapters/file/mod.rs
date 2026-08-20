@@ -5,7 +5,9 @@ use std::sync::Arc;
 use std::{fs, process::Command};
 
 use crate::platform::error::PlatformError;
-use crate::platform::model::{FileAdapterKind, ProjectFileLayout, slug_segment};
+use crate::platform::model::{
+    FileAdapterKind, ProjectFileLayout, ResolvedProjectLayout, slug_segment,
+};
 
 /// File adapter contract used by project service.
 pub trait FileAdapter: Send + Sync {
@@ -81,41 +83,17 @@ impl FileAdapter for FilesystemFileAdapter {
         let files_dir = root.join("files");
         let repo_dir = root.join("repo");
         let repo_git_dir = repo_dir.join(".git");
-        let repo_pipelines_dir = repo_dir.join("pipelines");
-        let repo_docs_dir = repo_dir.join("docs");
-        let repo_node_interfaces_dir = repo_dir.join("nodes");
         let data_nodes_dir = data_dir.join("nodes");
         let project_config_file =
             repo_dir.join(crate::contracts::kinds::PROJECT_CONFIGURATION_FILE);
         let agent_docs_dir = data_runtime_dir.join("agent_docs");
 
-        // Base dirs
-        for dir in [
-            &root,
-            &data_dir,
-            &data_runtime_dir,
-            &data_runtime_pipelines_dir,
-            &files_dir,
-            &files_dir.join("public"),
-            &files_dir.join("private"),
-            &repo_dir,
-            &repo_pipelines_dir,
-            &repo_docs_dir,
-            &agent_docs_dir,
-        ] {
-            fs::create_dir_all(dir)?;
-        }
+        // No project may declare a layout of its own yet, so every project
+        // resolves to the platform defaults. This is the one seam a declared
+        // layout would arrive through.
+        let repo_layout = ResolvedProjectLayout::platform_default();
 
-        // Only create assets/ and styles/ as default subdirs.
-        // All other folders (automation, web, components, lib, etc.) are created
-        // explicitly by the user — not auto-scaffolded on every request.
-        for subdir in ["assets", "styles"] {
-            fs::create_dir_all(repo_pipelines_dir.join(subdir))?;
-        }
-
-        Self::ensure_git_repo(&repo_dir, &repo_git_dir)?;
-
-        Ok(ProjectFileLayout {
+        let resolved = ProjectFileLayout {
             root,
             data_dir,
             data_runtime_dir,
@@ -123,13 +101,38 @@ impl FileAdapter for FilesystemFileAdapter {
             files_dir,
             repo_dir,
             repo_git_dir,
-            repo_pipelines_dir,
-            repo_docs_dir,
             project_config_file,
             agent_docs_dir,
-            repo_node_interfaces_dir,
             data_nodes_dir,
-        })
+            repo_layout,
+        };
+
+        // Base dirs
+        for dir in [
+            &resolved.root,
+            &resolved.data_dir,
+            &resolved.data_runtime_dir,
+            &resolved.data_runtime_pipelines_dir,
+            &resolved.files_dir,
+            &resolved.files_dir.join("public"),
+            &resolved.files_dir.join("private"),
+            &resolved.repo_dir,
+            &resolved.repo_source_dir(),
+            &resolved.repo_docs_dir(),
+            &resolved.agent_docs_dir,
+            // Only assets/ and styles/ are scaffolded inside the source root.
+            // All other folders (automation, web, components, lib, etc.) are
+            // created explicitly by the user — not auto-scaffolded on every
+            // request.
+            &resolved.repo_assets_dir(),
+            &resolved.repo_source_dir().join("styles"),
+        ] {
+            fs::create_dir_all(dir)?;
+        }
+
+        Self::ensure_git_repo(&resolved.repo_dir, &resolved.repo_git_dir)?;
+
+        Ok(resolved)
     }
 }
 

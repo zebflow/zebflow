@@ -974,10 +974,10 @@ impl ProjectService {
         // ── 2. Physical subdirs and files ────────────────────────────────────
         // Map virtual path → physical dir: virtual "/" → repo/pipelines/, "/pages" → repo/pipelines/pages/
         let phys_dir = if current_path == "/" {
-            layout.repo_pipelines_dir.clone()
+            layout.repo_source_dir()
         } else {
             layout
-                .repo_pipelines_dir
+                .repo_source_dir()
                 .join(current_path.trim_start_matches('/'))
         };
 
@@ -1010,9 +1010,12 @@ impl ProjectService {
                         };
                         // rel_path relative to repo/ root (used for git status)
                         let rel_path = if current_path == "/" {
-                            format!("pipelines/{fname}")
+                            layout.repo_layout.source_rel(&fname)
                         } else {
-                            format!("pipelines{current_path}/{fname}")
+                            layout.repo_layout.source_rel(&format!(
+                                "{}/{fname}",
+                                current_path.trim_start_matches('/')
+                            ))
                         };
                         // template_path relative to repo/pipelines/ (for template editor ?file=)
                         let template_path = if current_path == "/" {
@@ -1120,8 +1123,8 @@ impl ProjectService {
         let mut items = Vec::new();
         let mut default_file = None;
         walk_template_tree(
-            &layout.repo_pipelines_dir,
-            &layout.repo_pipelines_dir,
+            &layout.repo_source_dir(),
+            &layout.repo_source_dir(),
             0,
             &mut items,
             &mut default_file,
@@ -1147,7 +1150,7 @@ impl ProjectService {
         let project = slug_segment(project);
         let layout = self.file.ensure_project_layout(&owner, &project)?;
 
-        let root = &layout.repo_pipelines_dir;
+        let root = &layout.repo_source_dir();
         let search_root = if let Some(p) = path.filter(|p| !p.is_empty() && p != &"/") {
             let sub = p.trim_start_matches('/');
             let candidate = root.join(sub);
@@ -1174,7 +1177,7 @@ impl ProjectService {
         let owner = slug_segment(owner);
         let project = slug_segment(project);
         let layout = self.file.ensure_project_layout(&owner, &project)?;
-        Ok(layout.repo_pipelines_dir)
+        Ok(layout.repo_source_dir())
     }
 
     /// Resolve the absolute filesystem path for a template file given its `rel_path`.
@@ -1189,7 +1192,7 @@ impl ProjectService {
         let owner = slug_segment(owner);
         let project = slug_segment(project);
         let layout = self.file.ensure_project_layout(&owner, &project)?;
-        let (_, abs) = resolve_template_entry(&layout.repo_pipelines_dir, rel_path)?;
+        let (_, abs) = resolve_template_entry(&layout.repo_source_dir(), rel_path)?;
         // Canonicalize so the path format matches what the RWE compiler stores in
         // dependency_paths (the compiler uses fs::canonicalize via canonical_or_current).
         // Without this, a relative data_root like ".zebflow-platform-data" causes a
@@ -1209,7 +1212,7 @@ impl ProjectService {
         let layout = self.file.ensure_project_layout(&owner, &project)?;
         self.ensure_default_template_workspace(&layout)?;
 
-        let (rel, abs) = resolve_template_entry(&layout.repo_pipelines_dir, rel_path)?;
+        let (rel, abs) = resolve_template_entry(&layout.repo_source_dir(), rel_path)?;
         if !abs.is_file() {
             return Err(PlatformError::new(
                 "PLATFORM_TEMPLATE_MISSING",
@@ -1231,7 +1234,7 @@ impl ProjectService {
         let layout = self.file.ensure_project_layout(&owner, &project)?;
         self.ensure_default_template_workspace(&layout)?;
 
-        let (rel, abs) = resolve_template_entry(&layout.repo_pipelines_dir, rel_path)?;
+        let (rel, abs) = resolve_template_entry(&layout.repo_source_dir(), rel_path)?;
         if !abs.is_file() {
             return Err(PlatformError::new(
                 "PLATFORM_TEMPLATE_MISSING",
@@ -1255,7 +1258,7 @@ impl ProjectService {
         let layout = self.file.ensure_project_layout(&owner, &project)?;
         self.ensure_default_template_workspace(&layout)?;
 
-        let (rel, abs) = resolve_template_entry(&layout.repo_pipelines_dir, &req.rel_path)?;
+        let (rel, abs) = resolve_template_entry(&layout.repo_source_dir(), &req.rel_path)?;
         if let Some(parent) = abs.parent() {
             fs::create_dir_all(parent)?;
         }
@@ -1277,7 +1280,7 @@ impl ProjectService {
         let owner = slug_segment(owner);
         let project = slug_segment(project);
         let layout = self.file.ensure_project_layout(&owner, &project)?;
-        let root = &layout.repo_pipelines_dir;
+        let root = &layout.repo_source_dir();
 
         let pattern_lower = pattern.to_lowercase();
         let mut matches: Vec<(String, usize, String)> = Vec::new();
@@ -1335,7 +1338,7 @@ impl ProjectService {
         let owner = slug_segment(owner);
         let project = slug_segment(project);
         let layout = self.file.ensure_project_layout(&owner, &project)?;
-        let root = &layout.repo_pipelines_dir;
+        let root = &layout.repo_source_dir();
 
         let pattern_lower = pattern.to_lowercase();
         let mut matches: Vec<(String, usize, String)> = Vec::new();
@@ -1393,7 +1396,7 @@ impl ProjectService {
         self.ensure_template_editable(&owner, &project, rel_path, "edited")?;
         let layout = self.file.ensure_project_layout(&owner, &project)?;
 
-        let (rel, abs) = resolve_template_entry(&layout.repo_pipelines_dir, rel_path)?;
+        let (rel, abs) = resolve_template_entry(&layout.repo_source_dir(), rel_path)?;
         if !abs.is_file() {
             return Err(PlatformError::new(
                 "PLATFORM_TEMPLATE_MISSING",
@@ -1451,8 +1454,8 @@ impl ProjectService {
         if !parent_rel.is_empty() {
             self.ensure_template_editable(&owner, &project, &parent_rel, "modified")?;
         }
-        let parent_abs = layout.repo_pipelines_dir.join(&parent_rel);
-        if !parent_abs.starts_with(&layout.repo_pipelines_dir) {
+        let parent_abs = layout.repo_source_dir().join(&parent_rel);
+        if !parent_abs.starts_with(&layout.repo_source_dir()) {
             return Err(PlatformError::new(
                 "PLATFORM_TEMPLATE_PATH",
                 "resolved template parent escaped template root",
@@ -1473,7 +1476,7 @@ impl ProjectService {
             } else {
                 format!("{parent_rel}/{folder_name}")
             };
-            let abs = layout.repo_pipelines_dir.join(&rel);
+            let abs = layout.repo_source_dir().join(&rel);
             if abs.exists() {
                 return Err(PlatformError::new(
                     "PLATFORM_TEMPLATE_CREATE",
@@ -1498,8 +1501,8 @@ impl ProjectService {
             format!("{parent_rel}/{filename}")
         };
         self.ensure_template_editable(&owner, &project, &rel, "created")?;
-        let abs = layout.repo_pipelines_dir.join(&rel);
-        if !abs.starts_with(&layout.repo_pipelines_dir) {
+        let abs = layout.repo_source_dir().join(&rel);
+        if !abs.starts_with(&layout.repo_source_dir()) {
             return Err(PlatformError::new(
                 "PLATFORM_TEMPLATE_PATH",
                 "resolved template path escaped template root",
@@ -1531,7 +1534,7 @@ impl ProjectService {
         let layout = self.file.ensure_project_layout(&owner, &project)?;
         self.ensure_default_template_workspace(&layout)?;
 
-        let (rel, abs) = resolve_template_entry(&layout.repo_pipelines_dir, rel_path)?;
+        let (rel, abs) = resolve_template_entry(&layout.repo_source_dir(), rel_path)?;
         if !abs.exists() {
             return Err(PlatformError::new(
                 "PLATFORM_TEMPLATE_MISSING",
@@ -1566,7 +1569,7 @@ impl ProjectService {
         self.ensure_default_template_workspace(&layout)?;
 
         let (from_rel, from_abs) =
-            resolve_template_entry(&layout.repo_pipelines_dir, &req.from_rel_path)?;
+            resolve_template_entry(&layout.repo_source_dir(), &req.from_rel_path)?;
         if !from_abs.exists() {
             return Err(PlatformError::new(
                 "PLATFORM_TEMPLATE_MISSING",
@@ -1577,8 +1580,8 @@ impl ProjectService {
         if !parent_rel.is_empty() {
             self.ensure_template_editable(&owner, &project, &parent_rel, "modified")?;
         }
-        let parent_abs = layout.repo_pipelines_dir.join(&parent_rel);
-        if !parent_abs.starts_with(&layout.repo_pipelines_dir) {
+        let parent_abs = layout.repo_source_dir().join(&parent_rel);
+        if !parent_abs.starts_with(&layout.repo_source_dir()) {
             return Err(PlatformError::new(
                 "PLATFORM_TEMPLATE_PATH",
                 "resolved move target escaped template root",
@@ -1957,8 +1960,8 @@ impl ProjectService {
         layout: &ProjectFileLayout,
     ) -> Result<(), PlatformError> {
         // Subdirs are created by ensure_project_layout. Only scaffold default files here.
-        let pages_dir = layout.repo_pipelines_dir.join("pages");
-        let styles_dir = layout.repo_pipelines_dir.join("styles");
+        let pages_dir = layout.repo_source_dir().join("pages");
+        let styles_dir = layout.repo_source_dir().join("styles");
         fs::create_dir_all(&pages_dir)?;
         fs::create_dir_all(&styles_dir)?;
 
@@ -1980,7 +1983,7 @@ impl ProjectService {
         // Scaffold shared/ directories for cross-module shared code.
         // @/shared/ui, @/shared/layout, @/shared/lib — import path: @/shared/ui/button
         for subdir in ["shared/ui", "shared/layout", "shared/lib"] {
-            let dir = layout.repo_pipelines_dir.join(subdir);
+            let dir = layout.repo_source_dir().join(subdir);
             fs::create_dir_all(&dir)?;
             let gitkeep = dir.join(".gitkeep");
             if !gitkeep.exists() {
@@ -2017,10 +2020,9 @@ impl ProjectService {
         file_rel_path: &str,
         hash: &str,
     ) -> Result<PathBuf, PlatformError> {
-        // Strip "pipelines/" prefix to get the sub-path, then replace .zf.json with .{hash}.zf.json
-        let sub = file_rel_path
-            .trim_start_matches("pipelines/")
-            .trim_start_matches('/');
+        // Strip the source root to get the sub-path, then replace .zf.json
+        // with .{hash}.zf.json
+        let sub = strip_source_root(layout, file_rel_path);
         let snapshot_name = if let Some(stem) = sub.strip_suffix(".zf.json") {
             format!("{stem}.{}.zf.json", slug_segment(hash))
         } else if let Some(stem) = sub.strip_suffix(".json") {
@@ -2048,9 +2050,7 @@ impl ProjectService {
         file_rel_path: &str,
         keep_hash: Option<&str>,
     ) -> Result<(), PlatformError> {
-        let sub = file_rel_path
-            .trim_start_matches("pipelines/")
-            .trim_start_matches('/');
+        let sub = strip_source_root(layout, file_rel_path);
         let snapshot_prefix = if let Some(stem) = sub.strip_suffix(".zf.json") {
             format!("{stem}.")
         } else if let Some(stem) = sub.strip_suffix(".json") {
@@ -2112,7 +2112,7 @@ impl ProjectService {
         let project = slug_segment(project);
         let layout = self.file.ensure_project_layout(&owner, &project)?;
         let mut items = Vec::new();
-        walk_docs_tree(&layout.repo_docs_dir, &layout.repo_docs_dir, &mut items)?;
+        walk_docs_tree(&layout.repo_docs_dir(), &layout.repo_docs_dir(), &mut items)?;
         Ok(items)
     }
 
@@ -2126,7 +2126,7 @@ impl ProjectService {
         let owner = slug_segment(owner);
         let project = slug_segment(project);
         let layout = self.file.ensure_project_layout(&owner, &project)?;
-        let (_rel, abs) = resolve_doc_path(&layout.repo_docs_dir, rel_path)?;
+        let (_rel, abs) = resolve_doc_path(&layout.repo_docs_dir(), rel_path)?;
         if !abs.is_file() {
             return Err(PlatformError::new(
                 "PLATFORM_DOC_MISSING",
@@ -2147,7 +2147,7 @@ impl ProjectService {
         let owner = slug_segment(owner);
         let project = slug_segment(project);
         let layout = self.file.ensure_project_layout(&owner, &project)?;
-        let (rel, abs) = resolve_doc_path(&layout.repo_docs_dir, rel_path)?;
+        let (rel, abs) = resolve_doc_path(&layout.repo_docs_dir(), rel_path)?;
 
         if rel.ends_with('/') {
             return Err(PlatformError::new(
@@ -2182,7 +2182,7 @@ impl ProjectService {
         let owner = slug_segment(owner);
         let project = slug_segment(project);
         let layout = self.file.ensure_project_layout(&owner, &project)?;
-        let (rel, abs) = resolve_doc_folder_path(&layout.repo_docs_dir, rel_path, false)?;
+        let (rel, abs) = resolve_doc_folder_path(&layout.repo_docs_dir(), rel_path, false)?;
         fs::create_dir_all(&abs)?;
         let name = abs
             .file_name()
@@ -2207,7 +2207,7 @@ impl ProjectService {
         let project = slug_segment(project);
         let layout = self.file.ensure_project_layout(&owner, &project)?;
 
-        let (from_rel, from_abs) = resolve_doc_path(&layout.repo_docs_dir, &req.from_path)?;
+        let (from_rel, from_abs) = resolve_doc_path(&layout.repo_docs_dir(), &req.from_path)?;
         if !from_abs.exists() {
             return Err(PlatformError::new(
                 "PLATFORM_DOC_MISSING",
@@ -2215,7 +2215,7 @@ impl ProjectService {
             ));
         }
         let (parent_rel, parent_abs) =
-            resolve_doc_folder_path(&layout.repo_docs_dir, &req.to_parent_path, true)?;
+            resolve_doc_folder_path(&layout.repo_docs_dir(), &req.to_parent_path, true)?;
         if !parent_abs.exists() || !parent_abs.is_dir() {
             return Err(PlatformError::new(
                 "PLATFORM_DOC_MOVE",
@@ -2262,7 +2262,7 @@ impl ProjectService {
         let owner = slug_segment(owner);
         let project = slug_segment(project);
         let layout = self.file.ensure_project_layout(&owner, &project)?;
-        let (_rel, abs) = resolve_doc_path(&layout.repo_docs_dir, rel_path)?;
+        let (_rel, abs) = resolve_doc_path(&layout.repo_docs_dir(), rel_path)?;
         if !abs.is_file() {
             return Err(PlatformError::new(
                 "PLATFORM_DOC_MISSING",
@@ -2282,7 +2282,7 @@ impl ProjectService {
         let owner = slug_segment(owner);
         let project = slug_segment(project);
         let layout = self.file.ensure_project_layout(&owner, &project)?;
-        let (_rel, abs) = resolve_doc_path(&layout.repo_docs_dir, rel_path)?;
+        let (_rel, abs) = resolve_doc_path(&layout.repo_docs_dir(), rel_path)?;
         if !abs.exists() {
             return Err(PlatformError::new(
                 "PLATFORM_DOC_MISSING",
@@ -2870,6 +2870,18 @@ fn capitalize_ascii(raw: &str) -> String {
         Some(first) => format!("{}{}", first.to_ascii_uppercase(), chars.as_str()),
         None => String::new(),
     }
+}
+
+/// `file_rel_path` with the project's source root removed.
+///
+/// Runtime snapshot names are built from what is left, so a path outside the
+/// source root keeps its own shape rather than being rewritten into one.
+fn strip_source_root<'a>(layout: &ProjectFileLayout, file_rel_path: &'a str) -> &'a str {
+    layout
+        .repo_layout
+        .strip_source(file_rel_path)
+        .unwrap_or(file_rel_path)
+        .trim_start_matches('/')
 }
 
 /// Normalizes a pipeline file_rel_path:

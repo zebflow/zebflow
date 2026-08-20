@@ -12,8 +12,8 @@ use crate::infra::io::durable::atomic_write;
 use crate::platform::error::PlatformError;
 use crate::platform::model::{
     CollectionAttribute, CreateSimpleTableRequest, DbObjectNode, DbQueryColumn,
-    ProjectDbConnectionQueryResult, QueryProjectDbConnectionRequest, SimpleTableDefinition,
-    UpdateSimpleTableRequest, now_ts, slug_segment,
+    ProjectDbConnectionQueryResult, QueryProjectDbConnectionRequest, ResolvedProjectLayout,
+    SCHEMA_DOCUMENT_FILE, SimpleTableDefinition, UpdateSimpleTableRequest, now_ts, slug_segment,
 };
 
 // ── CoreDB connection pool ───────────────────────────────────────────────────
@@ -303,9 +303,16 @@ fn repo_dir(data_root: &Path, owner: &str, project: &str) -> PathBuf {
 }
 
 fn repo_schema_dir(data_root: &Path, owner: &str, project: &str) -> PathBuf {
-    repo_dir(data_root, owner, project)
-        .join("schemas")
-        .join("sekejap")
+    repo_dir(data_root, owner, project).join(repo_layout().schema)
+}
+
+/// The layout the exported schema documents are placed by.
+///
+/// This module reaches the repository through `data_root` rather than through
+/// a `ProjectFileLayout`, so it resolves the same layout rather than repeating
+/// the directory it names.
+fn repo_layout() -> ResolvedProjectLayout {
+    ResolvedProjectLayout::platform_default()
 }
 
 fn ensure_project_dir(
@@ -863,7 +870,7 @@ pub fn apply_schema_from_repo(
     owner: &str,
     project: &str,
 ) -> Result<Option<SekejapSchemaApplyReport>, PlatformError> {
-    let schema_path = repo_schema_dir(data_root, owner, project).join("schema.json");
+    let schema_path = repo_schema_dir(data_root, owner, project).join(SCHEMA_DOCUMENT_FILE);
     if !schema_path.is_file() {
         return Ok(None);
     }
@@ -930,6 +937,7 @@ pub fn sync_schema_to_repo(
         connection_slug: BUILTIN_CONNECTION_SLUG.to_string(),
         tables: export_tables_from_defs(defs),
     };
+    let layout = repo_layout();
     let schema_root = repo_schema_dir(data_root, owner, project);
     let tables_dir = schema_root.join("tables");
     std::fs::create_dir_all(&tables_dir)?;
@@ -938,12 +946,12 @@ pub fn sync_schema_to_repo(
     let mut files_written = Vec::new();
     let mut files_removed = Vec::new();
 
-    let schema_path = schema_root.join("schema.json");
+    let schema_path = schema_root.join(SCHEMA_DOCUMENT_FILE);
     let schema_bytes = encode_schema_export(export.clone())?;
     if write_bytes_if_changed(&schema_path, &schema_bytes)? {
         changed = true;
     }
-    files_written.push("schemas/sekejap/schema.json".to_string());
+    files_written.push(layout.schema_document_rel());
 
     let mut expected = BTreeSet::new();
     for table in &export.tables {
@@ -959,7 +967,7 @@ pub fn sync_schema_to_repo(
         if write_json_if_changed(&table_path, &table_value)? {
             changed = true;
         }
-        files_written.push(format!("schemas/sekejap/tables/{file_name}"));
+        files_written.push(format!("{}/tables/{file_name}", layout.schema));
     }
 
     if tables_dir.exists() {
@@ -975,14 +983,14 @@ pub fn sync_schema_to_repo(
             if !expected.contains(name) {
                 std::fs::remove_file(&path)?;
                 changed = true;
-                files_removed.push(format!("schemas/sekejap/tables/{name}"));
+                files_removed.push(format!("{}/tables/{name}", layout.schema));
             }
         }
     }
 
     Ok(SekejapSchemaSyncReport {
         changed,
-        root: "schemas/sekejap".to_string(),
+        root: layout.schema.clone(),
         files_written,
         files_removed,
         table_count: export.tables.len(),

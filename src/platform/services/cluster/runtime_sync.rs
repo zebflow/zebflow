@@ -20,7 +20,7 @@ use crate::platform::adapters::file::FileAdapter;
 use crate::platform::error::PlatformError;
 use crate::platform::model::{
     CreateProjectRequest, PlatformUser, PlatformUserLocalAuth,
-    ProjectRuntimeMaterializationRequest, StoredUser, now_ts, slug_segment,
+    ProjectRuntimeMaterializationRequest, ResolvedProjectLayout, StoredUser, now_ts, slug_segment,
 };
 use crate::platform::services::{
     PipelineRuntimeService, ProjectConfigurationService, ProjectService,
@@ -119,7 +119,8 @@ impl ClusterRuntimeSyncService {
         let cfg = self.zebflow_cfg.read_or_default(&owner, &project)?;
         reindex_project_sources(
             self.projects.as_ref(),
-            &layout.repo_pipelines_dir,
+            &layout.repo_layout,
+            &layout.repo_source_dir(),
             &owner,
             &project,
         )?;
@@ -320,6 +321,7 @@ fn sanitize_bundle_path(repo_dir: &Path, rel_path: &str) -> Result<PathBuf, Plat
 
 fn reindex_project_sources(
     projects: &ProjectService,
+    layout: &ResolvedProjectLayout,
     repo_root: &Path,
     owner: &str,
     project: &str,
@@ -347,7 +349,7 @@ fn reindex_project_sources(
                 continue;
             }
             let source = fs::read_to_string(&path)?;
-            let file_rel_path = format!("pipelines/{rel}");
+            let file_rel_path = layout.source_rel(&rel);
             let graph_description = decode_pipeline_graph(source.as_bytes())
                 .ok()
                 .and_then(|document| document.spec.description)

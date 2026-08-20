@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use super::report::PolicyRiskLevel;
+use crate::platform::model::ResolvedProjectLayout;
 
 const LARGE_FILE_THRESHOLD_BYTES: usize = 5 * 1024 * 1024;
 
@@ -109,6 +110,7 @@ pub struct PackageReviewOptions {
 }
 
 pub fn review_package_entries(
+    layout: &ResolvedProjectLayout,
     entries: &[PackagePolicyEntry],
     mut warnings: Vec<String>,
     options: PackageReviewOptions,
@@ -136,7 +138,7 @@ pub fn review_package_entries(
     }
 
     for entry in entries {
-        if is_reviewed_pipeline_path(&entry.rel_path) {
+        if is_reviewed_pipeline_path(layout, &entry.rel_path) {
             if !entry.unreadable.is_empty() {
                 // The destination decides what is scanned, so an entry that
                 // lands here is a pipeline whatever supplied its bytes. Bytes
@@ -171,7 +173,7 @@ pub fn review_package_entries(
         if looks_like_seed_data(&entry.rel_path, entry.size_bytes) {
             seed_data.push(entry.rel_path.clone());
         }
-        if let Some(engine) = initial_data_engine_for_rel_path(&entry.rel_path) {
+        if let Some(engine) = initial_data_engine_for_rel_path(layout, &entry.rel_path) {
             let mut report =
                 review_initial_data_sql(engine, &entry.rel_path, entry.text().unwrap_or_default());
             if !entry.unreadable.is_empty() {
@@ -253,9 +255,10 @@ pub fn review_package_entries(
 ///
 /// The path is the whole test, and it is applied to the path the install
 /// actually writes, so the review and the install never disagree about which
-/// entries are pipelines.
-fn is_reviewed_pipeline_path(rel_path: &str) -> bool {
-    rel_path.ends_with(".zf.json") && rel_path.starts_with("pipelines/")
+/// entries are pipelines. The layout answers, so neither can disagree with
+/// discovery either.
+fn is_reviewed_pipeline_path(layout: &ResolvedProjectLayout, rel_path: &str) -> bool {
+    layout.is_pipeline_rel_path(rel_path)
 }
 
 impl PackageSafetyReview {
@@ -439,7 +442,12 @@ fn collect_urls_from_text(text: &str, out: &mut BTreeSet<String>) {
 // because a full SQL grammar would be a dependency, a parse failure mode, and a
 // second opinion about statements the installer is going to run either way.
 
-/// Where a package's install-time SQL lives, and which engine replays it.
+/// Where a package's install-time SQL lives by default, and which engine
+/// replays it.
+///
+/// This is the platform default a project inherits when it declares no layout;
+/// [`ResolvedProjectLayout`] derives its own list from here, and every reader
+/// goes through that rather than through this table.
 ///
 /// The list is short on purpose. Both engines are project-local stores the
 /// install creates for itself, so bundle SQL has no route to a database the
@@ -456,19 +464,17 @@ pub const INITIAL_DATA_DIRS: &[(&str, &str)] = &[
 
 /// The engine that would replay `rel_path`, when the installer would replay it.
 ///
-/// The prefix is anchored, so this names the files an install actually runs and
-/// not every `.sql` the package happens to ship.
-pub fn initial_data_engine_for_rel_path(rel_path: &str) -> Option<&'static str> {
+/// Leading `/` and `./` are tolerated here because callers hand in manifest
+/// paths; the anchored prefix test itself belongs to the layout.
+pub fn initial_data_engine_for_rel_path<'a>(
+    layout: &'a ResolvedProjectLayout,
+    rel_path: &str,
+) -> Option<&'a str> {
     let rel = rel_path
         .trim()
         .trim_start_matches('/')
         .trim_start_matches("./");
-    if !rel.ends_with(".sql") {
-        return None;
-    }
-    INITIAL_DATA_DIRS
-        .iter()
-        .find_map(|(prefix, engine)| rel.starts_with(&format!("{prefix}/")).then_some(*engine))
+    layout.initial_data_engine(rel)
 }
 
 /// Splits an initial-data file into the statements the installer replays.
@@ -774,7 +780,12 @@ TRUNCATE TABLE tags;
     }
 
     fn only_report(entries: &[PackagePolicyEntry]) -> DatabaseInitializationReport {
-        let review = review_package_entries(entries, Vec::new(), PackageReviewOptions::default());
+        let review = review_package_entries(
+            &ResolvedProjectLayout::platform_default(),
+            entries,
+            Vec::new(),
+            PackageReviewOptions::default(),
+        );
         assert_eq!(
             review.database_initialization.len(),
             1,
@@ -853,15 +864,20 @@ TRUNCATE TABLE tags;
     /// data, and a non-`.sql` file inside one is not either.
     #[test]
     fn only_the_paths_the_installer_replays_are_reported() {
+        let layout = ResolvedProjectLayout::platform_default();
         for path in [
             "docs/schema.sql",
             "seeds/postgres/001.sql",
             "seeds/sekejap/notes.md",
         ] {
-            assert_eq!(initial_data_engine_for_rel_path(path), None, "{path}");
+            assert_eq!(
+                initial_data_engine_for_rel_path(&layout, path),
+                None,
+                "{path}"
+            );
         }
         assert_eq!(
-            initial_data_engine_for_rel_path("initial-data/sqlite/001.sql"),
+            initial_data_engine_for_rel_path(&layout, "initial-data/sqlite/001.sql"),
             Some("sqlite")
         );
     }
@@ -872,7 +888,12 @@ TRUNCATE TABLE tags;
     fn a_seed_file_that_cannot_be_read_still_gets_a_row() {
         let mut entry = seed_entry("seeds/sekejap/002-posts.sql", "");
         entry.unreadable = "artifact not found on this channel".to_string();
-        let review = review_package_entries(&[entry], Vec::new(), PackageReviewOptions::default());
+        let review = review_package_entries(
+            &ResolvedProjectLayout::platform_default(),
+            &[entry],
+            Vec::new(),
+            PackageReviewOptions::default(),
+        );
 
         let report = &review.database_initialization[0];
         assert_eq!(report.unreadable, "artifact not found on this channel");

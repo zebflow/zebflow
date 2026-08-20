@@ -6,9 +6,13 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+use crate::platform::model::ResolvedProjectLayout;
 use crate::platform::policy::package::{
     PackagePolicyEntry, PackageReviewOptions, review_package_entries,
 };
+
+/// Where the catalog installs, relative to the project's source root.
+const SHARED_UI_SUBDIR: &str = "shared/ui";
 
 /// One entry in the UI component catalog.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -348,10 +352,12 @@ impl CatalogService {
 
     /// Review installing UI components before writing to the project repo.
     pub fn review_ui(
+        layout: &ResolvedProjectLayout,
         names: &[String],
         shared_ui_dir: &PathBuf,
         overwrite: bool,
     ) -> UiInstallReview {
+        let install_root = layout.source_rel(SHARED_UI_SUBDIR);
         let source_map: HashMap<&str, (&str, &str)> = UI_SOURCES
             .iter()
             .map(|(name, src, filename, _, _)| (*name, (*src, *filename)))
@@ -370,7 +376,7 @@ impl CatalogService {
                 continue;
             };
             components.push(name.clone());
-            let rel_path = format!("pipelines/shared/ui/{filename}");
+            let rel_path = format!("{install_root}/{filename}");
             let dest = shared_ui_dir.join(filename);
             if dest.exists() && overwrite {
                 files_overwritten.push(rel_path.clone());
@@ -398,6 +404,7 @@ impl CatalogService {
         }
 
         let mut policy = review_package_entries(
+            layout,
             &policy_entries,
             warnings,
             PackageReviewOptions {
@@ -412,7 +419,7 @@ impl CatalogService {
         UiInstallReview {
             source: "built_in".to_string(),
             asset_kind: "ui_components".to_string(),
-            install_root: "pipelines/shared/ui".to_string(),
+            install_root,
             components,
             files_added,
             files_overwritten,
@@ -486,7 +493,12 @@ mod tests {
         let dir = temp_shared_ui_dir("review-files-before-write");
         let _ = std::fs::remove_dir_all(&dir);
 
-        let review = CatalogService::review_ui(&["button".to_string()], &dir, false);
+        let review = CatalogService::review_ui(
+            &ResolvedProjectLayout::platform_default(),
+            &["button".to_string()],
+            &dir,
+            false,
+        );
 
         assert_eq!(review.source, "built_in");
         assert_eq!(review.asset_kind, "ui_components");
@@ -507,14 +519,24 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("button.tsx"), "local edit").unwrap();
 
-        let skipped = CatalogService::review_ui(&["button".to_string()], &dir, false);
+        let skipped = CatalogService::review_ui(
+            &ResolvedProjectLayout::platform_default(),
+            &["button".to_string()],
+            &dir,
+            false,
+        );
         assert_eq!(
             skipped.files_skipped,
             vec!["pipelines/shared/ui/button.tsx"]
         );
         assert!(skipped.files_overwritten.is_empty());
 
-        let overwritten = CatalogService::review_ui(&["button".to_string()], &dir, true);
+        let overwritten = CatalogService::review_ui(
+            &ResolvedProjectLayout::platform_default(),
+            &["button".to_string()],
+            &dir,
+            true,
+        );
         assert!(overwritten.files_skipped.is_empty());
         assert_eq!(
             overwritten.files_overwritten,

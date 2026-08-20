@@ -1,11 +1,14 @@
 # Project layout — the contract as it exists today
 
-Status: **survey**. This describes what the code does now, not what it should do.
-Nothing here is a proposal. It exists so that a declared layout can be written
-without missing a consumer, because four copies of the same rule already
-disagree with each other.
+Status: **survey**, amended after the resolver landed. Nothing here is a
+proposal. It exists so that a declared layout can be written without missing a
+consumer.
 
-Every rule below is currently expressed in Rust rather than declared by the
+Section 5 records what changed. Sections 1 to 4 describe the rules as they were
+found, and the line numbers in them are the ones the survey was taken against;
+they have moved.
+
+Every rule below is still decided by the platform rather than declared by the
 project, which is why no project can use a folder pattern of its own.
 
 ## 0. The fact that explains the rest
@@ -71,8 +74,13 @@ can consult a declaration.
 | Node interface | `repo/nodes` | `repo_node_interfaces_dir` |
 | Asset / image | `repo/pipelines/assets/`, created for every project | `adapters/file/mod.rs:112`, served by `web/mod.rs:2069` and `:2153` |
 
-The pipeline rule is duplicated rather than shared. Checked against the code, the
-four copies currently agree; the risk is drift, not existing drift.
+The pipeline rule was duplicated rather than shared. Three of the four copies
+agreed. `ops.rs:1722` did not: it is `ends_with(".zf.json") || starts_with("pipelines/")`,
+an **or** over a different namespace. It decides whether `move_resource` is
+moving a pipeline, whose paths are repository-relative, or a template, whose
+paths are relative to the source root. Read as the discovery predicate it looks
+like a bug; read as the question it actually asks, the `or` is correct and the
+table above was wrong to list it as the same rule.
 
 Images do have a home: `ensure_project_layout` creates `repo/pipelines/assets/`
 alongside `styles/` for every project, and two routes serve it. An earlier draft
@@ -133,3 +141,32 @@ part of the kind-by-extension scheme:
 No repo in this codebase currently contains an image, though `pipelines/assets/`
 exists and is served for exactly that purpose. Any allowlist should be derived
 from this set plus a decided asset set, rather than from what seems reasonable.
+
+## 5. What the resolver changed
+
+`ResolvedProjectLayout` (`platform/model.rs`) now answers every question in
+section 1 that is not identity. `ProjectFileLayout` carries one and derives
+`repo_source_dir()`, `repo_assets_dir()`, `repo_docs_dir()` and
+`repo_node_interfaces_dir()` from it, so an absolute path and the
+repository-relative rule that names it cannot disagree. The safety review, the
+prepared-install gate, and every place that decides which installed files to
+register now share `is_pipeline_rel_path`; placement shares `source_rel` and
+`is_in_source` with them. The installer's initial-data table is reached through
+`initial_data`, and `INITIAL_DATA_DIRS` is what the default is derived *from*
+rather than a second reader.
+
+Nothing became free-form. `FilesystemFileAdapter::ensure_project_layout` builds
+the resolver from `ResolvedProjectLayout::platform_default()` and never opens
+`zebflow.yaml`, so every project resolves to the directories in section 0. That
+one line is the seam a declared layout arrives through.
+
+Identity is untouched, exactly as section 1 warns. `normalize_pipeline_file_rel_path`,
+`virtual_path_from_file_rel_path` and `name_from_file_rel_path` still hardcode
+`pipelines/`, because a persisted `file_rel_path` encodes it and changing that
+is a migration.
+
+Two things section 1 called settled were not. `ops.rs:1722` is an `or`, as
+noted above. And the runtime snapshot path stripped its prefix with
+`trim_start_matches`, which repeats, where every other copy used
+`strip_prefix`, which does not; it now strips once like the rest. Nothing
+reachable can produce the doubled prefix that told them apart.

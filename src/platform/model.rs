@@ -1943,25 +1943,48 @@ pub struct ProjectFileLayout {
     pub repo_dir: PathBuf,
     /// `.../repo/.git`
     pub repo_git_dir: PathBuf,
-    /// `.../repo/pipelines` — unified source root: *.zf.json pipelines + *.tsx templates + *.ts scripts.
-    /// Also the @/ root for the RWE compiler.
-    pub repo_pipelines_dir: PathBuf,
-    /// `.../repo/docs` (project docs: ERD, README.md, AGENTS.md, use cases, etc.; UI label may be "Schema")
-    pub repo_docs_dir: PathBuf,
     /// `.../repo/zebflow.yaml` (non-sensitive project configuration, git-synced).
     pub project_config_file: PathBuf,
     /// `.../data/runtime/agent_docs` (AGENTS.md, SOUL.md, MEMORY.md — agent context)
     pub agent_docs_dir: PathBuf,
-    /// `.../repo/nodes` — interfaces of the third-party nodes this project uses.
-    ///
-    /// These are `NodeDefinition` documents, not bundles. They let a graph stay
-    /// readable and reimplementable on an instance where the bundle is absent.
-    pub repo_node_interfaces_dir: PathBuf,
     /// `.../data/nodes` — installed node bundles.
     ///
     /// These are materialized from `zeb.lock`, not authored, so they live with
     /// the machine's other derived state rather than in the source repository.
     pub data_nodes_dir: PathBuf,
+    /// The repository layout these paths project onto disk.
+    ///
+    /// Every directory inside `repo/` is derived from this rather than stored
+    /// beside it, so an absolute path and the repository-relative rule that
+    /// names it cannot disagree.
+    pub repo_layout: ResolvedProjectLayout,
+}
+
+impl ProjectFileLayout {
+    /// `.../repo/{source}` — unified source root: *.zf.json pipelines + *.tsx
+    /// templates + *.ts scripts. Also the `@/` root for the RWE compiler.
+    pub fn repo_source_dir(&self) -> PathBuf {
+        self.repo_dir.join(&self.repo_layout.source)
+    }
+
+    /// `.../repo/{assets}` — files served under `/assets/{owner}/{project}/...`.
+    pub fn repo_assets_dir(&self) -> PathBuf {
+        self.repo_dir.join(&self.repo_layout.assets)
+    }
+
+    /// `.../repo/{docs}` (project docs: ERD, README.md, use cases, etc.).
+    pub fn repo_docs_dir(&self) -> PathBuf {
+        self.repo_dir.join(&self.repo_layout.docs)
+    }
+
+    /// `.../repo/{node_interfaces}` — interfaces of the third-party nodes this
+    /// project uses.
+    ///
+    /// These are `NodeDefinition` documents, not bundles. They let a graph stay
+    /// readable and reimplementable on an instance where the bundle is absent.
+    pub fn repo_node_interfaces_dir(&self) -> PathBuf {
+        self.repo_dir.join(&self.repo_layout.node_interfaces)
+    }
 }
 
 // ── Node package system ─────────────────────────────────────────────────────
@@ -2372,6 +2395,10 @@ pub const DEFAULT_LAYOUT_DOCS_DIR: &str = "docs";
 pub const DEFAULT_LAYOUT_SCHEMA_DIR: &str = "schemas/sekejap";
 /// Repository-relative directory holding third-party node interface documents.
 pub const DEFAULT_LAYOUT_NODE_INTERFACES_DIR: &str = "nodes";
+/// Filename suffix that marks a pipeline definition.
+pub const PIPELINE_DEFINITION_EXTENSION: &str = ".zf.json";
+/// Filename of the exported schema document inside the schema directory.
+pub const SCHEMA_DOCUMENT_FILE: &str = "schema.json";
 
 /// Declared repository layout loaded from `zebflow.yaml`.
 ///
@@ -2425,7 +2452,7 @@ pub fn default_initial_data_dirs() -> Vec<ZebflowJsonInitialDataDir> {
 ///
 /// Consumers read this instead of the declaration so that "not declared" is
 /// answered once, here, rather than at each of the places that need a path.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ResolvedProjectLayout {
     pub source: String,
     pub assets: String,
@@ -2465,6 +2492,65 @@ impl ResolvedProjectLayout {
     pub fn platform_default() -> Self {
         ZebflowJsonLayout::default().resolve()
     }
+
+    /// Repository-relative path of `rest` inside the source root.
+    pub fn source_rel(&self, rest: &str) -> String {
+        if rest.is_empty() {
+            self.source.clone()
+        } else {
+            format!("{}/{rest}", self.source)
+        }
+    }
+
+    /// `rel` with the source root removed, or `None` when it lives elsewhere.
+    pub fn strip_source<'a>(&self, rel: &'a str) -> Option<&'a str> {
+        strip_dir_prefix(&self.source, rel)
+    }
+
+    /// Whether `rel` is a repository-relative path inside the source root.
+    pub fn is_in_source(&self, rel: &str) -> bool {
+        self.strip_source(rel).is_some()
+    }
+
+    /// Whether `rel` names a pipeline definition.
+    ///
+    /// The safety review and the registration that follows it both ask this, so
+    /// they agree by construction: a path the review skips can never be a path
+    /// the install still writes and registers.
+    pub fn is_pipeline_rel_path(&self, rel: &str) -> bool {
+        self.is_in_source(rel) && rel.ends_with(PIPELINE_DEFINITION_EXTENSION)
+    }
+
+    /// Whether `rel` is part of the exported database schema document tree.
+    pub fn is_schema_rel_path(&self, rel: &str) -> bool {
+        strip_dir_prefix(&self.schema, rel).is_some()
+    }
+
+    /// Repository-relative path of the exported schema document itself.
+    pub fn schema_document_rel(&self) -> String {
+        format!("{}/{SCHEMA_DOCUMENT_FILE}", self.schema)
+    }
+
+    /// The engine that would replay `rel`, when this layout replays it at all.
+    ///
+    /// The prefix is anchored, so this names the files an install actually runs
+    /// and not every `.sql` a package happens to ship.
+    pub fn initial_data_engine(&self, rel: &str) -> Option<&str> {
+        if !rel.ends_with(".sql") {
+            return None;
+        }
+        self.initial_data
+            .iter()
+            .find(|dir| strip_dir_prefix(&dir.path, rel).is_some())
+            .map(|dir| dir.engine.as_str())
+    }
+}
+
+/// `rel` with `dir` and its separator removed, or `None` when `rel` is not
+/// under `dir`. Anchored on a whole segment, so `pipelines-old/x` is not
+/// treated as living under `pipelines`.
+fn strip_dir_prefix<'a>(dir: &str, rel: &'a str) -> Option<&'a str> {
+    rel.strip_prefix(dir)?.strip_prefix('/')
 }
 
 impl ZebflowJson {

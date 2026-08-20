@@ -1568,9 +1568,9 @@ impl NodeRegistryService {
         let layout = self.projects.project_layout(&owner, &project)?;
 
         let mut referenced = BTreeSet::new();
-        collect_referenced_third_party_kinds(&layout.repo_pipelines_dir, &mut referenced)?;
+        collect_referenced_third_party_kinds(&layout.repo_source_dir(), &mut referenced)?;
 
-        let dir = &layout.repo_node_interfaces_dir;
+        let dir = &layout.repo_node_interfaces_dir();
         let mut expected = HashSet::new();
         for kind in &referenced {
             let Some(definition) = self.definition_for_kind(&owner, &project, kind) else {
@@ -1648,7 +1648,7 @@ impl NodeRegistryService {
         let Ok(layout) = self.projects.project_layout(&owner, &project) else {
             return Vec::new();
         };
-        let Ok(entries) = std::fs::read_dir(&layout.repo_node_interfaces_dir) else {
+        let Ok(entries) = std::fs::read_dir(&layout.repo_node_interfaces_dir()) else {
             return Vec::new();
         };
 

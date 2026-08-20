@@ -43,6 +43,7 @@ use crate::pipeline::model::{ExecuteOptions, ExecutionBus};
 use crate::pipeline::{BasicPipelineEngine, PipelineContext, PipelineEngine, PipelineGraph};
 use crate::platform::error::PlatformError;
 use crate::platform::model::NodePackageManifest;
+use crate::platform::model::ResolvedProjectLayout;
 use crate::platform::model::{
     ClusterWorkerHeartbeatRequest, ClusterWorkerRegisterRequest, CreateHubTokenRequest,
     CreateProjectDocFolderRequest, CreateProjectRequest, CreateSimpleTableRequest,
@@ -2123,7 +2124,7 @@ async fn project_asset(
             }
         }
     } else {
-        let static_root = layout.repo_pipelines_dir.join("assets");
+        let static_root = layout.repo_assets_dir();
         let static_abs = static_root.join(&normalized);
         if !static_abs.starts_with(&static_root) || !static_abs.is_file() {
             return (StatusCode::NOT_FOUND, "asset not found").into_response();
@@ -2191,7 +2192,7 @@ async fn project_static_asset(
         Ok(layout) => layout,
         Err(err) => return internal_error(err),
     };
-    let assets_root = layout.repo_pipelines_dir.join("assets");
+    let assets_root = layout.repo_assets_dir();
     let abs = assets_root.join(&normalized);
     if !abs.starts_with(&assets_root) {
         return (StatusCode::BAD_REQUEST, "invalid asset path").into_response();
@@ -4694,6 +4695,11 @@ async fn render_project_pipelines_with_tab(
         Err(err) => return internal_error(err),
     }
 
+    let repo_layout = match state.platform.file.ensure_project_layout(&owner, &project) {
+        Ok(layout) => layout.repo_layout,
+        Err(err) => return internal_error(err),
+    };
+
     let is_registry = tab == "registry";
     let is_editor = tab == "editor";
 
@@ -4830,11 +4836,8 @@ async fn render_project_pipelines_with_tab(
                             .files
                             .into_iter()
                             .map(|f| {
-                                let template_path = f
-                                    .rel_path
-                                    .strip_prefix("pipelines/")
-                                    .unwrap_or(&f.rel_path)
-                                    .to_string();
+                                let template_path =
+                                    template_display_path(&repo_layout, &f.rel_path);
                                 let git_status = registry_git_map.get(&f.rel_path).cloned();
                                 json!({
                                     "name": f.name,
@@ -5150,11 +5153,8 @@ async fn render_project_pipelines_with_tab(
                             .files
                             .into_iter()
                             .map(|f| {
-                                let template_path = f
-                                    .rel_path
-                                    .strip_prefix("pipelines/")
-                                    .unwrap_or(&f.rel_path)
-                                    .to_string();
+                                let template_path =
+                                    template_display_path(&repo_layout, &f.rel_path);
                                 let git_status = registry_git_map.get(&f.rel_path).cloned();
                                 json!({
                                     "name": f.name,
@@ -5250,8 +5250,20 @@ async fn project_editor_page(
     render_project_editor(state, headers, uri, owner, project, query, "editor").await
 }
 
-fn derive_scope_from_file_path(file: &str) -> String {
-    let stripped = file.strip_prefix("pipelines/").unwrap_or(file);
+/// Repository-relative path as the template editor names it.
+///
+/// The editor addresses templates relative to the source root, so a listing
+/// entry that carries a repository-relative path is shown with that root
+/// removed.
+fn template_display_path(layout: &ResolvedProjectLayout, rel_path: &str) -> String {
+    layout
+        .strip_source(rel_path)
+        .unwrap_or(rel_path)
+        .to_string()
+}
+
+fn derive_scope_from_file_path(layout: &ResolvedProjectLayout, file: &str) -> String {
+    let stripped = layout.strip_source(file).unwrap_or(file);
     let parent = stripped.rsplit_once('/').map(|(dir, _)| dir).unwrap_or("");
     if parent.is_empty() {
         "/".to_string()
@@ -5318,6 +5330,11 @@ async fn render_project_editor(
         Err(err) => return internal_error(err),
     };
 
+    let repo_layout = match state.platform.file.ensure_project_layout(&owner, &project) {
+        Ok(layout) => layout.repo_layout,
+        Err(err) => return internal_error(err),
+    };
+
     let editor_base = if nav_sub == "registry" {
         format!("/projects/{owner}/{project}/pipelines/registry")
     } else {
@@ -5340,7 +5357,7 @@ async fn render_project_editor(
         if editor_type == "doc" {
             docs_parent_virtual_path(file)
         } else {
-            derive_scope_from_file_path(file)
+            derive_scope_from_file_path(&repo_layout, file)
         }
     } else {
         "/".to_string()
@@ -5544,11 +5561,7 @@ async fn render_project_editor(
             .files
             .iter()
             .map(|f| {
-                let template_path = f
-                    .rel_path
-                    .strip_prefix("pipelines/")
-                    .unwrap_or(&f.rel_path)
-                    .to_string();
+                let template_path = template_display_path(&repo_layout, &f.rel_path);
                 let git_status = git_map.get(&f.rel_path).cloned();
                 let is_selected = file_param.as_deref() == Some(template_path.as_str());
                 json!({
@@ -13315,7 +13328,7 @@ async fn api_template_diagnostics(
         Err(err) => return internal_error(err),
     };
 
-    let response = compile_template_buffer(&state, &layout.repo_pipelines_dir, &req);
+    let response = compile_template_buffer(&state, &layout.repo_source_dir(), &req);
     Json(response).into_response()
 }
 
@@ -24478,7 +24491,7 @@ async fn api_list_ui_catalog(
         Ok(l) => l,
         Err(e) => return internal_error(e),
     };
-    let shared_ui_dir = layout.repo_pipelines_dir.join("shared").join("ui");
+    let shared_ui_dir = layout.repo_source_dir().join("shared").join("ui");
     let entries = crate::platform::catalog::CatalogService::list_ui_with_presence(&shared_ui_dir);
     Json(json!({ "ok": true, "components": entries })).into_response()
 }
@@ -24518,8 +24531,9 @@ async fn api_review_ui_components(
         Ok(l) => l,
         Err(e) => return internal_error(e),
     };
-    let shared_ui_dir = layout.repo_pipelines_dir.join("shared").join("ui");
+    let shared_ui_dir = layout.repo_source_dir().join("shared").join("ui");
     let review = crate::platform::catalog::CatalogService::review_ui(
+        &layout.repo_layout,
         &req.names,
         &shared_ui_dir,
         req.overwrite,
@@ -24562,7 +24576,7 @@ async fn api_install_ui_components(
         Ok(l) => l,
         Err(e) => return internal_error(e),
     };
-    let shared_ui_dir = layout.repo_pipelines_dir.join("shared").join("ui");
+    let shared_ui_dir = layout.repo_source_dir().join("shared").join("ui");
     match crate::platform::catalog::CatalogService::install_ui(
         &req.names,
         &shared_ui_dir,
@@ -24621,7 +24635,8 @@ async fn api_reindex_project(
         Err(e) => return internal_error(e),
     };
 
-    let repo_root = layout.repo_pipelines_dir.clone();
+    let repo_root = layout.repo_source_dir();
+    let assets_root = layout.repo_assets_dir();
     let mut pipelines_indexed: usize = 0;
     let mut templates_indexed: usize = 0;
     let mut assets_indexed: usize = 0;
@@ -24647,12 +24662,15 @@ async fn api_reindex_project(
                     Ok(r) => r.to_string_lossy().replace('\\', "/"),
                     Err(_) => continue,
                 };
-                if rel.starts_with("assets/") {
+                if path
+                    .parent()
+                    .is_some_and(|dir| dir.starts_with(&assets_root))
+                {
                     assets_indexed += 1;
                 } else if rel.ends_with(".zf.json") {
                     match std::fs::read_to_string(&path) {
                         Ok(source) => {
-                            let file_rel_path = format!("pipelines/{rel}");
+                            let file_rel_path = layout.repo_layout.source_rel(&rel);
                             // Preserve description stored inside the graph JSON
                             let graph_description = decode_pipeline_graph(source.as_bytes())
                                 .ok()
@@ -24887,9 +24905,9 @@ async fn api_list_assets(
         .and_then(sanitize_subfolder)
         .unwrap_or_default();
     let assets_dir = if subfolder.is_empty() {
-        layout.repo_pipelines_dir.join("assets")
+        layout.repo_assets_dir()
     } else {
-        layout.repo_pipelines_dir.join("assets").join(&subfolder)
+        layout.repo_assets_dir().join(&subfolder)
     };
     if let Err(e) = std::fs::create_dir_all(&assets_dir) {
         return internal_error(PlatformError::new("ASSET_DIR_CREATE", e.to_string()));
@@ -25040,9 +25058,9 @@ async fn api_upload_asset(
         .and_then(sanitize_subfolder)
         .unwrap_or_default();
     let assets_dir = if subfolder.is_empty() {
-        layout.repo_pipelines_dir.join("assets")
+        layout.repo_assets_dir()
     } else {
-        layout.repo_pipelines_dir.join("assets").join(&subfolder)
+        layout.repo_assets_dir().join(&subfolder)
     };
     if let Err(e) = std::fs::create_dir_all(&assets_dir) {
         return internal_error(PlatformError::new("ASSET_DIR_CREATE", e.to_string()));
@@ -25168,7 +25186,7 @@ async fn api_delete_asset(
         Err(err) => return internal_error(err),
     };
 
-    let assets_dir = layout.repo_pipelines_dir.join("assets");
+    let assets_dir = layout.repo_assets_dir();
     let abs = assets_dir.join(&subpath);
 
     if !abs.starts_with(&assets_dir) {
@@ -25372,7 +25390,7 @@ async fn preview_page(
         Err(err) => return internal_error(err),
     };
 
-    let abs_path = layout.repo_pipelines_dir.join(&file);
+    let abs_path = layout.repo_source_dir().join(&file);
     let markup = match fs::read_to_string(&abs_path) {
         Ok(m) => m,
         Err(e) => {
@@ -25386,7 +25404,7 @@ async fn preview_page(
 
     let options = crate::rwe::ReactiveWebOptions {
         templates: crate::rwe::TemplateOptions {
-            template_root: Some(layout.repo_pipelines_dir.clone()),
+            template_root: Some(layout.repo_source_dir()),
             style_entries: Vec::new(),
         },
         processors: vec!["tailwind".to_string()],
@@ -25580,7 +25598,7 @@ async fn ws_preview_handler(
         Err(err) => return internal_error(err),
     };
 
-    let abs_path = layout.repo_pipelines_dir.join(&file);
+    let abs_path = layout.repo_source_dir().join(&file);
     let registry = state.preview_registry.clone();
 
     ws.on_upgrade(move |socket| async move {

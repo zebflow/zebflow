@@ -358,7 +358,9 @@ pub fn load_site(config: &Config, template_root: &Path) -> Result<DocsSite, Pipe
     let template_folder_rel = normalize_rel_dir_path(&config.template_folder, "template_folder")?;
     let meta_file = normalize_meta_file_name(&config.meta_file)?;
 
-    let docs_root_abs = repo_root.join("docs").join(&docs_root_rel);
+    let docs_root_abs = repo_root
+        .join(&crate::platform::model::ResolvedProjectLayout::platform_default().docs)
+        .join(&docs_root_rel);
     if !docs_root_abs.is_dir() {
         return Err(PipelineError::new(
             "WEB_DOCS_ROOT_MISSING",
@@ -1832,7 +1834,7 @@ mod tests {
             .ensure_project_layout("superadmin", "docs-project")
             .expect("layout");
 
-        let docs_root = layout.repo_docs_dir.join("sekejap-docs");
+        let docs_root = layout.repo_docs_dir().join("sekejap-docs");
         std::fs::create_dir_all(docs_root.join("basic")).expect("docs dir");
         std::fs::write(
             docs_root.join("_meta.yaml"),
@@ -1887,7 +1889,7 @@ mod tests {
             resolve_engine_or_default(None),
             None,
         )
-        .with_template_root(Some(layout.repo_pipelines_dir.clone()))
+        .with_template_root(Some(layout.repo_source_dir()))
         .with_template_cache(new_template_cache())
         .with_data_root(root.clone());
 
@@ -1913,7 +1915,7 @@ mod tests {
         );
 
         let template_path = layout
-            .repo_pipelines_dir
+            .repo_source_dir()
             .join("pages")
             .join("docs")
             .join("docs.template.tsx");

@@ -653,9 +653,9 @@ mod tests {
         let layout = file
             .ensure_project_layout("superadmin", "example-project")
             .expect("layout");
-        let template_dir = layout.repo_pipelines_dir.join("pages");
+        let template_dir = layout.repo_source_dir().join("pages");
         std::fs::create_dir_all(&template_dir).expect("template dir");
-        let asset_dir = layout.repo_pipelines_dir.join("assets").join("icons");
+        let asset_dir = layout.repo_assets_dir().join("icons");
         std::fs::create_dir_all(&asset_dir).expect("asset dir");
         std::fs::write(asset_dir.join("favicon.ico"), b"ico").expect("favicon");
         std::fs::write(
@@ -726,7 +726,7 @@ export default function LyricPage(input) {
             resolve_engine_or_default(None),
             None,
         )
-        .with_template_root(Some(layout.repo_pipelines_dir.clone()))
+        .with_template_root(Some(layout.repo_source_dir()))
         .with_template_cache(new_template_cache())
         .with_data_root(root.clone());
 
@@ -837,7 +837,7 @@ export default function LyricPage(input) {
         let layout = file
             .ensure_project_layout("superadmin", "example-project")
             .expect("layout");
-        let template_dir = layout.repo_pipelines_dir.join("pages");
+        let template_dir = layout.repo_source_dir().join("pages");
         std::fs::create_dir_all(&template_dir).expect("template dir");
         std::fs::write(
             template_dir.join("lyric.tsx"),
@@ -895,7 +895,7 @@ export default function LyricPage(input) {
             resolve_engine_or_default(None),
             None,
         )
-        .with_template_root(Some(layout.repo_pipelines_dir.clone()))
+        .with_template_root(Some(layout.repo_source_dir()))
         .with_template_cache(new_template_cache())
         .with_data_root(root.clone());
 

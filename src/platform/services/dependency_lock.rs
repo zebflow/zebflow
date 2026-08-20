@@ -21,7 +21,7 @@ use crate::infra::io::durable::atomic_write;
 use crate::infra::io::durable::directory_tree_sha256;
 use crate::pipeline::PipelineGraph;
 use crate::platform::error::PlatformError;
-use crate::platform::model::{ZebflowJsonRweLibraries, slug_segment};
+use crate::platform::model::{ResolvedProjectLayout, ZebflowJsonRweLibraries, slug_segment};
 use crate::platform::services::library::LibraryService;
 use crate::platform::services::project_config::ProjectConfigurationService;
 
@@ -496,9 +496,10 @@ impl DependencyLockService {
                 .map(|definition| definition.kind),
         );
         let mut required = BTreeSet::new();
+        let source_root = repo.join(&ResolvedProjectLayout::platform_default().source);
         collect_project_pipeline_requirements(
-            &repo.join("pipelines"),
-            &repo.join("pipelines"),
+            &source_root,
+            &source_root,
             &mut required,
             &mut items,
         )?;
