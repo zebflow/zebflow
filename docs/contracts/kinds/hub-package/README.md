@@ -114,6 +114,12 @@ exactly the packages whose paths need translating.
 already names each seed prefix with the engine that replays it, and one fact
 recorded twice is a fact that can disagree with itself.
 
+`allowed_extensions` is absent for a different reason. This record says what the
+publisher's paths *meant*; the extension set says what a receiver *accepts*, and
+a package does not get to declare that about the project it is installing into.
+The install gate reads the receiving project's own set, so a package cannot
+carry permission to write a file type that project refuses.
+
 Every entry is optional, and an absent entry resolves through the same rule a
 project that declares nothing resolves through. **A package published before this
 field existed therefore carries no layout, resolves to the platform default —

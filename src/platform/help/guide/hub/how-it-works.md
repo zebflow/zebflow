@@ -44,6 +44,34 @@ level. Built-in UI components and Hub packages already use this review gate;
 Git, folder, and zip sources should stage their contents and reuse the same
 gate.
 
+## Warnings and violations
+
+Most of what the review reports is a **warning**: an effect the package has, for
+you to accept or decline. A public webhook, a credential, an outbound URL, and a
+destructive seed statement are all warnings.
+
+A **violation** is different. It is not a stronger warning; it means the package
+will not be installed at all, whoever approves it, and the risk level reads
+`blocked`. There are two:
+
+- a pipeline whose bytes the review could not read, because bytes the review
+  never saw are bytes the install would still write
+- a file whose type a project's repository does not accept
+
+The second is a file-extension check, not a guess about content. A package may
+write source, documentation, data, and images. It may not write a `.sh`, a
+`.dylib`, a `.env`, or any binary type this build has no reader for. The
+refusal names the path and the extension.
+
+The accepted set is the platform's, so every project has it without configuring
+anything. A project may narrow it in `repo/zebflow.yaml` under
+`spec.layout.allowed_extensions`; it cannot widen it. `zebflow.yaml`,
+`zeb.lock`, `zebflow.init.json`, `schema.json`, and `.gitkeep` are accepted by
+name whatever the list says, because an install cannot proceed without them.
+
+A node bundle is judged by its own contract rather than by a project's list: it
+materializes into `data/nodes/` and never writes into `repo/`.
+
 ## Database initialization
 
 A package may carry SQL that runs at install, under `initial-data/`, `init/`,

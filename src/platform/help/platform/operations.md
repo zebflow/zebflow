@@ -36,6 +36,11 @@ registration, RWE compilation, docs, assets, seeds, and Hub installs all follow
 it. A pipeline's `file_rel_path` is relative to that root, so changing it does
 not rename anything.
 
+`spec.layout.allowed_extensions` says which file types a Hub package may write
+into `repo/`. A project that declares nothing gets the platform set; a project
+may narrow it and cannot widen it. A package carrying anything outside the set
+is refused outright rather than warned about.
+
 ---
 
 ## Agent Docs

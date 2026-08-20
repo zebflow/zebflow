@@ -2563,7 +2563,7 @@ impl HubService {
         let prepared =
             prepare_hub_install_entries(&placement, &install_base, &payload.files, artifacts)?;
         validate_prepared_pipeline_sources(&layout.repo_layout, &prepared)?;
-        refuse_prepared_install_violations(&layout.repo_layout, &prepared)?;
+        refuse_prepared_install_violations(&layout.repo_layout, &payload.asset_kind, &prepared)?;
         let previous_lock = if payload.asset_kind == HUB_ASSET_KIND_NODE_BUNDLE {
             Some(self.dependency_lock.read(&target_owner, &target_project)?)
         } else {
@@ -2801,7 +2801,10 @@ impl HubService {
             &layout.repo_layout,
             &policy_entries,
             Vec::new(),
-            PackageReviewOptions::default(),
+            PackageReviewOptions {
+                bundle_internal_paths: payload.asset_kind == HUB_ASSET_KIND_NODE_BUNDLE,
+                ..PackageReviewOptions::default()
+            },
         );
         policy.risk_level = install_risk_level(&policy, !files_overwritten.is_empty());
 
@@ -4384,6 +4387,7 @@ fn review_publish_artifact(
             title: title.clone(),
             description: description.clone(),
             has_cover_image: !media.is_empty(),
+            bundle_internal_paths: preview.asset_kind == HUB_ASSET_KIND_NODE_BUNDLE,
         },
     );
 
@@ -5161,6 +5165,10 @@ fn publisher_layout(payload: &HubPackageSpec) -> ResolvedProjectLayout {
         // A package names its seed prefixes in `project_initialization`, so the
         // layout does not carry them and this resolves to the default list.
         initial_data: None,
+        // A publisher records what its own paths meant, never what a receiver
+        // will accept. The extension set is the receiver's own floor, so it
+        // resolves to the platform set here and is never read off a package.
+        allowed_extensions: None,
     }
     .resolve()
 }
@@ -5285,6 +5293,7 @@ fn prepare_hub_install_entries(
 /// skipped.
 fn refuse_prepared_install_violations(
     layout: &ResolvedProjectLayout,
+    asset_kind: &str,
     entries: &[PreparedHubInstallEntry],
 ) -> Result<(), PlatformError> {
     let policy_entries = entries
@@ -5305,7 +5314,10 @@ fn refuse_prepared_install_violations(
         layout,
         &policy_entries,
         Vec::new(),
-        PackageReviewOptions::default(),
+        PackageReviewOptions {
+            bundle_internal_paths: asset_kind == HUB_ASSET_KIND_NODE_BUNDLE,
+            ..PackageReviewOptions::default()
+        },
     );
     if !review.is_installable() {
         return Err(PlatformError::new(
@@ -5497,9 +5509,11 @@ fn verify_hub_artifact_bytes(bytes: &[u8], expected: &str) -> Result<(), Platfor
 /// what [`reindex_project_bundle_pipelines`] registers from, so the review and
 /// the registration select the same entries.
 ///
-/// This refuses what cannot be *read*. A bundle whose pipelines parse is still
-/// installable however hostile they are, because no content detector produces a
-/// violation yet -- the review reports those as warnings and a risk level.
+/// This refuses what cannot be *read*, and what a project's layout does not
+/// accept as a file type at all. It does not refuse hostile behaviour: a bundle
+/// whose pipelines parse and whose paths are ordinary source installs however
+/// hostile it is, because no content detector produces a violation yet -- the
+/// review reports those as warnings and a risk level.
 fn refuse_unreviewable_project_bundle(
     layout: &ResolvedProjectLayout,
     files: &[HubPackageFile],
@@ -6639,6 +6653,85 @@ mod tests {
             &HubArtifactChannel::unresolvable(CHANNEL_WITHOUT_AN_ARTIFACT_LOCATION),
         )
         .expect("a readable bundle is not refused by this gate today");
+    }
+
+    /// A shell script put to both install gates.
+    ///
+    /// They are separate functions reached on separate paths -- one decides
+    /// about a project bundle before the project it fills exists, the other
+    /// about prepared bytes already on their way to disk -- so what this test
+    /// is for is that they answer the same way, not that either answers.
+    #[test]
+    fn both_install_gates_refuse_a_file_type_no_project_accepts() {
+        let layout = ResolvedProjectLayout::platform_default();
+        let rel = "pipelines/hub/pkg/postinstall.sh";
+        let package = pipeline_package(
+            HUB_ASSET_KIND_PROJECT_BUNDLE,
+            serde_json::json!({
+                "rel_path": rel, "kind": "file",
+                "size_bytes": 5, "reason": "test", "content": "true\n"
+            }),
+        );
+
+        let bundle_error = refuse_unreviewable_project_bundle(
+            &layout,
+            &package.files,
+            &HubArtifactChannel::unresolvable(CHANNEL_WITHOUT_AN_ARTIFACT_LOCATION),
+        )
+        .expect_err("a bundle carrying a shell script must not install");
+
+        let prepared = vec![PreparedHubInstallEntry {
+            install_rel: rel.to_string(),
+            destination: PathBuf::from(rel),
+            bytes: b"true\n".to_vec(),
+            previous: None,
+        }];
+        let prepared_error =
+            refuse_prepared_install_violations(&layout, HUB_ASSET_KIND_PIPELINE_BUNDLE, &prepared)
+                .expect_err("the same script must not reach disk either");
+
+        assert_eq!(bundle_error.code, "HUB_REMOTE_INSTALL_REFUSED");
+        assert_eq!(prepared_error.code, "HUB_INSTALL_REFUSED");
+        for error in [&bundle_error, &prepared_error] {
+            assert!(
+                error.message.contains(rel) && error.message.contains("'.sh'"),
+                "the refusal names the path and the extension: {}",
+                error.message
+            );
+        }
+    }
+
+    /// The same package with the same script renamed to a page: both gates let
+    /// it through, so the rule is the extension and not the folder it is in.
+    #[test]
+    fn both_install_gates_accept_ordinary_source() {
+        let layout = ResolvedProjectLayout::platform_default();
+        let rel = "pipelines/hub/pkg/postinstall.tsx";
+        let package = pipeline_package(
+            HUB_ASSET_KIND_PROJECT_BUNDLE,
+            serde_json::json!({
+                "rel_path": rel, "kind": "tsx",
+                "size_bytes": 5, "reason": "test", "content": "true\n"
+            }),
+        );
+
+        refuse_unreviewable_project_bundle(
+            &layout,
+            &package.files,
+            &HubArtifactChannel::unresolvable(CHANNEL_WITHOUT_AN_ARTIFACT_LOCATION),
+        )
+        .expect("ordinary source is not refused");
+        refuse_prepared_install_violations(
+            &layout,
+            HUB_ASSET_KIND_PIPELINE_BUNDLE,
+            &[PreparedHubInstallEntry {
+                install_rel: rel.to_string(),
+                destination: PathBuf::from(rel),
+                bytes: b"true\n".to_vec(),
+                previous: None,
+            }],
+        )
+        .expect("ordinary source is not refused");
     }
 
     /// The same pipeline, carried and referenced, reviewed through a channel

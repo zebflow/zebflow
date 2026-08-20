@@ -14,6 +14,12 @@ spec:
     initial_data:
     - path: db/seeds
       engine: sekejap
+    allowed_extensions:
+    - tsx
+    - ts
+    - css
+    - json
+    - md
   rwe: {}
   pipelines: {}
   runtime: {}

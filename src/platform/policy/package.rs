@@ -107,6 +107,18 @@ pub struct PackageReviewOptions {
     pub title: String,
     pub description: String,
     pub has_cover_image: bool,
+    /// Whether these `rel_path`s name files inside the package artifact rather
+    /// than inside a project's `repo/`.
+    ///
+    /// A node bundle is the only package this is true of: it materializes into
+    /// `data/nodes/` and its file set is fixed by the `NodeBundle` contract,
+    /// not by a project's layout. Applying a repository rule to it would let a
+    /// project that narrowed its own extensions refuse a bundle that never
+    /// touches its repository.
+    ///
+    /// The default is `false`, so a caller that forgets gets the repository
+    /// rule enforced rather than skipped.
+    pub bundle_internal_paths: bool,
 }
 
 pub fn review_package_entries(
@@ -138,6 +150,20 @@ pub fn review_package_entries(
     }
 
     for entry in entries {
+        // The one finding here that needs neither the bytes nor a guess: a path
+        // either ends in a file type this project accepts or it does not. Every
+        // other signal below is a substring match on a node kind or a key name,
+        // which is fair for a warning the user may accept and not for a refusal
+        // nobody can override -- one false positive there makes a legitimate
+        // package permanently uninstallable on this instance.
+        if !options.bundle_internal_paths
+            && let Some(refused) = layout.refused_file_type(&entry.rel_path)
+        {
+            violations.push(format!(
+                "{}: {refused} is not a file type a package may install",
+                entry.rel_path
+            ));
+        }
         if is_reviewed_pipeline_path(layout, &entry.rel_path) {
             if !entry.unreadable.is_empty() {
                 // The destination decides what is scanned, so an entry that
@@ -752,6 +778,7 @@ fn quote_sql_statement(statement: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::platform::model::ZebflowJsonLayout;
 
     /// A seed file as one actually arrives: comments, mixed case, quoted and
     /// qualified names, an `IF EXISTS`, and a long insert.
@@ -923,5 +950,173 @@ TRUNCATE TABLE tags;
         assert!(quoted.starts_with("DELETE FROM posts WHERE _key IN ("));
         assert!(quoted.ends_with("..."));
         assert!(quoted.chars().count() <= DESTRUCTIVE_QUOTE_CHARS + 3);
+    }
+
+    // ── The extension allowlist ────────────────────────────────────────────
+
+    fn entry(rel_path: &str) -> PackagePolicyEntry {
+        PackagePolicyEntry {
+            rel_path: rel_path.to_string(),
+            kind: "file".to_string(),
+            size_bytes: 1,
+            content: String::new(),
+            unreadable: String::new(),
+        }
+    }
+
+    fn review_with(layout: &ResolvedProjectLayout, paths: &[&str]) -> PackageSafetyReview {
+        let entries = paths.iter().map(|path| entry(path)).collect::<Vec<_>>();
+        review_package_entries(
+            layout,
+            &entries,
+            Vec::new(),
+            PackageReviewOptions::default(),
+        )
+    }
+
+    /// A shell script and a shared library are the case this rule exists for.
+    /// The refusal names the path and the extension, because nobody can
+    /// override it and a user who cannot argue with it must at least be able to
+    /// see what it objected to.
+    #[test]
+    fn a_package_carrying_an_executable_file_type_is_refused() {
+        let review = review_with(
+            &ResolvedProjectLayout::platform_default(),
+            &[
+                "pipelines/hub/pkg/install.sh",
+                "pipelines/hub/pkg/libnode.dylib",
+            ],
+        );
+
+        assert!(!review.is_installable());
+        assert_eq!(review.risk_level, "blocked");
+        assert_eq!(
+            review.violations,
+            vec![
+                "pipelines/hub/pkg/install.sh: extension '.sh' is not a file type a package may \
+                 install"
+                    .to_string(),
+                "pipelines/hub/pkg/libnode.dylib: extension '.dylib' is not a file type a package \
+                 may install"
+                    .to_string(),
+            ]
+        );
+    }
+
+    /// Everything a repository in this codebase actually holds, including the
+    /// three files an install cannot do without and the `.gitkeep` the platform
+    /// writes into every project itself.
+    #[test]
+    fn ordinary_project_content_installs_unchanged() {
+        let review = review_with(
+            &ResolvedProjectLayout::platform_default(),
+            &[
+                "pipelines/api/users-list.zf.json",
+                "pipelines/pages/hello.tsx",
+                "pipelines/pages/demo/deck-utils.ts",
+                "pipelines/styles/main.css",
+                "pipelines/assets/favicon-16x16.png",
+                "pipelines/shared/ui/.gitkeep",
+                "libraries/zeb/deckgl/0.1/runtime/deckgl.bundle.mjs",
+                "libraries.lock.json",
+                "docs/readme.md",
+                "schemas/sekejap/schema.json",
+                "seeds/sekejap/001-posts.sql",
+                "zebflow.yaml",
+                "zeb.lock",
+                "zebflow.init.json",
+            ],
+        );
+
+        assert!(review.violations.is_empty(), "{:?}", review.violations);
+        assert!(review.is_installable());
+    }
+
+    /// A name with no suffix is refused as an unnamed type, which is how
+    /// `.env` -- a hidden file rather than an extension -- is caught.
+    #[test]
+    fn a_file_with_no_extension_is_refused() {
+        let review = review_with(
+            &ResolvedProjectLayout::platform_default(),
+            &["pipelines/hub/pkg/.env", "pipelines/hub/pkg/Makefile"],
+        );
+
+        assert_eq!(
+            review.violations,
+            vec![
+                "pipelines/hub/pkg/.env: a name with no extension is not a file type a package \
+                 may install"
+                    .to_string(),
+                "pipelines/hub/pkg/Makefile: a name with no extension is not a file type a \
+                 package may install"
+                    .to_string(),
+            ]
+        );
+    }
+
+    /// A project may narrow the set. What it excluded is then refused for it,
+    /// and the files an install cannot do without survive the narrowing --
+    /// otherwise a project could make its own bundles uninstallable.
+    #[test]
+    fn a_project_that_narrows_its_extensions_refuses_what_it_excluded() {
+        let layout = ZebflowJsonLayout {
+            allowed_extensions: Some(vec!["tsx".to_string(), "json".to_string()]),
+            ..ZebflowJsonLayout::default()
+        }
+        .resolve();
+
+        let review = review_with(
+            &layout,
+            &[
+                "pipelines/feed.zf.json",
+                "pipelines/pages/hello.tsx",
+                "pipelines/styles/main.css",
+                "pipelines/assets/logo.png",
+                "zebflow.yaml",
+                "zeb.lock",
+                "pipelines/shared/ui/.gitkeep",
+            ],
+        );
+
+        assert_eq!(
+            review.violations,
+            vec![
+                "pipelines/assets/logo.png: extension '.png' is not a file type a package may \
+                 install"
+                    .to_string(),
+                "pipelines/styles/main.css: extension '.css' is not a file type a package may \
+                 install"
+                    .to_string(),
+            ]
+        );
+    }
+
+    /// A node bundle materializes into `data/nodes/` under its own contract,
+    /// not into anyone's repository, so the repository rule does not apply to
+    /// it -- and a project that narrowed its own extensions cannot refuse a
+    /// bundle that never touches its repository.
+    #[test]
+    fn a_node_bundle_is_judged_by_its_own_contract_not_the_repository_set() {
+        let layout = ZebflowJsonLayout {
+            allowed_extensions: Some(vec!["tsx".to_string()]),
+            ..ZebflowJsonLayout::default()
+        }
+        .resolve();
+        let entries = ["definition.json", "icon.svg", "wasm/core.wasm"]
+            .iter()
+            .map(|path| entry(path))
+            .collect::<Vec<_>>();
+
+        let review = review_package_entries(
+            &layout,
+            &entries,
+            Vec::new(),
+            PackageReviewOptions {
+                bundle_internal_paths: true,
+                ..PackageReviewOptions::default()
+            },
+        );
+
+        assert!(review.violations.is_empty(), "{:?}", review.violations);
     }
 }

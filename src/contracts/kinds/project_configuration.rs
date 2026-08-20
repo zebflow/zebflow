@@ -16,11 +16,11 @@ use crate::infra::execution::placement::{
 };
 use crate::infra::execution::sync::ProjectBootstrapPlan;
 use crate::platform::model::{
-    ZebflowJson, ZebflowJsonAssistant, ZebflowJsonConfigs, ZebflowJsonData,
-    ZebflowJsonDistribution, ZebflowJsonDistributionHub, ZebflowJsonFiles, ZebflowJsonGit,
-    ZebflowJsonGitRemote, ZebflowJsonInitialDataDir, ZebflowJsonLayout, ZebflowJsonLocks,
-    ZebflowJsonLogging, ZebflowJsonMetadata, ZebflowJsonPipelines, ZebflowJsonRwe,
-    ZebflowJsonRweLibraryEntry, ZebflowJsonUploads, slug_segment,
+    DEFAULT_ALLOWED_FILE_EXTENSIONS, ZebflowJson, ZebflowJsonAssistant, ZebflowJsonConfigs,
+    ZebflowJsonData, ZebflowJsonDistribution, ZebflowJsonDistributionHub, ZebflowJsonFiles,
+    ZebflowJsonGit, ZebflowJsonGitRemote, ZebflowJsonInitialDataDir, ZebflowJsonLayout,
+    ZebflowJsonLocks, ZebflowJsonLogging, ZebflowJsonMetadata, ZebflowJsonPipelines,
+    ZebflowJsonRwe, ZebflowJsonRweLibraryEntry, ZebflowJsonUploads, slug_segment,
 };
 
 /// Canonical repository filename for project configuration.
@@ -610,6 +610,19 @@ pub struct ProjectLayoutSpec {
     /// Prefixes an install replays as initial data, each bound to one engine.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub initial_data: Option<Vec<ProjectInitialDataDirSpec>>,
+    /// File extensions this project accepts inside `repo/`, without a dot.
+    ///
+    /// This is the one layout entry that is not a directory, and it belongs
+    /// here for the same reason the directories do: it answers "what is this
+    /// project's repository allowed to contain", and every consumer that has to
+    /// agree on that already resolves through the same layout.
+    ///
+    /// Declaring it narrows the platform set. It cannot widen it -- an entry
+    /// the platform does not allow is refused by name rather than ignored,
+    /// because the install refusal built on this set is not overridable and a
+    /// project that could widen it would be overriding it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allowed_extensions: Option<Vec<String>>,
 }
 
 /// One initial-data prefix and the database engine that would replay it.
@@ -641,6 +654,7 @@ impl ProjectLayoutSpec {
                 validate_layout_dir(path, value)?;
             }
         }
+        self.validate_allowed_extensions()?;
         let Some(entries) = &self.initial_data else {
             return Ok(());
         };
@@ -656,6 +670,39 @@ impl ProjectLayoutSpec {
             if !seen.insert(&entry.path) {
                 return Err(ContractError::invalid(
                     "spec.layout.initial_data paths must be unique",
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// Accepts a declared subset of the platform's extension set, refusing
+    /// anything else by name.
+    ///
+    /// An unknown entry is refused rather than dropped so that a project cannot
+    /// believe it accepts a file type no install would ever write, and a
+    /// platform entry cannot be widened past what the install gate enforces.
+    fn validate_allowed_extensions(&self) -> Result<(), ContractError> {
+        let Some(declared) = &self.allowed_extensions else {
+            return Ok(());
+        };
+        if declared.is_empty() {
+            return Err(ContractError::invalid(
+                "spec.layout.allowed_extensions must name at least one extension",
+            ));
+        }
+        let mut seen = std::collections::BTreeSet::new();
+        for entry in declared {
+            if !DEFAULT_ALLOWED_FILE_EXTENSIONS.contains(&entry.as_str()) {
+                return Err(ContractError::invalid(format!(
+                    "spec.layout.allowed_extensions entry '{entry}' is not one of the \
+                     extensions this platform accepts; the list may narrow the platform \
+                     set and may not widen it"
+                )));
+            }
+            if !seen.insert(entry) {
+                return Err(ContractError::invalid(
+                    "spec.layout.allowed_extensions entries must be unique",
                 ));
             }
         }
@@ -973,6 +1020,7 @@ impl From<ZebflowJson> for ProjectConfigurationSpec {
                         })
                         .collect()
                 }),
+                allowed_extensions: value.configs.layout.allowed_extensions,
             },
             rwe: ProjectRweSpec {
                 allow_list: value.configs.rwe.allow_list,
@@ -1071,6 +1119,7 @@ impl From<ProjectConfigurationSpec> for ZebflowJson {
                             })
                             .collect()
                     }),
+                    allowed_extensions: value.layout.allowed_extensions,
                 },
                 rwe: ZebflowJsonRwe {
                     allow_list: value.rwe.allow_list,
@@ -1287,6 +1336,12 @@ mod tests {
                 path: "db/seeds".to_string(),
                 engine: "sekejap".to_string(),
             }]),
+            allowed_extensions: Some(
+                ["tsx", "ts", "css", "json", "md"]
+                    .into_iter()
+                    .map(str::to_string)
+                    .collect(),
+            ),
         }
     }
 
@@ -1395,6 +1450,64 @@ mod tests {
                 .is_err()
             );
         }
+    }
+
+    /// The extension list narrows the platform set and cannot widen it. A
+    /// widening entry is refused by name rather than dropped, because a project
+    /// that silently kept an extension no install would ever write would
+    /// believe it accepted a file type the gate refuses.
+    #[test]
+    fn an_extension_list_may_narrow_the_platform_set_and_may_not_widen_it() {
+        let with = |extensions: &[&str]| ProjectConfigurationSpec {
+            layout: ProjectLayoutSpec {
+                allowed_extensions: Some(
+                    extensions.iter().map(|value| value.to_string()).collect(),
+                ),
+                ..ProjectLayoutSpec::default()
+            },
+            ..ProjectConfigurationSpec::default()
+        };
+        let encoded = |spec: ProjectConfigurationSpec| {
+            encode_contract::<ProjectConfigurationContract>(
+                ContractMetadata::named("project"),
+                spec,
+            )
+        };
+
+        encoded(with(&["tsx", "json"])).expect("a subset of the platform set is a narrowing");
+        for refused in [
+            vec!["tsx", "sh"],
+            vec!["tsx", ".tsx"],
+            vec!["tsx", "TSX"],
+            vec!["tsx", "tsx"],
+            vec![],
+        ] {
+            assert!(
+                encoded(with(&refused)).is_err(),
+                "accepted {refused:?}, which is not a narrowing of the platform set"
+            );
+        }
+    }
+
+    /// A project that declares nothing inherits the platform set whole, which
+    /// is what keeps the install gate on for every project written before this
+    /// entry existed.
+    #[test]
+    fn an_undeclared_extension_list_resolves_to_the_platform_set() {
+        let layout = ProjectLayoutSpec::default();
+        assert_eq!(layout.allowed_extensions, None);
+        assert_eq!(
+            ZebflowJson::from(ProjectConfigurationSpec {
+                layout,
+                ..ProjectConfigurationSpec::default()
+            })
+            .layout()
+            .allowed_extensions,
+            DEFAULT_ALLOWED_FILE_EXTENSIONS
+                .iter()
+                .map(|value| (*value).to_string())
+                .collect::<Vec<_>>()
+        );
     }
 
     #[test]

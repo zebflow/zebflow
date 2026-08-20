@@ -1,16 +1,17 @@
 # Project layout — the contract as it exists today
 
-Status: **survey**, amended three times: once after the resolver landed, once
-after the declaration took effect, and once after packages learned to carry a
-layout. Nothing here is a proposal. It exists so that a declared layout could be
-written without missing a consumer.
+Status: **survey**, amended four times: once after the resolver landed, once
+after the declaration took effect, once after packages learned to carry a
+layout, and once after an install learned to refuse a file type. Nothing here is
+a proposal. It exists so that a declared layout could be written without missing
+a consumer.
 
-Sections 5, 6 and 7 record what changed. Sections 1 to 4 describe the rules as
-they were found, and the line numbers in them are the ones the survey was taken
+Sections 5 to 8 record what changed. Sections 1 to 4 describe the rules as they
+were found, and the line numbers in them are the ones the survey was taken
 against; they have moved.
 
 Sections 1 to 4 are written in the present tense about a system where the
-platform decided every rule. It no longer does: sections 6 and 7 are what is
+platform decided every rule. It no longer does: sections 6 to 8 are what is
 true now.
 
 ## 0. The fact that explains the rest
@@ -140,9 +141,12 @@ part of the kind-by-extension scheme:
 
 `.tsx` `.ts` `.css` `.zf.json` `.md` `.sql` `.json`
 
-No repo in this codebase currently contains an image, though `pipelines/assets/`
-exists and is served for exactly that purpose. Any allowlist should be derived
-from this set plus a decided asset set, rather than from what seems reasonable.
+Any allowlist should be derived from this set plus a decided asset set, rather
+than from what seems reasonable.
+
+This list was short by five, and section 8 corrects it. The claim that no repo
+in this codebase contains an image was also wrong: `pipelines/assets/` holds
+`.png` files in a live project directory, which is what it exists for.
 
 ## 5. What the resolver changed
 
@@ -316,3 +320,64 @@ review lists every one of them.
 `nodes` array. A stored pipeline is a `Pipeline` envelope whose nodes live under
 `spec`, so no `n.web.response` node was ever seen and a published pipeline
 bundle carried no page.
+
+## 8. What the extension allowlist changed
+
+Section 4's list was taken from a partial sweep. A full walk of every `repo/`
+this instance holds -- the same walk `walk_files` performs for a project bundle,
+which skips `.git` and nothing else -- turns up five more:
+
+| Found | Where | Why it is real content |
+| --- | --- | --- |
+| `.mjs` | `libraries/zeb/deckgl/0.1/runtime/deckgl.bundle.mjs` | An RWE library runtime, served as `text/javascript` |
+| `.png` | `pipelines/assets/favicon-16x16.png`, `pipelines/assets/images/test-upload.png` | Section 4 said no repo held an image; two do |
+| `.yaml` | `zebflow.yaml` | The one file an install refuses a bundle without |
+| `.lock` | `zeb.lock` | Kept in every install scope by `install_entry_is_project_configuration` |
+| *(none)* | `pipelines/shared/{ui,layout,lib}/.gitkeep` | Written into every project by `ensure_project_layout`; a leading dot is a hidden-file marker, so this has no extension at all |
+
+The last two are load-bearing rather than incidental: removing either from the
+allowance makes the platform smoke suite's project-bundle install fail, because
+the bundle it exports carries both.
+
+### What is allowed, and why that line
+
+An extension is allowed when this build can say what the file is: source the
+RWE compiler builds, a document a contract defines, or a media type
+`content_type_for_path` serves from the asset route. Everything else answers
+`application/octet-stream` -- a binary nothing here reads -- which is the
+`.dylib`, `.so` and `.sh` case the set exists to refuse. `.env` is caught by the
+same rule from the other side: a leading dot is not a suffix, so it has no
+extension to judge and is refused as an unnamed type.
+
+The set is in `DEFAULT_ALLOWED_FILE_EXTENSIONS`; the five names matched whole
+are in `ALWAYS_ALLOWED_FILE_NAMES`. Both live beside the layout defaults in
+`platform/model.rs` and resolve through `ZebflowJsonLayout::resolve`, so the
+question "what may this repository contain" has one answer in the same place as
+"where does it keep it".
+
+### Why this one is a violation and the others are warnings
+
+`policy/package.rs` scores effects by substring: a node kind containing `pg` is
+a database effect, one containing `file` is a filesystem effect. That is fair
+for a warning the user may accept and unusable for a violation, which nobody
+can override -- one false positive makes a legitimate package permanently
+uninstallable on that instance. A suffix test has no such failure mode: a path
+either ends in an accepted type or it does not, decided from the path alone.
+
+A project may narrow the set and may not widen it. Widening is the same act as
+overriding, and a refusal a project can switch off in its own configuration is
+a warning wearing a violation's name. Narrowing only ever refuses more, so it
+needs no new proof. A declared entry outside the platform set is refused by
+name when `zebflow.yaml` is read, and `resolve` intersects as well, so no code
+path can construct a layout that accepts more than the platform does.
+
+### What is not covered
+
+A node bundle is exempt, for the reason
+[hub-package/README.md](../hub-package/README.md) already gives about its
+paths: it materializes into `data/nodes/` under the `NodeBundle` contract's own
+fixed layout, and its `rel_path`s name files inside the bundle rather than
+inside anyone's repository. Applying a repository rule there would let a project
+that narrowed its own extensions refuse a bundle that never touches its
+repository. That leaves the bundle's `.wasm` governed by its contract's path,
+symlink, ABI and reference checks and by nothing in this set.

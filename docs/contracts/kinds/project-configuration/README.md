@@ -1,7 +1,8 @@
 # ProjectConfiguration
 
 Status: **Frozen** on 2026-08-15. Amended 2026-08-20 to add optional
-`spec.layout`; see [Version Rules](#version-rules).
+`spec.layout` and, later the same day, `spec.layout.allowed_extensions`; see
+[Version Rules](#version-rules).
 
 `ProjectConfiguration` is the portable, non-secret project configuration stored
 in `repo/zebflow.yaml`. It is tracked with project source and remains useful when
@@ -47,6 +48,12 @@ spec:
     initial_data:
     - path: db/seeds
       engine: sekejap
+    allowed_extensions:
+    - tsx
+    - ts
+    - css
+    - json
+    - md
   rwe: {}
   pipelines:
     logging:
@@ -82,7 +89,7 @@ The full canonical example is the golden fixture linked above.
 | --- | --- | --- |
 | `metadata.name` | Project identity | A display title or release version |
 | `spec.profile` | Display title and description | Authentication or placement state |
-| `spec.layout` | Repository-relative directories the project's own files live in | Absolute paths, platform data directories, or file contents |
+| `spec.layout` | Repository-relative directories the project's own files live in, and the file extensions it accepts | Absolute paths, platform data directories, or file contents |
 | `spec.rwe` | RWE policy and requested libraries | Resolved library files or integrity hashes |
 | `spec.pipelines` | Pipeline logging retention and node timeout | Pipeline definitions or invocation records |
 | `spec.runtime` | Portable execution and resource intent | Worker IDs, pod names, or live allocation state |
@@ -123,6 +130,30 @@ bound to the database engine that would replay it. Declaring the list replaces
 the default list rather than extending it, so a project that names one prefix
 has exactly one.
 
+`allowed_extensions` is the one entry that is not a directory. It is the set of
+file extensions, lowercase and without a dot, that a package may write into
+`repo/`; the Hub safety review turns a path outside it into a violation, and a
+violation is never overridable, so both install gates refuse the package. It
+sits with the directories because it answers the same question they do -- what
+this project's repository is allowed to contain -- and every consumer that has
+to agree on that already resolves through the same layout.
+
+Declaring the list **narrows** the platform set in [Frozen
+Defaults](#frozen-defaults). It cannot widen it: an entry outside the platform
+set is refused by name when the document is read, rather than accepted or
+dropped. A refusal a project could switch off in its own configuration would be
+a warning wearing a violation's name, and the substring-matched effects the
+review already reports are what warnings are for. If a project genuinely needs
+a file type that is not here, that is evidence for amending the platform set --
+one decision, visible to everyone -- not for a per-project escape hatch.
+
+Some files are accepted by name whatever the extension list says:
+`zebflow.yaml`, `zeb.lock`, `zebflow.init.json`, `schema.json`, and `.gitkeep`.
+The first three travel in every install scope and an install refuses a bundle
+without a `zebflow.yaml`; `.gitkeep` is written into three directories of every
+project by `ensure_project_layout`. A project cannot narrow this list away,
+because narrowing it is how a project would make its own exports uninstallable.
+
 Discovery, placement, and the directories inside `repo/` are all resolved
 through one resolver rather than repeated as literals, and the declaration is
 what that resolver is given: `ensure_project_layout` reads this file, so a
@@ -145,7 +176,7 @@ file operations.
 | Section | User-facing writer | Runtime reader or effect |
 | --- | --- | --- |
 | `spec.profile` | Project creation and Settings > General | Project lists, headers, and app metadata |
-| `spec.layout` | No writer; hand-authored in `repo/zebflow.yaml` | `FilesystemFileAdapter::ensure_project_layout` reads it into `ResolvedProjectLayout`, which every consumer resolves its directory through: pipeline discovery and registration, the RWE template and `@/` root, asset serving, docs generation, initial-data replay, and Hub install placement |
+| `spec.layout` | No writer; hand-authored in `repo/zebflow.yaml` | `FilesystemFileAdapter::ensure_project_layout` reads it into `ResolvedProjectLayout`, which every consumer resolves through: pipeline discovery and registration, the RWE template and `@/` root, asset serving, docs generation, initial-data replay, Hub install placement, and the Hub safety review's file-type refusal |
 | `spec.rwe` | Settings > Policy and Settings > Libraries | RWE compilation, rendering, assets, and editor libraries |
 | `spec.pipelines` | Settings > General and Settings > Logs | Node timeout and bounded invocation retention |
 | `spec.runtime` | Project creation and explicit project configuration edits | Runtime synchronization and placement planning |
@@ -190,6 +221,7 @@ Omitted fields use these v1 meanings:
 | `spec.layout.sqlite_schema` | `schemas/sqlite` |
 | `spec.layout.node_interfaces` | `nodes` |
 | `spec.layout.initial_data` | `initial-data/sekejap`, `initial-data/sqlite`, `init/sekejap`, `init/sqlite`, `seeds/sekejap`, `seeds/sqlite`, each bound to the engine named in its own path |
+| `spec.layout.allowed_extensions` | `css`, `geojson`, `js`, `json`, `jsx`, `md`, `mjs`, `sql`, `ts`, `tsx`, `txt`, `xml`, `yaml`, `yml`, `csv`, `gif`, `ico`, `jpeg`, `jpg`, `mp3`, `mp4`, `pdf`, `png`, `svg`, `ttf`, `webp`, `woff`, `woff2` |
 | `spec.rwe.minify_html` | `false` |
 | `spec.rwe.strict_mode` | `true` |
 | `spec.pipelines.logging.max_invocations` | Runtime default of 20 |
@@ -219,6 +251,9 @@ The reader rejects:
   malformed branches, and unsupported URLs
 - layout directories that are empty, absolute, trailing-slashed, glob-bearing,
   or contain a `.` or `..` segment
+- an empty `allowed_extensions` list, a repeated entry, and any entry outside
+  the platform set -- including one spelled with a leading dot or in uppercase,
+  because a declaration is matched, not normalized
 - repeated initial-data prefixes, and initial-data engines other than `sekejap`
   and `sqlite`
 - URLs with embedded credentials
@@ -278,13 +313,22 @@ schema stops being a draft and starts being a promise.
 | --- | --- | --- |
 | 2026-08-20 | Added `spec.layout` | Optional at every level; omission reproduces the previous hardcoded directories exactly; no existing field changed meaning; absent stays absent on rewrite, so an existing file is not modified on its next save; the golden fixture still round-trips byte for byte. |
 | 2026-08-20 | Added `spec.layout.sqlite_schema` | The SQLite export directory was the one repository directory with no entry, so `schemas/sqlite/` stayed a literal in two places that could drift from each other. Optional, defaults to the literal it replaces, and absent stays absent on rewrite. |
+| 2026-08-20 | Added `spec.layout.allowed_extensions` | Optional; an absent entry resolves to the platform set, which is derived from what a repository in this codebase actually holds plus the media types the asset route serves, so no existing content becomes uninstallable and absent stays absent on rewrite. It can only narrow, so no document can weaken the gate built on it. No existing field changed meaning and the golden fixture still round-trips byte for byte. |
 | 2026-08-20 | `spec.layout.assets` now defaults inside the resolved `source` | For an undeclared `source` the default is the same string it always was, `pipelines/assets`, so no existing document changes meaning. It only differs for a project that declares a different `source` -- a case that could not arise before the declaration was read, and where the previous literal would have scaffolded an asset directory in the tree the project moved out of. |
 
 ## Freeze Evidence
 
 - The complete v1 fixture decodes and re-encodes byte for byte, and still does
   so with no `layout` key present.
-- A declared layout fixture decodes and re-encodes byte for byte.
+- A declared layout fixture decodes and re-encodes byte for byte, including a
+  narrowed `allowed_extensions` list.
+- A declared extension list may narrow the platform set; a wider one, a
+  repeated one, an empty one, and one spelled with a dot or in uppercase are
+  each refused rather than clamped.
+- A package carrying a `.sh` or a `.dylib` is refused by both install gates
+  with the offending path and extension named, and a package of ordinary
+  project content -- pages, styles, pipelines, images, `zebflow.yaml`,
+  `zeb.lock`, `.gitkeep` -- installs unchanged.
 - An undeclared layout resolves to the directories the platform hardcodes,
   including the installer's own initial-data prefix table.
 - A declared layout survives the runtime model conversion and an unrelated

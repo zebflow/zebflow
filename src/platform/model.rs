@@ -2398,6 +2398,42 @@ pub const DEFAULT_LAYOUT_SCHEMA_DIR: &str = "schemas/sekejap";
 pub const DEFAULT_LAYOUT_SQLITE_SCHEMA_DIR: &str = "schemas/sqlite";
 /// Repository-relative directory holding third-party node interface documents.
 pub const DEFAULT_LAYOUT_NODE_INTERFACES_DIR: &str = "nodes";
+/// File extensions a package may write into `repo/`, lowercase, without a dot.
+///
+/// An extension is here because this build can say what the file is: source the
+/// RWE compiler builds, a document a contract defines, or a media type
+/// `content_type_for_path` serves from the asset route. Everything else lands
+/// as `application/octet-stream` -- a binary nothing here reads -- which is the
+/// `.dylib` and `.sh` case this set exists to refuse.
+///
+/// The test is a suffix, so it is decidable from the path alone with no
+/// heuristic and no false positive. That is what makes it fit to be a
+/// violation, which nobody can override, rather than a warning.
+pub const DEFAULT_ALLOWED_FILE_EXTENSIONS: &[&str] = &[
+    // Source and project documents. `.zf.json`, the schema exports, node
+    // interfaces and library manifests are all `json`.
+    "css", "geojson", "js", "json", "jsx", "md", "mjs", "sql", "ts", "tsx", "txt", "xml", "yaml",
+    "yml", // Assets: what the asset route serves with a content type of its own.
+    "csv", "gif", "ico", "jpeg", "jpg", "mp3", "mp4", "pdf", "png", "svg", "ttf", "webp", "woff",
+    "woff2",
+];
+/// Files a package may write whatever the extension set says, matched on the
+/// whole file name.
+///
+/// These carry their meaning in the name rather than the suffix. Three of them
+/// are load-bearing: a bundle with no `zebflow.yaml` is refused outright,
+/// `zeb.lock` travels in every install scope and ends in nothing else, and
+/// `ensure_project_layout` writes a `.gitkeep` into three directories of every
+/// project -- so without these a project's own export could not come back. A
+/// project narrows extensions and never this list, because narrowing it is how
+/// a project would make its own bundles uninstallable.
+pub const ALWAYS_ALLOWED_FILE_NAMES: &[&str] = &[
+    ".gitkeep",
+    "schema.json",
+    "zeb.lock",
+    "zebflow.init.json",
+    "zebflow.yaml",
+];
 /// Filename suffix that marks a pipeline definition.
 pub const PIPELINE_DEFINITION_EXTENSION: &str = ".zf.json";
 /// The source root every persisted pipeline id carried before identity became
@@ -2434,6 +2470,9 @@ pub struct ZebflowJsonLayout {
     /// Prefixes an install replays as initial data, each bound to one engine.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub initial_data: Option<Vec<ZebflowJsonInitialDataDir>>,
+    /// File extensions this project accepts, narrowing the platform set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allowed_extensions: Option<Vec<String>>,
 }
 
 /// One initial-data prefix and the database engine that would replay it.
@@ -2473,6 +2512,9 @@ pub struct ResolvedProjectLayout {
     pub sqlite_schema: String,
     pub node_interfaces: String,
     pub initial_data: Vec<ZebflowJsonInitialDataDir>,
+    /// Lowercase, dotless, and never wider than
+    /// [`DEFAULT_ALLOWED_FILE_EXTENSIONS`].
+    pub allowed_extensions: Vec<String>,
 }
 
 impl ZebflowJsonLayout {
@@ -2506,8 +2548,36 @@ impl ZebflowJsonLayout {
                 .initial_data
                 .clone()
                 .unwrap_or_else(default_initial_data_dirs),
+            allowed_extensions: resolve_allowed_extensions(self.allowed_extensions.as_deref()),
         }
     }
+}
+
+/// The extensions a declaration ends up with: the platform set, or the declared
+/// subset of it.
+///
+/// The intersection is the guarantee rather than the message. A declared
+/// extension outside the platform set is refused by name when the document is
+/// read, so no user ever reaches this clamp; it is here so that no code path
+/// can construct a layout accepting more than the platform does either. A
+/// project may narrow the set because narrowing only ever refuses more. It may
+/// not widen it, because a violation nobody can override stops being one the
+/// moment a line in a project's own configuration can turn it off.
+fn resolve_allowed_extensions(declared: Option<&[String]>) -> Vec<String> {
+    let Some(declared) = declared else {
+        return DEFAULT_ALLOWED_FILE_EXTENSIONS
+            .iter()
+            .map(|value| (*value).to_string())
+            .collect();
+    };
+    let mut resolved = declared
+        .iter()
+        .map(|value| value.trim().trim_start_matches('.').to_ascii_lowercase())
+        .filter(|value| DEFAULT_ALLOWED_FILE_EXTENSIONS.contains(&value.as_str()))
+        .collect::<Vec<_>>();
+    resolved.sort();
+    resolved.dedup();
+    resolved
 }
 
 impl ResolvedProjectLayout {
@@ -2577,6 +2647,43 @@ impl ResolvedProjectLayout {
             .find(|dir| strip_dir_prefix(&dir.path, rel).is_some())
             .map(|dir| dir.engine.as_str())
     }
+
+    /// Why this layout refuses to hold `rel`, or `None` when it accepts it.
+    ///
+    /// The answer is phrased for the refusal message: a package that cannot be
+    /// installed by anyone's approval has to say exactly what it was refused
+    /// for, and "no extension" is as much an answer as `.sh`.
+    pub fn refused_file_type(&self, rel: &str) -> Option<String> {
+        let name = rel.rsplit('/').next().unwrap_or(rel);
+        if ALWAYS_ALLOWED_FILE_NAMES.contains(&name.to_ascii_lowercase().as_str()) {
+            return None;
+        }
+        match file_extension(name) {
+            Some(extension)
+                if self
+                    .allowed_extensions
+                    .iter()
+                    .any(|item| *item == extension) =>
+            {
+                None
+            }
+            Some(extension) => Some(format!("extension '.{extension}'")),
+            None => Some("a name with no extension".to_string()),
+        }
+    }
+}
+
+/// The suffix a file name is judged by, lowercase and without the dot.
+///
+/// A leading dot marks a hidden file rather than a suffix, so `.env` has no
+/// extension to judge and is refused as an unnamed type -- which is the answer
+/// that case needs anyway.
+fn file_extension(name: &str) -> Option<String> {
+    let (stem, extension) = name.rsplit_once('.')?;
+    if stem.is_empty() || extension.is_empty() {
+        return None;
+    }
+    Some(extension.to_ascii_lowercase())
 }
 
 /// `rel` with `dir` and its separator removed, or `None` when `rel` is not
