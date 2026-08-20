@@ -172,6 +172,61 @@ use std::fmt::{Display, Formatter};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+/// What a node kind can reach beyond the pipeline it runs in.
+///
+/// This is the vocabulary the package safety review speaks, and it is an enum
+/// rather than a string because nobody types it. A native node declares its own
+/// set here in Rust, so a misspelling is a build failure. A bundle-provided node
+/// declares nothing at all: a composite's set is derived as the union of the
+/// nodes its function pipelines compose, and a WASM node's is empty because
+/// `wasm_host` instantiates every module with an empty import array and this
+/// build links `wasmtime` without WASI -- the module gets linear memory and
+/// arithmetic and no host function whatever. Declaration only becomes necessary
+/// on the day the host grants imports, and on that day the import list would be
+/// the declaration rather than a claim about one.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum NodeCapability {
+    /// Opens an outbound connection to a host the pipeline names.
+    Network,
+    /// Reads or writes files the project owns.
+    Filesystem,
+    /// Reads or writes a store the project configured.
+    Database,
+    /// Reads a secret out of the credential service.
+    Credential,
+    /// Executes code or a program it was handed.
+    Process,
+}
+
+impl NodeCapability {
+    /// Every capability, in declaration order.
+    pub const ALL: &'static [Self] = &[
+        Self::Network,
+        Self::Filesystem,
+        Self::Database,
+        Self::Credential,
+        Self::Process,
+    ];
+
+    /// Stable wire name, matching the serde representation.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Network => "network",
+            Self::Filesystem => "filesystem",
+            Self::Database => "database",
+            Self::Credential => "credential",
+            Self::Process => "process",
+        }
+    }
+}
+
+impl Display for NodeCapability {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 /// How a DSL flag value is interpreted by the parser.
 ///
 /// The universal transformation rule `--flag-name` → `flag_name` (replace `-` with `_`)
@@ -834,6 +889,14 @@ pub struct NodeDefinition {
     /// defined per instance in the graph.
     #[serde(default)]
     pub output_pins: Vec<String>,
+    /// What this kind can reach beyond the pipeline, declared once here.
+    ///
+    /// The package safety review reads this rather than guessing from the kind
+    /// string, so a node that touches nothing outside its payload carries an
+    /// empty set and says so. See [`NodeCapability`] for why no authoring
+    /// surface accepts one of these as text.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub capabilities: Vec<NodeCapability>,
     /// Whether this node kind can be called from inside an `n.script` Deno sandbox.
     #[serde(default)]
     pub script_available: bool,
@@ -996,6 +1059,10 @@ pub struct NodeContractItem {
     /// Declared output pin names.
     #[serde(default)]
     pub output_pins: Vec<String>,
+    /// What this kind can reach beyond the pipeline.  Same as
+    /// [`NodeDefinition::capabilities`].
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub capabilities: Vec<NodeCapability>,
     /// Where this node kind can be used.
     pub usage_matrix: NodeUsageMatrix,
     /// DSL flag declarations — same as [`NodeDefinition::dsl_flags`].
@@ -1139,6 +1206,7 @@ impl From<NodeDefinition> for NodeContractItem {
             failure_semantics: value.failure_semantics,
             input_pins: value.input_pins,
             output_pins: value.output_pins,
+            capabilities: value.capabilities,
             dsl_flags: value.dsl_flags,
             fields: value.fields,
             layout: value.layout,

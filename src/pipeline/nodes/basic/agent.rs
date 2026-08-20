@@ -34,6 +34,7 @@ use crate::automaton::infra::http_client::{
 };
 use crate::automaton::infra::llm_interface::{LlmCall, ToolDef};
 use crate::automaton::infra::shell_tools::default_registry;
+use crate::pipeline::model::NodeCapability;
 use crate::pipeline::model::{
     DslFlag, DslFlagKind, LayoutItem, NodeAiToolDefinition, NodeFieldDataSource, NodeFieldType,
     Signal,
@@ -54,6 +55,7 @@ pub fn definition() -> NodeDefinition {
     use crate::pipeline::model::{NodeFieldDef, SelectOptionDef};
     NodeDefinition {
         kind: NODE_KIND.to_string(),
+        capabilities: vec![NodeCapability::Network, NodeCapability::Filesystem, NodeCapability::Credential, NodeCapability::Process],
         title: "AI Agent".to_string(),
         description: "Autonomous agent with tool use. Direct mode: single-pass structured tool sequence. \
             Strategic mode: plan → act → adapt → synthesize. \

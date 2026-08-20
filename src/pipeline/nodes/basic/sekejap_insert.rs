@@ -16,6 +16,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use super::util::{metadata_scope, resolve_path};
+use crate::pipeline::model::NodeCapability;
 use crate::pipeline::model::{DslFlag, DslFlagKind, LayoutItem, NodeFieldDef, NodeFieldType};
 use crate::pipeline::{
     NodeDefinition, PipelineError,
@@ -32,6 +33,7 @@ pub const OUTPUT_PIN_OUT: &str = "out";
 pub fn definition() -> NodeDefinition {
     NodeDefinition {
         kind: NODE_KIND.to_string(),
+        capabilities: vec![NodeCapability::Database],
         title: "Sekejap Insert".to_string(),
         description: "Bulk insert records and native edges into the project's embedded Sekejap store through the schema-driven typed write path. Vector fields are optimized automatically.".to_string(),
         input_schema: json!({

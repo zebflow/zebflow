@@ -222,11 +222,39 @@ Before Add, Zebflow should show what the package can affect:
 - external URLs and domains
 - database schemas, tables, collections, graphs, or indexes touched
 - filesystem paths touched
+- outbound connections opened, and code the package supplies that will run
 - schedules, webhooks, and public endpoints created
 - secrets required but not included
 - large files and optional seed/demo data
 
 The package brings source into the project. It does not bring trust.
+
+### How the review knows what a node does
+
+Every effect above that names a node kind is answered from the node catalog,
+never from the shape of the kind's name.
+
+- **Native nodes** declare their own capabilities in Rust, so the answer is a
+  constant of the build and a misspelling does not compile.
+- **Composite nodes** — what a third-party bundle mostly ships — declare
+  nothing. Their capabilities are the union of the nodes their function
+  pipelines compose, so a bundle cannot understate what it does without also
+  removing the nodes that do it. Their function pipelines are reviewed like any
+  other pipeline.
+- **WASM nodes** carry no capability at all. The host instantiates every module
+  with no imports and no WASI, so a module gets memory and arithmetic and
+  nothing else to call.
+
+A capability is what a kind *can* reach in some configuration, not what one
+instance of it does. A node kind the review cannot account for is named in the
+warnings rather than passed over silently — it is usually a node provided by a
+bundle installed separately, which is a normal thing for a package to depend on.
+
+A bundle that declares a node kind this build already provides is refused
+outright. That is not a judgement about the bundle's behaviour: the kind is in
+its own manifest, the catalog it collides with is fixed at compile time, and
+installing it makes the whole project's node registry fail to load, not just
+that one node.
 
 ## Gallery metadata
 

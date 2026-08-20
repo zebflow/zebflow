@@ -24,6 +24,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::infra::io::state::DynStateBus;
+use crate::pipeline::model::NodeCapability;
 use crate::pipeline::model::{DslFlag, DslFlagKind, NodeFieldDef, NodeFieldType};
 use crate::pipeline::{
     NodeDefinition, PipelineError,
@@ -37,6 +38,7 @@ const OUTPUT_PIN_OUT: &str = "out";
 pub fn definition() -> NodeDefinition {
     NodeDefinition {
         kind: NODE_KIND.to_string(),
+        capabilities: vec![NodeCapability::Database],
         title: "KV Exists".to_string(),
         description: "Check whether a key exists and is not expired in the per-project \
             KV store. Replaces the payload with { [out_key]: boolean } (default out_key: \"exists\"). \

@@ -21,6 +21,7 @@ use serde_json::{Value, json};
 use super::util::{eval_deno_expr, metadata_scope};
 use crate::language::LanguageEngine;
 use crate::pipeline::PipelineError;
+use crate::pipeline::model::NodeCapability;
 use crate::pipeline::model::{
     DslFlag, DslFlagKind, LayoutItem, NodeDefinition, NodeFieldDataSource, NodeFieldDef,
     NodeFieldType, SelectOptionDef,
@@ -216,6 +217,7 @@ struct TimedWord {
 pub fn definition() -> NodeDefinition {
     NodeDefinition {
         kind: NODE_KIND.to_string(),
+        capabilities: vec![NodeCapability::Filesystem, NodeCapability::Credential, NodeCapability::Process],
         title: "AI TTS".to_string(),
         description: "Synthesize speech from text. First stable provider is local Piper. Model, config, and espeak data are resolved from the selected credential under Zebflow FS.".to_string(),
         input_schema: json!({

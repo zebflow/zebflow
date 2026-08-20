@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
 use crate::language::LanguageEngine;
+use crate::pipeline::model::NodeCapability;
 use crate::pipeline::model::{
     DslFlag, DslFlagKind, LayoutItem, NodeFieldDef, NodeFieldType, SelectOptionDef,
 };
@@ -37,6 +38,7 @@ const MAX_INLINE_ROWS: usize = 10_000;
 pub fn definition() -> NodeDefinition {
     NodeDefinition {
         kind: NODE_KIND.to_string(),
+        capabilities: vec![NodeCapability::Network, NodeCapability::Filesystem, NodeCapability::Database, NodeCapability::Process],
         title: "Table Query".to_string(),
         description: "Run SQL over multiple table sources using the selected table engine.".to_string(),
         input_pins: vec![INPUT_PIN_IN.to_string()],

@@ -19,6 +19,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::pipeline::PipelineError;
+use crate::pipeline::model::NodeCapability;
 use crate::pipeline::model::{
     DslFlag, DslFlagKind, LayoutItem, NodeDefinition, NodeFieldDef, NodeFieldType, SelectOptionDef,
 };
@@ -304,6 +305,7 @@ pub fn write_generated_html(
 pub fn definition() -> NodeDefinition {
     NodeDefinition {
         kind: NODE_KIND.to_string(),
+        capabilities: vec![NodeCapability::Filesystem, NodeCapability::Process],
         title: "Web Static Generate".to_string(),
         description: "Render an RWE TSX template once and persist the HTML into project file storage. \
             Use this for static page generation, cached exports, and regeneration pipelines. \

@@ -636,6 +636,8 @@ export default function Page(input) {
                           <BundleReviewList title="Public endpoints created" items={bundleReview.public_endpoints} />
                           <BundleReviewList title="Database effects" items={bundleReview.database_effects} />
                           <BundleReviewList title="File effects" items={bundleReview.filesystem_effects} />
+                          <BundleReviewList title="Outbound connections" items={bundleReview.network_effects} />
+                          <BundleReviewList title="Runs supplied code" items={bundleReview.code_execution} />
                           <BundleReviewList title="Schedules" items={bundleReview.schedules} />
                           <BundleReviewList title="Files written" items={bundleReview.files_added} />
                           <BundleReviewList title="Files overwritten" items={bundleReview.files_overwritten} />
@@ -1174,6 +1176,8 @@ export default function Page(input) {
                               <ReviewList title="External URLs" items={publishReview.external_urls} danger />
                               <ReviewList title="Database effects" items={publishReview.database_effects} danger />
                               <ReviewList title="Filesystem effects" items={publishReview.filesystem_effects} />
+                              <ReviewList title="Outbound connections" items={publishReview.network_effects} danger />
+                              <ReviewList title="Runs supplied code" items={publishReview.code_execution} danger />
                               <ReviewList title="Public endpoints" items={publishReview.public_endpoints} danger />
                               <ReviewList title="Schedules" items={publishReview.schedules} danger />
                               <ReviewList title="Large files" items={publishReview.large_files} />

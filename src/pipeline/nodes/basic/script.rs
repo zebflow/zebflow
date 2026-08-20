@@ -4,6 +4,7 @@ use crate::language::{
     COMPILE_TARGET_BACKEND, CompileOptions, CompiledProgram, ExecutionContext, LanguageEngine,
     ModuleSource, SourceKind,
 };
+use crate::pipeline::model::NodeCapability;
 use crate::pipeline::model::{
     LayoutItem, NodeFieldDef, NodeFieldType, SidebarItem, SidebarSection,
 };
@@ -22,6 +23,7 @@ pub const OUTPUT_PIN_OUT: &str = "out";
 pub fn definition() -> NodeDefinition {
     NodeDefinition {
         kind: NODE_KIND.to_string(),
+        capabilities: vec![NodeCapability::Filesystem, NodeCapability::Process],
         title: "Script".to_string(),
         description:
             "Execute sandboxed Deno logic with runtime signature async function(input, n, ctx). \

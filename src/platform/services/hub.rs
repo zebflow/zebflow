@@ -286,6 +286,13 @@ pub struct ProjectBundleInstallReview {
     pub external_urls: Vec<String>,
     pub database_effects: Vec<String>,
     pub filesystem_effects: Vec<String>,
+    /// Node kinds that open an outbound connection, whether or not any URL is
+    /// written down in a config.
+    #[serde(default)]
+    pub network_effects: Vec<String>,
+    /// Node kinds that run code or a program the package supplied.
+    #[serde(default)]
+    pub code_execution: Vec<String>,
     pub public_endpoints: Vec<String>,
     pub schedules: Vec<String>,
     pub large_files: Vec<String>,
@@ -471,6 +478,13 @@ pub struct HubInstallReview {
     pub external_urls: Vec<String>,
     pub database_effects: Vec<String>,
     pub filesystem_effects: Vec<String>,
+    /// Node kinds that open an outbound connection, whether or not any URL is
+    /// written down in a config.
+    #[serde(default)]
+    pub network_effects: Vec<String>,
+    /// Node kinds that run code or a program the package supplied.
+    #[serde(default)]
+    pub code_execution: Vec<String>,
     pub public_endpoints: Vec<String>,
     pub schedules: Vec<String>,
     pub large_files: Vec<String>,
@@ -509,6 +523,13 @@ pub struct HubPublishReview {
     pub external_urls: Vec<String>,
     pub database_effects: Vec<String>,
     pub filesystem_effects: Vec<String>,
+    /// Node kinds that open an outbound connection, whether or not any URL is
+    /// written down in a config.
+    #[serde(default)]
+    pub network_effects: Vec<String>,
+    /// Node kinds that run code or a program the package supplied.
+    #[serde(default)]
+    pub code_execution: Vec<String>,
     pub public_endpoints: Vec<String>,
     pub schedules: Vec<String>,
     pub large_files: Vec<String>,
@@ -2887,6 +2908,8 @@ impl HubService {
             external_urls: policy.external_urls,
             database_effects: policy.database_effects,
             filesystem_effects: policy.filesystem_effects,
+            network_effects: policy.network_effects,
+            code_execution: policy.code_execution,
             public_endpoints: policy.public_endpoints,
             schedules: policy.schedules,
             large_files: policy.large_files,
@@ -3761,6 +3784,8 @@ impl HubService {
             external_urls: safety.external_urls,
             database_effects: safety.database_effects,
             filesystem_effects: safety.filesystem_effects,
+            network_effects: safety.network_effects,
+            code_execution: safety.code_execution,
             public_endpoints: safety.public_endpoints,
             schedules: safety.schedules,
             large_files: safety.large_files,
@@ -4580,6 +4605,8 @@ fn review_publish_artifact(
         external_urls: policy.external_urls,
         database_effects: policy.database_effects,
         filesystem_effects: policy.filesystem_effects,
+        network_effects: policy.network_effects,
+        code_execution: policy.code_execution,
         public_endpoints: policy.public_endpoints,
         schedules: policy.schedules,
         large_files: policy.large_files,
@@ -6227,6 +6254,12 @@ fn install_risk_level(policy: &PackageSafetyReview, has_overwrites: bool) -> Str
         risk_score += 2;
     }
     if !policy.filesystem_effects.is_empty() {
+        risk_score += 1;
+    }
+    if !policy.network_effects.is_empty() {
+        risk_score += 1;
+    }
+    if !policy.code_execution.is_empty() {
         risk_score += 1;
     }
     if !policy.public_endpoints.is_empty() || !policy.schedules.is_empty() {

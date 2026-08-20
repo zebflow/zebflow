@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
 use crate::pipeline::PipelineError;
+use crate::pipeline::model::NodeCapability;
 use crate::pipeline::model::{
     DslFlag, DslFlagKind, LayoutItem, NodeDefinition, NodeFieldDef, NodeFieldType,
 };
@@ -150,6 +151,7 @@ impl FolderNode {
 pub fn definition() -> NodeDefinition {
     NodeDefinition {
         kind: NODE_KIND.to_string(),
+        capabilities: vec![NodeCapability::Filesystem, NodeCapability::Process],
         title: "Web Docs Generate".to_string(),
         description: "Scan repo/docs markdown content, auto-scaffold docs.template.tsx when missing, and generate a fully static docs artifact tree under Zebflow FS. Treat output as publishable artifacts, not same-origin hosted pages.".to_string(),
         input_schema: json!({ "type": "object" }),

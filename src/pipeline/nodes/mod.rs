@@ -374,11 +374,41 @@ pub use interface::{NodeExecutionInput, NodeExecutionOutput, NodeHandler};
 
 use std::collections::HashSet;
 
-use crate::pipeline::model::{DslFlagKind, LayoutItem, NodeDefinition, NodeFieldType};
+use crate::pipeline::model::{
+    DslFlagKind, LayoutItem, NodeCapability, NodeDefinition, NodeFieldType,
+};
 
 /// Returns all built-in node definitions.
 pub fn builtin_node_definitions() -> Vec<crate::pipeline::NodeDefinition> {
     basic::builtin_node_definitions()
+}
+
+/// What every native node kind can reach, keyed by kind.
+///
+/// This is the compiled-in half of the answer the package safety review needs,
+/// and it is a constant of the build: nothing installed can add to it, remove
+/// from it, or disagree with it. Bundle-provided kinds are resolved separately,
+/// by deriving them from the nodes they compose.
+///
+/// A kind with an empty set is present and empty, never absent. "This node
+/// reaches nothing" and "nobody asked this node" are different answers and the
+/// review reports them differently.
+pub fn native_node_capabilities()
+-> &'static std::collections::BTreeMap<String, std::collections::BTreeSet<NodeCapability>> {
+    static NATIVE: std::sync::LazyLock<
+        std::collections::BTreeMap<String, std::collections::BTreeSet<NodeCapability>>,
+    > = std::sync::LazyLock::new(|| {
+        builtin_node_definitions()
+            .into_iter()
+            .map(|definition| {
+                (
+                    definition.kind,
+                    definition.capabilities.into_iter().collect(),
+                )
+            })
+            .collect()
+    });
+    &NATIVE
 }
 
 fn validate_layout_item(

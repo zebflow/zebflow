@@ -30,6 +30,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
+use crate::pipeline::model::NodeCapability;
 use crate::pipeline::model::{DslFlag, DslFlagKind, NodeFieldDef, NodeFieldType};
 use crate::pipeline::{
     NodeDefinition, PipelineError,
@@ -42,6 +43,7 @@ const OUTPUT_PIN_OUT: &str = "out";
 pub fn definition() -> NodeDefinition {
     NodeDefinition {
         kind: NODE_KIND.to_string(),
+        capabilities: vec![NodeCapability::Database],
         title: "KV Subscribe".to_string(),
         description: "Listen for messages published on a named KV channel. \
             Fires whenever n.kv.publish sends a message on the same channel. \

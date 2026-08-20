@@ -88,6 +88,8 @@ export default function BundleReview({ review, scope, onScopeChange, busy = fals
             <ReviewList title="Public endpoints created" items={review.public_endpoints} tone="danger" />
             <ReviewList title="Database effects" items={review.database_effects} tone="danger" />
             <ReviewList title="Filesystem effects" items={review.filesystem_effects} />
+            <ReviewList title="Outbound connections" items={review.network_effects} tone="danger" />
+            <ReviewList title="Runs supplied code" items={review.code_execution} tone="danger" />
             <ReviewList title="Schedules" items={review.schedules} tone="danger" />
             <ReviewList title="Large files" items={review.large_files} />
             <ReviewList title="Seed / demo data" items={review.seed_data} />

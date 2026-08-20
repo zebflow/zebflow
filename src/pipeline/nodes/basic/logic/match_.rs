@@ -11,6 +11,7 @@ use crate::language::{
     SourceKind,
 };
 use crate::pipeline::expr::build_expression_scope_input;
+use crate::pipeline::model::NodeCapability;
 use crate::pipeline::model::{DslFlag, DslFlagKind, LayoutItem};
 use crate::pipeline::{
     NodeDefinition, PipelineError,
@@ -23,6 +24,7 @@ pub const INPUT_PIN_IN: &str = "in";
 pub fn definition() -> NodeDefinition {
     NodeDefinition {
         kind: NODE_KIND.to_string(),
+        capabilities: vec![NodeCapability::Process],
         title: "Match".to_string(),
         description:
             "Evaluates a DSL expression using $input/$trigger/$nodes and routes to matching case pin, or default."

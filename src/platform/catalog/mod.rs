@@ -52,6 +52,13 @@ pub struct UiInstallReview {
     pub external_urls: Vec<String>,
     pub database_effects: Vec<String>,
     pub filesystem_effects: Vec<String>,
+    /// Node kinds that open an outbound connection, whether or not any URL is
+    /// written down in a config.
+    #[serde(default)]
+    pub network_effects: Vec<String>,
+    /// Node kinds that run code or a program the package supplied.
+    #[serde(default)]
+    pub code_execution: Vec<String>,
     pub public_endpoints: Vec<String>,
     pub schedules: Vec<String>,
     pub large_files: Vec<String>,
@@ -429,6 +436,8 @@ impl CatalogService {
             external_urls: policy.external_urls,
             database_effects: policy.database_effects,
             filesystem_effects: policy.filesystem_effects,
+            network_effects: policy.network_effects,
+            code_execution: policy.code_execution,
             public_endpoints: policy.public_endpoints,
             schedules: policy.schedules,
             large_files: policy.large_files,

@@ -17,6 +17,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use super::util::{metadata_scope, resolve_path};
+use crate::pipeline::model::NodeCapability;
 use crate::pipeline::nodes::basic::file_ref::{is_file_ref, read_file_ref_bytes};
 use crate::pipeline::{
     NodeDefinition, PipelineError,
@@ -324,6 +325,7 @@ fn object_definition(
 ) -> NodeDefinition {
     NodeDefinition {
         kind: kind.to_string(),
+        capabilities: vec![NodeCapability::Filesystem],
         title: title.to_string(),
         description: description.to_string(),
         input_schema: json!({"type": "object"}),

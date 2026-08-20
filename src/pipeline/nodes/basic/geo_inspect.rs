@@ -11,6 +11,7 @@ use serde_json::json;
 
 use super::file_ref::file_ref_to_rel_path_or_string;
 use super::util::{metadata_scope, resolve_path};
+use crate::pipeline::model::NodeCapability;
 use crate::pipeline::{
     NodeDefinition, PipelineError,
     model::{DslFlag, DslFlagKind, LayoutItem, NodeFieldDef, NodeFieldType},
@@ -45,6 +46,7 @@ impl Default for Config {
 pub fn definition() -> NodeDefinition {
     NodeDefinition {
         kind: NODE_KIND.to_string(),
+        capabilities: vec![NodeCapability::Filesystem],
         title: "Geo Inspect".to_string(),
         description: "Inspect a spatial dataset and return its schema, CRS, geometry type, \
             declared extent, and field definitions. Supports .gdb, .shp, .parquet, .geojson."

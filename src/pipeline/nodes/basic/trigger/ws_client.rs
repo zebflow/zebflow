@@ -30,6 +30,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
+use crate::pipeline::model::NodeCapability;
 use crate::pipeline::model::{DslFlag, DslFlagKind, NodeFieldDef, NodeFieldType};
 use crate::pipeline::{
     NodeDefinition, PipelineError,
@@ -42,6 +43,7 @@ const OUTPUT_PIN_OUT: &str = "out";
 pub fn definition() -> NodeDefinition {
     NodeDefinition {
         kind: NODE_KIND.to_string(),
+        capabilities: vec![NodeCapability::Network, NodeCapability::Credential],
         title: "WS Client".to_string(),
         description: "Connect to an external WebSocket server on pipeline activate. \
             Fires the pipeline for every received message. Auto-reconnects with \

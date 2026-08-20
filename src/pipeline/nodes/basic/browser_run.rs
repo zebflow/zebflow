@@ -28,6 +28,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
+use crate::pipeline::model::NodeCapability;
 use crate::pipeline::model::{
     DslFlag, DslFlagKind, LayoutItem, NodeFieldDataSource, NodeFieldDef, NodeFieldType,
     SidebarItem, SidebarSection,
@@ -47,6 +48,7 @@ const BROWSER_KIND_PREFIX: &str = "browser_";
 pub fn definition() -> NodeDefinition {
     NodeDefinition {
         kind: NODE_KIND.to_string(),
+        capabilities: vec![NodeCapability::Network, NodeCapability::Credential, NodeCapability::Process],
         title: "Browser Run".to_string(),
         description: "Execute a Playwright script via a Browserless-compatible HTTP endpoint and return the result.".to_string(),
         input_schema: json!({ "type": "object", "description": "Upstream payload available as context." }),

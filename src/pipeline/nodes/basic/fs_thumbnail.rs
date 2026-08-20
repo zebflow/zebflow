@@ -26,6 +26,7 @@ use uuid::Uuid;
 
 use super::file_ref::{BACKEND_ZEBFS, FILE_REF_TYPE, LIFECYCLE_DURABLE, file_ref_to_rel_path};
 use super::util::{metadata_scope, resolve_path};
+use crate::pipeline::model::NodeCapability;
 use crate::pipeline::{
     NodeDefinition, PipelineError,
     model::{DslFlag, DslFlagKind, LayoutItem, NodeFieldDef, NodeFieldType, SelectOptionDef},
@@ -133,6 +134,7 @@ impl Default for Config {
 pub fn definition() -> NodeDefinition {
     NodeDefinition {
         kind: NODE_KIND.to_string(),
+        capabilities: vec![NodeCapability::Filesystem],
         title: "Image Thumbnail".to_string(),
         description:
             "Resize and compress an uploaded image to a small thumbnail. \

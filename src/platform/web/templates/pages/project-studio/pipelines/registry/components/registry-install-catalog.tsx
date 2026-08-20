@@ -165,6 +165,8 @@ export function RegistryInstallCatalog({
                     <ReviewList title="External URLs" items={uiInstallReview.external_urls} danger />
                     <ReviewList title="Database effects" items={uiInstallReview.database_effects} danger />
                     <ReviewList title="Filesystem effects" items={uiInstallReview.filesystem_effects} />
+                    <ReviewList title="Outbound connections" items={uiInstallReview.network_effects} danger />
+                    <ReviewList title="Runs supplied code" items={uiInstallReview.code_execution} danger />
                   </div>
                   <WarningNotice items={uiInstallReview.warnings} />
                   <div className="flex justify-end gap-2">
@@ -250,6 +252,8 @@ export function RegistryInstallCatalog({
                     <ReviewList title="External URLs" items={hubInstallReview.external_urls} danger />
                     <ReviewList title="Database effects" items={hubInstallReview.database_effects} danger />
                     <ReviewList title="Filesystem effects" items={hubInstallReview.filesystem_effects} />
+                    <ReviewList title="Outbound connections" items={hubInstallReview.network_effects} danger />
+                    <ReviewList title="Runs supplied code" items={hubInstallReview.code_execution} danger />
                     <ReviewList title="Public endpoints" items={hubInstallReview.public_endpoints} danger />
                     <ReviewList title="Schedules" items={hubInstallReview.schedules} danger />
                     <ReviewList title="Large files" items={hubInstallReview.large_files} />

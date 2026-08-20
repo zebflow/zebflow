@@ -5,5 +5,6 @@
 //! render. It should not depend on React templates, request handlers, or other
 //! presentation details.
 
+pub mod capability;
 pub mod package;
 pub mod report;

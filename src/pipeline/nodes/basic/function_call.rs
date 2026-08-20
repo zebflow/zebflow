@@ -29,6 +29,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
+use crate::pipeline::model::NodeCapability;
 use crate::pipeline::model::{
     DslFlag, DslFlagKind, NodeFieldDataSource, NodeFieldDef, NodeFieldType,
 };
@@ -68,6 +69,7 @@ impl Node {
 pub fn definition() -> NodeDefinition {
     NodeDefinition {
         kind: NODE_KIND.to_string(),
+        capabilities: vec![NodeCapability::Process],
         title: "Call Function".to_string(),
         description: "Calls a function pipeline by slug and injects its output into the flow. \
             Routes to 'out' on success, 'error' on failure or when the function is not found."

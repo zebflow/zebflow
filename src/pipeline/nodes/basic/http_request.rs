@@ -18,6 +18,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::language::LanguageEngine;
+use crate::pipeline::model::NodeCapability;
 use crate::pipeline::nodes::basic::file_ref::{
     FileRefInput, is_file_ref, read_file_ref_bytes, write_tmp_file_ref,
 };
@@ -47,6 +48,7 @@ fn default_body_type() -> String {
 pub fn definition() -> NodeDefinition {
     NodeDefinition {
         kind: NODE_KIND.to_string(),
+        capabilities: vec![NodeCapability::Network, NodeCapability::Filesystem, NodeCapability::Credential],
         title: "HTTP Request".to_string(),
         description: "Perform HTTP call with support for JSON, text, and binary (bytes) responses. \
             Supports JSON, raw text, and multipart form-data request bodies including FileRef and __zf_bytes file parts. \

@@ -30,6 +30,7 @@ use serde_json::{Map, Value, json};
 use super::file_ref::file_ref_to_rel_path;
 use super::util::{eval_deno_expr, metadata_scope};
 use crate::language::LanguageEngine;
+use crate::pipeline::model::NodeCapability;
 use crate::pipeline::{
     NodeDefinition, PipelineError,
     model::{DslFlag, DslFlagKind, LayoutItem, NodeFieldDef, NodeFieldType, SelectOptionDef},
@@ -74,6 +75,7 @@ pub struct Config {
 pub fn definition() -> NodeDefinition {
     NodeDefinition {
         kind: NODE_KIND.to_string(),
+        capabilities: vec![NodeCapability::Filesystem, NodeCapability::Database, NodeCapability::Process],
         title: "Table Convert".to_string(),
         description: "Convert table-shaped data between ZebFS objects and downstream JSON. \
             Supports CSV, JSON, NDJSON, and Parquet. Reads from `--from` ZebFS path or \

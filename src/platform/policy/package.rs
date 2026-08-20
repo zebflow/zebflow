@@ -10,8 +10,13 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use super::capability::{
+    derive_bundle_capabilities, known_node_capabilities, node_kinds_in_pipeline,
+};
 use super::report::PolicyRiskLevel;
-use crate::platform::model::ResolvedProjectLayout;
+use crate::contracts::kinds::decode_node_bundle;
+use crate::pipeline::model::NodeCapability;
+use crate::platform::model::{MultiNodePackageDefinition, ResolvedProjectLayout};
 
 const LARGE_FILE_THRESHOLD_BYTES: usize = 5 * 1024 * 1024;
 
@@ -46,8 +51,30 @@ pub struct PackageSafetyReview {
     pub nodes_used: Vec<String>,
     pub credentials_required: Vec<String>,
     pub external_urls: Vec<String>,
+    /// Node kinds in this package that read or write a configured store.
+    ///
+    /// Derived from the node catalog, which is the only thing that knows what a
+    /// node does. The name predates the derivation and is kept because it is
+    /// the name three templates and two API responses already use.
     pub database_effects: Vec<String>,
+    /// Node kinds in this package that read or write the project's files.
     pub filesystem_effects: Vec<String>,
+    /// Node kinds in this package that open an outbound connection.
+    ///
+    /// Distinct from `external_urls`, which lists destinations written down in
+    /// a config. A node whose URL is assembled from a credential or a
+    /// placeholder contributes here and nowhere else, so a package can no
+    /// longer make outbound calls while reporting no destination at all.
+    #[serde(default)]
+    pub network_effects: Vec<String>,
+    /// Node kinds in this package that run code or a program the package
+    /// supplied -- a script body, a `--*-expr`, a template, a subprocess.
+    ///
+    /// This is the capability that carries the others with it: what a node runs
+    /// can reach whatever that code can reach, which is why the review reports
+    /// it separately rather than folding it into the lists above.
+    #[serde(default)]
+    pub code_execution: Vec<String>,
     pub public_endpoints: Vec<String>,
     pub schedules: Vec<String>,
     pub large_files: Vec<String>,
@@ -127,13 +154,7 @@ pub fn review_package_entries(
     mut warnings: Vec<String>,
     options: PackageReviewOptions,
 ) -> PackageSafetyReview {
-    let mut nodes_used = BTreeSet::new();
-    let mut credentials_required = BTreeSet::new();
-    let mut external_urls = BTreeSet::new();
-    let mut database_effects = BTreeSet::new();
-    let mut filesystem_effects = BTreeSet::new();
-    let mut public_endpoints = BTreeSet::new();
-    let mut schedules = BTreeSet::new();
+    let mut findings = PipelineFindings::default();
     let mut large_files = Vec::new();
     let mut seed_data = Vec::new();
     let mut database_initialization = Vec::new();
@@ -149,13 +170,36 @@ pub fn review_package_entries(
         warnings.push("package has no cover image".to_string());
     }
 
+    // The node bundles this package carries, read before anything else: they
+    // name their own function pipelines, which is how the review learns that a
+    // file outside the repository's pipeline directory is a pipeline at all.
+    let bundles = carried_node_bundles(entries);
+    let mut capabilities_by_kind = known_node_capabilities().clone();
+    let mut unresolved_kinds = BTreeSet::new();
+    for bundle in &bundles {
+        // A kind this build already provides is checked against the catalog as
+        // it was before this package touched it, so a bundle cannot make its
+        // own collision disappear by being merged in first.
+        for node in &bundle.package.nodes {
+            if capabilities_by_kind.contains_key(&node.kind) {
+                violations.push(format!(
+                    "{}: declares node kind '{}', which this build already provides",
+                    bundle.manifest_path, node.kind
+                ));
+            }
+        }
+        let derived = derive_bundle_capabilities(
+            &bundle.package,
+            |rel_path| bundle.function_graph(entries, rel_path),
+            &capabilities_by_kind,
+        );
+        capabilities_by_kind.extend(derived.nodes);
+        unresolved_kinds.extend(derived.unresolved);
+    }
+
     for entry in entries {
         // The one finding here that needs neither the bytes nor a guess: a path
-        // either ends in a file type this project accepts or it does not. Every
-        // other signal below is a substring match on a node kind or a key name,
-        // which is fair for a warning the user may accept and not for a refusal
-        // nobody can override -- one false positive there makes a legitimate
-        // package permanently uninstallable on this instance.
+        // either ends in a file type this project accepts or it does not.
         if !options.bundle_internal_paths
             && let Some(refused) = layout.refused_file_type(&entry.rel_path)
         {
@@ -164,7 +208,11 @@ pub fn review_package_entries(
                 entry.rel_path
             ));
         }
-        if is_reviewed_pipeline_path(layout, &entry.rel_path) {
+        let reviewed_as_pipeline = is_reviewed_pipeline_path(layout, &entry.rel_path)
+            || bundles
+                .iter()
+                .any(|bundle| bundle.is_function_path(&entry.rel_path));
+        if reviewed_as_pipeline {
             if !entry.unreadable.is_empty() {
                 // The destination decides what is scanned, so an entry that
                 // lands here is a pipeline whatever supplied its bytes. Bytes
@@ -175,21 +223,11 @@ pub fn review_package_entries(
                     entry.rel_path, entry.unreadable
                 ));
             } else if let Some(source) = entry.text() {
-                analyze_pipeline_text(
-                    source,
-                    &mut nodes_used,
-                    &mut credentials_required,
-                    &mut external_urls,
-                    &mut database_effects,
-                    &mut filesystem_effects,
-                    &mut public_endpoints,
-                    &mut schedules,
-                    &mut warnings,
-                );
+                findings.read_pipeline(source, &mut warnings);
             }
         } else if options.publish_mode {
             if let Some(source) = entry.text() {
-                collect_urls_from_text(source, &mut external_urls);
+                collect_urls_from_text(source, &mut findings.external_urls);
             }
         }
 
@@ -223,17 +261,89 @@ pub fn review_package_entries(
         }
     }
 
-    database_initialization.sort_by(|a, b| a.source.cmp(&b.source));
+    // Every node kind the package names, answered from the catalog rather than
+    // from the shape of the name. A kind nothing can answer for is a finding of
+    // its own: it is the review saying so, not the review staying quiet.
+    let mut by_capability: BTreeMap<NodeCapability, BTreeSet<String>> = BTreeMap::new();
+    for kind in &findings.nodes_used {
+        match capabilities_by_kind.get(kind) {
+            Some(capabilities) => {
+                for capability in capabilities {
+                    by_capability
+                        .entry(*capability)
+                        .or_default()
+                        .insert(kind.clone());
+                }
+            }
+            None => {
+                unresolved_kinds.insert(kind.clone());
+            }
+        }
+    }
+    // A trigger publishes its route whether or not the route is written into
+    // its config, so the kind itself is the finding. Matched exactly against
+    // this build's constants rather than by substring: `contains` was fair for
+    // a warning and never for the one that also drives the risk score.
+    if findings
+        .nodes_used
+        .contains(crate::pipeline::nodes::basic::trigger::webhook::NODE_KIND)
+    {
+        findings
+            .public_endpoints
+            .insert("webhook trigger".to_string());
+    }
+    if findings
+        .nodes_used
+        .contains(crate::pipeline::nodes::basic::trigger::schedule::NODE_KIND)
+    {
+        findings.schedules.insert("schedule trigger".to_string());
+    }
+
+    let capability_nodes = |capability: NodeCapability| -> Vec<String> {
+        by_capability
+            .get(&capability)
+            .map(|kinds| kinds.iter().cloned().collect())
+            .unwrap_or_default()
+    };
+    let database_effects = capability_nodes(NodeCapability::Database);
+    let filesystem_effects = capability_nodes(NodeCapability::Filesystem);
+    let network_effects = capability_nodes(NodeCapability::Network);
+    let code_execution = capability_nodes(NodeCapability::Process);
+    let credential_nodes = capability_nodes(NodeCapability::Credential);
+
+    if !credential_nodes.is_empty() {
+        // `credentials_required` names the credentials a config already points
+        // at. This names the nodes that will read one whatever the config says,
+        // which is the only signal a package gets when the choice is left to
+        // the installing user.
+        warnings.push(format!(
+            "reads a stored credential: {}",
+            credential_nodes.join(", ")
+        ));
+    }
+    if !unresolved_kinds.is_empty() {
+        warnings.push(format!(
+            "the safety review cannot say what these nodes do, because nothing in this package \
+             provides them: {}",
+            unresolved_kinds
+                .iter()
+                .cloned()
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+
     warnings.sort();
     warnings.dedup();
     violations.sort();
     violations.dedup();
+    database_initialization.sort_by(|a, b| a.source.cmp(&b.source));
 
     let mut risk_score = 0;
-    if !credentials_required.is_empty() {
+    if !findings.credentials_required.is_empty() || !credential_nodes.is_empty() {
         risk_score += 1;
     }
-    if !external_urls.is_empty() {
+    if !findings.external_urls.is_empty() || !network_effects.is_empty() {
         risk_score += 1;
     }
     if !database_effects.is_empty() {
@@ -242,7 +352,10 @@ pub fn review_package_entries(
     if !filesystem_effects.is_empty() {
         risk_score += 1;
     }
-    if !public_endpoints.is_empty() || !schedules.is_empty() {
+    if !code_execution.is_empty() {
+        risk_score += 1;
+    }
+    if !findings.public_endpoints.is_empty() || !findings.schedules.is_empty() {
         risk_score += 2;
     }
     if !large_files.is_empty() || !seed_data.is_empty() {
@@ -253,13 +366,15 @@ pub fn review_package_entries(
     }
 
     PackageSafetyReview {
-        nodes_used: nodes_used.into_iter().collect(),
-        credentials_required: credentials_required.into_iter().collect(),
-        external_urls: external_urls.into_iter().collect(),
-        database_effects: database_effects.into_iter().collect(),
-        filesystem_effects: filesystem_effects.into_iter().collect(),
-        public_endpoints: public_endpoints.into_iter().collect(),
-        schedules: schedules.into_iter().collect(),
+        nodes_used: findings.nodes_used.into_iter().collect(),
+        credentials_required: findings.credentials_required.into_iter().collect(),
+        external_urls: findings.external_urls.into_iter().collect(),
+        database_effects,
+        filesystem_effects,
+        network_effects,
+        code_execution,
+        public_endpoints: findings.public_endpoints.into_iter().collect(),
+        schedules: findings.schedules.into_iter().collect(),
         large_files,
         seed_data,
         database_initialization,
@@ -275,6 +390,66 @@ pub fn review_package_entries(
         .to_string(),
         violations,
     }
+}
+
+/// One node bundle a package carries, and where its own paths resolve from.
+///
+/// A bundle names its function pipelines package-relative, so the directory
+/// holding `definition.json` is what turns those names into entries. That works
+/// whether the bundle is the package (`definition.json` at the root) or sits
+/// inside a larger one.
+struct CarriedNodeBundle {
+    manifest_path: String,
+    root: String,
+    package: MultiNodePackageDefinition,
+}
+
+impl CarriedNodeBundle {
+    /// Entry path for one of this bundle's package-relative paths.
+    fn entry_path(&self, rel_path: &str) -> String {
+        format!("{}{}", self.root, rel_path)
+    }
+
+    fn is_function_path(&self, entry_rel_path: &str) -> bool {
+        self.package
+            .functions
+            .values()
+            .any(|rel_path| self.entry_path(rel_path) == entry_rel_path)
+    }
+
+    /// The parsed graph of one function pipeline, if the package carries it and
+    /// its bytes parse.
+    fn function_graph(&self, entries: &[PackagePolicyEntry], rel_path: &str) -> Option<Value> {
+        let wanted = self.entry_path(rel_path);
+        let entry = entries.iter().find(|entry| entry.rel_path == wanted)?;
+        serde_json::from_str(entry.text()?).ok()
+    }
+}
+
+/// The node bundles a package carries.
+///
+/// `definition.json` is the bundle contract's fixed file name, and decoding is
+/// the test: an entry that decodes as a `NodeBundle` is one, and an entry that
+/// does not is left alone rather than half-read.
+fn carried_node_bundles(entries: &[PackagePolicyEntry]) -> Vec<CarriedNodeBundle> {
+    entries
+        .iter()
+        .filter(|entry| {
+            entry
+                .rel_path
+                .rsplit('/')
+                .next()
+                .is_some_and(|name| name == "definition.json")
+        })
+        .filter_map(|entry| {
+            let document = decode_node_bundle(entry.text()?.as_bytes()).ok()?;
+            Some(CarriedNodeBundle {
+                manifest_path: entry.rel_path.clone(),
+                root: entry.rel_path[..entry.rel_path.len() - "definition.json".len()].to_string(),
+                package: document.spec,
+            })
+        })
+        .collect()
 }
 
 /// Whether this destination is reviewed as a pipeline definition.
@@ -328,124 +503,67 @@ fn looks_like_private_publish_path(path: &str) -> bool {
         || lower.ends_with(".sqlite3")
 }
 
-#[allow(clippy::too_many_arguments)]
-fn analyze_pipeline_text(
-    source: &str,
-    nodes_used: &mut BTreeSet<String>,
-    credentials_required: &mut BTreeSet<String>,
-    external_urls: &mut BTreeSet<String>,
-    database_effects: &mut BTreeSet<String>,
-    filesystem_effects: &mut BTreeSet<String>,
-    public_endpoints: &mut BTreeSet<String>,
-    schedules: &mut BTreeSet<String>,
-    warnings: &mut Vec<String>,
-) {
-    let Ok(value) = serde_json::from_str::<Value>(source) else {
-        warnings.push("One pipeline could not be parsed for safety review".to_string());
-        return;
-    };
-    analyze_pipeline_value(
-        &value,
-        nodes_used,
-        credentials_required,
-        external_urls,
-        database_effects,
-        filesystem_effects,
-        public_endpoints,
-        schedules,
-    );
+/// What the review reads out of the pipelines a package carries.
+///
+/// These are the findings a pipeline states outright: the nodes it names, the
+/// credentials and URLs written into its config, the routes it publishes and
+/// the schedules it sets. What those nodes can *reach* is not here, because a
+/// pipeline does not say -- that is resolved afterwards from the node catalog.
+#[derive(Default)]
+struct PipelineFindings {
+    nodes_used: BTreeSet<String>,
+    credentials_required: BTreeSet<String>,
+    external_urls: BTreeSet<String>,
+    public_endpoints: BTreeSet<String>,
+    schedules: BTreeSet<String>,
 }
 
-#[allow(clippy::too_many_arguments)]
-fn analyze_pipeline_value(
-    value: &Value,
-    nodes_used: &mut BTreeSet<String>,
-    credentials_required: &mut BTreeSet<String>,
-    external_urls: &mut BTreeSet<String>,
-    database_effects: &mut BTreeSet<String>,
-    filesystem_effects: &mut BTreeSet<String>,
-    public_endpoints: &mut BTreeSet<String>,
-    schedules: &mut BTreeSet<String>,
-) {
-    match value {
-        Value::Object(map) => {
-            let kind = map
-                .get("kind")
-                .and_then(Value::as_str)
-                .or_else(|| map.get("type").and_then(Value::as_str))
-                .unwrap_or_default();
-            if !kind.is_empty() {
-                nodes_used.insert(kind.to_string());
-                let kind_lc = kind.to_ascii_lowercase();
-                if kind_lc.contains("pg")
-                    || kind_lc.contains("mysql")
-                    || kind_lc.contains("sqlite")
-                    || kind_lc.contains("sekejap")
-                    || kind_lc.contains("table.")
-                    || kind_lc.contains("db.")
-                {
-                    database_effects.insert(kind.to_string());
-                }
-                if kind_lc.contains("fs.") || kind_lc.contains("file") {
-                    filesystem_effects.insert(kind.to_string());
-                }
-                if kind_lc.contains("trigger.webhook") {
-                    public_endpoints.insert("webhook trigger".to_string());
-                }
-                if kind_lc.contains("trigger.schedule") {
-                    schedules.insert("schedule trigger".to_string());
+impl PipelineFindings {
+    fn read_pipeline(&mut self, source: &str, warnings: &mut Vec<String>) {
+        let Ok(value) = serde_json::from_str::<Value>(source) else {
+            warnings.push("One pipeline could not be parsed for safety review".to_string());
+            return;
+        };
+        self.nodes_used.extend(node_kinds_in_pipeline(&value));
+        self.read_value(&value);
+    }
+
+    fn read_value(&mut self, value: &Value) {
+        match value {
+            Value::Object(map) => {
+                for (key, child) in map {
+                    let key_lc = key.to_ascii_lowercase();
+                    if key_lc.contains("credential")
+                        && let Some(value) = child.as_str().filter(|s| !s.trim().is_empty())
+                    {
+                        self.credentials_required.insert(value.trim().to_string());
+                    }
+                    if matches!(key_lc.as_str(), "url" | "base_url" | "endpoint" | "host")
+                        && let Some(value) = child.as_str()
+                    {
+                        collect_urls_from_text(value, &mut self.external_urls);
+                    }
+                    if matches!(key_lc.as_str(), "path" | "route")
+                        && let Some(value) = child.as_str().filter(|s| s.starts_with('/'))
+                    {
+                        self.public_endpoints.insert(value.to_string());
+                    }
+                    if (key_lc.contains("cron") || key_lc.contains("schedule"))
+                        && let Some(value) = child.as_str().filter(|s| !s.trim().is_empty())
+                    {
+                        self.schedules.insert(value.trim().to_string());
+                    }
+                    self.read_value(child);
                 }
             }
-            for (key, child) in map {
-                let key_lc = key.to_ascii_lowercase();
-                if key_lc.contains("credential") {
-                    if let Some(s) = child.as_str().filter(|s| !s.trim().is_empty()) {
-                        credentials_required.insert(s.trim().to_string());
-                    }
+            Value::Array(items) => {
+                for item in items {
+                    self.read_value(item);
                 }
-                if matches!(key_lc.as_str(), "url" | "base_url" | "endpoint" | "host") {
-                    if let Some(s) = child.as_str() {
-                        collect_urls_from_text(s, external_urls);
-                    }
-                }
-                if matches!(key_lc.as_str(), "path" | "route") {
-                    if let Some(s) = child.as_str().filter(|s| s.starts_with('/')) {
-                        public_endpoints.insert(s.to_string());
-                    }
-                }
-                if key_lc.contains("cron") || key_lc.contains("schedule") {
-                    if let Some(s) = child.as_str().filter(|s| !s.trim().is_empty()) {
-                        schedules.insert(s.trim().to_string());
-                    }
-                }
-                analyze_pipeline_value(
-                    child,
-                    nodes_used,
-                    credentials_required,
-                    external_urls,
-                    database_effects,
-                    filesystem_effects,
-                    public_endpoints,
-                    schedules,
-                );
             }
+            Value::String(text) => collect_urls_from_text(text, &mut self.external_urls),
+            _ => {}
         }
-        Value::Array(items) => {
-            for item in items {
-                analyze_pipeline_value(
-                    item,
-                    nodes_used,
-                    credentials_required,
-                    external_urls,
-                    database_effects,
-                    filesystem_effects,
-                    public_endpoints,
-                    schedules,
-                );
-            }
-        }
-        Value::String(text) => collect_urls_from_text(text, external_urls),
-        _ => {}
     }
 }
 
@@ -1089,6 +1207,317 @@ TRUNCATE TABLE tags;
                     .to_string(),
             ]
         );
+    }
+
+    // ── Capabilities, derived from the node catalog ────────────────────────
+
+    fn pipeline_entry(rel_path: &str, kinds: &[&str]) -> PackagePolicyEntry {
+        let nodes = kinds
+            .iter()
+            .enumerate()
+            .map(|(index, kind)| {
+                serde_json::json!({"id": format!("n{index}"), "kind": kind, "config": {}})
+            })
+            .collect::<Vec<_>>();
+        let source = serde_json::json!({
+            "apiVersion": "zebflow.com/v1",
+            "kind": "Pipeline",
+            "metadata": {"name": "demo"},
+            "spec": {"id": "demo", "nodes": nodes, "edges": []}
+        })
+        .to_string();
+        PackagePolicyEntry {
+            rel_path: rel_path.to_string(),
+            kind: "pipeline".to_string(),
+            size_bytes: source.len(),
+            content: source,
+            unreadable: String::new(),
+        }
+    }
+
+    fn bundle_entry(rel_path: &str, spec: Value) -> PackagePolicyEntry {
+        let spec: crate::platform::model::MultiNodePackageDefinition =
+            serde_json::from_value(spec).expect("bundle spec");
+        let mut metadata = crate::contracts::ContractMetadata::named(&spec.package);
+        metadata.version = Some(spec.version.clone());
+        let bytes = crate::contracts::kinds::encode_node_bundle(metadata, spec)
+            .expect("encode node bundle");
+        PackagePolicyEntry {
+            rel_path: rel_path.to_string(),
+            kind: "node bundle".to_string(),
+            size_bytes: bytes.len(),
+            content: String::from_utf8(bytes).expect("bundle is utf-8"),
+            unreadable: String::new(),
+        }
+    }
+
+    /// The findings the substring matcher got right are still produced, and now
+    /// for a reason: `n.pg.query` reads a store and `n.fs.put` writes files
+    /// because the catalog says so, not because their names contain `pg` and
+    /// `file`.
+    #[test]
+    fn the_effects_the_old_matcher_caught_are_still_caught() {
+        let review = review_package_entries(
+            &ResolvedProjectLayout::platform_default(),
+            &[pipeline_entry(
+                "pipelines/demo.zf.json",
+                &[
+                    "n.trigger.webhook",
+                    "n.http.request",
+                    "n.pg.query",
+                    "n.fs.put",
+                ],
+            )],
+            Vec::new(),
+            PackageReviewOptions::default(),
+        );
+
+        assert!(review.database_effects.contains(&"n.pg.query".to_string()));
+        assert!(review.filesystem_effects.contains(&"n.fs.put".to_string()));
+        assert!(review.nodes_used.contains(&"n.http.request".to_string()));
+        assert_eq!(review.risk_level, "high");
+        assert!(review.violations.is_empty(), "{:?}", review.violations);
+    }
+
+    /// A trigger that publishes a route reports it even with nothing in its
+    /// config to quote back, which the old matcher also got right.
+    #[test]
+    fn a_trigger_reports_its_route_without_a_route_written_down() {
+        let review = review_package_entries(
+            &ResolvedProjectLayout::platform_default(),
+            &[pipeline_entry(
+                "pipelines/demo.zf.json",
+                &["n.trigger.webhook", "n.trigger.schedule"],
+            )],
+            Vec::new(),
+            PackageReviewOptions::default(),
+        );
+
+        assert_eq!(review.public_endpoints, vec!["webhook trigger".to_string()]);
+        assert_eq!(review.schedules, vec!["schedule trigger".to_string()]);
+    }
+
+    /// The matcher could only ever repeat the name back. These four say what
+    /// the nodes reach -- including a node whose name says nothing about the
+    /// network, and one whose name says `fs` while it also runs a subprocess.
+    #[test]
+    fn a_capability_no_name_would_reveal_is_reported() {
+        let review = review_package_entries(
+            &ResolvedProjectLayout::platform_default(),
+            &[pipeline_entry(
+                "pipelines/demo.zf.json",
+                &["n.browser.run", "n.fs.compress", "n.logic.collect"],
+            )],
+            Vec::new(),
+            PackageReviewOptions::default(),
+        );
+
+        assert_eq!(review.network_effects, vec!["n.browser.run".to_string()]);
+        assert_eq!(
+            review.code_execution,
+            vec!["n.browser.run".to_string(), "n.fs.compress".to_string()]
+        );
+        // A node that reaches nothing appears in none of the effect lists, and
+        // that is an answer from the catalog rather than a gap in it.
+        assert!(
+            !review
+                .filesystem_effects
+                .contains(&"n.logic.collect".to_string())
+        );
+        assert!(
+            review
+                .warnings
+                .iter()
+                .any(|warning| warning.starts_with("reads a stored credential: ")),
+            "{:?}",
+            review.warnings
+        );
+    }
+
+    /// A kind nothing provides is named in the warnings rather than passed over.
+    /// It is a warning and not a refusal: the node may well be installed here
+    /// already, and a package is not wrong for depending on one.
+    #[test]
+    fn a_node_kind_this_package_cannot_account_for_is_reported() {
+        let review = review_package_entries(
+            &ResolvedProjectLayout::platform_default(),
+            &[pipeline_entry(
+                "pipelines/demo.zf.json",
+                &["n.x.nowhere.thing", "n.fs.put"],
+            )],
+            Vec::new(),
+            PackageReviewOptions::default(),
+        );
+
+        assert!(
+            review
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("n.x.nowhere.thing")),
+            "{:?}",
+            review.warnings
+        );
+        assert!(review.is_installable());
+    }
+
+    /// A bundle's own function pipelines are reviewed, so a node bundle stops
+    /// being a package the review had nothing to say about. The declared node
+    /// then carries what its function composes.
+    #[test]
+    fn a_node_bundles_function_pipelines_are_reviewed_like_any_other() {
+        let entries = vec![
+            bundle_entry(
+                "definition.json",
+                serde_json::json!({
+                    "package": "acme",
+                    "version": "1.0.0",
+                    "title": "Acme",
+                    "description": "A bundle whose function reaches the network.",
+                    "functions": {"main": "functions/main.zf.json"},
+                    "nodes": [{
+                        "kind": "n.x.acme.sync",
+                        "title": "Sync",
+                        "description": "Push a payload somewhere.",
+                        "run": {"function": "main"},
+                        "definition": {
+                            "input_pins": ["in"],
+                            "output_pins": ["out"],
+                            "config_schema": {},
+                            "input_schema": {"type": "object"},
+                            "output_schema": {"type": "object"}
+                        }
+                    }]
+                }),
+            ),
+            pipeline_entry(
+                "functions/main.zf.json",
+                &["n.trigger.function", "n.http.request"],
+            ),
+            pipeline_entry("pipelines/uses-it.zf.json", &["n.x.acme.sync"]),
+        ];
+
+        let review = review_package_entries(
+            &ResolvedProjectLayout::platform_default(),
+            &entries,
+            Vec::new(),
+            PackageReviewOptions {
+                bundle_internal_paths: true,
+                ..PackageReviewOptions::default()
+            },
+        );
+
+        assert!(review.violations.is_empty(), "{:?}", review.violations);
+        // The declared node reaches what its function composes, and the pipeline
+        // that uses it is credited with the same.
+        assert!(
+            review
+                .network_effects
+                .contains(&"n.x.acme.sync".to_string()),
+            "{:?}",
+            review.network_effects
+        );
+        assert!(
+            review
+                .network_effects
+                .contains(&"n.http.request".to_string())
+        );
+        assert!(
+            !review
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("cannot say what these nodes do")),
+            "the bundle accounts for its own node: {:?}",
+            review.warnings
+        );
+    }
+
+    /// The one refusal this change adds, and the whole argument for it: the
+    /// kind is in the package's own bytes, the native catalog is a constant of
+    /// this build, and a bundle that lands with a colliding kind makes the
+    /// project's entire node registry fail to load -- not just its own node.
+    #[test]
+    fn a_bundle_claiming_a_kind_this_build_provides_is_refused() {
+        let review = review_package_entries(
+            &ResolvedProjectLayout::platform_default(),
+            &[bundle_entry(
+                "definition.json",
+                serde_json::json!({
+                    "package": "acme",
+                    "version": "1.0.0",
+                    "title": "Acme",
+                    "description": "A bundle shadowing a native node.",
+                    "functions": {"main": "functions/main.zf.json"},
+                    "nodes": [{
+                        "kind": "n.http.request",
+                        "title": "HTTP Request",
+                        "description": "Not the one you think.",
+                        "run": {"function": "main"},
+                        "definition": {
+                            "input_pins": ["in"],
+                            "output_pins": ["out"],
+                            "config_schema": {},
+                            "input_schema": {"type": "object"},
+                            "output_schema": {"type": "object"}
+                        }
+                    }]
+                }),
+            )],
+            Vec::new(),
+            PackageReviewOptions {
+                bundle_internal_paths: true,
+                ..PackageReviewOptions::default()
+            },
+        );
+
+        assert!(!review.is_installable());
+        assert_eq!(review.risk_level, "blocked");
+        assert_eq!(
+            review.violations,
+            vec![
+                "definition.json: declares node kind 'n.http.request', which this build already \
+                 provides"
+                    .to_string()
+            ]
+        );
+    }
+
+    /// And it does not fire for a bundle that stayed in its own namespace,
+    /// which is every legitimate one.
+    #[test]
+    fn a_bundle_in_its_own_namespace_is_not_refused() {
+        let review = review_package_entries(
+            &ResolvedProjectLayout::platform_default(),
+            &[bundle_entry(
+                "definition.json",
+                serde_json::json!({
+                    "package": "acme",
+                    "version": "1.0.0",
+                    "title": "Acme",
+                    "description": "A bundle that owns the kind it declares.",
+                    "functions": {"main": "functions/main.zf.json"},
+                    "nodes": [{
+                        "kind": "n.x.acme.request",
+                        "title": "Acme Request",
+                        "description": "Its own node.",
+                        "run": {"function": "main"},
+                        "definition": {
+                            "input_pins": ["in"],
+                            "output_pins": ["out"],
+                            "config_schema": {},
+                            "input_schema": {"type": "object"},
+                            "output_schema": {"type": "object"}
+                        }
+                    }]
+                }),
+            )],
+            Vec::new(),
+            PackageReviewOptions {
+                bundle_internal_paths: true,
+                ..PackageReviewOptions::default()
+            },
+        );
+
+        assert!(review.violations.is_empty(), "{:?}", review.violations);
     }
 
     /// A node bundle materializes into `data/nodes/` under its own contract,

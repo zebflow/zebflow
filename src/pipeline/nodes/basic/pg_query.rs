@@ -7,6 +7,7 @@ use serde_json::{Map, Value, json};
 use sqlx::{Column, Row, postgres::PgConnectOptions, postgres::PgRow};
 
 use crate::language::LanguageEngine;
+use crate::pipeline::model::NodeCapability;
 use crate::pipeline::{
     NodeDefinition, PipelineError,
     nodes::{NodeExecutionInput, NodeExecutionOutput, NodeHandler},
@@ -24,6 +25,7 @@ pub const OUTPUT_PIN_OUT: &str = "out";
 pub fn definition() -> NodeDefinition {
     NodeDefinition {
         kind: NODE_KIND.to_string(),
+        capabilities: vec![NodeCapability::Network, NodeCapability::Database, NodeCapability::Credential, NodeCapability::Process],
         title: "Postgres Query".to_string(),
         description: "Execute SQL using project credential and return rows/affected count."
             .to_string(),

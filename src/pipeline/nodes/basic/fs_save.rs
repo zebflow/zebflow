@@ -23,6 +23,7 @@ use uuid::Uuid;
 
 use super::file_ref::{is_file_ref, read_file_ref_bytes};
 use super::util::{metadata_scope, resolve_path};
+use crate::pipeline::model::NodeCapability;
 use crate::pipeline::{
     NodeDefinition, PipelineError,
     model::{DslFlag, DslFlagKind, LayoutItem, NodeFieldDef, NodeFieldType, SelectOptionDef},
@@ -245,6 +246,7 @@ impl Default for Config {
 pub fn definition() -> NodeDefinition {
     NodeDefinition {
         kind: NODE_KIND.to_string(),
+        capabilities: vec![NodeCapability::Filesystem],
         title: "FS Save".to_string(),
         description: "Save an uploaded file from a multipart webhook payload to Zebflow FS \
             storage. Reads `input.files.{field}` (set by trigger.webhook), validates MIME type \

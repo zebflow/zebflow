@@ -20,6 +20,7 @@ use crate::language::{
     SourceKind,
 };
 use crate::pipeline::expr::build_expression_scope_input;
+use crate::pipeline::model::NodeCapability;
 use crate::pipeline::model::{DslFlag, DslFlagKind, LayoutItem};
 use crate::pipeline::{
     NodeDefinition, PipelineError,
@@ -33,6 +34,7 @@ pub const OUTPUT_PIN_ITEM: &str = "item";
 pub fn definition() -> NodeDefinition {
     NodeDefinition {
         kind: NODE_KIND.to_string(),
+        capabilities: vec![NodeCapability::Process],
         title: "Foreach".to_string(),
         description: "Emits one ordered downstream run per item from an input collection."
             .to_string(),

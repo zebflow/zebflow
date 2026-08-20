@@ -18,6 +18,7 @@ use crate::language::{
     COMPILE_TARGET_BACKEND, CompileOptions, CompiledProgram, LanguageEngine, ModuleSource,
     SourceKind,
 };
+use crate::pipeline::model::NodeCapability;
 use crate::pipeline::model::{DslFlag, DslFlagKind, LayoutItem};
 use crate::pipeline::{
     NodeDefinition, PipelineError,
@@ -31,6 +32,7 @@ pub const OUTPUT_PIN_OUT: &str = "out";
 pub fn definition() -> NodeDefinition {
     NodeDefinition {
         kind: NODE_KIND.to_string(),
+        capabilities: vec![NodeCapability::Process],
         title: "Reduce".to_string(),
         description: "Accumulates an ordered emitted series into one final result.".to_string(),
         input_schema: serde_json::json!({ "type": "object" }),

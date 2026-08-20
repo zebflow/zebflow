@@ -7,6 +7,7 @@ use jsonwebtoken::{Algorithm, EncodingKey, Header};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
+use crate::pipeline::model::NodeCapability;
 use crate::pipeline::{
     NodeDefinition, PipelineError,
     nodes::{NodeExecutionInput, NodeExecutionOutput, NodeHandler},
@@ -23,6 +24,7 @@ const OUTPUT_PIN_OUT: &str = "out";
 pub fn definition() -> NodeDefinition {
     NodeDefinition {
         kind: NODE_KIND.to_string(),
+        capabilities: vec![NodeCapability::Credential],
         title: "Create Auth Token".to_string(),
         description: "Signs a JWT access token from input data using a stored jwt_signing_key credential. Supports HS256 and RS256 algorithms. Claims marked with `:public` (e.g. `--claim name=$.fullname:public`) are the only ones exposed in the browser via `ctx.auth`; all others remain server-only.".to_string(),
         input_schema: json!({

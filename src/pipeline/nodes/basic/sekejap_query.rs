@@ -9,6 +9,7 @@ use serde_json::{Value, json};
 
 use super::util::{eval_deno_expr, metadata_scope, resolve_array_values};
 use crate::language::LanguageEngine;
+use crate::pipeline::model::NodeCapability;
 use crate::pipeline::model::{DslFlag, DslFlagKind, LayoutItem, NodeFieldDef, NodeFieldType};
 use crate::pipeline::{
     NodeDefinition, PipelineError,
@@ -23,6 +24,7 @@ pub const OUTPUT_PIN_OUT: &str = "out";
 pub fn definition() -> NodeDefinition {
     NodeDefinition {
         kind: NODE_KIND.to_string(),
+        capabilities: vec![NodeCapability::Database, NodeCapability::Process],
         title: "Sekejap Query".to_string(),
         description:
             "Execute SQL against the project's embedded Sekejap multimodel store and return rows or affected count."

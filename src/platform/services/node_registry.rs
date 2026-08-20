@@ -95,8 +95,11 @@ impl NodeRegistryService {
             validate_bundle_namespace(&pkg_def, BundleScope::Platform).unwrap_or_else(|error| {
                 panic!("embedded node bundle '{slug}' has an invalid namespace: {error}")
             });
-            let manifests = normalize_node_bundle(&pkg_def)
+            let mut manifests = normalize_node_bundle(&pkg_def)
                 .expect("decoded embedded node bundle must normalize");
+            apply_derived_capabilities(&pkg_def, &mut manifests, |rel| {
+                platform_composite_node_asset(&format!("{slug}/{rel}")).map(<[u8]>::to_vec)
+            });
             for manifest in manifests {
                 let kind = manifest.definition.kind.clone();
                 validate_manifest(&manifest, &builtin_kinds).unwrap_or_else(|error| {
@@ -220,8 +223,11 @@ impl NodeRegistryService {
                     ));
                 }
 
-                let (package, manifests) =
+                let (package, mut manifests) =
                     parse_multi_node_definition(&definition_path, &official_kinds)?;
+                apply_derived_capabilities(&package, &mut manifests, |rel| {
+                    std::fs::read(path.join(rel)).ok()
+                });
                 validate_bundle_namespace(&package, BundleScope::Project).map_err(|error| {
                     PlatformError::new("NODE_BUNDLE_NAMESPACE", error.to_string())
                 })?;
@@ -830,6 +836,32 @@ fn parse_multi_node_definition(
         validate_manifest(manifest, builtin_kinds)?;
     }
     Ok((package, manifests))
+}
+
+/// Fills in what each node in a bundle can reach, derived from what it composes.
+///
+/// A bundle never declares this: [`MultiNodeEntryDefinition`] has no field for
+/// one and refuses unknown keys, so there is nothing for an author to overstate
+/// or leave out. `read_function` reads one package-relative file; a function the
+/// package does not carry contributes nothing, which is the same answer the
+/// executor gives when it cannot load one.
+///
+/// [`MultiNodeEntryDefinition`]: crate::platform::model::MultiNodeEntryDefinition
+fn apply_derived_capabilities(
+    package: &MultiNodePackageDefinition,
+    manifests: &mut [NodePackageManifest],
+    read_function: impl Fn(&str) -> Option<Vec<u8>>,
+) {
+    let derived = crate::platform::policy::capability::derive_bundle_capabilities(
+        package,
+        |rel| serde_json::from_slice(&read_function(rel)?).ok(),
+        crate::pipeline::nodes::native_node_capabilities(),
+    );
+    for manifest in manifests {
+        if let Some(capabilities) = derived.nodes.get(&manifest.definition.kind) {
+            manifest.definition.capabilities = capabilities.iter().copied().collect();
+        }
+    }
 }
 
 /// Validate a node package manifest against namespace and collision rules.

@@ -18,6 +18,7 @@ use serde_json::{Value, json};
 
 use super::file_ref::file_ref_to_rel_path_or_string;
 use super::util::metadata_scope;
+use crate::pipeline::model::NodeCapability;
 use crate::pipeline::{
     NodeDefinition, NodeFieldDataSource, PipelineError,
     model::{DslFlag, DslFlagKind, LayoutItem, NodeFieldDef, NodeFieldType, SelectOptionDef},
@@ -255,6 +256,7 @@ fn text_field(name: &str, label: &str, help: &str) -> NodeFieldDef {
 pub fn publish_definition() -> NodeDefinition {
     NodeDefinition {
         kind: PUBLISH_KIND.to_string(),
+        capabilities: vec![NodeCapability::Filesystem],
         title: "MS Publish".to_string(),
         description: "Publish or update a map layer in the project layer registry. \
             The layer becomes immediately queryable on `/ms/{owner}/{project}/{path}`. \
@@ -497,6 +499,7 @@ pub fn publish_definition() -> NodeDefinition {
 pub fn unpublish_definition() -> NodeDefinition {
     NodeDefinition {
         kind: UNPUBLISH_KIND.to_string(),
+        capabilities: vec![NodeCapability::Filesystem],
         title: "MS Unpublish".to_string(),
         description: "Remove a map layer from the project layer registry.".to_string(),
         input_schema: json!({"type": "object"}),
@@ -537,6 +540,7 @@ pub fn unpublish_definition() -> NodeDefinition {
 pub fn get_definition() -> NodeDefinition {
     NodeDefinition {
         kind: GET_KIND.to_string(),
+        capabilities: vec![NodeCapability::Filesystem],
         title: "MS Get".to_string(),
         description: "Get metadata for a published map layer.".to_string(),
         input_schema: json!({"type": "object"}),
@@ -576,6 +580,7 @@ pub fn get_definition() -> NodeDefinition {
 pub fn list_definition() -> NodeDefinition {
     NodeDefinition {
         kind: LIST_KIND.to_string(),
+        capabilities: vec![NodeCapability::Filesystem],
         title: "MS List".to_string(),
         description: "List all published map layers in the project registry.".to_string(),
         input_schema: json!({"type": "object"}),

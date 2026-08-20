@@ -3,7 +3,8 @@
 Status: **survey**. This describes what the code does now. Every claim below was
 checked against the code as written, not inferred from a previous document.
 Section 1 was rewritten when the project-bundle review landed; sections 2 and 3
-were rewritten when the review and the consent choice reached the UI.
+were rewritten when the review and the consent choice reached the UI, and
+section 2 again when the findings stopped being guessed from node kind strings.
 
 Zebflow's stated goal is to be the most informative dependency scanner there is:
 a user should finish reading an install review knowing exactly what will happen
@@ -37,7 +38,7 @@ review calls installable is one the install installs, entry for entry.
 
 ## 2. What the review knows, the UI now shows
 
-`PackageSafetyReview` carries thirteen findings. Three templates render a
+`PackageSafetyReview` carries fifteen findings. Three templates render a
 package safety review, and all three now render `database_initialization`:
 
 | Template | Review it renders |
@@ -59,6 +60,29 @@ rather than implied, because it is the most reassuring thing the report can say:
 sekejap and sqlite stores are created *by* the install, so bundle SQL cannot
 reach a database the user already had. An engine this build does not describe
 reports the opposite, in red.
+
+Every finding that names a node kind is now derived from the node catalog
+rather than matched against the kind string. `database_effects` and
+`filesystem_effects` kept their names and changed their evidence; two more
+joined them, `network_effects` and `code_execution`, and both report something
+no name could have revealed. A node whose URL is assembled from a credential or
+a placeholder contributes nothing to `external_urls` and everything to
+`network_effects`, so a package can no longer make outbound calls while
+reporting no destination at all.
+
+Nothing in the package declares any of this. A native node's capabilities are a
+compile-time enum; a composite node's are the union of the nodes its function
+pipelines compose, and those pipelines are now reviewed like any other; a WASM
+node's are empty because the host grants its modules no imports. A kind the
+review cannot account for is named in the warnings, because a node quietly
+skipped would understate the package.
+
+One violation reads the package rather than judging it: a bundle declaring a
+node kind this build already provides. The kind is in the bundle's own manifest,
+the native catalog is fixed at compile time, and such a bundle makes the whole
+project's node registry fail to load. Nothing else about a capability is a
+violation — using the network is not a crime, and a refusal nobody can override
+has to be provable from the package rather than inferred from its power.
 
 `violations` and `warnings` are rendered by
 `components/package-review/findings.tsx` and are deliberately different in kind
