@@ -89,6 +89,10 @@ The review reports one `database_initialization` row per such file:
 - `tables`: every table the statements name
 - `destructive`: the DROP, DELETE, TRUNCATE, and ALTER statements, quoted back
 
+Every install review in the UI renders these rows in full: the Hub page's
+project-bundle review, the project Hub page's node-bundle review, and Add+ in
+the pipeline registry.
+
 ## Installing part of a project bundle
 
 A platform Hub project install accepts three flags, all true when omitted:
@@ -107,6 +111,10 @@ written but not run.
 
 `zebflow.yaml`, `zeb.lock`, and `zebflow.init.json` are always written: a
 project without its configuration is not a smaller install, it is a broken one.
+
+In the UI these three flags are checkboxes in the Hub page's install review,
+each on by default. Turning the schema off turns execution off with it and locks
+that checkbox, so the form cannot assemble the combination the API refuses.
 
 ## Hub is not backup
 

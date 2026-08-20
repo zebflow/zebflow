@@ -4,6 +4,8 @@ import { StudioTabNav, StudioTabLink } from "@/components/ui/studio-tab-nav";
 import Button from "@/components/ui/button";
 import Field from "@/components/ui/field";
 import Input from "@/components/ui/input";
+import SqlReport from "@/components/package-review/sql-report";
+import { ViolationNotice, WarningNotice } from "@/components/package-review/findings";
 import { useEffect, useState } from "zeb";
 
 export const page = {
@@ -619,16 +621,13 @@ export default function Page(input) {
 
                     {bundleReview ? (
                       <div className="mt-4 space-y-3">
-                        {bundleReview.violations?.length ? (
-                          <div className="rounded-lg border border-ui-border bg-ui-bg-muted/30 px-4 py-3 text-sm">
-                            <p className="font-medium text-ui-text">This package cannot be installed</p>
-                            <ul className="mt-1 list-disc pl-5 text-ui-text-soft">
-                              {bundleReview.violations.map((item, index) => (
-                                <li key={`violation-${index}`}>{item}</li>
-                              ))}
-                            </ul>
-                          </div>
-                        ) : null}
+                        <ViolationNotice items={bundleReview.violations} subject="This bundle" />
+                        <WarningNotice items={bundleReview.warnings} />
+
+                        <SqlReport
+                          reports={bundleReview.database_initialization}
+                          emptyNote="This bundle carries no install-time SQL. Nothing is replayed into any store."
+                        />
 
                         <div className="grid gap-3 md:grid-cols-2">
                           <BundleReviewList title="Nodes provided" items={bundleReview.nodes_used} />
@@ -640,7 +639,6 @@ export default function Page(input) {
                           <BundleReviewList title="Schedules" items={bundleReview.schedules} />
                           <BundleReviewList title="Files written" items={bundleReview.files_added} />
                           <BundleReviewList title="Files overwritten" items={bundleReview.files_overwritten} />
-                          <BundleReviewList title="Warnings" items={bundleReview.warnings} />
                         </div>
 
                         <p className="text-sm text-ui-text-soft">

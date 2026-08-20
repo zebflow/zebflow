@@ -2,6 +2,8 @@ import { cx, useState } from "zeb";
 import Button from "@/components/ui/button";
 import Checkbox from "@/components/ui/checkbox";
 import Input from "@/components/ui/input";
+import SqlReport from "@/components/package-review/sql-report";
+import { ViolationNotice, WarningNotice } from "@/components/package-review/findings";
 
 const ESSENTIALS = [
   "button", "input", "textarea", "label", "checkbox", "badge", "card", "dialog", "select", "tabs", "separator", "alert",
@@ -163,8 +165,8 @@ export function RegistryInstallCatalog({
                     <ReviewList title="External URLs" items={uiInstallReview.external_urls} danger />
                     <ReviewList title="Database effects" items={uiInstallReview.database_effects} danger />
                     <ReviewList title="Filesystem effects" items={uiInstallReview.filesystem_effects} />
-                    <ReviewList title="Warnings" items={uiInstallReview.warnings} danger />
                   </div>
+                  <WarningNotice items={uiInstallReview.warnings} />
                   <div className="flex justify-end gap-2">
                     <Button type="button" size="xs" variant="outline" onClick={onCancelUiReview}>Back</Button>
                     {uiReviewDirty ? (
@@ -253,9 +255,12 @@ export function RegistryInstallCatalog({
                     <ReviewList title="Large files" items={hubInstallReview.large_files} />
                     <ReviewList title="Seed/demo data" items={hubInstallReview.seed_data} />
                   </div>
-                  {Array.isArray(hubInstallReview.warnings) && hubInstallReview.warnings.length ? (
-                    <ReviewList title="Warnings" items={hubInstallReview.warnings} danger />
-                  ) : null}
+                  <SqlReport
+                    reports={hubInstallReview.database_initialization}
+                    emptyNote="This package carries no install-time SQL. Nothing is replayed into any store."
+                  />
+                  <ViolationNotice items={hubInstallReview.violations} subject="This package" />
+                  <WarningNotice items={hubInstallReview.warnings} />
                   <div className="flex justify-end gap-2">
                     <Button type="button" size="xs" variant="outline" onClick={onCancelHubAddReview}>Back</Button>
                     {hubReviewDirty ? (
@@ -263,7 +268,7 @@ export function RegistryInstallCatalog({
                         {installing ? "Reviewing…" : "Update Review"}
                       </Button>
                     ) : null}
-                    <Button type="button" size="xs" variant="primary" disabled={installing || hubReviewDirty} onClick={onConfirmHubAdd}>
+                    <Button type="button" size="xs" variant="primary" disabled={installing || hubReviewDirty || hubInstallReview.installable === false} onClick={onConfirmHubAdd}>
                       {installing ? "Adding…" : "Confirm Add"}
                     </Button>
                   </div>

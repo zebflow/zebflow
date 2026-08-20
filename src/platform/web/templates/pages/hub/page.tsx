@@ -9,6 +9,7 @@ import DialogHeader from "@/components/ui/dialog-header";
 import DialogTitle from "@/components/ui/dialog-title";
 import DialogDescription from "@/components/ui/dialog-description";
 import DialogFooter from "@/components/ui/dialog-footer";
+import BundleReview from "@/components/package-review/bundle-review";
 
 export const page = {
   html: { lang: "en" },
@@ -23,6 +24,30 @@ export function getPage(input) {
       description: input?.seo?.description ?? "",
     },
   };
+}
+
+/** Every consent flag defaults to on, exactly as the install request does. */
+function fullConsent() {
+  return { include_code: true, include_schema: true, execute_schema: true };
+}
+
+/**
+ * The consent flags as the API accepts them.
+ *
+ * `execute_schema` is forced off when the schema is not written, because that
+ * pair is a request error rather than a smaller install.
+ */
+function consentBody(scope) {
+  const includeSchema = scope?.include_schema !== false;
+  return {
+    include_code: scope?.include_code !== false,
+    include_schema: includeSchema,
+    execute_schema: includeSchema && scope?.execute_schema !== false,
+  };
+}
+
+function consentInstallsNothing(scope) {
+  return scope?.include_code === false && scope?.include_schema === false;
 }
 
 const DEFAULT_SOURCE = {
@@ -134,6 +159,11 @@ export default function Page(input) {
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState("");
   const [sourceSettingsOpen, setSourceSettingsOpen] = useState(false);
+  const [installTarget, setInstallTarget] = useState(null);
+  const [installScope, setInstallScope] = useState(fullConsent());
+  const [installReview, setInstallReview] = useState(null);
+  const [installReviewDirty, setInstallReviewDirty] = useState(true);
+  const [installBusy, setInstallBusy] = useState(false);
   const [sourceForm, setSourceForm] = useState(blankSource());
   const [serviceForm, setServiceForm] = useState({
     host_office_id: input?.service?.host_office_id || offices?.[0]?.id || "standalone",
@@ -251,23 +281,84 @@ export default function Page(input) {
     }
   }
 
-  async function installApp(item) {
-    setBusy(true);
+  function installBody(item, scope) {
+    return {
+      repository_id: item?.repository_id,
+      package_id: item?.package_id,
+      version: item?.latest_version,
+      ...consentBody(scope),
+    };
+  }
+
+  async function runInstallReview(item, scope) {
+    if (!item || !api.install_review) return;
+    if (consentInstallsNothing(scope)) {
+      setInstallReview(null);
+      setStatus("An install with neither the code nor the schema would install nothing.");
+      return;
+    }
+    setInstallBusy(true);
     setStatus("");
     try {
-      await requestJson(api.install, {
+      const payload = await requestJson(api.install_review, {
         method: "POST",
-        body: JSON.stringify({
-          repository_id: item?.repository_id,
-          package_id: item?.package_id,
-          version: item?.latest_version,
-        }),
+        body: JSON.stringify(installBody(item, scope)),
       });
-      setStatus("App installed");
+      const review = payload?.review || null;
+      setInstallReview(review);
+      setInstallReviewDirty(false);
+      if (review && review.installable === false) {
+        setStatus("This bundle cannot be installed. Read the violations below.");
+      }
+    } catch (err) {
+      setInstallReview(null);
+      setStatus(err?.message || "Failed reviewing this bundle");
+    } finally {
+      setInstallBusy(false);
+    }
+  }
+
+  function openInstallReview(item) {
+    const scope = fullConsent();
+    setInstallTarget(item);
+    setInstallScope(scope);
+    setInstallReview(null);
+    setInstallReviewDirty(true);
+    runInstallReview(item, scope).catch(() => {});
+  }
+
+  function closeInstallReview() {
+    setInstallTarget(null);
+    setInstallReview(null);
+    setInstallReviewDirty(true);
+  }
+
+  function patchInstallScope(patch) {
+    setInstallScope((prev) => ({ ...prev, ...patch }));
+    setInstallReviewDirty(true);
+  }
+
+  async function confirmInstall() {
+    if (!installTarget || !installReview?.installable || installReviewDirty) return;
+    setInstallBusy(true);
+    setStatus("");
+    try {
+      const payload = await requestJson(api.install, {
+        method: "POST",
+        body: JSON.stringify(installBody(installTarget, installScope)),
+      });
+      const installed = payload?.install || {};
+      const project = payload?.project?.project || payload?.project_slug || installed?.project || "";
+      closeInstallReview();
+      setStatus(
+        installed?.schema_executed === false
+          ? `Installed ${project}. The schema was written and not run — ${(installed?.unexecuted_initial_data || []).length} SQL file(s) are waiting in the repository.`
+          : `Installed ${project}.`,
+      );
     } catch (err) {
       setStatus(err?.message || "Failed installing app");
     } finally {
-      setBusy(false);
+      setInstallBusy(false);
     }
   }
 
@@ -477,8 +568,9 @@ export default function Page(input) {
                           <p><span className="font-medium text-gray-700">Version:</span> {item?.latest_version || "-"}</p>
                           <p><span className="font-medium text-gray-700">Publisher:</span> {item?.publisher_display_name || item?.publisher_id || "-"}</p>
                         </div>
-                        <div className="mt-5">
-                          <Button type="button" variant="primary" disabled={busy} onClick={() => installApp(item)}>Install App</Button>
+                        <div className="mt-5 flex flex-wrap items-center gap-2">
+                          <Button type="button" variant="primary" disabled={busy || installBusy} onClick={() => openInstallReview(item)}>Review &amp; Install</Button>
+                          <span className="text-xs text-ui-text-soft">Nothing is written until you confirm.</span>
                         </div>
                       </article>
                     );
@@ -851,6 +943,46 @@ export default function Page(input) {
               <Button type="submit" variant="primary" disabled={busy}>Save Source</Button>
             </DialogFooter>
           </form>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={!!installTarget} onOpenChange={(open) => { if (!open) closeInstallReview(); }}>
+        <DialogContent size="wide">
+          <div className="space-y-4 px-6 pt-6 pb-2">
+            <DialogHeader>
+              <DialogTitle>Install review</DialogTitle>
+              <DialogDescription>
+                {installTarget?.title || installTarget?.package_id || "This bundle"} would be installed as a new project.
+                Nothing has been created, written or run yet — this is what would happen if you confirm.
+              </DialogDescription>
+            </DialogHeader>
+            <BundleReview
+              review={installReview}
+              scope={installScope}
+              onScopeChange={patchInstallScope}
+              busy={installBusy}
+              dirty={installReviewDirty && !!installReview}
+            />
+          </div>
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={closeInstallReview}>Cancel</Button>
+            <Button
+              type="button"
+              variant="outline"
+              disabled={installBusy || consentInstallsNothing(installScope)}
+              onClick={() => runInstallReview(installTarget, installScope).catch(() => {})}
+            >
+              {installBusy ? "Reviewing…" : "Refresh review"}
+            </Button>
+            <Button
+              type="button"
+              variant="primary"
+              disabled={installBusy || installReviewDirty || !installReview?.installable}
+              onClick={() => confirmInstall().catch(() => {})}
+            >
+              {installReview && installReview.installable === false ? "Blocked" : "Install with these choices"}
+            </Button>
+          </DialogFooter>
         </DialogContent>
       </Dialog>
     </>
