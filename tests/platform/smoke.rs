@@ -503,6 +503,67 @@ async fn public_hub_requires_service_and_hides_project_internals() {
         token_publish["package"]["image_url"],
         json!("/api/hub/remote/assets/calc-studio.calc-tools-token/media/cover.webp")
     );
+    // Presentation is the mutable half: a typo is corrected by writing the
+    // package row, and the cover it does not mention stays where it was.
+    let presentation_patch = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/projects/superadmin/default/hub/assets/calc-tools-token/presentation")
+                .method("PATCH")
+                .header(header::COOKIE, &cookie)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({
+                        "publisher_token": publisher_token,
+                        "summary": "Calculators, batteries included.",
+                        "description_md": "## Calc Tools\nA long description."
+                    })
+                    .to_string(),
+                ))
+                .expect("request"),
+        )
+        .await
+        .expect("presentation patch response");
+    assert_eq!(presentation_patch.status(), StatusCode::OK);
+    let presentation_patch = response_json(presentation_patch).await;
+    assert_eq!(
+        presentation_patch["presentation"]["summary"],
+        json!("Calculators, batteries included.")
+    );
+    assert_eq!(
+        presentation_patch["presentation"]["image_url"],
+        json!("/api/hub/remote/assets/calc-studio.calc-tools-token/media/cover.webp")
+    );
+    // A scope the system cannot use is refused where it is given, rather than
+    // stored as nothing and failing later at a different endpoint.
+    let bad_scope_token = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/projects/superadmin/default/hub/tokens")
+                .method("POST")
+                .header(header::COOKIE, &cookie)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({
+                        "publisher_id": "calc-studio",
+                        "title": "Bad scope token",
+                        "scopes": ["read", "publish"],
+                        "expires_at": null
+                    })
+                    .to_string(),
+                ))
+                .expect("request"),
+        )
+        .await
+        .expect("bad scope token response");
+    assert_eq!(bad_scope_token.status(), StatusCode::BAD_REQUEST);
+    let bad_scope_token = response_json(bad_scope_token).await;
+    assert_eq!(
+        bad_scope_token["error"]["code"],
+        json!("HUB_TOKEN_SCOPE_INVALID")
+    );
     let public_remote_publish = app
         .clone()
         .oneshot(
@@ -898,7 +959,9 @@ async fn public_hub_requires_service_and_hides_project_internals() {
         .expect("delete response");
     assert_eq!(delete_remote.status(), StatusCode::OK);
     let delete_remote = response_json(delete_remote).await;
-    assert_eq!(delete_remote["deleted_versions"], json!(1));
+    assert_eq!(delete_remote["retracted_versions"], json!(1));
+    // DELETE retracts: the coordinate stays listed and marked, so a project
+    // that pinned it reads what happened instead of finding nothing there.
     let listed_after_delete = app
         .clone()
         .oneshot(
@@ -909,10 +972,17 @@ async fn public_hub_requires_service_and_hides_project_internals() {
                 .expect("request"),
         )
         .await
-        .expect("list after delete response");
+        .expect("list after retract response");
     assert_eq!(listed_after_delete.status(), StatusCode::OK);
-    let listed_after_delete = response_text(listed_after_delete).await;
-    assert!(!listed_after_delete.contains("calc-studio.calc-tools-remote"));
+    let listed_after_delete = response_json(listed_after_delete).await;
+    let retracted_item = listed_after_delete["items"]
+        .as_array()
+        .expect("items")
+        .iter()
+        .find(|item| item["package_id"] == json!("calc-studio.calc-tools-remote"))
+        .expect("a retracted package stays listed");
+    assert!(retracted_item["retracted"]["retracted_at"].is_i64());
+    assert_eq!(retracted_item["latest_version"], json!(""));
     assert!(
         !data_root
             .join("services")

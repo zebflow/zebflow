@@ -1,0 +1,26 @@
+apiVersion: zebflow.com/v1
+kind: ProjectConfiguration
+metadata:
+  name: project-layout
+spec:
+  profile: {}
+  layout:
+    source: src
+    assets: src/assets
+    docs: documentation
+    schema: db/schema
+    node_interfaces: vendor/nodes
+    initial_data:
+    - path: db/seeds
+      engine: sekejap
+  rwe: {}
+  pipelines: {}
+  runtime: {}
+  bootstrap: {}
+  git: {}
+  assistant: {}
+  locks: {}
+  data: {}
+  files: {}
+  distribution:
+    hub: {}

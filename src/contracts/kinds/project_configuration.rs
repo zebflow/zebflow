@@ -18,9 +18,9 @@ use crate::infra::execution::sync::ProjectBootstrapPlan;
 use crate::platform::model::{
     ZebflowJson, ZebflowJsonAssistant, ZebflowJsonConfigs, ZebflowJsonData,
     ZebflowJsonDistribution, ZebflowJsonDistributionHub, ZebflowJsonFiles, ZebflowJsonGit,
-    ZebflowJsonGitRemote, ZebflowJsonLocks, ZebflowJsonLogging, ZebflowJsonMetadata,
-    ZebflowJsonPipelines, ZebflowJsonRwe, ZebflowJsonRweLibraryEntry, ZebflowJsonUploads,
-    slug_segment,
+    ZebflowJsonGitRemote, ZebflowJsonInitialDataDir, ZebflowJsonLayout, ZebflowJsonLocks,
+    ZebflowJsonLogging, ZebflowJsonMetadata, ZebflowJsonPipelines, ZebflowJsonRwe,
+    ZebflowJsonRweLibraryEntry, ZebflowJsonUploads, slug_segment,
 };
 
 /// Canonical repository filename for project configuration.
@@ -61,6 +61,11 @@ impl PlatformContract for ProjectConfigurationContract {
 pub struct ProjectConfigurationSpec {
     #[serde(default)]
     pub profile: ProjectProfileSpec,
+    /// Repository layout. Unlike the other sections this one is omitted when it
+    /// is empty, so a project that never declared a layout is not rewritten to
+    /// carry an empty section it did not author.
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub layout: ProjectLayoutSpec,
     #[serde(default)]
     pub rwe: ProjectRweSpec,
     #[serde(default)]
@@ -86,6 +91,7 @@ pub struct ProjectConfigurationSpec {
 
 impl ProjectConfigurationSpec {
     fn validate(&self) -> Result<(), ContractError> {
+        self.layout.validate()?;
         validate_text("spec.profile.title", &self.profile.title, 256, false)?;
         validate_text(
             "spec.profile.description",
@@ -476,6 +482,9 @@ pub fn decode_legacy_project_configuration(
     let spec: ProjectConfigurationSpec = ZebflowJson {
         metadata: legacy.metadata,
         configs: ZebflowJsonConfigs {
+            // The legacy shape has no layout section, so a migrated project
+            // declares nothing and keeps the directories it already used.
+            layout: ZebflowJsonLayout::default(),
             rwe,
             pipelines: ZebflowJsonPipelines {
                 logging: pipelines.logging,
@@ -569,6 +578,107 @@ pub struct ProjectProfileSpec {
     pub title: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub description: String,
+}
+
+/// Declared repository layout.
+///
+/// Every entry is optional. An absent entry resolves to the platform default in
+/// [`ZebflowJsonLayout::resolve`], which is what keeps a project written before
+/// this section existed on exactly the directories it already used.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ProjectLayoutSpec {
+    /// Source root: pipelines, pages, styles, and shared components. It is also
+    /// the RWE template root, which is one directory today and not two.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub assets: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub docs: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schema: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node_interfaces: Option<String>,
+    /// Prefixes an install replays as initial data, each bound to one engine.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub initial_data: Option<Vec<ProjectInitialDataDirSpec>>,
+}
+
+/// One initial-data prefix and the database engine that would replay it.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ProjectInitialDataDirSpec {
+    pub path: String,
+    pub engine: String,
+}
+
+/// Engine tokens the installer dispatches on. A prefix bound to anything else
+/// would name a replay path that no code performs.
+const INITIAL_DATA_ENGINES: &[&str] = &["sekejap", "sqlite"];
+
+impl ProjectLayoutSpec {
+    fn validate(&self) -> Result<(), ContractError> {
+        for (path, value) in [
+            ("spec.layout.source", self.source.as_deref()),
+            ("spec.layout.assets", self.assets.as_deref()),
+            ("spec.layout.docs", self.docs.as_deref()),
+            ("spec.layout.schema", self.schema.as_deref()),
+            (
+                "spec.layout.node_interfaces",
+                self.node_interfaces.as_deref(),
+            ),
+        ] {
+            if let Some(value) = value {
+                validate_layout_dir(path, value)?;
+            }
+        }
+        let Some(entries) = &self.initial_data else {
+            return Ok(());
+        };
+        let mut seen = std::collections::BTreeSet::new();
+        for entry in entries {
+            validate_layout_dir("spec.layout.initial_data.*.path", &entry.path)?;
+            if !INITIAL_DATA_ENGINES.contains(&entry.engine.as_str()) {
+                return Err(ContractError::invalid(format!(
+                    "spec.layout.initial_data.*.engine must be one of {}",
+                    INITIAL_DATA_ENGINES.join(", ")
+                )));
+            }
+            if !seen.insert(&entry.path) {
+                return Err(ContractError::invalid(
+                    "spec.layout.initial_data paths must be unique",
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Accepts one normalized, project-relative directory.
+///
+/// Layout entries name directories that other paths are built on top of, so a
+/// trailing slash or a traversal segment here would be inherited by every path
+/// derived from it rather than failing at the one place it was written.
+fn validate_layout_dir(path: &str, value: &str) -> Result<(), ContractError> {
+    let invalid = value.is_empty()
+        || value.len() > 1024
+        || value.starts_with('/')
+        || value.ends_with('/')
+        || value
+            .split('/')
+            .any(|segment| segment.is_empty() || segment == "." || segment == "..")
+        || value.chars().any(|character| {
+            character.is_control()
+                || character == '\\'
+                || matches!(character, '*' | '?' | '[' | ']')
+        });
+    if invalid {
+        return Err(ContractError::invalid(format!(
+            "{path} must be a normalized, project-relative directory"
+        )));
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -835,6 +945,22 @@ impl From<ZebflowJson> for ProjectConfigurationSpec {
                 title: value.metadata.title,
                 description: value.metadata.description,
             },
+            layout: ProjectLayoutSpec {
+                source: value.configs.layout.source,
+                assets: value.configs.layout.assets,
+                docs: value.configs.layout.docs,
+                schema: value.configs.layout.schema,
+                node_interfaces: value.configs.layout.node_interfaces,
+                initial_data: value.configs.layout.initial_data.map(|entries| {
+                    entries
+                        .into_iter()
+                        .map(|entry| ProjectInitialDataDirSpec {
+                            path: entry.path,
+                            engine: entry.engine,
+                        })
+                        .collect()
+                }),
+            },
             rwe: ProjectRweSpec {
                 allow_list: value.configs.rwe.allow_list,
                 minify_html: value.configs.rwe.minify_html,
@@ -916,6 +1042,22 @@ impl From<ProjectConfigurationSpec> for ZebflowJson {
                 description: value.profile.description,
             },
             configs: ZebflowJsonConfigs {
+                layout: ZebflowJsonLayout {
+                    source: value.layout.source,
+                    assets: value.layout.assets,
+                    docs: value.layout.docs,
+                    schema: value.layout.schema,
+                    node_interfaces: value.layout.node_interfaces,
+                    initial_data: value.layout.initial_data.map(|entries| {
+                        entries
+                            .into_iter()
+                            .map(|entry| ZebflowJsonInitialDataDir {
+                                path: entry.path,
+                                engine: entry.engine,
+                            })
+                            .collect()
+                    }),
+                },
                 rwe: ZebflowJsonRwe {
                     allow_list: value.rwe.allow_list,
                     minify_html: value.rwe.minify_html,
@@ -1109,12 +1251,135 @@ mod tests {
         ContractMetadata, decode_contract_value, decode_contract_yaml, encode_contract,
         encode_contract_yaml,
     };
+    use crate::platform::model::ResolvedProjectLayout;
 
     const COMPLETE_V1: &[u8] =
         include_bytes!("../../../tests/fixtures/contracts/project-configuration/v1-complete.yaml");
     const COMPLETE_LEGACY_V1: &[u8] = include_bytes!(
         "../../../tests/fixtures/contracts/project-configuration/legacy-1.0-complete.json"
     );
+    const DECLARED_LAYOUT_V1: &[u8] =
+        include_bytes!("../../../tests/fixtures/contracts/project-configuration/v1-layout.yaml");
+
+    fn declared_layout() -> ProjectLayoutSpec {
+        ProjectLayoutSpec {
+            source: Some("src".to_string()),
+            assets: Some("src/assets".to_string()),
+            docs: Some("documentation".to_string()),
+            schema: Some("db/schema".to_string()),
+            node_interfaces: Some("vendor/nodes".to_string()),
+            initial_data: Some(vec![ProjectInitialDataDirSpec {
+                path: "db/seeds".to_string(),
+                engine: "sekejap".to_string(),
+            }]),
+        }
+    }
+
+    #[test]
+    fn an_undeclared_layout_resolves_to_the_hardcoded_platform_directories() {
+        let document = decode_contract_yaml::<ProjectConfigurationContract>(COMPLETE_V1).unwrap();
+        assert_eq!(document.spec.layout, ProjectLayoutSpec::default());
+
+        let layout = ZebflowJson::from(document.spec).layout();
+        assert_eq!(layout.source, "pipelines");
+        assert_eq!(layout.assets, "pipelines/assets");
+        assert_eq!(layout.docs, "docs");
+        assert_eq!(layout.schema, "schemas/sekejap");
+        assert_eq!(layout.node_interfaces, "nodes");
+        assert_eq!(
+            layout
+                .initial_data
+                .iter()
+                .map(|entry| (entry.path.as_str(), entry.engine.as_str()))
+                .collect::<Vec<_>>(),
+            [
+                ("initial-data/sekejap", "sekejap"),
+                ("initial-data/sqlite", "sqlite"),
+                ("init/sekejap", "sekejap"),
+                ("init/sqlite", "sqlite"),
+                ("seeds/sekejap", "sekejap"),
+                ("seeds/sqlite", "sqlite"),
+            ]
+        );
+        assert_eq!(layout, ResolvedProjectLayout::platform_default());
+    }
+
+    #[test]
+    fn declared_layout_fixture_roundtrips_byte_for_byte() {
+        let document =
+            decode_contract_yaml::<ProjectConfigurationContract>(DECLARED_LAYOUT_V1).unwrap();
+        assert_eq!(document.spec.layout, declared_layout());
+        assert_eq!(
+            encode_contract_yaml::<ProjectConfigurationContract>(document.metadata, document.spec)
+                .unwrap(),
+            DECLARED_LAYOUT_V1
+        );
+    }
+
+    #[test]
+    fn a_declared_layout_survives_the_runtime_model_roundtrip() {
+        let expected = ProjectConfigurationSpec {
+            layout: declared_layout(),
+            ..ProjectConfigurationSpec::default()
+        };
+        let runtime: ZebflowJson = expected.clone().into();
+        assert_eq!(runtime.layout().source, "src");
+        // Undeclared entries still resolve to the platform default.
+        assert_eq!(runtime.layout().assets, "src/assets");
+        assert_eq!(ProjectConfigurationSpec::from(runtime), expected);
+    }
+
+    #[test]
+    fn unusable_layout_directories_and_engines_are_rejected() {
+        let seed = |path: &str, engine: &str| ProjectInitialDataDirSpec {
+            path: path.to_string(),
+            engine: engine.to_string(),
+        };
+        for layout in [
+            ProjectLayoutSpec {
+                source: Some("/pipelines".to_string()),
+                ..ProjectLayoutSpec::default()
+            },
+            ProjectLayoutSpec {
+                source: Some("pipelines/".to_string()),
+                ..ProjectLayoutSpec::default()
+            },
+            ProjectLayoutSpec {
+                source: Some("../pipelines".to_string()),
+                ..ProjectLayoutSpec::default()
+            },
+            ProjectLayoutSpec {
+                source: Some(String::new()),
+                ..ProjectLayoutSpec::default()
+            },
+            ProjectLayoutSpec {
+                assets: Some("pipelines/*".to_string()),
+                ..ProjectLayoutSpec::default()
+            },
+            ProjectLayoutSpec {
+                initial_data: Some(vec![seed("seeds/mysql", "mysql")]),
+                ..ProjectLayoutSpec::default()
+            },
+            ProjectLayoutSpec {
+                initial_data: Some(vec![
+                    seed("seeds/sekejap", "sekejap"),
+                    seed("seeds/sekejap", "sqlite"),
+                ]),
+                ..ProjectLayoutSpec::default()
+            },
+        ] {
+            assert!(
+                encode_contract::<ProjectConfigurationContract>(
+                    ContractMetadata::named("project"),
+                    ProjectConfigurationSpec {
+                        layout,
+                        ..ProjectConfigurationSpec::default()
+                    },
+                )
+                .is_err()
+            );
+        }
+    }
 
     #[test]
     fn default_document_uses_the_permanent_section_layout() {

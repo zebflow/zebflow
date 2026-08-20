@@ -24,10 +24,10 @@ use crate::infra::io::durable::{atomic_write, durable_remove_file};
 use crate::platform::adapters::data::DataAdapter;
 use crate::platform::error::PlatformError;
 use crate::platform::model::{
-    CreateHubTokenRequest, CreateProjectRequest, HubAccessGrant, HubAssetGallery, HubAssetMedia,
-    HubAssetPackage, HubAssetVersion, HubAuthority, HubPublisher, HubToken, PlatformHubRepository,
-    PlatformServiceInstance, ProjectFileLayout, ProjectHubRepository,
-    ProjectRuntimeSelectionRequest, now_ts, slug_segment,
+    CreateHubTokenRequest, CreateProjectRequest, HubAccessGrant, HubAssetGallery,
+    HubAssetGalleryImage, HubAssetMedia, HubAssetPackage, HubAssetVersion, HubAuthority,
+    HubPublisher, HubToken, PlatformHubRepository, PlatformServiceInstance, ProjectFileLayout,
+    ProjectHubRepository, ProjectRuntimeSelectionRequest, now_ts, slug_segment,
 };
 use crate::platform::policy::package::{
     DatabaseInitializationReport, INITIAL_DATA_DIRS, PackagePolicyEntry, PackageReviewOptions,
@@ -582,6 +582,84 @@ pub struct RemoteHubPublishRequest {
     pub artifact: Value,
 }
 
+/// One edit to the mutable half of a package.
+///
+/// Every field is optional and an absent field means *leave it alone*: this is
+/// the route that exists so correcting a description costs an update rather
+/// than a version bump, and an edit that silently blanked what it did not
+/// mention would reintroduce exactly that cost.
+#[derive(Debug, Clone, Default, serde::Serialize, Deserialize)]
+pub struct HubPresentationUpdate {
+    /// One-line listing summary.
+    #[serde(default)]
+    pub summary: Option<String>,
+    /// Long-form markdown shown on the package page.
+    #[serde(default)]
+    pub description_md: Option<String>,
+    /// A project-relative image path to convert and store as the new cover.
+    #[serde(default)]
+    pub image_file_path: Option<String>,
+    /// Cover and gallery entries, referencing media the package already has.
+    #[serde(default)]
+    pub gallery: Option<HubAssetGallery>,
+}
+
+/// The mutable half of a package, carried from the row that exists to the row
+/// being written.
+///
+/// Presentation lives beside the releases so a typo costs an update rather than
+/// a version bump. That only holds if a publish which says nothing about
+/// presentation leaves it exactly as it found it, which is what this carries.
+#[derive(Debug, Clone, Default)]
+struct HubPresentation {
+    summary: String,
+    description_md: String,
+    image_url: String,
+    media: Vec<HubAssetMedia>,
+    gallery: HubAssetGallery,
+}
+
+impl HubPresentation {
+    fn from_existing(existing: Option<&HubAssetPackage>) -> Self {
+        let Some(package) = existing else {
+            return Self::default();
+        };
+        Self {
+            summary: package.summary.clone(),
+            description_md: package.description_md.clone(),
+            image_url: package.image_url.clone(),
+            media: package.media.clone(),
+            gallery: package.gallery.clone(),
+        }
+    }
+
+    /// Fold a newly supplied cover in, replacing the cover and nothing else.
+    ///
+    /// Other media and other gallery entries belong to the package rather than
+    /// to the release being published, so they survive; a publish that carries
+    /// no cover of its own leaves the current one in place. The alt text is
+    /// kept because it describes the package, not the image bytes.
+    fn replace_cover(&mut self, package_id: &str, cover: Option<HubAssetMedia>) {
+        let Some(cover) = cover else {
+            return;
+        };
+        let alt = self
+            .gallery
+            .cover
+            .as_ref()
+            .map(|item| item.alt.clone())
+            .unwrap_or_default();
+        self.media.retain(|item| item.role != "cover");
+        self.media.insert(0, cover.clone());
+        self.gallery.cover = Some(HubAssetGalleryImage {
+            kind: "image".to_string(),
+            media_name: cover.name.clone(),
+            alt,
+        });
+        self.image_url = format!("/api/hub/remote/assets/{package_id}/media/{}", cover.name);
+    }
+}
+
 /// One inbound presentation image, carried base64 on the publish request.
 #[derive(Debug, Clone, serde::Serialize, Deserialize)]
 pub struct RemoteHubPublishMedia {
@@ -744,10 +822,20 @@ impl HubService {
         self.hub_data.list_hub_asset_versions(package_id)
     }
 
-    pub fn delete_asset_package(
+    /// Retract every release of one package: the bytes go, the coordinates stay.
+    ///
+    /// This is the withdrawal path, and it is deliberately not a delete.
+    /// Immutability is enforced against the rows that exist, so dropping them
+    /// would free every `package@version` the package held to be published
+    /// again with different content — a `zeb.lock` pinning the old digest would
+    /// then report a tampered dependency, which is the exact failure
+    /// `enforce_release_immutability` exists to prevent. Keeping the rows and
+    /// destroying the artifacts withdraws the content without opening that hole.
+    pub fn retract_asset_package(
         &self,
         token: &HubToken,
         package_id: &str,
+        reason: &str,
     ) -> Result<usize, PlatformError> {
         self.require_enabled()?;
         let package_id = canonical_hub_package_id(&token.publisher_id, package_id)?;
@@ -757,7 +845,7 @@ impl HubService {
                 "package id must not be empty",
             ));
         }
-        let Some(package) = self.hub_data.get_hub_asset_package(&package_id)? else {
+        let Some(mut package) = self.hub_data.get_hub_asset_package(&package_id)? else {
             return Err(PlatformError::new(
                 "HUB_ASSET_MISSING",
                 "asset package not found",
@@ -770,19 +858,32 @@ impl HubService {
         {
             return Err(PlatformError::new(
                 "HUB_PACKAGE_FORBIDDEN",
-                "token cannot delete this package",
+                "token cannot retract this package",
             ));
         }
         let versions = self.hub_data.list_hub_asset_versions(&package_id)?;
-        let artifact_paths = versions
-            .iter()
-            .filter_map(|version| {
-                self.hub_artifact_path_for_delete(&version.artifact_rel_path)
-                    .ok()
-            })
-            .collect::<Vec<_>>();
-        self.hub_data.delete_hub_asset_package(&package_id)?;
-        for path in artifact_paths {
+        let now = now_ts();
+        let reason = reason.trim();
+        // The markers land before the bytes go: a row that still points at a
+        // readable artifact is recoverable, an artifact with no marker naming
+        // it is a release that reads as live and cannot be served.
+        let mut retracted = 0usize;
+        for version in &versions {
+            if version.retracted_at.is_some() {
+                continue;
+            }
+            self.hub_data
+                .retract_hub_asset_version(&package_id, &version.version, now, reason)?;
+            retracted += 1;
+        }
+        package.retracted_at = Some(package.retracted_at.unwrap_or(now));
+        package.retracted_reason = reason.to_string();
+        package.updated_at = now;
+        self.hub_data.put_hub_asset_package(&package)?;
+        for version in &versions {
+            let Ok(path) = self.hub_artifact_path_for_delete(&version.artifact_rel_path) else {
+                continue;
+            };
             match fs::remove_file(&path) {
                 Ok(()) => {}
                 Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
@@ -790,7 +891,116 @@ impl HubService {
             }
             prune_empty_hub_dirs(path.parent(), &self.data_root);
         }
-        Ok(versions.len())
+        Ok(retracted)
+    }
+
+    /// Update the mutable half of one package, touching no release.
+    ///
+    /// This is what the presentation split was made for: a release is
+    /// digest-pinned and cannot be edited, so everything a human reads while
+    /// choosing lives on the package row and correcting it costs an update
+    /// rather than a version bump. Nothing here reads or writes a
+    /// `HubAssetVersion` or an artifact under `packages/`.
+    ///
+    /// Every field of `update` is optional and an omitted field is left alone.
+    pub fn update_asset_presentation(
+        &self,
+        token: &HubToken,
+        source_owner: &str,
+        source_project: &str,
+        package_id: &str,
+        update: &HubPresentationUpdate,
+    ) -> Result<HubAssetPackage, PlatformError> {
+        self.require_enabled()?;
+        let package_id = canonical_hub_package_id(&token.publisher_id, package_id)?;
+        let Some(existing) = self.hub_data.get_hub_asset_package(&package_id)? else {
+            return Err(PlatformError::new(
+                "HUB_ASSET_MISSING",
+                "asset package not found",
+            ));
+        };
+        let can_manage = token.scopes.iter().any(|scope| scope == "hub:manage");
+        if !can_manage
+            && (existing.publisher_owner != token.owner
+                || existing.publisher_id != token.publisher_id)
+        {
+            return Err(PlatformError::new(
+                "HUB_PACKAGE_FORBIDDEN",
+                "token cannot update this package",
+            ));
+        }
+        let mut presentation = HubPresentation::from_existing(Some(&existing));
+        if let Some(summary) = update.summary.as_ref() {
+            presentation.summary = summary.trim().to_string();
+        }
+        if let Some(description_md) = update.description_md.as_ref() {
+            presentation.description_md = description_md.clone();
+        }
+        // The cover is converted and the gallery is checked against the media
+        // list the update would produce, before a single byte is stored.
+        let cover_bytes = match update
+            .image_file_path
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            Some(path) => {
+                let Some(publisher) = self.hub_data.get_hub_publisher(
+                    HUB_SERVICE_SCOPE_OWNER,
+                    HUB_SERVICE_SCOPE_PROJECT,
+                    &existing.publisher_id,
+                )?
+                else {
+                    return Err(PlatformError::new(
+                        "HUB_PUBLISHER_MISSING",
+                        "publisher not found",
+                    ));
+                };
+                let layout = self
+                    .projects
+                    .project_layout(&slug_segment(source_owner), &slug_segment(source_project))?;
+                hub_cover_webp_from_path(&layout, path, &publisher)?
+            }
+            None => None,
+        };
+        presentation.replace_cover(
+            &package_id,
+            cover_bytes.as_ref().map(|(name, bytes)| HubAssetMedia {
+                name: name.clone(),
+                role: "cover".to_string(),
+                content_type: HUB_COVER_MEDIA_TYPE.to_string(),
+                size_bytes: bytes.len(),
+                artifact_sha256: sha256_hex(bytes),
+            }),
+        );
+        if let Some(gallery) = update.gallery.as_ref() {
+            validate_hub_gallery(gallery, &presentation.media)?;
+            presentation.gallery = gallery.clone();
+            presentation.image_url = gallery
+                .cover
+                .as_ref()
+                .map(|item| {
+                    format!(
+                        "/api/hub/remote/assets/{package_id}/media/{}",
+                        item.media_name
+                    )
+                })
+                .unwrap_or_default();
+        }
+        if let Some((_, bytes)) = cover_bytes.as_ref() {
+            self.store_artifact(bytes)?;
+        }
+        let package = HubAssetPackage {
+            summary: presentation.summary,
+            description_md: presentation.description_md,
+            image_url: presentation.image_url,
+            media: presentation.media,
+            gallery: presentation.gallery,
+            updated_at: now_ts(),
+            ..existing
+        };
+        self.hub_data.put_hub_asset_package(&package)?;
+        Ok(package)
     }
 
     pub fn list_publishers(
@@ -933,7 +1143,7 @@ impl HubService {
                 "publisher is disabled",
             ));
         }
-        let scopes = normalize_scopes(&req.scopes);
+        let scopes = normalize_scopes(&req.scopes)?;
         validate_publisher_scopes(&publisher, &scopes)?;
         let now = now_ts();
         let token_id = format!("mkt_{}", random_hex(8));
@@ -1639,6 +1849,10 @@ impl HubService {
         // Before the source is even read: a republish must not reach the
         // artifact file or the version row.
         self.enforce_release_immutability(&package_id, version)?;
+        // The mutable half is read up front so a publish that carries no
+        // presentation can leave the existing presentation alone. Publishing a
+        // fix must not cost the publisher the description they wrote.
+        let existing_package = self.hub_data.get_hub_asset_package(&package_id)?;
         let mut preview =
             self.preview_publish_source(&source_owner, &source_project, &source_type, source_ref)?;
         if preview.entries.is_empty() {
@@ -1686,22 +1900,8 @@ impl HubService {
         } else {
             Vec::new()
         };
-        let image_url = cover
-            .as_ref()
-            .map(|item| format!("/api/hub/remote/assets/{package_id}/media/{}", item.name))
-            .unwrap_or_default();
-        let gallery = cover
-            .as_ref()
-            .map(|item| HubAssetGallery {
-                cover: Some(crate::platform::model::HubAssetGalleryImage {
-                    kind: "image".to_string(),
-                    media_name: item.name.clone(),
-                    alt: String::new(),
-                }),
-                items: Vec::new(),
-            })
-            .unwrap_or_default();
-        let media = cover.into_iter().collect::<Vec<_>>();
+        let mut presentation = HubPresentation::from_existing(existing_package.as_ref());
+        presentation.replace_cover(&package_id, cover);
         let artifact_rel = format!(
             "services/{}/packages/{}/versions/{}/artifact.json",
             DEFAULT_HUB_SERVICE_INSTANCE_ID, package_id, version
@@ -1746,7 +1946,6 @@ impl HubService {
         };
         let artifact_bytes = encode_hub_artifact(&package_id, &version, &manifest, "HUB_PUBLISH")?;
         let artifact_sha256 = sha256_hex(&artifact_bytes);
-        let existing_package = self.hub_data.get_hub_asset_package(&package_id)?;
         self.enforce_publisher_package_quota(
             &publisher,
             &package_id,
@@ -1773,13 +1972,18 @@ impl HubService {
             asset_kind: preview.asset_kind.clone(),
             title: manifest.title.clone(),
             description: manifest.description.clone(),
-            summary: String::new(),
-            description_md: String::new(),
-            image_url,
-            media,
-            gallery,
+            summary: presentation.summary,
+            description_md: presentation.description_md,
+            image_url: presentation.image_url,
+            media: presentation.media,
+            gallery: presentation.gallery,
             visibility: normalize_visibility(visibility),
             tags,
+            // A live release makes the package live again. The retracted
+            // version rows keep their own markers, so no retracted coordinate
+            // becomes publishable by this.
+            retracted_at: None,
+            retracted_reason: String::new(),
             created_at: existing_package.map(|item| item.created_at).unwrap_or(now),
             updated_at: now,
         };
@@ -1799,6 +2003,8 @@ impl HubService {
             artifact_sha256,
             manifest: serde_json::to_value(&manifest)
                 .map_err(|err| PlatformError::new("HUB_PUBLISH", err.to_string()))?,
+            retracted_at: None,
+            retracted_reason: String::new(),
             // A version row is written once and never again — the immutability
             // check above guarantees this row is new — so `now` is the moment
             // the release was created and stays that way for its whole life.
@@ -2023,6 +2229,14 @@ impl HubService {
                 "asset version not found",
             ));
         };
+        // A retracted release fails with its reason rather than with an io
+        // error about the file the retraction deliberately removed.
+        if version_row.retracted_at.is_some() {
+            return Err(PlatformError::new(
+                "HUB_VERSION_RETRACTED",
+                retraction_message(package_id, version, &version_row.retracted_reason),
+            ));
+        }
         let artifact_abs = self.data_root.join(&version_row.artifact_rel_path);
         let raw = fs::read(&artifact_abs)?;
         verify_hub_artifact_bytes(&raw, &version_row.artifact_sha256)?;
@@ -2097,6 +2311,14 @@ impl HubService {
                 "asset version not found",
             ));
         };
+        // A retracted release fails with its reason rather than with an io
+        // error about the file the retraction deliberately removed.
+        if version_row.retracted_at.is_some() {
+            return Err(PlatformError::new(
+                "HUB_VERSION_RETRACTED",
+                retraction_message(package_id, version, &version_row.retracted_reason),
+            ));
+        }
         let artifact_abs = self.data_root.join(&version_row.artifact_rel_path);
         let raw = fs::read(&artifact_abs)?;
         verify_hub_artifact_bytes(&raw, &version_row.artifact_sha256)?;
@@ -2576,6 +2798,19 @@ impl HubService {
         })
     }
 
+    /// One version row, without opening its artifact.
+    ///
+    /// A retracted release has no artifact left, so a reader that only wants to
+    /// describe the coordinate must be able to reach the row on its own.
+    pub fn get_asset_version(
+        &self,
+        package_id: &str,
+        version: &str,
+    ) -> Result<Option<HubAssetVersion>, PlatformError> {
+        self.require_enabled()?;
+        self.hub_data.get_hub_asset_version(package_id, version)
+    }
+
     pub fn get_asset_version_artifact(
         &self,
         package_id: &str,
@@ -2598,6 +2833,15 @@ impl HubService {
                 "asset version not found",
             ));
         };
+        // A retracted release has no bytes left. Saying so is the whole point:
+        // a project that pinned this coordinate reads why rather than a missing
+        // file, and the reason is the publisher's own.
+        if version_row.retracted_at.is_some() {
+            return Err(PlatformError::new(
+                "HUB_VERSION_RETRACTED",
+                retraction_message(package_id, version, &version_row.retracted_reason),
+            ));
+        }
         let artifact_abs = self.hub_artifact_path(&version_row.artifact_rel_path)?;
         let artifact_size_bytes = fs::metadata(&artifact_abs)?.len();
         if artifact_size_bytes > MAX_REMOTE_HUB_ARTIFACT_BYTES {
@@ -2711,6 +2955,7 @@ impl HubService {
         // release-immutability rule as a local publish. Checked before the
         // inbound document is decoded, so nothing durable is written.
         self.enforce_release_immutability(&package_id, &version)?;
+        let existing_package = self.hub_data.get_hub_asset_package(&package_id)?;
         let source_owner = slug_segment(&req.source_owner);
         let source_project = slug_segment(&req.source_project);
         let mut artifact = parse_hub_artifact_value(req.artifact.clone(), "HUB_REMOTE_INVALID")?;
@@ -2723,14 +2968,34 @@ impl HubService {
         // Presentation arrives beside the release, not inside it. Its images
         // are validated, then stored content-addressed so only a digest is
         // recorded against the package.
+        //
+        // What the request does not carry is left as it is. A remote publish of
+        // a new version says nothing about presentation by sending it empty,
+        // and blanking a description or dropping a cover on that basis is the
+        // coupling the presentation split removed.
         let decoded_media = decode_remote_hub_media(&req.media, &publisher)?;
-        let media = decoded_media
+        let incoming_media = decoded_media
             .iter()
             .map(|(item, _)| item.clone())
             .collect::<Vec<_>>();
-        validate_hub_gallery(&req.gallery, &media)?;
-        let image_url =
-            req.gallery
+        let incoming_gallery = req.gallery.cover.is_some() || !req.gallery.items.is_empty();
+        let mut presentation = HubPresentation::from_existing(existing_package.as_ref());
+        if !req.summary.trim().is_empty() {
+            presentation.summary = req.summary.trim().to_string();
+        }
+        if !req.description_md.trim().is_empty() {
+            presentation.description_md = req.description_md.clone();
+        }
+        if !incoming_media.is_empty() {
+            presentation.media = incoming_media;
+        }
+        if incoming_gallery {
+            validate_hub_gallery(&req.gallery, &presentation.media)?;
+            presentation.gallery = req.gallery.clone();
+        }
+        if !decoded_media.is_empty() || incoming_gallery {
+            presentation.image_url = presentation
+                .gallery
                 .cover
                 .as_ref()
                 .map(|item| {
@@ -2740,11 +3005,16 @@ impl HubService {
                     )
                 })
                 .or_else(|| {
-                    media.iter().find(|item| item.role == "cover").map(|item| {
-                        format!("/api/hub/remote/assets/{package_id}/media/{}", item.name)
-                    })
+                    presentation
+                        .media
+                        .iter()
+                        .find(|item| item.role == "cover")
+                        .map(|item| {
+                            format!("/api/hub/remote/assets/{package_id}/media/{}", item.name)
+                        })
                 })
                 .unwrap_or_default();
+        }
         sanitize_hub_export_entries(&mut artifact.files)?;
         let artifact_rel = format!(
             "services/{}/packages/{}/versions/{}/artifact.json",
@@ -2760,7 +3030,6 @@ impl HubService {
             .map_err(|err| PlatformError::new("HUB_REMOTE_INVALID", err.to_string()))?;
         let now = now_ts();
         let authority = self.ensure_service_authority()?;
-        let existing_package = self.hub_data.get_hub_asset_package(&package_id)?;
         self.enforce_publisher_package_quota(
             &publisher,
             &package_id,
@@ -2804,13 +3073,17 @@ impl HubService {
             } else {
                 req.description.trim().to_string()
             },
-            summary: req.summary.trim().to_string(),
-            description_md: req.description_md.clone(),
-            image_url,
-            media,
-            gallery: req.gallery.clone(),
+            summary: presentation.summary,
+            description_md: presentation.description_md,
+            image_url: presentation.image_url,
+            media: presentation.media,
+            gallery: presentation.gallery,
             visibility: normalize_visibility(&req.visibility),
             tags: req.tags.clone(),
+            // See the local publish path: a live release makes the package live
+            // again, and the retracted version rows keep their own markers.
+            retracted_at: None,
+            retracted_reason: String::new(),
             created_at: existing_package.map(|item| item.created_at).unwrap_or(now),
             updated_at: now,
         };
@@ -2829,6 +3102,8 @@ impl HubService {
             artifact_rel_path: artifact_rel,
             artifact_sha256: sha256_hex(&artifact_bytes),
             manifest: artifact_value,
+            retracted_at: None,
+            retracted_reason: String::new(),
             // New row by construction — see the note on the local publish path.
             created_at: now,
         };
@@ -3601,19 +3876,25 @@ impl HubService {
         package_id: &str,
         version: &str,
     ) -> Result<(), PlatformError> {
-        if self
-            .hub_data
-            .get_hub_asset_version(package_id, version)?
-            .is_some()
-        {
+        let Some(existing) = self.hub_data.get_hub_asset_version(package_id, version)? else {
+            return Ok(());
+        };
+        // A retracted release keeps its row precisely so this branch is
+        // reachable: the bytes are gone and the coordinate is still taken.
+        if existing.retracted_at.is_some() {
             return Err(PlatformError::new(
-                "HUB_VERSION_EXISTS",
+                "HUB_VERSION_RETRACTED",
                 format!(
-                    "{package_id}@{version} is already published and releases are immutable; bump the version and publish again"
+                    "{package_id}@{version} was retracted and its coordinates can never be reused; publish a new version"
                 ),
             ));
         }
-        Ok(())
+        Err(PlatformError::new(
+            "HUB_VERSION_EXISTS",
+            format!(
+                "{package_id}@{version} is already published and releases are immutable; bump the version and publish again"
+            ),
+        ))
     }
 
     fn enforce_publisher_package_quota(
@@ -4271,15 +4552,41 @@ fn normalize_visibility(input: &str) -> String {
     }
 }
 
-fn normalize_scopes(input: &[String]) -> Vec<String> {
-    let mut out = input
-        .iter()
-        .map(|item| item.trim().to_ascii_lowercase())
-        .filter(|item| matches!(item.as_str(), "hub:read" | "hub:publish" | "hub:manage"))
-        .collect::<Vec<_>>();
+/// The scopes a hub token may hold, in the form a refusal quotes them.
+const HUB_TOKEN_SCOPES: &str = "hub:read, hub:publish, hub:manage";
+
+/// Normalise requested token scopes, refusing anything unusable.
+///
+/// An unrecognised scope used to be dropped here, so a token asked for
+/// `["read","publish"]` was created holding nothing and only failed much later,
+/// at a different endpoint, as `HUB_TOKEN_FORBIDDEN / scope missing`. An input
+/// the system cannot use is refused where it is given, naming the value.
+fn normalize_scopes(input: &[String]) -> Result<Vec<String>, PlatformError> {
+    let mut out = Vec::with_capacity(input.len());
+    for raw in input {
+        let scope = raw.trim().to_ascii_lowercase();
+        match scope.as_str() {
+            "hub:read" | "hub:publish" | "hub:manage" => out.push(scope),
+            _ => {
+                return Err(PlatformError::new(
+                    "HUB_TOKEN_SCOPE_INVALID",
+                    format!(
+                        "'{}' is not a hub token scope; accepted scopes are {HUB_TOKEN_SCOPES}",
+                        raw.trim()
+                    ),
+                ));
+            }
+        }
+    }
     out.sort();
     out.dedup();
-    out
+    if out.is_empty() {
+        return Err(PlatformError::new(
+            "HUB_TOKEN_SCOPE_INVALID",
+            format!("a token needs at least one scope; accepted scopes are {HUB_TOKEN_SCOPES}"),
+        ));
+    }
+    Ok(out)
 }
 
 fn validate_publisher_scopes(
@@ -4362,6 +4669,18 @@ fn normalize_hub_grant_scope(input: &str) -> Result<String, PlatformError> {
 
 fn normalize_limit(value: i64, default_value: i64) -> i64 {
     if value <= 0 { default_value } else { value }
+}
+
+/// The refusal a retracted coordinate gives, carrying the publisher's reason.
+fn retraction_message(package_id: &str, version: &str, reason: &str) -> String {
+    let reason = reason.trim();
+    if reason.is_empty() {
+        format!("{package_id}@{version} was retracted by its publisher and its bytes are gone")
+    } else {
+        format!(
+            "{package_id}@{version} was retracted by its publisher and its bytes are gone: {reason}"
+        )
+    }
 }
 
 fn validate_hub_version(version: &str) -> Result<(), PlatformError> {
@@ -6812,17 +7131,38 @@ mod tests {
     }
 
     #[test]
-    fn normalize_scopes_only_keeps_known_hub_scopes() {
+    fn normalize_scopes_accepts_known_hub_scopes_in_any_shape() {
         let scopes = normalize_scopes(&[
             "hub:publish".to_string(),
-            " hub:read ".to_string(),
+            " HUB:read ".to_string(),
             "hub:publish".to_string(),
-            "custom:other".to_string(),
-        ]);
+        ])
+        .expect("known scopes");
         assert_eq!(
             scopes,
             vec!["hub:publish".to_string(), "hub:read".to_string()]
         );
+    }
+
+    /// An unrecognised scope used to be dropped, so a token asked for
+    /// `["read","publish"]` was created holding nothing and only failed later,
+    /// at a different endpoint, as `HUB_TOKEN_FORBIDDEN / scope missing`.
+    #[test]
+    fn normalize_scopes_refuses_an_unknown_scope_by_name() {
+        let error = normalize_scopes(&["read".to_string(), "hub:publish".to_string()])
+            .expect_err("an unusable scope is refused");
+        assert_eq!(error.code, "HUB_TOKEN_SCOPE_INVALID");
+        assert!(
+            error.message.contains("'read'") && error.message.contains("hub:read"),
+            "the refusal names the value and the accepted set, got {}",
+            error.message
+        );
+    }
+
+    #[test]
+    fn normalize_scopes_refuses_a_token_with_no_usable_scope() {
+        let error = normalize_scopes(&[]).expect_err("a token that can do nothing is refused");
+        assert_eq!(error.code, "HUB_TOKEN_SCOPE_INVALID");
     }
 
     #[test]
@@ -7394,6 +7734,265 @@ mod tests {
         assert_eq!(
             stored.created_at, first.created_at,
             "created_at is preserved for the life of a version"
+        );
+    }
+
+    /// A publisher token for the fixture's publisher.
+    fn calc_studio_token(
+        platform: &crate::platform::services::PlatformService,
+        scopes: &[&str],
+    ) -> HubToken {
+        platform
+            .hub
+            .create_token(
+                "superadmin",
+                "default",
+                &CreateHubTokenRequest {
+                    publisher_id: "calc-studio".to_string(),
+                    title: "Publish token".to_string(),
+                    scopes: scopes.iter().map(|item| item.to_string()).collect(),
+                    expires_at: None,
+                },
+            )
+            .expect("publisher token")
+            .0
+    }
+
+    /// The refusal happens at creation, where the value was given, and no
+    /// token is stored — the failure used to surface at a different endpoint
+    /// entirely, as a scope the token silently never had.
+    #[test]
+    fn creating_a_token_with_an_unknown_scope_is_refused_and_stores_nothing() {
+        let (_root, platform) = hub_publish_fixture("Calculator One");
+
+        let error = platform
+            .hub
+            .create_token(
+                "superadmin",
+                "default",
+                &CreateHubTokenRequest {
+                    publisher_id: "calc-studio".to_string(),
+                    title: "Publish token".to_string(),
+                    scopes: vec!["read".to_string(), "publish".to_string()],
+                    expires_at: None,
+                },
+            )
+            .expect_err("an unknown scope is a request error");
+        assert_eq!(error.code, "HUB_TOKEN_SCOPE_INVALID");
+        assert!(
+            platform
+                .hub
+                .list_tokens("superadmin", "default")
+                .expect("tokens")
+                .is_empty(),
+            "a refused request creates no token"
+        );
+    }
+
+    // ── Presentation is the mutable half ────────────────────────────────
+    //
+    // The release is digest-pinned and cannot be edited. That is only bearable
+    // because presentation lives beside it and can be, which these two hold to.
+
+    /// Publishing 1.1.0 says nothing about presentation, so it must change
+    /// none of it. It used to blank the summary and the long description and
+    /// drop the cover, which made a typo cost a version bump — the exact cost
+    /// splitting presentation out of the release was meant to remove.
+    #[test]
+    fn a_publish_that_omits_presentation_leaves_the_existing_presentation() {
+        let (root, platform) = hub_publish_fixture("Calculator One");
+        let image_file_path = write_cover_source(&root, 64, 36);
+        publish_calc_tools_with_cover(&platform, "1.0.0", &image_file_path)
+            .expect("publish with a cover");
+        let token = calc_studio_token(&platform, &["hub:publish"]);
+        platform
+            .hub
+            .update_asset_presentation(
+                &token,
+                "superadmin",
+                "default",
+                "calc-tools",
+                &HubPresentationUpdate {
+                    summary: Some("Calculators, batteries included.".to_string()),
+                    description_md: Some("# Calc Tools\n\nA long description.".to_string()),
+                    ..Default::default()
+                },
+            )
+            .expect("presentation update");
+
+        // A different source, so 1.1.0 is genuinely a new release, published
+        // with no summary, no description_md, and no image_file_path.
+        write_publish_source(&platform, "Calculator Two");
+        let (package, _) = publish_calc_tools(&platform, "1.1.0").expect("second publish");
+
+        assert_eq!(package.summary, "Calculators, batteries included.");
+        assert_eq!(
+            package.description_md,
+            "# Calc Tools\n\nA long description."
+        );
+        assert_eq!(
+            package.media.len(),
+            1,
+            "the cover survives a publish that names no image"
+        );
+        assert_eq!(package.media[0].role, "cover");
+        assert_eq!(
+            package
+                .gallery
+                .cover
+                .as_ref()
+                .map(|item| item.media_name.as_str()),
+            Some(package.media[0].name.as_str())
+        );
+        assert!(
+            package.image_url.ends_with(&package.media[0].name),
+            "image_url still points at the stored cover, got {}",
+            package.image_url
+        );
+    }
+
+    /// The point of the split: editing presentation is not a publish. No
+    /// release document, digest, or creation time may move.
+    #[test]
+    fn a_presentation_update_touches_no_release() {
+        let (root, platform) = hub_publish_fixture("Calculator One");
+        let (_, released) = publish_calc_tools(&platform, "1.0.0").expect("publish");
+        let artifact = root.path().join(&released.artifact_rel_path);
+        let bytes_before = std::fs::read(&artifact).expect("release bytes");
+        let token = calc_studio_token(&platform, &["hub:publish"]);
+
+        platform
+            .hub
+            .update_asset_presentation(
+                &token,
+                "superadmin",
+                "default",
+                "calc-tools",
+                &HubPresentationUpdate {
+                    summary: Some("Fixed the typo.".to_string()),
+                    ..Default::default()
+                },
+            )
+            .expect("presentation update");
+
+        assert_eq!(
+            std::fs::read(&artifact).expect("release bytes"),
+            bytes_before,
+            "the release document is untouched"
+        );
+        let stored = platform
+            .hub
+            .get_asset_version("calc-studio.calc-tools", "1.0.0")
+            .expect("version lookup")
+            .expect("version row");
+        assert_eq!(stored.artifact_sha256, released.artifact_sha256);
+        assert_eq!(stored.created_at, released.created_at);
+        assert_eq!(
+            platform
+                .hub
+                .list_asset_versions("calc-studio.calc-tools")
+                .expect("versions")
+                .len(),
+            1,
+            "no version was created by an edit"
+        );
+    }
+
+    // ── Retraction ──────────────────────────────────────────────────────
+
+    /// Withdrawing a package destroys its bytes and keeps its coordinates.
+    /// Dropping the rows instead would free `package@version` for reuse, which
+    /// is the lockfile-invalidating failure immutability exists to prevent,
+    /// reached in two steps rather than one.
+    #[test]
+    fn a_retracted_coordinate_can_never_be_published_again() {
+        let (root, platform) = hub_publish_fixture("Calculator One");
+        let (_, released) = publish_calc_tools(&platform, "1.0.0").expect("publish");
+        let artifact = root.path().join(&released.artifact_rel_path);
+        let token = calc_studio_token(&platform, &["hub:publish"]);
+
+        let retracted = platform
+            .hub
+            .retract_asset_package(&token, "calc-tools", "leaked an API key")
+            .expect("retract");
+        assert_eq!(retracted, 1);
+
+        assert!(!artifact.exists(), "the release bytes are gone");
+        let row = platform
+            .hub
+            .get_asset_version("calc-studio.calc-tools", "1.0.0")
+            .expect("version lookup")
+            .expect("the coordinate survives retraction");
+        assert!(row.retracted_at.is_some());
+        assert_eq!(row.retracted_reason, "leaked an API key");
+        let package = platform
+            .hub
+            .list_asset_packages()
+            .expect("packages")
+            .into_iter()
+            .find(|item| item.package_id == "calc-studio.calc-tools")
+            .expect("the package stays listed and explorable");
+        assert!(package.retracted_at.is_some());
+
+        // Different content, same coordinate: refused.
+        write_publish_source(&platform, "Calculator Two");
+        let error = publish_calc_tools(&platform, "1.0.0")
+            .expect_err("a retracted coordinate is never reusable");
+        assert_eq!(error.code, "HUB_VERSION_RETRACTED");
+        assert!(!artifact.exists(), "the refusal writes nothing");
+    }
+
+    /// A project that pinned a retracted release reads why, rather than an
+    /// io error about a file the retraction deliberately removed.
+    #[test]
+    fn a_retracted_release_refuses_its_artifact_with_a_reason() {
+        let (_root, platform) = hub_publish_fixture("Calculator One");
+        publish_calc_tools(&platform, "1.0.0").expect("publish");
+        let token = calc_studio_token(&platform, &["hub:publish"]);
+        platform
+            .hub
+            .retract_asset_package(&token, "calc-tools", "superseded by 2.0.0")
+            .expect("retract");
+
+        let error = platform
+            .hub
+            .get_asset_version_install_artifact("calc-studio.calc-tools", "1.0.0")
+            .expect_err("a retracted release has no bytes to serve");
+        assert_eq!(error.code, "HUB_VERSION_RETRACTED");
+        assert!(
+            error.message.contains("superseded by 2.0.0"),
+            "the publisher's reason travels with the refusal, got {}",
+            error.message
+        );
+    }
+
+    /// Retraction is per package, not per coordinate: a later version may
+    /// still be published, and the retracted one stays retracted.
+    #[test]
+    fn a_retracted_package_still_accepts_a_new_version() {
+        let (_root, platform) = hub_publish_fixture("Calculator One");
+        publish_calc_tools(&platform, "1.0.0").expect("publish");
+        let token = calc_studio_token(&platform, &["hub:publish"]);
+        platform
+            .hub
+            .retract_asset_package(&token, "calc-tools", "bad build")
+            .expect("retract");
+
+        write_publish_source(&platform, "Calculator Two");
+        let (package, _) = publish_calc_tools(&platform, "2.0.0").expect("publish 2.0.0");
+        assert!(
+            package.retracted_at.is_none(),
+            "a live release makes the package live again"
+        );
+        assert!(
+            platform
+                .hub
+                .get_asset_version("calc-studio.calc-tools", "1.0.0")
+                .expect("version lookup")
+                .expect("version row")
+                .retracted_at
+                .is_some(),
+            "the retracted coordinate stays retracted"
         );
     }
 

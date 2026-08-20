@@ -26,7 +26,7 @@ use axum::http::{
 };
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{Html, IntoResponse, Redirect, Response};
-use axum::routing::{any, delete, get, post, put};
+use axum::routing::{any, delete, get, patch, post, put};
 use axum::{Json, Router};
 use rand::RngExt as _;
 use serde::{Deserialize, Serialize};
@@ -861,6 +861,10 @@ pub async fn router(platform: Arc<PlatformService>) -> Router {
         .route(
             "/api/projects/{owner}/{project}/hub/assets/{package_id}",
             delete(api_delete_hub_asset),
+        )
+        .route(
+            "/api/projects/{owner}/{project}/hub/assets/{package_id}/presentation",
+            patch(api_update_hub_asset_presentation),
         )
         .route(
             "/api/projects/{owner}/{project}/help",
@@ -7399,14 +7403,12 @@ fn hub_asset_rows(
         if !only_mine && package.visibility == "private" && package.publisher_owner != owner {
             continue;
         }
-        let latest_version = state
-            .platform
-            .hub
-            .list_asset_versions(&package.package_id)?
-            .into_iter()
-            .next()
-            .map(|item| item.version)
-            .unwrap_or_default();
+        let latest_version = latest_installable_hub_version(
+            state
+                .platform
+                .hub
+                .list_asset_versions(&package.package_id)?,
+        );
         let (summary, gallery) = hub_package_gallery_projection(&package);
         rows.push(json!({
             "package_id": package.package_id,
@@ -7424,6 +7426,7 @@ fn hub_asset_rows(
             "visibility": package.visibility,
             "tags": package.tags,
             "latest_version": latest_version,
+            "retracted": hub_retraction_json(package.retracted_at, &package.retracted_reason),
             "updated_at": package.updated_at,
             "source": "local",
             "repository_id": "",
@@ -7437,13 +7440,13 @@ fn public_hub_asset_item_json(
     state: &PlatformAppState,
     package: crate::platform::model::HubAssetPackage,
 ) -> Value {
-    let latest_version = state
-        .platform
-        .hub
-        .list_asset_versions(&package.package_id)
-        .ok()
-        .and_then(|items| items.into_iter().next().map(|item| item.version))
-        .unwrap_or_default();
+    let latest_version = latest_installable_hub_version(
+        state
+            .platform
+            .hub
+            .list_asset_versions(&package.package_id)
+            .unwrap_or_default(),
+    );
     let (summary, gallery) = hub_package_gallery_projection(&package);
     json!({
         "package_id": package.package_id,
@@ -7459,9 +7462,35 @@ fn public_hub_asset_item_json(
         "visibility": package.visibility,
         "tags": package.tags,
         "latest_version": latest_version,
+        "retracted": hub_retraction_json(package.retracted_at, &package.retracted_reason),
         "updated_at": package.updated_at,
         "service_instance_id": crate::platform::services::hub::DEFAULT_HUB_SERVICE_INSTANCE_ID,
     })
+}
+
+/// The retraction marker any coordinate-carrying response shows, or `null`.
+///
+/// Retraction keeps the coordinates and destroys the bytes, so a listing that
+/// simply dropped the row would be describing a deletion that did not happen.
+fn hub_retraction_json(retracted_at: Option<i64>, reason: &str) -> Value {
+    match retracted_at {
+        Some(retracted_at) => json!({"retracted_at": retracted_at, "reason": reason}),
+        None => Value::Null,
+    }
+}
+
+/// The newest release that still has bytes.
+///
+/// A retracted release stays listed and explorable, but it is not the version a
+/// listing should offer as the one to take.
+fn latest_installable_hub_version(
+    versions: Vec<crate::platform::model::HubAssetVersion>,
+) -> String {
+    versions
+        .into_iter()
+        .find(|item| item.retracted_at.is_none())
+        .map(|item| item.version)
+        .unwrap_or_default()
 }
 
 /// A listing reads presentation from the mutable package row.
@@ -7506,6 +7535,7 @@ fn public_hub_version_json(
         "tags": package.tags,
         "source_kind": version.source_kind,
         "artifact_sha256": version.artifact_sha256,
+        "retracted": hub_retraction_json(version.retracted_at, &version.retracted_reason),
         "created_at": version.created_at,
         "manifest": {
             "asset_kind": package.asset_kind,
@@ -7519,6 +7549,47 @@ fn public_hub_version_json(
             "publisher_url": package.publisher_url,
         },
     })
+}
+
+/// The detail body for one release, whether it still has bytes or not.
+///
+/// A retracted release keeps its coordinate and loses its artifact, so detail
+/// describes it with a null `artifact` and a marker saying why: a project that
+/// pinned the coordinate needs to read what happened, and a refusal here would
+/// hide it. The artifact and install routes are where retraction refuses.
+fn hub_asset_detail_response(
+    state: &PlatformAppState,
+    package: &crate::platform::model::HubAssetPackage,
+    package_id: &str,
+    version: &str,
+) -> Response {
+    match state.platform.hub.get_asset_version(package_id, version) {
+        Ok(Some(version_row)) if version_row.retracted_at.is_some() => {
+            return Json(json!({
+                "ok": true,
+                "version": public_hub_version_json(package, &version_row),
+                "presentation": public_hub_presentation_json(package),
+                "artifact": Value::Null,
+            }))
+            .into_response();
+        }
+        Ok(_) => {}
+        Err(err) => return hub_api_error(err),
+    }
+    match state
+        .platform
+        .hub
+        .get_asset_version_artifact(package_id, version)
+    {
+        Ok((version_row, artifact)) => Json(json!({
+            "ok": true,
+            "version": public_hub_version_json(package, &version_row),
+            "presentation": public_hub_presentation_json(package),
+            "artifact": public_hub_artifact_json(artifact),
+        }))
+        .into_response(),
+        Err(err) => hub_api_error(err),
+    }
 }
 
 /// The release document as the public detail route serves it.
@@ -16349,6 +16420,32 @@ struct PublishHubAssetRequest {
     initial_data_paths: Vec<String>,
 }
 
+/// A presentation edit as the route receives it.
+///
+/// Absent is not empty here. Presentation was split out of the release so a
+/// typo costs an update rather than a version bump, and a request that blanked
+/// every field it did not mention would put that cost straight back.
+#[derive(Debug, Default, Deserialize, serde::Serialize)]
+struct UpdateHubPresentationRequest {
+    #[serde(default)]
+    publisher_token: String,
+    #[serde(default)]
+    summary: Option<String>,
+    #[serde(default)]
+    description_md: Option<String>,
+    #[serde(default)]
+    image_file_path: Option<String>,
+    #[serde(default)]
+    gallery: Option<crate::platform::model::HubAssetGallery>,
+}
+
+/// Why a publisher withdrew a package, carried on the retraction request.
+#[derive(Debug, Default, Deserialize, serde::Serialize)]
+struct RetractHubAssetRequest {
+    #[serde(default)]
+    reason: String,
+}
+
 #[derive(Debug, Deserialize)]
 struct HubPublishQuery {
     #[serde(default)]
@@ -16603,6 +16700,11 @@ fn hub_api_error(err: PlatformError) -> Response {
     } else if err.code == "HUB_VERSION_EXISTS" {
         // Releases are immutable: the version is already there.
         StatusCode::CONFLICT
+    } else if err.code == "HUB_VERSION_RETRACTED" {
+        // The coordinate is still real; its bytes are deliberately gone.
+        StatusCode::GONE
+    } else if err.code == "HUB_TOKEN_SCOPE_INVALID" {
+        StatusCode::BAD_REQUEST
     } else {
         StatusCode::INTERNAL_SERVER_ERROR
     };
@@ -17049,20 +17151,7 @@ async fn api_get_remote_hub_asset(
         )
             .into_response();
     }
-    match state
-        .platform
-        .hub
-        .get_asset_version_artifact(&package_id, &version)
-    {
-        Ok((version_row, artifact)) => Json(json!({
-            "ok": true,
-            "version": public_hub_version_json(&package, &version_row),
-            "presentation": public_hub_presentation_json(&package),
-            "artifact": public_hub_artifact_json(artifact),
-        }))
-        .into_response(),
-        Err(err) => internal_error(err),
-    }
+    hub_asset_detail_response(&state, &package, &package_id, &version)
 }
 
 async fn api_get_remote_hub_artifact(
@@ -17202,20 +17291,7 @@ async fn api_get_public_hub_asset(
         )
             .into_response();
     }
-    match state
-        .platform
-        .hub
-        .get_asset_version_artifact(&package_id, &version)
-    {
-        Ok((version_row, artifact)) => Json(json!({
-            "ok": true,
-            "version": public_hub_version_json(&package, &version_row),
-            "presentation": public_hub_presentation_json(&package),
-            "artifact": public_hub_artifact_json(artifact),
-        }))
-        .into_response(),
-        Err(err) => internal_error(err),
-    }
+    hub_asset_detail_response(&state, &package, &package_id, &version)
 }
 
 async fn api_get_public_hub_media(
@@ -17353,11 +17429,17 @@ async fn api_list_my_hub_assets(
     }
 }
 
+/// Retract every release of one package: `DELETE .../hub/assets/{package_id}`.
+///
+/// The method is still DELETE because that is what a publisher means, but the
+/// act is retraction: the rows survive with a marker, the artifacts do not, and
+/// the coordinates can never be published again.
 async fn api_delete_hub_asset(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
     Path((owner, project, package_id)): Path<(String, String, String)>,
     uri: Uri,
+    body: Option<Json<RetractHubAssetRequest>>,
 ) -> Response {
     if let Err(response) = require_project_api_capability(
         &state,
@@ -17411,9 +17493,15 @@ async fn api_delete_hub_asset(
         )
             .into_response();
     }
-    match state.platform.hub.delete_asset_package(&token, &package_id) {
-        Ok(deleted_versions) => {
-            Json(json!({"ok": true, "deleted_versions": deleted_versions})).into_response()
+    let reason = body.map(|Json(req)| req.reason).unwrap_or_default();
+    match state
+        .platform
+        .hub
+        .retract_asset_package(&token, &package_id, &reason)
+    {
+        Ok(retracted_versions) => {
+            Json(json!({"ok": true, "retracted": true, "retracted_versions": retracted_versions}))
+                .into_response()
         }
         Err(err) => hub_api_error(err),
     }
@@ -17669,6 +17757,74 @@ async fn api_review_hub_publish_asset(
     }
 }
 
+/// Edit the mutable half of a published package, touching no release.
+///
+/// `PATCH .../hub/assets/{package_id}/presentation`, publisher-scoped with the
+/// same token as publish. This is the endpoint the presentation split was made
+/// for: without it, presentation is mutable in the design and immutable in
+/// practice, and fixing a description costs a version bump.
+async fn api_update_hub_asset_presentation(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((owner, project, package_id)): Path<(String, String, String)>,
+    uri: Uri,
+    Json(req): Json<UpdateHubPresentationRequest>,
+) -> Response {
+    if let Err(response) = require_project_api_capability(
+        &state,
+        &headers,
+        &owner,
+        &project,
+        ProjectCapability::PipelinesWrite,
+    ) {
+        return response;
+    }
+    match maybe_forward_project_json_to_worker(
+        &state,
+        &uri,
+        &headers,
+        Method::PATCH,
+        &req,
+        &owner,
+        &project,
+    )
+    .await
+    {
+        Ok(Some(response)) => return response,
+        Ok(None) => {}
+        Err(err) => return internal_error(err),
+    }
+    let token = match authenticate_project_hub_publish_token(
+        &state,
+        &headers,
+        &owner,
+        &project,
+        &req.publisher_token,
+    ) {
+        Ok(token) => token,
+        Err(response) => return response,
+    };
+    match state.platform.hub.update_asset_presentation(
+        &token,
+        &owner,
+        &project,
+        &package_id,
+        &crate::platform::services::hub::HubPresentationUpdate {
+            summary: req.summary,
+            description_md: req.description_md,
+            image_file_path: req.image_file_path,
+            gallery: req.gallery,
+        },
+    ) {
+        Ok(package) => Json(json!({
+            "ok": true,
+            "presentation": public_hub_presentation_json(&package),
+        }))
+        .into_response(),
+        Err(err) => hub_api_error(err),
+    }
+}
+
 async fn api_install_hub_asset(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
@@ -17864,10 +18020,14 @@ async fn api_public_remote_publish_hub_asset(
     }
 }
 
+/// Retract every release of one package: `DELETE /api/hub/remote/assets/{id}`.
+///
+/// See `api_delete_hub_asset`: DELETE withdraws the bytes, never the coordinates.
 async fn api_public_delete_hub_asset(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
     Path(package_id): Path<String>,
+    body: Option<Json<RetractHubAssetRequest>>,
 ) -> Response {
     let Some(token_value) = bearer_token_from_headers(&headers) else {
         return (
@@ -17882,9 +18042,15 @@ async fn api_public_delete_hub_asset(
         Ok(token) => token,
         Err(err) => return hub_api_error(err),
     };
-    match state.platform.hub.delete_asset_package(&token, &package_id) {
-        Ok(deleted_versions) => {
-            Json(json!({"ok": true, "deleted_versions": deleted_versions})).into_response()
+    let reason = body.map(|Json(req)| req.reason).unwrap_or_default();
+    match state
+        .platform
+        .hub
+        .retract_asset_package(&token, &package_id, &reason)
+    {
+        Ok(retracted_versions) => {
+            Json(json!({"ok": true, "retracted": true, "retracted_versions": retracted_versions}))
+                .into_response()
         }
         Err(err) => hub_api_error(err),
     }
@@ -23687,6 +23853,9 @@ fn internal_error(err: PlatformError) -> Response {
         // A published release is immutable, so a republish is a conflict with
         // what is already there, not a malformed request.
         "HUB_VERSION_EXISTS" => StatusCode::CONFLICT,
+        // Retraction destroyed the bytes and kept the coordinate, which is what
+        // 410 says and 404 would not.
+        "HUB_VERSION_RETRACTED" => StatusCode::GONE,
         "HUB_TOKEN_INVALID"
         | "HUB_ARTIFACT_PATH_INVALID"
         | "HUB_PUBLISH_INVALID"

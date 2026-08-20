@@ -258,10 +258,24 @@ pub trait DataAdapter: Send + Sync {
         let _ = (package_id, version);
         Ok(None)
     }
-    /// Delete one hub package and all of its versions.
-    fn delete_hub_asset_package(&self, package_id: &str) -> Result<(), PlatformError> {
-        let _ = package_id;
-        Ok(())
+    /// Mark one release retracted: its bytes are gone, its coordinate is not.
+    ///
+    /// There is deliberately no delete beside this. Release immutability is
+    /// enforced against the rows that exist, so removing a row would free
+    /// `package@version` to be published again with different content, and any
+    /// lockfile pinning the old digest would report a tampered dependency.
+    fn retract_hub_asset_version(
+        &self,
+        package_id: &str,
+        version: &str,
+        retracted_at: i64,
+        reason: &str,
+    ) -> Result<(), PlatformError> {
+        let _ = (package_id, version, retracted_at, reason);
+        Err(PlatformError::new(
+            "PLATFORM_ADAPTER_UNAVAILABLE",
+            "hub package versions are not supported by this adapter",
+        ))
     }
     /// Upsert one hub token.
     fn put_hub_token(&self, token: &HubToken) -> Result<(), PlatformError> {

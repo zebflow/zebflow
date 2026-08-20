@@ -682,6 +682,44 @@ mod tests {
     }
 
     #[test]
+    fn a_project_without_a_declared_layout_keeps_a_layout_free_file() {
+        let root = tempfile::tempdir().unwrap();
+        let service = ProjectConfigurationService::new(root.path().join("users"));
+        service
+            .ensure_initialized("owner", "project", "Untouched")
+            .unwrap();
+
+        let written = std::fs::read_to_string(service.config_path("owner", "project")).unwrap();
+        let written: serde_yaml_ng::Value = serde_yaml_ng::from_str(&written).unwrap();
+        assert!(written["spec"].get("layout").is_none());
+
+        let config = service.read_or_default("owner", "project").unwrap();
+        assert_eq!(
+            config.layout(),
+            crate::platform::model::ResolvedProjectLayout::platform_default()
+        );
+    }
+
+    #[test]
+    fn a_declared_layout_survives_an_unrelated_configuration_update() {
+        let root = tempfile::tempdir().unwrap();
+        let service = ProjectConfigurationService::new(root.path().join("users"));
+        service
+            .update("owner", "project", |cfg| {
+                cfg.configs.layout.source = Some("src".to_string());
+            })
+            .unwrap();
+        service
+            .set_project_title("owner", "project", "Renamed")
+            .unwrap();
+
+        let config = service.read_or_default("owner", "project").unwrap();
+        assert_eq!(config.metadata.title, "Renamed");
+        assert_eq!(config.configs.layout.source.as_deref(), Some("src"));
+        assert_eq!(config.layout().docs, "docs");
+    }
+
+    #[test]
     fn concurrent_updates_preserve_independent_changes() {
         let root = tempfile::tempdir().unwrap();
         let service = Arc::new(ProjectConfigurationService::new(root.path().join("users")));

@@ -191,7 +191,9 @@ attribution for credit and contact, not a trust boundary.
 | Artifact location | `HubArtifactChannel` | the channel's answer to "where are the referenced bytes": a local base directory, or a refusal that says why |
 | Reader, artifact | `HubArtifactChannel::resolve` | reads `<base>/artifacts/<sha256>`, checks the declared size, and verifies the digest |
 | Writer, artifact | `HubService::store_artifact` | puts bytes into this instance's Hub store, content-addressed, and returns the digest |
-| Writer, publish | `publish_asset` | builds a manifest, writes an artifact file, records a version row; refuses a version that already exists |
+| Writer, publish | `publish_asset` | builds a manifest, writes an artifact file, records a version row; refuses a version that already exists or was retracted, and carries forward presentation it was not given |
+| Writer, presentation | `update_asset_presentation` | writes the mutable package row and never a release |
+| Writer, retraction | `retract_asset_package` | marks the rows retracted, then destroys the release artifacts |
 | Writer, encode | `encode_hub_artifact` | wraps a spec in the envelope |
 | Reader, bytes | `parse_hub_artifact_bytes` | Hub store and remote pack |
 | Reader, value | `parse_hub_artifact_value` | direct payload, including local node bundle install |
@@ -277,18 +279,49 @@ longer moves the column either — `put_hub_asset_version` leaves `created_at` o
 of its conflict update, so a rewrite that somehow reaches the adapter still
 cannot change when a release was created.
 
-### Delete removes a whole package, and frees its versions to be republished
+### Delete freed a package's versions for reuse — fixed
 
-`delete_asset_package` is the only delete path: it takes a `package_id`, drops
-every version row and every artifact for it, and returns the count. There is no
-per-version delete, so a publisher cannot retract `1.0.1` alone.
+`delete_asset_package` dropped every version row and every artifact for a
+`package_id`. Because immutability is enforced against the rows that exist,
+republishing any version the package had held was then allowed again — the same
+lockfile-invalidating failure `enforce_release_immutability` exists to prevent,
+reached in two steps rather than one.
 
-After a package is deleted, republishing any version it held is allowed again,
-because immutability is enforced against the rows that exist. Registries treat
-this as a separate decision from immutability — npm allows unpublish only inside
-a 72-hour window and then blocks the name and version forever, Cargo never
-deletes and only yanks. Zebflow has taken no such decision yet, so the behaviour
-is left as found and recorded here.
+Deletion is now retraction. `retract_asset_package` marks every version row and
+the package row retracted, with the moment and the publisher's reason, and only
+then removes the release artifacts; the markers land before the bytes go.
+`HUB_VERSION_RETRACTED` refuses a republish of a retracted coordinate, and the
+artifact and install paths answer `410 Gone` with the reason. The route is still
+`DELETE`, because that is what a publisher means by it.
+
+There is still no per-release retraction: it takes a `package_id`, so a
+publisher cannot withdraw `1.0.1` alone.
+
+### Presentation was mutable in the design and immutable in practice — fixed
+
+No endpoint updated a package row's presentation, and the only writer that
+existed worked against the decision: `publish_asset` set `summary` and
+`description_md` empty on every publish and rebuilt `image_url`, `media`, and
+`gallery` from `image_file_path` alone, so publishing a new version erased the
+long description and dropped the cover unless it was re-supplied. Correcting a
+typo therefore cost a version bump, which is the cost the split was made to
+remove.
+
+`PATCH /api/projects/{owner}/{project}/hub/assets/{package_id}/presentation`
+(`update_asset_presentation`) now writes the package row and no release,
+authorised by the same publisher token as publish, with every field optional and
+an omitted field left alone. Publish carries forward the presentation it does not
+supply, and a supplied cover replaces the cover entry rather than the whole
+gallery.
+
+### Unrecognised token scopes were dropped silently — fixed
+
+`normalize_scopes` filtered to the three known scopes and discarded the rest, so
+a token created with `["read","publish"]` succeeded holding `[]` and failed much
+later, at a different endpoint, as `HUB_TOKEN_FORBIDDEN / scope missing`. An
+unknown scope is now `HUB_TOKEN_SCOPE_INVALID` (HTTP 400) naming the offending
+value and the accepted set, and a token with no usable scope is refused rather
+than issued.
 
 ## Still to review
 
@@ -307,9 +340,10 @@ is left as found and recorded here.
 - how a publisher puts a *content* artifact into the store. Covers now go
   through `store_artifact`, but `publish_asset` still carries every entry in
   `spec.files` inline, so nothing yet produces a referenced package
-- presentation is not garbage-collected. Deleting a package drops its version
-  rows and release artifacts; a cover it was the only referent of stays in the
-  content-addressed store, because the store is shared and nothing counts
-  references yet
-- implementing retraction: deleting artifact bytes while keeping the coordinates,
-  the retracted marker, and a clear install failure
+- presentation is not garbage-collected. Retracting a package removes its release
+  artifacts; a cover it was the only referent of stays in the content-addressed
+  store, because the store is shared and nothing counts references yet. A
+  retracted package stays explorable, so keeping the cover is currently the
+  wanted behaviour rather than a leak
+- per-release retraction. Retraction takes a `package_id` and withdraws every
+  release the package holds

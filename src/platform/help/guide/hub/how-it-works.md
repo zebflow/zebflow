@@ -209,6 +209,50 @@ digest, and a digest only means something when the bytes it names cannot change
 underneath it. If a release could be overwritten, every project that pinned it
 would report a tampered dependency the next time it checked.
 
+## Presentation
+
+A release carries what installing it requires. Everything a human reads while
+choosing — summary, long-form markdown, cover, gallery — lives on the mutable
+package row beside it, and is edited without publishing anything:
+
+```text
+PATCH /api/projects/{owner}/{project}/hub/assets/{package_id}/presentation
+{ "summary": "...", "description_md": "...", "image_file_path": "...", "gallery": { ... } }
+```
+
+Authorised by the same publisher token as publish. Every field is optional and
+an omitted field is left alone. No release, digest, or creation time moves.
+
+Publishing follows the same rule: a publish that carries no summary, no
+description, and no `image_file_path` leaves the existing presentation exactly
+as it was.
+
+## Retraction
+
+`DELETE /api/hub/remote/assets/{package_id}` retracts. It does not delete.
+
+The artifact bytes of every release are destroyed. The package and version rows
+survive, marked retracted with a timestamp and the publisher's reason, and
+`package@version` can never be published again — a second publish of a retracted
+coordinate is refused with `HUB_VERSION_RETRACTED`.
+
+Freeing the coordinates would have been the hole in immutability: a lockfile
+pinning the old digest would report a tampered dependency for content that was
+simply republished. Keeping them means a coordinate always names one thing, or
+nothing.
+
+A retracted release stays listed and explorable. Its detail response still
+describes it, with `artifact: null` and the retracted marker saying why; the
+artifact and install routes answer `410 Gone`.
+
+## Token scopes
+
+A hub token holds `hub:read`, `hub:publish`, `hub:manage`, or a combination.
+Any other value is refused at creation with `HUB_TOKEN_SCOPE_INVALID` (HTTP
+400), naming the value and the accepted set, and a token with no usable scope is
+refused too. A scope the publisher record does not grant is refused with
+`HUB_PUBLISHER_SCOPE_DENIED`.
+
 ## Storage
 
 Hub operational state lives under the platform data root:

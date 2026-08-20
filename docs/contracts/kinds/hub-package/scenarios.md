@@ -874,40 +874,43 @@ copy still verifies.
 
 ### 6.2 Fixing a typo without a version bump
 
-**Not built.** This is the decision the presentation split was made *for*, and
-it is the one with nothing behind it.
+**Runs today.** This is the decision the presentation split was made *for*.
 
-The intent: a comma in the long description is presentation, presentation lives
-on the mutable `HubAssetPackage` row, so correcting it should be a write to that
-row and should not touch any release or any digest.
+A comma in the long description is presentation, presentation lives on the
+mutable `HubAssetPackage` row, so correcting it is a write to that row and
+touches no release and no digest.
 
-```text
-PATCH /api/projects/{owner}/{project}/hub/assets/{package_id}/presentation
-{ "summary": "…", "description_md": "…", "gallery": { … } }
+```bash
+curl -s -b /tmp/zf.txt -X PATCH -H "Content-Type: application/json" \
+  -d '{"summary":"Webhook to invoice PDF.","publisher_token":"zfmt_mkt_4f1c9a2b_..."}' \
+  http://studio.example/api/projects/acme/billing/hub/assets/invoice-tools/presentation
 ```
 
-> **That route does not exist.** No endpoint anywhere updates a package row's
-> presentation. Searching the router for `hub/assets` returns list, delete,
-> preview, publish, publish-review, add, and review, and nothing else.
->
-> **And the only writer that exists actively works against the decision.**
-> `publish_asset` rewrites the whole package row on every publish. It sets
-> `summary: String::new()` and `description_md: String::new()` unconditionally,
-> and it rebuilds `image_url`, `media`, and `gallery` from `image_file_path`
-> alone. Consequences, all reachable today on a local Hub:
->
-> - a local publish can never set a long description at all; only the remote
->   publish route (`import_remote_asset`, which reads `summary` and
->   `description_md` off `RemoteHubPublishRequest`) can;
-> - publishing 1.1.0 **erases** any long description the package had;
-> - publishing 1.1.0 without re-supplying `image_file_path` **erases the cover**,
->   because `hub_cover_webp_from_path` returns `None` for an empty path and the
->   row is written with `media: []` and `image_url: ""`.
->
-> So today, presentation is editable only by publishing a new version, which is
-> exactly the coupling the split was designed to break. The decision is sound and
-> unimplemented; the README's mutability column reads as description and is
-> currently intent.
+```json
+{
+  "ok": true,
+  "presentation": {
+    "summary": "Webhook to invoice PDF.",
+    "description_md": "…unchanged…",
+    "image_url": "/api/hub/remote/assets/acme.invoice-tools/media/cover.webp",
+    "gallery": { "cover": { "kind": "image", "media_name": "cover.webp", "alt": "" } },
+    "media": [ { "name": "cover.webp", "role": "cover", "…": "…" } ]
+  }
+}
+```
+
+`update_asset_presentation` is authorised by the same publisher token as
+publish, and every field of the body is optional: an omitted field is left
+alone. Nothing in it reads or writes a `HubAssetVersion` or an artifact under
+`packages/`, which is the property the split exists for.
+
+The publish path follows the same rule. `publish_asset` used to set
+`summary: String::new()` and `description_md: String::new()` unconditionally and
+rebuild `image_url`, `media`, and `gallery` from `image_file_path` alone, so
+publishing 1.1.0 erased the long description and dropped the cover unless it was
+re-supplied. It now reads the existing package row first and carries forward
+what the publish does not carry; a supplied cover replaces the cover entry and
+leaves other media and gallery items alone.
 
 ---
 
@@ -994,50 +997,71 @@ WASM module that motivated the design still cannot be distributed end to end.
 
 ## 8. Retraction
 
-**Not built.** Decided in the README, nothing performs it.
+**Partly runs.** Retraction is per package; per-release retraction is not built.
 
-The intended act: a publisher withdraws the bytes of one release while its
-coordinates survive.
+The act: a publisher withdraws the bytes while the coordinates survive.
 
 | Survives | Removed |
 | --- | --- |
 | `acme.invoice-tools` and `1.1.0` as a listed, explorable coordinate | the release document |
-| title, description, publisher | referenced artifacts only this release used |
-| the retracted marker and its reason | |
+| title, description, publisher, presentation | referenced artifacts only this release used |
+| the retracted marker, its timestamp, and its reason | |
 
-`acme.invoice-tools@1.1.0` can never be reused. A project pinning it sees why
-rather than a missing file, and the install fails with a clear reason.
+```bash
+curl -s -X DELETE -H "Authorization: Bearer zfmt_…" \
+  -H "Content-Type: application/json" -d '{"reason":"leaked an API key"}' \
+  http://studio.example/api/hub/remote/assets/acme.invoice-tools
+```
 
-> **What exists instead is whole-package delete**, and it has the opposite
-> property in one important respect.
->
-> ```bash
-> curl -s -X DELETE -H "Authorization: Bearer zfmt_…" \
->   http://studio.example/api/hub/remote/assets/acme.invoice-tools
-> ```
->
-> ```json
-> { "ok": true, "deleted_versions": 2 }
-> ```
->
-> `delete_asset_package` takes a `package_id`, drops **every** version row and
-> **every** release artifact for it, and returns the count. There is no
-> per-version delete, so 1.1.0 cannot be withdrawn while 1.0.0 stays.
->
-> And because `enforce_release_immutability` checks the rows that exist, deleting
-> the package **frees every version string to be published again**. After the
-> delete above, `acme.invoice-tools@1.0.0` may be republished with entirely
-> different content. A `zeb.lock` pinning the old digest then reports a tampered
-> dependency — the exact failure §6.1 prevents, reachable by deleting first.
->
-> Registries treat this as a decision separate from immutability: npm allows
-> unpublish in a 72-hour window then blocks the name and version forever; Cargo
-> never deletes and only yanks. Zebflow has taken no such decision, and the
-> behaviour above is the untaken decision's default.
+```json
+{ "ok": true, "retracted": true, "retracted_versions": 2 }
+```
 
-Also missing on this path: the release artifacts are deleted but a cover in the
-content-addressed store is not, because the store is shared and nothing counts
-references.
+The method is still `DELETE`, because that is what a publisher means, but
+`retract_asset_package` performs a retraction: it marks every version row
+retracted with the moment and the reason, marks the package row, and only then
+removes the artifact files. The markers land before the bytes go, so an
+interrupted retraction leaves rows that still point at readable artifacts rather
+than releases that read as live and cannot be served.
+
+`acme.invoice-tools@1.0.0` can now never be reused. `enforce_release_immutability`
+checks the rows that exist, and the rows still exist, so a republish of a
+retracted coordinate is refused:
+
+```json
+{
+  "ok": false,
+  "error": {
+    "code": "HUB_VERSION_RETRACTED",
+    "message": "acme.invoice-tools@1.0.0 was retracted and its coordinates can never be reused; publish a new version"
+  }
+}
+```
+
+Freeing the coordinates would have been the hole in immutability — a `zeb.lock`
+pinning the old digest would report a tampered dependency for content that was
+merely republished, the exact failure §6.1 prevents. npm reaches the same place
+by blocking a name and version forever after unpublish; Cargo by never deleting
+and only yanking.
+
+A retracted release stays explorable. `GET .../assets/{id}/{version}` answers
+`200` with the version described, the presentation intact, `artifact: null`, and
+the retracted marker saying why; `.../artifact` and the install paths answer
+`410 Gone` with `HUB_VERSION_RETRACTED` and the publisher's reason. Listings keep
+the package and report `latest_version: ""` when nothing installable is left.
+
+Publishing a *new* version of a retracted package is allowed and clears the
+package-level marker: the package has live content again. The retracted version
+rows keep their own markers, and `retract_hub_asset_version` is the only writer
+of them and never clears one.
+
+> **Not built: per-release retraction.** Retraction takes a `package_id`, so
+> 1.1.0 cannot be withdrawn while 1.0.0 stays.
+>
+> **Not built: reference counting for presentation.** The release artifacts are
+> removed but a cover in the content-addressed store is not, because the store is
+> shared and nothing counts references. This is deliberate here — a retracted
+> package stays explorable, and its cover is part of what stays.
 
 ---
 
@@ -1169,12 +1193,12 @@ document paths, refuses on a violation. `distribution.md` §3 says every channel
 that installs into a project runs the same review; one of them does not run it at
 all. (§2.2, §4)
 
-**3. Presentation is mutable in the design and immutable in practice.** There is
-no endpoint to edit a package row's presentation. The only writer is
-`publish_asset`, which clears `summary` and `description_md` on every publish and
-drops the cover unless `image_file_path` is re-supplied. Fixing a typo therefore
-costs a version bump today — the exact cost the presentation split was made to
-remove. (§6.2)
+**3. Presentation was mutable in the design and immutable in practice — fixed.**
+There was no endpoint to edit a package row's presentation, and the only writer,
+`publish_asset`, cleared `summary` and `description_md` on every publish and
+dropped the cover unless `image_file_path` was re-supplied. `PATCH
+.../hub/assets/{package_id}/presentation` now writes the row and no release, and
+a publish carries forward the presentation it does not supply. (§6.2)
 
 **4. `zeb.lock` does not record a release digest.** The node bundle entry's
 `integrity` is a digest of the installed directory tree. Nothing records the
@@ -1183,12 +1207,13 @@ release they hold is the release that was published; they can only confirm the
 document is internally consistent with the digest the same source handed them.
 `distribution.md` §4's integrity row is not yet true for this kind. (§3, §5.4)
 
-**5. Delete frees version strings for reuse.** Whole-package delete drops every
-row, and immutability is enforced against rows that exist, so after a delete any
-prior version may be republished with different content. This is the same
-lockfile-invalidating failure that §6.1 exists to prevent, reachable in two
-steps. Retraction, which was designed precisely to avoid it, is unimplemented.
-(§8)
+**5. Delete freed version strings for reuse — fixed.** Whole-package delete
+dropped every row, and immutability is enforced against rows that exist, so
+after a delete any prior version could be republished with different content —
+the same lockfile-invalidating failure §6.1 exists to prevent, reachable in two
+steps. Delete is now retraction: the rows survive marked, the bytes go, and a
+retracted coordinate is refused with `HUB_VERSION_RETRACTED`. Per-release
+retraction is still not built. (§8)
 
 **6. Referenced artifacts have no producer and no reachable consumer.** The
 format accepts them, `HubArtifactChannel::local` resolves and verifies them, and
@@ -1196,6 +1221,13 @@ format accepts them, `HubArtifactChannel::local` resolves and verifies them, and
 the only route that accepts a local document uses the unresolvable channel, and
 HTTP fetching does not exist. The 32 MB WASM module in the golden fixture cannot
 be distributed by any path that currently has an entry point. (§7)
+
+**7a. Unrecognised token scopes were dropped silently — fixed.**
+`normalize_scopes` lowercased and filtered to the three known scopes, so a token
+created with `["read","publish"]` stored `[]` and failed much later, at a
+different endpoint, as `HUB_TOKEN_FORBIDDEN / scope missing`. An unknown scope is
+now a `HUB_TOKEN_SCOPE_INVALID` request error naming the value and the accepted
+set, and a token with no usable scope is refused too.
 
 **7. One route reports refusals as HTTP 200.**
 `api_install_local_node_bundle` and `api_review_local_node_bundle` return

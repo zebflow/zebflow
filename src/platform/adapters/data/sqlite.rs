@@ -194,6 +194,8 @@ CREATE TABLE IF NOT EXISTS hub_asset_packages (
     gallery_json     TEXT NOT NULL DEFAULT '{}',
     visibility       TEXT NOT NULL DEFAULT 'private',
     tags_json        TEXT NOT NULL DEFAULT '[]',
+    retracted_at     INTEGER,
+    retracted_reason TEXT NOT NULL DEFAULT '',
     created_at       INTEGER NOT NULL DEFAULT 0,
     updated_at       INTEGER NOT NULL DEFAULT 0,
     FOREIGN KEY (authority_id) REFERENCES hub_authorities(authority_id)
@@ -218,6 +220,8 @@ CREATE TABLE IF NOT EXISTS hub_asset_versions (
     artifact_rel_path TEXT NOT NULL DEFAULT '',
     artifact_sha256   TEXT NOT NULL DEFAULT '',
     manifest_json     TEXT NOT NULL DEFAULT 'null',
+    retracted_at      INTEGER,
+    retracted_reason  TEXT NOT NULL DEFAULT '',
     created_at        INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (package_id, version),
     FOREIGN KEY (package_pk) REFERENCES hub_asset_packages(package_pk)
@@ -2581,8 +2585,23 @@ CREATE INDEX IF NOT EXISTS idx_platform_service_instances_host
             ("image_url", "TEXT NOT NULL DEFAULT ''"),
             ("media_json", "TEXT NOT NULL DEFAULT '[]'"),
             ("gallery_json", "TEXT NOT NULL DEFAULT '{}'"),
+            ("retracted_at", "INTEGER"),
+            ("retracted_reason", "TEXT NOT NULL DEFAULT ''"),
         ] {
             Self::ensure_table_column(conn, "hub_asset_packages", column, definition)?;
+        }
+        Ok(())
+    }
+
+    fn ensure_hub_asset_version_columns<C>(conn: &C) -> Result<(), PlatformError>
+    where
+        C: std::ops::Deref<Target = Connection>,
+    {
+        for (column, definition) in [
+            ("retracted_at", "INTEGER"),
+            ("retracted_reason", "TEXT NOT NULL DEFAULT ''"),
+        ] {
+            Self::ensure_table_column(conn, "hub_asset_versions", column, definition)?;
         }
         Ok(())
     }
@@ -3882,8 +3901,8 @@ impl DataAdapter for SqliteDataAdapter {
         let gallery_json = serde_json::to_string(&package.gallery).map_err(Self::json_error)?;
         conn.execute(
             "INSERT INTO hub_asset_packages
-             (package_pk, authority_id, publisher_pk, package_id, authority_owner, authority_project, publisher_owner, publisher_id, publisher_display_name, publisher_url, publisher_email, asset_kind, title, description, summary, description_md, image_url, media_json, gallery_json, visibility, tags_json, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23)
+             (package_pk, authority_id, publisher_pk, package_id, authority_owner, authority_project, publisher_owner, publisher_id, publisher_display_name, publisher_url, publisher_email, asset_kind, title, description, summary, description_md, image_url, media_json, gallery_json, visibility, tags_json, retracted_at, retracted_reason, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25)
              ON CONFLICT(package_id) DO UPDATE SET
                  package_pk = excluded.package_pk,
                  authority_id = excluded.authority_id,
@@ -3905,6 +3924,8 @@ impl DataAdapter for SqliteDataAdapter {
                  gallery_json = excluded.gallery_json,
                  visibility = excluded.visibility,
                  tags_json = excluded.tags_json,
+                 retracted_at = excluded.retracted_at,
+                 retracted_reason = excluded.retracted_reason,
                  created_at = excluded.created_at,
                  updated_at = excluded.updated_at",
             params![
@@ -3929,6 +3950,8 @@ impl DataAdapter for SqliteDataAdapter {
                 &gallery_json,
                 &package.visibility,
                 &tags_json,
+                package.retracted_at,
+                &package.retracted_reason,
                 package.created_at,
                 package.updated_at,
             ],
@@ -3942,7 +3965,7 @@ impl DataAdapter for SqliteDataAdapter {
         Self::ensure_hub_asset_package_columns(&conn)?;
         let mut stmt = conn
             .prepare(
-                "SELECT package_pk, authority_id, publisher_pk, package_id, authority_owner, authority_project, publisher_owner, publisher_id, publisher_display_name, publisher_url, publisher_email, asset_kind, title, description, summary, description_md, image_url, media_json, gallery_json, visibility, tags_json, created_at, updated_at
+                "SELECT package_pk, authority_id, publisher_pk, package_id, authority_owner, authority_project, publisher_owner, publisher_id, publisher_display_name, publisher_url, publisher_email, asset_kind, title, description, summary, description_md, image_url, media_json, gallery_json, visibility, tags_json, retracted_at, retracted_reason, created_at, updated_at
                  FROM hub_asset_packages
                  ORDER BY updated_at DESC, package_id ASC",
             )
@@ -3972,8 +3995,10 @@ impl DataAdapter for SqliteDataAdapter {
                     visibility: row.get(19)?,
                     tags: serde_json::from_str::<Vec<String>>(&row.get::<_, String>(20)?)
                         .unwrap_or_default(),
-                    created_at: row.get(21)?,
-                    updated_at: row.get(22)?,
+                    retracted_at: row.get(21)?,
+                    retracted_reason: row.get(22)?,
+                    created_at: row.get(23)?,
+                    updated_at: row.get(24)?,
                 })
             })
             .map_err(Self::qe)?
@@ -3990,7 +4015,7 @@ impl DataAdapter for SqliteDataAdapter {
         Self::ensure_hub_asset_package_columns(&conn)?;
         let mut stmt = conn
             .prepare(
-                "SELECT package_pk, authority_id, publisher_pk, package_id, authority_owner, authority_project, publisher_owner, publisher_id, publisher_display_name, publisher_url, publisher_email, asset_kind, title, description, summary, description_md, image_url, media_json, gallery_json, visibility, tags_json, created_at, updated_at
+                "SELECT package_pk, authority_id, publisher_pk, package_id, authority_owner, authority_project, publisher_owner, publisher_id, publisher_display_name, publisher_url, publisher_email, asset_kind, title, description, summary, description_md, image_url, media_json, gallery_json, visibility, tags_json, retracted_at, retracted_reason, created_at, updated_at
                  FROM hub_asset_packages WHERE package_id = ?1",
             )
             .map_err(Self::qe)?;
@@ -4018,8 +4043,10 @@ impl DataAdapter for SqliteDataAdapter {
                 visibility: row.get(19)?,
                 tags: serde_json::from_str::<Vec<String>>(&row.get::<_, String>(20)?)
                     .unwrap_or_default(),
-                created_at: row.get(21)?,
-                updated_at: row.get(22)?,
+                retracted_at: row.get(21)?,
+                retracted_reason: row.get(22)?,
+                created_at: row.get(23)?,
+                updated_at: row.get(24)?,
             })
         }) {
             Ok(item) => Ok(Some(item)),
@@ -4034,13 +4061,18 @@ impl DataAdapter for SqliteDataAdapter {
     /// when the release was first published and must survive for the life of
     /// the version. The hub service already refuses a republish outright
     /// (`HUB_VERSION_EXISTS`); this keeps the column honest regardless.
+    ///
+    /// The retraction columns are left out for the same reason, and one more:
+    /// retraction is one-way, so no write through this path may clear a marker
+    /// and hand a withdrawn coordinate back.
     fn put_hub_asset_version(&self, version: &HubAssetVersion) -> Result<(), PlatformError> {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        Self::ensure_hub_asset_version_columns(&conn)?;
         let manifest_json = serde_json::to_string(&version.manifest).map_err(Self::json_error)?;
         conn.execute(
             "INSERT INTO hub_asset_versions
-             (package_pk, package_id, version, authority_owner, authority_project, publisher_owner, publisher_id, source_owner, source_project, source_kind, source_ref, artifact_rel_path, artifact_sha256, manifest_json, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
+             (package_pk, package_id, version, authority_owner, authority_project, publisher_owner, publisher_id, source_owner, source_project, source_kind, source_ref, artifact_rel_path, artifact_sha256, manifest_json, retracted_at, retracted_reason, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)
              ON CONFLICT(package_id, version) DO UPDATE SET
                  package_pk = excluded.package_pk,
                  authority_owner = excluded.authority_owner,
@@ -4069,6 +4101,8 @@ impl DataAdapter for SqliteDataAdapter {
                 &version.artifact_rel_path,
                 &version.artifact_sha256,
                 &manifest_json,
+                version.retracted_at,
+                &version.retracted_reason,
                 version.created_at,
             ],
         )
@@ -4081,9 +4115,10 @@ impl DataAdapter for SqliteDataAdapter {
         package_id: &str,
     ) -> Result<Vec<HubAssetVersion>, PlatformError> {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        Self::ensure_hub_asset_version_columns(&conn)?;
         let mut stmt = conn
             .prepare(
-                "SELECT package_pk, package_id, version, authority_owner, authority_project, publisher_owner, publisher_id, source_owner, source_project, source_kind, source_ref, artifact_rel_path, artifact_sha256, manifest_json, created_at
+                "SELECT package_pk, package_id, version, authority_owner, authority_project, publisher_owner, publisher_id, source_owner, source_project, source_kind, source_ref, artifact_rel_path, artifact_sha256, manifest_json, retracted_at, retracted_reason, created_at
                  FROM hub_asset_versions WHERE package_id = ?1
                  ORDER BY created_at DESC, version DESC",
             )
@@ -4106,7 +4141,9 @@ impl DataAdapter for SqliteDataAdapter {
                     artifact_sha256: row.get(12)?,
                     manifest: serde_json::from_str::<Value>(&row.get::<_, String>(13)?)
                         .unwrap_or(Value::Null),
-                    created_at: row.get(14)?,
+                    retracted_at: row.get(14)?,
+                    retracted_reason: row.get(15)?,
+                    created_at: row.get(16)?,
                 })
             })
             .map_err(Self::qe)?
@@ -4121,9 +4158,10 @@ impl DataAdapter for SqliteDataAdapter {
         version: &str,
     ) -> Result<Option<HubAssetVersion>, PlatformError> {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        Self::ensure_hub_asset_version_columns(&conn)?;
         let mut stmt = conn
             .prepare(
-                "SELECT package_pk, package_id, version, authority_owner, authority_project, publisher_owner, publisher_id, source_owner, source_project, source_kind, source_ref, artifact_rel_path, artifact_sha256, manifest_json, created_at
+                "SELECT package_pk, package_id, version, authority_owner, authority_project, publisher_owner, publisher_id, source_owner, source_project, source_kind, source_ref, artifact_rel_path, artifact_sha256, manifest_json, retracted_at, retracted_reason, created_at
                  FROM hub_asset_versions WHERE package_id = ?1 AND version = ?2",
             )
             .map_err(Self::qe)?;
@@ -4144,7 +4182,9 @@ impl DataAdapter for SqliteDataAdapter {
                 artifact_sha256: row.get(12)?,
                 manifest: serde_json::from_str::<Value>(&row.get::<_, String>(13)?)
                     .unwrap_or(Value::Null),
-                created_at: row.get(14)?,
+                retracted_at: row.get(14)?,
+                retracted_reason: row.get(15)?,
+                created_at: row.get(16)?,
             })
         }) {
             Ok(item) => Ok(Some(item)),
@@ -4153,20 +4193,27 @@ impl DataAdapter for SqliteDataAdapter {
         }
     }
 
-    fn delete_hub_asset_package(&self, package_id: &str) -> Result<(), PlatformError> {
-        let mut conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
-        let tx = conn.transaction().map_err(Self::qe)?;
-        tx.execute(
-            "DELETE FROM hub_asset_versions WHERE package_id = ?1",
-            params![package_id],
+    /// Mark one release retracted, and only if it is not already.
+    ///
+    /// The `retracted_at IS NULL` guard makes the write idempotent and keeps
+    /// the first reason and moment, which are the ones a project pinning this
+    /// coordinate needs to read.
+    fn retract_hub_asset_version(
+        &self,
+        package_id: &str,
+        version: &str,
+        retracted_at: i64,
+        reason: &str,
+    ) -> Result<(), PlatformError> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        Self::ensure_hub_asset_version_columns(&conn)?;
+        conn.execute(
+            "UPDATE hub_asset_versions
+                SET retracted_at = ?3, retracted_reason = ?4
+              WHERE package_id = ?1 AND version = ?2 AND retracted_at IS NULL",
+            params![package_id, version, retracted_at, reason],
         )
         .map_err(Self::qe)?;
-        tx.execute(
-            "DELETE FROM hub_asset_packages WHERE package_id = ?1",
-            params![package_id],
-        )
-        .map_err(Self::qe)?;
-        tx.commit().map_err(Self::qe)?;
         Ok(())
     }
 

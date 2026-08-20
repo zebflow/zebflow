@@ -691,6 +691,16 @@ pub struct HubAssetPackage {
     pub visibility: String,
     /// Search tags.
     pub tags: Vec<String>,
+    /// When every release of this package was retracted, if it was.
+    ///
+    /// Retraction destroys the bytes and keeps the coordinates, so this row
+    /// outlives the releases it describes and the package id can never be
+    /// claimed by different content.
+    #[serde(default)]
+    pub retracted_at: Option<i64>,
+    /// Why it was retracted, shown wherever the coordinate is still listed.
+    #[serde(default)]
+    pub retracted_reason: String,
     /// Unix timestamp seconds.
     pub created_at: i64,
     /// Unix timestamp seconds.
@@ -733,6 +743,16 @@ pub struct HubAssetVersion {
     pub artifact_sha256: String,
     /// Serialized manifest/payload metadata.
     pub manifest: serde_json::Value,
+    /// When this release was retracted, if it was.
+    ///
+    /// A retracted release keeps its row so `package@version` stays taken
+    /// forever: the artifact bytes are gone, but the coordinate still means
+    /// this release and nothing else.
+    #[serde(default)]
+    pub retracted_at: Option<i64>,
+    /// Why it was retracted, served wherever the release is still explorable.
+    #[serde(default)]
+    pub retracted_reason: String,
     /// Unix timestamp seconds.
     pub created_at: i64,
 }
@@ -2317,6 +2337,11 @@ pub struct ZebflowJsonMetadata {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 pub struct ZebflowJsonConfigs {
+    /// Skipped when nothing is declared, so an undeclared layout stays absent
+    /// from every serialization of this view rather than appearing as an empty
+    /// object that was never authored.
+    #[serde(default, skip_serializing_if = "ZebflowJsonLayout::is_undeclared")]
+    pub layout: ZebflowJsonLayout,
     #[serde(default)]
     pub rwe: ZebflowJsonRwe,
     #[serde(default)]
@@ -2335,6 +2360,118 @@ pub struct ZebflowJsonConfigs {
     pub data: ZebflowJsonData,
     #[serde(default)]
     pub files: ZebflowJsonFiles,
+}
+
+/// Repository-relative source root: pipelines, pages, styles, and components.
+pub const DEFAULT_LAYOUT_SOURCE_DIR: &str = "pipelines";
+/// Repository-relative directory served for `/assets/{owner}/{project}/...`.
+pub const DEFAULT_LAYOUT_ASSETS_DIR: &str = "pipelines/assets";
+/// Repository-relative directory holding project documentation.
+pub const DEFAULT_LAYOUT_DOCS_DIR: &str = "docs";
+/// Repository-relative directory holding the exported database schema document.
+pub const DEFAULT_LAYOUT_SCHEMA_DIR: &str = "schemas/sekejap";
+/// Repository-relative directory holding third-party node interface documents.
+pub const DEFAULT_LAYOUT_NODE_INTERFACES_DIR: &str = "nodes";
+
+/// Declared repository layout loaded from `zebflow.yaml`.
+///
+/// Every entry is optional and an absent entry means the platform default, so a
+/// project written before this section existed keeps the directories the
+/// platform hardcodes rather than acquiring a declaration it never made.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ZebflowJsonLayout {
+    /// Source root. This is also the RWE template root and the `@/` import root.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub assets: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub docs: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schema: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node_interfaces: Option<String>,
+    /// Prefixes an install replays as initial data, each bound to one engine.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub initial_data: Option<Vec<ZebflowJsonInitialDataDir>>,
+}
+
+/// One initial-data prefix and the database engine that would replay it.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ZebflowJsonInitialDataDir {
+    /// Repository-relative directory prefix.
+    pub path: String,
+    /// Engine name, matching the engine tokens the installer dispatches on.
+    pub engine: String,
+}
+
+/// The default initial-data prefixes, derived from the installer's own table so
+/// a declaration-free project can never resolve to a different set than the one
+/// the installer actually replays.
+pub fn default_initial_data_dirs() -> Vec<ZebflowJsonInitialDataDir> {
+    crate::platform::policy::package::INITIAL_DATA_DIRS
+        .iter()
+        .map(|(path, engine)| ZebflowJsonInitialDataDir {
+            path: (*path).to_string(),
+            engine: (*engine).to_string(),
+        })
+        .collect()
+}
+
+/// The layout a project actually has: every entry resolved to a concrete,
+/// repository-relative directory.
+///
+/// Consumers read this instead of the declaration so that "not declared" is
+/// answered once, here, rather than at each of the places that need a path.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedProjectLayout {
+    pub source: String,
+    pub assets: String,
+    pub docs: String,
+    pub schema: String,
+    pub node_interfaces: String,
+    pub initial_data: Vec<ZebflowJsonInitialDataDir>,
+}
+
+impl ZebflowJsonLayout {
+    /// Returns true when the project declared no layout at all.
+    pub fn is_undeclared(&self) -> bool {
+        *self == Self::default()
+    }
+
+    /// Resolves the declaration against the platform defaults.
+    pub fn resolve(&self) -> ResolvedProjectLayout {
+        let resolved = |declared: &Option<String>, fallback: &str| {
+            declared.clone().unwrap_or_else(|| fallback.to_string())
+        };
+        ResolvedProjectLayout {
+            source: resolved(&self.source, DEFAULT_LAYOUT_SOURCE_DIR),
+            assets: resolved(&self.assets, DEFAULT_LAYOUT_ASSETS_DIR),
+            docs: resolved(&self.docs, DEFAULT_LAYOUT_DOCS_DIR),
+            schema: resolved(&self.schema, DEFAULT_LAYOUT_SCHEMA_DIR),
+            node_interfaces: resolved(&self.node_interfaces, DEFAULT_LAYOUT_NODE_INTERFACES_DIR),
+            initial_data: self
+                .initial_data
+                .clone()
+                .unwrap_or_else(default_initial_data_dirs),
+        }
+    }
+}
+
+impl ResolvedProjectLayout {
+    /// The layout of a project that declares nothing.
+    pub fn platform_default() -> Self {
+        ZebflowJsonLayout::default().resolve()
+    }
+}
+
+impl ZebflowJson {
+    /// Effective repository layout for this project.
+    pub fn layout(&self) -> ResolvedProjectLayout {
+        self.configs.layout.resolve()
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

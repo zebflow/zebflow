@@ -50,7 +50,7 @@ pub use project_bundle::ProjectBundleContract;
 pub use project_configuration::{
     LEGACY_PROJECT_CONFIGURATION_FILE, PROJECT_CONFIGURATION_BACKUP_FILE,
     PROJECT_CONFIGURATION_FILE, ProjectConfigurationContract, ProjectConfigurationSpec,
-    decode_legacy_project_configuration,
+    ProjectInitialDataDirSpec, ProjectLayoutSpec, decode_legacy_project_configuration,
 };
 pub use runtime_bundle::RuntimeBundleContract;
 pub use zebfs_acl::ZebFsAclContract;

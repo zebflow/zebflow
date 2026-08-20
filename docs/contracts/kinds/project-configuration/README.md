@@ -1,6 +1,7 @@
 # ProjectConfiguration
 
-Status: **Frozen** on 2026-08-15
+Status: **Frozen** on 2026-08-15. Amended 2026-08-20 to add optional
+`spec.layout`; see [Version Rules](#version-rules).
 
 `ProjectConfiguration` is the portable, non-secret project configuration stored
 in `repo/zebflow.yaml`. It is tracked with project source and remains useful when
@@ -21,6 +22,7 @@ validation, migration, recovery, fixtures, and documentation.
 | Rust definition | `src/contracts/kinds/project_configuration.rs` |
 | Read and write service | `src/platform/services/project_config.rs` |
 | Golden fixture | `tests/fixtures/contracts/project-configuration/v1-complete.yaml` |
+| Declared layout fixture | `tests/fixtures/contracts/project-configuration/v1-layout.yaml` |
 
 `metadata.name` must be the canonical project slug and must match the project
 slug in the owning path. `metadata.version`, `metadata.digest`, and
@@ -40,6 +42,11 @@ metadata:
 spec:
   profile:
     title: Project Development
+  layout:
+    source: src
+    initial_data:
+    - path: db/seeds
+      engine: sekejap
   rwe: {}
   pipelines:
     logging:
@@ -75,6 +82,7 @@ The full canonical example is the golden fixture linked above.
 | --- | --- | --- |
 | `metadata.name` | Project identity | A display title or release version |
 | `spec.profile` | Display title and description | Authentication or placement state |
+| `spec.layout` | Repository-relative directories the project's own files live in | Absolute paths, platform data directories, or file contents |
 | `spec.rwe` | RWE policy and requested libraries | Resolved library files or integrity hashes |
 | `spec.pipelines` | Pipeline logging retention and node timeout | Pipeline definitions or invocation records |
 | `spec.runtime` | Portable execution and resource intent | Worker IDs, pod names, or live allocation state |
@@ -93,6 +101,28 @@ project credential store.
 entry paths and integrity hashes. They may repeat a requested version and source
 for verification, but they do not own the same decision.
 
+### spec.layout
+
+Every entry is one directory, relative to `repo/`, and every entry is optional.
+An absent entry means the default in [Frozen Defaults](#frozen-defaults), so a
+project that declares no layout describes exactly the directories the platform
+has always used.
+
+`source` is one directory, not two: it is the root that holds pipelines, pages,
+stylesheets, and shared components, and it is the same directory the RWE
+compiler treats as its template root and `@/` import root. `assets` defaults
+inside `source` because that is where the asset routes look today.
+
+`initial_data` is an ordered list of prefixes an install would replay, each
+bound to the database engine that would replay it. Declaring the list replaces
+the default list rather than extending it, so a project that names one prefix
+has exactly one.
+
+The declaration is readable today and is not yet consulted. Discovery,
+placement, and pipeline identity still use the hardcoded directories, so
+declaring a layout that differs from the defaults changes nothing at runtime.
+See [layout.md](./layout.md) for the survey of those hardcoded rules.
+
 ## Integration Map
 
 Every v1 section has one writer path and one runtime owner. Settings controls
@@ -102,6 +132,7 @@ file operations.
 | Section | User-facing writer | Runtime reader or effect |
 | --- | --- | --- |
 | `spec.profile` | Project creation and Settings > General | Project lists, headers, and app metadata |
+| `spec.layout` | No writer; hand-authored in `repo/zebflow.yaml` | None yet. The declaration is readable through `ZebflowJson::layout()`; no consumer reads it, and the directories remain hardcoded |
 | `spec.rwe` | Settings > Policy and Settings > Libraries | RWE compilation, rendering, assets, and editor libraries |
 | `spec.pipelines` | Settings > General and Settings > Logs | Node timeout and bounded invocation retention |
 | `spec.runtime` | Project creation and explicit project configuration edits | Runtime synchronization and placement planning |
@@ -138,6 +169,13 @@ Omitted fields use these v1 meanings:
 
 | Field | Default |
 | --- | --- |
+| `spec.layout` | Every entry below; an absent section declares nothing |
+| `spec.layout.source` | `pipelines` |
+| `spec.layout.assets` | `pipelines/assets` |
+| `spec.layout.docs` | `docs` |
+| `spec.layout.schema` | `schemas/sekejap` |
+| `spec.layout.node_interfaces` | `nodes` |
+| `spec.layout.initial_data` | `initial-data/sekejap`, `initial-data/sqlite`, `init/sekejap`, `init/sqlite`, `seeds/sekejap`, `seeds/sqlite`, each bound to the engine named in its own path |
 | `spec.rwe.minify_html` | `false` |
 | `spec.rwe.strict_mode` | `true` |
 | `spec.pipelines.logging.max_invocations` | Runtime default of 20 |
@@ -165,6 +203,10 @@ The reader rejects:
   events
 - invalid project slugs, paths that escape the project, repeated paths or tags,
   malformed branches, and unsupported URLs
+- layout directories that are empty, absolute, trailing-slashed, glob-bearing,
+  or contain a `.` or `..` segment
+- repeated initial-data prefixes, and initial-data engines other than `sekejap`
+  and `sqlite`
 - URLs with embedded credentials
 - upload, timeout, logging, assistant, replica, or resource values outside their
   documented limits
@@ -205,9 +247,25 @@ For `zebflow.com/v1`:
   changed meaning requires a new contract API version and an explicit converter.
 - The v1 reader never guesses or silently converts another shape.
 
+`spec.layout` was added to `zebflow.com/v1` on 2026-08-20 without a new API
+version, and it is the one recorded exception to the rule above. Every entry is
+optional, an omitted section is the previous behavior exactly, no document that
+was valid before became invalid, and no existing field changed type, default, or
+meaning. A writer omits the whole section when nothing is declared, so files
+written before the section existed are not rewritten. Nothing else may be added
+this way: a field that changes an existing meaning, or whose omission is not the
+previous behavior, still requires a new API version and an explicit converter.
+
 ## Freeze Evidence
 
-- The complete v1 fixture decodes and re-encodes byte for byte.
+- The complete v1 fixture decodes and re-encodes byte for byte, and still does
+  so with no `layout` key present.
+- A declared layout fixture decodes and re-encodes byte for byte.
+- An undeclared layout resolves to the directories the platform hardcodes,
+  including the installer's own initial-data prefix table.
+- A declared layout survives the runtime model conversion and an unrelated
+  configuration update, so no settings write can erase it.
+- A project that declares no layout is not rewritten to carry an empty section.
 - Wrong kind, future version, unknown fields, malformed YAML, and unsafe YAML
   features have negative tests.
 - Complete legacy data maps through a dedicated legacy type.

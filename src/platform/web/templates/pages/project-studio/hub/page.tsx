@@ -358,24 +358,24 @@ export default function Page(input) {
     }
   }
 
-  async function deleteAsset(item) {
+  async function retractAsset(item) {
     const packageId = item?.package_id;
     if (!packageId) return;
     if (!publishForm.publisher_token) {
-      showStatus("Publisher token is required to delete a package.");
+      showStatus("Publisher token is required to retract a package.");
       return;
     }
-    if (!window.confirm(`Delete ${packageId} and all of its versions from the Hub?`)) {
+    if (!window.confirm(`Retract ${packageId}? Its files are destroyed, its name and versions stay listed, and they can never be published again.`)) {
       return;
     }
-    showStatus(`Deleting ${packageId}...`);
+    showStatus(`Retracting ${packageId}...`);
     try {
       const payload = await requestJson(`${api.assets}/${encodeURIComponent(packageId)}`, {
         method: "DELETE",
         headers: { Authorization: `Bearer ${publishForm.publisher_token}` },
       });
       await refresh();
-      showStatus(`Deleted ${packageId} (${payload?.deleted_versions || 0} version(s))`);
+      showStatus(`Retracted ${packageId} (${payload?.retracted_versions || 0} version(s))`);
     } catch (err) {
       showStatus(err?.message || err);
     }
@@ -842,12 +842,14 @@ export default function Page(input) {
                             <StudioTd>{item?.title}</StudioTd>
                             <StudioTd>{item?.asset_kind}</StudioTd>
                             <StudioTd>{item?.latest_version || "-"}</StudioTd>
-                            <StudioTd>{item?.visibility}</StudioTd>
+                            <StudioTd>{item?.retracted ? "retracted" : item?.visibility}</StudioTd>
                             <StudioTd>{fmtTs(item?.updated_at)}</StudioTd>
                             <StudioTd>
-                              <Button type="button" variant="ghost" size="sm" onClick={() => deleteAsset(item)}>
-                                Delete
-                              </Button>
+                              {item?.retracted ? null : (
+                                <Button type="button" variant="ghost" size="sm" onClick={() => retractAsset(item)}>
+                                  Retract
+                                </Button>
+                              )}
                             </StudioTd>
                           </tr>
                         ))}
