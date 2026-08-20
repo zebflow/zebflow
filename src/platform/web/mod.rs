@@ -16808,6 +16808,10 @@ fn hub_api_error(err: PlatformError) -> Response {
         || err.code == "HUB_MEDIA_INVALID"
         || err.code == "HUB_GALLERY_INVALID"
         || err.code == "HUB_INSTALL_SCOPE_INVALID"
+        // A refused publish is a fault in the package the caller sent, and a
+        // publisher who reads 500 fixes nothing.
+        || err.code == "HUB_PUBLISH_REFUSED"
+        || err.code == "HUB_REMOTE_PUBLISH_REFUSED"
     {
         StatusCode::BAD_REQUEST
     } else if err.code == "HUB_ASSET_MISSING"

@@ -52,11 +52,13 @@ destructive seed statement are all warnings.
 
 A **violation** is different. It is not a stronger warning; it means the package
 will not be installed at all, whoever approves it, and the risk level reads
-`blocked`. There are two:
+`blocked`. There are three:
 
 - a pipeline whose bytes the review could not read, because bytes the review
   never saw are bytes the install would still write
 - a file whose type a project's repository does not accept
+- a node bundle declaring a node kind this build already provides, which makes
+  the whole project's node registry fail to load
 
 The second is a file-extension check, not a guess about content. A package may
 write source, documentation, data, and images. It may not write a `.sh`, a
@@ -71,6 +73,23 @@ name whatever the list says, because an install cannot proceed without them.
 
 A node bundle is judged by its own contract rather than by a project's list: it
 materializes into `data/nodes/` and never writes into `repo/`.
+
+## Publishing refuses the same things
+
+A violation refuses an install on every channel, so a release carrying one is a
+release nobody can use -- including on the hub that stores it. Publishing is
+therefore refused as well, locally and over the remote publish route, before
+anything is written: no artifact file, no version row, no cover in the store.
+The error names every violation, so you know what to fix.
+
+This is in your favour rather than an extra hurdle. A release is immutable: once
+a version number is published it can never be republished, and retracting it
+keeps the coordinate reserved. Being refused costs you a retry. Being accepted
+would have cost you the version.
+
+Publishing reads the platform's extension set, not the narrowed one your own
+project may declare, because the narrowed set is what *your* project accepts and
+says nothing about what a receiver will.
 
 ## Database initialization
 

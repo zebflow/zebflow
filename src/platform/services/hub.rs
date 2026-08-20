@@ -1960,8 +1960,42 @@ impl HubService {
             .project_layout(&source_owner, &source_project)?;
         // A cover is presentation, so it never enters the release document: the
         // bytes go into the content-addressed artifact store and the package
-        // row records the digest.
-        let cover = match hub_cover_webp_from_path(&source_layout, image_file_path, &publisher)? {
+        // row records the digest. Reading the bytes is not storing them, and
+        // the read happens first so the review below can be told whether this
+        // release has a cover without a refused publish having stored one.
+        let cover_source = hub_cover_webp_from_path(&source_layout, image_file_path, &publisher)?;
+        // Resolved before the review rather than inside the manifest below, so
+        // the review here and the preview review read the same two strings: a
+        // blank title falls back to the source's name in both.
+        let resolved_title = if title.trim().is_empty() {
+            preview.name.clone()
+        } else {
+            title.trim().to_string()
+        };
+        let resolved_description = if description.trim().is_empty() {
+            preview.description.clone()
+        } else {
+            description.trim().to_string()
+        };
+        // Beside `enforce_release_immutability`, and for the same reason: the
+        // entries are final here -- previewed, option-filtered, sanitized --
+        // and nothing durable has been written yet. A violation refuses every
+        // install on every channel, so a release carrying one is a version
+        // number spent on bytes nobody can use.
+        refuse_publish_violations(
+            "HUB_PUBLISH_REFUSED",
+            &review_publish_entries(
+                &publish_review_layout(&source_layout.repo_layout),
+                &preview.asset_kind,
+                &preview.entries,
+                preview.warnings.clone(),
+                &resolved_title,
+                &resolved_description,
+                cover_source.is_some(),
+                &self.artifact_store(),
+            ),
+        )?;
+        let cover = match cover_source {
             Some((name, bytes)) => {
                 let artifact_sha256 = self.store_artifact(&bytes)?;
                 Some(HubAssetMedia {
@@ -2016,16 +2050,8 @@ impl HubService {
         // way to learn which portion of a path was structure.
         let manifest = HubPackageSpec {
             asset_kind: preview.asset_kind.clone(),
-            title: if title.trim().is_empty() {
-                preview.name.clone()
-            } else {
-                title.trim().to_string()
-            },
-            description: if description.trim().is_empty() {
-                preview.description.clone()
-            } else {
-                description.trim().to_string()
-            },
+            title: resolved_title,
+            description: resolved_description,
             layout: Some(recorded_publisher_layout(&source_layout.repo_layout)),
             active_pipelines,
             project_initialization,
@@ -2165,10 +2191,12 @@ impl HubService {
             description.trim().to_string()
         };
         review_publish_artifact(
-            &self
-                .projects
-                .project_layout(&source_owner, &source_project)?
-                .repo_layout,
+            &publish_review_layout(
+                &self
+                    .projects
+                    .project_layout(&source_owner, &source_project)?
+                    .repo_layout,
+            ),
             package_id,
             version,
             preview,
@@ -3142,6 +3170,31 @@ impl HubService {
                 .unwrap_or_default();
         }
         sanitize_hub_export_entries(&mut artifact.files)?;
+        // The remote publish route is a publish, so it refuses what a local
+        // publish refuses. This hub would serve the release to installers who
+        // all refuse it, and the coordinate it burns is burned here rather
+        // than on the instance the document came from -- where the publisher
+        // cannot retract it. It is not a hub judging a peer's catalogue: the
+        // token authenticates a publisher registered here, pushing their own
+        // package to this hub.
+        //
+        // Reviewed against the layout the document records and this store,
+        // because those are what a receiver installing *from this hub* reads:
+        // `review_asset_install` and `install_asset` both resolve references
+        // through the same channel.
+        refuse_publish_violations(
+            "HUB_REMOTE_PUBLISH_REFUSED",
+            &review_publish_entries(
+                &publisher_layout(&artifact),
+                &artifact.asset_kind,
+                &artifact.files,
+                Vec::new(),
+                &artifact.title,
+                &artifact.description,
+                !decoded_media.is_empty(),
+                &self.artifact_store(),
+            ),
+        )?;
         let artifact_rel = format!(
             "services/{}/packages/{}/versions/{}/artifact.json",
             DEFAULT_HUB_SERVICE_INSTANCE_ID, package_id, version
@@ -4552,6 +4605,84 @@ fn validate_hub_gallery(
 }
 
 #[allow(clippy::too_many_arguments)]
+/// The safety review of the entries a publish would store.
+///
+/// The publish preview and the publish itself both read the package through
+/// this, so the verdict a publisher is shown is the verdict that refuses them.
+/// Two readings of one package could disagree, and the one that refuses is not
+/// overridable by anyone.
+fn review_publish_entries(
+    layout: &ResolvedProjectLayout,
+    asset_kind: &str,
+    entries: &[HubPackageFile],
+    warnings: Vec<String>,
+    title: &str,
+    description: &str,
+    has_cover_image: bool,
+    artifacts: &HubArtifactChannel,
+) -> PackageSafetyReview {
+    let policy_entries = entries
+        .iter()
+        .map(|entry| package_policy_entry(&entry.rel_path, entry, artifacts))
+        .collect::<Vec<_>>();
+    review_package_entries(
+        layout,
+        &policy_entries,
+        warnings,
+        PackageReviewOptions {
+            publish_mode: true,
+            require_title: true,
+            require_description: true,
+            require_cover_image: true,
+            title: title.to_string(),
+            description: description.to_string(),
+            has_cover_image,
+            bundle_internal_paths: asset_kind == HUB_ASSET_KIND_NODE_BUNDLE,
+        },
+    )
+}
+
+/// The layout a publish reviews against: the publisher's own directories, with
+/// the extension set left at the platform floor.
+///
+/// The directories have to be the publisher's, because they are what decides
+/// which of its entries are pipelines. The extension set must not be: it says
+/// what a *receiver* accepts, which is why `recorded_publisher_layout` never
+/// writes it into a release and `publisher_layout` never reads one back. A
+/// project may narrow its own set, and reviewing a publish against a narrowed
+/// one would refuse a release every receiver would have installed -- with no
+/// override anywhere to undo it.
+fn publish_review_layout(source: &ResolvedProjectLayout) -> ResolvedProjectLayout {
+    ResolvedProjectLayout {
+        allowed_extensions: ResolvedProjectLayout::platform_default().allowed_extensions,
+        ..source.clone()
+    }
+}
+
+/// Refuses a publish whose release no install would accept.
+///
+/// A violation is not overridable, so a release carrying one is refused by
+/// every install gate on every channel -- including this hub's own. Storing it
+/// would spend a version number on bytes nobody can use, and that spend is
+/// permanent: `enforce_release_immutability` refuses the coordinate a second
+/// time and retraction keeps it reserved. Refusing here costs the publisher a
+/// retry; accepting costs them the version.
+fn refuse_publish_violations(
+    code: &'static str,
+    review: &PackageSafetyReview,
+) -> Result<(), PlatformError> {
+    if review.is_installable() {
+        return Ok(());
+    }
+    Err(PlatformError::new(
+        code,
+        format!(
+            "package cannot be published: {}",
+            review.violations.join("; ")
+        ),
+    ))
+}
+
 fn review_publish_artifact(
     layout: &ResolvedProjectLayout,
     package_id: String,
@@ -4565,25 +4696,15 @@ fn review_publish_artifact(
     project_initialization: HubPackageInitialization,
     artifacts: &HubArtifactChannel,
 ) -> Result<HubPublishReview, PlatformError> {
-    let policy_entries = preview
-        .entries
-        .iter()
-        .map(|entry| package_policy_entry(&entry.rel_path, entry, artifacts))
-        .collect::<Vec<_>>();
-    let policy = review_package_entries(
+    let policy = review_publish_entries(
         layout,
-        &policy_entries,
+        &preview.asset_kind,
+        &preview.entries,
         preview.warnings.clone(),
-        PackageReviewOptions {
-            publish_mode: true,
-            require_title: true,
-            require_description: true,
-            require_cover_image: true,
-            title: title.clone(),
-            description: description.clone(),
-            has_cover_image: !media.is_empty(),
-            bundle_internal_paths: preview.asset_kind == HUB_ASSET_KIND_NODE_BUNDLE,
-        },
+        &title,
+        &description,
+        !media.is_empty(),
+        artifacts,
     );
 
     Ok(HubPublishReview {
@@ -8442,6 +8563,312 @@ mod tests {
             1,
             "the refusal writes no second row"
         );
+    }
+
+    /// Writes one file into the fixture project's repository.
+    ///
+    /// A folder publish exports whatever the walk finds, so this is how a
+    /// source acquires a file the project's own APIs would never write.
+    fn write_repo_file(root: &tempfile::TempDir, rel: &str, content: &str) {
+        let path = root
+            .path()
+            .join("users")
+            .join("superadmin")
+            .join("default")
+            .join("repo")
+            .join(rel);
+        std::fs::create_dir_all(path.parent().expect("parent")).expect("repo dir");
+        std::fs::write(&path, content).expect("write repo file");
+    }
+
+    fn publish_folder(
+        platform: &crate::platform::services::PlatformService,
+        package_id: &str,
+        source_ref: &str,
+        image_file_path: &str,
+    ) -> Result<(HubAssetPackage, HubAssetVersion), PlatformError> {
+        platform.hub.publish_asset(
+            "superadmin",
+            "default",
+            "superadmin",
+            "calc-studio",
+            "",
+            "",
+            "",
+            "superadmin",
+            "default",
+            "folder_files",
+            source_ref,
+            package_id,
+            "1.0.0",
+            "Folder Pack",
+            "A folder published as it stands.",
+            image_file_path,
+            "public",
+            Default::default(),
+            vec![],
+        )
+    }
+
+    /// Publish refuses what install refuses, and says which file.
+    ///
+    /// A release carrying a violation is refused by every install gate, so
+    /// storing it would spend a version number -- permanently, because the
+    /// coordinate cannot be republished -- on bytes nobody can use.
+    ///
+    /// The cover is supplied deliberately: it is the first durable write in
+    /// `publish_asset`, so an empty artifact store is what proves the refusal
+    /// comes before the writing rather than beside it.
+    #[test]
+    fn a_publish_carrying_a_file_type_no_project_accepts_is_refused() {
+        let (root, platform) = hub_publish_fixture("Calculator One");
+        write_repo_file(&root, "pipelines/folder-pack/postinstall.sh", "true\n");
+        let image_file_path = write_cover_source(&root, 64, 36);
+
+        let error = publish_folder(
+            &platform,
+            "folder-pack",
+            "pipelines/folder-pack",
+            &image_file_path,
+        )
+        .expect_err("a package no instance can install must not be stored");
+
+        assert_eq!(error.code, "HUB_PUBLISH_REFUSED");
+        assert!(
+            error
+                .message
+                .contains("pipelines/folder-pack/postinstall.sh")
+                && error.message.contains("'.sh'"),
+            "the publisher is told the path and the extension: {}",
+            error.message
+        );
+        assert!(
+            platform
+                .hub
+                .hub_data
+                .get_hub_asset_version("calc-studio.folder-pack", "1.0.0")
+                .expect("version lookup")
+                .is_none(),
+            "a refused publish records no version row"
+        );
+        assert!(
+            platform
+                .hub
+                .hub_data
+                .get_hub_asset_package("calc-studio.folder-pack")
+                .expect("package lookup")
+                .is_none(),
+            "a refused publish records no package row"
+        );
+        assert!(
+            !root
+                .path()
+                .join("services/hub-default/packages/calc-studio.folder-pack")
+                .exists(),
+            "a refused publish creates no release directory"
+        );
+        assert!(
+            !root.path().join("services/hub-default/artifacts").exists(),
+            "a refused publish stores no cover either"
+        );
+    }
+
+    /// The same folder with the same file renamed: a legitimate package still
+    /// publishes, so the gate is the extension and not the folder.
+    #[test]
+    fn an_ordinary_folder_still_publishes() {
+        let (root, platform) = hub_publish_fixture("Calculator One");
+        write_repo_file(&root, "pipelines/folder-pack/postinstall.tsx", "true\n");
+
+        let (_, version) = publish_folder(&platform, "folder-pack", "pipelines/folder-pack", "")
+            .expect("ordinary source publishes");
+
+        assert!(
+            root.path().join(&version.artifact_rel_path).exists(),
+            "the release is written where the row says it is"
+        );
+    }
+
+    /// The extension set is the *receiver's*: a release records none, and a
+    /// project may narrow its own. Reviewing a publish against the publisher's
+    /// narrowed set would refuse a release every receiver would install, and a
+    /// violation has no override, so the publish review reads the platform
+    /// floor instead.
+    #[test]
+    fn a_publish_is_reviewed_against_the_platform_extension_floor() {
+        let mut narrowed = ResolvedProjectLayout::platform_default();
+        narrowed.source = "src".to_string();
+        narrowed.allowed_extensions = vec!["tsx".to_string()];
+        let files = pipeline_package(
+            HUB_ASSET_KIND_FOLDER_BUNDLE,
+            serde_json::json!({
+                "rel_path": "src/pack/settings.json", "kind": "json",
+                "size_bytes": 3, "reason": "test", "content": "{}\n"
+            }),
+        )
+        .files;
+        let review_against = |layout: &ResolvedProjectLayout| {
+            review_publish_entries(
+                layout,
+                HUB_ASSET_KIND_FOLDER_BUNDLE,
+                &files,
+                Vec::new(),
+                "Pack",
+                "A pack.",
+                true,
+                &HubArtifactChannel::unresolvable(CHANNEL_WITHOUT_AN_ARTIFACT_LOCATION),
+            )
+        };
+
+        assert!(
+            !review_against(&narrowed).is_installable(),
+            "the control: the narrowed set does refuse a .json file"
+        );
+
+        let reviewed = publish_review_layout(&narrowed);
+        assert_eq!(
+            reviewed.source, "src",
+            "the publisher's own directories are what decide its pipelines"
+        );
+        assert!(
+            review_against(&reviewed).is_installable(),
+            "a publish is not refused for a file type every receiver accepts"
+        );
+    }
+
+    /// The remote publish route is a publish, so it refuses what a publish
+    /// refuses. The coordinate would be burned on *this* hub, where the
+    /// publisher cannot retract it, and every installer fetching from here
+    /// would refuse what they were served.
+    #[test]
+    fn remote_publishing_a_file_type_no_project_accepts_is_refused() {
+        let (root, platform) = hub_publish_fixture("Calculator One");
+        let token = remote_publish_token(&platform);
+
+        let error = platform
+            .hub
+            .import_remote_asset(
+                "superadmin",
+                "default",
+                &token,
+                &remote_publish_request(
+                    "1.0.0",
+                    serde_json::json!({
+                        "rel_path": "pipelines/pack/postinstall.sh",
+                        "kind": "file",
+                        "size_bytes": 5,
+                        "reason": "package",
+                        "content": "true\n"
+                    }),
+                ),
+            )
+            .expect_err("an inbound package no instance can install must not be stored");
+
+        assert_eq!(error.code, "HUB_REMOTE_PUBLISH_REFUSED");
+        assert!(
+            error.message.contains("pipelines/pack/postinstall.sh")
+                && error.message.contains("'.sh'"),
+            "the sending publisher is told the path and the extension: {}",
+            error.message
+        );
+        assert!(
+            platform
+                .hub
+                .hub_data
+                .get_hub_asset_version("calc-studio.remote-pack", "1.0.0")
+                .expect("version lookup")
+                .is_none(),
+            "a refused remote publish records no version row"
+        );
+        assert!(
+            !root
+                .path()
+                .join("services/hub-default/packages/calc-studio.remote-pack")
+                .exists(),
+            "a refused remote publish creates no release directory"
+        );
+    }
+
+    /// The gate is the violation and not the route: an inbound package with
+    /// nothing to refuse still lands.
+    #[test]
+    fn an_ordinary_remote_publish_still_lands() {
+        let (root, platform) = hub_publish_fixture("Calculator One");
+        let token = remote_publish_token(&platform);
+
+        let (_, version) = platform
+            .hub
+            .import_remote_asset(
+                "superadmin",
+                "default",
+                &token,
+                &remote_publish_request(
+                    "1.0.0",
+                    serde_json::json!({
+                        "rel_path": "pipelines/pack/postinstall.tsx",
+                        "kind": "tsx",
+                        "size_bytes": 5,
+                        "reason": "package",
+                        "content": "true\n"
+                    }),
+                ),
+            )
+            .expect("an ordinary inbound package is stored");
+
+        assert!(
+            root.path().join(&version.artifact_rel_path).exists(),
+            "the release is written where the row says it is"
+        );
+    }
+
+    fn remote_publish_token(
+        platform: &crate::platform::services::PlatformService,
+    ) -> crate::platform::model::HubToken {
+        platform
+            .hub
+            .create_token(
+                "superadmin",
+                "default",
+                &crate::platform::model::CreateHubTokenRequest {
+                    publisher_id: "calc-studio".to_string(),
+                    title: "Publish token".to_string(),
+                    scopes: vec!["hub:publish".to_string()],
+                    expires_at: None,
+                },
+            )
+            .expect("publisher token")
+            .0
+    }
+
+    /// One inbound release whose single entry is supplied by the caller.
+    fn remote_publish_request(version: &str, entry: serde_json::Value) -> RemoteHubPublishRequest {
+        RemoteHubPublishRequest {
+            package_id: "remote-pack".to_string(),
+            version: version.to_string(),
+            title: "Remote Pack".to_string(),
+            description: "Published from another instance.".to_string(),
+            summary: String::new(),
+            description_md: String::new(),
+            media: Vec::new(),
+            gallery: HubAssetGallery::default(),
+            visibility: "public".to_string(),
+            tags: Vec::new(),
+            source_owner: "superadmin".to_string(),
+            source_project: "default".to_string(),
+            source_kind: "folder_files".to_string(),
+            source_ref: "pipelines/pack".to_string(),
+            artifact: serde_json::json!({
+                "apiVersion": "zebflow.com/v1",
+                "kind": "HubPackage",
+                "metadata": {"name": "calc-studio.remote-pack", "version": version},
+                "spec": {
+                    "asset_kind": "folder_bundle",
+                    "title": "Remote Pack",
+                    "description": "Published from another instance.",
+                    "files": [entry]
+                }
+            }),
+        }
     }
 
     #[test]

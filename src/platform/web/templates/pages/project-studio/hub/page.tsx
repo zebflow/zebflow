@@ -1126,7 +1126,7 @@ export default function Page(input) {
                           <Button type="button" variant="outline" onClick={reviewPublish} disabled={!publishForm.source_ref || !publishPreview?.entries?.length || !publishForm.publisher_token}>
                             {publishReviewDirty ? "Review Package" : "Review Again"}
                           </Button>
-                          <Button type="submit" disabled={!publishForm.source_ref || !publishPreview?.entries?.length || !publishForm.publisher_token || !publishReview || publishReviewDirty}>Publish Package</Button>
+                          <Button type="submit" disabled={!publishForm.source_ref || !publishPreview?.entries?.length || !publishForm.publisher_token || !publishReview || publishReviewDirty || !!publishReview?.violations?.length}>{publishReview?.violations?.length ? "Blocked" : "Publish Package"}</Button>
                         </div>
                         {publishReview ? (
                           <div className="rounded-lg border border-ui-border bg-ui-bg-muted/20 p-3 space-y-3">
@@ -1170,6 +1170,7 @@ export default function Page(input) {
                                 )}
                               </div>
                             ) : null}
+                            <ViolationNotice items={publishReview.violations} subject="This package" outcome="published" refuser="publish" />
                             <div className="grid gap-2 text-xs md:grid-cols-2">
                               <ReviewList title="Nodes" items={publishReview.nodes_used} />
                               <ReviewList title="Credentials" items={publishReview.credentials_required} danger />

@@ -7,7 +7,13 @@
  * has to be able to read why.
  */
 
-export function ViolationNotice({ items, subject = "This package" }) {
+/**
+ * `outcome` is what the caller's own gate refuses, because publish refuses on
+ * the same findings an install does. A publisher reading "will not be
+ * installed" would be told a true thing about someone else's machine and
+ * nothing about the button that just failed.
+ */
+export function ViolationNotice({ items, subject = "This package", outcome = "installed", refuser = "install" }) {
   const values = Array.isArray(items) ? items.filter(Boolean) : [];
   if (!values.length) return null;
   return (
@@ -17,13 +23,13 @@ export function ViolationNotice({ items, subject = "This package" }) {
           Blocked
         </span>
         <p className="m-0 text-sm font-semibold text-red-700">
-          {subject} will not be installed
+          {subject} will not be {outcome}
         </p>
       </div>
       <p className="m-0 mt-2 text-xs text-red-700">
         {values.length === 1 ? "This is a violation" : `These are ${values.length} violations`}, not a
         warning. A violation cannot be accepted or overridden — not by you, not by an administrator.
-        The install refuses for exactly the reason{values.length === 1 ? "" : "s"} below.
+        The {refuser} refuses for exactly the reason{values.length === 1 ? "" : "s"} below.
       </p>
       <ul className="m-0 mt-2 list-none space-y-1 p-0">
         {values.map((item, index) => (

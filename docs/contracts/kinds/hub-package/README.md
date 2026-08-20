@@ -260,7 +260,8 @@ attribution for credit and contact, not a trust boundary.
 | Artifact location | `HubArtifactChannel` | the channel's answer to "where are the referenced bytes": a local base directory, or a refusal that says why |
 | Reader, artifact | `HubArtifactChannel::resolve` | reads `<base>/artifacts/<sha256>`, checks the declared size, and verifies the digest |
 | Writer, artifact | `HubService::store_artifact` | puts bytes into this instance's Hub store, content-addressed, and returns the digest |
-| Writer, publish | `publish_asset` | builds a manifest, writes an artifact file, records a version row; refuses a version that already exists or was retracted, and carries forward presentation it was not given |
+| Writer, publish | `publish_asset` | builds a manifest, writes an artifact file, records a version row; refuses a version that already exists or was retracted, refuses a release the safety review reports violations for, and carries forward presentation it was not given |
+| Gate, publish | `refuse_publish_violations` | refuses a publish and a remote publish alike, naming every violation; called before the first durable write on both |
 | Writer, presentation | `update_asset_presentation` | writes the mutable package row and never a release |
 | Writer, retraction | `retract_asset_package` | marks the rows retracted, then destroys the release artifacts |
 | Writer, encode | `encode_hub_artifact` | wraps a spec in the envelope |
@@ -354,6 +355,38 @@ Refusal is deliberate rather than incidental. HTTP fetching of artifacts has no
 endpoint, no cache, and no size streaming yet, and a channel that silently wrote
 an empty file would be worse than one that says it cannot.
 
+### Publish computed violations and stored the release anyway — fixed
+
+`HubPublishReview` carried a `violations` field, reported it, and `publish_asset`
+never read it. Both install gates refuse on violations, so a hub would accept and
+store a release that no instance — its own included — would ever install.
+
+That is worse than untidy, because a release is immutable. `enforce_release_immutability`
+refuses the coordinate a second time and retraction keeps it reserved, so a
+publisher who shipped a violation had burned that version number permanently.
+Refusing at publish costs a retry; accepting cost a version.
+
+`refuse_publish_violations` now runs in `publish_asset` and in `import_remote_asset`,
+in both cases before the first durable write — in `publish_asset` that meant
+reading the cover bytes before storing them, since `store_artifact` was the first
+write and ran before any review. The error names every violation.
+
+`import_remote_asset` refuses too, and the reason is that it is not a hub judging
+a peer's catalogue. It is the remote publish route: the bearer token authenticates
+a publisher registered on *this* hub, pushing their own package to it. The
+coordinate it would burn is burned here, where the sending instance cannot retract
+it, and every installer fetching from here would refuse what they were served.
+
+**The publish review read the wrong extension set — fixed with it.** The
+extension allowlist says what a *receiver* accepts: `recorded_publisher_layout`
+deliberately omits it and `publisher_layout` resolves it to the platform set. The
+publish review, alone, read the source project's own resolved layout, which
+carries whatever that project narrowed itself to. That was harmless while publish
+only reported; as a refusal it would have blocked a publisher from shipping a file
+type every receiver accepts, with no override anywhere. `publish_review_layout`
+keeps the publisher's directories — those decide which entries are pipelines — and
+restores the extension set to the platform floor.
+
 ### Republishing silently overwrote — fixed
 
 `publish_asset` built a `HubAssetVersion` and called `put_hub_asset_version`
@@ -426,6 +459,18 @@ than issued.
 
 ## Still to review
 
+- publish and install do not read a package through identical eyes, and two
+  gaps remain. `refuse_prepared_install_violations` hands the review
+  `unreadable: ""` for every entry, so "a pipeline the safety review cannot
+  read" is unreachable on that path: a non-UTF-8 `.zf.json` is refused at
+  publish and passes there. And a package referencing an artifact resolves
+  against `artifact_store()` at publish and at local install, but every remote
+  channel is `Unresolvable`, so the same release publishes and installs locally
+  while refusing remotely. Nothing produces a referenced package yet, so the
+  second is latent
+- `HUB_INSTALL_REFUSED` and `HUB_REMOTE_INSTALL_REFUSED` are unmapped in
+  `hub_api_error` and answer 500. The publish refusals were mapped to 400 when
+  they were added; the install pair still reads as a server fault
 - publisher identity now lives on the package row rather than in the release.
   What it *asserts*, and what a static repository asserts having none, is still
   open

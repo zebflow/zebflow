@@ -92,6 +92,14 @@ accepts, and blocks nothing. A violation is a solid two-pixel red panel with
 accepted or overridden by anyone; the confirm button beside it is disabled and
 reads "Blocked". A user facing a refusal can read exactly why.
 
+Publishing now refuses what installing refuses. `HubPublishReview` reported
+`violations` and `publish_asset` ignored them, so a hub would store a release no
+instance could install -- and a release is immutable, so the publisher had spent
+that version number on it. `refuse_publish_violations` runs before the first
+durable write on both writers, the local one and the remote publish route, and
+names every violation. A publisher who cannot publish is told what to fix while
+the coordinate is still theirs.
+
 ## 3. Consent is reachable from the UI
 
 The install request carries three flags, each defaulting to true:
