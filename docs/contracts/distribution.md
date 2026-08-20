@@ -269,9 +269,16 @@ not: it is materialised at a path the platform owns.
 
 | Path | Destination | Default |
 | --- | --- | --- |
-| Hub add | `target_folder`, chosen by the receiver | `pipelines/hub/{id}` for pipelines and RWE source, `hub/{id}` otherwise |
+| Hub add | `target_folder`, chosen by the receiver, inside the project's source root | `{source}/hub/{id}` |
 | Hub install, node bundle | not chosen | `data/nodes/{package}` |
 | UI catalog add | **not offered** | fixed by the catalog |
+
+A package's paths were produced by the publisher's layout, so `target_folder`
+names the destination of its **source** files only. Assets and docs go to the
+directories the receiving project declares for them, under the same folder name;
+anything else stays inside the package's own folder. A release records the
+publisher's layout so the translation is read rather than guessed — see
+[`kinds/hub-package/README.md`](./kinds/hub-package/README.md#install-maps-into-the-receiving-projects-layout).
 
 The last row is an inconsistency, not a design. Adding a component is the same
 act as adding an RWE source file from the Hub, and it should offer the same

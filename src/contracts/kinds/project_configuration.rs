@@ -668,7 +668,11 @@ impl ProjectLayoutSpec {
 /// Layout entries name directories that other paths are built on top of, so a
 /// trailing slash or a traversal segment here would be inherited by every path
 /// derived from it rather than failing at the one place it was written.
-fn validate_layout_dir(path: &str, value: &str) -> Result<(), ContractError> {
+///
+/// `HubPackage` records the layout a publisher's paths were produced by and
+/// validates it through this same rule, because a package layout an install
+/// would translate against has to be exactly as safe as one a project declares.
+pub(crate) fn validate_layout_dir(path: &str, value: &str) -> Result<(), ContractError> {
     let invalid = value.is_empty()
         || value.len() > 1024
         || value.starts_with('/')

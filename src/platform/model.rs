@@ -2582,7 +2582,7 @@ impl ResolvedProjectLayout {
 /// `rel` with `dir` and its separator removed, or `None` when `rel` is not
 /// under `dir`. Anchored on a whole segment, so `pipelines-old/x` is not
 /// treated as living under `pipelines`.
-fn strip_dir_prefix<'a>(dir: &str, rel: &'a str) -> Option<&'a str> {
+pub fn strip_dir_prefix<'a>(dir: &str, rel: &'a str) -> Option<&'a str> {
     rel.strip_prefix(dir)?.strip_prefix('/')
 }
 

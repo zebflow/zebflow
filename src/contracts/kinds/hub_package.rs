@@ -109,6 +109,25 @@ pub struct HubPackageSpec {
     pub title: String,
     /// One line saying what it does, so it is self-describing offline.
     pub description: String,
+    /// The layout the publisher's `rel_path` values were produced by.
+    ///
+    /// Every path in `files` is repository-relative to the *publisher's*
+    /// project, and a receiver's project need not keep its source, docs, or
+    /// assets in the same directories. Without this a receiver can only guess
+    /// which portion of a path was structure and which was content, and the
+    /// guess it used to make -- strip the *receiver's* own source root -- is
+    /// only right when the two layouts happen to agree.
+    ///
+    /// It is in the release rather than beside it because it decides where
+    /// files land, and where files land is exactly what an immutable,
+    /// digest-pinned release owns. A package handed over as a file has no store
+    /// beside it and still has to install correctly.
+    ///
+    /// Absent means the platform default, which is the layout every project had
+    /// before a project could declare one, so a package published before this
+    /// field existed keeps meaning what it meant.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub layout: Option<HubPackageLayout>,
     /// Pipelines that were active in the source project.
     #[serde(default)]
     pub active_pipelines: Vec<String>,
@@ -117,6 +136,34 @@ pub struct HubPackageSpec {
     pub project_initialization: HubPackageInitialization,
     /// The content manifest.
     pub files: Vec<HubPackageFile>,
+}
+
+/// The repository directories a publisher's manifest paths were relative to.
+///
+/// These are the same entries `ProjectConfiguration`'s `spec.layout` declares
+/// and are validated by the same rule, minus `initial_data`: the seed prefixes
+/// an install replays are already named, with their engines, by
+/// `project_initialization.initial_data`, and one fact recorded twice is a fact
+/// that can disagree with itself.
+///
+/// Every entry is optional and an absent entry resolves to the platform
+/// default, so a hand-authored package may name only what it moved.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct HubPackageLayout {
+    /// Source root: pipelines, pages, styles, and shared components.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub assets: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub docs: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schema: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sqlite_schema: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node_interfaces: Option<String>,
 }
 
 /// How one file's bytes reach the receiver.
@@ -234,6 +281,10 @@ impl PlatformContract for HubPackageContract {
             MAX_HUB_PACKAGE_DESCRIPTION_BYTES,
         )?;
 
+        if let Some(layout) = &spec.layout {
+            layout.validate()?;
+        }
+
         validate_files(&spec.files)?;
 
         validate_limit(
@@ -246,6 +297,32 @@ impl PlatformContract for HubPackageContract {
         }
 
         validate_initialization(&spec.project_initialization)
+    }
+}
+
+impl HubPackageLayout {
+    /// Every declared entry, paired with the field path that names it.
+    fn entries(&self) -> [(&'static str, Option<&str>); 6] {
+        [
+            ("spec.layout.source", self.source.as_deref()),
+            ("spec.layout.assets", self.assets.as_deref()),
+            ("spec.layout.docs", self.docs.as_deref()),
+            ("spec.layout.schema", self.schema.as_deref()),
+            ("spec.layout.sqlite_schema", self.sqlite_schema.as_deref()),
+            (
+                "spec.layout.node_interfaces",
+                self.node_interfaces.as_deref(),
+            ),
+        ]
+    }
+
+    fn validate(&self) -> Result<(), ContractError> {
+        for (path, value) in self.entries() {
+            if let Some(value) = value {
+                super::project_configuration::validate_layout_dir(path, value)?;
+            }
+        }
+        Ok(())
     }
 }
 
@@ -528,6 +605,58 @@ mod tests {
             supplies[2],
             ("wasm/core.wasm", HubPackageFileSupply::Referenced(_))
         ));
+    }
+
+    // ── Publisher layout ────────────────────────────────────────────────
+
+    /// A package written before this field existed carries no layout, and must
+    /// stay byte-identical rather than acquiring an empty section on its next
+    /// encode.
+    #[test]
+    fn a_package_that_declares_no_layout_is_not_given_one() {
+        let document = decode_hub_package(V1_PACKAGE).expect("decode");
+        assert!(document.spec.layout.is_none());
+        let encoded = encode_hub_package(document.metadata, document.spec).expect("encode");
+        assert!(!String::from_utf8(encoded).expect("utf8").contains("layout"));
+    }
+
+    #[test]
+    fn a_declared_layout_roundtrips() {
+        let declared = serde_json::json!({
+            "source": "src",
+            "assets": "static",
+            "docs": "documentation",
+            "schema": "db/sekejap",
+            "sqlite_schema": "db/sqlite",
+            "node_interfaces": "interfaces",
+        });
+        let bytes = mutate(V1_PACKAGE, |value| {
+            value["spec"]["layout"] = declared.clone();
+        });
+        let document = decode_hub_package(&bytes).expect("decode a declared layout");
+        let layout = document.spec.layout.clone().expect("layout");
+        assert_eq!(layout.source.as_deref(), Some("src"));
+        assert_eq!(layout.node_interfaces.as_deref(), Some("interfaces"));
+        assert_eq!(
+            serde_json::to_value(&layout).expect("json"),
+            declared,
+            "every declared entry survives the round trip"
+        );
+    }
+
+    /// A layout entry is the prefix every path in the manifest is built on, so
+    /// it is held to the same rule a project's own declaration is held to.
+    #[test]
+    fn rejects_a_layout_directory_that_could_escape_the_project() {
+        for bad in ["/absolute", "src/", "../up", "src/*/pages", ""] {
+            assert!(
+                decode_hub_package(&mutate(V1_PACKAGE, |value| {
+                    value["spec"]["layout"] = serde_json::json!({ "source": bad });
+                }))
+                .is_err(),
+                "a source of {bad:?} must be refused"
+            );
+        }
     }
 
     // ── Envelope ────────────────────────────────────────────────────────
@@ -1060,6 +1189,7 @@ mod tests {
             files: decoded.files.clone(),
             project_initialization: decoded.project_initialization.clone(),
             active_pipelines: decoded.active_pipelines.clone(),
+            layout: decoded.layout.clone(),
             description: decoded.description.clone(),
             title: decoded.title.clone(),
             asset_kind: decoded.asset_kind.clone(),

@@ -154,6 +154,27 @@ Add is copy/clone based. Hub does not keep ownership of the resulting project
 files and does not track an installation state after Add. Users can change the
 added source like any other project code.
 
+### Where an added package lands
+
+A package's file paths are relative to the publishing project's layout, and the
+receiving project may keep its own files elsewhere. A release records the layout
+its paths were produced by, and Add translates each file into the equivalent
+directory of the receiving project:
+
+- source (pipelines, pages, styles, shared components) goes to the target folder
+  inside this project's source root, defaulting to `hub/{package_id}`
+- assets go to this project's asset directory, under the same folder name, so
+  they are served at `/assets/{owner}/{project}/...`
+- docs go to this project's docs directory, under the same folder name
+
+Anything else the package carries — its own `zebflow.yaml`, exported schema
+documents, node interfaces — stays inside the package's own folder. One project
+holds one of each of those, so a second copy is kept readable rather than
+written over the project's own.
+
+The safety review reports these destinations, and Add writes exactly the
+destinations the review reported.
+
 ## Safety review
 
 Before Add, Zebflow should show what the package can affect:

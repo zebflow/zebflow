@@ -35,7 +35,7 @@ reads while choosing lives in mutable storage beside it.**
 
 | Stays in the release, digest-pinned | Moves out, mutable |
 | --- | --- |
-| `asset_kind`, `files`, `active_pipelines`, `project_initialization` | `description_md`, `gallery`, `media`, `image_url` |
+| `asset_kind`, `files`, `layout`, `active_pipelines`, `project_initialization` | `description_md`, `gallery`, `media`, `image_url` |
 | `title` and a one-line `description` | `publisher_id`, `publisher_display_name`, `publisher_url`, `publisher_email` |
 | | `source_type`, `source_owner`, `source_project`, `source_ref` |
 
@@ -82,6 +82,67 @@ still checked against the converted WebP, before anything is stored.
 A cover therefore resolves the same way a referenced file does —
 `<hub service root>/artifacts/<sha256>`, size-checked and digest-verified — and
 `get_latest_asset_media` no longer opens a release document to serve one.
+
+### A release records the layout its paths were produced by
+
+Every `rel_path` in `spec.files` is repository-relative to the **publisher's**
+project, and the receiver's project need not keep its source, docs, or assets in
+the same directories. Nothing recorded which was which, so the installer guessed:
+it stripped the *receiver's* own source root off each entry, which is right only
+when the two layouts happen to agree.
+
+`spec.layout` records the publisher's resolved layout — `source`, `assets`,
+`docs`, `schema`, `sqlite_schema`, `node_interfaces` — so a receiver can tell
+which portion of a path was structure and which was content.
+
+**Why it is a seventh field rather than something beside the release.** The
+split above is "a release carries install; presentation lives beside it", and
+this decides *where files land*, which is install and nothing else. The place
+beside a release is the mutable package row, and putting it there would make a
+digest-pinned document's destinations mutable and would leave a package handed
+over as a file — which has no row beside it — with nothing to translate against.
+
+**Why one project-wide fact rather than a per-entry role.** Tagging each entry
+with its area would let one manifest claim two source roots, which is a state no
+project can produce. One record cannot disagree with itself.
+
+**Why not derive it from the carried `zebflow.yaml`.** Only a `project_bundle`
+carries one. A pipeline, template, or folder bundle carries none, and those are
+exactly the packages whose paths need translating.
+
+`initial_data` is deliberately absent: `project_initialization.initial_data`
+already names each seed prefix with the engine that replays it, and one fact
+recorded twice is a fact that can disagree with itself.
+
+Every entry is optional, and an absent entry resolves through the same rule a
+project that declares nothing resolves through. **A package published before this
+field existed therefore carries no layout, resolves to the platform default —
+which is the layout every project had when it was published — and installs.**
+
+### Install maps into the receiving project's layout
+
+The destination of one entry is decided per area, from the publisher's layout to
+the receiver's:
+
+| Publisher area | Where it lands |
+| --- | --- |
+| `source` | the target folder inside the receiver's `source`, default `hub/{package_id}` |
+| `assets` | the receiver's `assets`, under the same folder name |
+| `docs` | the receiver's `docs`, under the same folder name |
+| anything else | inside the package's own folder, verbatim |
+
+The last row is the decision, not a leftover. The schema exports and the node
+interface directory hold **one** document for the whole project: a second copy
+cannot merge, and writing it at the canonical path would overwrite the
+receiver's own. Keeping it inside the package's folder is readable and inert,
+which is the safe half of that pair.
+
+A node bundle is exempt: its paths name files inside the bundle rather than
+inside anyone's project, so there is nothing to translate.
+
+The review and the install build the same placement from the same inputs and
+resolve every destination through it, so a destination the review shows is the
+destination the install writes. They cannot be two answers.
 
 ### A file is carried or referenced, never both
 
@@ -188,6 +249,8 @@ attribution for credit and contact, not a trust boundary.
 | Role | Where | What it does |
 | --- | --- | --- |
 | Contract adapter | `src/contracts/kinds/hub_package.rs` | `type Spec = HubPackageSpec`; typed, `deny_unknown_fields`, bounded, and enforces the carried-or-referenced rule |
+| Publisher layout | `HubPackageLayout` | the directories this manifest's paths are relative to; validated by `ProjectConfiguration`'s own `validate_layout_dir` |
+| Placement | `HubInstallPlacement` | built once from the package and the target project, and asked for every destination by both the review and the install |
 | Artifact location | `HubArtifactChannel` | the channel's answer to "where are the referenced bytes": a local base directory, or a refusal that says why |
 | Reader, artifact | `HubArtifactChannel::resolve` | reads `<base>/artifacts/<sha256>`, checks the declared size, and verifies the digest |
 | Writer, artifact | `HubService::store_artifact` | puts bytes into this instance's Hub store, content-addressed, and returns the digest |
@@ -206,6 +269,38 @@ attribution for credit and contact, not a trust boundary.
 | Durable store, presentation | `HubAssetPackage` row plus `<hub service root>/artifacts/<sha256>` | mutable, one stored file per distinct image |
 
 ## Findings
+
+### A manifest's paths meant nothing without the publisher's layout — fixed
+
+`install_entry_rel_inside_folder` stripped the **receiver's** source root from
+each entry and then re-rooted the remainder. A package published from a
+`pipelines/` project into a project declaring `source: src` therefore landed at
+`src/hub/{id}/pipelines/blog/feed.zf.json`, carrying the publisher's root along
+as a dead segment; its images landed outside the directory the asset route
+serves, so every `/assets/...` URL in its pages 404'd while the review reported
+nothing wrong. That is the same shape as the target-folder defect: it installs,
+it reviews clean, and it does not work.
+
+`spec.layout` and `HubInstallPlacement` replace the guess with the recorded
+fact.
+
+### A whole project added at project scope landed outside the source root — fixed
+
+`install_asset` accepts a `project_bundle`, and `default_install_target_folder`
+gave every kind that was not a pipeline or template bundle a root at `hub/{id}`
+— outside the source root. Its pipelines were not pipelines by the discovery
+rule, so the review scanned none of them and the install registered none of
+them. Every kind that is not a `node_bundle` now roots inside `source`, which is
+the same rule and the same reason as the target-folder fix.
+
+### A published pipeline bundle lost the page it renders — fixed
+
+`preview_pipeline` read the stored pipeline as raw JSON and looked for a
+top-level `nodes` array. A stored pipeline is a `Pipeline` contract document
+whose nodes live under `spec`, so the lookup found none, no `n.web.response`
+node was ever seen, and the bundle was published without the template it
+renders. It decodes through `decode_pipeline_graph` now, like every other reader
+of a stored pipeline.
 
 ### The contract was empty — fixed
 
@@ -347,3 +442,12 @@ than issued.
   wanted behaviour rather than a leak
 - per-release retraction. Retraction takes a `package_id` and withdraws every
   release the package holds
+- uninstall for an add. Added content has no update path by design, and removal
+  is deleting the files. A package now occupies one folder *name* in up to three
+  areas rather than one directory, so "delete the folder" is three deletions the
+  user has to know about. The review lists every destination, and nothing
+  records them afterwards
+- a hand-authored `project_bundle` whose `spec.layout` disagrees with the
+  `zebflow.yaml` it carries. Platform-scope install reviews against the recorded
+  layout and creates the project from the carried configuration; nothing checks
+  that the two say the same thing. No writer produces such a document

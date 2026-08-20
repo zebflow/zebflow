@@ -1,15 +1,17 @@
 # Project layout — the contract as it exists today
 
-Status: **survey**, amended twice: once after the resolver landed, once after
-the declaration took effect. Nothing here is a proposal. It exists so that a
-declared layout could be written without missing a consumer.
+Status: **survey**, amended three times: once after the resolver landed, once
+after the declaration took effect, and once after packages learned to carry a
+layout. Nothing here is a proposal. It exists so that a declared layout could be
+written without missing a consumer.
 
-Sections 5 and 6 record what changed. Sections 1 to 4 describe the rules as they
-were found, and the line numbers in them are the ones the survey was taken
+Sections 5, 6 and 7 record what changed. Sections 1 to 4 describe the rules as
+they were found, and the line numbers in them are the ones the survey was taken
 against; they have moved.
 
 Sections 1 to 4 are written in the present tense about a system where the
-platform decided every rule. It no longer does: section 6 is what is true now.
+platform decided every rule. It no longer does: sections 6 and 7 are what is
+true now.
 
 ## 0. The fact that explains the rest
 
@@ -253,3 +255,64 @@ reached from a node or handler holding only a `data_root`, so honoring a
 declared `spec.layout.schema` there is a separate change. A project that
 declares `schema` gets it honored by Hub review, export, and install
 classification, and not by the sekejap writer.
+
+## 7. What a package carrying a layout changed
+
+Section 6 made placement follow the *receiver's* declaration. That is half the
+problem: a package's paths were produced by the *publisher's* layout, and
+nothing recorded what they meant.
+
+`HubPackageSpec` gains `spec.layout`, the publisher's resolved layout, recorded
+on every publish. It is in the release rather than beside it because it decides
+where files land, which is what an immutable release owns; and it is one
+project-wide record rather than a role on each entry, because a manifest must
+not be able to claim two source roots. See
+[hub-package/README.md](../hub-package/README.md#a-release-records-the-layout-its-paths-were-produced-by).
+
+An absent `spec.layout` resolves through `ZebflowJsonLayout::resolve` — the same
+rule an undeclared project resolves through — so a package published before the
+field existed keeps meaning what it meant and installs unchanged.
+
+### Placement across two layouts
+
+`HubInstallPlacement` is built once from the package and the target project and
+answers every destination. The review and the install build it from the same
+inputs and ask it the same questions, so the destinations a review shows are the
+destinations the install writes, by construction rather than by coincidence.
+
+| Publisher area | Where it lands in the receiver |
+| --- | --- |
+| `source` | the target folder inside the receiver's `source` |
+| `assets` | the receiver's `assets`, under the same folder name |
+| `docs` | the receiver's `docs`, under the same folder name |
+| anything else | inside the package's own folder, verbatim |
+
+The last row is deliberate. The schema exports and the node interface directory
+hold one document for the whole project: a second copy cannot merge, and writing
+it at the canonical path would overwrite the receiver's own. That is also why a
+package's `zebflow.yaml` lands inside its folder and never replaces the
+receiver's.
+
+### Adding a whole project as a folder
+
+`install_asset` accepts a `project_bundle` at project scope, and
+`default_install_target_folder` used to give it — and `folder_bundle` — a root
+at `hub/{id}`, outside the source root. Nothing there is a pipeline by the
+discovery rule, so the review scanned none of them and the install registered
+none of them: the same inert install section 1 recorded under a different asset
+kind. Every kind that is not a `node_bundle` now roots inside `source`.
+
+The alternative was one self-contained directory, so that uninstall is deleting
+it. It was rejected because it cannot be true: a pipeline is only discovered
+inside the source root and an image is only served from the asset directory, so
+a package confined to one directory outside them installs and does not run. What
+is kept from the intent is that the package occupies one *name* — `hub/{id}`, or
+whatever folder the user chose — reproduced in at most three areas, and the
+review lists every one of them.
+
+### Also found, and fixed
+
+`preview_pipeline` read a stored pipeline as raw JSON and looked for a top-level
+`nodes` array. A stored pipeline is a `Pipeline` envelope whose nodes live under
+`spec`, so no `n.web.response` node was ever seen and a published pipeline
+bundle carried no page.

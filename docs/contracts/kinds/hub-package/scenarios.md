@@ -329,10 +329,18 @@ then something you can check yourself:
 }
 ```
 
-Six spec fields, no seventh. There is no cover, no long description, no
-publisher name, no "which project did this come from". A release carries what
-installing it requires. `title` and the one-line `description` are the kept
-exception, so this file handed over on a USB stick still says what it is.
+Seven spec fields, no eighth, and this document declares six of them: there is
+no cover, no long description, no publisher name, no "which project did this
+come from". A release carries what installing it requires. `title` and the
+one-line `description` are the kept exception, so this file handed over on a USB
+stick still says what it is.
+
+The seventh, `layout`, is absent here and is optional everywhere. It records the
+repository directories the publisher's `rel_path` values were relative to, which
+an installer needs to place them into a project that keeps its own files
+somewhere else. A node bundle's paths are internal to the bundle, so this one
+has nothing to record. Absent means the platform default, which is why a package
+published before the field existed still installs.
 
 Note the third entry: `artifact` with a digest, no `content`, no `encoding`, and
 no URL anywhere. That entry is 32 MB of WASM that will never fit inside a 25 MB
@@ -356,8 +364,10 @@ curl -s -b /tmp/zf.txt -X POST \
   http://studio.example/api/projects/dana/ops/hub/assets/acme.invoice-tools/1.0.0/review
 ```
 
-An empty body means "use the default folder", which for a pipeline bundle is
-`pipelines/hub/{package_id}`.
+An empty body means "use the default folder", which is `hub/{package_id}` inside
+the receiving project's source root — `pipelines/hub/{package_id}` for a project
+that declares no layout, and `src/hub/{package_id}` for one declaring
+`source: src`.
 
 ```json
 {
@@ -374,7 +384,7 @@ An empty body means "use the default folder", which for a pipeline bundle is
       "pipelines/hub/acme.invoice-tools/pages/invoice.tsx"
     ],
     "files_overwritten": [],
-    "pipelines_registered": ["pipelines/hub/acme.invoice-tools/api/invoice.zf.json"],
+    "pipelines_registered": ["hub/acme.invoice-tools/api/invoice.zf.json"],
     "nodes_used": ["n.pg.query", "n.trigger.webhook", "n.web.response"],
     "credentials_required": ["billing_pg"],
     "external_urls": ["https://fonts.example/inter.css"],
@@ -398,11 +408,16 @@ An empty body means "use the default folder", which for a pipeline bundle is
 }
 ```
 
-The install paths are not the export paths. `install_entry_rel_inside_folder`
-strips a leading `pipelines/` or `templates/` from each entry before joining it
-under the install root, so the exported `pipelines/api/invoice.zf.json` lands at
+The install paths are not the export paths. Each entry is translated from the
+layout the release records to the layout the receiving project declares:
+`HubInstallPlacement` strips the *publisher's* source root and joins the
+remainder under the install root, so the exported
+`pipelines/api/invoice.zf.json` lands at
 `pipelines/hub/acme.invoice-tools/api/invoice.zf.json` rather than doubling the
-segment.
+segment — and lands at `src/hub/acme.invoice-tools/api/invoice.zf.json` in a
+project that keeps its source in `src`. Assets and docs go to the receiver's
+asset and docs directories, under the same folder name; anything else stays
+inside the package's folder.
 
 ### 2.1a The same package, one word different
 
@@ -418,50 +433,42 @@ curl -s -b /tmp/zf.txt -X POST -H "Content-Type: application/json" \
 {
   "review": {
     "target_folder": "billing",
-    "install_root": "billing",
+    "install_root": "pipelines/billing",
     "files_added": [
-      "billing/api/invoice.zf.json",
-      "billing/components/invoice-line.tsx",
-      "billing/pages/invoice.tsx"
+      "pipelines/billing/api/invoice.zf.json",
+      "pipelines/billing/components/invoice-line.tsx",
+      "pipelines/billing/pages/invoice.tsx"
     ],
-    "pipelines_registered": [],
-    "nodes_used": [],
-    "credentials_required": [],
-    "external_urls": [],
-    "database_effects": [],
-    "public_endpoints": [],
+    "pipelines_registered": ["billing/api/invoice.zf.json"],
+    "nodes_used": ["n.pg.query", "n.trigger.webhook", "n.web.response"],
+    "credentials_required": ["billing_pg"],
+    "external_urls": ["https://fonts.example/inter.css"],
+    "database_effects": ["n.pg.query"],
+    "public_endpoints": ["/invoice", "webhook trigger"],
     "warnings": [],
     "violations": [],
     "installable": true,
-    "risk_level": "low"
+    "risk_level": "high"
   }
 }
 ```
 
-**Same package, same bytes, and every finding is gone.** The credential, the
-database access, and the public endpoint have not changed; the review simply
-stopped looking.
+**Same package, same bytes, same findings.** That was not always true, and the
+way it failed is worth keeping:
 
-`is_reviewed_pipeline_path` tests the path the install *writes*: it must start
-with `pipelines/` and end with `.zf.json`. Under `billing` the pipeline lands at
-`billing/api/invoice.zf.json`, which fails the first half, so it is never parsed.
-Testing the installed path rather than the source path is deliberate and correct
-in intent — the review and the install must never disagree about which entries
-are pipelines — but it makes the review's *reach* a function of a folder name the
-receiver types.
+> **Fixed.** A target folder used to be pulled inside the source root only when
+> the receiver typed a leading slash, so `"/billing"` installed at
+> `pipelines/billing` and `"billing"` installed at `billing`. Nothing under
+> `billing` is a pipeline by the discovery rule, so the review parsed none of
+> them and reported `risk_level: "low"` with every finding list empty, while the
+> install registered nothing and the pipelines silently never ran. Typing a
+> slash is not consent to be reviewed. Placement follows the project's declared
+> layout now, so all three spellings — `""`, `"billing"`, `"/billing"` — review
+> and register identically.
 
-The sharpest form of it: `normalize_install_target_folder` prefixes `pipelines/`
-when the typed folder begins with a slash. So `"/billing"` is scanned and
-`"billing"` is not.
-
-> **Design gap, not an unbuilt feature.** A receiver who chooses their own
-> destination can silently turn the safety review off for exactly the files that
-> carry the behaviour, and is shown `risk_level: "low"` when they do. Recorded in
-> [§10](#10-what-these-scenarios-exposed). Read every receiver-side review in
-> this document as "what the scanner saw", not "what the package does".
-
-Taking the default folder, the review reports the full picture, and that is the
-version to read the table below against.
+Note that `pipelines_registered` reports the pipeline's **identity** — its path
+inside the source root — rather than the repository path the install writes, so
+a review can be compared against the result it predicts.
 
 What Dana should read off this before accepting:
 
@@ -472,6 +479,68 @@ What Dana should read off this before accepting:
 | `database_effects` | it runs SQL against a connection Dana supplies. |
 | `files_overwritten: []` | nothing Dana already has is being replaced. A non-empty list here adds 2 to the risk score, and is the one finding that is about Dana's project rather than the package. |
 | `installable: true` | nothing refuses. `false` would mean the Add button must not be offered at all. |
+
+### 2.1b The same package, into a project laid out differently
+
+**Runs today.**
+
+Acme keeps its source in `pipelines/`. Dana's `ops` project declares
+`spec.layout.source: src`. The release records the layout its paths were
+produced by, so the install translates rather than guesses:
+
+```json
+{
+  "review": {
+    "target_folder": "",
+    "install_root": "src/hub/acme.invoice-tools",
+    "files_added": [
+      "src/hub/acme.invoice-tools/api/invoice.zf.json",
+      "src/hub/acme.invoice-tools/components/invoice-line.tsx",
+      "src/hub/acme.invoice-tools/pages/invoice.tsx"
+    ],
+    "pipelines_registered": ["hub/acme.invoice-tools/api/invoice.zf.json"]
+  }
+}
+```
+
+The publisher's `pipelines/` is removed rather than carried along, and the
+pipeline's identity is the same string in both projects, because identity is the
+path inside the source root and the root lives only in `zebflow.yaml`.
+
+### 2.1c Adding a whole project as a folder
+
+**Runs today.**
+
+`spatial-blogging` is a complete project: pipelines, pages, styles, docs, seeds,
+and images. At platform scope it installs as a *new project*. From inside `ops`,
+adding it makes it a folder of Dana's own source.
+
+```bash
+curl -s -b /tmp/zf.txt -X POST -H "Content-Type: application/json" -d '{}' \
+  http://studio.example/api/projects/dana/ops/hub/assets/labs.spatial-blogging/1.0.0/add
+```
+
+Its parts do not all land in one directory, because they cannot: a pipeline is
+only discovered inside the source root, and an image is only served from the
+asset directory. What it occupies is one *name*, in each area it reaches.
+
+```text
+users/dana/ops/repo/
+  src/hub/labs.spatial-blogging/
+    blog/feed.zf.json          registered as a pipeline definition
+    pages/feed.tsx
+    zebflow.yaml               the publisher's, kept inert beside its own files
+    schemas/sekejap/schema.json
+  src/assets/hub/labs.spatial-blogging/
+    logo.svg                   served at /assets/dana/ops/hub/labs.spatial-blogging/logo.svg
+  docs/hub/labs.spatial-blogging/
+    README.md
+```
+
+Dana's own `zebflow.yaml` and `schemas/` are untouched: one project holds one of
+each, so the package's copies are kept readable rather than written over Dana's.
+The review lists every destination above, and removal is deleting those
+directories — three, not one, which is the price of the parts actually working.
 
 ### 2.2 Accept
 
@@ -491,7 +560,7 @@ curl -s -b /tmp/zf.txt -X POST \
     "asset_kind": "pipeline_bundle",
     "install_root": "pipelines/hub/acme.invoice-tools",
     "files_written": 3,
-    "pipelines_registered": ["pipelines/hub/acme.invoice-tools/api/invoice.zf.json"]
+    "pipelines_registered": ["hub/acme.invoice-tools/api/invoice.zf.json"]
   }
 }
 ```
@@ -1176,22 +1245,29 @@ the README, because the current wording is stronger than the code.
 Writing the usage out surfaced these. They are ordered by how much they change
 what a user actually gets.
 
-**1. The safety review's coverage depends on a folder name the receiver types.**
-`is_reviewed_pipeline_path` matches on the *installed* path, and
-`install_entry_rel_inside_folder` strips the entry's own `pipelines/` prefix. A
-receiver who chooses a target folder that does not start with `pipelines/` gets a
-review that scans none of the pipelines and reports `risk_level: "low"` for a
-package with a public endpoint, a credential requirement, and a database effect.
-`"/billing"` is scanned; `"billing"` is not. The publish-side review, which sees
-the source paths, reports everything. Two reviews of one package disagree, and
-the one the receiver reads is the weaker one. (§2.1a)
+**1. The safety review's coverage depended on a folder name the receiver types —
+fixed.** The review matched on the *installed* path, and a target folder was
+pulled inside the source root only when the receiver typed a leading slash. So
+`"/billing"` was scanned and `"billing"` was not: a package with a public
+endpoint, a credential requirement, and a database effect reviewed as
+`risk_level: "low"` with every finding list empty, and registered nothing.
+Placement follows the project's declared layout now, and every spelling of a
+folder reviews and registers the same. (§2.1a)
 
-**2. The Hub add route never runs the review.** `install_asset` verifies the
-artifact digest and installs. It does not call `review_artifact_payload` and does
-not consult `installable`. Only `install_node_bundle_payload`, on the local
-document paths, refuses on a violation. `distribution.md` §3 says every channel
-that installs into a project runs the same review; one of them does not run it at
-all. (§2.2, §4)
+**2. The Hub add route never ran the review — fixed.** `install_asset` verified
+the artifact digest and installed, without consulting `installable`.
+`refuse_prepared_install_violations` is now the gate every channel passes
+through, and it reviews the *prepared* entries — bytes already resolved, paths
+already the destinations that will be written — so the review reads exactly what
+the install is about to place. (§2.2, §4)
+
+**2a. A package's paths meant nothing without the publisher's layout — fixed.**
+A `rel_path` is relative to the publishing project's directories, and the
+installer stripped the *receiver's* source root off it, which is right only when
+the two layouts agree. A package from a `pipelines/` project installed into a
+`source: src` project kept `pipelines/` as a dead segment, and its images landed
+outside the directory the asset route serves. `spec.layout` records the
+publisher's layout and `HubInstallPlacement` translates against it.
 
 **3. Presentation was mutable in the design and immutable in practice — fixed.**
 There was no endpoint to edit a package row's presentation, and the only writer,

@@ -16,7 +16,7 @@ use sha2::{Digest, Sha256};
 use crate::contracts::kinds::{
     DEPENDENCY_LOCK_FILE, DependencyLockContract, HubPackageArtifactRef, HubPackageContract,
     HubPackageFile, HubPackageFileSupply, HubPackageInitialDataStep, HubPackageInitialization,
-    HubPackageSpec, MAX_HUB_PACKAGE_BYTES, MAX_HUB_PACKAGE_REFERENCED_FILE_BYTES,
+    HubPackageLayout, HubPackageSpec, MAX_HUB_PACKAGE_BYTES, MAX_HUB_PACKAGE_REFERENCED_FILE_BYTES,
     ProjectConfigurationContract, decode_hub_package, decode_pipeline_graph, encode_hub_package,
 };
 use crate::contracts::{ContractMetadata, decode_contract, decode_contract_value, encode_contract};
@@ -27,8 +27,8 @@ use crate::platform::model::{
     CreateHubTokenRequest, CreateProjectRequest, HubAccessGrant, HubAssetGallery,
     HubAssetGalleryImage, HubAssetMedia, HubAssetPackage, HubAssetVersion, HubAuthority,
     HubPublisher, HubToken, PlatformHubRepository, PlatformServiceInstance, ProjectFileLayout,
-    ProjectHubRepository, ProjectRuntimeSelectionRequest, ResolvedProjectLayout, now_ts,
-    slug_segment,
+    ProjectHubRepository, ProjectRuntimeSelectionRequest, ResolvedProjectLayout, ZebflowJsonLayout,
+    now_ts, slug_segment, strip_dir_prefix,
 };
 use crate::platform::policy::package::{
     DatabaseInitializationReport, PackagePolicyEntry, PackageReviewOptions, PackageSafetyReview,
@@ -1869,16 +1869,13 @@ impl HubService {
             project_options,
         )?;
         sanitize_hub_export_entries(&mut preview.entries)?;
+        let source_layout = self
+            .projects
+            .project_layout(&source_owner, &source_project)?;
         // A cover is presentation, so it never enters the release document: the
         // bytes go into the content-addressed artifact store and the package
         // row records the digest.
-        let cover = match hub_cover_webp_from_path(
-            &self
-                .projects
-                .project_layout(&source_owner, &source_project)?,
-            image_file_path,
-            &publisher,
-        )? {
+        let cover = match hub_cover_webp_from_path(&source_layout, image_file_path, &publisher)? {
             Some((name, bytes)) => {
                 let artifact_sha256 = self.store_artifact(&bytes)?;
                 Some(HubAssetMedia {
@@ -1927,7 +1924,10 @@ impl HubService {
             publisher_email.trim().to_string()
         };
         // The release carries what installing it requires, plus the title and
-        // one-line description that keep it self-describing offline.
+        // one-line description that keep it self-describing offline. The layout
+        // is part of "what installing it requires": every rel_path below is
+        // relative to it, and a receiver whose own layout differs has no other
+        // way to learn which portion of a path was structure.
         let manifest = HubPackageSpec {
             asset_kind: preview.asset_kind.clone(),
             title: if title.trim().is_empty() {
@@ -1940,6 +1940,7 @@ impl HubService {
             } else {
                 description.trim().to_string()
             },
+            layout: Some(recorded_publisher_layout(&source_layout.repo_layout)),
             active_pipelines,
             project_initialization,
             files: preview.entries.clone(),
@@ -2546,12 +2547,9 @@ impl HubService {
         let _install_guard = install_lock
             .lock()
             .unwrap_or_else(|error| error.into_inner());
-        let install_root = install_root_for_target_folder(
-            &layout.repo_layout,
-            package_id,
-            &payload.asset_kind,
-            target_folder,
-        );
+        let placement =
+            HubInstallPlacement::new(&layout.repo_layout, &payload, package_id, target_folder);
+        let install_root = placement.install_root().to_string();
         // A node bundle is a materialized artifact, so it installs under data/.
         // Everything else is project source and installs under repo/.
         let install_base = if payload.asset_kind == HUB_ASSET_KIND_NODE_BUNDLE {
@@ -2562,13 +2560,8 @@ impl HubService {
         // Every entry's bytes — carried and referenced alike — are produced and
         // verified here, before the first write. A digest mismatch or a missing
         // artifact returns now, with the project untouched.
-        let prepared = prepare_hub_install_entries(
-            &layout.repo_layout,
-            &install_base,
-            &install_root,
-            &payload.files,
-            artifacts,
-        )?;
+        let prepared =
+            prepare_hub_install_entries(&placement, &install_base, &payload.files, artifacts)?;
         validate_prepared_pipeline_sources(&layout.repo_layout, &prepared)?;
         refuse_prepared_install_violations(&layout.repo_layout, &prepared)?;
         let previous_lock = if payload.asset_kind == HUB_ASSET_KIND_NODE_BUNDLE {
@@ -2762,12 +2755,11 @@ impl HubService {
         artifacts: &HubArtifactChannel,
     ) -> Result<HubInstallReview, PlatformError> {
         let layout = self.projects.project_layout(target_owner, target_project)?;
-        let install_root = install_root_for_target_folder(
-            &layout.repo_layout,
-            package_id,
-            &payload.asset_kind,
-            target_folder,
-        );
+        // The same placement the install builds, from the same inputs, so a
+        // destination the review shows is the destination the install writes.
+        let placement =
+            HubInstallPlacement::new(&layout.repo_layout, payload, package_id, target_folder);
+        let install_root = placement.install_root().to_string();
         // The same choice the install makes, so what the review calls an
         // overwrite is what the install would actually overwrite.
         let install_base = if payload.asset_kind == HUB_ASSET_KIND_NODE_BUNDLE {
@@ -2781,8 +2773,7 @@ impl HubService {
         let mut policy_entries = Vec::new();
 
         for entry in &payload.files {
-            let install_rel =
-                install_rel_path_under_folder(&layout.repo_layout, &install_root, &entry.rel_path);
+            let install_rel = placement.destination(&entry.rel_path);
             let dest_abs = install_base.join(&install_rel);
             if dest_abs.exists() {
                 files_overwritten.push(install_rel.clone());
@@ -3467,8 +3458,13 @@ impl HubService {
             ));
         }
         // A bundle is reviewed before the project it creates exists, so the
-        // review asks the layout that project will resolve to.
-        let new_project_layout = ResolvedProjectLayout::platform_default();
+        // review asks the layout that project will resolve to. That is the
+        // publisher's own layout: this bundle carries the publisher's
+        // `zebflow.yaml`, and the new project is created from it. Asking the
+        // platform default instead classified a `source: src` bundle's
+        // pipelines as ordinary files, so the review scanned none of them and
+        // reported a risk level for a package it had not read.
+        let new_project_layout = publisher_layout(&artifact);
         let review =
             refuse_unreviewable_project_bundle(&new_project_layout, &artifact.files, artifacts)?;
         // The gate above read every entry the bundle carries, including the
@@ -3633,31 +3629,33 @@ impl HubService {
         let source = self
             .projects
             .read_pipeline_source(owner, project, &meta.file_rel_path)?;
-        let value: Value = serde_json::from_str(&source)
-            .map_err(|err| PlatformError::new("HUB_PREVIEW", err.to_string()))?;
+        // Read through the contract rather than by poking at the raw JSON: a
+        // stored pipeline is an envelope whose nodes live under `spec`, so a
+        // top-level `nodes` lookup found none of them and published a bundle
+        // without the page its own web response renders.
+        let document = decode_pipeline_graph(source.as_bytes()).map_err(|error| {
+            PlatformError::new(
+                "HUB_PREVIEW",
+                format!("invalid pipeline '{}': {error}", meta.file_rel_path),
+            )
+        })?;
         let mut seen = BTreeSet::new();
         seen.insert(pipeline_repo_rel);
-        if let Some(nodes) = value.get("nodes").and_then(Value::as_array) {
-            for node in nodes {
-                if node.get("kind").and_then(Value::as_str) != Some("n.web.response") {
-                    continue;
-                }
-                let Some(template_rel) = node
-                    .get("config")
-                    .and_then(|cfg| cfg.get("template"))
-                    .and_then(Value::as_str)
-                else {
-                    continue;
-                };
-                self.collect_template_dependency_entries(
-                    layout,
-                    template_rel,
-                    "web response template".to_string(),
-                    &mut seen,
-                    &mut entries,
-                    &mut warnings,
-                )?;
+        for node in &document.spec.nodes {
+            if node.kind != "n.web.response" {
+                continue;
             }
+            let Some(template_rel) = node.config.get("template").and_then(Value::as_str) else {
+                continue;
+            };
+            self.collect_template_dependency_entries(
+                layout,
+                template_rel,
+                "web response template".to_string(),
+                &mut seen,
+                &mut entries,
+                &mut warnings,
+            )?;
         }
         entries.sort_by(|a, b| a.rel_path.cmp(&b.rel_path));
         Ok(build_preview(
@@ -5003,16 +5001,17 @@ fn normalize_install_target_folder(
     if folder.is_empty() {
         return ".".to_string();
     }
-    // Pipeline and template bundles are project source, so a target folder
-    // names a place inside the source root. It used to name one only when the
-    // caller typed a leading slash, which made `billing` install outside the
-    // root: nothing there is a pipeline by the discovery rule, so the review
-    // found nothing and the install registered nothing, and the package landed
-    // as inert files. Typing a slash is not consent to be reviewed.
-    if matches!(
-        asset_kind,
-        HUB_ASSET_KIND_PIPELINE_BUNDLE | HUB_ASSET_KIND_TEMPLATE_BUNDLE
-    ) && !layout.is_in_source(&folder)
+    // Everything that is not a node bundle is project source, so a target
+    // folder names a place inside the source root. It used to name one only
+    // when the caller typed a leading slash, which made `billing` install
+    // outside the root: nothing there is a pipeline by the discovery rule, so
+    // the review found nothing and the install registered nothing, and the
+    // package landed as inert files. Typing a slash is not consent to be
+    // reviewed. Folder and project bundles joined that rule here: they carry
+    // pipelines too, and were landing outside the source root for the same
+    // reason under a different asset kind.
+    if asset_kind != HUB_ASSET_KIND_NODE_BUNDLE
+        && !layout.is_in_source(&folder)
         && folder != layout.source
     {
         return layout.source_rel(&folder);
@@ -5020,45 +5019,166 @@ fn normalize_install_target_folder(
     folder
 }
 
-fn install_rel_path_under_folder(
-    layout: &ResolvedProjectLayout,
-    install_root: &str,
-    rel_path: &str,
-) -> String {
-    let root = normalize_repo_rel(install_root);
-    let rel = install_entry_rel_inside_folder(layout, rel_path);
-    if root.is_empty() || root == "." {
-        rel
-    } else {
-        format!("{root}/{rel}")
-    }
-}
-
-fn install_entry_rel_inside_folder(layout: &ResolvedProjectLayout, rel_path: &str) -> String {
-    let rel = normalize_repo_rel(rel_path);
-    if let Some(rest) = layout.strip_source(&rel) {
-        rest.to_string()
-    } else if let Some(rest) = rel.strip_prefix("templates/") {
-        rest.to_string()
-    } else {
-        rel
-    }
-}
-
 fn default_install_target_folder(
     layout: &ResolvedProjectLayout,
     package_id: &str,
     asset_kind: &str,
 ) -> String {
-    if matches!(
-        asset_kind,
-        HUB_ASSET_KIND_PIPELINE_BUNDLE | HUB_ASSET_KIND_TEMPLATE_BUNDLE
-    ) {
-        layout.source_rel(&format!("hub/{package_id}"))
-    } else if asset_kind == HUB_ASSET_KIND_NODE_BUNDLE {
+    if asset_kind == HUB_ASSET_KIND_NODE_BUNDLE {
         format!("nodes/{package_id}")
     } else {
-        format!("hub/{package_id}")
+        layout.source_rel(&format!("hub/{package_id}"))
+    }
+}
+
+/// `rest` under `root`, where an empty or `.` root means the repository itself.
+fn join_repo_rel(root: &str, rest: &str) -> String {
+    if root.is_empty() || root == "." {
+        rest.to_string()
+    } else if rest.is_empty() {
+        root.to_string()
+    } else {
+        format!("{root}/{rest}")
+    }
+}
+
+/// Where one package's files land in one target project.
+///
+/// The review and the install both resolve every destination through this, so
+/// what a review shows and what an install writes cannot be two answers. It is
+/// built once from the package and the target project, and answers per entry.
+enum HubInstallPlacement {
+    /// Bundle-internal paths, written verbatim under one materialized root.
+    ///
+    /// A node bundle's `rel_path` names a file inside the bundle rather than
+    /// inside anyone's project, so there is no publisher layout to translate
+    /// from and nothing to translate to.
+    Verbatim { install_root: String },
+    /// Project paths, translated from the publisher's layout into the target's.
+    Project {
+        publisher: ResolvedProjectLayout,
+        target: ResolvedProjectLayout,
+        /// Repository-relative root for the package's source-area files.
+        install_root: String,
+        /// The package's own directory name, repeated inside each area it
+        /// reaches, so one uninstall knows every place to look.
+        folder: String,
+    },
+}
+
+impl HubInstallPlacement {
+    fn new(
+        target: &ResolvedProjectLayout,
+        payload: &HubPackageSpec,
+        package_id: &str,
+        target_folder: &str,
+    ) -> Self {
+        let install_root =
+            install_root_for_target_folder(target, package_id, &payload.asset_kind, target_folder);
+        if payload.asset_kind == HUB_ASSET_KIND_NODE_BUNDLE {
+            return Self::Verbatim { install_root };
+        }
+        let folder = target
+            .strip_source(&install_root)
+            .unwrap_or(if install_root == target.source {
+                ""
+            } else {
+                install_root.as_str()
+            })
+            .to_string();
+        Self::Project {
+            publisher: publisher_layout(payload),
+            target: target.clone(),
+            install_root,
+            folder,
+        }
+    }
+
+    /// The root reported to the caller: for project content, the source-area
+    /// root, which is where the pipelines and pages go.
+    fn install_root(&self) -> &str {
+        match self {
+            Self::Verbatim { install_root } => install_root,
+            Self::Project { install_root, .. } => install_root,
+        }
+    }
+
+    /// The repository-relative destination of one manifest entry.
+    ///
+    /// Areas whose contents are per-file are translated: source, assets, and
+    /// docs each land in the directory the *target* keeps that kind of file in,
+    /// under the package's own folder name. The schema exports and the node
+    /// interface directory are not, because each holds one document for the
+    /// whole project: a second copy cannot merge, and writing it at the
+    /// canonical path would overwrite the target's own. Those stay inside the
+    /// package's folder, readable and inert.
+    fn destination(&self, rel_path: &str) -> String {
+        let rel = normalize_repo_rel(rel_path);
+        let (publisher, target, install_root, folder) = match self {
+            Self::Verbatim { install_root } => return join_repo_rel(install_root, &rel),
+            Self::Project {
+                publisher,
+                target,
+                install_root,
+                folder,
+            } => (publisher, target, install_root, folder),
+        };
+        // Assets default *inside* the source root, so this order is the rule
+        // and not a preference: testing source first would swallow them.
+        if let Some(rest) = strip_dir_prefix(&publisher.assets, &rel) {
+            return join_repo_rel(&join_repo_rel(&target.assets, folder), rest);
+        }
+        if let Some(rest) = strip_dir_prefix(&publisher.docs, &rel) {
+            return join_repo_rel(&join_repo_rel(&target.docs, folder), rest);
+        }
+        if let Some(rest) = publisher.strip_source(&rel) {
+            return join_repo_rel(install_root, rest);
+        }
+        // An export produced before the source root had a name wrote its
+        // templates under this prefix. It names no area in any layout, so it
+        // would otherwise survive into the destination as a stray segment.
+        if let Some(rest) = rel.strip_prefix("templates/") {
+            return join_repo_rel(install_root, rest);
+        }
+        join_repo_rel(install_root, &rel)
+    }
+}
+
+/// The layout a package's manifest paths were produced by.
+///
+/// An absent declaration resolves through the same rule a project that declares
+/// nothing resolves through, so "published before this field existed" and
+/// "published by a project that moved nothing" are one case rather than two.
+fn publisher_layout(payload: &HubPackageSpec) -> ResolvedProjectLayout {
+    let declared = payload.layout.clone().unwrap_or_default();
+    ZebflowJsonLayout {
+        source: declared.source,
+        assets: declared.assets,
+        docs: declared.docs,
+        schema: declared.schema,
+        sqlite_schema: declared.sqlite_schema,
+        node_interfaces: declared.node_interfaces,
+        // A package names its seed prefixes in `project_initialization`, so the
+        // layout does not carry them and this resolves to the default list.
+        initial_data: None,
+    }
+    .resolve()
+}
+
+/// The layout entries a publish records, so a receiver knows what the paths in
+/// this manifest meant.
+fn recorded_publisher_layout(layout: &ResolvedProjectLayout) -> HubPackageLayout {
+    // Every entry is written out rather than only the ones that differ from the
+    // default: a release must mean the same thing forever, and a document that
+    // leans on the reader's defaults means whatever the reader's defaults
+    // become.
+    HubPackageLayout {
+        source: Some(layout.source.clone()),
+        assets: Some(layout.assets.clone()),
+        docs: Some(layout.docs.clone()),
+        schema: Some(layout.schema.clone()),
+        sqlite_schema: Some(layout.sqlite_schema.clone()),
+        node_interfaces: Some(layout.node_interfaces.clone()),
     }
 }
 
@@ -5102,16 +5222,15 @@ fn hub_entry_bytes(
 }
 
 fn prepare_hub_install_entries(
-    layout: &ResolvedProjectLayout,
+    placement: &HubInstallPlacement,
     install_base: &Path,
-    install_root: &str,
     files: &[HubPackageFile],
     artifacts: &HubArtifactChannel,
 ) -> Result<Vec<PreparedHubInstallEntry>, PlatformError> {
     let mut seen = HashSet::new();
     let mut prepared = Vec::with_capacity(files.len());
     for entry in files {
-        let install_rel = install_rel_path_under_folder(layout, install_root, &entry.rel_path);
+        let install_rel = placement.destination(&entry.rel_path);
         if !seen.insert(install_rel.clone()) {
             return Err(PlatformError::new(
                 "HUB_INSTALL",
@@ -8313,6 +8432,434 @@ mod tests {
         .expect_err("an empty install is a request error");
 
         assert_eq!(error.code, "HUB_INSTALL_SCOPE_INVALID");
+    }
+
+    // ── Publisher layout and placement ──────────────────────────────────
+    //
+    // A manifest's rel_path values were produced by the publisher's layout and
+    // are consumed by the installer's, and the two need not match. These cover
+    // what a package records about its own paths and where they then land.
+
+    const HUB_LAYOUT_PAGE: &str = "export default function Feed() { return <div>feed</div>; }\n";
+    const HUB_LAYOUT_LOGO: &str = "<svg xmlns=\"http://www.w3.org/2000/svg\"/>";
+    const HUB_LAYOUT_DOC: &str = "# Spatial Blogging\n\nHow to run it.\n";
+
+    /// Writes one file into every area a layout names, so an install has
+    /// something to place in each of them.
+    fn write_spatial_blogging_source(platform: &crate::platform::services::PlatformService) {
+        platform
+            .projects
+            .delete_pipeline("superadmin", "default", "calc.zf.json")
+            .expect("the publish fixture's own pipeline is not part of this application");
+        platform
+            .projects
+            .write_template_file(
+                "superadmin",
+                "default",
+                &crate::platform::model::TemplateSaveRequest {
+                    rel_path: "pages/feed.tsx".to_string(),
+                    content: HUB_LAYOUT_PAGE.to_string(),
+                },
+            )
+            .expect("page");
+        platform
+            .projects
+            .upsert_pipeline_definition(
+                "superadmin",
+                "default",
+                "blog/feed.zf.json",
+                "Feed",
+                "Renders the feed.",
+                "webhook",
+                &serde_json::json!({
+                    "apiVersion": "zebflow.com/v1",
+                    "kind": "Pipeline",
+                    "metadata": {"name": "feed"},
+                    "spec": {
+                        "id": "feed",
+                        "entry_nodes": ["wh"],
+                        "nodes": [
+                            {"id": "wh", "kind": "n.trigger.webhook", "input_pins": [],
+                             "output_pins": ["out"], "config": {"path": "/feed", "method": "GET"}},
+                            {"id": "res", "kind": "n.web.response", "input_pins": ["in"],
+                             "output_pins": ["out"], "config": {"template": "pages/feed.tsx"}}
+                        ],
+                        "edges": [{"from_node": "wh", "from_pin": "out",
+                                   "to_node": "res", "to_pin": "in"}]
+                    }
+                })
+                .to_string(),
+            )
+            .expect("pipeline");
+        let layout = platform
+            .projects
+            .project_layout("superadmin", "default")
+            .expect("publisher layout");
+        for (dir, name, content) in [
+            (layout.repo_assets_dir(), "logo.svg", HUB_LAYOUT_LOGO),
+            (layout.repo_docs_dir(), "README.md", HUB_LAYOUT_DOC),
+        ] {
+            std::fs::create_dir_all(&dir).expect("area directory");
+            std::fs::write(dir.join(name), content).expect("area file");
+        }
+    }
+
+    /// A target project that keeps its source somewhere else entirely.
+    fn project_declaring_src(
+        platform: &crate::platform::services::PlatformService,
+        project: &str,
+    ) -> ProjectFileLayout {
+        platform
+            .projects
+            .create_or_update_project(
+                "superadmin",
+                &CreateProjectRequest {
+                    project: project.to_string(),
+                    title: Some("Declared".to_string()),
+                    local_branch: None,
+                    runtime: ProjectRuntimeSelectionRequest::default(),
+                },
+            )
+            .expect("target project");
+        platform
+            .zebflow_cfg
+            .update("superadmin", project, |cfg| {
+                cfg.configs.layout.source = Some("src".to_string());
+            })
+            .expect("declare source");
+        platform
+            .projects
+            .project_layout("superadmin", project)
+            .expect("target layout")
+    }
+
+    fn publish_spatial_blogging(
+        platform: &crate::platform::services::PlatformService,
+        source_type: &str,
+        source_ref: &str,
+        package: &str,
+    ) {
+        platform
+            .hub
+            .publish_asset(
+                "superadmin",
+                "default",
+                "superadmin",
+                "calc-studio",
+                "",
+                "",
+                "",
+                "superadmin",
+                "default",
+                source_type,
+                source_ref,
+                package,
+                "1.0.0",
+                "Spatial Blogging",
+                "A whole small application.",
+                "",
+                "public",
+                HubProjectBundlePublishOptions {
+                    include_sekejap_schema: false,
+                    include_sqlite_schema: false,
+                    include_libraries: Vec::new(),
+                    include_initial_data: false,
+                    initial_data_paths: Vec::new(),
+                },
+                Vec::new(),
+            )
+            .expect("publish");
+    }
+
+    /// The destinations a review promised, as one sorted list.
+    fn reviewed_destinations(review: &HubInstallReview) -> Vec<String> {
+        let mut all = review.files_added.clone();
+        all.extend(review.files_overwritten.clone());
+        all.sort();
+        all
+    }
+
+    /// A release records the layout its paths were produced by, so a receiver
+    /// is not left guessing which portion of a path was structure.
+    #[test]
+    fn a_release_records_the_layout_its_paths_were_produced_by() {
+        let (_root, platform) = hub_publish_fixture("Calculator One");
+        let (_, version) = publish_calc_tools(&platform, "1.0.0").expect("publish");
+        let manifest: HubPackageSpec =
+            serde_json::from_value(version.manifest).expect("manifest spec");
+        let layout = manifest.layout.expect("a publish records its layout");
+        assert_eq!(layout.source.as_deref(), Some("pipelines"));
+        assert_eq!(layout.assets.as_deref(), Some("pipelines/assets"));
+        assert_eq!(layout.docs.as_deref(), Some("docs"));
+        // Every entry is written out, not only the ones that differ from the
+        // default: a release must mean the same thing forever.
+        assert_eq!(layout.schema.as_deref(), Some("schemas/sekejap"));
+        assert_eq!(layout.sqlite_schema.as_deref(), Some("schemas/sqlite"));
+        assert_eq!(layout.node_interfaces.as_deref(), Some("nodes"));
+    }
+
+    /// The publisher kept its source in `pipelines`; the receiver keeps its own
+    /// in `src`. The package's source files have to arrive in the receiver's
+    /// source root with the publisher's root removed rather than carried along
+    /// as a stray segment.
+    #[test]
+    fn a_package_published_from_pipelines_installs_into_a_project_declaring_src() {
+        let (root, platform) = hub_publish_fixture("Calculator One");
+        write_spatial_blogging_source(&platform);
+        publish_spatial_blogging(
+            &platform,
+            "pipeline_with_dependencies",
+            "blog/feed.zf.json",
+            "feed-tools",
+        );
+        let target = project_declaring_src(&platform, "atlas");
+
+        let review = platform
+            .hub
+            .review_asset_install("superadmin", "atlas", "calc-studio.feed-tools", "1.0.0", "")
+            .expect("review");
+        assert_eq!(review.install_root, "src/hub/calc-studio.feed-tools");
+        assert_eq!(
+            reviewed_destinations(&review),
+            vec![
+                "src/hub/calc-studio.feed-tools/blog/feed.zf.json".to_string(),
+                "src/hub/calc-studio.feed-tools/pages/feed.tsx".to_string(),
+            ],
+            "the publisher's source root is removed, not carried along"
+        );
+        assert_eq!(
+            review.pipelines_registered,
+            vec!["hub/calc-studio.feed-tools/blog/feed.zf.json".to_string()]
+        );
+
+        let result = platform
+            .hub
+            .install_asset("superadmin", "atlas", "calc-studio.feed-tools", "1.0.0", "")
+            .expect("install");
+        assert_eq!(result.pipelines_registered, review.pipelines_registered);
+        for destination in reviewed_destinations(&review) {
+            assert!(
+                target.repo_dir.join(&destination).is_file(),
+                "the review promised {destination}"
+            );
+        }
+        let _ = root;
+    }
+
+    /// A package written before `spec.layout` existed carries no layout, so it
+    /// resolves through the platform default -- the layout every project had
+    /// when that package was published. Nothing about it has to be reissued.
+    #[test]
+    fn a_package_published_before_this_field_existed_still_installs() {
+        let root = tempfile::tempdir().unwrap();
+        let platform = test_platform(&root);
+        let target = project_declaring_src(&platform, "atlas");
+
+        // Written the way a package of that vintage was written: no layout key
+        // at all, and paths rooted at the source directory the platform used to
+        // hardcode. Decoded through the contract so the absence is proven to be
+        // accepted rather than assumed.
+        let pipeline = serde_json::json!({
+            "apiVersion": "zebflow.com/v1",
+            "kind": "Pipeline",
+            "metadata": {"name": "feed"},
+            "spec": {"id": "feed", "entry_nodes": [], "nodes": [], "edges": []}
+        })
+        .to_string();
+        let document = serde_json::json!({
+            "apiVersion": "zebflow.com/v1",
+            "kind": "HubPackage",
+            "metadata": {"name": "legacy-tools", "version": "1.0.0"},
+            "spec": {
+                "asset_kind": HUB_ASSET_KIND_PIPELINE_BUNDLE,
+                "title": "Legacy Tools",
+                "description": "Published before a package recorded its layout.",
+                "files": [
+                    {"rel_path": "pipelines/blog/feed.zf.json", "kind": "pipeline",
+                     "size_bytes": pipeline.len(), "reason": "primary pipeline",
+                     "content": pipeline},
+                    {"rel_path": "pipelines/pages/feed.tsx", "kind": "tsx",
+                     "size_bytes": HUB_LAYOUT_PAGE.len(), "reason": "page",
+                     "content": HUB_LAYOUT_PAGE}
+                ]
+            }
+        });
+        let payload = parse_hub_artifact_value(document, "TEST_HUB").expect("a v1 document");
+        assert!(
+            payload.layout.is_none(),
+            "the fixture is only interesting while it declares nothing"
+        );
+
+        let review = platform
+            .hub
+            .review_artifact_payload(
+                "superadmin",
+                "atlas",
+                "legacy-tools",
+                "1.0.0",
+                "",
+                &payload,
+                &no_channel(),
+            )
+            .expect("review");
+        assert_eq!(
+            reviewed_destinations(&review),
+            vec![
+                "src/hub/legacy-tools/blog/feed.zf.json".to_string(),
+                "src/hub/legacy-tools/pages/feed.tsx".to_string(),
+            ]
+        );
+
+        platform
+            .hub
+            .install_artifact_payload(
+                "superadmin".to_string(),
+                "atlas".to_string(),
+                "legacy-tools",
+                "1.0.0",
+                "",
+                "local/legacy-tools",
+                payload,
+            )
+            .expect("install");
+        for destination in reviewed_destinations(&review) {
+            assert!(target.repo_dir.join(&destination).is_file());
+        }
+    }
+
+    /// Adding a whole project from inside another one. Its source lands in the
+    /// receiver's source root, its images where the receiver serves images
+    /// from, and its docs where the receiver keeps docs -- each under the same
+    /// folder name, so an uninstall knows every place to look.
+    #[test]
+    fn a_whole_project_added_as_a_folder_lands_in_the_receivers_areas() {
+        let (_root, platform) = hub_publish_fixture("Calculator One");
+        write_spatial_blogging_source(&platform);
+        publish_spatial_blogging(&platform, "project_files", ".", "spatial-blogging");
+        let target = project_declaring_src(&platform, "atlas");
+        let target_configuration =
+            std::fs::read(target.project_config_file.as_path()).expect("target configuration");
+
+        let package = "calc-studio.spatial-blogging";
+        let review = platform
+            .hub
+            .review_asset_install("superadmin", "atlas", package, "1.0.0", "")
+            .expect("review");
+        let destinations = reviewed_destinations(&review);
+
+        let result = platform
+            .hub
+            .install_asset("superadmin", "atlas", package, "1.0.0", "")
+            .expect("install");
+
+        let folder = format!("hub/{package}");
+        assert_eq!(result.install_root, format!("src/{folder}"));
+        assert!(
+            destinations.contains(&format!("src/{folder}/blog/feed.zf.json")),
+            "source keeps the receiver's source root: {destinations:?}"
+        );
+        assert!(
+            destinations.contains(&format!("src/assets/{folder}/logo.svg")),
+            "assets land where the receiver serves assets from: {destinations:?}"
+        );
+        assert!(
+            destinations.contains(&format!("docs/{folder}/README.md")),
+            "docs land where the receiver keeps docs: {destinations:?}"
+        );
+        // The publisher's own project configuration is not an area of the
+        // receiver's layout, so it stays inside the package's folder. Writing
+        // it at the canonical path would replace the receiver's own.
+        assert!(destinations.contains(&format!(
+            "src/{folder}/{}",
+            crate::contracts::kinds::PROJECT_CONFIGURATION_FILE
+        )));
+        assert_eq!(
+            std::fs::read(target.project_config_file.as_path()).expect("target configuration"),
+            target_configuration,
+            "adding a project must not rewrite the receiver's configuration"
+        );
+
+        // The review and the install are one answer, not two that happen to
+        // agree: every destination shown exists, and the pipeline the review
+        // said would be registered is the identity the install registered.
+        for destination in &destinations {
+            assert!(
+                target.repo_dir.join(destination).is_file(),
+                "the review promised {destination}"
+            );
+        }
+        assert_eq!(result.pipelines_registered, review.pipelines_registered);
+        assert_eq!(
+            result.pipelines_registered,
+            vec![format!("{folder}/blog/feed.zf.json")]
+        );
+        assert!(
+            platform
+                .projects
+                .read_pipeline_source(
+                    "superadmin",
+                    "atlas",
+                    &format!("{folder}/blog/feed.zf.json")
+                )
+                .expect("the added pipeline is registered")
+                .contains("\"feed\"")
+        );
+    }
+
+    /// Translation is per area, and a path in no area is left alone. The two
+    /// singular documents -- the schema exports and the node interface
+    /// directory -- are deliberately not translated: one project holds one of
+    /// each, so a second copy cannot merge and must not overwrite.
+    #[test]
+    fn placement_translates_the_areas_it_can_merge_and_leaves_the_rest() {
+        let publisher = ZebflowJsonLayout {
+            source: Some("pipelines".to_string()),
+            ..Default::default()
+        }
+        .resolve();
+        let target = ZebflowJsonLayout {
+            source: Some("src".to_string()),
+            docs: Some("documentation".to_string()),
+            ..Default::default()
+        }
+        .resolve();
+        let placement = HubInstallPlacement::Project {
+            publisher,
+            target,
+            install_root: "src/hub/demo".to_string(),
+            folder: "hub/demo".to_string(),
+        };
+
+        assert_eq!(
+            placement.destination("pipelines/blog/feed.zf.json"),
+            "src/hub/demo/blog/feed.zf.json"
+        );
+        assert_eq!(
+            placement.destination("pipelines/assets/logo.svg"),
+            "src/assets/hub/demo/logo.svg"
+        );
+        assert_eq!(
+            placement.destination("docs/README.md"),
+            "documentation/hub/demo/README.md"
+        );
+        assert_eq!(
+            placement.destination("schemas/sekejap/schema.json"),
+            "src/hub/demo/schemas/sekejap/schema.json"
+        );
+        assert_eq!(
+            placement.destination("nodes/n.x.acme.thing.json"),
+            "src/hub/demo/nodes/n.x.acme.thing.json"
+        );
+        assert_eq!(
+            placement.destination("zebflow.yaml"),
+            "src/hub/demo/zebflow.yaml"
+        );
+        // `pipelines-old` is not inside `pipelines`; the prefix is anchored on
+        // a whole segment so a neighbouring directory is not swallowed.
+        assert_eq!(
+            placement.destination("pipelines-old/feed.zf.json"),
+            "src/hub/demo/pipelines-old/feed.zf.json"
+        );
     }
 
     /// Omitted flags mean the install this caller always got.
