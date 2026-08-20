@@ -1,6 +1,8 @@
 # Pipeline Authoring
 
-Pipelines are directed graphs stored as `.zf.json` files under `repo/pipelines/`.
+Pipelines are directed graphs stored as `.zf.json` files under the project's
+source root — `repo/pipelines/` unless `spec.layout.source` in `repo/zebflow.yaml`
+says otherwise.
 Use the **DSL** (`pipeline_register`) to author them — the JSON is auto-generated.
 Read this doc for the underlying model. See `help("pipeline/dsl")` for the DSL.
 
@@ -38,9 +40,10 @@ description, and keywords. Templates without this block still appear in
 
 ## File Location
 
+Inside the source root:
+
 ```
-pipelines/
-  api/
+api/
     auth/login.zf.json
     posts/list.zf.json
   pages/
@@ -50,7 +53,7 @@ pipelines/
     daily-report.zf.json
 ```
 
-Naming convention: `pipelines/<virtual-path>/<name>.zf.json`
+Naming convention: `<virtual-path>/<name>.zf.json`, relative to the source root.
 
 ---
 

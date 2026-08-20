@@ -310,7 +310,9 @@ fn repo_schema_dir(data_root: &Path, owner: &str, project: &str) -> PathBuf {
 ///
 /// This module reaches the repository through `data_root` rather than through
 /// a `ProjectFileLayout`, so it resolves the same layout rather than repeating
-/// the directory it names.
+/// the directory it names. Every writer in this module is reached from a node
+/// or handler that has no layout in hand, so honoring a declared
+/// `spec.layout.schema` here is a separate change from this one.
 fn repo_layout() -> ResolvedProjectLayout {
     ResolvedProjectLayout::platform_default()
 }

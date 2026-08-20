@@ -285,19 +285,20 @@ After patching, the pipeline is `stale` until re-activated.
 
 ```zf
 activate blog-home
-activate pipelines/api/blog-home.zf.json
+activate api/blog-home.zf.json
 deactivate blog-home
 ```
 
 The `file_rel_path` is the only argument — no `pipeline` keyword between verb and path.
-`pipelines/` prefix and `.zf.json` extension are added automatically when omitted.
+Paths are relative to the project's source root, and the `.zf.json` extension is
+added when omitted.
 
 ### execute — trigger a registered pipeline
 
 ```zf
 execute blog-home
 execute process-order -- {"order_id": 42, "action": "resend"}
-execute pipelines/api/process-order.zf.json -- {"order_id": 42}
+execute api/process-order.zf.json -- {"order_id": 42}
 ```
 
 Triggers with the declared trigger kind. Use `-- {json}` to pass input payload (manual trigger pipelines).
@@ -1104,7 +1105,7 @@ describe pipeline get-posts
 
 # 6. Commit changes
 git status
-git add pipelines/api/get-posts.json
+git add pipelines/api/get-posts.zf.json
 git commit -- "add get-posts pipeline"
 ```
 

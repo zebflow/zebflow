@@ -35,7 +35,7 @@ const MCP_PROXY_BODY_LIMIT: usize = 16 * 1024 * 1024;
 
 #[derive(serde::Deserialize, JsonSchema)]
 struct PipelineGetParams {
-    /// File-relative path of the pipeline (e.g. "pipelines/my-pipeline.zf.json").
+    /// Source-relative path of the pipeline (e.g. "my-pipeline.zf.json").
     file_rel_path: String,
 }
 
@@ -44,7 +44,7 @@ struct PipelineListParams {
     /// Optional semantic filter across path, title, description, trigger kind, and trigger summary.
     #[schemars(with = "String")]
     query: Option<String>,
-    /// Optional glob to filter pipeline files (e.g. "pipelines/api/*.zf.json").
+    /// Optional glob to filter pipeline files (e.g. "api/*.zf.json").
     #[schemars(with = "String")]
     glob: Option<String>,
     /// Optional status filter: "active", "draft", or "all".
@@ -136,7 +136,7 @@ struct TemplateSearchParams {
 struct PipelineSearchParams {
     /// Pattern to search for (case-insensitive substring).
     pattern: String,
-    /// Optional glob to filter pipeline files (e.g. "pipelines/api/*.zf.json"). Omit to search all .zf.json files.
+    /// Optional glob to filter pipeline files (e.g. "api/*.zf.json"). Omit to search all .zf.json files.
     #[schemars(with = "String")]
     glob: Option<String>,
     /// Number of context lines to include before and after each match. Default 0 (match line only).
@@ -224,7 +224,7 @@ struct DocsAgentWriteParams {
 
 #[derive(serde::Deserialize, JsonSchema)]
 struct PipelineRegisterParams {
-    /// File-relative path of the pipeline under repo/ (e.g. "pipelines/api/blog-home").
+    /// Source-relative path of the pipeline (e.g. "api/blog-home").
     /// The .zf.json extension is added automatically if omitted.
     /// Preferred over name+path. If omitted, derived from name and path fields.
     #[serde(default)]
@@ -254,7 +254,7 @@ struct PipelineRegisterParams {
 
 #[derive(serde::Deserialize, JsonSchema)]
 struct PipelineDescribeParams {
-    /// File-relative path of the pipeline (e.g. "pipelines/api/blog-home.zf.json").
+    /// Source-relative path of the pipeline (e.g. "api/blog-home.zf.json").
     /// Also accepted as "name" for backward compatibility.
     #[serde(alias = "name")]
     file_rel_path: String,
@@ -266,7 +266,7 @@ struct PipelineDescribeParams {
 
 #[derive(serde::Deserialize, JsonSchema)]
 struct PipelinePatchParams {
-    /// File-relative path of the pipeline (e.g. "pipelines/api/blog-home.zf.json").
+    /// Source-relative path of the pipeline (e.g. "api/blog-home.zf.json").
     /// Also accepted as "name" for backward compatibility.
     #[serde(alias = "name")]
     file_rel_path: String,
@@ -283,12 +283,12 @@ struct PipelinePatchParams {
 
 #[derive(serde::Deserialize, JsonSchema)]
 struct PipelineActivateParams {
-    /// File-relative path of the pipeline to activate (e.g. "pipelines/api/blog-home.zf.json").
+    /// Source-relative path of the pipeline to activate (e.g. "api/blog-home.zf.json").
     /// Also accepted as "name" for backward compatibility.
     /// Ignored when glob is set.
     #[serde(alias = "name", default)]
     file_rel_path: String,
-    /// Glob pattern to bulk-activate matching pipelines (e.g. "pipelines/modules/manage/**").
+    /// Glob pattern to bulk-activate matching pipelines (e.g. "modules/manage/**").
     /// When set, activates all pipelines whose file_rel_path matches. file_rel_path is ignored.
     #[serde(default)]
     #[schemars(with = "String")]
@@ -297,7 +297,7 @@ struct PipelineActivateParams {
 
 #[derive(serde::Deserialize, JsonSchema)]
 struct PipelineDeactivateParams {
-    /// File-relative path of the pipeline to deactivate (e.g. "pipelines/api/blog-home.zf.json").
+    /// Source-relative path of the pipeline to deactivate (e.g. "api/blog-home.zf.json").
     /// Also accepted as "name" for backward compatibility.
     #[serde(alias = "name")]
     file_rel_path: String,
@@ -305,7 +305,7 @@ struct PipelineDeactivateParams {
 
 #[derive(serde::Deserialize, JsonSchema)]
 struct PipelineExecuteParams {
-    /// File-relative path of the registered active pipeline to execute (e.g. "pipelines/api/blog-home.zf.json").
+    /// Source-relative path of the registered active pipeline to execute (e.g. "api/blog-home.zf.json").
     /// Also accepted as "name" for backward compatibility.
     #[serde(alias = "name")]
     file_rel_path: String,
@@ -330,7 +330,7 @@ struct PipelineRunParams {
 
 #[derive(serde::Deserialize, JsonSchema)]
 struct PipelineGetInvocationsParams {
-    /// File-relative path of the pipeline (e.g. "pipelines/api/blog-home.zf.json").
+    /// Source-relative path of the pipeline (e.g. "api/blog-home.zf.json").
     file_rel_path: String,
 }
 
@@ -382,7 +382,7 @@ struct InstallUiComponentsParams {
 #[derive(serde::Deserialize, JsonSchema)]
 struct MoveParams {
     /// Source path to move from.
-    /// Pipelines: file_rel_path e.g. "pipelines/api/old-name.zf.json" or just "old-name".
+    /// Pipelines: file_rel_path e.g. "api/old-name.zf.json" or just "old-name".
     /// Templates: rel_path e.g. "pages/old-name.tsx" or "components/old-card.tsx".
     from_path: String,
     /// Destination path to move to. Same domain as from_path.
@@ -515,7 +515,7 @@ impl ZebflowMcpHandler {
 
     #[tool(
         description = "Search pipeline .zf.json files for a pattern. Returns file:line matches. \
-                       Use glob to narrow scope (e.g. \"pipelines/api/*.zf.json\"). \
+                       Use glob to narrow scope (e.g. \"api/*.zf.json\"). \
                        Equivalent to Grep across pipelines — find which pipelines use a credential, path, or node kind."
     )]
     async fn pipeline_search(
@@ -569,7 +569,11 @@ impl ZebflowMcpHandler {
         self.check_tool_capability(&session, "pipeline_register")?;
         // Check lock on existing pipeline (by resolved file_rel_path if provided)
         if let Some(ref frp) = params.file_rel_path {
-            let frp = crate::platform::services::project::normalize_pipeline_file_rel_path(frp);
+            let frp = self
+                .platform
+                .projects
+                .pipeline_identity(&session.owner, &session.project, frp)
+                .map_err(|error| McpError::internal_error(error.to_string(), None))?;
             if self.pipeline_locked(&session.owner, &session.project, &frp) {
                 return Err(McpError::invalid_params(
                     "This pipeline is locked by the project owner and cannot be accessed by agents. Ask the owner to unlock it.",
@@ -653,7 +657,7 @@ impl ZebflowMcpHandler {
         description = "Activate a pipeline — makes it live so it can serve traffic and be executed. \
                        Must be called after pipeline_register or after patching. \
                        A pipeline must be active before pipeline_execute will run it. \
-                       Set glob (e.g. \"pipelines/modules/manage/**\") to bulk-activate all matching pipelines \
+                       Set glob (e.g. \"modules/manage/**\") to bulk-activate all matching pipelines \
                        instead of activating one at a time."
     )]
     async fn pipeline_activate(
@@ -1378,10 +1382,10 @@ impl ZebflowMcpHandler {
         )
         .with_platform(self.platform.clone())
         .with_template_cache(self.template_cache.clone())
-        .with_template_root(
+        .with_project_layout(
             self.platform
                 .projects
-                .get_project_template_root(&session.owner, &session.project)
+                .project_layout(&session.owner, &session.project)
                 .ok(),
         )
         .with_ws_hub(self.platform.ws_hub.clone())

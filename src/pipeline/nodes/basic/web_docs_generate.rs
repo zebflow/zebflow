@@ -345,22 +345,24 @@ pub fn definition() -> NodeDefinition {
     }
 }
 
-pub fn load_site(config: &Config, template_root: &Path) -> Result<DocsSite, PipelineError> {
-    let repo_root = template_root.parent().ok_or_else(|| {
-        PipelineError::new(
-            "WEB_DOCS_TEMPLATE_ROOT",
-            "template_root must point to repo/pipelines so docs generation can resolve repo/docs",
-        )
-    })?;
+/// Loads the documentation site described by `config`.
+///
+/// `docs_root` is passed in rather than derived from `template_root`, which
+/// used to be reached by a single `parent()` hop: that is only the repository
+/// root when the source directory is exactly one segment deep, so a project
+/// declaring `source: src/app` resolved its docs against `repo/src`.
+pub fn load_site(
+    config: &Config,
+    template_root: &Path,
+    docs_root: &Path,
+) -> Result<DocsSite, PipelineError> {
     let docs_root_rel = normalize_rel_dir_path(&config.docs_root, "docs_root")?;
     let output_dir_rel = normalize_rel_dir_path(&config.output_dir, "output_dir")?;
     let site_root_rel = effective_site_root_rel_path(config, &output_dir_rel)?;
     let template_folder_rel = normalize_rel_dir_path(&config.template_folder, "template_folder")?;
     let meta_file = normalize_meta_file_name(&config.meta_file)?;
 
-    let docs_root_abs = repo_root
-        .join(&crate::platform::model::ResolvedProjectLayout::platform_default().docs)
-        .join(&docs_root_rel);
+    let docs_root_abs = docs_root.join(&docs_root_rel);
     if !docs_root_abs.is_dir() {
         return Err(PipelineError::new(
             "WEB_DOCS_ROOT_MISSING",
@@ -1787,6 +1789,7 @@ mod tests {
     };
     use crate::platform::adapters::file::build_file_adapter;
     use crate::platform::model::FileAdapterKind;
+    use crate::platform::services::project_config::ProjectConfigurationService;
     use crate::rwe::resolve_engine_or_default;
 
     #[test]
@@ -1829,7 +1832,11 @@ mod tests {
                 .expect("unix time")
                 .as_nanos()
         ));
-        let file = build_file_adapter(FileAdapterKind::Filesystem, root.clone());
+        let file = build_file_adapter(
+            FileAdapterKind::Filesystem,
+            root.clone(),
+            std::sync::Arc::new(ProjectConfigurationService::new(root.join("users"))),
+        );
         let layout = file
             .ensure_project_layout("superadmin", "docs-project")
             .expect("layout");
@@ -1889,7 +1896,7 @@ mod tests {
             resolve_engine_or_default(None),
             None,
         )
-        .with_template_root(Some(layout.repo_source_dir()))
+        .with_project_layout(Some(layout.clone()))
         .with_template_cache(new_template_cache())
         .with_data_root(root.clone());
 

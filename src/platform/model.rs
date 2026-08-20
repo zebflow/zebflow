@@ -2387,18 +2387,28 @@ pub struct ZebflowJsonConfigs {
 
 /// Repository-relative source root: pipelines, pages, styles, and components.
 pub const DEFAULT_LAYOUT_SOURCE_DIR: &str = "pipelines";
-/// Repository-relative directory served for `/assets/{owner}/{project}/...`.
-pub const DEFAULT_LAYOUT_ASSETS_DIR: &str = "pipelines/assets";
+/// Directory name, inside the source root, served for
+/// `/assets/{owner}/{project}/...`.
+pub const DEFAULT_LAYOUT_ASSETS_SUBDIR: &str = "assets";
 /// Repository-relative directory holding project documentation.
 pub const DEFAULT_LAYOUT_DOCS_DIR: &str = "docs";
 /// Repository-relative directory holding the exported database schema document.
 pub const DEFAULT_LAYOUT_SCHEMA_DIR: &str = "schemas/sekejap";
+/// Repository-relative directory holding the portable SQLite schema export.
+pub const DEFAULT_LAYOUT_SQLITE_SCHEMA_DIR: &str = "schemas/sqlite";
 /// Repository-relative directory holding third-party node interface documents.
 pub const DEFAULT_LAYOUT_NODE_INTERFACES_DIR: &str = "nodes";
 /// Filename suffix that marks a pipeline definition.
 pub const PIPELINE_DEFINITION_EXTENSION: &str = ".zf.json";
+/// The source root every persisted pipeline id carried before identity became
+/// source-relative. It is the one prefix the migration knows how to remove.
+pub const LEGACY_PIPELINE_IDENTITY_ROOT: &str = "pipelines";
+/// Recovery copy written by the pipeline identity migration.
+pub const PIPELINE_IDENTITY_BACKUP_FILE: &str = "pipelines.pre-source-relative.json";
 /// Filename of the exported schema document inside the schema directory.
 pub const SCHEMA_DOCUMENT_FILE: &str = "schema.json";
+/// Filename of the SQLite schema export inside the SQLite schema directory.
+pub const SQLITE_SCHEMA_DOCUMENT_FILE: &str = "schema.sql";
 
 /// Declared repository layout loaded from `zebflow.yaml`.
 ///
@@ -2417,6 +2427,8 @@ pub struct ZebflowJsonLayout {
     pub docs: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub schema: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sqlite_schema: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub node_interfaces: Option<String>,
     /// Prefixes an install replays as initial data, each bound to one engine.
@@ -2458,6 +2470,7 @@ pub struct ResolvedProjectLayout {
     pub assets: String,
     pub docs: String,
     pub schema: String,
+    pub sqlite_schema: String,
     pub node_interfaces: String,
     pub initial_data: Vec<ZebflowJsonInitialDataDir>,
 }
@@ -2473,11 +2486,21 @@ impl ZebflowJsonLayout {
         let resolved = |declared: &Option<String>, fallback: &str| {
             declared.clone().unwrap_or_else(|| fallback.to_string())
         };
+        let source = resolved(&self.source, DEFAULT_LAYOUT_SOURCE_DIR);
+        // Assets default *inside* the source root rather than at a fixed path,
+        // so a project that moves its source does not keep an asset directory
+        // in the tree it moved out of. With no source declared this is
+        // `pipelines/assets`, exactly as before.
+        let assets = self
+            .assets
+            .clone()
+            .unwrap_or_else(|| format!("{source}/{DEFAULT_LAYOUT_ASSETS_SUBDIR}"));
         ResolvedProjectLayout {
-            source: resolved(&self.source, DEFAULT_LAYOUT_SOURCE_DIR),
-            assets: resolved(&self.assets, DEFAULT_LAYOUT_ASSETS_DIR),
+            source,
+            assets,
             docs: resolved(&self.docs, DEFAULT_LAYOUT_DOCS_DIR),
             schema: resolved(&self.schema, DEFAULT_LAYOUT_SCHEMA_DIR),
+            sqlite_schema: resolved(&self.sqlite_schema, DEFAULT_LAYOUT_SQLITE_SCHEMA_DIR),
             node_interfaces: resolved(&self.node_interfaces, DEFAULT_LAYOUT_NODE_INTERFACES_DIR),
             initial_data: self
                 .initial_data
@@ -2529,6 +2552,16 @@ impl ResolvedProjectLayout {
     /// Repository-relative path of the exported schema document itself.
     pub fn schema_document_rel(&self) -> String {
         format!("{}/{SCHEMA_DOCUMENT_FILE}", self.schema)
+    }
+
+    /// Whether `rel` is part of the portable SQLite schema export.
+    pub fn is_sqlite_schema_rel_path(&self, rel: &str) -> bool {
+        strip_dir_prefix(&self.sqlite_schema, rel).is_some()
+    }
+
+    /// Repository-relative path of the SQLite schema export itself.
+    pub fn sqlite_schema_document_rel(&self) -> String {
+        format!("{}/{SQLITE_SCHEMA_DOCUMENT_FILE}", self.sqlite_schema)
     }
 
     /// The engine that would replay `rel`, when this layout replays it at all.

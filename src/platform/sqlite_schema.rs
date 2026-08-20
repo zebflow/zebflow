@@ -1,17 +1,17 @@
 //! Portable SQLite schema export/import for project bundles.
 //!
 //! Project bundles do not ship local SQLite data through Hub. When requested,
-//! they carry `schemas/sqlite/schema.sql`, which is enough to initialize a new
-//! project's `data/local.db` with the same table/index/view/trigger structure.
+//! they carry the project's SQLite schema export, which is enough to
+//! initialize a new project's `data/local.db` with the same
+//! table/index/view/trigger structure. The directory it lives in is declared
+//! by `spec.layout.sqlite_schema` rather than named here.
 
 use std::path::{Path, PathBuf};
 
 use rusqlite::Connection;
 
 use crate::platform::error::PlatformError;
-use crate::platform::model::slug_segment;
-
-pub const REPO_SCHEMA_PATH: &str = "schemas/sqlite/schema.sql";
+use crate::platform::model::{ResolvedProjectLayout, slug_segment};
 
 fn project_repo_dir(data_root: &Path, owner: &str, project: &str) -> PathBuf {
     data_root
@@ -33,8 +33,13 @@ pub fn local_db_path(data_root: &Path, owner: &str, project: &str) -> PathBuf {
     project_data_dir(data_root, owner, project).join("local.db")
 }
 
-pub fn repo_schema_path(data_root: &Path, owner: &str, project: &str) -> PathBuf {
-    project_repo_dir(data_root, owner, project).join(REPO_SCHEMA_PATH)
+pub fn repo_schema_path(
+    data_root: &Path,
+    owner: &str,
+    project: &str,
+    layout: &ResolvedProjectLayout,
+) -> PathBuf {
+    project_repo_dir(data_root, owner, project).join(layout.sqlite_schema_document_rel())
 }
 
 pub fn has_schema(data_root: &Path, owner: &str, project: &str) -> Result<bool, PlatformError> {
@@ -103,8 +108,9 @@ pub fn apply_schema_from_repo(
     data_root: &Path,
     owner: &str,
     project: &str,
+    layout: &ResolvedProjectLayout,
 ) -> Result<bool, PlatformError> {
-    let schema_path = repo_schema_path(data_root, owner, project);
+    let schema_path = repo_schema_path(data_root, owner, project, layout);
     if !schema_path.is_file() {
         return Ok(false);
     }

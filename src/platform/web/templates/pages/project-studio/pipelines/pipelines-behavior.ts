@@ -308,9 +308,10 @@ export function initPipelineRegistryBehavior() {
     }
 
     async function createPipelineAndNavigate(virtualPath: string, name: string, title: string, triggerKind: string) {
-      // Derive file_rel_path from virtualPath + name
+      // Identity is relative to the project's source root, which lives in
+      // zebflow.yaml and is never spelled here.
       const vSeg = virtualPath === "/" ? "" : virtualPath.replace(/^\//, "") + "/";
-      const fileRelPath = `pipelines/${vSeg}${name}.zf.json`;
+      const fileRelPath = `${vSeg}${name}.zf.json`;
       const defaultSource = JSON.stringify(pePipelineDocument({
         id: name,
         entry_nodes: [], nodes: [], edges: [],

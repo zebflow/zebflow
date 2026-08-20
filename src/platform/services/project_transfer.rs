@@ -223,8 +223,17 @@ impl ProjectTransferService {
             ProjectTransferArtifactKind::Bundle => {
                 replace_directory(&layout.repo_dir, &extract_dir.join("repo"))?;
                 replace_directory(&layout.data_dir, &extract_dir.join("data"))?;
+                // Resolved after the replacement: the imported repository
+                // brings its own zebflow.yaml, so the layout that decides
+                // where the schema export lives is the incoming one.
+                let imported = self.file.ensure_project_layout(&owner, &project)?;
                 sekejap::apply_schema_from_repo(&self.data_root, &owner, &project)?;
-                sqlite_schema::apply_schema_from_repo(&self.data_root, &owner, &project)?;
+                sqlite_schema::apply_schema_from_repo(
+                    &self.data_root,
+                    &owner,
+                    &project,
+                    &imported.repo_layout,
+                )?;
             }
             ProjectTransferArtifactKind::Files => {
                 replace_directory(&layout.files_dir, &extract_dir.join("files"))?;
@@ -346,10 +355,12 @@ mod tests {
         let owner = "owner";
         let project = "portable-project";
 
-        let source_file: Arc<dyn FileAdapter> =
-            Arc::new(FilesystemFileAdapter::new(source_root.join("users")));
-        source_file.initialize().unwrap();
         let source_config = Arc::new(ProjectConfigurationService::new(source_root.join("users")));
+        let source_file: Arc<dyn FileAdapter> = Arc::new(FilesystemFileAdapter::new(
+            source_root.join("users"),
+            Arc::clone(&source_config),
+        ));
+        source_file.initialize().unwrap();
         source_config
             .ensure_initialized(owner, project, "Portable Project")
             .unwrap();
@@ -423,10 +434,12 @@ mod tests {
             )
             .unwrap();
 
-        let target_file: Arc<dyn FileAdapter> =
-            Arc::new(FilesystemFileAdapter::new(target_root.join("users")));
-        target_file.initialize().unwrap();
         let target_config = Arc::new(ProjectConfigurationService::new(target_root.join("users")));
+        let target_file: Arc<dyn FileAdapter> = Arc::new(FilesystemFileAdapter::new(
+            target_root.join("users"),
+            Arc::clone(&target_config),
+        ));
+        target_file.initialize().unwrap();
         target_config
             .ensure_initialized(owner, project, "Target Placeholder")
             .unwrap();

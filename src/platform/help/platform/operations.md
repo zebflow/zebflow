@@ -10,7 +10,7 @@ Everything an agent needs to understand how a Zebflow project is structured and 
 {project-root}/
 ├── repo/
 │   ├── zebflow.yaml              ← project config (title, assistant LLM settings)
-│   ├── pipelines/                ← pipeline definitions (.zf.json)
+│   ├── pipelines/                ← source root: .zf.json pipelines + TSX/CSS
 │   ├── templates/
 │   │   ├── pages/                ← full-page TSX templates
 │   │   ├── components/
@@ -28,6 +28,13 @@ Everything an agent needs to understand how a Zebflow project is structured and 
 │
 └── files/                        ← Zebflow FS project artifacts
 ```
+
+Every directory under `repo/` is declared in `repo/zebflow.yaml` under
+`spec.layout`; the names above are what a project that declares nothing gets.
+A project may set `spec.layout.source` to any directory, and discovery,
+registration, RWE compilation, docs, assets, seeds, and Hub installs all follow
+it. A pipeline's `file_rel_path` is relative to that root, so changing it does
+not rename anything.
 
 ---
 

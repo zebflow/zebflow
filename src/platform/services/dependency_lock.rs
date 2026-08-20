@@ -70,6 +70,12 @@ pub struct DependencyStatusReport {
 pub struct DependencyLockService {
     users_root: PathBuf,
     library: Option<Arc<LibraryService>>,
+    /// Where a project's declared layout comes from, when one is attached.
+    ///
+    /// Absent only for the constructors that never scan a source tree, which
+    /// is why resolution falls back to the platform defaults rather than
+    /// failing: a project that declares nothing resolves to them anyway.
+    configs: Option<Arc<ProjectConfigurationService>>,
     update_locks: Mutex<HashMap<PathBuf, Arc<Mutex<()>>>>,
 }
 
@@ -82,6 +88,7 @@ impl DependencyLockService {
         Self {
             users_root,
             library: None,
+            configs: None,
             update_locks: Mutex::new(HashMap::new()),
         }
     }
@@ -91,8 +98,27 @@ impl DependencyLockService {
         Self {
             users_root,
             library: Some(library),
+            configs: None,
             update_locks: Mutex::new(HashMap::new()),
         }
+    }
+
+    /// Attaches the reader that answers where a project keeps its source.
+    pub fn with_project_configs(mut self, configs: Arc<ProjectConfigurationService>) -> Self {
+        self.configs = Some(configs);
+        self
+    }
+
+    /// The project's source root, or the platform default when no
+    /// configuration reader is attached.
+    fn source_root(&self, owner: &str, project: &str) -> PathBuf {
+        let source = self
+            .configs
+            .as_ref()
+            .and_then(|configs| configs.project_layout(owner, project).ok())
+            .unwrap_or_else(ResolvedProjectLayout::platform_default)
+            .source;
+        self.repo_path(owner, project).join(source)
     }
 
     fn repo_path(&self, owner: &str, project: &str) -> PathBuf {
@@ -484,7 +510,6 @@ impl DependencyLockService {
             });
         }
 
-        let repo = self.repo_path(owner, project);
         let node_root = self.node_root(owner, project);
         let mut available = crate::pipeline::nodes::builtin_node_definitions()
             .into_iter()
@@ -496,7 +521,7 @@ impl DependencyLockService {
                 .map(|definition| definition.kind),
         );
         let mut required = BTreeSet::new();
-        let source_root = repo.join(&ResolvedProjectLayout::platform_default().source);
+        let source_root = self.source_root(owner, project);
         collect_project_pipeline_requirements(
             &source_root,
             &source_root,

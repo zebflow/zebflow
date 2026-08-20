@@ -1733,10 +1733,113 @@ async fn hub_add_reviews_risks_and_respects_target_folders() {
         .read_pipeline_source(
             "superadmin",
             "consumer-review",
-            "pipelines/safety-demo/safety-demo.zf.json",
+            "safety-demo/safety-demo.zf.json",
         )
         .expect("added pipeline");
     assert!(added.contains("unsafe-public-hook"));
+
+    // A target folder used to be pulled into the source root only when the
+    // caller typed a leading slash, so `billing` installed outside it, was
+    // reviewed as risk-free with every finding list empty, and registered
+    // nothing. All three spellings now review and register the same pipeline.
+    // One webhook path may only be claimed once, so each spelling is installed
+    // on its own and removed again.
+    let mut previous_install = Some("safety-demo/safety-demo.zf.json".to_string());
+    for (target_folder, expected_root) in [
+        ("", "pipelines/hub/review-lab.safety-demo"),
+        ("billing", "pipelines/billing"),
+        ("/billing", "pipelines/billing"),
+    ] {
+        if let Some(previous) = previous_install.take() {
+            platform
+                .projects
+                .delete_pipeline("superadmin", "consumer-review", &previous)
+                .expect("remove previous install");
+        }
+        let review = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(
+                        "/api/projects/superadmin/consumer-review/hub/assets/review-lab.safety-demo/1.0.0/review",
+                    )
+                    .method("POST")
+                    .header(header::COOKIE, &cookie)
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        json!({ "target_folder": target_folder }).to_string(),
+                    ))
+                    .expect("request"),
+            )
+            .await
+            .expect("target folder review response");
+        assert_eq!(review.status(), StatusCode::OK);
+        let review = response_json(review).await;
+        assert_eq!(
+            review["review"]["install_root"],
+            json!(expected_root),
+            "install root for target_folder {target_folder:?}"
+        );
+        assert_eq!(
+            review["review"]["risk_level"],
+            json!("high"),
+            "risk level for target_folder {target_folder:?}"
+        );
+        assert!(
+            review["review"]["public_endpoints"]
+                .as_array()
+                .expect("endpoints")
+                .contains(&json!("/unsafe-public-hook")),
+            "public endpoints for target_folder {target_folder:?}"
+        );
+
+        let add = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(
+                        "/api/projects/superadmin/consumer-review/hub/assets/review-lab.safety-demo/1.0.0/add",
+                    )
+                    .method("POST")
+                    .header(header::COOKIE, &cookie)
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        json!({ "target_folder": target_folder }).to_string(),
+                    ))
+                    .expect("request"),
+            )
+            .await
+            .expect("target folder add response");
+        assert_eq!(add.status(), StatusCode::OK);
+        let add = response_json(add).await;
+        let registered = add["result"]["pipelines_registered"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+        assert_eq!(
+            registered,
+            review["review"]["pipelines_registered"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default(),
+            "review and install disagree for target_folder {target_folder:?}"
+        );
+        assert_eq!(
+            registered.len(),
+            1,
+            "nothing registered for target_folder {target_folder:?}: {add}"
+        );
+        let identity = registered[0].as_str().expect("identity");
+        assert!(
+            platform
+                .projects
+                .get_pipeline_meta_by_file_id("superadmin", "consumer-review", identity)
+                .expect("meta lookup")
+                .is_some(),
+            "no catalog row for target_folder {target_folder:?}"
+        );
+        previous_install = Some(identity.to_string());
+    }
 }
 
 #[tokio::test]
@@ -2440,6 +2543,137 @@ async fn platform_serves_local_codemirror_library_asset() {
     let js = String::from_utf8(body.to_vec()).expect("utf8");
     assert!(js.contains("EditorView"));
     assert!(js.contains("basicSetup"));
+}
+
+#[tokio::test]
+async fn a_declared_source_root_moves_templates_pipelines_and_assets() {
+    let mut config = PlatformConfig::default();
+    config.data_root = temp_test_dir("declared-source-root");
+    config.default_password = "test-pass".to_string();
+    let platform = Arc::new(PlatformService::from_config(config).expect("platform service"));
+    let app = zebflow::platform::web::router(platform.clone()).await;
+    let cookie = login_cookie(app.clone(), "superadmin", "test-pass").await;
+
+    platform
+        .projects
+        .create_or_update_project(
+            "superadmin",
+            &CreateProjectRequest {
+                project: "declared".to_string(),
+                title: Some("Declared".to_string()),
+                local_branch: None,
+                runtime: Default::default(),
+            },
+        )
+        .expect("project");
+    platform
+        .zebflow_cfg
+        .update("superadmin", "declared", |cfg| {
+            cfg.configs.layout.source = Some("src".to_string());
+        })
+        .expect("declare layout");
+
+    let layout = platform
+        .projects
+        .project_layout("superadmin", "declared")
+        .expect("layout");
+    assert_eq!(layout.repo_source_dir(), layout.repo_dir.join("src"));
+    assert_eq!(layout.repo_assets_dir(), layout.repo_dir.join("src/assets"));
+
+    let create = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/projects/superadmin/declared/templates/create")
+                .method("POST")
+                .header(header::COOKIE, &cookie)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    r#"{"kind":"component","name":"panel","parent_rel_path":"components"}"#,
+                ))
+                .expect("request"),
+        )
+        .await
+        .expect("create response");
+    assert_eq!(create.status(), StatusCode::OK);
+    assert!(layout.repo_dir.join("src/components/panel.tsx").is_file());
+    assert!(
+        !layout
+            .repo_dir
+            .join("pipelines/components/panel.tsx")
+            .exists()
+    );
+
+    let register = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/projects/superadmin/declared/pipelines/definition")
+                .method("POST")
+                .header(header::COOKIE, &cookie)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({
+                        "file_rel_path": "blog/feed",
+                        "title": "Feed",
+                        "description": "",
+                        "trigger_kind": "webhook",
+                        "source": r#"{"apiVersion":"zebflow.com/v1","kind":"Pipeline","metadata":{"name":"feed"},"spec":{"id":"feed","entry_nodes":["wh"],"nodes":[{"id":"wh","kind":"n.trigger.webhook","input_pins":[],"output_pins":["out"],"config":{"path":"/feed","method":"GET"}}],"edges":[]}}"#
+                    })
+                    .to_string(),
+                ))
+                .expect("request"),
+        )
+        .await
+        .expect("register response");
+    assert_eq!(register.status(), StatusCode::OK);
+    let register = response_json(register).await;
+    // Identity has no root segment; the root lives in zebflow.yaml.
+    assert_eq!(
+        register["meta"]["file_rel_path"],
+        json!("blog/feed.zf.json")
+    );
+    assert!(layout.repo_dir.join("src/blog/feed.zf.json").is_file());
+
+    let registry = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/projects/superadmin/declared/pipelines/registry?scope=project")
+                .method("GET")
+                .header(header::COOKIE, &cookie)
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("registry response");
+    assert_eq!(registry.status(), StatusCode::OK);
+    let registry = response_json(registry).await;
+    let listed = registry["items"].as_array().cloned().unwrap_or_default();
+    assert_eq!(
+        listed.len(),
+        1,
+        "registry did not discover the pipeline: {registry}"
+    );
+    assert_eq!(listed[0]["file_rel_path"], json!("blog/feed.zf.json"));
+
+    std::fs::create_dir_all(layout.repo_assets_dir()).expect("assets dir");
+    std::fs::write(layout.repo_assets_dir().join("logo.txt"), b"declared-asset")
+        .expect("asset file");
+    let asset = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/assets/superadmin/declared/logo.txt")
+                .method("GET")
+                .header(header::COOKIE, &cookie)
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("asset response");
+    assert_eq!(asset.status(), StatusCode::OK);
+    assert_eq!(response_text(asset).await, "declared-asset");
 }
 
 #[tokio::test]

@@ -29,7 +29,7 @@ use zebflow::platform::services::project::{
     derive_trigger_kind_from_source, webhook_triggers_from_source,
 };
 use zebflow::platform::services::{
-    DependencyLockService, LibraryService, ProjectConfigurationService,
+    DependencyLockService, LibraryService, ProjectConfigurationService, ProjectService,
 };
 use zebflow::platform::web;
 use zebflow::platform::{DataAdapterKind, FileAdapterKind, PlatformConfig, build_router};
@@ -140,6 +140,7 @@ Usage:
   zebflow run <project-or-hub-asset-url> [--owner <owner>] [--project <project>]
   zebflow project config migrate <owner> <project>
   zebflow project lock migrate <owner> <project>
+  zebflow project pipelines migrate <owner> <project>
   zebflow controller
   zebflow office
   zebflow k8s cluster <command> ...
@@ -158,6 +159,8 @@ Project Maintenance:
                Explicitly migrate repo/zebflow.json to repo/zebflow.yaml
   zebflow project lock migrate <owner> <project>
                Explicitly migrate the pre-v1 repo/zeb.lock format
+  zebflow project pipelines migrate <owner> <project>
+               Rewrite persisted pipeline ids to the source-relative form
 
 Kubernetes:
   zebflow k8s cluster init <path>
@@ -203,7 +206,7 @@ fn project_maintenance(args: &[String]) -> Result<(), Box<dyn std::error::Error>
     if args.len() != 4 || args[1] != "migrate" {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            "usage: zebflow project <config|lock> migrate <owner> <project>",
+            "usage: zebflow project <config|lock|pipelines> migrate <owner> <project>",
         )
         .into());
     }
@@ -230,12 +233,60 @@ fn project_maintenance(args: &[String]) -> Result<(), Box<dyn std::error::Error>
             println!("Recovery: {}", result.recovery_path.display());
             Ok(())
         }
+        "pipelines" => {
+            let result = pipeline_identity_service(&data_root)?
+                .migrate_pipeline_identity(&args[2], &args[3])?;
+            println!(
+                "Pipeline identity migrated ({} converted, {} already source-relative)",
+                result.rewrites.len(),
+                result.already_canonical
+            );
+            for rewrite in &result.rewrites {
+                println!("  {} -> {}", rewrite.from, rewrite.to);
+            }
+            if !result.bootstrap_activate.is_empty() {
+                println!("spec.bootstrap.activate: {:?}", result.bootstrap_activate);
+            }
+            match result.recovery_path {
+                Some(path) => println!("Recovery: {}", path.display()),
+                None => println!("Nothing to convert; no recovery copy written."),
+            }
+            Ok(())
+        }
         _ => Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            "usage: zebflow project <config|lock> migrate <owner> <project>",
+            "usage: zebflow project <config|lock|pipelines> migrate <owner> <project>",
         )
         .into()),
     }
+}
+
+/// Builds only the services the pipeline identity migration needs.
+///
+/// The migration touches the platform catalog and `zebflow.yaml`, so it needs
+/// a real data adapter, but it must not start a server or run bootstrap.
+fn pipeline_identity_service(
+    data_root: &Path,
+) -> Result<ProjectService, Box<dyn std::error::Error>> {
+    let users_root = data_root.join("users");
+    let data = zebflow::platform::adapters::data::build_data_adapter(
+        PlatformConfig::default().data_adapter,
+        data_root,
+    )?;
+    let configs = Arc::new(ProjectConfigurationService::new(users_root.clone()));
+    let file = zebflow::platform::adapters::file::build_file_adapter(
+        FileAdapterKind::Filesystem,
+        data_root.to_path_buf(),
+        configs.clone(),
+    );
+    file.initialize()?;
+    Ok(ProjectService::new(
+        data,
+        file,
+        zebflow::platform::adapters::project_data::build_project_data_factory(data_root),
+        configs,
+        Arc::new(DependencyLockService::new(users_root)),
+    ))
 }
 
 /// Load the platform configuration for the requested runtime role from environment variables.

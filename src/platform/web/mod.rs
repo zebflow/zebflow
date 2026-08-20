@@ -4824,7 +4824,10 @@ async fn render_project_pipelines_with_tab(
                 ) {
                     Ok(mut listing) => {
                         for item in &mut listing.pipelines {
-                            item.git_status = registry_git_map.get(&item.file_rel_path).cloned();
+                            // Git keys are repository-relative; identity is not.
+                            item.git_status = registry_git_map
+                                .get(&repo_layout.source_rel(&item.file_rel_path))
+                                .cloned();
                         }
                         for item in &mut listing.files {
                             item.git_status = registry_git_map.get(&item.rel_path).cloned();
@@ -10593,7 +10596,12 @@ async fn api_pipeline_registry(
     };
     let base_route = format!("/projects/{owner}/{project}/pipelines/registry");
     let editor_base = format!("/projects/{owner}/{project}/pipelines/registry");
-    // Build git status map keyed by file_rel_path (relative to repo/).
+    // Git reports repository-relative paths, while pipeline identity is
+    // source-relative, so the root is added back for those lookups.
+    let repo_layout = match state.platform.projects.project_layout(&owner, &project) {
+        Ok(layout) => layout.repo_layout,
+        Err(err) => return internal_error(err),
+    };
     let git_map: std::collections::HashMap<String, String> = state
         .platform
         .projects
@@ -10602,6 +10610,9 @@ async fn api_pipeline_registry(
         .into_iter()
         .map(|item| (item.rel_path, item.code))
         .collect();
+    let pipeline_git_status = |file_rel_path: &str| -> Option<String> {
+        git_map.get(&repo_layout.source_rel(file_rel_path)).cloned()
+    };
     match scope {
         PipelineRegistryScope::Path => {
             let current_path = query.path.as_deref().unwrap_or("/");
@@ -10614,7 +10625,7 @@ async fn api_pipeline_registry(
             ) {
                 Ok(mut listing) => {
                     for item in &mut listing.pipelines {
-                        item.git_status = git_map.get(&item.file_rel_path).cloned();
+                        item.git_status = pipeline_git_status(&item.file_rel_path);
                     }
                     for item in &mut listing.files {
                         item.git_status = git_map.get(&item.rel_path).cloned();
@@ -10643,7 +10654,7 @@ async fn api_pipeline_registry(
                             .as_deref()
                             .map(|h| !h.is_empty() && h != meta.hash)
                             .unwrap_or(false);
-                        let git_status = git_map.get(&meta.file_rel_path).cloned();
+                        let git_status = pipeline_git_status(&meta.file_rel_path);
                         let file_rel_path = meta.file_rel_path.clone();
                         json!({
                             "id": file_rel_path,
@@ -11067,7 +11078,15 @@ async fn api_pipeline_lock_toggle(
         Ok(l) => l,
         Err(err) => return internal_error(err),
     };
-    let pipeline_path = layout.repo_dir.join(&req.file_rel_path);
+    // Identity is source-relative; git and the filesystem both want the
+    // repository-relative form, so it is rebuilt once here.
+    let pipeline_repo_rel = layout.repo_layout.source_rel(
+        layout
+            .repo_layout
+            .strip_source(&req.file_rel_path)
+            .unwrap_or(&req.file_rel_path),
+    );
+    let pipeline_path = layout.repo_dir.join(&pipeline_repo_rel);
     let source = match std::fs::read(&pipeline_path) {
         Ok(s) => s,
         Err(_) => {
@@ -11124,7 +11143,7 @@ async fn api_pipeline_lock_toggle(
             .arg(&layout.repo_dir)
             .arg("add")
             .arg("--")
-            .arg(&req.file_rel_path);
+            .arg(&pipeline_repo_rel);
         add_cmd.output()
     };
     let _ = {
@@ -12522,13 +12541,7 @@ async fn execute_pipeline_local(
     )
     .with_platform(state.platform.clone())
     .with_template_cache(state.template_cache.clone())
-    .with_template_root(
-        state
-            .platform
-            .projects
-            .get_project_template_root(owner, project)
-            .ok(),
-    )
+    .with_project_layout(state.platform.projects.project_layout(owner, project).ok())
     .with_ws_hub(state.platform.ws_hub.clone())
     .with_ws_client_manager(state.ws_client_manager.clone())
     .with_state_bus(state.platform.state_bus.clone())
@@ -20690,13 +20703,7 @@ async fn dispatch_weberror(
     )
     .with_platform(state.platform.clone())
     .with_template_cache(state.template_cache.clone())
-    .with_template_root(
-        state
-            .platform
-            .projects
-            .get_project_template_root(owner, project)
-            .ok(),
-    )
+    .with_project_layout(state.platform.projects.project_layout(owner, project).ok())
     .with_ws_hub(state.platform.ws_hub.clone())
     .with_ws_client_manager(state.ws_client_manager.clone())
     .with_state_bus(state.platform.state_bus.clone())
@@ -21042,11 +21049,11 @@ async fn public_webhook_ingress(
     )
     .with_platform(state.platform.clone())
     .with_template_cache(state.template_cache.clone())
-    .with_template_root(
+    .with_project_layout(
         state
             .platform
             .projects
-            .get_project_template_root(&owner, &project)
+            .project_layout(&owner, &project)
             .ok(),
     )
     .with_ws_hub(state.platform.ws_hub.clone())

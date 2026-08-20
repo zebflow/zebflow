@@ -99,18 +99,27 @@ impl PlatformService {
     pub fn from_config(config: PlatformConfig) -> Result<Self, PlatformError> {
         std::fs::create_dir_all(&config.data_root)?;
         let data = build_data_adapter(config.data_adapter, &config.data_root)?;
-        let file = build_file_adapter(config.file_adapter, config.data_root.clone());
+        // The configuration service is built first: the file adapter resolves
+        // every project directory through the layout that service reads.
+        let zebflow_cfg = Arc::new(ProjectConfigurationService::new(
+            config.data_root.join("users"),
+        ));
+        let file = build_file_adapter(
+            config.file_adapter,
+            config.data_root.clone(),
+            zebflow_cfg.clone(),
+        );
         let project_data = build_project_data_factory(&config.data_root);
         file.initialize()?;
 
         let library = Arc::new(LibraryService::from_embedded()?);
-        let zebflow_cfg = Arc::new(ProjectConfigurationService::new(
-            config.data_root.join("users"),
-        ));
-        let dependency_lock = Arc::new(DependencyLockService::with_library_service(
-            config.data_root.join("users"),
-            library.clone(),
-        ));
+        let dependency_lock = Arc::new(
+            DependencyLockService::with_library_service(
+                config.data_root.join("users"),
+                library.clone(),
+            )
+            .with_project_configs(zebflow_cfg.clone()),
+        );
         let users = Arc::new(UserService::new(data.clone()));
         let projects = Arc::new(ProjectService::new(
             data.clone(),

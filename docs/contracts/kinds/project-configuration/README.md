@@ -110,8 +110,13 @@ has always used.
 
 `source` is one directory, not two: it is the root that holds pipelines, pages,
 stylesheets, and shared components, and it is the same directory the RWE
-compiler treats as its template root and `@/` import root. `assets` defaults
-inside `source` because that is where the asset routes look today.
+compiler treats as its template root and `@/` import root. `assets` defaults to
+`assets` inside whatever `source` resolves to, so a project that moves its
+source does not leave an asset directory behind in the tree it moved out of.
+
+`schema` and `sqlite_schema` are separate entries because they are different
+documents written by different engines, and a project may carry one without the
+other.
 
 `initial_data` is an ordered list of prefixes an install would replay, each
 bound to the database engine that would replay it. Declaring the list replaces
@@ -119,12 +124,17 @@ the default list rather than extending it, so a project that names one prefix
 has exactly one.
 
 Discovery, placement, and the directories inside `repo/` are all resolved
-through one resolver rather than repeated as literals. What that resolver is
-given is still the platform defaults: nothing reads a project's own `layout`
-into it yet, so declaring a layout that differs from the defaults changes
-nothing at runtime. Pipeline identity is separate again -- `file_rel_path` is
-persisted with its source root already in it, and is not resolved. See
-[layout.md](./layout.md) for the survey those rules came from.
+through one resolver rather than repeated as literals, and the declaration is
+what that resolver is given: `ensure_project_layout` reads this file, so a
+project that declares a different `source` genuinely registers, compiles,
+serves, and installs from it.
+
+Pipeline identity is not a directory and is not declared here. A pipeline's
+`file_rel_path` is its path *inside* `source`, so changing `source` does not
+rename any pipeline. Ids persisted before that was true still carry the old
+root; they are read through the same rule, and
+`zebflow project pipelines migrate` rewrites the stored bytes once. See
+[layout.md](./layout.md) for the survey these rules came from.
 
 ## Integration Map
 
@@ -135,7 +145,7 @@ file operations.
 | Section | User-facing writer | Runtime reader or effect |
 | --- | --- | --- |
 | `spec.profile` | Project creation and Settings > General | Project lists, headers, and app metadata |
-| `spec.layout` | No writer; hand-authored in `repo/zebflow.yaml` | None yet. Every consumer resolves its directory through `ResolvedProjectLayout`, but the layout a project is given is built from the platform defaults, not from its own declaration |
+| `spec.layout` | No writer; hand-authored in `repo/zebflow.yaml` | `FilesystemFileAdapter::ensure_project_layout` reads it into `ResolvedProjectLayout`, which every consumer resolves its directory through: pipeline discovery and registration, the RWE template and `@/` root, asset serving, docs generation, initial-data replay, and Hub install placement |
 | `spec.rwe` | Settings > Policy and Settings > Libraries | RWE compilation, rendering, assets, and editor libraries |
 | `spec.pipelines` | Settings > General and Settings > Logs | Node timeout and bounded invocation retention |
 | `spec.runtime` | Project creation and explicit project configuration edits | Runtime synchronization and placement planning |
@@ -174,9 +184,10 @@ Omitted fields use these v1 meanings:
 | --- | --- |
 | `spec.layout` | Every entry below; an absent section declares nothing |
 | `spec.layout.source` | `pipelines` |
-| `spec.layout.assets` | `pipelines/assets` |
+| `spec.layout.assets` | `assets` inside the resolved `source`, so `pipelines/assets` when `source` is undeclared |
 | `spec.layout.docs` | `docs` |
 | `spec.layout.schema` | `schemas/sekejap` |
+| `spec.layout.sqlite_schema` | `schemas/sqlite` |
 | `spec.layout.node_interfaces` | `nodes` |
 | `spec.layout.initial_data` | `initial-data/sekejap`, `initial-data/sqlite`, `init/sekejap`, `init/sqlite`, `seeds/sekejap`, `seeds/sqlite`, each bound to the engine named in its own path |
 | `spec.rwe.minify_html` | `false` |
@@ -266,6 +277,8 @@ schema stops being a draft and starts being a promise.
 | Date | Change | Why it was safe |
 | --- | --- | --- |
 | 2026-08-20 | Added `spec.layout` | Optional at every level; omission reproduces the previous hardcoded directories exactly; no existing field changed meaning; absent stays absent on rewrite, so an existing file is not modified on its next save; the golden fixture still round-trips byte for byte. |
+| 2026-08-20 | Added `spec.layout.sqlite_schema` | The SQLite export directory was the one repository directory with no entry, so `schemas/sqlite/` stayed a literal in two places that could drift from each other. Optional, defaults to the literal it replaces, and absent stays absent on rewrite. |
+| 2026-08-20 | `spec.layout.assets` now defaults inside the resolved `source` | For an undeclared `source` the default is the same string it always was, `pipelines/assets`, so no existing document changes meaning. It only differs for a project that declares a different `source` -- a case that could not arise before the declaration was read, and where the previous literal would have scaffolded an asset directory in the tree the project moved out of. |
 
 ## Freeze Evidence
 
@@ -277,6 +290,12 @@ schema stops being a draft and starts being a promise.
 - A declared layout survives the runtime model conversion and an unrelated
   configuration update, so no settings write can erase it.
 - A project that declares no layout is not rewritten to carry an empty section.
+- A declared `source` moves registration, discovery, the template root, and the
+  asset route together, and a project that declares nothing keeps the same
+  directories and the same behavior it had.
+- Pipeline identity is source-relative, ids written before that are read through
+  the same rule without migrating, and the migration that rewrites them is
+  refused rather than guessed when two ids would collapse into one.
 - Wrong kind, future version, unknown fields, malformed YAML, and unsafe YAML
   features have negative tests.
 - Complete legacy data maps through a dedicated legacy type.

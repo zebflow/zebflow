@@ -143,19 +143,23 @@ Use **`help_search`** for keywords across remaining skill markdown (node bodies 
 
 ### The Pipeline Identifier: `file_rel_path`
 
-Every pipeline is identified by its `file_rel_path` — the path of its `.zf.json` file under the project repo.
+Every pipeline is identified by its `file_rel_path` — the path of its `.zf.json`
+file **inside the project's source root**. The source root itself is declared in
+`repo/zebflow.yaml` under `spec.layout.source` (default `pipelines`) and is never
+part of the identifier, so moving the source tree does not rename any pipeline.
 
 ```
-pipelines/pages/blog-home.zf.json   → file_rel_path = "pipelines/pages/blog-home.zf.json"
-pipelines/api/posts.zf.json         → file_rel_path = "pipelines/api/posts.zf.json"
-pipelines/my-pipe.zf.json           → file_rel_path = "pipelines/my-pipe.zf.json"
+repo/pipelines/pages/blog-home.zf.json  ->  file_rel_path = "pages/blog-home.zf.json"
+repo/pipelines/api/posts.zf.json        ->  file_rel_path = "api/posts.zf.json"
+repo/pipelines/my-pipe.zf.json          ->  file_rel_path = "my-pipe.zf.json"
 ```
 
-You can omit the `pipelines/` prefix and `.zf.json` extension — they are added automatically:
+The `.zf.json` extension is added when omitted, and a leading source root is
+removed when you include one:
 ```
-pipelines/pages/blog-home  →  pipelines/pages/blog-home.zf.json
-pages/blog-home            →  pipelines/pages/blog-home.zf.json
-blog-home                  →  pipelines/blog-home.zf.json
+pages/blog-home            ->  pages/blog-home.zf.json
+blog-home                  ->  blog-home.zf.json
+pipelines/pages/blog-home  ->  pages/blog-home.zf.json   (default layout)
 ```
 
 **Never use `name` or `path` as separate pipeline parameters.** `file_rel_path` is the only key.
@@ -164,7 +168,7 @@ blog-home                  →  pipelines/blog-home.zf.json
 
 ```
 pipeline_register
-  file_rel_path = "pipelines/pages/blog-home"
+  file_rel_path = "pages/blog-home"
   title = "Blog Home"
   body = "| trigger.webhook --path /blog --method GET | pg.query --credential main-db -- \"SELECT * FROM posts\" | web.response --template pages/blog-home.tsx --route /blog"
 ```
@@ -172,10 +176,10 @@ pipeline_register
 ### Step 2: Activate (goes live)
 
 ```
-pipeline_activate  file_rel_path="pipelines/pages/blog-home.zf.json"
+pipeline_activate  file_rel_path="pages/blog-home.zf.json"
 ```
 
-Or via DSL shell: `activate pipelines/pages/blog-home.zf.json`
+Or via DSL shell: `activate pages/blog-home.zf.json`
 
 After activate, the pipeline handles live traffic.
 
@@ -183,15 +187,15 @@ After activate, the pipeline handles live traffic.
 
 Option A — re-register with full new body (easiest):
 ```
-pipeline_register  file_rel_path="pipelines/pages/blog-home"  body="..."
-pipeline_activate  file_rel_path="pipelines/pages/blog-home.zf.json"
+pipeline_register  file_rel_path="pages/blog-home"  body="..."
+pipeline_activate  file_rel_path="pages/blog-home.zf.json"
 ```
 
 Option B — patch one node without rewriting the graph:
 ```
-pipeline_describe  file_rel_path="pipelines/pages/blog-home.zf.json"   ← get node IDs
-pipeline_patch     file_rel_path="pipelines/pages/blog-home.zf.json"  node_id="n1"  flags="--credential new-db"
-pipeline_activate  file_rel_path="pipelines/pages/blog-home.zf.json"
+pipeline_describe  file_rel_path="pages/blog-home.zf.json"   ← get node IDs
+pipeline_patch     file_rel_path="pages/blog-home.zf.json"  node_id="n1"  flags="--credential new-db"
+pipeline_activate  file_rel_path="pages/blog-home.zf.json"
 ```
 
 ---

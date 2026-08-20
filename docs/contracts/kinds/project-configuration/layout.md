@@ -1,15 +1,15 @@
 # Project layout — the contract as it exists today
 
-Status: **survey**, amended after the resolver landed. Nothing here is a
-proposal. It exists so that a declared layout can be written without missing a
-consumer.
+Status: **survey**, amended twice: once after the resolver landed, once after
+the declaration took effect. Nothing here is a proposal. It exists so that a
+declared layout could be written without missing a consumer.
 
-Section 5 records what changed. Sections 1 to 4 describe the rules as they were
-found, and the line numbers in them are the ones the survey was taken against;
-they have moved.
+Sections 5 and 6 record what changed. Sections 1 to 4 describe the rules as they
+were found, and the line numbers in them are the ones the survey was taken
+against; they have moved.
 
-Every rule below is still decided by the platform rather than declared by the
-project, which is why no project can use a folder pattern of its own.
+Sections 1 to 4 are written in the present tense about a system where the
+platform decided every rule. It no longer does: section 6 is what is true now.
 
 ## 0. The fact that explains the rest
 
@@ -170,3 +170,86 @@ noted above. And the runtime snapshot path stripped its prefix with
 `trim_start_matches`, which repeats, where every other copy used
 `strip_prefix`, which does not; it now strips once like the rest. Nothing
 reachable can produce the doubled prefix that told them apart.
+
+## 6. What reading the declaration changed
+
+`FilesystemFileAdapter::ensure_project_layout` reads `repo/zebflow.yaml` and
+builds the layout from it. That was the one line section 5 called the seam. The
+parsed answer is cached against the file's size and modification time, because
+every request that resolves a project directory asks for it; a write through
+`ProjectConfigurationService` drops the entry outright. A malformed or
+unmigrated configuration returns an error rather than resolving to the
+defaults, because reinterpreting a damaged file would silently relocate a
+project's entire source tree.
+
+### Identity
+
+Section 1 called identity the hardest constraint, and said a project declaring a
+different root invalidates every persisted `file_rel_path`. It does — once.
+Identity is now the path *inside* the source root:
+
+```
+layout.source: src     file_rel_path "blog/feed.zf.json"  ->  repo/src/blog/feed.zf.json
+layout.source: app     file_rel_path "blog/feed.zf.json"  ->  repo/app/blog/feed.zf.json
+```
+
+The id does not change between those two lines. That is the point: one migration
+now instead of a migration on every future layout change.
+
+`normalize_pipeline_file_rel_path` takes the layout and removes the source root
+when a caller includes one, so the DSL, MCP, the API, and every stored row
+written before this change still name the same pipeline on a default layout. It
+also replaces a bare `.json` tail with `.zf.json` instead of leaving it, which
+closes the case section 1 recorded where identity could mint a path discovery
+then refused to see.
+
+Rows are read through that rule, so an existing project keeps working with no
+user action. `zebflow project pipelines migrate <owner> <project>` rewrites the
+stored bytes and `spec.bootstrap.activate` once, writes
+`repo/pipelines.pre-source-relative.json` before touching anything, and refuses
+rather than guessing when two ids would collapse into one or when the prefix it
+would remove names a real directory inside the source root. Running it twice
+converts nothing the second time.
+
+Bootstrap and MCP globs go through the same tolerance, so a plan that still
+says `pipelines/pages/**/*.zf.json` selects the pipelines it named.
+
+### Placement
+
+`normalize_install_target_folder` no longer asks whether the caller typed a
+leading slash. A pipeline or template bundle installs inside the source root
+whatever the spelling, so the table in section 1 now reads:
+
+| `target_folder` | `install_root` | reviewed | registered |
+| --- | --- | --- | --- |
+| `""` | `{source}/hub/{id}` | yes | yes |
+| `billing` | `{source}/billing` | yes | yes |
+| `/billing` | `{source}/billing` | yes | yes |
+
+The review also reports `pipelines_registered` as the identity the install will
+register rather than the repository path it will write, so a review can be
+compared against the result it predicts.
+
+### The two blockers section 5 recorded
+
+`web_docs_generate::load_site` takes the docs directory instead of reaching it
+by one `parent()` hop off the template root, which was only the repository root
+for a source exactly one segment deep. The pipeline engine carries the project's
+`ProjectFileLayout` rather than a bare template root, and derives the template
+root from it, so the two cannot disagree; the static-site asset root comes from
+the same place.
+
+`spec.layout` gained `sqlite_schema`, so `schemas/sqlite/` is no longer named
+literally in `sqlite_schema.rs` and in the Hub's schema-entry test. `assets` now
+defaults inside the resolved `source` rather than at a fixed `pipelines/assets`,
+which is the same string for an undeclared source. Both are recorded in the
+README's amendments table.
+
+### Still decided by the platform
+
+`sekejap.rs` writes and reads the exported schema documents through
+`ResolvedProjectLayout::platform_default()`. Every writer in that module is
+reached from a node or handler holding only a `data_root`, so honoring a
+declared `spec.layout.schema` there is a separate change. A project that
+declares `schema` gets it honored by Hub review, export, and install
+classification, and not by the sekejap writer.

@@ -9,6 +9,7 @@ spec:
     assets: src/assets
     docs: documentation
     schema: db/schema
+    sqlite_schema: db/sqlite
     node_interfaces: vendor/nodes
     initial_data:
     - path: db/seeds

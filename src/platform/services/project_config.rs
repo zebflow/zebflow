@@ -17,9 +17,15 @@ use crate::infra::execution::sync::ProjectBootstrapPlan;
 use crate::infra::io::durable::atomic_write;
 use crate::platform::error::PlatformError;
 use crate::platform::model::{
-    ZebflowJson, ZebflowJsonAssistant, ZebflowJsonDistributionHub, ZebflowJsonRweLibraries,
-    ZebflowJsonRweLibraryEntry, slug_segment,
+    ResolvedProjectLayout, ZebflowJson, ZebflowJsonAssistant, ZebflowJsonDistributionHub,
+    ZebflowJsonRweLibraries, ZebflowJsonRweLibraryEntry, slug_segment,
 };
+
+/// Modification time and size of `path`, or `None` when it does not exist.
+fn file_stamp(path: &Path) -> Option<(std::time::SystemTime, u64)> {
+    let meta = std::fs::metadata(path).ok()?;
+    Some((meta.modified().ok()?, meta.len()))
+}
 
 /// Returns true if `rel_path` matches a locked path or is inside a locked folder prefix.
 pub fn is_template_path_locked(locked: &[String], rel_path: &str) -> bool {
@@ -28,10 +34,18 @@ pub fn is_template_path_locked(locked: &[String], rel_path: &str) -> bool {
     })
 }
 
+/// One cached layout and the file identity it was read from.
+struct LayoutCacheEntry {
+    /// `None` when the configuration file was absent at the time of the read.
+    stamp: Option<(std::time::SystemTime, u64)>,
+    layout: ResolvedProjectLayout,
+}
+
 /// Reads and writes `{data_root}/users/{owner}/{project}/repo/zebflow.yaml`.
 pub struct ProjectConfigurationService {
     users_root: PathBuf,
     update_locks: Mutex<HashMap<PathBuf, Arc<Mutex<()>>>>,
+    layouts: Mutex<HashMap<PathBuf, LayoutCacheEntry>>,
 }
 
 impl ProjectConfigurationService {
@@ -40,6 +54,7 @@ impl ProjectConfigurationService {
         Self {
             users_root,
             update_locks: Mutex::new(HashMap::new()),
+            layouts: Mutex::new(HashMap::new()),
         }
     }
 
@@ -87,6 +102,50 @@ impl ProjectConfigurationService {
     ) -> Result<ZebflowJson, PlatformError> {
         let path = self.config_path(owner, project);
         self.read_path_or_default(&path, &self.legacy_path(owner, project), project)
+    }
+
+    /// Effective repository layout for one project.
+    ///
+    /// This is on the hot path — every request that resolves a project's
+    /// directories asks for it — so the parsed answer is cached against the
+    /// configuration file's size and modification time. A file edited outside
+    /// this process still changes both, and a write through this service drops
+    /// the entry outright, so a stale layout cannot outlive the declaration it
+    /// came from.
+    pub fn project_layout(
+        &self,
+        owner: &str,
+        project: &str,
+    ) -> Result<ResolvedProjectLayout, PlatformError> {
+        let path = self.config_path(owner, project);
+        let stamp = file_stamp(&path);
+        {
+            let cache = self.layouts.lock().unwrap_or_else(|err| err.into_inner());
+            if let Some(entry) = cache.get(&path)
+                && entry.stamp == stamp
+            {
+                return Ok(entry.layout.clone());
+            }
+        }
+        let layout = self
+            .read_path_or_default(&path, &self.legacy_path(owner, project), project)?
+            .layout();
+        let mut cache = self.layouts.lock().unwrap_or_else(|err| err.into_inner());
+        cache.insert(
+            path,
+            LayoutCacheEntry {
+                stamp,
+                layout: layout.clone(),
+            },
+        );
+        Ok(layout)
+    }
+
+    fn forget_layout(&self, path: &Path) {
+        self.layouts
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .remove(path);
     }
 
     fn read_path_or_default(
@@ -141,6 +200,7 @@ impl ProjectConfigurationService {
         project: &str,
         config: &ZebflowJson,
     ) -> Result<(), PlatformError> {
+        self.forget_layout(path);
         write_contract_yaml::<ProjectConfigurationContract>(
             path,
             ContractMetadata::named(project),
@@ -265,6 +325,7 @@ impl ProjectConfigurationService {
                 ));
             }
         }
+        self.forget_layout(&path);
         write_contract_yaml::<ProjectConfigurationContract>(&path, metadata, spec.clone())
             .map_err(|err| PlatformError::new("PROJECT_CONFIG_MIGRATE", err.to_string()))?;
         let reopened = read_optional_contract_yaml::<ProjectConfigurationContract>(&path)

@@ -598,6 +598,13 @@ pub struct ProjectLayoutSpec {
     pub docs: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub schema: Option<String>,
+    /// Directory holding the portable SQLite schema export.
+    ///
+    /// This is a separate entry from `schema` because the two exports are
+    /// different documents produced by different engines, and a project may
+    /// carry one without the other.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sqlite_schema: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub node_interfaces: Option<String>,
     /// Prefixes an install replays as initial data, each bound to one engine.
@@ -624,6 +631,7 @@ impl ProjectLayoutSpec {
             ("spec.layout.assets", self.assets.as_deref()),
             ("spec.layout.docs", self.docs.as_deref()),
             ("spec.layout.schema", self.schema.as_deref()),
+            ("spec.layout.sqlite_schema", self.sqlite_schema.as_deref()),
             (
                 "spec.layout.node_interfaces",
                 self.node_interfaces.as_deref(),
@@ -950,6 +958,7 @@ impl From<ZebflowJson> for ProjectConfigurationSpec {
                 assets: value.configs.layout.assets,
                 docs: value.configs.layout.docs,
                 schema: value.configs.layout.schema,
+                sqlite_schema: value.configs.layout.sqlite_schema,
                 node_interfaces: value.configs.layout.node_interfaces,
                 initial_data: value.configs.layout.initial_data.map(|entries| {
                     entries
@@ -1047,6 +1056,7 @@ impl From<ProjectConfigurationSpec> for ZebflowJson {
                     assets: value.layout.assets,
                     docs: value.layout.docs,
                     schema: value.layout.schema,
+                    sqlite_schema: value.layout.sqlite_schema,
                     node_interfaces: value.layout.node_interfaces,
                     initial_data: value.layout.initial_data.map(|entries| {
                         entries
@@ -1267,6 +1277,7 @@ mod tests {
             assets: Some("src/assets".to_string()),
             docs: Some("documentation".to_string()),
             schema: Some("db/schema".to_string()),
+            sqlite_schema: Some("db/sqlite".to_string()),
             node_interfaces: Some("vendor/nodes".to_string()),
             initial_data: Some(vec![ProjectInitialDataDirSpec {
                 path: "db/seeds".to_string(),
@@ -1285,6 +1296,7 @@ mod tests {
         assert_eq!(layout.assets, "pipelines/assets");
         assert_eq!(layout.docs, "docs");
         assert_eq!(layout.schema, "schemas/sekejap");
+        assert_eq!(layout.sqlite_schema, "schemas/sqlite");
         assert_eq!(layout.node_interfaces, "nodes");
         assert_eq!(
             layout

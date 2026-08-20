@@ -180,7 +180,7 @@ Agent builds pipelines one by one. Register first (draft), then scaffold templat
 
 ```
 pipeline_register
-  file_rel_path=pipelines/pages/blog-list.zf.json
+  file_rel_path=pages/blog-list.zf.json
   body="""
   | trigger.webhook --path /blog --method GET
   | pg.query --credential main-db -- "
@@ -198,7 +198,7 @@ pipeline_register
 
 ```
 pipeline_register
-  file_rel_path=pipelines/pages/blog-post.zf.json
+  file_rel_path=pages/blog-post.zf.json
   body="""
   | trigger.webhook --path /blog/post --method GET
   | pg.query --credential main-db -- "
@@ -216,7 +216,7 @@ pipeline_register
 
 ```
 pipeline_register
-  file_rel_path=pipelines/admin/admin-posts.zf.json
+  file_rel_path=admin/admin-posts.zf.json
   body="""
   | trigger.webhook --path /admin/posts --method GET
   | script -- "
@@ -240,7 +240,7 @@ pipeline_register
 
 ```
 pipeline_register
-  file_rel_path=pipelines/admin/admin-post-get.zf.json
+  file_rel_path=admin/admin-post-get.zf.json
   body="""
   | trigger.webhook --path /admin/post --method GET
   | script -- "
@@ -265,7 +265,7 @@ pipeline_register
 
 ```
 pipeline_register
-  file_rel_path=pipelines/admin/admin-post-put.zf.json
+  file_rel_path=admin/admin-post-put.zf.json
   body="""
   | trigger.webhook --path /admin/post --method PUT
   | script -- "
@@ -522,11 +522,11 @@ template_write
 Agent activates all pipelines:
 
 ```
-pipeline_activate  file_rel_path=pipelines/pages/blog-list.zf.json
-pipeline_activate  file_rel_path=pipelines/pages/blog-post.zf.json
-pipeline_activate  file_rel_path=pipelines/admin/admin-posts.zf.json
-pipeline_activate  file_rel_path=pipelines/admin/admin-post-get.zf.json
-pipeline_activate  file_rel_path=pipelines/admin/admin-post-put.zf.json
+pipeline_activate  file_rel_path=pages/blog-list.zf.json
+pipeline_activate  file_rel_path=pages/blog-post.zf.json
+pipeline_activate  file_rel_path=admin/admin-posts.zf.json
+pipeline_activate  file_rel_path=admin/admin-post-get.zf.json
+pipeline_activate  file_rel_path=admin/admin-post-put.zf.json
 ```
 
 Verify everything is active:
@@ -549,7 +549,7 @@ All 5 show `active`. Routes are now live:
 
 ```
 pipeline_execute
-  file_rel_path=pipelines/pages/blog-list.zf.json
+  file_rel_path=pages/blog-list.zf.json
   input={"query":{}}
 ```
 

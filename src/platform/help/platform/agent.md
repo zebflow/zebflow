@@ -53,7 +53,7 @@ If AGENTS.md contradicts any skill doc, follow AGENTS.md.
 | `pipeline_register` | Save a new pipeline from DSL body (stored as draft) |
 | `pipeline_patch` | Update a node's config inside an existing pipeline. `node_id` accepts opaque ID, kind (`trigger.webhook`), or kind+index (`pg.query[1]`) — no describe needed |
 | `pipeline_search` | Grep across all `.zf.json` pipeline files with optional glob filter and context lines. Use `output_mode="files_with_matches"` for file paths only. Use `head_limit` to cap results. |
-| `pipeline_activate` | Promote draft to active — goes live immediately. Set `glob="pipelines/modules/**"` to bulk-activate all matching pipelines in one call. |
+| `pipeline_activate` | Promote draft to active — goes live immediately. Set `glob="modules/**"` to bulk-activate all matching pipelines in one call. |
 | `pipeline_deactivate` | Remove from active registry — stops serving traffic |
 | `pipeline_execute` | Run the active version of a saved pipeline. Always pass `input` when testing function pipelines (`n.trigger.function`) — without it the pipeline receives `{}`. Accepts `input` as a JSON object or string. |
 | `pipeline_run` | Run a pipeline body once — not saved, not logged. Pass `input` to provide an initial payload. |
@@ -211,7 +211,7 @@ See `help(topic="db/sekejap")` for the full query language reference.
 | n.web.response --template pages/blog-home.tsx
 ```
 
-Pass this as `body` to `pipeline_register` with a canonical `file_rel_path` (e.g. `pipelines/pages/blog-home.zf.json`).
+Pass this as `body` to `pipeline_register` with a canonical `file_rel_path` (e.g. `pages/blog-home.zf.json`).
 
 ### 2. Create the template
 
@@ -225,7 +225,7 @@ See `help(topic="web")` for TSX conventions.
 ### 3. Activate and commit
 
 ```
-pipeline_activate  file_rel_path=pipelines/pages/blog-home.zf.json
+pipeline_activate  file_rel_path=pages/blog-home.zf.json
 git_command  subcommand=add  args="."
 git_command  subcommand=commit  message="feat: blog home page"
 docs_agent_write  name=MEMORY.md  content="..."

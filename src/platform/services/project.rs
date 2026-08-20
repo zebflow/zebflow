@@ -1,6 +1,6 @@
 //! Project management service.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -20,12 +20,13 @@ use crate::platform::adapters::file::FileAdapter;
 use crate::platform::adapters::project_data::ProjectDataFactory;
 use crate::platform::error::PlatformError;
 use crate::platform::model::{
-    AgentDocItem, CreateProjectRequest, HubAuthority, PipelineBreadcrumb, PipelineFolderItem,
-    PipelineMeta, PipelineRegistryItem, PipelineRegistryListing, PlatformProject, ProjectDocItem,
-    ProjectDocMoveRequest, ProjectFileLayout, RegistryFileItem, TemplateCreateKind,
-    TemplateCreateRequest, TemplateFilePayload, TemplateGitStatusItem, TemplateMoveRequest,
-    TemplateSaveRequest, TemplateTreeItem, TemplateWorkspaceListing, normalize_virtual_path,
-    now_ts, slug_segment,
+    AgentDocItem, CreateProjectRequest, HubAuthority, LEGACY_PIPELINE_IDENTITY_ROOT,
+    PIPELINE_DEFINITION_EXTENSION, PIPELINE_IDENTITY_BACKUP_FILE, PipelineBreadcrumb,
+    PipelineFolderItem, PipelineMeta, PipelineRegistryItem, PipelineRegistryListing,
+    PlatformProject, ProjectDocItem, ProjectDocMoveRequest, ProjectFileLayout, RegistryFileItem,
+    ResolvedProjectLayout, TemplateCreateKind, TemplateCreateRequest, TemplateFilePayload,
+    TemplateGitStatusItem, TemplateMoveRequest, TemplateSaveRequest, TemplateTreeItem,
+    TemplateWorkspaceListing, normalize_virtual_path, now_ts, slug_segment,
 };
 use crate::platform::services::dependency_lock::DependencyLockService;
 use crate::platform::services::project_config::ProjectConfigurationService;
@@ -272,8 +273,7 @@ impl ProjectService {
         file_rel_path: &str,
         action: &str,
     ) -> Result<(), PlatformError> {
-        let normalized = normalize_pipeline_file_rel_path(file_rel_path);
-        let Some(meta) = self.get_pipeline_meta_by_file_id(owner, project, &normalized)? else {
+        let Some(meta) = self.get_pipeline_meta_by_file_id(owner, project, file_rel_path)? else {
             return Ok(());
         };
         let source = self.read_pipeline_source(owner, project, &meta.file_rel_path)?;
@@ -339,6 +339,170 @@ impl ProjectService {
         let owner = slug_segment(owner);
         let project = slug_segment(project);
         self.file.ensure_project_layout(&owner, &project)
+    }
+
+    /// Rewrites persisted pipeline ids from repository-relative to
+    /// source-relative, once.
+    ///
+    /// Reads already tolerate the old form, so this is not what makes an
+    /// existing project work; it is what stops every read from having to
+    /// forgive the stored bytes. Running it twice converts nothing the second
+    /// time.
+    ///
+    /// Nothing durable changes before the whole conversion is known to be
+    /// safe: an ambiguous or colliding id refuses the migration outright
+    /// rather than picking one of the two readings.
+    pub fn migrate_pipeline_identity(
+        &self,
+        owner: &str,
+        project: &str,
+    ) -> Result<PipelineIdentityMigration, PlatformError> {
+        let owner = slug_segment(owner);
+        let project = slug_segment(project);
+        if self.data.get_project(&owner, &project)?.is_none() {
+            return Err(PlatformError::new(
+                "PIPELINE_IDENTITY_MIGRATE",
+                format!("project '{owner}/{project}' not found"),
+            ));
+        }
+        let layout = self.file.ensure_project_layout(&owner, &project)?;
+        let source_dir = layout.repo_source_dir();
+        let rows = self.data.list_pipeline_meta(&owner, &project)?;
+
+        let mut rewrites = Vec::new();
+        let mut unchanged = 0usize;
+        let mut claimed: BTreeMap<String, String> = BTreeMap::new();
+        for row in &rows {
+            let from = row.file_rel_path.trim().replace('\\', "/");
+            let to = strip_legacy_identity_root(&from);
+            if to == from {
+                unchanged += 1;
+            } else {
+                // The legacy root is only removable when it is not also a real
+                // directory inside this project's source tree. A project whose
+                // source is `src` may genuinely keep `src/pipelines/...`, and
+                // renaming that would move a file the owner never asked to
+                // move.
+                if source_dir.join(&from).is_file() {
+                    return Err(PlatformError::new(
+                        "PIPELINE_IDENTITY_MIGRATE",
+                        format!(
+                            "'{from}' also exists at '{}' inside the source root, so removing its \
+                             '{LEGACY_PIPELINE_IDENTITY_ROOT}/' prefix would name a different file",
+                            source_dir.join(&from).display()
+                        ),
+                    ));
+                }
+                rewrites.push(PipelineIdentityRewrite {
+                    from: from.clone(),
+                    to: to.clone(),
+                });
+            }
+            if let Some(other) = claimed.insert(to.clone(), from.clone()) {
+                return Err(PlatformError::new(
+                    "PIPELINE_IDENTITY_MIGRATE",
+                    format!("'{other}' and '{from}' both become '{to}'"),
+                ));
+            }
+        }
+
+        let mut config = self.zebflow_cfg.read_or_default(&owner, &project)?;
+        let bootstrap: Vec<String> = config
+            .configs
+            .bootstrap
+            .activate
+            .iter()
+            .map(|pattern| strip_legacy_identity_root(pattern.trim()))
+            .collect();
+        let bootstrap_changed = bootstrap != config.configs.bootstrap.activate;
+
+        if rewrites.is_empty() && !bootstrap_changed {
+            return Ok(PipelineIdentityMigration {
+                rewrites,
+                already_canonical: unchanged,
+                bootstrap_activate: Vec::new(),
+                recovery_path: None,
+            });
+        }
+
+        // The recovery copy is written before the first row moves, so an
+        // interrupted migration leaves a readable record of what the ids were.
+        let recovery_path = layout.repo_dir.join(PIPELINE_IDENTITY_BACKUP_FILE);
+        let record = serde_json::json!({
+            "source": layout.repo_layout.source,
+            "pipelines": rewrites
+                .iter()
+                .map(|rewrite| serde_json::json!({ "from": rewrite.from, "to": rewrite.to }))
+                .collect::<Vec<_>>(),
+            "bootstrap_activate": config.configs.bootstrap.activate,
+        });
+        let bytes = serde_json::to_vec_pretty(&record)
+            .map_err(|error| PlatformError::new("PIPELINE_IDENTITY_MIGRATE", error.to_string()))?;
+        match std::fs::read(&recovery_path) {
+            Ok(existing) if existing != bytes => {
+                return Err(PlatformError::new(
+                    "PIPELINE_IDENTITY_MIGRATE",
+                    format!(
+                        "recovery copy '{}' already exists with different content",
+                        recovery_path.display()
+                    ),
+                ));
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                atomic_write(&recovery_path, &bytes)?;
+            }
+            Err(error) => {
+                return Err(PlatformError::new(
+                    "PIPELINE_IDENTITY_MIGRATE",
+                    format!("failed reading recovery copy: {error}"),
+                ));
+            }
+        }
+
+        for row in &rows {
+            let from = row.file_rel_path.trim().replace('\\', "/");
+            let Some(rewrite) = rewrites.iter().find(|rewrite| rewrite.from == from) else {
+                continue;
+            };
+            let mut moved = row.clone();
+            moved.file_rel_path = rewrite.to.clone();
+            moved.virtual_path = virtual_path_from_file_rel_path(&rewrite.to);
+            self.put_pipeline_meta(&moved)?;
+            self.data
+                .delete_pipeline_meta(&row.owner, &row.project, &row.file_rel_path)?;
+        }
+        if bootstrap_changed {
+            config.configs.bootstrap.activate = bootstrap.clone();
+            self.zebflow_cfg
+                .set_bootstrap(&owner, &project, config.configs.bootstrap.clone())?;
+        }
+
+        Ok(PipelineIdentityMigration {
+            rewrites,
+            already_canonical: unchanged,
+            bootstrap_activate: if bootstrap_changed {
+                bootstrap
+            } else {
+                Vec::new()
+            },
+            recovery_path: Some(recovery_path),
+        })
+    }
+
+    /// Canonical identity of the pipeline `raw` names in this project.
+    ///
+    /// Callers outside this service reach identity through here rather than
+    /// through the free function, so none of them has to know that resolving a
+    /// name requires the project's declared layout.
+    pub fn pipeline_identity(
+        &self,
+        owner: &str,
+        project: &str,
+        raw: &str,
+    ) -> Result<String, PlatformError> {
+        let layout = self.project_layout(owner, project)?;
+        Ok(normalize_pipeline_file_rel_path(&layout.repo_layout, raw))
     }
 
     /// Creates or updates project metadata + required folder layout.
@@ -526,7 +690,8 @@ impl ProjectService {
 
     /// Upserts one pipeline source file + metadata catalog entry.
     ///
-    /// `file_rel_path` is the canonical identifier, e.g. `"pipelines/api/my-hook.zf.json"`.
+    /// `file_rel_path` is the canonical identifier, e.g. `"api/my-hook.zf.json"`,
+    /// relative to the project's declared source root.
     /// Name and virtual_path are derived from it automatically.
     pub fn upsert_pipeline_definition(
         &self,
@@ -540,8 +705,8 @@ impl ProjectService {
     ) -> Result<PipelineMeta, PlatformError> {
         let owner = slug_segment(owner);
         let project = slug_segment(project);
-        // Normalize file_rel_path: ensure it starts with "pipelines/" and ends with ".zf.json"
-        let file_rel_path = normalize_pipeline_file_rel_path(file_rel_path);
+        let layout = self.file.ensure_project_layout(&owner, &project)?;
+        let file_rel_path = normalize_pipeline_file_rel_path(&layout.repo_layout, file_rel_path);
         let name = name_from_file_rel_path(&file_rel_path);
         if owner.is_empty() || project.is_empty() || name.is_empty() {
             return Err(PlatformError::new(
@@ -569,7 +734,6 @@ impl ProjectService {
                 )
             })?;
 
-        let layout = self.file.ensure_project_layout(&owner, &project)?;
         self.project_data.initialize_project(&layout)?;
         self.ensure_webhook_paths_available(&owner, &project, &canonical_source, &file_rel_path)?;
 
@@ -635,16 +799,20 @@ impl ProjectService {
     ) -> Result<Vec<WebhookPathConflict>, PlatformError> {
         let owner = slug_segment(owner);
         let project = slug_segment(project);
-        let self_file_rel_path = normalize_pipeline_file_rel_path(self_file_rel_path);
+        let layout = self.file.ensure_project_layout(&owner, &project)?;
+        let self_file_rel_path =
+            normalize_pipeline_file_rel_path(&layout.repo_layout, self_file_rel_path);
         let wanted = webhook_triggers_from_graph(graph);
         if wanted.is_empty() {
             return Ok(Vec::new());
         }
 
+        // Rows arrive through `list_pipeline_meta_rows`, which already reads
+        // them through the identity rule.
         let rows = self.list_pipeline_meta_rows(&owner, &project)?;
         let mut conflicts = Vec::new();
         for meta in rows {
-            if normalize_pipeline_file_rel_path(&meta.file_rel_path) == self_file_rel_path {
+            if meta.file_rel_path == self_file_rel_path {
                 continue;
             }
             let Ok(source) = self.read_pipeline_source(&owner, &project, &meta.file_rel_path)
@@ -702,15 +870,14 @@ impl ProjectService {
         let owner = slug_segment(owner);
         let project = slug_segment(project);
         let layout = self.file.ensure_project_layout(&owner, &project)?;
-        let raw_rows = self.data.list_pipeline_meta(&owner, &project)?;
-        let mut rows: Vec<PipelineMeta> = raw_rows
+        let source_dir = layout.repo_source_dir();
+        let mut rows: Vec<PipelineMeta> = self
+            .data
+            .list_pipeline_meta(&owner, &project)?
             .into_iter()
-            .filter(|m| layout.repo_dir.join(&m.file_rel_path).is_file())
+            .map(|m| adopt_pipeline_meta(&layout.repo_layout, m))
+            .filter(|m| source_dir.join(&m.file_rel_path).is_file())
             .collect();
-        // Re-derive virtual_path from file_rel_path (source of truth).
-        for m in &mut rows {
-            m.virtual_path = virtual_path_from_file_rel_path(&m.file_rel_path);
-        }
         rows.sort_by(|a, b| a.file_rel_path.cmp(&b.file_rel_path));
         Ok(rows)
     }
@@ -724,17 +891,14 @@ impl ProjectService {
     ) -> Result<Option<PipelineMeta>, PlatformError> {
         let owner = slug_segment(owner);
         let project = slug_segment(project);
-        let wanted = normalize_pipeline_file_rel_path(file_id.trim());
+        let layout = self.file.ensure_project_layout(&owner, &project)?;
+        let wanted = normalize_pipeline_file_rel_path(&layout.repo_layout, file_id);
         let meta = self
             .data
             .list_pipeline_meta(&owner, &project)?
             .into_iter()
-            .find(|m| normalize_pipeline_file_rel_path(&m.file_rel_path) == wanted)
-            .map(|mut m| {
-                // Re-derive virtual_path from file_rel_path (source of truth).
-                m.virtual_path = virtual_path_from_file_rel_path(&m.file_rel_path);
-                m
-            });
+            .map(|m| adopt_pipeline_meta(&layout.repo_layout, m))
+            .find(|m| m.file_rel_path == wanted);
         Ok(meta)
     }
 
@@ -748,13 +912,7 @@ impl ProjectService {
         let owner = slug_segment(owner);
         let project = slug_segment(project);
         let layout = self.file.ensure_project_layout(&owner, &project)?;
-        let abs = layout.repo_dir.join(file_rel_path);
-        if !abs.starts_with(&layout.repo_dir) {
-            return Err(PlatformError::new(
-                "PLATFORM_PIPELINE_PATH",
-                "resolved pipeline path escaped app root",
-            ));
-        }
+        let abs = self.pipeline_abs_path(&layout, file_rel_path)?;
         if !abs.is_file() {
             return Err(PlatformError::new(
                 "PLATFORM_PIPELINE_MISSING",
@@ -875,15 +1033,13 @@ impl ProjectService {
     ) -> Result<Vec<PipelineMeta>, PlatformError> {
         let owner = slug_segment(owner);
         let project = slug_segment(project);
+        let layout = self.file.ensure_project_layout(&owner, &project)?;
         let mut rows = self
             .data
             .list_pipeline_meta(&owner, &project)?
             .into_iter()
             .filter(|m| m.active_hash.as_deref().is_some())
-            .map(|mut m| {
-                m.virtual_path = virtual_path_from_file_rel_path(&m.file_rel_path);
-                m
-            })
+            .map(|m| adopt_pipeline_meta(&layout.repo_layout, m))
             .collect::<Vec<_>>();
         rows.sort_by(|a, b| a.file_rel_path.cmp(&b.file_rel_path));
         Ok(rows)
@@ -935,8 +1091,8 @@ impl ProjectService {
         let mut folders: BTreeSet<String> = BTreeSet::new();
         let mut pipelines = Vec::new();
         for m in rows {
-            // Derive virtual_path from file_rel_path (source of truth).
-            let vp = virtual_path_from_file_rel_path(&m.file_rel_path);
+            let m = adopt_pipeline_meta(&layout.repo_layout, m);
+            let vp = m.virtual_path.clone();
             if vp == current_path {
                 let is_active = m
                     .active_hash
@@ -1923,17 +2079,11 @@ impl ProjectService {
     ) -> Result<(), PlatformError> {
         let owner = slug_segment(owner);
         let project = slug_segment(project);
-        let wanted = file_rel_path.trim().replace('\\', "/");
+        let layout = self.file.ensure_project_layout(&owner, &project)?;
+        let wanted = normalize_pipeline_file_rel_path(&layout.repo_layout, file_rel_path);
         self.ensure_pipeline_editable(&owner, &project, &wanted, "deleted")?;
 
-        let layout = self.file.ensure_project_layout(&owner, &project)?;
-        let abs = layout.repo_dir.join(&wanted);
-        if !abs.starts_with(&layout.repo_dir) {
-            return Err(PlatformError::new(
-                "PLATFORM_PIPELINE_PATH",
-                "resolved pipeline path escaped repo root",
-            ));
-        }
+        let abs = self.pipeline_abs_path(&layout, &wanted)?;
 
         // Remove source file from disk.
         if abs.is_file() {
@@ -1941,12 +2091,15 @@ impl ProjectService {
                 .map_err(|e| PlatformError::new("PLATFORM_PIPELINE_DELETE", e.to_string()))?;
         }
 
-        // Find and remove metadata from platform catalog.
+        // The stored row may still carry the source root, so it is matched
+        // through the identity rule but deleted by the key it was written with.
         let meta = self
             .data
             .list_pipeline_meta(&owner, &project)?
             .into_iter()
-            .find(|m| m.file_rel_path.trim().replace('\\', "/") == wanted);
+            .find(|m| {
+                normalize_pipeline_file_rel_path(&layout.repo_layout, &m.file_rel_path) == wanted
+            });
         if let Some(m) = meta {
             self.data
                 .delete_pipeline_meta(&m.owner, &m.project, &m.file_rel_path)?;
@@ -2000,8 +2153,12 @@ impl ProjectService {
         layout: &ProjectFileLayout,
         file_rel_path: &str,
     ) -> Result<PathBuf, PlatformError> {
-        let abs = layout.repo_dir.join(file_rel_path);
-        if !abs.starts_with(&layout.repo_dir) {
+        // Identity is resolved here, so a caller may hand in a stored row that
+        // still carries the source root and still reach the same file.
+        let identity = normalize_pipeline_file_rel_path(&layout.repo_layout, file_rel_path);
+        let source_dir = layout.repo_source_dir();
+        let abs = source_dir.join(&identity);
+        if !abs.starts_with(&source_dir) {
             return Err(PlatformError::new(
                 "PLATFORM_PIPELINE_PATH",
                 "resolved path escaped repo root",
@@ -2013,7 +2170,7 @@ impl ProjectService {
     /// Returns the runtime snapshot path for an active pipeline.
     ///
     /// Uses `file_rel_path` as the stable identifier:
-    /// `pipelines/api/foo.zf.json` + `abc123` → `<runtime>/api/foo.abc123.zf.json`
+    /// `api/foo.zf.json` + `abc123` -> `<runtime>/api/foo.abc123.zf.json`
     fn runtime_pipeline_snapshot_path(
         &self,
         layout: &ProjectFileLayout,
@@ -2647,10 +2804,12 @@ fn collect_all_files(root: &Path, dir: &Path, out: &mut Vec<(String, std::path::
     }
 }
 
-/// Simple glob match: `*` matches non-slash chars, `**` matches anything.
-/// Glob match for pipeline paths. Exposed publicly for use in bulk operations.
-pub fn pipeline_glob_matches(pattern: &str, path: &str) -> bool {
-    template_glob_matches(pattern, path)
+/// Glob match against a pipeline identity. Exposed publicly for bulk operations.
+///
+/// The pattern goes through [`normalize_pipeline_glob`] first, so a pattern
+/// that names the source root and one that does not select the same pipelines.
+pub fn pipeline_glob_matches(layout: &ResolvedProjectLayout, pattern: &str, path: &str) -> bool {
+    template_glob_matches(&normalize_pipeline_glob(layout, pattern), path)
 }
 
 pub fn template_glob_matches(pattern: &str, path: &str) -> bool {
@@ -2884,35 +3043,89 @@ fn strip_source_root<'a>(layout: &ProjectFileLayout, file_rel_path: &'a str) -> 
         .trim_start_matches('/')
 }
 
-/// Normalizes a pipeline file_rel_path:
-/// - Ensures it starts with "pipelines/"
-/// - Ensures it ends with ".zf.json"
-/// - Strips leading "/" if present
-pub fn normalize_pipeline_file_rel_path(raw: &str) -> String {
-    let s = raw.trim().trim_start_matches('/');
-    // Ensure starts with "pipelines/"
-    let s = if s.starts_with("pipelines/") {
-        s.to_string()
-    } else {
-        format!("pipelines/{s}")
-    };
-    // Ensure ends with ".zf.json"
-    if s.ends_with(".zf.json") {
-        s
-    } else if s.ends_with(".json") {
-        s
-    } else {
-        format!("{s}.zf.json")
-    }
+/// One persisted pipeline id and what the migration converts it to.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct PipelineIdentityRewrite {
+    pub from: String,
+    pub to: String,
 }
 
-/// Derives the virtual_path from a file_rel_path.
-/// "pipelines/api/foo.zf.json" → "/api"
-/// "pipelines/foo.zf.json"     → "/"
+/// What one run of the pipeline identity migration did.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct PipelineIdentityMigration {
+    pub rewrites: Vec<PipelineIdentityRewrite>,
+    /// Rows that already named a pipeline the way identity does now.
+    pub already_canonical: usize,
+    /// The rewritten `spec.bootstrap.activate` list, empty when unchanged.
+    pub bootstrap_activate: Vec<String>,
+    /// Absent when there was nothing to convert, so nothing was written.
+    pub recovery_path: Option<PathBuf>,
+}
+
+/// `raw` with the pre-source-relative root removed, if it carried one.
+fn strip_legacy_identity_root(raw: &str) -> String {
+    let cleaned = raw.trim().replace('\\', "/");
+    let rooted = cleaned.trim_start_matches('/');
+    rooted
+        .strip_prefix(LEGACY_PIPELINE_IDENTITY_ROOT)
+        .and_then(|rest| rest.strip_prefix('/'))
+        .unwrap_or(rooted)
+        .to_string()
+}
+
+/// One stored pipeline row, read through the identity rule.
+///
+/// Rows written before identity became source-relative still carry the source
+/// root. Reading them through the rule is what lets an existing project keep
+/// working with no user action; the migration only rewrites the durable bytes
+/// so they stop needing this.
+fn adopt_pipeline_meta(layout: &ResolvedProjectLayout, mut meta: PipelineMeta) -> PipelineMeta {
+    meta.file_rel_path = normalize_pipeline_file_rel_path(layout, &meta.file_rel_path);
+    meta.virtual_path = virtual_path_from_file_rel_path(&meta.file_rel_path);
+    meta
+}
+
+/// Normalizes a pipeline `file_rel_path` into its canonical identity.
+///
+/// Identity is source-relative: it is the path *inside* the project's source
+/// root, and the root itself lives only in `zebflow.yaml`. A project that
+/// moves its source therefore keeps every pipeline id it already had.
+///
+/// A caller may hand in a bare name, an already-canonical id, or a path that
+/// still carries the source root; all three name the same pipeline. Accepting
+/// the rooted form is what lets a project written before this change keep
+/// working without being migrated first, and is why the DSL, MCP, and API can
+/// all keep spelling a pipeline `pipelines/api/foo` on a default layout.
+pub fn normalize_pipeline_file_rel_path(layout: &ResolvedProjectLayout, raw: &str) -> String {
+    let cleaned = raw.trim().replace('\\', "/");
+    let rooted = cleaned.trim_start_matches('/');
+    let rel = layout.strip_source(rooted).unwrap_or(rooted);
+    if rel.ends_with(PIPELINE_DEFINITION_EXTENSION) {
+        return rel.to_string();
+    }
+    // A plain `.json` tail used to be left alone, which minted an identity the
+    // `.zf.json` discovery rule then refused to see. The extension is replaced
+    // rather than appended so identity and discovery cannot disagree.
+    let stem = rel.strip_suffix(".json").unwrap_or(rel);
+    format!("{stem}{PIPELINE_DEFINITION_EXTENSION}")
+}
+
+/// Normalizes a glob that selects pipelines by identity.
+///
+/// Patterns are written by people and stored in `spec.bootstrap.activate`, so
+/// the same tolerance identity has applies here: a pattern that still names
+/// the source root selects the same pipelines as one that does not.
+pub fn normalize_pipeline_glob(layout: &ResolvedProjectLayout, pattern: &str) -> String {
+    let cleaned = pattern.trim().replace('\\', "/");
+    let rooted = cleaned.trim_start_matches('/');
+    layout.strip_source(rooted).unwrap_or(rooted).to_string()
+}
+
+/// Derives the virtual_path from a source-relative `file_rel_path`.
+/// `"api/foo.zf.json"` -> `"/api"`
+/// `"foo.zf.json"`     -> `"/"`
 pub fn virtual_path_from_file_rel_path(file_rel_path: &str) -> String {
-    let stripped = file_rel_path
-        .trim_start_matches("pipelines/")
-        .trim_start_matches('/');
+    let stripped = file_rel_path.trim_start_matches('/');
     match stripped.rfind('/') {
         Some(pos) => format!("/{}", &stripped[..pos]),
         None => "/".to_string(),
@@ -2966,7 +3179,11 @@ mod tests {
 
     fn make_service(root: &Path) -> ProjectService {
         let data = build_data_adapter(DataAdapterKind::Sqlite, root).expect("sqlite adapter");
-        let file = Arc::new(FilesystemFileAdapter::new(root.join("users")));
+        let configs = Arc::new(ProjectConfigurationService::new(root.join("users")));
+        let file = Arc::new(FilesystemFileAdapter::new(
+            root.join("users"),
+            Arc::clone(&configs),
+        ));
         file.initialize().expect("file adapter init");
         let now = now_ts();
         let seeded_user_id = "usr_test_superadmin".to_string();
@@ -2989,9 +3206,8 @@ mod tests {
         })
         .expect("seed test owner user");
         let project_data = build_project_data_factory(root);
-        let zebflow_cfg = Arc::new(ProjectConfigurationService::new(root.join("users")));
         let dependency_lock = Arc::new(DependencyLockService::new(root.join("users")));
-        ProjectService::new(data, file, project_data, zebflow_cfg, dependency_lock)
+        ProjectService::new(data, file, project_data, configs, dependency_lock)
     }
 
     fn create_default_project(svc: &ProjectService) {
@@ -3465,7 +3681,8 @@ mod tests {
             )
             .expect("check conflict");
         assert_eq!(conflicts.len(), 1);
-        assert_eq!(conflicts[0].file_rel_path, "pipelines/pages/a.zf.json");
+        // Identity is source-relative: the root lives in the layout, not the id.
+        assert_eq!(conflicts[0].file_rel_path, "pages/a.zf.json");
         assert_eq!(conflicts[0].method, "GET");
         assert_eq!(conflicts[0].path, "/same");
     }
@@ -3778,5 +3995,233 @@ mod tests {
         let err = parse_and_validate_pipeline_source_for_save(future).unwrap_err();
         assert_eq!(err.code, "PLATFORM_PIPELINE_PARSE");
         assert!(err.message.contains("unsupported apiVersion"));
+    }
+
+    fn webhook_pipeline_source(id: &str, path: &str) -> String {
+        format!(
+            r#"{{
+  "apiVersion":"zebflow.com/v1",
+  "kind":"Pipeline",
+  "metadata":{{"name":"{id}"}},
+  "spec":{{
+  "id":"{id}",
+  "entry_nodes":["wh"],
+  "nodes":[{{"id":"wh","kind":"n.trigger.webhook","input_pins":[],"output_pins":["out"],"config":{{"path":"{path}","method":"POST"}}}}],
+  "edges":[]}}
+}}"#
+        )
+    }
+
+    #[test]
+    fn a_project_that_declares_nothing_keeps_the_directories_it_already_had() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let svc = make_service(tmp.path());
+        create_default_project(&svc);
+
+        let layout = svc.project_layout("superadmin", "default").expect("layout");
+        assert_eq!(layout.repo_layout.source, "pipelines");
+        assert_eq!(layout.repo_layout.assets, "pipelines/assets");
+        assert_eq!(layout.repo_source_dir(), layout.repo_dir.join("pipelines"));
+
+        let meta = svc
+            .upsert_pipeline_definition(
+                "superadmin",
+                "default",
+                "api/router",
+                "Router",
+                "",
+                "webhook",
+                &webhook_pipeline_source("router", "/router"),
+            )
+            .expect("save");
+        assert_eq!(meta.file_rel_path, "api/router.zf.json");
+        assert!(
+            layout
+                .repo_dir
+                .join("pipelines/api/router.zf.json")
+                .is_file()
+        );
+    }
+
+    #[test]
+    fn a_declared_source_root_moves_registration_discovery_and_the_template_root() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let svc = make_service(tmp.path());
+        create_default_project(&svc);
+        svc.zebflow_cfg
+            .update("superadmin", "default", |cfg| {
+                cfg.configs.layout.source = Some("src/app".to_string());
+            })
+            .expect("declare layout");
+
+        let layout = svc.project_layout("superadmin", "default").expect("layout");
+        assert_eq!(layout.repo_source_dir(), layout.repo_dir.join("src/app"));
+        // Assets follow the source they default inside, rather than staying in
+        // the tree the project moved out of.
+        assert_eq!(
+            layout.repo_assets_dir(),
+            layout.repo_dir.join("src/app/assets")
+        );
+        assert_eq!(
+            svc.get_project_template_root("superadmin", "default")
+                .expect("template root"),
+            layout.repo_dir.join("src/app")
+        );
+
+        let meta = svc
+            .upsert_pipeline_definition(
+                "superadmin",
+                "default",
+                "blog/feed",
+                "Feed",
+                "",
+                "webhook",
+                &webhook_pipeline_source("feed", "/feed"),
+            )
+            .expect("save");
+        // Identity carries no root segment, so it is the same string this
+        // pipeline would have under any other declared source.
+        assert_eq!(meta.file_rel_path, "blog/feed.zf.json");
+        assert!(layout.repo_dir.join("src/app/blog/feed.zf.json").is_file());
+        assert!(!layout.repo_dir.join("pipelines/blog/feed.zf.json").exists());
+
+        let rows = svc
+            .list_pipeline_meta_rows("superadmin", "default")
+            .expect("rows");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].file_rel_path, "blog/feed.zf.json");
+        assert_eq!(rows[0].virtual_path, "/blog");
+        assert!(
+            svc.read_pipeline_source("superadmin", "default", "blog/feed.zf.json")
+                .expect("read")
+                .contains("/feed")
+        );
+        svc.activate_pipeline_definition("superadmin", "default", "blog/feed.zf.json")
+            .expect("activate");
+    }
+
+    #[test]
+    fn migrating_pipeline_identity_converts_stored_ids_once() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let svc = make_service(tmp.path());
+        create_default_project(&svc);
+
+        let layout = svc.project_layout("superadmin", "default").expect("layout");
+        let source = webhook_pipeline_source("legacy", "/legacy");
+        let legacy_id = "pipelines/api/legacy.zf.json";
+        let abs = svc
+            .pipeline_abs_path(&layout, legacy_id)
+            .expect("legacy abs");
+        std::fs::create_dir_all(abs.parent().expect("parent")).expect("mkdirs");
+        std::fs::write(&abs, &source).expect("write legacy source");
+        let now = now_ts();
+        svc.data
+            .put_pipeline_meta(&PipelineMeta {
+                owner: "superadmin".to_string(),
+                project: "default".to_string(),
+                name: "legacy".to_string(),
+                title: "Legacy".to_string(),
+                virtual_path: "/pipelines/api".to_string(),
+                file_rel_path: legacy_id.to_string(),
+                description: String::new(),
+                trigger_kind: "webhook".to_string(),
+                hash: stable_hash_hex(&source),
+                active_hash: None,
+                created_at: now,
+                updated_at: now,
+                activated_at: None,
+            })
+            .expect("insert legacy meta");
+        svc.zebflow_cfg
+            .set_bootstrap(
+                "superadmin",
+                "default",
+                crate::infra::execution::sync::ProjectBootstrapPlan {
+                    activate: vec!["pipelines/api/*.zf.json".to_string()],
+                },
+            )
+            .expect("bootstrap");
+
+        // Before migrating, the stored row already reads as the new identity:
+        // an existing project keeps working with no user action.
+        let rows = svc
+            .list_pipeline_meta_rows("superadmin", "default")
+            .expect("rows");
+        assert_eq!(rows[0].file_rel_path, "api/legacy.zf.json");
+        assert_eq!(
+            svc.data
+                .list_pipeline_meta("superadmin", "default")
+                .expect("raw rows")[0]
+                .file_rel_path,
+            legacy_id,
+            "the stored bytes are untouched until the migration runs"
+        );
+
+        let report = svc
+            .migrate_pipeline_identity("superadmin", "default")
+            .expect("migrate");
+        assert_eq!(report.rewrites.len(), 1);
+        assert_eq!(report.rewrites[0].from, legacy_id);
+        assert_eq!(report.rewrites[0].to, "api/legacy.zf.json");
+        assert_eq!(report.bootstrap_activate, vec!["api/*.zf.json".to_string()]);
+        assert!(report.recovery_path.expect("recovery path").is_file());
+        let stored = svc
+            .data
+            .list_pipeline_meta("superadmin", "default")
+            .expect("raw rows");
+        assert_eq!(stored.len(), 1);
+        assert_eq!(stored[0].file_rel_path, "api/legacy.zf.json");
+        assert_eq!(stored[0].virtual_path, "/api");
+
+        let again = svc
+            .migrate_pipeline_identity("superadmin", "default")
+            .expect("migrate again");
+        assert!(again.rewrites.is_empty());
+        assert_eq!(again.already_canonical, 1);
+        assert!(
+            again.recovery_path.is_none(),
+            "a second run has nothing to convert and writes nothing"
+        );
+    }
+
+    #[test]
+    fn migrating_refuses_two_ids_that_would_become_one() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let svc = make_service(tmp.path());
+        create_default_project(&svc);
+        let source = webhook_pipeline_source("dup", "/dup");
+        let now = now_ts();
+        for id in ["pipelines/api/dup.zf.json", "api/dup.zf.json"] {
+            svc.data
+                .put_pipeline_meta(&PipelineMeta {
+                    owner: "superadmin".to_string(),
+                    project: "default".to_string(),
+                    name: "dup".to_string(),
+                    title: "Dup".to_string(),
+                    virtual_path: "/api".to_string(),
+                    file_rel_path: id.to_string(),
+                    description: String::new(),
+                    trigger_kind: "webhook".to_string(),
+                    hash: stable_hash_hex(&source),
+                    active_hash: None,
+                    created_at: now,
+                    updated_at: now,
+                    activated_at: None,
+                })
+                .expect("insert row");
+        }
+        let err = svc
+            .migrate_pipeline_identity("superadmin", "default")
+            .expect_err("collision must refuse");
+        assert_eq!(err.code, "PIPELINE_IDENTITY_MIGRATE");
+        assert!(err.message.contains("both become"));
+        assert!(
+            !svc.project_layout("superadmin", "default")
+                .expect("layout")
+                .repo_dir
+                .join(PIPELINE_IDENTITY_BACKUP_FILE)
+                .exists(),
+            "a refused migration writes nothing"
+        );
     }
 }

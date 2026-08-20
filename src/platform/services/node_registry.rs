@@ -875,7 +875,11 @@ mod tests {
 
     fn make_registry(root: &Path) -> super::NodeRegistryService {
         let data = build_data_adapter(DataAdapterKind::Sqlite, root).expect("sqlite adapter");
-        let file = Arc::new(FilesystemFileAdapter::new(root.join("users")));
+        let configs = Arc::new(ProjectConfigurationService::new(root.join("users")));
+        let file = Arc::new(FilesystemFileAdapter::new(
+            root.join("users"),
+            Arc::clone(&configs),
+        ));
         file.initialize().expect("file adapter init");
         let now = now_ts();
         let user_id = "usr_node_registry_test".to_string();
@@ -902,7 +906,7 @@ mod tests {
             data,
             file,
             build_project_data_factory(root),
-            Arc::new(ProjectConfigurationService::new(root.join("users"))),
+            configs,
             dependency_lock.clone(),
         ));
         projects

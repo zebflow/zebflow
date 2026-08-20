@@ -486,13 +486,13 @@ impl DslExecutor {
     ) -> DslOutput {
         if file_rel_path.is_empty() {
             return DslOutput::err(
-                "register: pipeline file_rel_path is required (e.g. pipelines/api/my-pipe)",
+                "register: pipeline file_rel_path is required (e.g. api/my-pipe)",
             );
         }
         if body.is_empty() {
             return DslOutput::err(
                 "register: pipeline body is required. \
-                 Example: register pipelines/api/my-pipe | trigger.webhook --path /api | pg.query --credential main-db",
+                 Example: register api/my-pipe | trigger.webhook --path /api | pg.query --credential main-db",
             );
         }
 
@@ -953,10 +953,10 @@ impl DslExecutor {
         .with_ws_hub(self.platform.ws_hub.clone())
         .with_state_bus(self.platform.state_bus.clone())
         .with_data_root(self.platform.config.data_root.clone())
-        .with_template_root(
+        .with_project_layout(
             self.platform
                 .projects
-                .get_project_template_root(&self.owner, &self.project)
+                .project_layout(&self.owner, &self.project)
                 .ok(),
         );
 
@@ -1076,10 +1076,10 @@ impl DslExecutor {
                 .with_ws_hub(self.platform.ws_hub.clone())
                 .with_state_bus(self.platform.state_bus.clone())
                 .with_data_root(self.platform.config.data_root.clone())
-                .with_template_root(
+                .with_project_layout(
                     self.platform
                         .projects
-                        .get_project_template_root(&self.owner, &self.project)
+                        .project_layout(&self.owner, &self.project)
                         .ok(),
                 );
 

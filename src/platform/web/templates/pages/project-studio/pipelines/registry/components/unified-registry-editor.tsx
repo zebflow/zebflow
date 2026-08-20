@@ -866,8 +866,10 @@ export default function UnifiedRegistryEditor(input) {
     const virtualPath = peNormalizeVirtualPath(currentPath);
     const title = String(fd.get("title") || "");
     const source = JSON.stringify(peEmptyPipelineDocument(name, triggerKind), null, 2);
+    // Identity is relative to the project's source root, which lives in
+    // zebflow.yaml and is never spelled here.
     const cleanVp = (virtualPath || "/").replace(/^\//, "");
-    const fileRelPath = cleanVp ? `pipelines/${cleanVp}/${name}.zf.json` : `pipelines/${name}.zf.json`;
+    const fileRelPath = cleanVp ? `${cleanVp}/${name}.zf.json` : `${name}.zf.json`;
     setCreating(true);
     setCreateError(null);
     try {

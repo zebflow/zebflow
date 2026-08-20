@@ -584,6 +584,7 @@ mod tests {
     };
     use crate::platform::adapters::file::build_file_adapter;
     use crate::platform::model::FileAdapterKind;
+    use crate::platform::services::project_config::ProjectConfigurationService;
     use crate::rwe::resolve_engine_or_default;
 
     #[test]
@@ -649,7 +650,11 @@ mod tests {
                 .expect("unix time")
                 .as_nanos()
         ));
-        let file = build_file_adapter(FileAdapterKind::Filesystem, root.clone());
+        let file = build_file_adapter(
+            FileAdapterKind::Filesystem,
+            root.clone(),
+            std::sync::Arc::new(ProjectConfigurationService::new(root.join("users"))),
+        );
         let layout = file
             .ensure_project_layout("superadmin", "example-project")
             .expect("layout");
@@ -726,7 +731,7 @@ export default function LyricPage(input) {
             resolve_engine_or_default(None),
             None,
         )
-        .with_template_root(Some(layout.repo_source_dir()))
+        .with_project_layout(Some(layout.clone()))
         .with_template_cache(new_template_cache())
         .with_data_root(root.clone());
 
@@ -833,7 +838,11 @@ export default function LyricPage(input) {
                 .expect("unix time")
                 .as_nanos()
         ));
-        let file = build_file_adapter(FileAdapterKind::Filesystem, root.clone());
+        let file = build_file_adapter(
+            FileAdapterKind::Filesystem,
+            root.clone(),
+            std::sync::Arc::new(ProjectConfigurationService::new(root.join("users"))),
+        );
         let layout = file
             .ensure_project_layout("superadmin", "example-project")
             .expect("layout");
@@ -895,7 +904,7 @@ export default function LyricPage(input) {
             resolve_engine_or_default(None),
             None,
         )
-        .with_template_root(Some(layout.repo_source_dir()))
+        .with_project_layout(Some(layout.clone()))
         .with_template_cache(new_template_cache())
         .with_data_root(root.clone());
 

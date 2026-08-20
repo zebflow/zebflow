@@ -20,8 +20,9 @@ use crate::platform::adapters::file::FileAdapter;
 use crate::platform::error::PlatformError;
 use crate::platform::model::{
     CreateProjectRequest, PlatformUser, PlatformUserLocalAuth,
-    ProjectRuntimeMaterializationRequest, ResolvedProjectLayout, StoredUser, now_ts, slug_segment,
+    ProjectRuntimeMaterializationRequest, StoredUser, now_ts, slug_segment,
 };
+use crate::platform::services::project::normalize_pipeline_glob;
 use crate::platform::services::{
     PipelineRuntimeService, ProjectConfigurationService, ProjectService,
 };
@@ -119,7 +120,6 @@ impl ClusterRuntimeSyncService {
         let cfg = self.zebflow_cfg.read_or_default(&owner, &project)?;
         reindex_project_sources(
             self.projects.as_ref(),
-            &layout.repo_layout,
             &layout.repo_source_dir(),
             &owner,
             &project,
@@ -321,7 +321,6 @@ fn sanitize_bundle_path(repo_dir: &Path, rel_path: &str) -> Result<PathBuf, Plat
 
 fn reindex_project_sources(
     projects: &ProjectService,
-    layout: &ResolvedProjectLayout,
     repo_root: &Path,
     owner: &str,
     project: &str,
@@ -349,7 +348,9 @@ fn reindex_project_sources(
                 continue;
             }
             let source = fs::read_to_string(&path)?;
-            let file_rel_path = layout.source_rel(&rel);
+            // `rel` is already relative to the source root, which is exactly
+            // what identity is. It used to be re-prefixed here.
+            let file_rel_path = rel;
             let graph_description = decode_pipeline_graph(source.as_bytes())
                 .ok()
                 .and_then(|document| document.spec.description)
@@ -379,9 +380,17 @@ fn activate_bootstrap_plan(
     if bootstrap.activate.is_empty() {
         return Ok(());
     }
+    // Bootstrap patterns are matched through the identity rule so a plan
+    // written before identity became source-relative still selects the
+    // pipelines it named.
+    let layout = projects.project_layout(owner, project)?;
+    let patterns: Vec<String> = bootstrap
+        .activate
+        .iter()
+        .map(|pattern| normalize_pipeline_glob(&layout.repo_layout, pattern))
+        .collect();
     for meta in projects.list_pipeline_meta_rows(owner, project)? {
-        if bootstrap
-            .activate
+        if patterns
             .iter()
             .any(|pattern| path_glob_matches(pattern, &meta.file_rel_path))
         {
@@ -466,21 +475,27 @@ fn derive_trigger_kind_from_source(source: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::path_glob_matches;
+    use super::{normalize_pipeline_glob, path_glob_matches};
+    use crate::platform::model::ResolvedProjectLayout;
 
     #[test]
     fn bootstrap_globs_support_recursive_pipeline_patterns() {
         assert!(path_glob_matches(
-            "pipelines/pages/**/*.zf.json",
-            "pipelines/pages/demo/safety.zf.json"
+            "pages/**/*.zf.json",
+            "pages/demo/safety.zf.json"
         ));
-        assert!(path_glob_matches(
-            "pipelines/api/*.zf.json",
-            "pipelines/api/auth.zf.json"
-        ));
+        assert!(path_glob_matches("api/*.zf.json", "api/auth.zf.json"));
         assert!(!path_glob_matches(
-            "pipelines/api/*.zf.json",
-            "pipelines/api/admin/auth.zf.json"
+            "api/*.zf.json",
+            "api/admin/auth.zf.json"
         ));
+    }
+
+    #[test]
+    fn a_bootstrap_plan_written_against_the_old_identity_still_selects() {
+        let layout = ResolvedProjectLayout::platform_default();
+        let pattern = normalize_pipeline_glob(&layout, "pipelines/pages/**/*.zf.json");
+        assert_eq!(pattern, "pages/**/*.zf.json");
+        assert!(path_glob_matches(&pattern, "pages/demo/safety.zf.json"));
     }
 }

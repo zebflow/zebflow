@@ -809,11 +809,13 @@ impl PlatformOps {
             None => {
                 let n = name.unwrap_or_default();
                 let raw_path = path.unwrap_or("/");
+                // Identity is source-relative, so a minted path carries no
+                // root segment; the root lives in the project's layout.
                 let vpath = raw_path.trim_matches('/');
                 if vpath.is_empty() {
-                    format!("pipelines/{n}")
+                    n.to_string()
                 } else {
-                    format!("pipelines/{vpath}/{n}")
+                    format!("{vpath}/{n}")
                 }
             }
         };
@@ -934,11 +936,23 @@ impl PlatformOps {
             Err(e) => return OpsResult::err(e.to_string()),
         };
 
+        let layout = match self
+            .platform
+            .projects
+            .project_layout(&self.owner, &self.project)
+        {
+            Ok(value) => value,
+            Err(e) => return OpsResult::err(e.to_string()),
+        };
         // Reuse the same glob matcher used by template_search / pipeline_search.
         let matching: Vec<String> = rows
             .iter()
             .filter(|m| {
-                crate::platform::services::project::pipeline_glob_matches(glob, &m.file_rel_path)
+                crate::platform::services::project::pipeline_glob_matches(
+                    &layout.repo_layout,
+                    glob,
+                    &m.file_rel_path,
+                )
             })
             .map(|m| m.file_rel_path.clone())
             .collect();
@@ -1589,14 +1603,19 @@ impl PlatformOps {
     }
 
     async fn move_pipeline(&self, from_path: &str, to_path: &str) -> OpsResult {
-        use crate::platform::services::project::normalize_pipeline_file_rel_path;
         let owner = &self.owner;
         let project = &self.project;
         let projects = &self.platform.projects;
         let runtime = &self.platform.pipeline_runtime;
 
-        let from = normalize_pipeline_file_rel_path(from_path);
-        let to = normalize_pipeline_file_rel_path(to_path);
+        let from = match projects.pipeline_identity(owner, project, from_path) {
+            Ok(value) => value,
+            Err(error) => return OpsResult::err(error.to_string()),
+        };
+        let to = match projects.pipeline_identity(owner, project, to_path) {
+            Ok(value) => value,
+            Err(error) => return OpsResult::err(error.to_string()),
+        };
 
         if from == to {
             return OpsResult::err("from_path and to_path resolve to the same pipeline");
@@ -2018,16 +2037,29 @@ fn filter_pipeline_rows(
         .map(str::trim)
         .filter(|s| !s.is_empty() && !s.eq_ignore_ascii_case("all"))
         .map(normalize_trigger_filter);
+    let glob = options
+        .glob
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .and_then(|glob| {
+            ops.platform
+                .projects
+                .project_layout(&ops.owner, &ops.project)
+                .ok()
+                .map(|layout| {
+                    crate::platform::services::project::normalize_pipeline_glob(
+                        &layout.repo_layout,
+                        glob,
+                    )
+                })
+        });
 
     pipelines
         .into_iter()
         .filter(|meta| {
-            options
-                .glob
-                .map(str::trim)
-                .filter(|s| !s.is_empty())
+            glob.as_deref()
                 .map(|glob| {
-                    crate::platform::services::project::pipeline_glob_matches(
+                    crate::platform::services::project::template_glob_matches(
                         glob,
                         &meta.file_rel_path,
                     )

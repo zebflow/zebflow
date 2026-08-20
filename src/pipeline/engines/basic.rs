@@ -966,7 +966,16 @@ pub struct BasicPipelineEngine {
     state_bus: Option<DynStateBus>,
     platform: Option<Arc<PlatformService>>,
     /// Filesystem root for resolving `@/` alias imports in TSX templates.
+    ///
+    /// Derived from `repo_layout` and never set on its own, so the alias root
+    /// and the layout that names it cannot disagree.
     template_root: Option<std::path::PathBuf>,
+    /// The project's resolved repository layout, when the engine runs for one.
+    ///
+    /// Nodes that need a repository directory other than the source root read
+    /// it from here instead of walking up from the template root, which only
+    /// works for a source root exactly one segment deep.
+    repo_layout: Option<crate::platform::model::ProjectFileLayout>,
     /// Platform data root — used by SQLite nodes to locate the project DB.
     data_root: Option<std::path::PathBuf>,
 }
@@ -984,6 +993,7 @@ impl Default for BasicPipelineEngine {
             state_bus: None,
             platform: None,
             template_root: None,
+            repo_layout: None,
             data_root: None,
         }
     }
@@ -1005,13 +1015,21 @@ impl BasicPipelineEngine {
             state_bus: None,
             platform: None,
             template_root: None,
+            repo_layout: None,
             data_root: None,
         }
     }
 
-    /// Set the template root so `@/` alias imports resolve correctly in TSX templates.
-    pub fn with_template_root(mut self, root: Option<std::path::PathBuf>) -> Self {
-        self.template_root = root;
+    /// Attach the project's repository layout.
+    ///
+    /// This also sets the template root, because the template root *is* the
+    /// layout's source directory; there is no second way to set it.
+    pub fn with_project_layout(
+        mut self,
+        layout: Option<crate::platform::model::ProjectFileLayout>,
+    ) -> Self {
+        self.template_root = layout.as_ref().map(|value| value.repo_source_dir());
+        self.repo_layout = layout;
         self
     }
 
@@ -1994,7 +2012,18 @@ impl PipelineEngine for BasicPipelineEngine {
                             ));
                         };
 
-                        let site = web_docs_generate::load_site(&config, template_root)?;
+                        let Some(docs_root) = self
+                            .repo_layout
+                            .as_ref()
+                            .map(|layout| layout.repo_docs_dir())
+                        else {
+                            return Err(PipelineError::new(
+                                "FW_NODE_WEB_DOCS_TEMPLATE_ROOT",
+                                "project layout is not configured on this pipeline engine",
+                            ));
+                        };
+                        let site =
+                            web_docs_generate::load_site(&config, template_root, &docs_root)?;
                         let options = crate::rwe::ReactiveWebOptions {
                             templates: crate::rwe::TemplateOptions {
                                 template_root: self.template_root.clone(),
@@ -2054,9 +2083,9 @@ impl PipelineEngine for BasicPipelineEngine {
                                 .join("files")
                                 .join(&site.site_root_rel);
                             let project_asset_root = self
-                                .template_root
-                                .as_deref()
-                                .map(|root| root.join("assets"));
+                                .repo_layout
+                                .as_ref()
+                                .map(|layout| layout.repo_assets_dir());
 
                             let enabled_libraries: Vec<String> = self
                                 .platform
@@ -2405,9 +2434,9 @@ impl PipelineEngine for BasicPipelineEngine {
                                 &template_source.markup,
                             );
                             let project_asset_root = self
-                                .template_root
-                                .as_deref()
-                                .map(|root| root.join("assets"));
+                                .repo_layout
+                                .as_ref()
+                                .map(|layout| layout.repo_assets_dir());
                             let localized = if let Some(site_root_rel) =
                                 web_static_generate::effective_site_root_rel_path(&config)?
                             {

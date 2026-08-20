@@ -5,9 +5,8 @@ use std::sync::Arc;
 use std::{fs, process::Command};
 
 use crate::platform::error::PlatformError;
-use crate::platform::model::{
-    FileAdapterKind, ProjectFileLayout, ResolvedProjectLayout, slug_segment,
-};
+use crate::platform::model::{FileAdapterKind, ProjectFileLayout, slug_segment};
+use crate::platform::services::project_config::ProjectConfigurationService;
 
 /// File adapter contract used by project service.
 pub trait FileAdapter: Send + Sync {
@@ -26,12 +25,18 @@ pub trait FileAdapter: Send + Sync {
 /// Filesystem adapter implementation.
 pub struct FilesystemFileAdapter {
     root: PathBuf,
+    /// Where a project's declared layout is read from.
+    ///
+    /// The adapter owns no parser of its own: `zebflow.yaml` has exactly one
+    /// reader, and a second one here could accept a document the real reader
+    /// refuses.
+    configs: Arc<ProjectConfigurationService>,
 }
 
 impl FilesystemFileAdapter {
     /// Creates filesystem adapter rooted at `{data_root}/users`.
-    pub fn new(root: PathBuf) -> Self {
-        Self { root }
+    pub fn new(root: PathBuf, configs: Arc<ProjectConfigurationService>) -> Self {
+        Self { root, configs }
     }
 
     fn project_root(&self, owner: &str, project: &str) -> PathBuf {
@@ -88,10 +93,12 @@ impl FileAdapter for FilesystemFileAdapter {
             repo_dir.join(crate::contracts::kinds::PROJECT_CONFIGURATION_FILE);
         let agent_docs_dir = data_runtime_dir.join("agent_docs");
 
-        // No project may declare a layout of its own yet, so every project
-        // resolves to the platform defaults. This is the one seam a declared
-        // layout would arrive through.
-        let repo_layout = ResolvedProjectLayout::platform_default();
+        // The declaration takes effect here. A project that declares nothing
+        // resolves to the platform defaults, and a malformed or unmigrated
+        // configuration returns an error rather than being reinterpreted as
+        // the defaults, because guessing here would silently relocate a
+        // project's entire source tree.
+        let repo_layout = self.configs.project_layout(owner, project)?;
 
         let resolved = ProjectFileLayout {
             root,
@@ -137,10 +144,14 @@ impl FileAdapter for FilesystemFileAdapter {
 }
 
 /// Builds selected file adapter.
-pub fn build_file_adapter(kind: FileAdapterKind, data_root: PathBuf) -> Arc<dyn FileAdapter> {
+pub fn build_file_adapter(
+    kind: FileAdapterKind,
+    data_root: PathBuf,
+    configs: Arc<ProjectConfigurationService>,
+) -> Arc<dyn FileAdapter> {
     match kind {
         FileAdapterKind::Filesystem => {
-            Arc::new(FilesystemFileAdapter::new(data_root.join("users")))
+            Arc::new(FilesystemFileAdapter::new(data_root.join("users"), configs))
         }
     }
 }

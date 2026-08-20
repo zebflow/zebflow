@@ -2149,15 +2149,16 @@ impl HubService {
             }
         }
 
+        let sqlite_schema_rel = layout.sqlite_schema_document_rel();
         preview
             .entries
-            .retain(|entry| normalize_repo_rel(&entry.rel_path) != sqlite_schema::REPO_SCHEMA_PATH);
+            .retain(|entry| normalize_repo_rel(&entry.rel_path) != sqlite_schema_rel);
         if options.include_sqlite_schema {
             if let Some(sql) =
                 sqlite_schema::export_schema_sql(&self.data_root, source_owner, source_project)?
             {
                 preview.entries.push(text_export_entry(
-                    sqlite_schema::REPO_SCHEMA_PATH,
+                    &sqlite_schema_rel,
                     "sqlite schema",
                     "Portable SQLite schema",
                     sql,
@@ -2789,7 +2790,16 @@ impl HubService {
                 files_added.push(install_rel.clone());
             }
             if layout.repo_layout.is_pipeline_rel_path(&install_rel) {
-                pipelines_registered.push(install_rel.clone());
+                // Reported as the identity the install would register, not as
+                // the repository path it would write, so a review can be
+                // compared against the install result it predicts.
+                pipelines_registered.push(
+                    layout
+                        .repo_layout
+                        .strip_source(&install_rel)
+                        .unwrap_or(&install_rel)
+                        .to_string(),
+                );
             }
             // Keyed on the destination, never the manifest path: the install
             // decides where an entry lands, so the review scans the same path
@@ -3537,7 +3547,12 @@ impl HubService {
         let mut unexecuted_initial_data = Vec::new();
         if scope.execute_schema {
             sekejap::apply_schema_from_repo(&self.data_root, &target_owner, &project)?;
-            sqlite_schema::apply_schema_from_repo(&self.data_root, &target_owner, &project)?;
+            sqlite_schema::apply_schema_from_repo(
+                &self.data_root,
+                &target_owner,
+                &project,
+                &layout.repo_layout,
+            )?;
             execute_project_initial_data(
                 &self.data_root,
                 &target_owner,
@@ -3607,9 +3622,12 @@ impl HubService {
             ));
         };
         let mut warnings = Vec::new();
+        // A manifest entry names a file inside the repository, while identity
+        // names one inside the source root, so the root is added back here.
+        let pipeline_repo_rel = layout.repo_layout.source_rel(&meta.file_rel_path);
         let mut entries = vec![read_repo_entry(
             layout,
-            &meta.file_rel_path,
+            &pipeline_repo_rel,
             "primary pipeline".to_string(),
         )?];
         let source = self
@@ -3618,7 +3636,7 @@ impl HubService {
         let value: Value = serde_json::from_str(&source)
             .map_err(|err| PlatformError::new("HUB_PREVIEW", err.to_string()))?;
         let mut seen = BTreeSet::new();
-        seen.insert(meta.file_rel_path.clone());
+        seen.insert(pipeline_repo_rel);
         if let Some(nodes) = value.get("nodes").and_then(Value::as_array) {
             for node in nodes {
                 if node.get("kind").and_then(Value::as_str) != Some("n.web.response") {
@@ -4985,12 +5003,17 @@ fn normalize_install_target_folder(
     if folder.is_empty() {
         return ".".to_string();
     }
-    if target_folder.trim_start().starts_with('/')
-        && matches!(
-            asset_kind,
-            HUB_ASSET_KIND_PIPELINE_BUNDLE | HUB_ASSET_KIND_TEMPLATE_BUNDLE
-        )
-        && !layout.is_in_source(&folder)
+    // Pipeline and template bundles are project source, so a target folder
+    // names a place inside the source root. It used to name one only when the
+    // caller typed a leading slash, which made `billing` install outside the
+    // root: nothing there is a pipeline by the discovery rule, so the review
+    // found nothing and the install registered nothing, and the package landed
+    // as inert files. Typing a slash is not consent to be reviewed.
+    if matches!(
+        asset_kind,
+        HUB_ASSET_KIND_PIPELINE_BUNDLE | HUB_ASSET_KIND_TEMPLATE_BUNDLE
+    ) && !layout.is_in_source(&folder)
+        && folder != layout.source
     {
         return layout.source_rel(&folder);
     }
@@ -5392,9 +5415,7 @@ fn refuse_unreviewable_project_bundle(
 fn install_entry_is_schema(layout: &ResolvedProjectLayout, rel_path: &str) -> bool {
     let rel = normalize_repo_rel(rel_path);
     layout.is_schema_rel_path(&rel)
-        // The SQLite export has no entry on the layout contract, so it is still
-        // named here rather than resolved.
-        || rel.starts_with("schemas/sqlite/")
+        || layout.is_sqlite_schema_rel_path(&rel)
         || initial_data_engine_for_path(layout, &rel).is_some()
 }
 
