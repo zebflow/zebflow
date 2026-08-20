@@ -242,19 +242,27 @@ For `zebflow.com/v1`:
 - A patch may fix code or strengthen rejection of content that was already
   invalid. It must not rename fields, change defaults, or change valid meaning.
 - A minor Zebflow release may add runtime behavior that does not change this
-  document. It must not add fields to this frozen v1 schema.
+  document.
 - A new field, removed field, renamed field, changed type, changed default, or
   changed meaning requires a new contract API version and an explicit converter.
 - The v1 reader never guesses or silently converts another shape.
 
-`spec.layout` was added to `zebflow.com/v1` on 2026-08-20 without a new API
-version, and it is the one recorded exception to the rule above. Every entry is
-optional, an omitted section is the previous behavior exactly, no document that
-was valid before became invalid, and no existing field changed type, default, or
-meaning. A writer omits the whole section when nothing is declared, so files
-written before the section existed are not rewritten. Nothing else may be added
-this way: a field that changes an existing meaning, or whose omission is not the
-previous behavior, still requires a new API version and an explicit converter.
+### Before first release
+
+Zebflow has not published a v1 release. No `zebflow.yaml` exists outside this
+repository and its test instances, so there is no document in the world for a
+schema change to break. Until first release, `zebflow.com/v1` may be amended in
+place, and every amendment is recorded below with its date. A converter is not
+written for a document that never existed.
+
+After first release this section closes and the rules above apply literally: the
+schema stops being a draft and starts being a promise.
+
+### Amendments
+
+| Date | Change | Why it was safe |
+| --- | --- | --- |
+| 2026-08-20 | Added `spec.layout` | Optional at every level; omission reproduces the previous hardcoded directories exactly; no existing field changed meaning; absent stays absent on rewrite, so an existing file is not modified on its next save; the golden fixture still round-trips byte for byte. |
 
 ## Freeze Evidence
 
