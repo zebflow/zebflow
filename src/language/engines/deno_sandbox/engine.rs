@@ -69,6 +69,23 @@ impl DenoSandboxEngine {
         }
     }
 
+    /// Creates an engine whose scripts fetch inside one project's directory.
+    ///
+    /// The root enters through the project patch, the layer already reserved
+    /// for per-project policy, so it merges with an operator's platform patch
+    /// instead of competing with it. An engine built any other way has no fetch
+    /// root at all and refuses a local fetch, which is why forgetting this call
+    /// closes a project's scripts rather than opening the server's directory.
+    pub fn for_project(project_root: impl AsRef<std::path::Path>) -> Self {
+        Self {
+            platform_patch: DenoSandboxConfigPatch::default(),
+            project_patch: DenoSandboxConfigPatch {
+                local_fetch_root: Some(project_root.as_ref().display().to_string()),
+                ..DenoSandboxConfigPatch::default()
+            },
+        }
+    }
+
     /// Compiles plain JS source into a sandbox-ready artifact.
     pub fn compile_script(
         &self,
@@ -277,6 +294,29 @@ mod tests {
         DenoSandboxEngine::default()
             .run_script(source, &json!({}), None)
             .expect("tool script should succeed")
+    }
+
+    #[test]
+    fn a_project_scoped_engine_fetches_under_that_project() {
+        let compiled = DenoSandboxEngine::for_project("/srv/zebflow/users/acme/shop/files")
+            .compile_script("return 1;", None)
+            .expect("compile");
+
+        assert_eq!(
+            compiled.resolved_config.local_fetch_root,
+            "/srv/zebflow/users/acme/shop/files"
+        );
+    }
+
+    #[test]
+    fn an_unscoped_engine_has_no_fetch_root_at_all() {
+        let compiled = DenoSandboxEngine::default()
+            .compile_script("return 1;", None)
+            .expect("compile");
+
+        // Not the server's directory: an engine built for no project resolves
+        // a local fetch nowhere, so forgetting to scope one closes it.
+        assert!(compiled.resolved_config.local_fetch_root.is_empty());
     }
 
     fn approx_eq(actual: f64, expected: f64, tolerance: f64) {

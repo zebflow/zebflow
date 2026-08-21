@@ -120,6 +120,25 @@ pub async fn check_llm(client: &dyn LlmCall) -> Result<(), String> {
     Ok(())
 }
 
+/// The directory this REPL's shell tools are confined to.
+///
+/// The REPL is the one shell-tool caller with no Zebflow project: `owner` and
+/// `project` below are placeholders for the automaton context, not a project on
+/// disk, so there is no project layout to resolve. The operator's own directory
+/// is therefore the root, and `ZEBTUNE_WORK_DIR` names a different one. It is
+/// logged rather than assumed, because it is what every tool argument is now
+/// checked against.
+fn shell_tool_root() -> std::path::PathBuf {
+    if let Some(dir) = std::env::var("ZEBTUNE_WORK_DIR")
+        .ok()
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+    {
+        return std::path::PathBuf::from(dir);
+    }
+    std::env::current_dir().unwrap_or_else(|_| Path::new(".").to_path_buf())
+}
+
 /// Interactive REPL (sync): engine only, no LLM.
 pub fn run_interactive(engine: Arc<dyn AutomatonEngine>) -> io::Result<()> {
     run_interactive_with_llm(engine, None)
@@ -137,6 +156,9 @@ pub fn run_interactive_with_llm(
 
     let rt = tokio::runtime::Runtime::new()
         .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("tokio runtime: {}", e)))?;
+
+    let work_dir = shell_tool_root();
+    log(&format!("Shell tools confined to: {}", work_dir.display()));
 
     loop {
         let _ = io::stdout().write_all(b"\nYou> ");
@@ -162,7 +184,6 @@ pub fn run_interactive_with_llm(
         if let Some(ref llm) = llm {
             let registry = shell_tools::default_registry();
             let enabled = shell_tools::enabled_auto_commands();
-            let work_dir = std::env::current_dir().unwrap_or_else(|_| Path::new(".").to_path_buf());
 
             // Build auto-context if enabled
             let user_content = if enabled.is_empty() {

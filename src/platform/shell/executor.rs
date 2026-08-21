@@ -945,7 +945,7 @@ impl DslExecutor {
         };
 
         let engine = crate::pipeline::BasicPipelineEngine::new(
-            Arc::new(crate::language::DenoSandboxEngine::default()),
+            Arc::new(self.platform.project_sandbox(&self.owner, &self.project)),
             crate::rwe::resolve_engine_or_default(None),
             Some(self.platform.credentials.clone()),
         )
@@ -1068,7 +1068,7 @@ impl DslExecutor {
                 };
 
                 let engine = crate::pipeline::BasicPipelineEngine::new(
-                    Arc::new(crate::language::DenoSandboxEngine::default()),
+                    Arc::new(self.platform.project_sandbox(&self.owner, &self.project)),
                     crate::rwe::resolve_engine_or_default(None),
                     Some(self.platform.credentials.clone()),
                 )

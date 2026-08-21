@@ -38,6 +38,10 @@ fn op_script_result(#[string] json: String) {
 #[deno_core::op2]
 #[string]
 fn op_read_local_file(#[string] rel_path: String) -> Result<String, JsErrorBox> {
+    // A refusal is kept distinguishable from a miss. The fetch wrapper answers
+    // 404 for a file that is simply not there, and rejects on DENIED_PREFIX, so
+    // a boundary refusal reaches the script as an error rather than as a
+    // missing file it might reasonably ignore.
     let rel = Path::new(&rel_path);
     if rel.is_absolute()
         || rel.components().any(|component| {
@@ -47,25 +51,47 @@ fn op_read_local_file(#[string] rel_path: String) -> Result<String, JsErrorBox> 
             )
         })
     {
-        return Err(JsErrorBox::generic("local file path escaped sandbox root"));
+        return Err(denied(format!(
+            "path '{rel_path}' escaped the sandbox root"
+        )));
     }
 
     let root = LOCAL_FETCH_ROOT
         .with(|root| root.borrow().clone())
-        .ok_or_else(|| JsErrorBox::generic("local fetch root is not configured"))?;
-    let canonical_root = root
-        .canonicalize()
-        .map_err(|e| JsErrorBox::generic(format!("local fetch root invalid: {e}")))?;
+        .ok_or_else(|| {
+            denied(format!(
+                "no sandbox root is configured for this run, so '{rel_path}' resolves nowhere"
+            ))
+        })?;
+    let canonical_root = root.canonicalize().map_err(|e| {
+        denied(format!(
+            "sandbox root '{}' is unusable: {e}",
+            root.display()
+        ))
+    })?;
     let target = canonical_root.join(rel);
     let canonical_target = target
         .canonicalize()
         .map_err(|e| JsErrorBox::generic(format!("local file read failed: {e}")))?;
     if !canonical_target.starts_with(&canonical_root) {
-        return Err(JsErrorBox::generic("local file path escaped sandbox root"));
+        return Err(denied(format!(
+            "path '{rel_path}' escaped the sandbox root {}",
+            canonical_root.display()
+        )));
     }
 
     std::fs::read_to_string(&canonical_target)
         .map_err(|e| JsErrorBox::generic(format!("local file read failed: {e}")))
+}
+
+/// Marker the fetch wrapper matches on to reject rather than answer 404.
+///
+/// `SANDBOX_INIT` is a JavaScript literal and cannot read this constant, so the
+/// same string appears there; the two must change together.
+const DENIED_PREFIX: &str = "local fetch denied: ";
+
+fn denied(reason: String) -> JsErrorBox {
+    JsErrorBox::generic(format!("{DENIED_PREFIX}{reason}"))
 }
 
 deno_core::extension!(script_ops, ops = [op_script_result, op_read_local_file],);
@@ -166,7 +192,7 @@ const SANDBOX_INIT: &str = r#"
 
   // ----- Permanent fetch wrapper -----------------------------------------
   // Reads __fetchConfig (set per run) so allow-list is enforced correctly.
-  globalThis.__fetchConfig = { allowedHosts: [], localFetchRoot: "." };
+  globalThis.__fetchConfig = { allowedHosts: [] };
   globalThis.__tj_tick     = function () {};
   globalThis.__script_input = null;
 
@@ -191,6 +217,12 @@ const SANDBOX_INIT: &str = r#"
           status: 200, headers: { "content-type": ct }
         }));
       } catch (e) {
+        // A refused path is an error, not an empty answer: only a genuine miss
+        // becomes a 404.
+        var msg = (e && e.message) ? String(e.message) : String(e);
+        if (msg.indexOf("local fetch denied: ") !== -1) {
+          return Promise.reject(new Error("DenoSandboxError: " + msg));
+        }
         return Promise.resolve(new globalThis.Response("Not Found", { status: 404 }));
       }
     }
@@ -336,8 +368,15 @@ async fn execute_script(js_rt: &mut JsRuntime, work: ScriptWork) -> Result<Value
     })
     .to_string();
 
+    // An unset root stays unset: a local fetch is then refused by name rather
+    // than resolved against whatever directory the server was started in.
+    let fetch_root = if cfg.local_fetch_root.trim().is_empty() {
+        None
+    } else {
+        Some(PathBuf::from(&cfg.local_fetch_root))
+    };
     LOCAL_FETCH_ROOT.with(|root| {
-        *root.borrow_mut() = Some(PathBuf::from(&cfg.local_fetch_root));
+        *root.borrow_mut() = fetch_root;
     });
 
     let timeout_ms = cfg.timeout_ms;

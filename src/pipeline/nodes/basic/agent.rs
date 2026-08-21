@@ -10,7 +10,8 @@
 //! # Tool Discovery
 //!
 //! Available tools come from two sources, merged and filtered by `config.tools`:
-//! 1. **Shell tools** — `default_registry()`: `ls`, `pwd`, `python`. Always executable.
+//! 1. **Shell tools** — `default_registry()`: `ls`, `pwd`, `python`. These run inside the
+//!    owning project's `repo/` directory and refuse a path that resolves outside it.
 //! 2. **Pipeline node tools** — nodes with `ai_tool.registered = true` in their definition
 //!    (e.g. `http_request`, `database_query`). Exposed to the LLM via the catalog;
 //!    inline execution requires pipeline context (TODO: future milestone).
@@ -412,6 +413,36 @@ impl Node {
         client_from_env()
     }
 
+    /// The directory the agent's shell tools run in: the owning project's
+    /// repository, the same root the platform shell and git use.
+    ///
+    /// A tool that cannot be placed in a project is refused rather than run in
+    /// the server's own working directory — under `./dev.sh` that is the
+    /// Zebflow source tree, which belongs to no project. The reason is returned
+    /// so the refusal reaches the model as the tool result instead of
+    /// disappearing.
+    fn shell_work_dir(&self, owner: &str, project: &str) -> Result<std::path::PathBuf, String> {
+        let Some(platform) = &self.platform else {
+            return Err(
+                "shell tools are unavailable: this pipeline engine has no platform \
+                 service, so there is no project directory to run in"
+                    .to_string(),
+            );
+        };
+        if owner.trim().is_empty() || project.trim().is_empty() {
+            return Err(
+                "shell tools are unavailable: this run carries no owner/project, so there is \
+                 no project directory to run in"
+                    .to_string(),
+            );
+        }
+        platform
+            .file
+            .ensure_project_layout(owner, project)
+            .map(|layout| layout.repo_dir)
+            .map_err(|err| format!("shell tools are unavailable: {err}"))
+    }
+
     /// Build the merged ToolDef list from shell tools + registered pipeline node tools
     /// + active function pipelines, filtered by config.tools (empty = none).
     fn build_tool_defs(&self, owner: &str, project: &str) -> Vec<ToolDef> {
@@ -590,8 +621,7 @@ impl Node {
 
         let tools = self.build_tool_defs(owner, project);
         let registry = default_registry();
-        let work_dir =
-            std::env::current_dir().unwrap_or_else(|_| std::path::Path::new(".").to_path_buf());
+        let work_dir = self.shell_work_dir(owner, project);
 
         let max_iter = if self.config.max_iterations == 0 {
             5
@@ -617,8 +647,20 @@ impl Node {
                 let args: Value = serde_json::from_str(args_json).unwrap_or(json!({}));
 
                 // 1. Try shell tools first.
-                if let Some(out) = registry.run_tool(tool_name, &args, &work_dir) {
-                    return out;
+                match &work_dir {
+                    Ok(dir) => {
+                        if let Some(out) = registry.run_tool(tool_name, &args, dir) {
+                            return out;
+                        }
+                    }
+                    // No project directory resolved: a shell tool is refused
+                    // rather than run somewhere else. Other tool names fall
+                    // through, since they need no directory at all.
+                    Err(reason) => {
+                        if registry.get(tool_name).is_some() {
+                            return Err(reason.clone());
+                        }
+                    }
                 }
 
                 // 2. Try function pipeline tools (async → sync bridge).
@@ -731,8 +773,7 @@ impl Node {
         // Use the same tool discovery as direct mode: shell + node AI tools + function pipelines.
         let tools = self.build_tool_defs(owner, project);
         let registry = default_registry();
-        let work_dir =
-            std::env::current_dir().unwrap_or_else(|_| std::path::Path::new(".").to_path_buf());
+        let work_dir = self.shell_work_dir(owner, project);
 
         let platform_clone = self.platform.clone();
         let owner_s = owner.to_string();
@@ -821,8 +862,20 @@ impl Node {
                     let args: Value = serde_json::from_str(args_json).unwrap_or(json!({}));
 
                     // 1. Try shell tools first.
-                    if let Some(out) = registry.run_tool(tool_name, &args, &work_dir) {
-                        return out;
+                    match &work_dir {
+                        Ok(dir) => {
+                            if let Some(out) = registry.run_tool(tool_name, &args, dir) {
+                                return out;
+                            }
+                        }
+                        // No project directory resolved: a shell tool is
+                        // refused rather than run somewhere else. Other tool
+                        // names fall through, since they need no directory.
+                        Err(reason) => {
+                            if registry.get(tool_name).is_some() {
+                                return Err(reason.clone());
+                            }
+                        }
                     }
 
                     // 2. Try function pipeline tools (async → sync bridge).
@@ -921,4 +974,90 @@ fn goal_from_payload(payload: &Value) -> Option<String> {
         return s;
     }
     payload.as_str().map(|s| s.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::automaton::infra::shell_tools::{LsTool, Tool};
+    use crate::platform::{PlatformConfig, PlatformService};
+
+    fn platform_for(project: &str) -> (tempfile::TempDir, Arc<PlatformService>) {
+        let data_root = tempfile::tempdir().expect("temp data root");
+        let platform = Arc::new(
+            PlatformService::from_config(PlatformConfig {
+                data_root: data_root.path().to_path_buf(),
+                default_password: "secret".to_string(),
+                default_project: project.to_string(),
+                ..Default::default()
+            })
+            .expect("platform"),
+        );
+        (data_root, platform)
+    }
+
+    #[test]
+    fn shell_tools_run_in_the_project_and_not_the_server_directory() {
+        let (_data_root, platform) = platform_for("agent_work_dir");
+        let node = Node::new(Config::default(), None, Some(platform.clone()));
+
+        let work_dir = node
+            .shell_work_dir("superadmin", "agent_work_dir")
+            .expect("a project layout resolves to a work dir");
+
+        let layout = platform
+            .file
+            .ensure_project_layout("superadmin", "agent_work_dir")
+            .expect("project layout");
+        assert_eq!(work_dir, layout.repo_dir);
+
+        // The listing proves it: a marker written into the project shows up,
+        // and the Zebflow source tree the test process runs in does not.
+        std::fs::write(layout.repo_dir.join("marker-in-project.txt"), b"x").expect("marker");
+        let listing = LsTool
+            .run(&json!({}), &work_dir)
+            .expect("ls inside the project");
+        assert!(
+            listing.contains("marker-in-project.txt"),
+            "expected the project's own files: {listing}"
+        );
+        assert!(
+            !listing.contains("Cargo.toml"),
+            "expected the project directory, not the server's: {listing}"
+        );
+    }
+
+    #[test]
+    fn a_path_escaping_the_project_is_refused_by_name() {
+        let (_data_root, platform) = platform_for("agent_escape");
+        let node = Node::new(Config::default(), None, Some(platform));
+        let work_dir = node
+            .shell_work_dir("superadmin", "agent_escape")
+            .expect("work dir");
+
+        let err = LsTool
+            .run(&json!({ "path": "../../.." }), &work_dir)
+            .expect_err("a path outside the project must be refused, not clamped");
+
+        assert!(
+            err.contains("../../.."),
+            "refusal must name the path: {err}"
+        );
+    }
+
+    #[test]
+    fn a_run_without_a_project_refuses_shell_tools_rather_than_falling_back() {
+        let node = Node::new(Config::default(), None, None);
+        let err = node
+            .shell_work_dir("superadmin", "anything")
+            .expect_err("no platform service means no project directory");
+        assert!(err.contains("no project directory"), "unexpected: {err}");
+
+        let (_data_root, platform) = platform_for("agent_no_scope");
+        let scoped = Node::new(Config::default(), None, Some(platform));
+        let err = scoped
+            .shell_work_dir("", "")
+            .expect_err("an unscoped run has no project directory");
+        assert!(err.contains("no owner/project"), "unexpected: {err}");
+    }
 }

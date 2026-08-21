@@ -1376,7 +1376,10 @@ impl ZebflowMcpHandler {
         // Build the pipeline engine (same pattern as webhook/manual dispatch).
         let credentials = self.platform.credentials.clone();
         let engine = crate::pipeline::engines::basic::BasicPipelineEngine::new(
-            std::sync::Arc::new(crate::language::DenoSandboxEngine::default()),
+            std::sync::Arc::new(
+                self.platform
+                    .project_sandbox(&session.owner, &session.project),
+            ),
             crate::rwe::resolve_engine_or_default(None),
             Some(credentials),
         )

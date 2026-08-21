@@ -16,7 +16,12 @@ pub struct DenoSandboxConfig {
     pub max_source_bytes: usize,
     /// Maximum allowed stdout payload returned from runner (bytes).
     pub max_output_bytes: usize,
-    /// Root path used for local fetches such as `/data/file.json`.
+    /// Root path a local fetch such as `/data/file.json` resolves under.
+    ///
+    /// Empty means no root is configured, and a local fetch is refused. There
+    /// is no fallback root: the only sensible default would be the directory
+    /// the server process happens to be running in, which belongs to no
+    /// project. It is set from the project the script runs for.
     pub local_fetch_root: String,
     /// Allow-list configuration for fetch targets.
     pub allow_list: DenoSandboxAllowList,
@@ -34,7 +39,7 @@ impl Default for DenoSandboxConfig {
             max_ops: 1_000_000,
             max_source_bytes: 128 * 1024,
             max_output_bytes: 64 * 1024,
-            local_fetch_root: ".".into(),
+            local_fetch_root: String::new(),
             allow_list: DenoSandboxAllowList::default(),
             capabilities: vec!["time.now".into(), "math.imul".into(), "math.u32".into()],
             danger_zone: DenoSandboxDangerZone::default(),
@@ -215,9 +220,7 @@ pub(crate) fn normalize_limits(cfg: &mut DenoSandboxConfig) {
     if cfg.host_kill_timeout_ms < cfg.timeout_ms + 5 {
         cfg.host_kill_timeout_ms = cfg.timeout_ms + 5;
     }
-    if cfg.local_fetch_root.trim().is_empty() {
-        cfg.local_fetch_root = ".".into();
-    }
+    cfg.local_fetch_root = cfg.local_fetch_root.trim().to_string();
     let mut hosts: Vec<String> = cfg
         .allow_list
         .external_fetch_hosts

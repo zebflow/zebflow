@@ -12,7 +12,6 @@ use std::sync::Arc;
 
 use serde_json::{Value, json};
 
-use crate::language::DenoSandboxEngine;
 use crate::pipeline::PipelineContext;
 use crate::pipeline::interface::PipelineEngine;
 use crate::pipeline::model::PipelineError;
@@ -230,7 +229,7 @@ async fn execute_installed_trigger(
             };
 
             let engine = BasicPipelineEngine::new(
-                Arc::new(DenoSandboxEngine::default()),
+                Arc::new(platform.project_sandbox(&owner, &project)),
                 crate::rwe::resolve_engine_or_default(None),
                 Some(platform.credentials.clone()),
             )
@@ -375,7 +374,7 @@ async fn execute_composite_node(
         };
 
         let engine = BasicPipelineEngine::new(
-            Arc::new(DenoSandboxEngine::default()),
+            Arc::new(platform.project_sandbox(&owner, &project)),
             crate::rwe::resolve_engine_or_default(None),
             Some(platform.credentials.clone()),
         )

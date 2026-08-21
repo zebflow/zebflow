@@ -287,6 +287,11 @@ pub async fn router(platform: Arc<PlatformService>) -> Router {
     let render_script_cache = build_render_script_cache(&platform.config.data_root);
 
     // Build a BasicPipelineEngine for the scheduler + mem subscriber.
+    //
+    // One engine serves every project here, so there is no single project to
+    // scope the script sandbox to. The default sandbox has no local fetch root
+    // and refuses a local fetch by name; it does not fall back to this
+    // process's directory.
     let sched_engine = Arc::new(
         BasicPipelineEngine::new(
             Arc::new(DenoSandboxEngine::default()),
@@ -12361,7 +12366,7 @@ async fn run_composite_lifecycle_hooks(
 
         // Build engine with credential support.
         let engine = crate::pipeline::BasicPipelineEngine::new(
-            std::sync::Arc::new(crate::language::DenoSandboxEngine::default()),
+            std::sync::Arc::new(state.platform.project_sandbox(owner, project)),
             crate::rwe::resolve_engine_or_default(None),
             Some(state.platform.credentials.clone()),
         )
@@ -12634,7 +12639,7 @@ async fn execute_pipeline_local(
         placeholder: None,
     };
     let engine = BasicPipelineEngine::new(
-        Arc::new(DenoSandboxEngine::default()),
+        Arc::new(state.platform.project_sandbox(owner, project)),
         state.frontend.rwe.clone(),
         Some(credentials),
     )
@@ -20800,7 +20805,7 @@ async fn dispatch_weberror(
 
     let credentials = state.platform.credentials.clone();
     let engine = BasicPipelineEngine::new(
-        Arc::new(DenoSandboxEngine::default()),
+        Arc::new(state.platform.project_sandbox(owner, project)),
         state.frontend.rwe.clone(),
         Some(credentials),
     )
@@ -21146,7 +21151,7 @@ async fn public_webhook_ingress(
     };
     let file_rel_path = selected.compiled.file_rel_path.clone();
     let engine = BasicPipelineEngine::new(
-        Arc::new(DenoSandboxEngine::default()),
+        Arc::new(state.platform.project_sandbox(&owner, &project)),
         state.frontend.rwe.clone(),
         Some(credentials),
     )
@@ -24254,9 +24259,10 @@ async fn ws_dispatch_event(
         let state_bus = state.platform.state_bus.clone();
         let data_root = state.platform.config.data_root.clone();
         let platform_clone = state.platform.clone();
+        let sandbox = state.platform.project_sandbox(owner, project);
         tokio::spawn(async move {
             let engine = crate::pipeline::BasicPipelineEngine::new(
-                std::sync::Arc::new(crate::language::DenoSandboxEngine::default()),
+                std::sync::Arc::new(sandbox),
                 rwe,
                 Some(credentials),
             )

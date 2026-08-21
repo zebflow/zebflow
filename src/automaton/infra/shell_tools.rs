@@ -3,8 +3,82 @@
 //! These are execution primitives — NOT AI capabilities.
 //! AI-native capabilities (TTS, STT, vectorize, classify, etc.) live in `crate::automaton::intelligence`.
 
-use std::path::Path;
+use std::path::{Component, Path, PathBuf};
 use std::process::Command;
+
+/// Resolves a tool's path argument inside `work_dir`.
+///
+/// `work_dir` is a boundary, not a starting point. An argument that lands
+/// outside it is refused by name rather than clamped back inside, so a caller
+/// that asked for the wrong path learns that instead of quietly being served a
+/// different one.
+pub fn resolve_in_work_dir(work_dir: &Path, path: &str) -> Result<PathBuf, String> {
+    // The root itself may be relative (`.`), and comparing a relative root
+    // against an absolute argument would refuse paths that are in fact inside
+    // it. Canonicalize when the root exists; fall back to the literal root so a
+    // missing directory fails on use rather than here.
+    let root = work_dir
+        .canonicalize()
+        .unwrap_or_else(|_| work_dir.to_path_buf());
+
+    let requested = path.trim();
+    if requested.is_empty() || requested == "." {
+        return Ok(root);
+    }
+
+    let candidate = {
+        let p = Path::new(requested);
+        if p.is_absolute() {
+            p.to_path_buf()
+        } else {
+            root.join(p)
+        }
+    };
+
+    // `..` is resolved lexically first, so a path that escapes is refused even
+    // when it names a directory that does not exist and so cannot be
+    // canonicalized.
+    let lexical = lexically_normalize(&candidate);
+    if !lexical.starts_with(&root) {
+        return Err(escape_error(requested, &root));
+    }
+
+    // Then again against the real filesystem, which is what catches a symbolic
+    // link inside the root pointing out of it.
+    match lexical.canonicalize() {
+        Ok(real) if real.starts_with(&root) => Ok(real),
+        Ok(_) => Err(escape_error(requested, &root)),
+        // Not yet on disk: the lexical check above already proved containment.
+        Err(_) => Ok(lexical),
+    }
+}
+
+fn escape_error(requested: &str, root: &Path) -> String {
+    format!(
+        "path '{}' resolves outside the project directory {} and was refused",
+        requested,
+        root.display()
+    )
+}
+
+/// Resolves `.` and `..` without touching the filesystem.
+fn lexically_normalize(path: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                // A `..` with nothing to pop is kept, so the containment check
+                // sees the escape instead of a path that silently lost it.
+                if !out.pop() {
+                    out.push("..");
+                }
+            }
+            other => out.push(other.as_os_str()),
+        }
+    }
+    out
+}
 
 /// One shell tool: name, description, and run(args, work_dir) -> output.
 pub trait Tool: Send + Sync {
@@ -84,16 +158,7 @@ impl Tool for LsTool {
             .or_else(|| args.get("dir"))
             .and_then(|v| v.as_str())
             .unwrap_or(".");
-        let target = if path == "." || path.is_empty() {
-            work_dir.to_path_buf()
-        } else {
-            let p = Path::new(path);
-            if p.is_absolute() {
-                p.to_path_buf()
-            } else {
-                work_dir.join(p)
-            }
-        };
+        let target = resolve_in_work_dir(work_dir, path)?;
         let result = Command::new("ls")
             .args(["-la"])
             .current_dir(&target)
@@ -147,12 +212,7 @@ impl Tool for PythonTool {
         if script.is_empty() {
             return Err("script path is empty".to_string());
         }
-        let script_path = Path::new(script);
-        let full = if script_path.is_absolute() {
-            script_path.to_path_buf()
-        } else {
-            work_dir.join(script_path)
-        };
+        let full = resolve_in_work_dir(work_dir, script)?;
         if !full.exists() {
             return Err(format!("script not found: {}", full.display()));
         }
@@ -200,4 +260,100 @@ pub fn enabled_auto_commands() -> Vec<String> {
         .map(|x| x.trim().to_string())
         .filter(|x| !x.is_empty())
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp_root(name: &str) -> PathBuf {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("zebflow-shell-tools-{name}-{now}"));
+        std::fs::create_dir_all(&dir).expect("temp root");
+        dir
+    }
+
+    #[test]
+    fn resolve_keeps_paths_inside_the_work_dir() {
+        let root = temp_root("inside");
+        std::fs::create_dir_all(root.join("sub")).expect("sub dir");
+
+        let resolved = resolve_in_work_dir(&root, "sub").expect("path inside the root");
+
+        assert!(resolved.starts_with(root.canonicalize().expect("canonical root")));
+        assert!(resolved.ends_with("sub"));
+    }
+
+    #[test]
+    fn resolve_refuses_a_relative_escape_and_names_the_path() {
+        let root = temp_root("relative-escape");
+
+        let err = resolve_in_work_dir(&root, "../secrets.txt")
+            .expect_err("a path leaving the root must be refused");
+
+        assert!(
+            err.contains("../secrets.txt"),
+            "refusal must name the path: {err}"
+        );
+        assert!(
+            err.contains(
+                &root
+                    .canonicalize()
+                    .expect("canonical root")
+                    .display()
+                    .to_string()
+            ),
+            "refusal must name the root: {err}"
+        );
+    }
+
+    #[test]
+    fn resolve_refuses_an_absolute_path_outside_the_work_dir() {
+        let root = temp_root("absolute-escape");
+
+        let err = resolve_in_work_dir(&root, "/etc/passwd")
+            .expect_err("an absolute path outside the root must be refused");
+
+        assert!(
+            err.contains("/etc/passwd"),
+            "refusal must name the path: {err}"
+        );
+    }
+
+    #[test]
+    fn ls_refuses_an_escaping_path_rather_than_listing_it() {
+        let root = temp_root("ls-escape");
+
+        let err = LsTool
+            .run(&serde_json::json!({ "path": ".." }), &root)
+            .expect_err("ls must refuse a path outside its root");
+
+        assert!(err.contains(".."), "refusal must name the path: {err}");
+    }
+
+    #[test]
+    fn python_refuses_a_script_outside_the_work_dir() {
+        let root = temp_root("python-escape");
+        let outside = root
+            .parent()
+            .expect("temp parent")
+            .join("zebflow-outside.py");
+        std::fs::write(&outside, "print('hi')").expect("outside script");
+
+        let err = PythonTool
+            .run(
+                &serde_json::json!({ "script": "../zebflow-outside.py" }),
+                &root,
+            )
+            .expect_err("python must refuse a script outside its root");
+
+        assert!(
+            err.contains("../zebflow-outside.py"),
+            "refusal must name the path: {err}"
+        );
+        let _ = std::fs::remove_file(&outside);
+    }
 }

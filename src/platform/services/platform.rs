@@ -6,6 +6,7 @@ use crate::infra::execution::runner::RunnerCapabilities;
 use crate::infra::io::state::{DynStateBus, MemStateBus};
 use crate::infra::mem::MemHub;
 use crate::infra::transport::ws::WsHub;
+use crate::language::DenoSandboxEngine;
 use crate::platform::adapters::data::{DataAdapter, build_data_adapter, build_hub_data_adapter};
 use crate::platform::adapters::file::{FileAdapter, build_file_adapter};
 use crate::platform::adapters::project_data::{ProjectDataFactory, build_project_data_factory};
@@ -301,6 +302,20 @@ impl PlatformService {
         Ok(())
     }
 
+    /// Builds the script sandbox for one project's pipeline run.
+    ///
+    /// The sandbox's local fetch root is that project's own file storage, so a
+    /// script reads the project it belongs to rather than the directory the
+    /// server process was started in. A project whose layout cannot be resolved
+    /// gets a sandbox with no root, which refuses a local fetch instead of
+    /// falling back to one.
+    pub fn project_sandbox(&self, owner: &str, project: &str) -> DenoSandboxEngine {
+        match self.file.ensure_project_layout(owner, project) {
+            Ok(layout) => DenoSandboxEngine::for_project(layout.files_dir),
+            Err(_) => DenoSandboxEngine::default(),
+        }
+    }
+
     /// Execute an active function pipeline by slug and return its output value.
     ///
     /// Called from `n.function.call` nodes during pipeline execution.
@@ -380,7 +395,7 @@ impl PlatformService {
         };
 
         let engine = crate::pipeline::BasicPipelineEngine::new(
-            std::sync::Arc::new(crate::language::DenoSandboxEngine::default()),
+            std::sync::Arc::new(self.project_sandbox(owner, project)),
             crate::rwe::resolve_engine_or_default(None),
             Some(self.credentials.clone()),
         )
@@ -504,5 +519,37 @@ impl PlatformService {
             },
         )?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::platform::model::PlatformConfig;
+
+    #[test]
+    fn a_project_sandbox_fetches_inside_that_project() {
+        let data_root = tempfile::tempdir().expect("temp data root");
+        let platform = PlatformService::from_config(PlatformConfig {
+            data_root: data_root.path().to_path_buf(),
+            default_password: "secret".to_string(),
+            default_project: "sandbox_root".to_string(),
+            ..Default::default()
+        })
+        .expect("platform");
+
+        let compiled = platform
+            .project_sandbox("superadmin", "sandbox_root")
+            .compile_script("return 1;", None)
+            .expect("compile");
+
+        let layout = platform
+            .file
+            .ensure_project_layout("superadmin", "sandbox_root")
+            .expect("project layout");
+        assert_eq!(
+            compiled.resolved_config.local_fetch_root,
+            layout.files_dir.display().to_string()
+        );
     }
 }
