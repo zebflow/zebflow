@@ -119,9 +119,19 @@ key only when they provide distinct representations, such as field-by-field and
 full-schema input.
 
 `script_available` and `script_bridge` must be declared together. A bridge name
-uses an `n.*` identifier. An AI tool marked as registered requires a stable tool
-name, description, and object or null input schema. An unregistered AI tool may
-not carry hidden tool metadata.
+uses an `n.*` identifier. That coherence rule is the whole of what the pair
+means today: **no runtime dispatches from a script into a node handler**, so
+neither field grants a call nor prevents one. A script's `n` object holds pure
+time and arithmetic helpers, and the sandbox exposes no op that reaches a node.
+Every definition Zebflow ships declares `false` and `null`, and a reader must
+not take that as a restriction being enforced. The fields are reserved shape
+for a bridge that does not exist; removing them from `spec` is a serialized
+field removal, which the compatibility rules below place in a new contract API
+version with an explicit converter, not in a v1 patch.
+
+An AI tool marked as registered requires a stable tool name, description, and
+object or null input schema. An unregistered AI tool may not carry hidden tool
+metadata.
 
 Unknown fields are rejected in the envelope and every typed object.
 

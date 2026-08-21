@@ -121,8 +121,8 @@ pub fn definition() -> NodeDefinition {
                         items: vec![
                             SidebarItem { label: "console.log(...)".to_string(), type_hint: Some("void".to_string()), description: Some("Log to pipeline trace output.".to_string()) },
                             SidebarItem { label: "n.time.now()".to_string(), type_hint: Some("number".to_string()), description: Some("Current Unix timestamp in milliseconds.".to_string()) },
-                            SidebarItem { label: "n.pg.query({...})".to_string(), type_hint: Some("Promise<rows>".to_string()), description: Some("Execute a Postgres query inline.".to_string()) },
-                            SidebarItem { label: "n.http.request({...})".to_string(), type_hint: Some("Promise<response>".to_string()), description: Some("Make an HTTP request inline.".to_string()) },
+                            SidebarItem { label: "n.math.imul(a, b)".to_string(), type_hint: Some("number".to_string()), description: Some("32-bit integer multiply.".to_string()) },
+                            SidebarItem { label: "n.math.u32(v)".to_string(), type_hint: Some("number".to_string()), description: Some("Coerce to an unsigned 32-bit integer.".to_string()) },
                         ],
                     },
                 ],

@@ -745,25 +745,24 @@ pub struct PipelineEdge {
     pub to_pin: String,
 }
 
-/// Declares that this node kind can be invoked from inside an `n.script` node.
+/// Reserved shape for a script bridge that does not exist yet.
 ///
-/// When `enabled = true` the language engine exposes the node's capability as a global
-/// function under `bridge_name` inside the Deno sandbox.  Pipeline authors can call it
-/// directly from JavaScript without adding a separate graph node.
+/// **Nothing dispatches from a script back into a node handler.** The `n` object a
+/// script receives is built by `build_capabilities_expr` in the Deno sandbox pool and
+/// holds pure `time` and `math` helpers only; the sandbox's two host ops return a
+/// result and read a project-local file, and `Deno.core` is hidden from user code.
+/// There is no path from script source to a `NodeHandler`.
 ///
-/// # Example
-///
-/// ```js
-/// // inside n.script source
-/// const rows = await n.pg.query({ credential_id: "main-db", query: "SELECT * FROM posts" });
-/// ```
+/// The field is kept because [`NodeDefinition`] is a frozen `zebflow.com/v1` contract
+/// whose serialized shape cannot lose a field without a new API version. Every
+/// definition in this repository declares `None`, and a reader must not take that as
+/// a restriction being enforced — there is nothing to restrict.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(deny_unknown_fields)]
 pub struct NodeScriptBridge {
-    /// Function name exposed in the script sandbox (e.g. `"n.pg.query"`).
+    /// Function name a bridge would expose, were one built (e.g. `"n.pg.query"`).
     pub name: String,
-    /// Whether this bridge is active in the current runtime.  Disabled bridges are visible
-    /// in the contract document but not callable from scripts.
+    /// Reserved. No runtime reads this, because no bridge dispatches.
     #[serde(default)]
     pub enabled: bool,
 }
@@ -823,12 +822,14 @@ pub struct NodeAiToolDefinition {
 ///
 /// # Usage Dimensions
 ///
-/// A node kind can be usable in three ways simultaneously:
+/// A node kind can be usable in two ways simultaneously:
 /// 1. As a **graph node** — always true for any registered kind.
-/// 2. As a **script bridge** — callable from `n.script` Deno sandbox (see [`NodeScriptBridge`]).
-/// 3. As an **AI tool** — invokable by LLM agents (see [`NodeAiToolDefinition`]).
+/// 2. As an **AI tool** — invokable by LLM agents (see [`NodeAiToolDefinition`]).
 ///
-/// The [`NodeUsageMatrix`] in [`NodeContractItem`] captures all three dimensions.
+/// A third dimension, a script bridge, is declared by [`NodeScriptBridge`] and
+/// implemented by nothing; read it before believing the declaration.
+///
+/// The [`NodeUsageMatrix`] in [`NodeContractItem`] carries all three declarations.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 #[serde(deny_unknown_fields)]
 pub struct NodeDefinition {
@@ -897,10 +898,13 @@ pub struct NodeDefinition {
     /// surface accepts one of these as text.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub capabilities: Vec<NodeCapability>,
-    /// Whether this node kind can be called from inside an `n.script` Deno sandbox.
+    /// Reserved, and honoured by nothing. See [`NodeScriptBridge`] for why: no code
+    /// path reaches a node handler from inside a script, so this declares neither a
+    /// permission nor a restriction. Every definition here declares `false`.
     #[serde(default)]
     pub script_available: bool,
-    /// Script bridge metadata.  Only meaningful when `script_available = true`.
+    /// Reserved companion to `script_available`; both are declared together or not at
+    /// all, which is all the contract validator checks.
     #[serde(default)]
     pub script_bridge: Option<NodeScriptBridge>,
     /// AI tool registration.  Only meaningful when `ai_tool.registered = true`.
@@ -979,15 +983,19 @@ pub struct NodeFailureSemantic {
     pub retry_hint: String,
 }
 
-/// Script bridge capability as exposed in a [`NodeUsageMatrix`].
+/// The unimplemented script bridge as reported in a [`NodeUsageMatrix`].
+///
+/// Every field is a restatement of the reserved [`NodeScriptBridge`] declaration, so
+/// all three read `false`/empty for every node Zebflow ships. Nothing consumes this
+/// view; it exists because `/docs/node` serializes the whole matrix.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct NodeScriptUsageContract {
-    /// Whether this node can be called from `n.script`.
+    /// Mirror of `NodeDefinition::script_available`. Not a permission.
     pub available: bool,
-    /// Function name exposed in the Deno sandbox.
+    /// Function name a bridge would expose, were one built.
     #[serde(default)]
     pub bridge_name: String,
-    /// Whether the bridge is active in the current runtime build.
+    /// Reserved. No bridge dispatches, so nothing is ever active.
     #[serde(default)]
     pub enabled: bool,
 }

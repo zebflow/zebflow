@@ -170,29 +170,21 @@
 //!
 //! ---
 //!
-//! # 5. Script bridge — callable from `n.script`
+//! # 5. Script bridge — declared, and built by nothing
 //!
-//! Set `script_available: true` and provide a `NodeScriptBridge` to expose the node
-//! as a global function inside the Deno sandbox of `n.script`:
+//! Write `script_available: false` and `script_bridge: None`.  Every node does.
 //!
-//! ```rust,ignore
-//! script_available: true,
-//! script_bridge: Some(NodeScriptBridge {
-//!     name: "n.pg.query".to_string(),
-//!     enabled: true,
-//! }),
-//! ```
+//! A script cannot reach a node handler.  The `n` object handed to an `n.script` body
+//! is assembled by `build_capabilities_expr` in `language/engines/deno_sandbox/pool.rs`
+//! from pure `time` and `math` helpers; the sandbox exposes two host ops, neither of
+//! which dispatches a node, and hides `Deno.core` from user code.  Declaring `true`
+//! would grant nothing and would put a false "n.script access" claim in the node
+//! catalog, which is why no definition does.
 //!
-//! Pipeline authors can then call it from script:
-//!
-//! ```js
-//! // inside n.script body
-//! const rows = await n.pg.query({ credential_id: "main-db", query: "SELECT * FROM posts" });
-//! return { posts: rows };
-//! ```
-//!
-//! Only expose nodes whose config is safe to construct dynamically.  Nodes that mutate
-//! state or emit side effects should be careful here.
+//! The two fields survive because `NodeDefinition` is a frozen `zebflow.com/v1`
+//! contract; see `docs/contracts/kinds/node-definition/README.md`.  Building the bridge
+//! is a feature, and the egress rules in `docs/contracts/confinement.md` §3 have to
+//! cover it before it exists.
 //!
 //! ---
 //!

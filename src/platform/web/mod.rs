@@ -7208,7 +7208,6 @@ fn settings_nodes() -> (usize, Vec<Value>) {
             "kind": def.kind,
             "title": def.title,
             "description": def.description,
-            "script_available": def.script_available,
             "ai_registered": def.ai_tool.registered,
             "source": "built-in"
         }));

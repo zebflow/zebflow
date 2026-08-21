@@ -175,11 +175,36 @@ Still open in the same area, named rather than fixed:
   violation the bundle contract names — a credential value reaching a host other
   than the one that credential belongs to — is still unimplemented.
 
-**`script_available`** — every node declares whether it may be called from
-inside an `n.script` sandbox. Nothing in `src/language/` dispatches from the
-sandbox back into node handlers, so the flag currently describes a bridge that
-does not exist. Not a hole; an unimplemented feature whose declaration is
-already in place.
+**`script_available`** — reserved shape for a bridge nobody built, and it no
+longer claims otherwise.
+
+A script cannot reach a node handler by any path. The `n` object a script
+receives is built by `build_capabilities_expr` from pure `time` and `math`
+helpers; the sandbox registers two ops, `op_script_result` and
+`op_read_local_file`, neither of which dispatches a node; `Deno.core` is hidden
+from user code; and `LanguageEngine` has no method a node handler could be
+reached through. A script's return value becomes the node's output payload and
+is never read as a call.
+
+So the flag prevented nothing, and where it read `true` it asserted something
+false. `n.pg.query` and `n.http.request` — the two nodes with the longest reach
+— declared `true`, which rendered an "n.script access" badge in the node
+catalog and listed `n.pg.query({...})` and `n.http.request({...})` as built-ins
+in the `n.script` editor's own sidebar. Every declaration is now `false` with no
+bridge, both false surfaces are gone, and the field's documentation says it
+grants and restricts nothing.
+
+The declaration itself stays, because `NodeDefinition` is a frozen
+`zebflow.com/v1` contract and its compatibility rules place a serialized field
+removal in a new API version with an explicit converter. It carries no
+pre-release amendment clause, so the field cannot be dropped in place the way
+`ProjectConfiguration`'s could. Deleting it is a v2 item and should ride the
+next NodeDefinition version bump rather than mint one for a dead boolean.
+
+If the bridge is ever built, it is a second egress path and the `spec.hosts`
+check above has to cover it before the first call works — otherwise a bundle
+that composes `n.script` reaches whatever the bridge exposes, which is exactly
+the hole `BundleEgress` was built to close.
 
 **Derived capabilities** — reported to a user, never checked against what a node
 does.
@@ -189,7 +214,7 @@ does.
 The install boundary answers "should this be here". The runtime boundary answers
 "what may it do now that it is". The first is well defended; the second has no
 directory escapes left, one declaration a package cannot exceed, and one
-declaration nothing honours.
+reserved field that no longer claims to be a limit.
 
 `spec.hosts` was the item in §3 that needed designing rather than fixing: where
 an outbound connection is checked, and what a violation does to a run in flight.

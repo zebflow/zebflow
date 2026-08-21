@@ -41,11 +41,8 @@ pub fn definition() -> NodeDefinition {
         }),
         input_pins: vec![INPUT_PIN_IN.to_string()],
         output_pins: vec![OUTPUT_PIN_OUT.to_string()],
-        script_available: true,
-        script_bridge: Some(crate::pipeline::NodeScriptBridge {
-            name: "n.pg.query".to_string(),
-            enabled: false,
-        }),
+        script_available: false,
+        script_bridge: None,
         config_schema: Default::default(),
         dsl_flags: vec![
             DslFlag { flag: "--credential".to_string(), config_key: "credential_id".to_string(), description: "Credential ID of the PostgreSQL connection to use.".to_string(), kind: DslFlagKind::Scalar, required: true },

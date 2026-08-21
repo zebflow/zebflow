@@ -67,11 +67,8 @@ pub fn definition() -> NodeDefinition {
         }),
         input_pins: vec![INPUT_PIN_IN.to_string()],
         output_pins: vec![OUTPUT_PIN_OUT.to_string()],
-        script_available: true,
-        script_bridge: Some(crate::pipeline::NodeScriptBridge {
-            name: "n.http.request".to_string(),
-            enabled: false,
-        }),
+        script_available: false,
+        script_bridge: None,
         config_schema: Default::default(),
         dsl_flags: vec![
             DslFlag { flag: "--credential".to_string(), config_key: "credential_id".to_string(), description: "Optional credential for HTTP auth. secure_request: template-driven. oauth2: auto-refresh Bearer token.".to_string(), kind: DslFlagKind::Scalar, required: false },

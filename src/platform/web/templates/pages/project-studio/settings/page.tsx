@@ -1398,9 +1398,6 @@ function NodeRegistryPanel({ groups, count }) {
                           <div className="text-[0.75rem] leading-[1.4] text-body-soft mt-[0.3rem]">{node?.description}</div>
                         </div>
                         <div className="flex items-center flex-wrap gap-[0.3rem] shrink-0 pt-[0.1rem]">
-                          {node?.script_available ? (
-                            <Badge label="n.script access" variant="outline" className="text-[0.65rem] text-gray-200 border-white/25 bg-transparent" />
-                          ) : null}
                           {node?.ai_registered ? (
                             <Badge label="agent tool" variant="outline" className="text-[0.65rem] text-gray-200 border-white/25 bg-transparent" />
                           ) : null}
