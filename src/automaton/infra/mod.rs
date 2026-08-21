@@ -10,5 +10,4 @@ pub mod llm;
 pub mod llm_interface;
 pub mod model;
 pub mod registry;
-pub mod repl;
 pub mod shell_tools;

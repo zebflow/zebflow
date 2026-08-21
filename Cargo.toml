@@ -45,7 +45,6 @@ futures = "0.3"
 async-stream = "0.3"
 arc-swap = "1"
 ureq = { version = "2", features = ["json"] }
-dotenvy = "0.15"
 rmcp = { version = "0.17.0", features = ["server", "transport-io", "transport-streamable-http-server", "schemars"] }
 tokio-util = "0.7.18"
 rand = "0.10.0"

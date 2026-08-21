@@ -121,13 +121,7 @@ pub use infra::model::{
 };
 pub use infra::registry::AutomatonEngineRegistry;
 
-// REPL utilities (used by bin/zebtune.rs)
-pub use infra::repl::{
-    check_llm, log_llm_status, print_running_mechanism, run_interactive, run_interactive_with_llm,
-    run_one_turn, strip_thinking,
-};
-
-// Shell tool registry (used by zebtune pipeline node)
+// Shell tool registry (used by the n.ai.agent node)
 pub use infra::shell_tools::{
     LsTool, PwdTool, PythonTool, Tool, ToolRegistry, default_registry, enabled_auto_commands,
 };

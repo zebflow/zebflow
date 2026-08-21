@@ -292,7 +292,7 @@ impl ZebtuneAgent {
 
             match result {
                 CallResult::Text(text) => {
-                    let trimmed = crate::automaton::infra::repl::strip_thinking(&text);
+                    let trimmed = strip_thinking(&text);
                     let short: String = trimmed.chars().take(120).collect();
                     let desc = if trimmed.chars().count() > 120 {
                         format!("{}...", short)
@@ -564,4 +564,31 @@ fn format_elapsed(instant: Instant) -> String {
     let m = (s % 3600) / 60;
     let s = s % 60;
     format!("{:02}:{:02}:{:02}", h, m, s)
+}
+
+/// Strips `<think>` blocks and common chain-of-thought markers so a caller sees
+/// only the answer.
+///
+/// This lived beside an interactive REPL that no longer exists. It stayed
+/// because a model that narrates its reasoning still does so here, and the
+/// agent node hands this text onward.
+fn strip_thinking(text: &str) -> String {
+    let mut out = text.trim();
+    if let Some(i) = out.find("</think>") {
+        out = out[i + 7..].trim_start();
+    }
+    if let Some(i) = out.find("<think>") {
+        out = out[i + 7..].trim_start();
+    }
+    for marker in [
+        "We could say:",
+        "Thus answer:",
+        "So we could say:",
+        "Thus final answer:",
+    ] {
+        if let Some(i) = out.find(marker) {
+            out = out[i + marker.len()..].trim_start();
+        }
+    }
+    out.to_string()
 }
