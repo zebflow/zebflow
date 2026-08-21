@@ -513,19 +513,25 @@ declarations, because the outer bundle is still the reason the connection is
 being made. A violation fails the node, naming the host refused and the bundle
 that refused it.
 
-Three limits, stated rather than implied:
+Four limits, stated rather than implied:
 
-- A **non-empty** list is an allowlist. An empty or absent one restricts
-  nothing: `#[serde(default)]` makes the two identical on the wire, so reading
+- A **non-empty** list is an allowlist. An empty or absent one restricts no
+  host: `#[serde(default)]` makes the two identical on the wire, so reading
   empty as deny-all would break every bundle published before enforcement
   existed. The prose above — "an empty list states that the package makes no
   external calls" — remains what an author means by it, not what the runtime can
   prove they meant.
 - A node that reaches the network through a destination the egress guard never
   sees as a URL — `n.ai.agent`, `n.pg.query`, `n.table.query`,
-  `n.ws.client.send`, `n.trigger.ws.client` — is **refused** inside a bundle
-  that declares hosts, rather than allowed through unchecked. A bundle needing
-  one of those cannot be confined by a host list today.
+  `n.ws.client.send`, `n.trigger.ws.client` — is **refused** inside any bundle,
+  rather than allowed through unchecked. A bundle needing one of those cannot be
+  confined by a host list today, and that is true whether it declared hosts or
+  not: an empty list weakens the host allowlist and nothing else, so an author
+  gains nothing by staying silent.
+- `n.script` is refused inside a bundle only where the Deno sandbox has been
+  granted network access — `dangerZone.allowNet`, or any
+  `allowList.externalFetchHosts` entry. As shipped the sandbox denies `fetch`,
+  so a script reaches nothing a host guard would need to read.
 - Enforcement covers bundle-provided nodes. A project's own pipelines are not
   restricted by any bundle's declaration.
 
@@ -614,15 +620,19 @@ Declared-host enforcement, in `src/pipeline/engines/composite_host.rs`,
 31. an installed composite bundle's **inner** HTTP node is refused when it
     contacts a host the bundle did not declare, with the error naming both
 32. the same inner node reaching a declared host is admitted by that check
-33. a bundle declaring no hosts is unrestricted
+33. a bundle declaring no hosts may reach any host
 34. a bundle reached from inside another bundle satisfies both declarations, and
     the outer one refuses a host only the inner one declared
 35. a network node whose destination cannot be host-checked is refused inside a
     bundle that declares hosts
-36. a project's own request is unaffected by an installed bundle's declaration
-37. every embedded bundle that declares hosts runs under its own declaration:
-    no inner node is refused as uncheckable, and every host its functions name
-    outright is one it declared
+36. the same node is refused inside a bundle that declares none, so silence buys
+    no capability
+37. a project's own request is unaffected by an installed bundle's declaration
+38. every embedded bundle runs under its own declaration: no inner node is
+    refused as uncheckable, and every host its functions name outright is one it
+    declared
+39. `n.script` runs inside a bundle under the shipped sandbox, and is refused
+    once that sandbox is granted network access
 
 ### Live and browser evidence, 2026-08-18
 

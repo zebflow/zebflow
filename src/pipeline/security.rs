@@ -11,6 +11,10 @@ pub fn validate_outbound_http_url(url: &str, node_kind: &str) -> Result<(), Pipe
 }
 
 /// The hosts one node bundle declared, and the package that declared them.
+///
+/// `hosts` may be empty: a bundle that declared nothing still gets a layer,
+/// because being inside a bundle is itself the fact some guards need. Such a
+/// layer restricts no host — see [`BundleEgress::check_host`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeclaredHosts {
     /// `spec.package` of the bundle this declaration came from.
@@ -40,30 +44,30 @@ pub struct BundleEgress {
 
 impl BundleEgress {
     /// Adds one bundle's declaration to whatever policy already governs the
-    /// caller, returning `None` when the result would restrict nothing.
+    /// caller.
     ///
-    /// An absent and an empty `spec.hosts` are the same bytes on the wire —
-    /// `#[serde(default)]` makes them indistinguishable — so an empty list
-    /// cannot mean "deny all" without retroactively breaking every bundle
-    /// published before enforcement existed. It therefore adds no layer, which
-    /// means unrestricted. That is a deliberate, temporary limit and not an
-    /// oversight; closing it needs a way to tell the two apart.
-    pub fn extend(parent: Option<&BundleEgress>, package: &str, hosts: &[String]) -> Option<Self> {
+    /// Every bundle gets a layer, including one that declared nothing, because
+    /// the layer records two separate facts: which hosts are allowed, and that
+    /// a bundle is running at all. The second is what
+    /// [`refuse_uncheckable`](Self::refuse_uncheckable) needs, and it is true of
+    /// a silent bundle exactly as much as of a truthful one.
+    pub fn extend(parent: Option<&BundleEgress>, package: &str, hosts: &[String]) -> Self {
         let mut layers = parent
             .map(|policy| policy.layers.clone())
             .unwrap_or_default();
-        if !hosts.is_empty() {
-            layers.push(DeclaredHosts {
-                package: package.to_string(),
-                hosts: hosts.to_vec(),
-            });
-        }
-        (!layers.is_empty()).then_some(Self { layers })
+        layers.push(DeclaredHosts {
+            package: package.to_string(),
+            hosts: hosts.to_vec(),
+        });
+        Self { layers }
     }
 
-    /// Whether any declaration governs this policy.
+    /// Whether any layer restricts which hosts may be reached.
+    ///
+    /// A bundle that declared nothing is governed — it is still a bundle — but
+    /// it restricts no host, so the host checks below have nothing to say.
     pub fn is_active(&self) -> bool {
-        !self.layers.is_empty()
+        self.layers.iter().any(|layer| !layer.hosts.is_empty())
     }
 
     /// The innermost bundle governing the caller — the one whose function
@@ -101,10 +105,18 @@ impl BundleEgress {
     pub fn check_host(&self, host: &str, node_kind: &str) -> Result<(), PipelineError> {
         let host = normalize_host(host);
         for layer in &self.layers {
-            if layer
-                .hosts
-                .iter()
-                .any(|pattern| declared_host_matches(pattern, &host))
+            // An absent and an empty `spec.hosts` are the same bytes on the
+            // wire — `#[serde(default)]` makes them indistinguishable — so an
+            // empty list cannot mean "deny all" without retroactively breaking
+            // every bundle published before enforcement existed. It restricts
+            // no host. Closing that needs a way to tell the two apart; until
+            // then, declaring nothing buys nothing, because a bundle is
+            // governed by every other guard here whether it declared or not.
+            if layer.hosts.is_empty()
+                || layer
+                    .hosts
+                    .iter()
+                    .any(|pattern| declared_host_matches(pattern, &host))
             {
                 continue;
             }
@@ -124,9 +136,14 @@ impl BundleEgress {
     /// Refuses a node whose destination cannot be read at the egress guard.
     ///
     /// A node that can reach the network but whose target Zebflow never sees as
-    /// a URL cannot be checked against a declaration. Inside a governed subtree
-    /// it is refused rather than allowed, so "enforced" means enforced for every
+    /// a URL cannot be checked against a declaration. Inside a bundle it is
+    /// refused rather than allowed, so "enforced" means enforced for every
     /// egress path in that subtree and not only the ones we can read.
+    ///
+    /// This does not ask whether the bundle declared any host, and that is the
+    /// point: if it did, a bundle wanting an unreadable destination would be
+    /// better off declaring nothing, and honesty would cost the author
+    /// something. The refusal is the same either way.
     pub fn refuse_uncheckable(&self, node_kind: &str) -> PipelineError {
         let package = self
             .innermost()
@@ -297,8 +314,7 @@ mod tests {
 
     #[test]
     fn declared_hosts_admit_what_the_bundle_stated() {
-        let policy = BundleEgress::extend(None, "ml", &hosts(&["api.openai.com", "*.example.org"]))
-            .expect("a declaration restricts");
+        let policy = BundleEgress::extend(None, "ml", &hosts(&["api.openai.com", "*.example.org"]));
         policy
             .check_url("https://api.openai.com/v1/embeddings", "n.http.request")
             .expect("exact host");
@@ -312,8 +328,7 @@ mod tests {
 
     #[test]
     fn an_undeclared_host_is_refused_by_name() {
-        let policy = BundleEgress::extend(None, "ml", &hosts(&["api.openai.com", "*.example.org"]))
-            .expect("a declaration restricts");
+        let policy = BundleEgress::extend(None, "ml", &hosts(&["api.openai.com", "*.example.org"]));
         let err = policy
             .check_url("https://evil.example.com/steal", "n.http.request")
             .expect_err("undeclared host");
@@ -332,11 +347,22 @@ mod tests {
     }
 
     #[test]
-    fn an_empty_declaration_restricts_nothing() {
+    fn an_empty_declaration_restricts_no_host_but_still_names_its_bundle() {
+        let silent = BundleEgress::extend(None, "ml", &[]);
         assert!(
-            BundleEgress::extend(None, "ml", &[]).is_none(),
-            "absent and empty are the same bytes on the wire, so empty cannot deny"
+            !silent.is_active(),
+            "absent and empty are the same bytes on the wire, so empty cannot deny a host"
         );
+        silent
+            .check_url("https://anywhere.example.com/", "n.http.request")
+            .expect("no layer restricts a host");
+
+        // Declaring nothing does not buy anonymity: the bundle is still the one
+        // a refusal names, so the incentive to stay silent does not exist.
+        let err = silent.refuse_uncheckable("n.pg.query");
+        assert_eq!(err.code, "FW_EGRESS_UNCHECKED_NODE");
+        assert!(err.message.contains("'ml'"), "{}", err.message);
+
         assert!(!BundleEgress::default().is_active());
         BundleEgress::default()
             .check_url("https://anywhere.example.com/", "n.http.request")
@@ -345,10 +371,8 @@ mod tests {
 
     #[test]
     fn a_nested_bundle_answers_to_both_declarations() {
-        let outer = BundleEgress::extend(None, "outer", &hosts(&["api.outer.com"]))
-            .expect("outer declares");
-        let nested = BundleEgress::extend(Some(&outer), "inner", &hosts(&["api.inner.com"]))
-            .expect("inner declares");
+        let outer = BundleEgress::extend(None, "outer", &hosts(&["api.outer.com"]));
+        let nested = BundleEgress::extend(Some(&outer), "inner", &hosts(&["api.inner.com"]));
 
         for url in [
             "https://api.inner.com/x",
@@ -362,7 +386,7 @@ mod tests {
         }
 
         // A bundle that declares nothing does not escape the one that composed it.
-        let silent = BundleEgress::extend(Some(&outer), "silent", &[]).expect("outer still holds");
+        let silent = BundleEgress::extend(Some(&outer), "silent", &[]);
         silent
             .check_url("https://api.outer.com/x", "n.http.request")
             .expect("the outer declaration still admits its own host");
@@ -377,8 +401,7 @@ mod tests {
 
     #[test]
     fn an_unreadable_destination_is_refused_rather_than_allowed() {
-        let policy =
-            BundleEgress::extend(None, "ml", &hosts(&["api.openai.com"])).expect("declares");
+        let policy = BundleEgress::extend(None, "ml", &hosts(&["api.openai.com"]));
         assert_eq!(
             policy
                 .check_url("not-a-url", "n.http.request")

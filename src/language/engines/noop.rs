@@ -23,6 +23,12 @@ impl LanguageEngine for NoopLanguageEngine {
         "language.noop"
     }
 
+    /// `run` echoes the compiled artifact back. There is no runtime here to
+    /// hold a socket open, so nothing this engine does reaches the network.
+    fn grants_network(&self) -> bool {
+        false
+    }
+
     fn parse(&self, module: &ModuleSource) -> Result<ProgramIr, LanguageError> {
         let body = match module.kind {
             SourceKind::ZfJson => serde_json::from_str::<Value>(&module.code).map_err(|err| {

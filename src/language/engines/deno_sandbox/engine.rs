@@ -171,6 +171,21 @@ impl LanguageEngine for DenoSandboxEngine {
         "language.deno_sandbox"
     }
 
+    /// Answered from the merged platform and project patches, not from the
+    /// strict default, because the default is exactly what an operator is able
+    /// to widen. A run patch cannot re-open this: the only writer of
+    /// `metadata.languageRunPatch` narrows, and a package has no path into it.
+    ///
+    /// An explicit `externalFetchHosts` entry counts as network. It is narrower
+    /// than `allowNet`, but it is still egress a bundle's host guard never
+    /// sees, which is the whole reason the caller is asking.
+    fn grants_network(&self) -> bool {
+        let mut cfg = DenoSandboxConfig::default();
+        apply_patch(&mut cfg, &self.platform_patch);
+        apply_patch(&mut cfg, &self.project_patch);
+        cfg.danger_zone.allow_net || !cfg.allow_list.external_fetch_hosts.is_empty()
+    }
+
     fn parse(&self, module: &ModuleSource) -> Result<ProgramIr, LanguageError> {
         Ok(ProgramIr {
             source_id: module.id.clone(),

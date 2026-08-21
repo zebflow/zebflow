@@ -127,7 +127,7 @@ Nothing new happens to the run: the inner node fails, and the composite reports
 it on the `error` pin the engine already routes failures through. The request is
 never made, and it is never dropped silently either.
 
-Three consequences follow from where the check sits, each a stated limit rather
+Four consequences follow from where the check sits, each a stated limit rather
 than an omission:
 
 - **A composite inside a composite answers to both declarations.** The policy
@@ -137,15 +137,30 @@ than an omission:
   not allowed.** `n.ai.agent`, `n.pg.query`, `n.table.query`,
   `n.ws.client.send` and `n.trigger.ws.client` reach hosts that come from a
   credential or a project connection, which the egress guard never sees. Inside
-  a governed subtree they fail with `FW_EGRESS_UNCHECKED_NODE`. The set is
-  derived from `native_node_capabilities()` — the same table the package review
-  reads — so a network node added later is refused until it is given a guard,
-  rather than silently becoming the way out.
-- **An empty or absent list is unrestricted.** `#[serde(default)]` makes the two
-  identical on the wire, so reading empty as deny-all would break every bundle
-  published before enforcement existed. That is deliberate and temporary;
-  closing it needs a way to tell an author who declared nothing from one who
-  declared no calls.
+  any bundle they fail with `FW_EGRESS_UNCHECKED_NODE`. The set is derived from
+  `native_node_capabilities()` — the same table the package review reads — so a
+  network node added later is refused until it is given a guard, rather than
+  silently becoming the way out.
+- **An empty or absent list restricts no host, and buys nothing else.**
+  `#[serde(default)]` makes the two identical on the wire, so reading empty as
+  deny-all would break every bundle published before enforcement existed. That
+  much is deliberate and temporary. What does *not* follow from it is a weaker
+  bundle: the refusal above runs for every bundle-provided node whether its
+  bundle declared a host or not, so declaring nothing is not a way to obtain
+  `n.pg.query`. Only the host allowlist is affected by an empty list, and an
+  empty allowlist is the one thing an author gains nothing by choosing.
+- **`n.script` answers to the sandbox actually in force.** The Deno sandbox
+  denies `fetch` as shipped, so a script reaches nothing a host guard would need
+  to read, and both curated bundles compose one. Where an operator has granted
+  the sandbox network access — `dangerZone.allowNet`, or any
+  `allowList.externalFetchHosts` entry — a script becomes egress the guard
+  cannot read, and is refused on the same grounds as the rest. The guard reads
+  the merged platform and project patches through `LanguageEngine::grants_network`
+  rather than the shipped default, so widening the sandbox narrows what a bundle
+  may compose in the same motion. No caller in the repo sets either network
+  field on those patches today — `for_project` sets a fetch root and nothing
+  else — so the check is inert until an operator-configuration path exists to
+  set one.
 
 Scope is bundle-provided nodes only. A project's own pipeline calling
 `n.http.request` carries no policy and is not restricted: the threat model is
@@ -153,10 +168,6 @@ third-party code the user installed, not the user's own work.
 
 Still open in the same area, named rather than fixed:
 
-- `n.script` is not refused inside a governed subtree. The Deno sandbox denies
-  `fetch` by default and the capability table does not call it a network node,
-  so both curated bundles keep working; an operator who widens `allow_net`
-  platform-wide reopens that path for bundles as much as for projects.
 - `n.function.call` lets a bundle start a pipeline the project wrote, and that
   pipeline runs unrestricted. What it reaches is the user's own code, but the
   bundle chose the moment.
@@ -186,5 +197,6 @@ Both are answered now — at the dispatch that already knows which bundle it is
 inside, and by failing the node through the error pins the engine already has.
 
 What is left is narrower than what it replaced. A ceiling that holds for the
-node kinds Zebflow can read a destination from, refuses the ones it cannot, and
-says plainly that a bundle which declares nothing is bounded by nothing.
+node kinds Zebflow can read a destination from, refuses the ones it cannot
+whoever provided them, and says plainly that a bundle which declares nothing is
+bounded by nothing *in which hosts it may name* — and by everything else.

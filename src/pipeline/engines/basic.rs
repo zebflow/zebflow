@@ -978,11 +978,13 @@ pub struct BasicPipelineEngine {
     repo_layout: Option<crate::platform::model::ProjectFileLayout>,
     /// Platform data root — used by SQLite nodes to locate the project DB.
     data_root: Option<std::path::PathBuf>,
-    /// The declared-host allowlist governing this engine's nodes.
+    /// The bundle policy governing this engine's nodes.
     ///
     /// Set only on an engine built to run a bundle's function pipeline, so it
     /// covers the whole inner subtree. A project's own pipeline runs with
-    /// `None` and is unrestricted.
+    /// `None` and is unrestricted. `Some` means "inside a bundle" whether or
+    /// not that bundle declared a host; the declared hosts are what it carries,
+    /// not what makes it present.
     bundle_egress: Option<Arc<crate::pipeline::security::BundleEgress>>,
 }
 
@@ -1102,7 +1104,7 @@ impl BasicPipelineEngine {
 
     fn build_node(&self, node: &PipelineNode) -> Result<NodeDispatch, PipelineError> {
         if let Some(egress) = &self.bundle_egress {
-            refuse_uncheckable_egress_node(egress, &node.kind)?;
+            refuse_uncheckable_egress_node(egress, &node.kind, self.language.grants_network())?;
         }
         match node.kind.as_str() {
             webhook::NODE_KIND => Ok(NodeDispatch::Webhook(webhook::Node::new(
@@ -2969,11 +2971,14 @@ mod tests {
     /// A curated bundle ships in the binary, so a declaration it cannot run
     /// under is a startup-shaped bug rather than a user's problem.
     ///
-    /// Checks both halves of the guard against every embedded bundle that
-    /// declares hosts: no inner node is refused as uncheckable, and every host
-    /// its functions name outright is one the bundle declared. A URL assembled
-    /// at run time is not readable here, which is exactly why the check also
-    /// exists at the moment of the request.
+    /// Checks both halves of the guard against every embedded bundle: no inner
+    /// node is refused as uncheckable, and every host its functions name
+    /// outright is one the bundle declared. A URL assembled at run time is not
+    /// readable here, which is exactly why the check also exists at the moment
+    /// of the request.
+    ///
+    /// The uncheckable half runs for bundles that declare nothing too, because
+    /// that is now when it runs in production.
     #[test]
     fn embedded_bundles_can_run_under_their_own_declared_hosts() {
         use crate::contracts::decode_contract;
@@ -3002,10 +3007,10 @@ mod tests {
             let spec = decode_contract::<NodeBundleContract>(asset.bytes)
                 .unwrap_or_else(|error| panic!("embedded bundle '{slug}': {error}"))
                 .spec;
-            let Some(egress) = BundleEgress::extend(None, &spec.package, &spec.hosts) else {
-                continue;
-            };
-            declaring_bundles += 1;
+            let egress = BundleEgress::extend(None, &spec.package, &spec.hosts);
+            if egress.is_active() {
+                declaring_bundles += 1;
+            }
 
             for path in spec.functions.values() {
                 let bytes = platform_composite_node_asset(&format!("{slug}/{path}"))
@@ -3014,9 +3019,13 @@ mod tests {
                     .unwrap_or_else(|error| panic!("embedded bundle '{slug}'/{path}: {error}"))
                     .spec;
                 for node in &graph.nodes {
-                    super::refuse_uncheckable_egress_node(&egress, &node.kind).unwrap_or_else(
-                        |error| panic!("embedded bundle '{slug}'/{path}: {}", error.message),
-                    );
+                    // The sandbox denies fetch as shipped, which is the state a
+                    // curated bundle must run in; what happens when an operator
+                    // widens it is asserted separately.
+                    super::refuse_uncheckable_egress_node(&egress, &node.kind, false)
+                        .unwrap_or_else(|error| {
+                            panic!("embedded bundle '{slug}'/{path}: {}", error.message)
+                        });
                     let Some(url) = node.config.get("url").and_then(|value| value.as_str()) else {
                         continue;
                     };
@@ -3034,6 +3043,84 @@ mod tests {
         assert!(
             declaring_bundles > 0,
             "no embedded bundle declares hosts, so this proved nothing"
+        );
+    }
+
+    /// The incentive this guard exists to remove: if refusing an unreadable
+    /// destination only happened inside a bundle that declared hosts, an author
+    /// who wanted `n.pg.query` would be better off declaring nothing, and only
+    /// the honest author would be constrained.
+    #[test]
+    fn a_bundle_that_declares_no_hosts_still_cannot_use_an_uncheckable_node() {
+        use crate::pipeline::security::BundleEgress;
+
+        let silent = BundleEgress::extend(None, "silent", &[]);
+        assert!(!silent.is_active(), "the bundle declared nothing");
+
+        for kind in [
+            "n.ai.agent",
+            "n.pg.query",
+            "n.table.query",
+            "n.ws.client.send",
+            "n.trigger.ws.client",
+        ] {
+            let error = super::refuse_uncheckable_egress_node(&silent, kind, false)
+                .expect_err("an unreadable destination is refused whatever was declared");
+            assert_eq!(error.code, "FW_EGRESS_UNCHECKED_NODE");
+            assert!(
+                error.message.contains(kind) && error.message.contains("'silent'"),
+                "{}",
+                error.message
+            );
+        }
+
+        // What a declaration does buy is still bought: a readable destination is
+        // checked against the list rather than refused outright.
+        super::refuse_uncheckable_egress_node(&silent, super::http_request::NODE_KIND, false)
+            .expect("a host-checked node is not an unreadable destination");
+    }
+
+    /// `n.script` is a network node only when an operator has made it one, so
+    /// the guard reads the sandbox in force rather than the sandbox as shipped.
+    #[test]
+    fn a_script_is_refused_inside_a_bundle_only_when_its_sandbox_reaches_the_network() {
+        use crate::language::{
+            DenoSandboxConfigPatch, DenoSandboxDangerZonePatch, DenoSandboxEngine, LanguageEngine,
+        };
+        use crate::pipeline::security::BundleEgress;
+
+        let egress = BundleEgress::extend(None, "telegram", &["api.telegram.org".to_string()]);
+
+        super::refuse_uncheckable_egress_node(&egress, super::script::NODE_KIND, false)
+            .expect("a sandbox that denies fetch reaches nothing to check");
+
+        let error = super::refuse_uncheckable_egress_node(&egress, super::script::NODE_KIND, true)
+            .expect_err("a sandbox that may fetch is an egress path the guard cannot read");
+        assert_eq!(error.code, "FW_EGRESS_UNCHECKED_NODE");
+        assert!(
+            error.message.contains("n.script") && error.message.contains("'telegram'"),
+            "{}",
+            error.message
+        );
+
+        // And the boolean is not hypothetical: it is what the engine answers.
+        assert!(
+            !DenoSandboxEngine::default().grants_network(),
+            "the shipped sandbox denies fetch"
+        );
+        let widened = DenoSandboxEngine::new(
+            DenoSandboxConfigPatch {
+                danger_zone: Some(DenoSandboxDangerZonePatch {
+                    allow_net: Some(true),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+            DenoSandboxConfigPatch::default(),
+        );
+        assert!(
+            widened.grants_network(),
+            "an operator's platform patch is what the guard must read"
         );
     }
 
@@ -4139,10 +4226,27 @@ const HOST_CHECKED_NETWORK_NODES: &[&str] = &[http_request::NODE_KIND, browser_r
 /// a network node added later is refused until it is given a guard rather than
 /// silently becoming a way out of a bundle's declaration. Kinds absent from that
 /// table are bundle-provided, and are governed by the dispatch they recurse into.
+///
+/// This runs for every bundle-provided node, whether or not that bundle declared
+/// a host. Asking only inside a declaring bundle would have made silence the
+/// cheapest way to reach an unreadable destination, so an author who declared
+/// truthfully would be the only one constrained.
+///
+/// `n.script` is not a network node in the capability table, and with the
+/// sandbox denying `fetch` it is not one in fact either. When an operator has
+/// granted the sandbox network access, it becomes an egress path this guard
+/// cannot read, and is refused on the same grounds as the rest.
 fn refuse_uncheckable_egress_node(
     egress: &crate::pipeline::security::BundleEgress,
     kind: &str,
+    sandbox_reaches_network: bool,
 ) -> Result<(), PipelineError> {
+    if kind == script::NODE_KIND {
+        if sandbox_reaches_network {
+            return Err(egress.refuse_uncheckable(kind));
+        }
+        return Ok(());
+    }
     if HOST_CHECKED_NETWORK_NODES.contains(&kind) {
         return Ok(());
     }

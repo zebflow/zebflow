@@ -50,8 +50,13 @@ pub(super) async fn execute_installed_node(
 
     // The manifest resolved here names the bundle this dispatch is inside, so
     // this is where its declaration becomes the policy for everything below.
-    let egress = BundleEgress::extend(parent_egress.as_deref(), &manifest.package, &manifest.hosts)
-        .map(Arc::new);
+    // A bundle declaring no host still gets a policy: the guards that care
+    // whether a bundle is running at all must not be escapable by silence.
+    let egress = Some(Arc::new(BundleEgress::extend(
+        parent_egress.as_deref(),
+        &manifest.package,
+        &manifest.hosts,
+    )));
 
     if manifest.trigger.is_some() {
         return execute_installed_trigger(&kind, &config, &platform, egress, vec![input]).await;
@@ -770,6 +775,71 @@ mod tests {
                 && error.contains("'n.ai.agent'")
                 && error.contains("node bundle 'agentpkg'"),
             "the refusal names the node and the bundle, got: {error}"
+        );
+    }
+
+    /// Declaring nothing must not be the cheap way to reach an unreadable
+    /// destination. A bundle with an empty `spec.hosts` is unrestricted in
+    /// which hosts it may name, and refused just the same for a node whose
+    /// host never reaches the guard.
+    #[tokio::test]
+    async fn a_bundle_that_declares_no_hosts_is_refused_an_uncheckable_node_too() {
+        let root = tempfile::tempdir().expect("temp root");
+        let platform = platform_for(root.path());
+        write_bundle(
+            root.path(),
+            "silentagent",
+            json!([]),
+            "n.ai.agent",
+            json!({}),
+        );
+        platform
+            .node_registry
+            .refresh_project(OWNER, PROJECT)
+            .expect("bundle registers");
+
+        let payload = run_bundle_node(&platform, "silentagent").await;
+        let error = payload["error"].as_str().unwrap_or_default();
+        assert!(
+            error.contains("FW_EGRESS_UNCHECKED_NODE")
+                && error.contains("'n.ai.agent'")
+                && error.contains("node bundle 'silentagent'"),
+            "silence buys nothing, got: {error}"
+        );
+    }
+
+    /// Both curated bundles compose `n.script`, so a guard that refused it
+    /// under the shipped sandbox would break what ships. It does not: the
+    /// sandbox denies `fetch`, so there is no egress to read.
+    #[tokio::test]
+    async fn a_script_runs_inside_a_bundle_under_the_shipped_sandbox() {
+        let root = tempfile::tempdir().expect("temp root");
+        let platform = platform_for(root.path());
+        write_bundle(
+            root.path(),
+            "scriptpkg",
+            json!(["api.telegram.org"]),
+            "n.script",
+            json!({ "source": "return { ok: true };" }),
+        );
+        platform
+            .node_registry
+            .refresh_project(OWNER, PROJECT)
+            .expect("bundle registers");
+
+        let payload = run_bundle_node(&platform, "scriptpkg").await;
+        assert!(
+            !payload
+                .get("error")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .contains("FW_EGRESS"),
+            "no egress guard has anything to say about a sandbox that cannot fetch, got: {payload}"
+        );
+        assert_eq!(
+            payload,
+            json!({ "ok": true }),
+            "the script ran to its own result, so this is not a refusal in disguise"
         );
     }
 
