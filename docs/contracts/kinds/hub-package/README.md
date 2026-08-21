@@ -265,6 +265,9 @@ attribution for credit and contact, not a trust boundary.
 | Reader, release artifact | `get_release_referenced_artifact` | serves one artifact a named release references, under that release's visibility and retraction |
 | Writer, publish | `publish_asset` | builds a manifest, writes an artifact file, records a version row; refuses a version that already exists or was retracted, refuses a release the safety review reports violations for, and carries forward presentation it was not given |
 | Gate, publish | `refuse_publish_violations` | refuses a publish and a remote publish alike, naming every violation; called before the first durable write on both |
+| Gate, install | `refuse_prepared_install_violations` | refuses a package on every channel that installs into an existing project, reading the resolved bytes at the destinations that will be written |
+| Gate, project bundle | `refuse_unreviewable_project_bundle` | refuses a whole-project bundle before the project it would fill is created |
+| Reader, review | `PackagePolicyEntry::from_bytes` | the only thing that turns bytes into text the review can scan, or into a recorded reason it cannot; every gate reaches the review through it |
 | Writer, presentation | `update_asset_presentation` | writes the mutable package row and never a release |
 | Writer, retraction | `retract_asset_package` | marks the rows retracted, then destroys the release artifacts |
 | Writer, encode | `encode_hub_artifact` | wraps a spec in the envelope |
@@ -311,6 +314,43 @@ whose nodes live under `spec`, so the lookup found none, no `n.web.response`
 node was ever seen, and the bundle was published without the template it
 renders. It decodes through `decode_pipeline_graph` now, like every other reader
 of a stored pipeline.
+
+### Three gates read one document, two ways — fixed
+
+`refuse_prepared_install_violations` is the shared install gate: packs, node
+bundles, and folder bundles all pass through it. It built its
+`PackagePolicyEntry` values by hand, taking `String::from_utf8(...).unwrap_or_default()`
+as the content and setting `unreadable` empty unconditionally. The project-bundle
+gate and publish both went through `package_policy_entry`, which distinguishes
+bytes it read from bytes it could not. So a `.zf.json` whose bytes are not text
+was refused at publish and at project-bundle install, and on the prepared-install
+path reviewed as an empty pipeline with nothing in it.
+
+The reasoning that left it there was half right. `unreadable` does mean the
+review was handed nothing, and marking every carried image unreadable sounds like
+refusing every package with an icon. It is not: the scan escalates `unreadable`
+only where the bytes were going to be read as a pipeline, and warns where they
+were going to be replayed as SQL. Binary anywhere else contributes nothing —
+which is why the project-bundle gate, which has recorded every carried PNG as
+unreadable since it was written, installs them.
+
+The decision now has one owner. `PackagePolicyEntry`'s fields are private;
+`from_bytes` is the only thing that turns bytes into `content` or `unreadable`,
+and `unresolved` the only thing that records bytes that never arrived.
+`entry_review_text` became `entry_review_bytes` and answers only "did the bytes
+arrive", which is the half that genuinely differs per channel. No caller can hand
+the review an entry it assembled itself, so the readings cannot drift apart
+again.
+
+**What the validator ahead of it already covered, and what it did not.**
+`validate_prepared_pipeline_sources` runs immediately before this gate and
+decodes every entry the *layout* calls a pipeline, so at a repository pipeline
+path it refuses those bytes first, with `HUB_INSTALL` rather than a violation:
+there the divergence was real and unreachable. It is neither at the other kind of
+pipeline path. A node bundle's function pipeline is a pipeline because the
+bundle's own manifest names it, not because of where it sits, so that validator
+never looks at it and this gate was the only thing between those bytes and disk.
+Both cases are tests rather than comments.
 
 ### The contract was empty — fixed
 
@@ -523,10 +563,6 @@ than issued.
 
 ## Still to review
 
-- publish and install do not read a package through identical eyes.
-  `refuse_prepared_install_violations` hands the review `unreadable: ""` for
-  every entry, so "a pipeline the safety review cannot read" is unreachable on
-  that path: a non-UTF-8 `.zf.json` is refused at publish and passes there
 - `HUB_INSTALL_REFUSED` and `HUB_REMOTE_INSTALL_REFUSED` are unmapped in
   `hub_api_error` and answer 500. The publish refusals were mapped to 400 when
   they were added; the install pair still reads as a server fault
@@ -593,28 +629,19 @@ both the default folder and `/billing`.
 
 ### Why it is not Frozen
 
-Three reasons, in order of weight.
+Two reasons were recorded here. One is closed, below; this is what is left.
 
-**`spec.layout` is one day old.** It was added on 2026-08-20 so a package
-published under one project layout can install into a project declaring another.
-Freezing a field with a single day's exercise is how a contract acquires a
-permanent mistake. This kind's sibling was marked a freeze candidate on evidence
-that predated a change and the claim had to be retracted; the lesson is cheap to
-apply and expensive to skip.
-
-**Two enforcement points disagree about the same document.**
-`refuse_prepared_install_violations` sets `unreadable` empty unconditionally, so
-it can never produce the "a pipeline the safety review cannot read" violation. A
-non-UTF-8 `.zf.json` is refused at publish and at project-bundle install, and
-reviews as an empty pipeline on the prepared-install path. A contract whose gates
-answer differently about the same bytes is not settled, whatever its format does.
+**`spec.layout` is days old.** It was added on 2026-08-20 so a package published
+under one project layout can install into a project declaring another. Freezing a
+field with a few days' exercise is how a contract acquires a permanent mistake.
+This kind's sibling was marked a freeze candidate on evidence that predated a
+change and the claim had to be retracted; the lesson is cheap to apply and
+expensive to skip.
 
 ### What would close it
 
-1. Reconcile the two install gates so every gate reaches the same verdict on the
-   same document.
-2. Give `spec.layout` time and a cross-layout install that was not written the
-   same week as the field.
+Give `spec.layout` time and a cross-layout install that was not written the same
+week as the field.
 
 ### The referenced half is now proven live — 2026-08-21
 
@@ -642,3 +669,27 @@ nothing if it were reading a placeholder.
 Per-release retraction, a `.wasm` governed by anything beyond the NodeBundle
 contract, and remote pack rows carrying a retraction marker are open, but none
 of them move the on-disk format and none block a freeze.
+
+### The gates now answer alike — 2026-08-22
+
+The second reason recorded above is closed. `refuse_prepared_install_violations`
+set `unreadable` empty unconditionally and so could never produce "a pipeline the
+safety review cannot read"; publish and the project-bundle gate could. All three
+now reach the review through `PackagePolicyEntry::from_bytes`, which is the only
+thing that decides what a reviewer can see, and a test puts one document to all
+three and requires one answer.
+
+Two things this does not claim. It was **not** the case that a non-UTF-8
+`.zf.json` installed through a Hub add: `validate_prepared_pipeline_sources` runs
+immediately before that gate and refuses any repository pipeline path whose bytes
+will not decode, with `HUB_INSTALL`. On that path the disagreement was real,
+recorded correctly, and unreachable — the earlier judgement overstated its
+consequence while describing its cause exactly. What was reachable is the case
+neither the earlier judgement nor that validator names: a node bundle's function
+pipeline, which the review scans because the bundle's manifest names it and which
+the layout does not recognise as a pipeline at all. Those bytes reviewed clean
+and installed.
+
+And this closes a disagreement about how a document is *read*, not about what a
+package is allowed to do. The violation tier still refuses three things, all of
+them properties of the package rather than of its behaviour.

@@ -20,23 +20,80 @@ use crate::platform::model::{MultiNodePackageDefinition, ResolvedProjectLayout};
 
 const LARGE_FILE_THRESHOLD_BYTES: usize = 5 * 1024 * 1024;
 
+/// Why bytes already in hand are still not something the review can read.
+const UNREADABLE_NOT_TEXT: &str = "the bytes are not UTF-8 text";
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PackagePolicyEntry {
-    pub rel_path: String,
-    pub kind: String,
-    pub size_bytes: usize,
+    rel_path: String,
+    kind: String,
+    size_bytes: usize,
     #[serde(default)]
-    pub content: String,
+    content: String,
     /// Why the review could not read this entry's bytes, when it could not.
     ///
     /// Empty `content` means an empty file. This means the reviewer was handed
     /// nothing while the install still writes something, which is the opposite
     /// finding and must never produce the same verdict.
+    ///
+    /// The fields are private and the two constructors below are the only way
+    /// to set them, because every caller that built this by hand got to decide
+    /// for itself what "unreadable" meant -- and they did not agree.
     #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub unreadable: String,
+    unreadable: String,
 }
 
 impl PackagePolicyEntry {
+    /// The review's view of one entry whose bytes are in hand.
+    ///
+    /// This is the only place bytes become `content` or `unreadable`, so two
+    /// gates cannot reach different verdicts on the same document by each
+    /// deciding readability their own way. Bytes that are not text are
+    /// unreadable: the reviewer was handed nothing while the install still
+    /// writes something, and that is the same fact whether the bytes never
+    /// arrived or arrived as binary.
+    ///
+    /// Being unreadable refuses nothing on its own. The scan escalates it only
+    /// where those bytes were going to be read as a pipeline, which is why a
+    /// package carrying an icon or a font still installs.
+    pub fn from_bytes(
+        rel_path: impl Into<String>,
+        kind: impl Into<String>,
+        size_bytes: usize,
+        bytes: &[u8],
+    ) -> Self {
+        let (content, unreadable) = match std::str::from_utf8(bytes) {
+            Ok(text) => (text.to_string(), String::new()),
+            Err(_) => (String::new(), UNREADABLE_NOT_TEXT.to_string()),
+        };
+        Self {
+            rel_path: rel_path.into(),
+            kind: kind.into(),
+            size_bytes,
+            content,
+            unreadable,
+        }
+    }
+
+    /// The review's view of an entry whose bytes never arrived at all.
+    ///
+    /// `reason` says what stopped them, so the refusal can name a failed fetch
+    /// rather than describing it as an empty file.
+    pub fn unresolved(
+        rel_path: impl Into<String>,
+        kind: impl Into<String>,
+        size_bytes: usize,
+        reason: impl Into<String>,
+    ) -> Self {
+        Self {
+            rel_path: rel_path.into(),
+            kind: kind.into(),
+            size_bytes,
+            content: String::new(),
+            unreadable: reason.into(),
+        }
+    }
+
     pub fn text(&self) -> Option<&str> {
         if self.content.is_empty() {
             None

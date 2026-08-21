@@ -410,14 +410,27 @@ digest mismatch and fails closed, exactly like a tampered bundle.
 **Trust.** A static repository is not meaningfully more dangerous than a remote
 Hub: both execute someone else's bytes and both run the same review. What a Hub
 adds is publisher identity and grants, which is provenance rather than
-behaviour. The real gap is that no violation detector exists yet, so the review
-currently reports without ever refusing. Static repositories should be designed
-now and enabled once the first detectors land.
+behaviour. Three violation detectors now refuse rather than report — a file type
+no project accepts, a bundle declaring a node kind this build already provides,
+and a pipeline whose bytes the review cannot read — and all three read the
+package rather than judging what it does. No detector refuses a pipeline for its
+behaviour, so a static repository still buys exactly what any other channel does:
+one review, and no protection from a package that is honest about being
+hostile. The condition this paragraph originally set — design static
+repositories now, enable them once the first detectors land — is met; whether to
+enable them is a separate decision and still open.
 
 ## 3. One review, every channel
 
 Every channel that installs into a project runs the same package review from
 `src/platform/policy/package.rs`, producing the same `PackageSafetyReview`.
+
+That holds down to how one entry is read. A channel differs in whether it can
+obtain an entry's bytes at all — carried inline, fetched from a hub, resolved
+beside a document, already staged for writing — and in nothing after that:
+`PackagePolicyEntry::from_bytes` is the only thing that turns bytes into text the
+review can scan or into a recorded reason it cannot, so two gates cannot reach
+different verdicts on one document by each reading it their own way.
 
 A Hub package is not safer than a local file. It is published, which is a
 statement about provenance, not about behaviour. Treating them differently would
@@ -431,8 +444,11 @@ The review has three gates, described in full in
 3. policy **warnings** are reported for the user to accept
 
 Every install surface can be asked for that verdict before it acts, and the
-verdict a review shows is the verdict the install enforces: both read one
-decision built from one set of inputs, rather than reviewing the package twice.
+verdict a review shows is the verdict the install enforces. A project bundle
+reaches that literally: review and install share one `ProjectBundleInstallPlan`,
+so asking what the install would do and asking whether it may run are one
+question. Elsewhere they are two readings that cannot disagree, because both run
+over the same bytes at the same destinations through the same reader.
 
 ## 4. Identity and integrity
 

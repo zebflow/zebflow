@@ -392,15 +392,15 @@ impl CatalogService {
             } else {
                 files_added.push(rel_path.clone());
             }
-            policy_entries.push(PackagePolicyEntry {
+            // A built-in component is compiled in, so its bytes are always in
+            // hand; they are still read through the review's own constructor,
+            // which is the only thing that decides what a reviewer can see.
+            policy_entries.push(PackagePolicyEntry::from_bytes(
                 rel_path,
-                kind: "template".to_string(),
-                size_bytes: src.len(),
-                // A built-in component is compiled in, so its bytes are always
-                // in hand and there is nothing the review can fail to read.
-                content: (*src).to_string(),
-                unreadable: String::new(),
-            });
+                "template",
+                src.len(),
+                src.as_bytes(),
+            ));
         }
 
         if components.is_empty() {

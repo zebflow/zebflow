@@ -1,5 +1,6 @@
 //! Asset hub service.
 
+use std::borrow::Cow;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fs;
 use std::io::Cursor;
@@ -6113,18 +6114,20 @@ fn refuse_prepared_install_violations(
     asset_kind: &str,
     entries: &[PreparedHubInstallEntry],
 ) -> Result<(), PlatformError> {
+    // Read through the same constructor the channel-fed gates use. The bytes
+    // are already resolved here, so nothing can be unfetched -- but binary at a
+    // path the scan reads as a pipeline is still bytes the review cannot see
+    // and the install would still write, and that is the one judgement this
+    // gate used to make differently from the others.
     let policy_entries = entries
         .iter()
-        .map(|entry| PackagePolicyEntry {
-            rel_path: entry.install_rel.clone(),
-            kind: file_kind_from_path(Path::new(&entry.install_rel)),
-            size_bytes: entry.bytes.len(),
-            // The bytes are in hand, so anything unreadable here is genuinely
-            // binary rather than unresolved. `unreadable` stays empty: it means
-            // "could not be fetched", and conflating the two would refuse every
-            // package carrying an icon.
-            content: String::from_utf8(entry.bytes.clone()).unwrap_or_default(),
-            unreadable: String::new(),
+        .map(|entry| {
+            PackagePolicyEntry::from_bytes(
+                &entry.install_rel,
+                file_kind_from_path(Path::new(&entry.install_rel)),
+                entry.bytes.len(),
+                &entry.bytes,
+            )
         })
         .collect::<Vec<_>>();
     let review = review_package_entries(
@@ -6803,33 +6806,34 @@ fn entry_text(entry: &HubPackageFile) -> Option<String> {
     Some(content.to_string())
 }
 
-/// The text one manifest entry contributes to the safety review.
+/// The bytes one manifest entry contributes to the safety review.
 ///
 /// A referenced entry is fetched and verified through the channel here, so the
 /// review reads exactly the bytes the install would write instead of nothing.
 /// `Err` is the answer that matters: bytes exist that the review cannot see,
-/// which is never the same fact as an empty file.
-fn entry_review_text(
-    entry: &HubPackageFile,
+/// which is never the same fact as an empty file. Whether the bytes that do
+/// arrive are readable is not decided here -- that judgement belongs to the
+/// review's own constructor, so it is made once for every channel.
+fn entry_review_bytes<'a>(
+    entry: &'a HubPackageFile,
     artifacts: &HubArtifactChannel,
-) -> Result<String, String> {
-    let bytes = match entry.supply() {
+) -> Result<Cow<'a, [u8]>, String> {
+    match entry.supply() {
         Some(HubPackageFileSupply::Carried(content)) if entry.encoding == "base64" => {
             base64::engine::general_purpose::STANDARD
                 .decode(content)
-                .map_err(|error| format!("base64 content does not decode: {error}"))?
+                .map(Cow::Owned)
+                .map_err(|error| format!("base64 content does not decode: {error}"))
         }
-        Some(HubPackageFileSupply::Carried(content)) => return Ok(content.to_string()),
+        Some(HubPackageFileSupply::Carried(content)) => Ok(Cow::Borrowed(content.as_bytes())),
         Some(HubPackageFileSupply::Referenced(artifact)) => artifacts
             .resolve(&entry.rel_path, artifact, entry.size_bytes)
-            .map_err(|error| error.to_string())?,
+            .map(Cow::Owned)
+            .map_err(|error| error.to_string()),
         None => {
-            return Err(
-                "the entry declares neither carried content nor a referenced artifact".to_string(),
-            );
+            Err("the entry declares neither carried content nor a referenced artifact".to_string())
         }
-    };
-    String::from_utf8(bytes).map_err(|_| "the bytes are not UTF-8 text".to_string())
+    }
 }
 
 fn package_policy_entry(
@@ -6837,16 +6841,13 @@ fn package_policy_entry(
     entry: &HubPackageFile,
     artifacts: &HubArtifactChannel,
 ) -> PackagePolicyEntry {
-    let (content, unreadable) = match entry_review_text(entry, artifacts) {
-        Ok(text) => (text, String::new()),
-        Err(reason) => (String::new(), reason),
-    };
-    PackagePolicyEntry {
-        rel_path: rel_path.to_string(),
-        kind: entry.kind.clone(),
-        size_bytes: entry.size_bytes,
-        content,
-        unreadable,
+    match entry_review_bytes(entry, artifacts) {
+        Ok(bytes) => {
+            PackagePolicyEntry::from_bytes(rel_path, &entry.kind, entry.size_bytes, &bytes)
+        }
+        Err(reason) => {
+            PackagePolicyEntry::unresolved(rel_path, &entry.kind, entry.size_bytes, reason)
+        }
     }
 }
 
@@ -7988,6 +7989,222 @@ mod tests {
             }],
         )
         .expect("ordinary source is not refused");
+    }
+
+    /// Bytes at a pipeline path that are not text at all.
+    ///
+    /// A manifest carries them base64, because a JSON string cannot hold them;
+    /// a prepared install holds the same bytes directly. That difference is the
+    /// whole reason the gates could disagree about them.
+    const NOT_TEXT_PIPELINE: &[u8] = &[0x1f, 0x8b, 0x08, 0x00, 0xff, 0xfe, 0x00, 0x01];
+
+    fn not_text_entry(rel_path: &str) -> serde_json::Value {
+        serde_json::json!({
+            "rel_path": rel_path, "kind": "pipeline",
+            "size_bytes": NOT_TEXT_PIPELINE.len(), "reason": "test",
+            "encoding": "base64",
+            "content": base64::engine::general_purpose::STANDARD.encode(NOT_TEXT_PIPELINE)
+        })
+    }
+
+    fn prepared_entry(rel_path: &str, bytes: &[u8]) -> PreparedHubInstallEntry {
+        PreparedHubInstallEntry {
+            install_rel: rel_path.to_string(),
+            destination: PathBuf::from(rel_path),
+            bytes: bytes.to_vec(),
+            previous: None,
+        }
+    }
+
+    /// A node bundle declaring one node whose function pipeline is an entry of
+    /// its own, which is how a file outside the repository's pipeline directory
+    /// becomes a pipeline to the review.
+    fn bundle_definition_document() -> String {
+        serde_json::json!({
+            "apiVersion": "zebflow.com/v1",
+            "kind": "NodeBundle",
+            "metadata": { "name": "acme", "version": "1.0.0" },
+            "spec": {
+                "package": "acme",
+                "version": "1.0.0",
+                "title": "Acme",
+                "description": "A bundle whose function pipeline travels with it.",
+                "functions": { "main": "functions/main.zf.json" },
+                "nodes": [{
+                    "kind": "n.x.acme.sync",
+                    "title": "Sync",
+                    "description": "Push a payload somewhere.",
+                    "run": { "function": "main" },
+                    "definition": {
+                        "input_pins": ["in"],
+                        "output_pins": ["out"],
+                        "config_schema": {},
+                        "input_schema": { "type": "object" },
+                        "output_schema": { "type": "object" }
+                    }
+                }]
+            }
+        })
+        .to_string()
+    }
+
+    /// One document at all three refusals: publish, the project-bundle gate,
+    /// and the prepared-install gate every channel passes through. The bytes
+    /// are the same bytes at a path all three read as a pipeline, so the answer
+    /// has to be the same answer. The prepared gate used to call this an empty
+    /// pipeline and install it.
+    #[test]
+    fn all_three_gates_refuse_the_same_pipeline_none_of_them_can_read() {
+        let layout = ResolvedProjectLayout::platform_default();
+        let rel = "pipelines/exfiltrate.zf.json";
+        let package = pipeline_package(HUB_ASSET_KIND_PIPELINE_BUNDLE, not_text_entry(rel));
+
+        let publish_error = refuse_publish_violations(
+            "HUB_PUBLISH_REFUSED",
+            &review_publish_entries(
+                &layout,
+                HUB_ASSET_KIND_PIPELINE_BUNDLE,
+                &package.files,
+                Vec::new(),
+                "Exfiltrator",
+                "A pipeline whose bytes are not text.",
+                true,
+                &no_channel(),
+            ),
+        )
+        .expect_err("a release no install would accept must not be published");
+
+        let bundle_error = refuse_unreviewable_project_bundle(&review_project_bundle_entries(
+            &layout,
+            &package.files,
+            &no_channel(),
+        ))
+        .expect_err("a bundle whose pipeline cannot be read must not install");
+
+        let prepared_error = refuse_prepared_install_violations(
+            &layout,
+            HUB_ASSET_KIND_PIPELINE_BUNDLE,
+            &[prepared_entry(rel, NOT_TEXT_PIPELINE)],
+        )
+        .expect_err("the same bytes must not reach disk either");
+
+        assert_eq!(publish_error.code, "HUB_PUBLISH_REFUSED");
+        assert_eq!(bundle_error.code, "HUB_REMOTE_INSTALL_REFUSED");
+        assert_eq!(prepared_error.code, "HUB_INSTALL_REFUSED");
+        for error in [&publish_error, &bundle_error, &prepared_error] {
+            assert!(
+                error.message.contains(rel)
+                    && error
+                        .message
+                        .contains("a pipeline the safety review cannot read"),
+                "every gate reports the same finding: {}",
+                error.message
+            );
+        }
+    }
+
+    /// The constraint that shaped the gate that was wrong. Bytes that are not
+    /// text are a refusal only where the review was going to read them: an icon
+    /// is binary at every gate and installs at every gate.
+    #[test]
+    fn all_three_gates_accept_a_binary_that_is_not_at_a_pipeline_path() {
+        let layout = ResolvedProjectLayout::platform_default();
+        let icon = [0x89u8, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
+        let rel = format!("{}/icon.png", layout.assets);
+        let package = pipeline_package(
+            HUB_ASSET_KIND_PIPELINE_BUNDLE,
+            serde_json::json!({
+                "rel_path": rel, "kind": "asset",
+                "size_bytes": icon.len(), "reason": "test",
+                "encoding": "base64",
+                "content": base64::engine::general_purpose::STANDARD.encode(icon)
+            }),
+        );
+
+        refuse_publish_violations(
+            "HUB_PUBLISH_REFUSED",
+            &review_publish_entries(
+                &layout,
+                HUB_ASSET_KIND_PIPELINE_BUNDLE,
+                &package.files,
+                Vec::new(),
+                "Icon",
+                "A package carrying an image.",
+                true,
+                &no_channel(),
+            ),
+        )
+        .expect("an image is publishable");
+        refuse_unreviewable_project_bundle(&review_project_bundle_entries(
+            &layout,
+            &package.files,
+            &no_channel(),
+        ))
+        .expect("an image is installable");
+        refuse_prepared_install_violations(
+            &layout,
+            HUB_ASSET_KIND_PIPELINE_BUNDLE,
+            &[prepared_entry(&rel, &icon)],
+        )
+        .expect("an image is installable");
+    }
+
+    /// What runs before the prepared gate, and how far it reaches.
+    ///
+    /// `validate_prepared_pipeline_sources` decodes every entry the *layout*
+    /// calls a pipeline, so for a repository pipeline path it refuses these
+    /// bytes first and the gate behind it never speaks. Both refuse, with
+    /// different codes and the same outcome -- which is why the divergence went
+    /// unnoticed on this path.
+    #[test]
+    fn a_repository_pipeline_that_is_not_text_is_refused_before_the_gate_sees_it() {
+        let layout = ResolvedProjectLayout::platform_default();
+        let prepared = [prepared_entry(
+            "pipelines/exfiltrate.zf.json",
+            NOT_TEXT_PIPELINE,
+        )];
+
+        let validator_error = validate_prepared_pipeline_sources(&layout, &prepared)
+            .expect_err("bytes that will not decode are not a pipeline");
+        assert_eq!(validator_error.code, "HUB_INSTALL");
+
+        let gate_error =
+            refuse_prepared_install_violations(&layout, HUB_ASSET_KIND_PIPELINE_BUNDLE, &prepared)
+                .expect_err("the gate behind it must not disagree");
+        assert_eq!(gate_error.code, "HUB_INSTALL_REFUSED");
+    }
+
+    /// And where it does not reach. A node bundle's function pipeline is a
+    /// pipeline to the review -- the bundle's own manifest says so -- and not a
+    /// pipeline to the layout, which knows only the repository's source root.
+    /// The validator passes it, so the gate is the only thing between these
+    /// bytes and disk, and until it read them the same way the others do it let
+    /// them through as an empty pipeline.
+    #[test]
+    fn a_bundle_function_pipeline_that_is_not_text_reaches_only_the_prepared_gate() {
+        let layout = ResolvedProjectLayout::platform_default();
+        let definition = bundle_definition_document();
+        let function_rel = "hub/acme/functions/main.zf.json";
+        let prepared = [
+            prepared_entry("hub/acme/definition.json", definition.as_bytes()),
+            prepared_entry(function_rel, NOT_TEXT_PIPELINE),
+        ];
+
+        validate_prepared_pipeline_sources(&layout, &prepared)
+            .expect("a bundle's own function pipeline is not a repository pipeline path");
+
+        let error =
+            refuse_prepared_install_violations(&layout, HUB_ASSET_KIND_NODE_BUNDLE, &prepared)
+                .expect_err("a function pipeline the review cannot read must not install");
+        assert_eq!(error.code, "HUB_INSTALL_REFUSED");
+        assert!(
+            error.message.contains(function_rel)
+                && error
+                    .message
+                    .contains("a pipeline the safety review cannot read"),
+            "the refusal names the function pipeline: {}",
+            error.message
+        );
     }
 
     /// The same pipeline, carried and referenced, reviewed through a channel

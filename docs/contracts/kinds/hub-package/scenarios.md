@@ -583,16 +583,13 @@ The write is all-or-nothing. Every entry's bytes are produced and verified by
 `prepare_hub_install_entries` before the first `atomic_write`, and a failure part
 way through goes to `recover_failed_install`, which restores what was there.
 
-> **Not built: the add route never consults the review.**
-> `install_asset` reads the version row, verifies the artifact digest, and
-> installs. It does not call `review_artifact_payload` and does not check
-> `installable`. A violation therefore blocks a *locally supplied* node bundle
-> (`install_node_bundle_payload` does check, and refuses with
-> `NODE_BUNDLE_INSTALL_REFUSED`) but does not block a Hub add of the same
-> package. The UI runs `/review` first and can decline to offer the button, but
-> the API does not enforce it, so the non-overridable tier is only non-overridable
-> on one of the two paths. This is the single most important thing in this
-> document.
+The add route does not call `review_artifact_payload`, and does not need to.
+`refuse_prepared_install_violations` runs inside `install_artifact_payload_from`,
+after every entry's bytes are resolved and before the first write, so a violation
+refuses a Hub add exactly as it refuses a locally supplied node bundle. The two
+are separate calls reached on separate paths; what makes them agree is that both
+build the review's entries through `PackagePolicyEntry::from_bytes`, which is the
+only thing that decides what a reviewer can see.
 
 ---
 
@@ -676,8 +673,8 @@ published. That proof is §5, and the fact that the lock does not carry it is
 
 ## 4. A package that cannot be installed by anyone
 
-**Partly runs.** The tier, the refusal, and the first detector exist; the wiring
-that makes every channel honour it does not.
+**Runs.** The tier, the refusal, and the first detector exist, and every channel
+that writes into a project passes through a gate that honours it.
 
 A warning asks "do you accept this effect?". A violation says "this will not be
 installed, whoever approves it". They are different questions and the review
@@ -691,7 +688,7 @@ used to be unreadable to the scanner and still written verbatim by the installer
 
 The subtler version survives the contract. An entry landing at a reviewed
 pipeline path can be **referenced** rather than carried, and its bytes then come
-from the channel. The review now resolves references itself — `entry_review_text`
+from the channel. The review now resolves references itself — `entry_review_bytes`
 takes the same `HubArtifactChannel` the install would use — so a reference the
 channel *can* satisfy is read and scanned exactly like carried bytes. The
 violation fires when it cannot: an unresolvable channel, a digest or size
@@ -702,6 +699,14 @@ The distinction that makes this a violation rather than a clean result: an empty
 handed nothing while the install would still write something. Those must never
 produce the same verdict, so `PackagePolicyEntry` carries an `unreadable` reason
 and a non-empty reason at a pipeline path is a violation.
+
+The reason is recorded in one place. `PackagePolicyEntry`'s fields are private,
+`from_bytes` is the only thing that turns bytes into readable text or a recorded
+reason they are not, and `unresolved` is the only thing that records bytes that
+never arrived. Bytes that are not text are unreadable wherever they came from —
+which refuses nothing on its own, because the scan escalates `unreadable` only
+where those bytes were going to be read as a pipeline. A package carrying an icon
+or a font installs.
 
 Acme hand-authors `1.2.0` with the pipeline referenced rather than carried, and
 publishes it to a hub whose store does not hold that artifact. Dana reviews:
@@ -740,29 +745,36 @@ The refusal, on the local node bundle path:
 }
 ```
 
-> **Not built (two parts).**
->
-> 1. **The Hub add route does not check.** As in §2.2, `install_asset` verifies
->    the release digest and calls `install_artifact_payload_from` directly. It
->    never calls `review_artifact_payload` and never reads `installable`. So this
->    violation blocks `POST .../nodes/install` and does not block
->    `POST .../hub/assets/{id}/{v}/add` for the same package. Until that is
->    wired, "never overridable" is true of one channel and enforced by the UI on
->    the other.
-> 2. **The local node bundle refusal returns HTTP 200.**
->    `api_install_local_node_bundle` answers `{"ok": false, "error": "CODE:
->    message"}` with a 200 status and a flat string, unlike every other Hub route,
->    which returns a status code and `{"error": {"code", "message"}}`. A client
->    checking the status code will read a refusal as a success — on the one route
->    that actually enforces violations.
+**Where each half of this is reachable.** The refusal above is the review's: it
+runs before anything is fetched for the install, so it is the one that answers a
+reference the channel cannot satisfy. `refuse_prepared_install_violations` sits
+further down, after `prepare_hub_install_entries` has resolved every entry, so an
+artifact that could not be obtained has already failed there and this gate only
+ever sees bytes. What it judges about them is whether they are text at a path the
+scan reads as a pipeline — and even that is refused earlier for a repository
+pipeline path, where `validate_prepared_pipeline_sources` rejects bytes that will
+not decode as a pipeline graph, with `HUB_INSTALL`. The gate's own
+`HUB_INSTALL_REFUSED` is what stands behind a pipeline the *layout* does not
+recognise: a node bundle's function pipeline, which is a pipeline because the
+bundle's manifest names it and for no other reason.
+
+> **Not built: the local node bundle refusal returns HTTP 200.**
+> `api_install_local_node_bundle` answers `{"ok": false, "error": "CODE:
+> message"}` with a 200 status and a flat string, unlike every other Hub route,
+> which returns a status code and `{"error": {"code", "message"}}`. A client
+> checking the status code will read a refusal as a success. The two install
+> refusal codes are unmapped in `hub_api_error` for a related reason, and answer
+> 500.
 
 ### 4.2 What is deliberately not a violation
 
 Everything else. Reaching an external URL, requiring a credential, exposing a
 webhook, running SQL, shipping 40 MB of seed data — all warnings and effect
 lists, all acceptable, all Dana's decision. The tier is reserved for findings
-precise enough to refuse without a false positive, and there is exactly one so
-far. Growing it is deliberate slowness, not neglect: a violation that misfires
+precise enough to refuse without a false positive, and there are three so far:
+this one, a file type no project accepts, and a bundle declaring a node kind this
+build already provides. Growing it is deliberate slowness, not neglect: a
+violation that misfires
 makes a package uninstallable with no override, which is a worse failure than a
 warning nobody reads.
 
@@ -1324,7 +1336,8 @@ the artifact digest and installed, without consulting `installable`.
 `refuse_prepared_install_violations` is now the gate every channel passes
 through, and it reviews the *prepared* entries — bytes already resolved, paths
 already the destinations that will be written — so the review reads exactly what
-the install is about to place. (§2.2, §4)
+the install is about to place. It read those bytes differently from every other
+gate until they were given one reader; see §4.1. (§2.2, §4)
 
 **2a. A package's paths meant nothing without the publisher's layout — fixed.**
 A `rel_path` is relative to the publishing project's directories, and the
@@ -1378,8 +1391,10 @@ set, and a token with no usable scope is refused too.
 `api_install_local_node_bundle` and `api_review_local_node_bundle` return
 `{"ok": false, "error": "CODE: message"}` with a 200 status and a flat string,
 where every other Hub route returns a status code and a structured
-`{"error": {"code", "message"}}`. That is the route that enforces violations,
-so the strictest check has the least legible failure. (§4.1)
+`{"error": {"code", "message"}}`. `HUB_INSTALL_REFUSED` and
+`HUB_REMOTE_INSTALL_REFUSED` are unmapped in `hub_api_error` and answer 500, so
+a refusal on the other install paths reads as a server fault. The strictest
+check has the least legible failure. (§4.1)
 
 **8. "Provenance is never published" is stronger than the code.** The four
 `source_*` fields travel on a remote publish and are kept by the receiving hub;

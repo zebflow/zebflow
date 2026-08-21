@@ -475,9 +475,14 @@ symlink cannot be installed no matter who approves it. Violations extend that
 from malformed to unsafe.
 
 `PackageSafetyReview::violations` and `is_installable()` exist now and install
-checks them before considering any approval the caller supplies. No detector
-populates them yet, because a non-overridable refusal has to be precise enough
-not to produce false positives.
+checks them before considering any approval the caller supplies. Two detectors
+populate them for a bundle: a declared node kind this build already provides,
+and a function pipeline whose bytes the review cannot read. A third — a file
+type no project accepts — is read against the receiving project's repository and
+does not apply to a bundle, whose files materialize under `data/` and never
+enter `repo/`. All three refuse what a package *is*; none refuses one for what
+it does, because a non-overridable refusal has to be precise enough not to
+produce false positives.
 
 ### Declared hosts
 
@@ -686,8 +691,9 @@ the kind is unknown.
 
 ### Known gaps, deliberately left
 
-- No detector populates `violations` yet; the tier and `spec.hosts` exist so the
-  refusal path and the declaration are in place before the detectors land.
+- No detector populates `violations` from what a bundle *does*; the two that
+  apply to a bundle read what it is. `spec.hosts` exists so the declaration is in
+  place before behaviour detectors land.
 - Interface sync runs on the two user-facing pipeline write paths and on
   install. Other writers, including cluster runtime sync and project transfer,
   do not trigger it. One canonical writer would remove that class of omission.
