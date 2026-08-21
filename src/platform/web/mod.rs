@@ -12364,7 +12364,9 @@ async fn run_composite_lifecycle_hooks(
             },
         };
 
-        // Build engine with credential support.
+        // Build engine with credential support. A lifecycle hook is the
+        // bundle's own function pipeline, so it runs under the same declared
+        // hosts as any other node the bundle provides.
         let engine = crate::pipeline::BasicPipelineEngine::new(
             std::sync::Arc::new(state.platform.project_sandbox(owner, project)),
             crate::rwe::resolve_engine_or_default(None),
@@ -12373,7 +12375,15 @@ async fn run_composite_lifecycle_hooks(
         .with_platform(state.platform.clone())
         .with_ws_hub(state.platform.ws_hub.clone())
         .with_state_bus(state.platform.state_bus.clone())
-        .with_data_root(state.platform.config.data_root.clone());
+        .with_data_root(state.platform.config.data_root.clone())
+        .with_bundle_egress(
+            crate::pipeline::security::BundleEgress::extend(
+                None,
+                &manifest.package,
+                &manifest.hosts,
+            )
+            .map(std::sync::Arc::new),
+        );
 
         // Execute — fire and forget (log errors but don't block activation).
         match engine.execute_async(&function_graph, &ctx).await {

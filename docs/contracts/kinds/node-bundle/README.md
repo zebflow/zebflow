@@ -497,12 +497,37 @@ judgement the reader has to make into a consistency check against what the
 author stated. Static scanning alone is weak — a URL built at run time from
 configuration is invisible, and a compiled WASM module is opaque — so the
 declaration's real purpose is to be the allowlist a runtime egress boundary
-enforces later.
+enforces.
 
-The first violations to be implemented, in order of significance:
+The first of the two violations this list exists for is enforced now:
 
-1. contacting a host the package did not declare
-2. a credential value reaching a host other than the one that credential belongs to
+1. contacting a host the package did not declare — **enforced at run time**
+2. a credential value reaching a host other than the one that credential belongs
+   to — not implemented
+
+`BundleEgress` in `src/pipeline/security.rs` is the runtime allowlist. It is
+attached where a bundle's function pipeline is dispatched, so a declaration
+covers every node that pipeline runs and not only the bundle node a project's
+graph names. A composite reached from inside another bundle answers to both
+declarations, because the outer bundle is still the reason the connection is
+being made. A violation fails the node, naming the host refused and the bundle
+that refused it.
+
+Three limits, stated rather than implied:
+
+- A **non-empty** list is an allowlist. An empty or absent one restricts
+  nothing: `#[serde(default)]` makes the two identical on the wire, so reading
+  empty as deny-all would break every bundle published before enforcement
+  existed. The prose above — "an empty list states that the package makes no
+  external calls" — remains what an author means by it, not what the runtime can
+  prove they meant.
+- A node that reaches the network through a destination the egress guard never
+  sees as a URL — `n.ai.agent`, `n.pg.query`, `n.table.query`,
+  `n.ws.client.send`, `n.trigger.ws.client` — is **refused** inside a bundle
+  that declares hosts, rather than allowed through unchecked. A bundle needing
+  one of those cannot be confined by a host list today.
+- Enforcement covers bundle-provided nodes. A project's own pipelines are not
+  restricted by any bundle's declaration.
 
 A bundle contains public metadata and artifacts only. Credential values stay in
 the credential service. Manifest fields never imply extra host capability for a
@@ -582,6 +607,22 @@ Registry, lock, and runtime tests in `src/platform/services/`:
     without a lock entry is adopted and pinned, a package without a manifest
     fails the refresh with the previous registry still active, and removing the
     partial package restores a clean refresh
+
+Declared-host enforcement, in `src/pipeline/engines/composite_host.rs`,
+`src/pipeline/engines/basic.rs`, and `src/pipeline/security.rs`:
+
+31. an installed composite bundle's **inner** HTTP node is refused when it
+    contacts a host the bundle did not declare, with the error naming both
+32. the same inner node reaching a declared host is admitted by that check
+33. a bundle declaring no hosts is unrestricted
+34. a bundle reached from inside another bundle satisfies both declarations, and
+    the outer one refuses a host only the inner one declared
+35. a network node whose destination cannot be host-checked is refused inside a
+    bundle that declares hosts
+36. a project's own request is unaffected by an installed bundle's declaration
+37. every embedded bundle that declares hosts runs under its own declaration:
+    no inner node is refused as uncheckable, and every host its functions name
+    outright is one it declared
 
 ### Live and browser evidence, 2026-08-18
 

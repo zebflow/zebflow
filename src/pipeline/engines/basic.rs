@@ -978,6 +978,12 @@ pub struct BasicPipelineEngine {
     repo_layout: Option<crate::platform::model::ProjectFileLayout>,
     /// Platform data root — used by SQLite nodes to locate the project DB.
     data_root: Option<std::path::PathBuf>,
+    /// The declared-host allowlist governing this engine's nodes.
+    ///
+    /// Set only on an engine built to run a bundle's function pipeline, so it
+    /// covers the whole inner subtree. A project's own pipeline runs with
+    /// `None` and is unrestricted.
+    bundle_egress: Option<Arc<crate::pipeline::security::BundleEgress>>,
 }
 
 impl Default for BasicPipelineEngine {
@@ -995,6 +1001,7 @@ impl Default for BasicPipelineEngine {
             template_root: None,
             repo_layout: None,
             data_root: None,
+            bundle_egress: None,
         }
     }
 }
@@ -1017,6 +1024,7 @@ impl BasicPipelineEngine {
             template_root: None,
             repo_layout: None,
             data_root: None,
+            bundle_egress: None,
         }
     }
 
@@ -1079,7 +1087,23 @@ impl BasicPipelineEngine {
         self
     }
 
+    /// Confine this engine's nodes to the hosts a node bundle declared.
+    ///
+    /// Attached where a bundle's function pipeline is dispatched, which is what
+    /// makes the declaration cover every node in that pipeline rather than only
+    /// the bundle node the outer graph names.
+    pub fn with_bundle_egress(
+        mut self,
+        egress: Option<Arc<crate::pipeline::security::BundleEgress>>,
+    ) -> Self {
+        self.bundle_egress = egress;
+        self
+    }
+
     fn build_node(&self, node: &PipelineNode) -> Result<NodeDispatch, PipelineError> {
+        if let Some(egress) = &self.bundle_egress {
+            refuse_uncheckable_egress_node(egress, &node.kind)?;
+        }
         match node.kind.as_str() {
             webhook::NODE_KIND => Ok(NodeDispatch::Webhook(webhook::Node::new(
                 serde_json::from_value(node.config.clone())
@@ -1107,6 +1131,7 @@ impl BasicPipelineEngine {
                 self.language.clone(),
                 self.credentials.clone(),
                 self.platform.clone(),
+                self.bundle_egress.clone(),
             )?)),
             sqlite_query::NODE_KIND => {
                 let Some(data_root) = &self.data_root else {
@@ -1179,6 +1204,7 @@ impl BasicPipelineEngine {
                         PipelineError::new("FW_NODE_BROWSER_RUN_CONFIG", e.to_string())
                     })?,
                     credentials.clone(),
+                    self.bundle_egress.clone(),
                 )?))
             }
             pg_query::NODE_KIND => {
@@ -1695,6 +1721,10 @@ impl BasicPipelineEngine {
                     kind: other.to_string(),
                     config: node.config.clone(),
                     platform: platform.clone(),
+                    // A bundle composing another bundle's node stays governed by
+                    // its own declaration, so the policy in force here descends
+                    // with the dispatch rather than being replaced by it.
+                    egress: self.bundle_egress.clone(),
                 })
             }
             other => Err(PipelineError::new(
@@ -2636,7 +2666,10 @@ impl PipelineEngine for BasicPipelineEngine {
                         kind,
                         config,
                         platform,
-                    } => execute_installed_node(kind, config, platform, input_for_exec).await,
+                        egress,
+                    } => {
+                        execute_installed_node(kind, config, platform, egress, input_for_exec).await
+                    }
                 }
             }; // end exec_fut
             let timeout_node_id = trace_node_id.clone();
@@ -2932,6 +2965,77 @@ mod tests {
     use crate::platform::services::PlatformService;
     use crate::platform::shell::parser::build_pipeline_graph;
     use crate::zebfs::LocalZebFs;
+
+    /// A curated bundle ships in the binary, so a declaration it cannot run
+    /// under is a startup-shaped bug rather than a user's problem.
+    ///
+    /// Checks both halves of the guard against every embedded bundle that
+    /// declares hosts: no inner node is refused as uncheckable, and every host
+    /// its functions name outright is one the bundle declared. A URL assembled
+    /// at run time is not readable here, which is exactly why the check also
+    /// exists at the moment of the request.
+    #[test]
+    fn embedded_bundles_can_run_under_their_own_declared_hosts() {
+        use crate::contracts::decode_contract;
+        use crate::contracts::kinds::{NodeBundleContract, decode_pipeline_graph};
+        use crate::pipeline::security::BundleEgress;
+        use crate::platform::web::embedded::{
+            PLATFORM_COMPOSITE_NODE_ASSETS, platform_composite_node_asset,
+        };
+
+        fn literal_host(url: &str) -> Option<String> {
+            let rest = url
+                .strip_prefix("https://")
+                .or_else(|| url.strip_prefix("http://"))?;
+            let host = rest.split(['/', '?', '#']).next().unwrap_or_default();
+            let host = host.split('@').next_back().unwrap_or_default();
+            let host = host.split(':').next().unwrap_or_default();
+            (!host.is_empty() && !host.contains("{{")).then(|| host.to_string())
+        }
+
+        let mut declaring_bundles = 0;
+        for asset in PLATFORM_COMPOSITE_NODE_ASSETS
+            .iter()
+            .filter(|asset| asset.path.ends_with("/definition.json"))
+        {
+            let slug = asset.path.trim_end_matches("/definition.json");
+            let spec = decode_contract::<NodeBundleContract>(asset.bytes)
+                .unwrap_or_else(|error| panic!("embedded bundle '{slug}': {error}"))
+                .spec;
+            let Some(egress) = BundleEgress::extend(None, &spec.package, &spec.hosts) else {
+                continue;
+            };
+            declaring_bundles += 1;
+
+            for path in spec.functions.values() {
+                let bytes = platform_composite_node_asset(&format!("{slug}/{path}"))
+                    .unwrap_or_else(|| panic!("embedded bundle '{slug}' is missing '{path}'"));
+                let graph = decode_pipeline_graph(bytes)
+                    .unwrap_or_else(|error| panic!("embedded bundle '{slug}'/{path}: {error}"))
+                    .spec;
+                for node in &graph.nodes {
+                    super::refuse_uncheckable_egress_node(&egress, &node.kind).unwrap_or_else(
+                        |error| panic!("embedded bundle '{slug}'/{path}: {}", error.message),
+                    );
+                    let Some(url) = node.config.get("url").and_then(|value| value.as_str()) else {
+                        continue;
+                    };
+                    let Some(host) = literal_host(url) else {
+                        continue;
+                    };
+                    egress
+                        .check_host(&host, &node.kind)
+                        .unwrap_or_else(|error| {
+                            panic!("embedded bundle '{slug}'/{path}: {}", error.message)
+                        });
+                }
+            }
+        }
+        assert!(
+            declaring_bundles > 0,
+            "no embedded bundle declares hosts, so this proved nothing"
+        );
+    }
 
     #[test]
     fn private_redact_tokens_are_removed_and_applied_recursively() {
@@ -4019,7 +4123,38 @@ enum NodeDispatch {
         kind: String,
         config: serde_json::Value,
         platform: std::sync::Arc<crate::platform::services::PlatformService>,
+        /// Declared-host policy already in force, when this dispatch is itself
+        /// inside another bundle's function pipeline.
+        egress: Option<Arc<crate::pipeline::security::BundleEgress>>,
     },
+}
+
+/// Node kinds whose outbound destination reaches an egress guard as a URL, so a
+/// bundle's declared hosts can be checked against what they actually contact.
+const HOST_CHECKED_NETWORK_NODES: &[&str] = &[http_request::NODE_KIND, browser_run::NODE_KIND];
+
+/// Refuses a network-capable node whose destination cannot be host-checked.
+///
+/// Capability comes from the same compiled-in table the package review reads, so
+/// a network node added later is refused until it is given a guard rather than
+/// silently becoming a way out of a bundle's declaration. Kinds absent from that
+/// table are bundle-provided, and are governed by the dispatch they recurse into.
+fn refuse_uncheckable_egress_node(
+    egress: &crate::pipeline::security::BundleEgress,
+    kind: &str,
+) -> Result<(), PipelineError> {
+    if HOST_CHECKED_NETWORK_NODES.contains(&kind) {
+        return Ok(());
+    }
+    let reaches_network = crate::pipeline::nodes::native_node_capabilities()
+        .get(kind)
+        .is_some_and(|capabilities| {
+            capabilities.contains(&crate::pipeline::model::NodeCapability::Network)
+        });
+    if reaches_network {
+        return Err(egress.refuse_uncheckable(kind));
+    }
+    Ok(())
 }
 
 fn is_logic_collect(node: &PipelineNode) -> bool {

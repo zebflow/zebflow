@@ -111,10 +111,16 @@ pub struct Config {
 pub struct Node {
     config: Config,
     credentials: Arc<CredentialService>,
+    /// Declared hosts of the node bundle this run happens inside, if any.
+    bundle_egress: Option<Arc<crate::pipeline::security::BundleEgress>>,
 }
 
 impl Node {
-    pub fn new(config: Config, credentials: Arc<CredentialService>) -> Result<Self, PipelineError> {
+    pub fn new(
+        config: Config,
+        credentials: Arc<CredentialService>,
+        bundle_egress: Option<Arc<crate::pipeline::security::BundleEgress>>,
+    ) -> Result<Self, PipelineError> {
         if config.credential_id.trim().is_empty() {
             return Err(PipelineError::new(
                 "FW_NODE_BROWSER_RUN_CONFIG",
@@ -130,6 +136,7 @@ impl Node {
         Ok(Self {
             config,
             credentials,
+            bundle_egress,
         })
     }
 }
@@ -200,6 +207,9 @@ impl NodeHandler for Node {
                 "FW_NODE_BROWSER_RUN_SECRET",
                 "credential secret.url is required",
             ));
+        }
+        if let Some(egress) = &self.bundle_egress {
+            egress.check_url(base_url, NODE_KIND)?;
         }
         crate::pipeline::security::validate_outbound_http_url(base_url, NODE_KIND)?;
         let token = credential

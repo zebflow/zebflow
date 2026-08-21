@@ -2070,8 +2070,20 @@ impl RunBinding {
 pub struct NodePackageManifest {
     /// Implementation type, derived from `run`.
     pub source: NodePackageSource,
+    /// `spec.package` of the bundle providing this node.
+    ///
+    /// Carried per node because the runtime resolves a manifest by kind and
+    /// otherwise could not name the bundle a refusal came from.
+    #[serde(default)]
+    pub package: String,
     /// Package release version.
     pub version: String,
+    /// External hosts the providing bundle declared in `spec.hosts`.
+    ///
+    /// Copied from the package because egress is enforced where a node runs,
+    /// and the only thing in hand there is the manifest for one kind.
+    #[serde(default)]
+    pub hosts: Vec<String>,
     /// The node definition (same struct as native nodes).
     pub definition: crate::pipeline::NodeDefinition,
     /// Credential type definitions this node declares through `uses_credentials`.
@@ -2162,10 +2174,12 @@ pub struct MultiNodePackageDefinition {
     pub credentials: Vec<CredentialTypeDef>,
     /// External hosts this package is allowed to contact.
     ///
-    /// Declared now, enforced later. An empty list states that the package makes
-    /// no external calls. Declaring turns "here are the URLs it contacts" from a
-    /// judgement the reader has to make into a consistency check against what
-    /// the author said, and is what a runtime egress allowlist will enforce.
+    /// Enforced at run time by [`crate::pipeline::security::BundleEgress`] over
+    /// everything a bundle-provided node runs, inner nodes of a composite
+    /// included. A non-empty list is an allowlist; an empty one restricts
+    /// nothing, because `#[serde(default)]` makes absent and empty the same
+    /// bytes and a deny-all reading would break every bundle published before
+    /// enforcement existed.
     #[serde(default)]
     pub hosts: Vec<String>,
     /// Function name → package-relative pipeline path.

@@ -5,13 +5,14 @@ Status: **survey**. Every claim below was checked against the code as written on
 one was not.
 
 The three escapes this document named in §2 are now closed; §2 records how, and
-what is left.
+what is left. The first of the two declarations in §3 is now enforced; §3
+records where, and what it does not cover.
 
 Zebflow's install boundary is now strong: a package is reviewed before it lands,
 refused for file types no project accepts, refused at publish if no instance
 would install it, and disclosed to a user before they consent.
 
-None of that governs what a node can reach **once it is running**.
+Almost none of that governs what a node can reach **once it is running**.
 
 ## 0. The mismatch this exists to name
 
@@ -24,7 +25,9 @@ The review states that `n.script` can execute processes and that
 either from doing more than was derived, because nothing enforces the ceiling.
 
 A capability is currently a claim *about* a package. Confinement is what would
-make it a limit *on* one.
+make it a limit *on* one. `spec.hosts` is the one declaration that has become a
+limit, and it is an author's statement rather than a derived capability — §3
+records what it covers.
 
 ## 1. Boundaries that hold
 
@@ -98,16 +101,68 @@ be read as a 404.
   placeholders. Its root is the operator's own directory, which is stated in the
   log rather than assumed.
 
-## 3. Declared and not enforced
+## 3. Declarations, and what honours them
 
 **`spec.hosts`** — a node bundle declares the hosts it intends to contact. The
 contract validates the list (`contracts/kinds/node.rs:217`): count, duplicates,
-and shape. Nothing checks an outbound connection against it at runtime. The
-phrase used when it was added was "declared now, enforced later", and that is
-still exactly true.
+and shape. It is now also enforced at run time, for bundle-provided nodes.
 
-Enforcement is newly practical: `Network` is now derived rather than trusted, so
-the set of nodes that can egress is known without asking the package.
+`BundleEgress` in `pipeline/security.rs` is that allowlist. It is attached to
+the engine that runs a bundle's function pipeline — in `composite_host.rs`,
+where the manifest is already resolved by kind, and in the lifecycle-hook runner
+in `web/mod.rs` — so it governs the whole inner subtree rather than the one node
+a project's graph names. That placement is the point: a bundle declaring
+`["api.openai.com"]` and composing `n.http.request` would otherwise reach
+anywhere, which was the entire hole.
+
+A violation fails the node, naming the host refused and the bundle that refused
+it:
+
+```text
+n.http.request outbound host 'elsewhere.invalid' is not declared by node bundle
+'undeclared' (spec.hosts: declared.invalid)
+```
+
+Nothing new happens to the run: the inner node fails, and the composite reports
+it on the `error` pin the engine already routes failures through. The request is
+never made, and it is never dropped silently either.
+
+Three consequences follow from where the check sits, each a stated limit rather
+than an omission:
+
+- **A composite inside a composite answers to both declarations.** The policy
+  descends with the dispatch instead of being replaced by it, so a bundle cannot
+  widen its own list by composing a more permissive one.
+- **A network node whose destination never reaches a guard as a URL is refused,
+  not allowed.** `n.ai.agent`, `n.pg.query`, `n.table.query`,
+  `n.ws.client.send` and `n.trigger.ws.client` reach hosts that come from a
+  credential or a project connection, which the egress guard never sees. Inside
+  a governed subtree they fail with `FW_EGRESS_UNCHECKED_NODE`. The set is
+  derived from `native_node_capabilities()` — the same table the package review
+  reads — so a network node added later is refused until it is given a guard,
+  rather than silently becoming the way out.
+- **An empty or absent list is unrestricted.** `#[serde(default)]` makes the two
+  identical on the wire, so reading empty as deny-all would break every bundle
+  published before enforcement existed. That is deliberate and temporary;
+  closing it needs a way to tell an author who declared nothing from one who
+  declared no calls.
+
+Scope is bundle-provided nodes only. A project's own pipeline calling
+`n.http.request` carries no policy and is not restricted: the threat model is
+third-party code the user installed, not the user's own work.
+
+Still open in the same area, named rather than fixed:
+
+- `n.script` is not refused inside a governed subtree. The Deno sandbox denies
+  `fetch` by default and the capability table does not call it a network node,
+  so both curated bundles keep working; an operator who widens `allow_net`
+  platform-wide reopens that path for bundles as much as for projects.
+- `n.function.call` lets a bundle start a pipeline the project wrote, and that
+  pipeline runs unrestricted. What it reaches is the user's own code, but the
+  bundle chose the moment.
+- The check is on the host, not on which credential travels to it. The second
+  violation the bundle contract names — a credential value reaching a host other
+  than the one that credential belongs to — is still unimplemented.
 
 **`script_available`** — every node declares whether it may be called from
 inside an `n.script` sandbox. Nothing in `src/language/` dispatches from the
@@ -122,10 +177,14 @@ does.
 
 The install boundary answers "should this be here". The runtime boundary answers
 "what may it do now that it is". The first is well defended; the second has no
-directory escapes left and two declarations nothing honours.
+directory escapes left, one declaration a package cannot exceed, and one
+declaration nothing honours.
 
-What remains in §3 is a different kind of work from what §2 was. The escapes
-were each a one-line divergence from a pattern the codebase already used
-correctly, closable without designing anything. Enforcing `spec.hosts` is not:
-it needs a decision about where an outbound connection is checked and what a
-violation does to a run in flight.
+`spec.hosts` was the item in §3 that needed designing rather than fixing: where
+an outbound connection is checked, and what a violation does to a run in flight.
+Both are answered now — at the dispatch that already knows which bundle it is
+inside, and by failing the node through the error pins the engine already has.
+
+What is left is narrower than what it replaced. A ceiling that holds for the
+node kinds Zebflow can read a destination from, refuses the ones it cannot, and
+says plainly that a bundle which declares nothing is bounded by nothing.

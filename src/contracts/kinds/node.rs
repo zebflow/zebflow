@@ -443,7 +443,9 @@ pub fn normalize_node_bundle(
             .unwrap_or(NodePackageSource::Declarative);
         manifests.push(NodePackageManifest {
             source,
+            package: package.package.clone(),
             version: package.version.clone(),
+            hosts: package.hosts.clone(),
             definition,
             credentials: package
                 .credentials

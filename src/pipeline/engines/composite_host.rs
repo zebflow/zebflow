@@ -15,6 +15,7 @@ use serde_json::{Value, json};
 use crate::pipeline::PipelineContext;
 use crate::pipeline::interface::PipelineEngine;
 use crate::pipeline::model::PipelineError;
+use crate::pipeline::security::BundleEgress;
 
 use super::basic::BasicPipelineEngine;
 
@@ -22,6 +23,7 @@ pub(super) async fn execute_installed_node(
     kind: String,
     config: Value,
     platform: Arc<crate::platform::services::PlatformService>,
+    parent_egress: Option<Arc<BundleEgress>>,
     input: crate::pipeline::nodes::NodeExecutionInput,
 ) -> Result<Vec<crate::pipeline::nodes::NodeExecutionOutput>, PipelineError> {
     use crate::platform::model::NodePackageSource;
@@ -46,8 +48,13 @@ pub(super) async fn execute_installed_node(
         ));
     };
 
+    // The manifest resolved here names the bundle this dispatch is inside, so
+    // this is where its declaration becomes the policy for everything below.
+    let egress = BundleEgress::extend(parent_egress.as_deref(), &manifest.package, &manifest.hosts)
+        .map(Arc::new);
+
     if manifest.trigger.is_some() {
-        return execute_installed_trigger(&kind, &config, &platform, vec![input]).await;
+        return execute_installed_trigger(&kind, &config, &platform, egress, vec![input]).await;
     }
 
     match manifest.source {
@@ -55,7 +62,7 @@ pub(super) async fn execute_installed_node(
             super::wasm_host::execute_wasm_node(kind, config, platform, input).await
         }
         NodePackageSource::Composite => {
-            execute_composite_node(&kind, &config, &platform, vec![input]).await
+            execute_composite_node(&kind, &config, &platform, egress, vec![input]).await
         }
         NodePackageSource::Declarative => Err(PipelineError::new(
             "FW_NODE_PACKAGE_NOT_EXECUTABLE",
@@ -131,6 +138,7 @@ async fn execute_installed_trigger(
     kind: &str,
     config: &Value,
     platform: &Arc<crate::platform::services::PlatformService>,
+    egress: Option<Arc<BundleEgress>>,
     inputs: Vec<crate::pipeline::nodes::NodeExecutionInput>,
 ) -> Result<Vec<crate::pipeline::nodes::NodeExecutionOutput>, PipelineError> {
     use crate::pipeline::nodes::NodeExecutionOutput;
@@ -236,7 +244,8 @@ async fn execute_installed_trigger(
             .with_platform(platform.clone())
             .with_ws_hub(platform.ws_hub.clone())
             .with_state_bus(platform.state_bus.clone())
-            .with_data_root(platform.config.data_root.clone());
+            .with_data_root(platform.config.data_root.clone())
+            .with_bundle_egress(egress.clone());
 
             match engine.execute_async(&graph, &ctx).await {
                 Ok(output) => {
@@ -283,6 +292,7 @@ async fn execute_composite_node(
     kind: &str,
     config: &Value,
     platform: &Arc<crate::platform::services::PlatformService>,
+    egress: Option<Arc<BundleEgress>>,
     inputs: Vec<crate::pipeline::nodes::NodeExecutionInput>,
 ) -> Result<Vec<crate::pipeline::nodes::NodeExecutionOutput>, PipelineError> {
     use crate::pipeline::nodes::NodeExecutionOutput;
@@ -381,7 +391,8 @@ async fn execute_composite_node(
         .with_platform(platform.clone())
         .with_ws_hub(platform.ws_hub.clone())
         .with_state_bus(platform.state_bus.clone())
-        .with_data_root(platform.config.data_root.clone());
+        .with_data_root(platform.config.data_root.clone())
+        .with_bundle_egress(egress.clone());
 
         match engine.execute_async(&graph, &ctx).await {
             Ok(output) => {
@@ -478,4 +489,361 @@ pub fn build_composite_placeholder_map(
     }
 
     placeholder_map
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+    use std::sync::Arc;
+
+    use serde_json::{Value, json};
+
+    use crate::contracts::{ContractMetadata, encode_contract};
+    use crate::pipeline::nodes::NodeExecutionInput;
+    use crate::platform::services::PlatformService;
+
+    const OWNER: &str = "superadmin";
+    const PROJECT: &str = "default";
+
+    fn platform_for(root: &Path) -> Arc<PlatformService> {
+        Arc::new(
+            PlatformService::from_config(crate::platform::model::PlatformConfig {
+                data_root: root.to_path_buf(),
+                default_password: "test-password".to_string(),
+                ..Default::default()
+            })
+            .expect("platform service"),
+        )
+    }
+
+    fn http_get(url: &str) -> Value {
+        json!({ "method": "GET", "url": url, "response_type": "json" })
+    }
+
+    /// Writes a one-node composite bundle whose function runs exactly one inner
+    /// node, so what that node reaches is the only variable.
+    fn write_bundle(root: &Path, slug: &str, hosts: Value, call_kind: &str, call_config: Value) {
+        let package_dir = root.join("users/superadmin/default/data/nodes").join(slug);
+        std::fs::create_dir_all(package_dir.join("functions")).expect("package dirs");
+
+        let spec: crate::platform::model::MultiNodePackageDefinition =
+            serde_json::from_value(json!({
+                "package": slug,
+                "version": "1.0.0",
+                "title": "Host Check",
+                "description": "A composite bundle that reaches one external host.",
+                "icon": "icon.svg",
+                "hosts": hosts,
+                "functions": { "main": "functions/main.zf.json" },
+                "nodes": [{
+                    "kind": format!("n.x.{}.call", slug),
+                    "title": "Call",
+                    "description": "Run the bundle's outbound request.",
+                    "icon": "icon.svg",
+                    "run": { "function": "main" },
+                    "definition": {
+                        "config_schema": {},
+                        "input_schema": {"type": "object"},
+                        "output_schema": {"type": "object"},
+                        "input_pins": ["in"],
+                        "output_pins": ["out"]
+                    }
+                }]
+            }))
+            .expect("bundle spec");
+        let mut metadata = ContractMetadata::named(slug);
+        metadata.version = Some("1.0.0".into());
+        let bytes = encode_contract::<crate::contracts::kinds::NodeBundleContract>(metadata, spec)
+            .expect("bundle contract");
+        std::fs::write(package_dir.join("definition.json"), bytes).expect("definition");
+        std::fs::write(
+            package_dir.join("icon.svg"),
+            b"<svg xmlns=\"http://www.w3.org/2000/svg\"/>",
+        )
+        .expect("icon");
+
+        let function: crate::pipeline::PipelineGraph = serde_json::from_value(json!({
+            "id": format!("{slug}-main"),
+            "entry_nodes": ["trigger"],
+            "nodes": [
+                {
+                    "id": "trigger",
+                    "kind": "n.trigger.function",
+                    "input_pins": [],
+                    "output_pins": ["out"],
+                    "config": {}
+                },
+                {
+                    "id": "call",
+                    "kind": call_kind,
+                    "input_pins": ["in"],
+                    "output_pins": ["out"],
+                    "config": call_config
+                }
+            ],
+            "edges": [
+                { "from_node": "trigger", "from_pin": "out", "to_node": "call", "to_pin": "in" }
+            ]
+        }))
+        .expect("function graph");
+        let bytes = encode_contract::<crate::contracts::kinds::PipelineContract>(
+            ContractMetadata::named(format!("{slug}-main")),
+            function.into(),
+        )
+        .expect("function contract");
+        std::fs::write(package_dir.join("functions/main.zf.json"), bytes).expect("function");
+    }
+
+    async fn run_bundle_node(platform: &Arc<PlatformService>, slug: &str) -> Value {
+        let outputs = super::execute_installed_node(
+            format!("n.x.{slug}.call"),
+            json!({}),
+            platform.clone(),
+            None,
+            NodeExecutionInput {
+                node_id: "n0".to_string(),
+                input_pin: "in".to_string(),
+                payload: json!({}),
+                metadata: json!({ "owner": OWNER, "project": PROJECT }),
+                bus: None,
+            },
+        )
+        .await
+        .expect("the composite node itself dispatches");
+        outputs.into_iter().next().expect("one emission").payload
+    }
+
+    /// The hole `spec.hosts` was declared to close: a bundle names one host and
+    /// composes an HTTP node that could reach any other.
+    ///
+    /// The refused request is made by an *inner* node of the bundle's function
+    /// pipeline, never named by the graph the project wrote, so this is the
+    /// evidence that the declaration covers the subtree and not just the node.
+    #[tokio::test]
+    async fn an_inner_node_may_not_reach_a_host_its_bundle_did_not_declare() {
+        let root = tempfile::tempdir().expect("temp root");
+        let platform = platform_for(root.path());
+        write_bundle(
+            root.path(),
+            "undeclared",
+            json!(["declared.invalid"]),
+            "n.http.request",
+            http_get("https://elsewhere.invalid/steal"),
+        );
+        platform
+            .node_registry
+            .refresh_project(OWNER, PROJECT)
+            .expect("bundle registers");
+
+        let payload = run_bundle_node(&platform, "undeclared").await;
+        assert_eq!(
+            payload["error"],
+            json!(
+                "FW_EGRESS_UNDECLARED_HOST: n.http.request outbound host 'elsewhere.invalid' is \
+                 not declared by node bundle 'undeclared' (spec.hosts: declared.invalid)"
+            ),
+            "the refusal names the host and the bundle whose list refused it"
+        );
+    }
+
+    /// A declared host is admitted by the bundle guard. The request then fails
+    /// on the network, because `.invalid` never resolves — which is the point:
+    /// the run got past the declaration and out to DNS.
+    #[tokio::test]
+    async fn a_declared_host_passes_the_bundle_guard() {
+        let root = tempfile::tempdir().expect("temp root");
+        let platform = platform_for(root.path());
+        write_bundle(
+            root.path(),
+            "declaredhost",
+            json!(["declared.invalid"]),
+            "n.http.request",
+            http_get("https://declared.invalid/embed"),
+        );
+        platform
+            .node_registry
+            .refresh_project(OWNER, PROJECT)
+            .expect("bundle registers");
+
+        let payload = run_bundle_node(&platform, "declaredhost").await;
+        let error = payload["error"].as_str().unwrap_or_default();
+        assert!(
+            !error.contains("FW_EGRESS_UNDECLARED_HOST"),
+            "the declared host was admitted, got: {error}"
+        );
+    }
+
+    /// Empty and absent `spec.hosts` are the same bytes, so an empty list
+    /// cannot deny without breaking every bundle published before enforcement.
+    #[tokio::test]
+    async fn a_bundle_that_declares_no_hosts_is_unrestricted() {
+        let root = tempfile::tempdir().expect("temp root");
+        let platform = platform_for(root.path());
+        write_bundle(
+            root.path(),
+            "nohosts",
+            json!([]),
+            "n.http.request",
+            http_get("https://anywhere.invalid/x"),
+        );
+        platform
+            .node_registry
+            .refresh_project(OWNER, PROJECT)
+            .expect("bundle registers");
+
+        let payload = run_bundle_node(&platform, "nohosts").await;
+        let error = payload["error"].as_str().unwrap_or_default();
+        assert!(
+            !error.contains("FW_EGRESS_UNDECLARED_HOST"),
+            "an empty declaration restricts nothing, got: {error}"
+        );
+    }
+
+    /// A bundle composing another bundle's node stays answerable for what it
+    /// set in motion, so the inner subtree satisfies both declarations.
+    #[tokio::test]
+    async fn a_nested_bundle_does_not_escape_the_one_that_composed_it() {
+        let root = tempfile::tempdir().expect("temp root");
+        let platform = platform_for(root.path());
+        write_bundle(
+            root.path(),
+            "outer",
+            json!(["api.outer.invalid"]),
+            "n.x.inner.call",
+            json!({}),
+        );
+        write_bundle(
+            root.path(),
+            "inner",
+            json!(["api.inner.invalid"]),
+            "n.http.request",
+            http_get("https://api.inner.invalid/x"),
+        );
+        platform
+            .node_registry
+            .refresh_project(OWNER, PROJECT)
+            .expect("bundles register");
+
+        // Run directly, the inner bundle reaches its own declared host.
+        let payload = run_bundle_node(&platform, "inner").await;
+        let error = payload["error"].as_str().unwrap_or_default();
+        assert!(
+            !error.contains("FW_EGRESS_UNDECLARED_HOST"),
+            "the inner bundle's own host is fine on its own, got: {error}"
+        );
+
+        // Reached through the outer bundle, the same request answers to the
+        // outer declaration too, which does not name that host.
+        let payload = run_bundle_node(&platform, "outer").await;
+        let error = payload["error"].as_str().unwrap_or_default();
+        assert!(
+            error.contains("FW_EGRESS_UNDECLARED_HOST")
+                && error.contains("'api.inner.invalid'")
+                && error.contains("node bundle 'outer'"),
+            "the outer bundle's list refuses the nested request, got: {error}"
+        );
+    }
+
+    /// A network node whose destination never reaches a guard as a URL cannot
+    /// be checked, so inside a governed subtree it is refused rather than
+    /// quietly becoming the way out of the declaration.
+    #[tokio::test]
+    async fn a_network_node_that_cannot_be_host_checked_is_refused() {
+        let root = tempfile::tempdir().expect("temp root");
+        let platform = platform_for(root.path());
+        write_bundle(
+            root.path(),
+            "agentpkg",
+            json!(["api.openai.com"]),
+            "n.ai.agent",
+            json!({}),
+        );
+        platform
+            .node_registry
+            .refresh_project(OWNER, PROJECT)
+            .expect("bundle registers");
+
+        let payload = run_bundle_node(&platform, "agentpkg").await;
+        let error = payload["error"].as_str().unwrap_or_default();
+        assert!(
+            error.contains("FW_EGRESS_UNCHECKED_NODE")
+                && error.contains("'n.ai.agent'")
+                && error.contains("node bundle 'agentpkg'"),
+            "the refusal names the node and the bundle, got: {error}"
+        );
+    }
+
+    /// The scope line: `spec.hosts` is a bundle's declaration about itself, and
+    /// says nothing about the pipelines a user writes in their own project.
+    #[tokio::test]
+    async fn a_projects_own_request_is_not_governed_by_an_installed_bundle() {
+        let root = tempfile::tempdir().expect("temp root");
+        let platform = platform_for(root.path());
+        write_bundle(
+            root.path(),
+            "installed",
+            json!(["declared.invalid"]),
+            "n.http.request",
+            http_get("https://declared.invalid/x"),
+        );
+        platform
+            .node_registry
+            .refresh_project(OWNER, PROJECT)
+            .expect("bundle registers");
+
+        // The same host the installed bundle would be refused for, reached from
+        // the project's own graph, with no bundle policy in force.
+        let graph: crate::pipeline::PipelineGraph = serde_json::from_value(json!({
+            "id": "project-own",
+            "entry_nodes": ["trigger"],
+            "nodes": [
+                {
+                    "id": "trigger",
+                    "kind": "n.trigger.function",
+                    "input_pins": [],
+                    "output_pins": ["out"],
+                    "config": {}
+                },
+                {
+                    "id": "call",
+                    "kind": "n.http.request",
+                    "input_pins": ["in"],
+                    "output_pins": ["out"],
+                    "config": http_get("https://elsewhere.invalid/x")
+                }
+            ],
+            "edges": [
+                { "from_node": "trigger", "from_pin": "out", "to_node": "call", "to_pin": "in" }
+            ]
+        }))
+        .expect("project graph");
+
+        let engine = super::BasicPipelineEngine::new(
+            Arc::new(platform.project_sandbox(OWNER, PROJECT)),
+            crate::rwe::resolve_engine_or_default(None),
+            Some(platform.credentials.clone()),
+        )
+        .with_platform(platform.clone())
+        .with_data_root(platform.config.data_root.clone());
+
+        let ctx = crate::pipeline::PipelineContext {
+            owner: OWNER.to_string(),
+            project: PROJECT.to_string(),
+            pipeline: "project-own".to_string(),
+            request_id: "test".to_string(),
+            route: Default::default(),
+            input: json!({}),
+            trigger: None,
+            placeholder: None,
+        };
+        let error =
+            crate::pipeline::interface::PipelineEngine::execute_async(&engine, &graph, &ctx)
+                .await
+                .expect_err("the host does not resolve, so the run still fails");
+        assert_ne!(
+            error.code, "FW_EGRESS_UNDECLARED_HOST",
+            "a project's own request is the user's own choice: {}",
+            error.message
+        );
+    }
 }

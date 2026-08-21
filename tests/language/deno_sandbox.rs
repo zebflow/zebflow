@@ -135,6 +135,51 @@ return deno["core"]["ops"]["op_read_local_file"]("/etc/passwd");
 }
 
 #[test]
+fn deno_sandbox_runtime_refuses_local_fetch_without_a_project_root() {
+    // Cargo runs this from the crate root, so `Cargo.toml` is exactly the file
+    // a fetch root of "." would have handed the script.
+    let engine = DenoSandboxEngine::default();
+    let source = r#"
+const response = await fetch("/Cargo.toml");
+return { status: response.status };
+"#;
+
+    let err = engine
+        .run_script(source, &json!({}), None)
+        .expect_err("an unscoped sandbox must refuse a local fetch");
+
+    assert!(
+        err.message.contains("local fetch denied"),
+        "unexpected error: {}",
+        err.message
+    );
+    assert!(
+        err.message.contains("Cargo.toml"),
+        "refusal must name the path: {}",
+        err.message
+    );
+}
+
+#[test]
+fn deno_sandbox_runtime_reads_only_under_the_project_root() {
+    let dir = make_temp_dir("zebflow_deno_project_root");
+    fs::write(dir.join("payload.json"), br#"{"value": 7}"#).expect("write payload file");
+
+    let engine = DenoSandboxEngine::for_project(&dir);
+    let out = engine
+        .run_script(
+            r#"return await fetch("/payload.json").then((r) => r.json());"#,
+            &json!({}),
+            None,
+        )
+        .expect("a project-scoped sandbox reads its own project");
+    assert_eq!(out.get("value").and_then(|v| v.as_i64()), Some(7));
+
+    let _ = fs::remove_file(dir.join("payload.json"));
+    let _ = fs::remove_dir(dir);
+}
+
+#[test]
 fn deno_sandbox_runtime_blocks_local_fetch_escape_paths() {
     let dir = make_temp_dir("zebflow_deno_fetch_escape");
     let outside = dir

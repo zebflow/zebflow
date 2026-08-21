@@ -22,7 +22,7 @@ use crate::pipeline::model::NodeCapability;
 use crate::pipeline::nodes::basic::file_ref::{
     FileRefInput, is_file_ref, read_file_ref_bytes, write_tmp_file_ref,
 };
-use crate::pipeline::security::OutboundHttpPolicy;
+use crate::pipeline::security::{BundleEgress, OutboundHttpPolicy};
 use crate::pipeline::{
     NodeDefinition, PipelineError,
     nodes::{NodeExecutionInput, NodeExecutionOutput, NodeHandler},
@@ -283,6 +283,8 @@ pub struct Node {
     language: Arc<dyn LanguageEngine>,
     credentials: Option<Arc<CredentialService>>,
     platform: Option<Arc<PlatformService>>,
+    /// Declared hosts of the node bundle this request runs inside, if any.
+    bundle_egress: Option<Arc<BundleEgress>>,
 }
 
 impl Node {
@@ -291,6 +293,7 @@ impl Node {
         language: Arc<dyn LanguageEngine>,
         credentials: Option<Arc<CredentialService>>,
         platform: Option<Arc<PlatformService>>,
+        bundle_egress: Option<Arc<BundleEgress>>,
     ) -> Result<Self, PipelineError> {
         let url = config.url.trim();
         let has_credential = !config
@@ -322,6 +325,7 @@ impl Node {
             language,
             credentials,
             platform,
+            bundle_egress,
         })
     }
 }
@@ -525,6 +529,11 @@ impl NodeHandler for Node {
         let request_visible_url = prepared.visible_url.clone();
         let request_method = prepared.visible_method.clone();
         let request_credential_id = prepared.credential_id.clone();
+        // The bundle's declaration is checked first, so a refusal names the
+        // undeclared host rather than whatever the network guard finds there.
+        if let Some(egress) = &self.bundle_egress {
+            egress.check_url(&prepared.url, NODE_KIND)?;
+        }
         if let Some(policy) = &prepared.egress_policy {
             crate::pipeline::security::validate_outbound_http_url_with_policy(
                 &prepared.url,
@@ -536,8 +545,21 @@ impl NodeHandler for Node {
         }
 
         // ── Build reqwest client + request ───────────────────────────────────────
-        let client = reqwest::Client::builder()
-            .timeout(Duration::from_millis(timeout_ms))
+        let mut client_builder =
+            reqwest::Client::builder().timeout(Duration::from_millis(timeout_ms));
+        if let Some(egress) = self.bundle_egress.clone() {
+            // A checked URL that redirects is still a connection to wherever it
+            // lands, so every hop answers to the same declaration.
+            client_builder =
+                client_builder.redirect(reqwest::redirect::Policy::custom(move |attempt| {
+                    match egress.check_url(attempt.url().as_str(), NODE_KIND) {
+                        Ok(()) if attempt.previous().len() >= 10 => attempt.stop(),
+                        Ok(()) => attempt.follow(),
+                        Err(error) => attempt.error(error.message),
+                    }
+                }));
+        }
+        let client = client_builder
             .build()
             .map_err(|e| PipelineError::new("FW_NODE_HTTP_REQUEST_CLIENT", e.to_string()))?;
 
@@ -1148,6 +1170,7 @@ mod tests {
                                     ..Default::default()
                                 },
                                 Arc::new(NoopLanguageEngine),
+                                None,
                                 None,
                                 None,
                             )
