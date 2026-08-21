@@ -323,10 +323,6 @@ const HUB_ARTIFACT_DIR: &str = "artifacts";
 const LOCAL_NODE_BUNDLE_BODY_HAS_NO_CHANNEL: &str = "a bundle supplied as a document body says nothing about where its artifacts live; \
      install it from its file instead";
 
-/// Why a channel that only moved the document cannot fetch referenced bytes.
-const CHANNEL_WITHOUT_AN_ARTIFACT_LOCATION: &str =
-    "this channel does not say where its artifacts live";
-
 /// Where the channel a package arrived through keeps its referenced artifacts.
 ///
 /// An artifact reference carries a digest and never a location, so the location
@@ -341,8 +337,27 @@ pub enum HubArtifactChannel {
     /// A directory holding `artifacts/<sha256>`: this instance's Hub store, or
     /// the folder a supplied document was read from.
     Local(PathBuf),
+    /// A hub reached over HTTP, whose artifacts were fetched before this
+    /// channel existed.
+    Remote(RemoteHubArtifacts),
     /// This channel cannot fetch referenced bytes, and says why.
     Unresolvable(&'static str),
+}
+
+/// A remote hub's artifacts, already fetched and already verified.
+///
+/// The fetch happens once, before the review and therefore before the install,
+/// because both must read the same bytes and neither may read a placeholder.
+/// Verified bytes land in this instance's content-addressed store, so the
+/// review, the install, and a second package naming the same digest all read
+/// one file that was checked once.
+#[derive(Debug, Clone)]
+pub struct RemoteHubArtifacts {
+    /// This instance's content-addressed store, where the fetch put the bytes.
+    cache_base: PathBuf,
+    /// The hub they came from, named in a refusal so the user knows who did
+    /// not supply what.
+    origin: String,
 }
 
 impl HubArtifactChannel {
@@ -367,8 +382,9 @@ impl HubArtifactChannel {
         artifact: &HubPackageArtifactRef,
         declared_size_bytes: usize,
     ) -> Result<Vec<u8>, PlatformError> {
-        let base = match self {
-            Self::Local(base) => base,
+        let (base, holder) = match self {
+            Self::Local(base) => (base, "this channel".to_string()),
+            Self::Remote(remote) => (&remote.cache_base, remote.origin.clone()),
             Self::Unresolvable(reason) => {
                 return Err(PlatformError::new(
                     "HUB_ARTIFACT_UNRESOLVED",
@@ -395,7 +411,7 @@ impl HubArtifactChannel {
                 return Err(PlatformError::new(
                     "HUB_ARTIFACT_MISSING",
                     format!(
-                        "file '{rel_path}' references artifact {}, which this channel does not have",
+                        "file '{rel_path}' references artifact {}, which {holder} does not have",
                         artifact.sha256
                     ),
                 ));
@@ -450,6 +466,17 @@ fn local_document_channel_base(document_path: &Path) -> PathBuf {
 /// segment: a reference is content-addressed and can never name a directory or
 /// a neighbour.
 fn referenced_artifact_path(base: &Path, sha256: &str) -> Result<PathBuf, PlatformError> {
+    validate_artifact_digest(sha256)?;
+    Ok(base.join(HUB_ARTIFACT_DIR).join(sha256))
+}
+
+/// A digest is 64 lowercase hexadecimal digits and nothing else.
+///
+/// The contract validator already refuses anything else in a decoded document.
+/// This is checked again wherever a digest becomes a path segment or a URL
+/// segment, because those are the two places where a wrong one would stop being
+/// a name and start being a location.
+fn validate_artifact_digest(sha256: &str) -> Result<(), PlatformError> {
     let valid = sha256.len() == 64
         && sha256
             .bytes()
@@ -460,7 +487,229 @@ fn referenced_artifact_path(base: &Path, sha256: &str) -> Result<PathBuf, Platfo
             format!("artifact digest '{sha256}' is not 64 lowercase hexadecimal digits"),
         ));
     }
-    Ok(base.join(HUB_ARTIFACT_DIR).join(sha256))
+    Ok(())
+}
+
+/// How long a remote artifact fetch may spend reaching the hub.
+const REMOTE_ARTIFACT_CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+/// How long a fetch in progress may go without producing a byte.
+///
+/// A whole-request deadline cannot be used here: a 512 MB artifact on a slow
+/// link is legitimate and a stalled connection is not, and only an idle timeout
+/// tells the two apart.
+const REMOTE_ARTIFACT_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// The client every remote artifact fetch uses.
+///
+/// It is deliberately not the shared platform client, because two of this
+/// channel's trust decisions are client-wide. Redirects are refused rather than
+/// followed, so a hub cannot hand a fetch to a host the egress check never saw;
+/// and a connection that stops producing bytes fails instead of holding an
+/// install open indefinitely.
+///
+/// A client that could not be built with that policy is not replaced by one
+/// without it: the fetch refuses instead, because a fallback that quietly
+/// followed redirects would be the boundary failing open.
+static REMOTE_ARTIFACT_CLIENT: std::sync::LazyLock<Result<reqwest::Client, String>> =
+    std::sync::LazyLock::new(|| {
+        reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .connect_timeout(REMOTE_ARTIFACT_CONNECT_TIMEOUT)
+            .read_timeout(REMOTE_ARTIFACT_READ_TIMEOUT)
+            .build()
+            .map_err(|error| error.to_string())
+    });
+
+/// Whether the store already holds these exact bytes.
+///
+/// A wrong-length or wrong-digest file at the content address is treated as
+/// absent rather than as a failure, so a cache that was somehow corrupted heals
+/// on the next fetch instead of refusing every install forever.
+fn cached_artifact_matches(path: &Path, declared_size_bytes: usize, sha256: &str) -> bool {
+    let Ok(metadata) = fs::symlink_metadata(path) else {
+        return false;
+    };
+    if !metadata.is_file() || metadata.len() != declared_size_bytes as u64 {
+        return false;
+    }
+    let Ok(mut file) = std::fs::File::open(path) else {
+        return false;
+    };
+    let mut hasher = Sha256::new();
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        match std::io::Read::read(&mut file, &mut buffer) {
+            Ok(0) => break,
+            Ok(read) => hasher.update(&buffer[..read]),
+            Err(_) => return false,
+        }
+    }
+    hex_lower(&hasher.finalize()) == sha256
+}
+
+/// Fetches one referenced artifact from a remote hub into `store_base`.
+///
+/// Nothing the remote says is taken on trust. The digest is validated before it
+/// becomes a URL segment, the declared size bounds the read so a hub cannot
+/// stream an unbounded body, and the bytes are hashed as they arrive. A file
+/// appears at the content address only after the digest matches, so a fetch
+/// that fails, stalls, overruns, or lies leaves the store exactly as it was.
+async fn fetch_referenced_artifact(
+    store_base: &Path,
+    url: &str,
+    read_token: &str,
+    rel_path: &str,
+    artifact: &HubPackageArtifactRef,
+    declared_size_bytes: usize,
+) -> Result<(), PlatformError> {
+    if declared_size_bytes > MAX_HUB_PACKAGE_REFERENCED_FILE_BYTES {
+        return Err(PlatformError::new(
+            "HUB_ARTIFACT_TOO_LARGE",
+            format!(
+                "file '{rel_path}' declares {declared_size_bytes} bytes, over the \
+                 {MAX_HUB_PACKAGE_REFERENCED_FILE_BYTES} byte limit for a referenced artifact"
+            ),
+        ));
+    }
+    let destination = referenced_artifact_path(store_base, &artifact.sha256)?;
+    // Two releases naming one runtime cost one fetch, and a review followed by
+    // the install it precedes costs one fetch between them.
+    if cached_artifact_matches(&destination, declared_size_bytes, &artifact.sha256) {
+        return Ok(());
+    }
+    validate_remote_hub_url(url)?;
+    let client = REMOTE_ARTIFACT_CLIENT.as_ref().map_err(|error| {
+        PlatformError::new(
+            "HUB_ARTIFACT_FETCH_FAILED",
+            format!("no client with the artifact fetch policy could be built: {error}"),
+        )
+    })?;
+    let mut request = client.get(url);
+    if !read_token.trim().is_empty() {
+        request = request.bearer_auth(read_token.trim());
+    }
+    let mut response = request.send().await.map_err(|err| {
+        PlatformError::new(
+            "HUB_ARTIFACT_FETCH_FAILED",
+            format!(
+                "file '{rel_path}' references artifact {} and fetching it failed: {err}",
+                artifact.sha256
+            ),
+        )
+    })?;
+    let status = response.status();
+    if status.is_redirection() {
+        return Err(PlatformError::new(
+            "HUB_ARTIFACT_REDIRECTED",
+            format!(
+                "file '{rel_path}' references artifact {}, and the hub answered {status} with a \
+                 redirect; an artifact is fetched from the hub that serves it and nowhere else",
+                artifact.sha256
+            ),
+        ));
+    }
+    if status == reqwest::StatusCode::NOT_FOUND || status == reqwest::StatusCode::GONE {
+        return Err(PlatformError::new(
+            "HUB_ARTIFACT_MISSING",
+            format!(
+                "file '{rel_path}' references artifact {}, which the hub does not have ({status})",
+                artifact.sha256
+            ),
+        ));
+    }
+    if status == reqwest::StatusCode::UNAUTHORIZED || status == reqwest::StatusCode::FORBIDDEN {
+        return Err(PlatformError::new(
+            "HUB_ARTIFACT_FORBIDDEN",
+            format!(
+                "file '{rel_path}' references artifact {}, and the hub refused to serve it \
+                 ({status})",
+                artifact.sha256
+            ),
+        ));
+    }
+    if !status.is_success() {
+        return Err(PlatformError::new(
+            "HUB_ARTIFACT_FETCH_FAILED",
+            format!(
+                "file '{rel_path}' references artifact {} and the hub answered {status}",
+                artifact.sha256
+            ),
+        ));
+    }
+    // A declared length that disagrees with the manifest is refused before a
+    // single byte of the body is read.
+    if let Some(length) = response.content_length()
+        && length != declared_size_bytes as u64
+    {
+        return Err(PlatformError::new(
+            "HUB_ARTIFACT_SIZE_MISMATCH",
+            format!(
+                "file '{rel_path}' declares {declared_size_bytes} bytes but the hub offers \
+                 {length} bytes for artifact {}",
+                artifact.sha256
+            ),
+        ));
+    }
+    let artifacts_dir = destination
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| store_base.join(HUB_ARTIFACT_DIR));
+    fs::create_dir_all(&artifacts_dir)?;
+    let mut staged = tempfile::Builder::new()
+        .prefix(".zebflow-artifact-")
+        .tempfile_in(&artifacts_dir)?;
+    let mut hasher = Sha256::new();
+    let mut received = 0_usize;
+    loop {
+        let chunk = response.chunk().await.map_err(|err| {
+            PlatformError::new(
+                "HUB_ARTIFACT_FETCH_FAILED",
+                format!(
+                    "file '{rel_path}' references artifact {} and reading it failed: {err}",
+                    artifact.sha256
+                ),
+            )
+        })?;
+        let Some(chunk) = chunk else { break };
+        received = received.saturating_add(chunk.len());
+        if received > declared_size_bytes {
+            return Err(PlatformError::new(
+                "HUB_ARTIFACT_SIZE_MISMATCH",
+                format!(
+                    "file '{rel_path}' declares {declared_size_bytes} bytes but the hub is still \
+                     sending bytes for artifact {}",
+                    artifact.sha256
+                ),
+            ));
+        }
+        hasher.update(&chunk);
+        std::io::Write::write_all(staged.as_file_mut(), &chunk)?;
+    }
+    if received != declared_size_bytes {
+        return Err(PlatformError::new(
+            "HUB_ARTIFACT_SIZE_MISMATCH",
+            format!(
+                "file '{rel_path}' declares {declared_size_bytes} bytes but artifact {} arrived \
+                 as {received} bytes",
+                artifact.sha256
+            ),
+        ));
+    }
+    let actual = hex_lower(&hasher.finalize());
+    if actual != artifact.sha256 {
+        return Err(PlatformError::new(
+            "HUB_ARTIFACT_DIGEST_MISMATCH",
+            format!(
+                "file '{rel_path}' expects artifact {}, but the fetched bytes hash to {actual}",
+                artifact.sha256
+            ),
+        ));
+    }
+    std::io::Write::flush(staged.as_file_mut())?;
+    // Only now, with the digest matched, do the bytes become addressable. The
+    // temporary file is removed by its own drop on every path above.
+    crate::infra::io::durable::durable_persist(staged, &destination)?;
+    Ok(())
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1995,6 +2244,10 @@ impl HubService {
                 &self.artifact_store(),
             ),
         )?;
+        // The review has passed, so the release may now be shaped for the store
+        // it is going into. A large binary leaves the document and becomes a
+        // digest; the bytes wait here until the release is fully accepted.
+        let referenced_artifacts = reference_large_publish_entries(&mut preview.entries)?;
         let cover = match cover_source {
             Some((name, bytes)) => {
                 let artifact_sha256 = self.store_artifact(&bytes)?;
@@ -2059,12 +2312,23 @@ impl HubService {
         };
         let artifact_bytes = encode_hub_artifact(&package_id, &version, &manifest, "HUB_PUBLISH")?;
         let artifact_sha256 = sha256_hex(&artifact_bytes);
+        // The quota counts what the release costs the hub, not what its JSON
+        // weighs, so moving a file out of the document does not move it out of
+        // the publisher's allowance.
         self.enforce_publisher_package_quota(
             &publisher,
             &package_id,
             existing_package.as_ref(),
-            artifact_bytes.len(),
+            artifact_bytes.len() + referenced_artifacts.iter().map(Vec::len).sum::<usize>(),
         )?;
+        // The bytes the manifest now only names go into the content-addressed
+        // store before the release that names them is written, so no release
+        // ever points at an artifact this hub does not hold. The store is
+        // content-addressed, so a second release shipping the same file costs
+        // nothing.
+        for bytes in &referenced_artifacts {
+            self.store_artifact(bytes)?;
+        }
         atomic_write(&artifact_abs, &artifact_bytes)?;
         let package = HubAssetPackage {
             package_pk: existing_package
@@ -2400,6 +2664,49 @@ impl HubService {
             .join(DEFAULT_HUB_SERVICE_INSTANCE_ID)
     }
 
+    /// A hub reached over HTTP, as an artifact channel.
+    ///
+    /// Every artifact the package references is fetched and digest-verified
+    /// here, before the caller reviews or installs anything. That order is the
+    /// point: the review reads the artifact's real bytes rather than a
+    /// placeholder, the install writes nothing until every reference has
+    /// passed, and a fetch that fails leaves the target exactly as it was.
+    ///
+    /// Verified bytes land in this instance's content-addressed store, which is
+    /// the cache: a review followed by its install fetches once, and two
+    /// releases naming one runtime fetch it once between them.
+    async fn remote_artifact_channel<F>(
+        &self,
+        files: &[HubPackageFile],
+        origin: &str,
+        read_token: &str,
+        artifact_url: F,
+    ) -> Result<HubArtifactChannel, PlatformError>
+    where
+        F: Fn(&str) -> String,
+    {
+        let store_base = self.hub_service_root();
+        for file in files {
+            let Some(HubPackageFileSupply::Referenced(artifact)) = file.supply() else {
+                continue;
+            };
+            validate_artifact_digest(&artifact.sha256)?;
+            fetch_referenced_artifact(
+                &store_base,
+                &artifact_url(&artifact.sha256),
+                read_token,
+                &file.rel_path,
+                artifact,
+                file.size_bytes,
+            )
+            .await?;
+        }
+        Ok(HubArtifactChannel::Remote(RemoteHubArtifacts {
+            cache_base: store_base,
+            origin: origin.to_string(),
+        }))
+    }
+
     /// Puts one artifact into this instance's Hub store and returns its digest.
     ///
     /// The store is content-addressed, so publishing the same bytes twice is
@@ -2610,33 +2917,6 @@ impl HubService {
             &format!("local/{package_id}"),
             payload,
             artifacts,
-        )
-    }
-
-    /// Installs a package whose channel cannot resolve referenced artifacts.
-    ///
-    /// Every carried file installs exactly as before; a referenced one is
-    /// refused, because a channel that supplies no location has nowhere to fetch
-    /// from and an empty file is not an answer.
-    fn install_artifact_payload(
-        &self,
-        target_owner: String,
-        target_project: String,
-        package_id: &str,
-        version: &str,
-        target_folder: &str,
-        source_id: &str,
-        payload: HubPackageSpec,
-    ) -> Result<HubInstallResult, PlatformError> {
-        self.install_artifact_payload_from(
-            target_owner,
-            target_project,
-            package_id,
-            version,
-            target_folder,
-            source_id,
-            payload,
-            &HubArtifactChannel::unresolvable(CHANNEL_WITHOUT_AN_ARTIFACT_LOCATION),
         )
     }
 
@@ -3018,6 +3298,62 @@ impl HubService {
         let artifact = serde_json::from_slice::<Value>(&raw)
             .map_err(|err| PlatformError::new("HUB_INSTALL", err.to_string()))?;
         Ok((version_row, artifact, artifact_size_bytes))
+    }
+
+    /// Serves one artifact a release references, by digest.
+    ///
+    /// The request names the release and not only the digest, so the bytes
+    /// inherit that release's visibility and its retraction: a coordinate whose
+    /// bytes were withdrawn stops serving them, and knowing a digest is not a
+    /// key to everything else in a shared, content-addressed store. A digest
+    /// this release does not reference is not found here even when the store
+    /// holds it for some other package.
+    pub fn get_release_referenced_artifact(
+        &self,
+        package_id: &str,
+        version: &str,
+        sha256: &str,
+    ) -> Result<(HubAssetVersion, String, Vec<u8>), PlatformError> {
+        self.require_enabled()?;
+        let Some(version_row) = self.hub_data.get_hub_asset_version(package_id, version)? else {
+            return Err(PlatformError::new(
+                "HUB_ASSET_MISSING",
+                "asset version not found",
+            ));
+        };
+        if version_row.retracted_at.is_some() {
+            return Err(PlatformError::new(
+                "HUB_VERSION_RETRACTED",
+                retraction_message(package_id, version, &version_row.retracted_reason),
+            ));
+        }
+        validate_artifact_digest(sha256)?;
+        let artifact_abs = self.hub_artifact_path(&version_row.artifact_rel_path)?;
+        let raw = fs::read(&artifact_abs)?;
+        verify_hub_artifact_bytes(&raw, &version_row.artifact_sha256)?;
+        let payload = parse_hub_artifact_bytes(&raw, "HUB_ARTIFACT_MISSING")?;
+        let Some((entry, artifact)) = payload.files.iter().find_map(|file| match file.supply() {
+            Some(HubPackageFileSupply::Referenced(artifact)) if artifact.sha256 == sha256 => {
+                Some((file, artifact))
+            }
+            _ => None,
+        }) else {
+            return Err(PlatformError::new(
+                "HUB_ARTIFACT_MISSING",
+                format!("release {package_id}@{version} references no artifact {sha256}"),
+            ));
+        };
+        // Resolved through the same channel an install on this instance reads,
+        // so the digest is verified on the way out as well as on the way in.
+        let bytes = self
+            .artifact_store()
+            .resolve(&entry.rel_path, artifact, entry.size_bytes)?;
+        let media_type = if artifact.media_type.is_empty() {
+            "application/octet-stream".to_string()
+        } else {
+            artifact.media_type.clone()
+        };
+        Ok((version_row, media_type, bytes))
     }
 
     pub fn get_latest_asset_media(
@@ -3447,7 +3783,20 @@ impl HubService {
             .map_err(|err| PlatformError::new("HUB_REMOTE_FETCH", err.to_string()))?;
         verify_remote_artifact_hash(&payload)?;
         let artifact = parse_hub_artifact_value(payload.artifact, "HUB_REMOTE_INVALID")?;
-        self.install_artifact_payload(
+        // Every referenced artifact is fetched and verified before the install
+        // reaches the project, so a reference that cannot be obtained refuses
+        // here rather than half-way through writing files.
+        let artifacts = self
+            .remote_artifact_channel(
+                &artifact.files,
+                &repo.title.clone().if_empty_then(|| repo.base_url.clone()),
+                &repo.read_token,
+                |sha256| {
+                    remote_hub_url(&repo, &remote_artifact_suffix(package_id, version, sha256))
+                },
+            )
+            .await?;
+        self.install_artifact_payload_from(
             slug_segment(target_owner),
             slug_segment(target_project),
             package_id,
@@ -3455,6 +3804,7 @@ impl HubService {
             target_folder,
             &format!("{repository_id}/{package_id}"),
             artifact,
+            &artifacts,
         )
     }
 
@@ -3498,6 +3848,19 @@ impl HubService {
             .map_err(|err| PlatformError::new("HUB_REMOTE_FETCH", err.to_string()))?;
         verify_remote_artifact_hash(&payload)?;
         let artifact = parse_hub_artifact_value(payload.artifact, "HUB_REMOTE_INVALID")?;
+        // The review fetches what the install would fetch, so what it scans is
+        // what would land. It reports rather than writes, and the fetch touches
+        // only the shared artifact cache.
+        let artifacts = self
+            .remote_artifact_channel(
+                &artifact.files,
+                &repo.title.clone().if_empty_then(|| repo.base_url.clone()),
+                &repo.read_token,
+                |sha256| {
+                    remote_hub_url(&repo, &remote_artifact_suffix(package_id, version, sha256))
+                },
+            )
+            .await?;
         self.review_artifact_payload(
             &slug_segment(target_owner),
             &slug_segment(target_project),
@@ -3505,7 +3868,7 @@ impl HubService {
             version,
             target_folder,
             &artifact,
-            &HubArtifactChannel::unresolvable(CHANNEL_WITHOUT_AN_ARTIFACT_LOCATION),
+            &artifacts,
         )
     }
 
@@ -3544,7 +3907,7 @@ impl HubService {
         // A contradictory scope is a request error, so it costs no download.
         scope.validate()?;
         let target_owner = slug_segment(target_owner);
-        let artifact = self
+        let (repo, artifact) = self
             .fetch_platform_project_bundle(
                 http_client,
                 source_owner,
@@ -3553,9 +3916,21 @@ impl HubService {
                 version,
             )
             .await?;
-        // A remote pack carries its bytes in the document it just fetched, so
-        // there is no artifact location to fetch a reference from.
-        let artifacts = HubArtifactChannel::unresolvable(CHANNEL_WITHOUT_AN_ARTIFACT_LOCATION);
+        // The bundle's referenced bytes live at the hub that served the
+        // document, and are fetched and verified before the project exists.
+        let artifacts = self
+            .remote_artifact_channel(
+                &artifact.files,
+                &repo.title.clone().if_empty_then(|| repo.base_url.clone()),
+                &repo.read_token,
+                |sha256| {
+                    remote_hub_url_for_platform(
+                        &repo,
+                        &remote_artifact_suffix(package_id, version, sha256),
+                    )
+                },
+            )
+            .await?;
         self.install_project_bundle(&target_owner, package_id, &artifact, &artifacts, scope)
     }
 
@@ -3600,7 +3975,7 @@ impl HubService {
     ) -> Result<ProjectBundleInstallReview, PlatformError> {
         scope.validate()?;
         let target_owner = slug_segment(target_owner);
-        let artifact = self
+        let (repo, artifact) = self
             .fetch_platform_project_bundle(
                 http_client,
                 source_owner,
@@ -3609,7 +3984,19 @@ impl HubService {
                 version,
             )
             .await?;
-        let artifacts = HubArtifactChannel::unresolvable(CHANNEL_WITHOUT_AN_ARTIFACT_LOCATION);
+        let artifacts = self
+            .remote_artifact_channel(
+                &artifact.files,
+                &repo.title.clone().if_empty_then(|| repo.base_url.clone()),
+                &repo.read_token,
+                |sha256| {
+                    remote_hub_url_for_platform(
+                        &repo,
+                        &remote_artifact_suffix(package_id, version, sha256),
+                    )
+                },
+            )
+            .await?;
         self.review_project_bundle(
             &target_owner,
             package_id,
@@ -3632,7 +4019,7 @@ impl HubService {
         repository_id: &str,
         package_id: &str,
         version: &str,
-    ) -> Result<HubPackageSpec, PlatformError> {
+    ) -> Result<(PlatformHubRepository, HubPackageSpec), PlatformError> {
         let source_owner = slug_segment(source_owner);
         let repo = self
             .list_platform_repositories(&source_owner)?
@@ -3663,7 +4050,11 @@ impl HubService {
             .await
             .map_err(|err| PlatformError::new("HUB_REMOTE_FETCH", err.to_string()))?;
         verify_remote_artifact_hash(&payload)?;
-        parse_hub_artifact_value(payload.artifact, "HUB_REMOTE_INVALID")
+        let artifact = parse_hub_artifact_value(payload.artifact, "HUB_REMOTE_INVALID")?;
+        // The repository travels back with the document: whichever of the two
+        // callers asked, the referenced bytes have to be fetched from the same
+        // hub that served it.
+        Ok((repo, artifact))
     }
 
     /// Installs a project bundle into a project this call creates.
@@ -4282,6 +4673,16 @@ fn ownerless_hub_url(api_base: &str, suffix: &str) -> String {
     } else {
         format!("{}/hub/{}", api_base, suffix)
     }
+}
+
+/// The hub path one referenced artifact is served at.
+///
+/// It is namespaced by the release that names it rather than being a bare
+/// content address, so the hub applies that release's own visibility and
+/// retraction rules to the bytes it hands over, and so a digest alone is not a
+/// key to the whole store.
+fn remote_artifact_suffix(package_id: &str, version: &str, sha256: &str) -> String {
+    format!("remote/assets/{package_id}/{version}/artifacts/{sha256}")
 }
 
 fn remote_hub_url(repo: &ProjectHubRepository, suffix: &str) -> String {
@@ -5090,7 +5491,12 @@ fn random_hex(bytes: usize) -> String {
 fn sha256_hex(input: &[u8]) -> String {
     let mut hasher = Sha256::new();
     hasher.update(input);
-    let bytes = hasher.finalize();
+    hex_lower(&hasher.finalize())
+}
+
+/// The one spelling of a digest, so bytes hashed in one pass and bytes hashed
+/// in many produce the same string.
+fn hex_lower(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
@@ -5502,6 +5908,95 @@ fn publisher_layout(payload: &HubPackageSpec) -> ResolvedProjectLayout {
         allowed_extensions: None,
     }
     .resolve()
+}
+
+/// How large one file may be before a release references it by digest instead
+/// of carrying it inline.
+///
+/// Size decides, not type. Below the threshold a self-contained document is
+/// worth its overhead: it is the whole package, one thing to move and read, and
+/// the local file channel then needs no directory beside it. Above it the
+/// overhead is real -- base64 costs 33% and every install pays to parse and
+/// decode bytes it writes back out verbatim -- and nobody reads a megabyte of
+/// anything by eye, so the argument for keeping it inline has run out.
+///
+/// In practice this leaves text alone, because the JSON, TSX, and `.zf.json` a
+/// bundle is made of are kilobytes. It is not a rule about text: a megabyte of
+/// SQL is no more diffable than a megabyte of WASM.
+const HUB_PUBLISH_REFERENCE_THRESHOLD_BYTES: usize = 1024 * 1024;
+
+/// Moves the entries a release should not carry out of the document.
+///
+/// The bytes are returned rather than stored: a publish that is refused after
+/// this point must leave the artifact store as it found it, so the caller
+/// stores them only once the release is otherwise accepted. The decision is
+/// made after the publish review for the same reason it is safe to make -- it
+/// changes how bytes are supplied and never which bytes they are, so the review
+/// reads the same content either way.
+fn reference_large_publish_entries(
+    entries: &mut [HubPackageFile],
+) -> Result<Vec<Vec<u8>>, PlatformError> {
+    let mut referenced = Vec::new();
+    for entry in entries.iter_mut() {
+        if entry.size_bytes <= HUB_PUBLISH_REFERENCE_THRESHOLD_BYTES {
+            continue;
+        }
+        let Some(HubPackageFileSupply::Carried(content)) = entry.supply() else {
+            continue;
+        };
+        let bytes = if entry.encoding == "base64" {
+            base64::engine::general_purpose::STANDARD
+                .decode(content)
+                .map_err(|err| {
+                    PlatformError::new(
+                        "HUB_PUBLISH",
+                        format!("file '{}' is not base64: {err}", entry.rel_path),
+                    )
+                })?
+        } else {
+            content.as_bytes().to_vec()
+        };
+        let sha256 = sha256_hex(&bytes);
+        // `size_bytes` already counts the raw bytes rather than the base64, so
+        // it means the same thing on both sides of this change.
+        entry.encoding = String::new();
+        entry.content = None;
+        entry.artifact = Some(HubPackageArtifactRef {
+            sha256,
+            media_type: artifact_media_type_from_path(&entry.rel_path),
+        });
+        referenced.push(bytes);
+    }
+    Ok(referenced)
+}
+
+/// A hint at what the referenced bytes are, for a reader that never sees them.
+///
+/// It is a hint and not a claim: nothing installs by it, and the digest decides
+/// what the bytes actually are.
+fn artifact_media_type_from_path(rel_path: &str) -> String {
+    let ext = Path::new(rel_path)
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    match ext.as_str() {
+        "wasm" => "application/wasm",
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "webp" => "image/webp",
+        "gif" => "image/gif",
+        "svg" => "image/svg+xml",
+        "pdf" => "application/pdf",
+        "zip" => "application/zip",
+        "woff2" => "font/woff2",
+        "woff" => "font/woff",
+        "ttf" => "font/ttf",
+        "mp4" => "video/mp4",
+        "mp3" => "audio/mpeg",
+        _ => "application/octet-stream",
+    }
+    .to_string()
 }
 
 /// The layout entries a publish records, so a receiver knows what the paths in
@@ -6978,6 +7473,147 @@ mod tests {
         })
     }
 
+    /// The producer half of the rule: what a release will not carry, it names.
+    ///
+    /// Size decides and type does not, so the text entry has to move too --
+    /// that is the case the review has to keep reading through the channel.
+    #[test]
+    fn a_publish_references_only_what_it_will_not_carry() {
+        let big_text = "-- seed\n".repeat(HUB_PUBLISH_REFERENCE_THRESHOLD_BYTES / 4);
+        let big_binary = vec![0x7f_u8; HUB_PUBLISH_REFERENCE_THRESHOLD_BYTES + 1];
+        let mut entries = vec![
+            text_export_entry(
+                "pipelines/api/small.zf.json",
+                "json",
+                "test",
+                "{}".to_string(),
+            ),
+            text_export_entry("data/seed.sql", "sql", "test", big_text.clone()),
+            HubPackageFile {
+                rel_path: "assets/mural.png".to_string(),
+                kind: "png".to_string(),
+                size_bytes: big_binary.len(),
+                reason: "test".to_string(),
+                encoding: "base64".to_string(),
+                content: Some(base64::engine::general_purpose::STANDARD.encode(&big_binary)),
+                artifact: None,
+            },
+        ];
+
+        let referenced = reference_large_publish_entries(&mut entries).expect("the rule applies");
+
+        assert_eq!(
+            entries[0].content.as_deref(),
+            Some("{}"),
+            "small stays carried"
+        );
+        assert!(entries[0].artifact.is_none());
+        for (index, bytes) in [(1_usize, big_text.as_bytes()), (2, big_binary.as_slice())] {
+            let entry = &entries[index];
+            assert!(
+                entry.content.is_none(),
+                "{} is no longer carried",
+                entry.rel_path
+            );
+            assert!(
+                entry.encoding.is_empty(),
+                "a referenced entry declares no encoding"
+            );
+            assert_eq!(
+                entry.size_bytes,
+                bytes.len(),
+                "size_bytes still counts raw bytes"
+            );
+            let artifact = entry
+                .artifact
+                .as_ref()
+                .expect("a digest replaced the content");
+            assert_eq!(artifact.sha256, sha256_hex(bytes));
+        }
+        assert_eq!(
+            referenced.iter().map(Vec::as_slice).collect::<Vec<_>>(),
+            vec![big_text.as_bytes(), big_binary.as_slice()],
+            "the bytes are handed back for the caller to store after the release is accepted"
+        );
+    }
+
+    /// A refusal has to say who did not have the bytes, because the answer for
+    /// a remote hub and for this instance's own store are different problems.
+    #[test]
+    fn a_remote_channel_refusal_names_the_hub_it_came_from() {
+        let root = tempfile::tempdir().unwrap();
+        let channel = HubArtifactChannel::Remote(RemoteHubArtifacts {
+            cache_base: root.path().to_path_buf(),
+            origin: "Studio Hub".to_string(),
+        });
+        let error = channel
+            .resolve(
+                "wasm/core.wasm",
+                &HubPackageArtifactRef {
+                    sha256: sha256_hex(REFERENCED_MODULE),
+                    media_type: "application/wasm".to_string(),
+                },
+                REFERENCED_MODULE.len(),
+            )
+            .expect_err("nothing was fetched, so nothing resolves");
+        assert_eq!(error.code, "HUB_ARTIFACT_MISSING");
+        assert!(error.message.contains("Studio Hub"), "{}", error.message);
+    }
+
+    /// The store is the cache: bytes two releases share are fetched once, and a
+    /// review followed by its install does not fetch twice.
+    ///
+    /// The URL is deliberately unreachable, so reaching the network at all
+    /// would fail the test rather than slow it down.
+    #[tokio::test]
+    async fn an_artifact_already_in_the_store_is_not_fetched_again() {
+        let root = tempfile::tempdir().unwrap();
+        let sha256 = sha256_hex(REFERENCED_MODULE);
+        let path = referenced_artifact_path(root.path(), &sha256).expect("a valid digest");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, REFERENCED_MODULE).unwrap();
+
+        fetch_referenced_artifact(
+            root.path(),
+            "http://127.0.0.1:1/never-reached",
+            "",
+            "wasm/core.wasm",
+            &HubPackageArtifactRef {
+                sha256: sha256.clone(),
+                media_type: "application/wasm".to_string(),
+            },
+            REFERENCED_MODULE.len(),
+        )
+        .await
+        .expect("the cached bytes answer without a request");
+    }
+
+    /// A cached file at the right address with the wrong bytes is treated as
+    /// absent, so a corrupted cache heals on the next fetch instead of refusing
+    /// every install of that release forever.
+    #[test]
+    fn a_corrupted_cache_entry_does_not_count_as_cached() {
+        let root = tempfile::tempdir().unwrap();
+        let sha256 = sha256_hex(REFERENCED_MODULE);
+        let path = referenced_artifact_path(root.path(), &sha256).expect("a valid digest");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let mut wrong = REFERENCED_MODULE.to_vec();
+        wrong[0] ^= 0xff;
+        std::fs::write(&path, &wrong).unwrap();
+
+        assert!(!cached_artifact_matches(
+            &path,
+            REFERENCED_MODULE.len(),
+            &sha256
+        ));
+        std::fs::write(&path, REFERENCED_MODULE).unwrap();
+        assert!(cached_artifact_matches(
+            &path,
+            REFERENCED_MODULE.len(),
+            &sha256
+        ));
+    }
+
     fn spec_of(document: &serde_json::Value) -> HubPackageSpec {
         serde_json::from_value(document["spec"].clone()).expect("package spec")
     }
@@ -7245,7 +7881,7 @@ mod tests {
         let error = refuse_unreviewable_project_bundle(&review_project_bundle_entries(
             &ResolvedProjectLayout::platform_default(),
             &package.files,
-            &HubArtifactChannel::unresolvable(CHANNEL_WITHOUT_AN_ARTIFACT_LOCATION),
+            &no_channel(),
         ))
         .expect_err("a bundle the review cannot read must not install");
 
@@ -7270,7 +7906,7 @@ mod tests {
         refuse_unreviewable_project_bundle(&review_project_bundle_entries(
             &ResolvedProjectLayout::platform_default(),
             &package.files,
-            &HubArtifactChannel::unresolvable(CHANNEL_WITHOUT_AN_ARTIFACT_LOCATION),
+            &no_channel(),
         ))
         .expect("a readable bundle is not refused by this gate today");
     }
@@ -7296,7 +7932,7 @@ mod tests {
         let bundle_error = refuse_unreviewable_project_bundle(&review_project_bundle_entries(
             &layout,
             &package.files,
-            &HubArtifactChannel::unresolvable(CHANNEL_WITHOUT_AN_ARTIFACT_LOCATION),
+            &no_channel(),
         ))
         .expect_err("a bundle carrying a shell script must not install");
 
@@ -7338,7 +7974,7 @@ mod tests {
         refuse_unreviewable_project_bundle(&review_project_bundle_entries(
             &layout,
             &package.files,
-            &HubArtifactChannel::unresolvable(CHANNEL_WITHOUT_AN_ARTIFACT_LOCATION),
+            &no_channel(),
         ))
         .expect("ordinary source is not refused");
         refuse_prepared_install_violations(
@@ -7417,7 +8053,7 @@ mod tests {
                     HUB_ASSET_KIND_PIPELINE_BUNDLE,
                     referenced_pipeline_entry(&sha256),
                 ),
-                &HubArtifactChannel::unresolvable(CHANNEL_WITHOUT_AN_ARTIFACT_LOCATION),
+                &no_channel(),
             )
             .expect("the review runs");
 
@@ -7723,7 +8359,7 @@ mod tests {
 
         platform
             .hub
-            .install_artifact_payload(
+            .install_artifact_payload_from(
                 owner.to_string(),
                 project.to_string(),
                 "wasmtrig",
@@ -7731,6 +8367,7 @@ mod tests {
                 "",
                 "test/wasmtrig",
                 payload,
+                &no_channel(),
             )
             .expect("install succeeds");
 
@@ -7848,7 +8485,7 @@ mod tests {
 
         platform
             .hub
-            .install_artifact_payload(
+            .install_artifact_payload_from(
                 owner.to_string(),
                 project.to_string(),
                 "e2ewasm",
@@ -7856,6 +8493,7 @@ mod tests {
                 "",
                 "test/e2ewasm",
                 payload,
+                &no_channel(),
             )
             .expect("install succeeds");
 
@@ -7945,7 +8583,7 @@ mod tests {
 
         let error = platform
             .hub
-            .install_artifact_payload(
+            .install_artifact_payload_from(
                 owner.to_string(),
                 project.to_string(),
                 "broken-bundle",
@@ -7953,6 +8591,7 @@ mod tests {
                 "",
                 "test/broken-bundle",
                 payload,
+                &no_channel(),
             )
             .unwrap_err();
         assert_eq!(error.code, "NODE_MANIFEST_PARSE");
@@ -8032,7 +8671,7 @@ mod tests {
 
         let result = platform
             .hub
-            .install_artifact_payload(
+            .install_artifact_payload_from(
                 owner.to_string(),
                 project.to_string(),
                 "openai-embedding-test",
@@ -8040,6 +8679,7 @@ mod tests {
                 "",
                 "test/openai-embedding-test",
                 payload,
+                &no_channel(),
             )
             .unwrap();
         assert_eq!(result.install_root, "nodes/openai-embedding-test");
@@ -8716,7 +9356,7 @@ mod tests {
                 "Pack",
                 "A pack.",
                 true,
-                &HubArtifactChannel::unresolvable(CHANNEL_WITHOUT_AN_ARTIFACT_LOCATION),
+                &no_channel(),
             )
         };
 
@@ -9320,6 +9960,11 @@ mod tests {
         }))
         .expect("package spec")
     }
+
+    /// Why a channel that only moved the document cannot fetch referenced
+    /// bytes.
+    const CHANNEL_WITHOUT_AN_ARTIFACT_LOCATION: &str =
+        "this channel does not say where its artifacts live";
 
     fn no_channel() -> HubArtifactChannel {
         HubArtifactChannel::unresolvable(CHANNEL_WITHOUT_AN_ARTIFACT_LOCATION)
@@ -10090,7 +10735,7 @@ mod tests {
 
         platform
             .hub
-            .install_artifact_payload(
+            .install_artifact_payload_from(
                 "superadmin".to_string(),
                 "atlas".to_string(),
                 "legacy-tools",
@@ -10098,6 +10743,7 @@ mod tests {
                 "",
                 "local/legacy-tools",
                 payload,
+                &no_channel(),
             )
             .expect("install");
         for destination in reviewed_destinations(&review) {

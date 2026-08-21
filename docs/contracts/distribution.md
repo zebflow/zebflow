@@ -342,20 +342,26 @@ one interface**, and the format they carry is the same in every case.
 A repository answers two questions:
 
 ```text
-list()               what packages and versions are available here
-fetch(id, version)   give me that HubPackage document
+list()                    what packages and versions are available here
+fetch(id, version)        give me that HubPackage document
+artifact(id, version, d)  give me the bytes that hash to d
 ```
 
-Everything else — publisher identity, access tokens, base URLs, file paths — is
-implementation detail behind those two calls.
+The third call exists because a package's files are carried inline or referenced
+by digest, and a reference names no location: the channel supplies it. A
+repository that serves documents and not their artifacts can only serve packages
+small enough to carry everything.
 
-| Implementation | `list()` | `fetch()` |
-| --- | --- | --- |
-| Embedded | the binary's asset table | bytes compiled into the binary |
-| Local file | the one document supplied | that document |
-| Zebflow Hub | this instance's asset store | the stored artifact |
-| Remote Hub | another instance's HTTP API | that instance's artifact endpoint |
-| Static repository | `zebflow-repository.json` | a document path from the index |
+Everything else — publisher identity, access tokens, base URLs, file paths — is
+implementation detail behind those three calls.
+
+| Implementation | `list()` | `fetch()` | `artifact()` |
+| --- | --- | --- | --- |
+| Embedded | the binary's asset table | bytes compiled into the binary | n/a: nothing embedded references |
+| Local file | the one document supplied | that document | `artifacts/<sha256>` beside it |
+| Zebflow Hub | this instance's asset store | the stored artifact | `<hub root>/artifacts/<sha256>` |
+| Remote Hub | another instance's HTTP API | that instance's artifact endpoint | `remote/assets/{id}/{version}/artifacts/{sha256}` |
+| Static repository | `zebflow-repository.json` | a document path from the index | not implemented |
 
 This matters because it means a new source is a **fetcher**, not a new package
 format, a new installer, or a new review path. Adding static repositories should

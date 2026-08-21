@@ -183,9 +183,9 @@ computed rather than declared:
   description, not an accusation.
 
 Note what `files[]` shows: `content` inline, `encoding: "text"`, and no
-`artifact`. **Everything `publish_asset` produces today is carried.** The
-referenced form is accepted by the format and resolvable by the installer, but
-no publish path emits one — see [§7](#7-a-package-with-a-referenced-artifact).
+`artifact`. Every file here is a few kilobytes, and a publish carries anything up
+to 1 MiB. A file over that is referenced by digest instead — see
+[§7](#7-a-package-with-a-referenced-artifact).
 
 ### 1.3 Publish
 
@@ -985,8 +985,8 @@ leaves other media and gallery items alone.
 
 ## 7. A package with a referenced artifact
 
-**Partly runs.** The format, the resolver, and one channel work. The producer
-and two channels do not.
+**Runs.** Publishing produces one, three channels resolve one, and the review
+reads its real bytes on every one of them.
 
 The third entry of the §1.5 fixture references 32 MB of WASM by digest. Where
 those bytes come from is the channel's answer, never the document's.
@@ -1022,45 +1022,102 @@ nothing in the document names where it was published from.
 
 > **Not built: no route reaches this.** `install_local_node_bundle_document` and
 > `review_local_node_bundle_document` are the only callers of the local file
-> channel, and outside the test module nothing calls them. The API route
-> `POST .../nodes/install` takes the document as a JSON *body*
-> (`LocalNodeBundleRequest.artifact`) and therefore uses
-> `HubArtifactChannel::unresolvable`, so a referenced entry through that route
-> fails with:
->
-> ```json
-> { "ok": false, "error": "HUB_ARTIFACT_UNRESOLVED: file 'wasm/core.wasm' references artifact 9f2b… and a bundle supplied as a document body says nothing about where its artifacts live; install it from its file instead" }
-> ```
->
-> The message tells you to install it from its file. There is currently no
-> command or endpoint that does.
+> channel, and outside the test module nothing calls them — see
+> [§7.4](#74-what-is-still-not-built).
 
-### 7.2 Installing from this instance's Hub
+### 7.2 Publishing one, and installing it from this instance's Hub
 
-**Runs today, if the artifact is already in the store.**
-`HubService::artifact_store()` points at
-`<data_root>/services/hub-default/artifacts/`, so a Hub install resolves
-`artifacts/<sha256>` from there. Two packages naming one runtime read one file.
+**Runs today.** A publish carries a file up to 1 MiB and references anything
+larger. The bytes go into `<data_root>/services/hub-default/artifacts/<sha256>`
+through `store_artifact`, and the release records only the digest:
 
-> **Not built: nothing puts a *content* artifact in that store.**
-> `store_artifact` has exactly one caller, and it stores cover images.
-> `publish_asset` carries every entry of `spec.files` inline, so no publish
-> produces a referenced package. Referenced packages exist today only if
-> hand-authored.
+```bash
+curl -s -b /tmp/zf.txt -X POST -H "Content-Type: application/json" \
+  -d '{"source_type":"pipeline_with_dependencies",
+       "source_ref":"pipelines/api/big-hello.zf.json",
+       "package_id":"big-hello","version":"1.0.2",
+       "visibility":"public","publisher_token":"zfmt_..."}' \
+  http://studio.example/api/projects/acme/billing/hub/assets/publish
+```
+
+The release that comes out is 1 028 bytes and names a 1 120 873-byte pipeline:
+
+```json
+{ "rel_path": "pipelines/api/big-hello.zf.json", "kind": "json",
+  "size_bytes": 1120873, "reason": "primary pipeline",
+  "artifact": { "sha256": "e245c30a…f101", "media_type": "application/octet-stream" } }
+```
+
+Installing it locally resolves `artifacts/<sha256>` from that store. Two
+packages naming one runtime read one file.
+
+The decision is made **after** the publish review and **before** the store is
+written. Referencing changes how bytes are supplied and never which bytes they
+are, so the review reads the same content either way; and a publish refused
+after the review leaves the artifact store as it found it.
 
 ### 7.3 Installing over HTTP
 
-> **Not built, and honestly so.** A remote pack and a project bundle over HTTP
-> get `HubArtifactChannel::unresolvable`, and every referenced entry through them
-> is refused with `HUB_ARTIFACT_UNRESOLVED`. There is no artifact endpoint, no
-> size-bounded streaming read, and no cache for bytes two packages share. A
-> channel that quietly wrote an empty file in place of a 32 MB module would be
-> far worse than one that says it cannot, so the refusal is the deliberate
-> current state and not an oversight.
+**Runs today.** The hub that serves a release also serves its artifacts:
 
-The net effect across §7: **referenced artifacts are a working format and a
-working local resolver with no producer and no reachable consumer.** The 32 MB
-WASM module that motivated the design still cannot be distributed end to end.
+```text
+GET /api/hub/remote/assets/{package_id}/{version}/artifacts/{sha256}
+```
+
+The route is namespaced by the release rather than being a bare content address,
+so the bytes inherit that release's visibility and its retraction, and a digest
+the release does not name is `404` even when the store holds it for another
+package.
+
+A remote install fetches every reference before it reviews, so the review reads
+the real bytes:
+
+```json
+{ "ok": true, "review": {
+    "nodes_used": ["n.trigger.webhook", "n.web.response"],
+    "external_urls": ["https://art.example.com/feed.json"],
+    "public_endpoints": ["/big-hello", "webhook trigger"],
+    "violations": [], "installable": true, "risk_level": "high" } }
+```
+
+Every one of those findings came out of the referenced artifact. A review that
+scanned a placeholder would report none of them, which is exactly the bypass
+found on 2026-08-19.
+
+**What the channel refuses.** Redirects are not followed; the declared
+`size_bytes` bounds the read, so a `Content-Length` that disagrees is refused
+before the body and a body that keeps arriving is cut off; the digest is
+verified as the bytes stream, and a file appears at the content address only
+after it matches. A hub that answered is distinguishable from a request that
+failed:
+
+| Code | When |
+| --- | --- |
+| `HUB_ARTIFACT_MISSING` | the hub answered 404 or 410 |
+| `HUB_ARTIFACT_FORBIDDEN` | the hub answered 401 or 403 |
+| `HUB_ARTIFACT_REDIRECTED` | the hub answered 3xx |
+| `HUB_ARTIFACT_FETCH_FAILED` | the request did not complete |
+| `HUB_ARTIFACT_SIZE_MISMATCH` | more or fewer bytes than the release declares |
+| `HUB_ARTIFACT_DIGEST_MISMATCH` | the bytes are not the bytes the release names |
+
+Verified bytes are kept in this instance's own artifact store, so reviewing a
+package and then installing it costs one fetch. A cached file whose bytes do not
+hash to its own name is treated as absent, so a corrupted cache heals rather
+than refusing that release forever.
+
+### 7.4 What is still not built
+
+> **Pushing a referenced release outward.** `import_remote_asset` reviews an
+> inbound document against the receiving hub's own store, and the remote publish
+> route moves one document and nothing beside it. A publisher pushing to someone
+> else's hub therefore still has to keep every file carried.
+
+> **A document supplied as a request body.** `POST .../nodes/install` takes the
+> document as JSON (`LocalNodeBundleRequest.artifact`) and so uses
+> `HubArtifactChannel::unresolvable`. A referenced entry through that route
+> fails with `HUB_ARTIFACT_UNRESOLVED` and is told to install from its file
+> instead. Nothing outside the test module calls the local file channel, so
+> there is still no command or endpoint that does.
 
 ---
 
@@ -1299,12 +1356,16 @@ steps. Delete is now retraction: the rows survive marked, the bytes go, and a
 retracted coordinate is refused with `HUB_VERSION_RETRACTED`. Per-release
 retraction is still not built. (§8)
 
-**6. Referenced artifacts have no producer and no reachable consumer.** The
-format accepts them, `HubArtifactChannel::local` resolves and verifies them, and
-`store_artifact` can store them. But `publish_asset` carries everything inline,
-the only route that accepts a local document uses the unresolvable channel, and
-HTTP fetching does not exist. The 32 MB WASM module in the golden fixture cannot
-be distributed by any path that currently has an entry point. (§7)
+**6. Referenced artifacts had no producer and no reachable consumer — fixed.**
+The format accepted them and `HubArtifactChannel::local` verified them, but
+`publish_asset` carried everything inline and HTTP fetching did not exist, so
+the half of the rule where a review bypass had been found ran only in unit
+tests. A publish now references anything over 1 MiB, a hub serves
+`remote/assets/{id}/{version}/artifacts/{sha256}`, and a remote install fetches
+and verifies every reference before it reviews — so the review reads the real
+bytes and the install writes nothing until all of them pass. What remains is a
+document handed over as a request body, which names no origin to fetch from, and
+pushing a referenced release outward to someone else's hub. (§7)
 
 **7a. Unrecognised token scopes were dropped silently — fixed.**
 `normalize_scopes` lowercased and filtered to the three known scopes, so a token

@@ -257,9 +257,12 @@ attribution for credit and contact, not a trust boundary.
 | Contract adapter | `src/contracts/kinds/hub_package.rs` | `type Spec = HubPackageSpec`; typed, `deny_unknown_fields`, bounded, and enforces the carried-or-referenced rule |
 | Publisher layout | `HubPackageLayout` | the directories this manifest's paths are relative to; validated by `ProjectConfiguration`'s own `validate_layout_dir` |
 | Placement | `HubInstallPlacement` | built once from the package and the target project, and asked for every destination by both the review and the install |
-| Artifact location | `HubArtifactChannel` | the channel's answer to "where are the referenced bytes": a local base directory, or a refusal that says why |
+| Artifact location | `HubArtifactChannel` | the channel's answer to "where are the referenced bytes": a local base directory, a remote hub already fetched from, or a refusal that says why |
 | Reader, artifact | `HubArtifactChannel::resolve` | reads `<base>/artifacts/<sha256>`, checks the declared size, and verifies the digest |
+| Reader, artifact over HTTP | `HubService::remote_artifact_channel` then `fetch_referenced_artifact` | fetches every digest a package names from the hub that served it, bounded by the declared size and verified before it is stored |
 | Writer, artifact | `HubService::store_artifact` | puts bytes into this instance's Hub store, content-addressed, and returns the digest |
+| Producer, reference | `reference_large_publish_entries` | moves an entry over 1 MiB out of the document and replaces it with its digest, after the publish review and before the store is written |
+| Reader, release artifact | `get_release_referenced_artifact` | serves one artifact a named release references, under that release's visibility and retraction |
 | Writer, publish | `publish_asset` | builds a manifest, writes an artifact file, records a version row; refuses a version that already exists or was retracted, refuses a release the safety review reports violations for, and carries forward presentation it was not given |
 | Gate, publish | `refuse_publish_violations` | refuses a publish and a remote publish alike, naming every violation; called before the first durable write on both |
 | Writer, presentation | `update_asset_presentation` | writes the mutable package row and never a release |
@@ -328,32 +331,93 @@ not recognise, while the installer writes the entry's bytes verbatim. Labelling
 a file `utf8` therefore skipped the whole review and still landed on disk. The
 accepted set is now closed to `text`, `base64`, and absent.
 
-### A referenced artifact could not be installed — fixed for local channels
+### A referenced artifact could not be installed — fixed
 
 The format accepted a reference and the installer refused one, so the honest
 half of the decision was in place and the useful half was not. Installation now
 resolves references, and the location comes from the channel rather than the
-document: `HubArtifactChannel` is either a base directory holding
-`artifacts/<sha256>` or an explicit refusal carrying the reason.
+document.
 
-| Channel | Base it resolves against |
+| Channel | Where it resolves |
 | --- | --- |
 | Hub asset | `data_root/services/<instance>/artifacts/<sha256>` |
 | Local file | `artifacts/<sha256>` beside the document |
-| Remote pack, project bundle over HTTP | refused: `HUB_ARTIFACT_UNRESOLVED` |
+| Remote pack, project bundle over HTTP | `GET <hub>/remote/assets/<id>/<version>/artifacts/<sha256>`, then this instance's store |
 | A document supplied as a request body | refused: it names no location |
 
 Every reference is fetched, sized, and hashed in
 `prepare_hub_install_entries`, which already ran to completion before the first
 write existed. Nothing is staged, copied, or rolled back for a bad artifact,
 because nothing was written: a mismatch or a missing file returns before the
-install touches the project at all. The remote paths that cannot fetch check
-their entries before clearing anything, so a refusal there does not empty a
-worktree it was about to fill.
+install touches the project at all. The remote paths check their entries before
+clearing anything, so a refusal there does not empty a worktree it was about to
+fill.
 
-Refusal is deliberate rather than incidental. HTTP fetching of artifacts has no
-endpoint, no cache, and no size streaming yet, and a channel that silently wrote
-an empty file would be worse than one that says it cannot.
+The last remaining refusal is a document handed over as a request body, which
+names no origin at all. That one is not a gap: there is nothing to fetch from.
+
+### The HTTP channel, and what it will not do
+
+An artifact is fetched from the hub that served the release and from nowhere
+else. The trust boundary is drawn on purpose:
+
+| Decision | What it does |
+| --- | --- |
+| Redirects | not followed. A `3xx` is `HUB_ARTIFACT_REDIRECTED`, so a hub cannot hand the fetch to a host the egress check never saw |
+| Size | the declared `size_bytes` bounds the read. A `Content-Length` that disagrees refuses before the body is read; a body that keeps arriving past the declared size is cut off |
+| Ceiling | the contract's 512 MB referenced-file limit, checked before any request. `MAX_REMOTE_HUB_ARTIFACT_BYTES` is deliberately not reused: it is the *document* ceiling, and reusing it would leave the channel unable to move the 32 MB module references exist for |
+| Timeouts | 10 s to connect, 60 s idle. A whole-request deadline would fail a large artifact on a slow link, which is the case this exists to serve |
+| Digest | verified as the bytes stream. A file appears at the content address only after it matches |
+| Refused or failed | different codes. `HUB_ARTIFACT_MISSING` (404/410) and `HUB_ARTIFACT_FORBIDDEN` (401/403) mean the hub answered; `HUB_ARTIFACT_FETCH_FAILED` means the request did not complete |
+
+**The fetch happens before the review, not before the install.** That ordering
+is the point: the review reads the artifact's real bytes, so a referenced
+pipeline is scanned from what it actually contains. Reviewing over HTTP costs
+one fetch and writes nothing but the cache.
+
+**The cache is the content-addressed store.** Verified bytes land in
+`artifacts/<sha256>`, so a review followed by its install fetches once and two
+releases naming one runtime fetch it once between them. A cached file whose
+bytes do not hash to its own name is treated as absent, so a corrupted cache
+heals rather than refusing that release forever.
+
+### Nothing produced a referenced package — fixed
+
+`publish_asset` carried every entry inline, so the `artifact` half of the format
+had no producer at all.
+
+**The rule is size, and it is 1 MiB.** Below it a release stays one
+self-contained document, which is worth its overhead: it is the whole package,
+and the local file channel then needs no directory beside it. Above it the
+overhead is real — base64 costs 33%, and every install pays to parse and decode
+bytes it writes back out verbatim — and nobody reads a megabyte of anything by
+eye.
+
+Size decides, not type. In practice that leaves text alone, because the JSON,
+TSX, and `.zf.json` a bundle is made of are kilobytes; but a megabyte of SQL is
+no more diffable than a megabyte of WASM, and a rule that exempted it would
+leave the review's own text detectors permanently untested against a reference.
+
+**The decision is made after the publish review and before the store is
+written.** Referencing changes how bytes are supplied and never which bytes they
+are, so the review reads the same content either way; and the bytes are held in
+memory until the release is otherwise accepted, so a refused publish leaves the
+artifact store as it found it. That is the same ordering the cover already used.
+
+The publisher quota counts the referenced bytes with the document, so moving a
+file out of the release does not move it out of the publisher's allowance.
+
+### A hub served releases and not their artifacts
+
+A referenced release is only installable from a hub that will hand over the
+bytes, and no route did.
+
+`GET /api/hub/remote/assets/{id}/{version}/artifacts/{sha256}` serves them, in
+both the ownerless and the project-scoped producer form. It is namespaced by the
+release rather than being a bare content address, so the bytes inherit that
+release's visibility and its retraction, and knowing a digest is not a key to
+everything else in a shared store. A digest the release does not reference is
+`404` even when the store holds it for some other package.
 
 ### Publish computed violations and stored the release anyway — fixed
 
@@ -459,15 +523,10 @@ than issued.
 
 ## Still to review
 
-- publish and install do not read a package through identical eyes, and two
-  gaps remain. `refuse_prepared_install_violations` hands the review
-  `unreadable: ""` for every entry, so "a pipeline the safety review cannot
-  read" is unreachable on that path: a non-UTF-8 `.zf.json` is refused at
-  publish and passes there. And a package referencing an artifact resolves
-  against `artifact_store()` at publish and at local install, but every remote
-  channel is `Unresolvable`, so the same release publishes and installs locally
-  while refusing remotely. Nothing produces a referenced package yet, so the
-  second is latent
+- publish and install do not read a package through identical eyes.
+  `refuse_prepared_install_violations` hands the review `unreadable: ""` for
+  every entry, so "a pipeline the safety review cannot read" is unreachable on
+  that path: a non-UTF-8 `.zf.json` is refused at publish and passes there
 - `HUB_INSTALL_REFUSED` and `HUB_REMOTE_INSTALL_REFUSED` are unmapped in
   `hub_api_error` and answer 500. The publish refusals were mapped to 400 when
   they were added; the install pair still reads as a server fault
@@ -479,18 +538,19 @@ than issued.
   `fetch()` interface described in `distribution.md`
 - size and count limits are now declared in the contract: 25 MB per document
   (the existing remote cap), 18 MB per carried file, 512 MB per referenced file.
-  The per-file numbers still need review against real packages
-- fetching a referenced artifact over HTTP, which is the one channel still
-  refusing: it needs an artifact endpoint, a size-bounded streaming read, and a
-  decision about caching bytes two packages share
-- how a publisher puts a *content* artifact into the store. Covers now go
-  through `store_artifact`, but `publish_asset` still carries every entry in
-  `spec.files` inline, so nothing yet produces a referenced package
-- presentation is not garbage-collected. Retracting a package removes its release
-  artifacts; a cover it was the only referent of stays in the content-addressed
-  store, because the store is shared and nothing counts references yet. A
-  retracted package stays explorable, so keeping the cover is currently the
-  wanted behaviour rather than a leak
+  The per-file numbers still need review against real packages, and so does the
+  1 MiB point at which a publish stops carrying and starts referencing
+- pushing a referenced release *outward*. `import_remote_asset` reviews an
+  inbound document against this hub's own store, so a package whose artifacts
+  this hub does not already hold is refused. The remote publish route moves one
+  document and nothing beside it, so a publisher pushing to someone else's hub
+  still has to keep every file carried
+- referenced artifacts are not garbage-collected, and neither is presentation.
+  Retracting a package removes its release documents; the referenced bytes and a
+  cover it was the only referent of stay in the content-addressed store, because
+  the store is shared and nothing counts references yet. A retracted release
+  refuses before it reaches an artifact, so the leftovers are unreachable storage
+  rather than a way to read a withdrawn release
 - per-release retraction. Retraction takes a `package_id` and withdraws every
   release the package holds
 - uninstall for an add. Added content has no update path by design, and removal
@@ -503,7 +563,7 @@ than issued.
   layout and creates the project from the carried configuration; nothing checks
   that the two say the same thing. No writer produces such a document
 
-## Freeze judgement — 2026-08-20
+## Freeze judgement — 2026-08-21
 
 Status: **Review**, close to Candidate. Not Frozen.
 
@@ -542,13 +602,6 @@ permanent mistake. This kind's sibling was marked a freeze candidate on evidence
 that predated a change and the claim had to be retracted; the lesson is cheap to
 apply and expensive to skip.
 
-**No package with a referenced artifact exists.** `publish_asset` carries every
-entry inline, so the `artifact` half of the carried-or-referenced rule has never
-run outside unit tests. That half is exactly where a review bypass was found on
-2026-08-19: a referenced pipeline reviewed as empty content while the install
-wrote the real bytes. A rule proven only by unit test is not proven the way the
-carried half is.
-
 **Two enforcement points disagree about the same document.**
 `refuse_prepared_install_violations` sets `unreadable` empty unconditionally, so
 it can never produce the "a pipeline the safety review cannot read" violation. A
@@ -558,12 +611,33 @@ answer differently about the same bytes is not settled, whatever its format does
 
 ### What would close it
 
-1. Produce a package carrying a referenced artifact and run it through publish,
-   review, install and run — the same live pass the carried form has had.
-2. Reconcile the two install gates so every gate reaches the same verdict on the
+1. Reconcile the two install gates so every gate reaches the same verdict on the
    same document.
-3. Give `spec.layout` time and a cross-layout install that was not written the
+2. Give `spec.layout` time and a cross-layout install that was not written the
    same week as the field.
+
+### The referenced half is now proven live — 2026-08-21
+
+The reason recorded on 2026-08-20 — "no package with a referenced artifact
+exists" — no longer holds. A publish over 1 MiB now references, an HTTP artifact
+channel fetches, and the pair was run end to end against two servers on this
+date:
+
+| Step | Result |
+| --- | --- |
+| publish `acme.big-hello@1.0.2` | 1 120 873-byte pipeline referenced by digest; release document 1 028 bytes |
+| review over HTTP, from a second instance | real bytes read: the pipeline's nodes, its outbound URL, and its public endpoint all reported |
+| install over HTTP | file written, digest matched, pipeline registered |
+| activate and run | `GET /wh/superadmin/dana/big-hello` answered 200 with 1 120 033 bytes that only ever existed inside the artifact |
+| tampered bytes, from a mirror serving the same release | `HUB_ARTIFACT_DIGEST_MISMATCH`, nothing cached, nothing written |
+| a redirect, an over-long body, a `Content-Length` that disagrees | refused, each with its own code |
+| the origin missing the artifact | `HUB_ARTIFACT_MISSING`, distinct from a failed request |
+| an all-carried release, before and after | installs unchanged, locally and over HTTP |
+
+The 2026-08-19 bypass — a referenced pipeline reviewed as empty content while
+the install wrote the real bytes — is what the second row rules out: the review
+on this channel reports the referenced pipeline's own contents, and would report
+nothing if it were reading a placeholder.
 
 Per-release retraction, a `.wasm` governed by anything beyond the NodeBundle
 contract, and remote pack rows carrying a retraction marker are open, but none

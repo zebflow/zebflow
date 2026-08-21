@@ -15,6 +15,19 @@ pub fn atomic_write(path: &Path, bytes: &[u8]) -> io::Result<()> {
     atomic_write_with(path, |file| file.write_all(bytes))
 }
 
+/// Atomically installs an already-filled temporary file at `path`.
+///
+/// A writer that produces its bytes a chunk at a time -- a size-bounded
+/// download, for one -- never holds them all at once and so cannot use
+/// [`atomic_write`]. It fills a temporary file in the destination directory and
+/// finishes here, keeping the same guarantee: `path` is either the previous
+/// file or the complete new one, never a partial write.
+pub fn durable_persist(temporary: tempfile::NamedTempFile, path: &Path) -> io::Result<()> {
+    temporary.as_file().sync_all()?;
+    temporary.persist(path).map_err(|error| error.error)?;
+    sync_directory(path.parent().unwrap_or_else(|| Path::new(".")))
+}
+
 /// Removes one file and synchronizes its parent directory.
 ///
 /// A missing file is already in the requested state and succeeds.

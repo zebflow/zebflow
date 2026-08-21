@@ -897,6 +897,10 @@ pub async fn router(platform: Arc<PlatformService>) -> Router {
             get(api_get_remote_hub_artifact),
         )
         .route(
+            "/api/projects/{owner}/{project}/hub/remote/assets/{package_id}/{version}/artifacts/{sha256}",
+            get(api_get_remote_hub_referenced_artifact),
+        )
+        .route(
             "/api/hub/remote/assets",
             get(api_list_public_hub_assets).post(api_public_remote_publish_hub_asset),
         )
@@ -915,6 +919,10 @@ pub async fn router(platform: Arc<PlatformService>) -> Router {
         .route(
             "/api/hub/remote/assets/{package_id}/{version}/artifact",
             get(api_get_public_hub_artifact),
+        )
+        .route(
+            "/api/hub/remote/assets/{package_id}/{version}/artifacts/{sha256}",
+            get(api_get_public_hub_referenced_artifact),
         )
         .route(
             "/api/projects/{owner}/{project}/hub/assets/mine",
@@ -12376,14 +12384,13 @@ async fn run_composite_lifecycle_hooks(
         .with_ws_hub(state.platform.ws_hub.clone())
         .with_state_bus(state.platform.state_bus.clone())
         .with_data_root(state.platform.config.data_root.clone())
-        .with_bundle_egress(
+        .with_bundle_egress(Some(std::sync::Arc::new(
             crate::pipeline::security::BundleEgress::extend(
                 None,
                 &manifest.package,
                 &manifest.hosts,
-            )
-            .map(std::sync::Arc::new),
-        );
+            ),
+        )));
 
         // Execute — fire and forget (log errors but don't block activation).
         match engine.execute_async(&function_graph, &ctx).await {
@@ -16823,6 +16830,9 @@ fn hub_api_error(err: PlatformError) -> Response {
         || err.code == "HUB_MEDIA_INVALID"
         || err.code == "HUB_GALLERY_INVALID"
         || err.code == "HUB_INSTALL_SCOPE_INVALID"
+        // A digest that is not 64 hexadecimal digits is a malformed request,
+        // and it is refused before it can become a path or a URL segment.
+        || err.code == "HUB_ARTIFACT_INVALID"
         // A refused publish is a fault in the package the caller sent, and a
         // publisher who reads 500 fixes nothing.
         || err.code == "HUB_PUBLISH_REFUSED"
@@ -16832,6 +16842,9 @@ fn hub_api_error(err: PlatformError) -> Response {
     } else if err.code == "HUB_ASSET_MISSING"
         || err.code == "HUB_MEDIA_MISSING"
         || err.code == "HUB_REPOSITORY_MISSING"
+        // A digest this release does not reference, or whose bytes this hub
+        // does not hold, is a missing thing and not a server fault.
+        || err.code == "HUB_ARTIFACT_MISSING"
     {
         StatusCode::NOT_FOUND
     } else if err.code == "HUB_TOKEN_INVALID"
@@ -17388,6 +17401,143 @@ async fn api_get_remote_hub_artifact(
         ))
         .into_response(),
         Err(err) => internal_error(err),
+    }
+}
+
+/// Serves one artifact a release references: the HTTP half of the artifact
+/// channel.
+///
+/// A referenced file's bytes never travel in the release document, so a hub
+/// that serves releases has to serve their artifacts too or every remote
+/// install of one refuses. The response is the raw bytes and nothing else: the
+/// installer already knows the digest it wants and verifies what it gets.
+async fn api_get_public_hub_referenced_artifact(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((package_id, version, sha256)): Path<(String, String, String)>,
+) -> Response {
+    if let Err(response) = require_hub_service_enabled(&state) {
+        return response;
+    }
+    let requester = match hub_read_token_owner(&state, &headers) {
+        Ok(requester) => requester,
+        Err(response) => return response,
+    };
+    hub_referenced_artifact_response(&state, requester, &package_id, &version, &sha256)
+}
+
+/// The same artifact, on a project-scoped producer hub.
+async fn api_get_remote_hub_referenced_artifact(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((owner, project, package_id, version, sha256)): Path<(
+        String,
+        String,
+        String,
+        String,
+        String,
+    )>,
+    uri: Uri,
+) -> Response {
+    match maybe_forward_project_api_to_worker(
+        &state,
+        &uri,
+        &Method::GET,
+        &headers,
+        Bytes::new(),
+        &owner,
+        &project,
+    )
+    .await
+    {
+        Ok(Some(response)) => return response,
+        Ok(None) => {}
+        Err(err) => return internal_error(err),
+    }
+    if let Err(response) = require_hub_service_enabled(&state) {
+        return response;
+    }
+    if let Err(response) = require_project_hub_producer(&state, &owner, &project) {
+        return response;
+    }
+    let requester = match hub_read_token_owner(&state, &headers) {
+        Ok(requester) => requester,
+        Err(response) => return response,
+    };
+    hub_referenced_artifact_response(&state, requester, &package_id, &version, &sha256)
+}
+
+/// Who is asking, if they presented a hub read token at all.
+fn hub_read_token_owner(
+    state: &PlatformAppState,
+    headers: &HeaderMap,
+) -> Result<Option<String>, Response> {
+    let Some(token_value) = bearer_token_from_headers(headers) else {
+        return Ok(None);
+    };
+    match state
+        .platform
+        .hub
+        .authenticate_token(&token_value, "hub:read")
+    {
+        Ok(token) => Ok(Some(token.owner)),
+        Err(err) => Err((
+            StatusCode::UNAUTHORIZED,
+            Json(json!({"ok": false, "error": err.message, "code": err.code})),
+        )
+            .into_response()),
+    }
+}
+
+/// The release's own visibility decides who may read its artifacts, so the two
+/// routes above answer the same way about the same bytes.
+fn hub_referenced_artifact_response(
+    state: &PlatformAppState,
+    requester: Option<String>,
+    package_id: &str,
+    version: &str,
+    sha256: &str,
+) -> Response {
+    let Some(package) = state
+        .platform
+        .hub
+        .list_asset_packages()
+        .ok()
+        .and_then(|items| items.into_iter().find(|item| item.package_id == package_id))
+    else {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(json!({"ok": false, "error": "package not found"})),
+        )
+            .into_response();
+    };
+    if package.visibility == "private"
+        && requester.as_deref() != Some(package.publisher_owner.as_str())
+    {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({"ok": false, "error": "private package"})),
+        )
+            .into_response();
+    }
+    match state
+        .platform
+        .hub
+        .get_release_referenced_artifact(package_id, version, sha256)
+    {
+        Ok((_, media_type, bytes)) => {
+            let mut response_headers = HeaderMap::new();
+            if let Ok(value) = HeaderValue::from_str(&media_type) {
+                response_headers.insert(CONTENT_TYPE, value);
+            }
+            // Content-addressed bytes cannot change under their own name.
+            response_headers.insert(
+                CACHE_CONTROL,
+                HeaderValue::from_static("public, max-age=31536000, immutable"),
+            );
+            (StatusCode::OK, response_headers, bytes).into_response()
+        }
+        Err(err) => hub_api_error(err),
     }
 }
 

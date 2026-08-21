@@ -2176,10 +2176,14 @@ pub struct MultiNodePackageDefinition {
     ///
     /// Enforced at run time by [`crate::pipeline::security::BundleEgress`] over
     /// everything a bundle-provided node runs, inner nodes of a composite
-    /// included. A non-empty list is an allowlist; an empty one restricts
-    /// nothing, because `#[serde(default)]` makes absent and empty the same
-    /// bytes and a deny-all reading would break every bundle published before
+    /// included. A non-empty list is an allowlist; an empty one restricts no
+    /// host, because `#[serde(default)]` makes absent and empty the same bytes
+    /// and a deny-all reading would break every bundle published before
     /// enforcement existed.
+    ///
+    /// Declaring nothing is not a way out. Every other guard the policy carries
+    /// — refusing a node whose destination the guard cannot read — applies to a
+    /// bundle that declared nothing exactly as it does to one that declared.
     #[serde(default)]
     pub hosts: Vec<String>,
     /// Function name → package-relative pipeline path.

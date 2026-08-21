@@ -357,6 +357,55 @@ Any other value is refused at creation with `HUB_TOKEN_SCOPE_INVALID` (HTTP
 refused too. A scope the publisher record does not grant is refused with
 `HUB_PUBLISHER_SCOPE_DENIED`.
 
+## Carried and referenced files
+
+Each file in a release supplies its bytes one of two ways, never both:
+
+| Field | Meaning |
+| --- | --- |
+| `content` | the bytes, inline in the release document |
+| `artifact` | a SHA-256 digest the bytes are fetched and verified against |
+
+Publishing decides per file, by size. A file up to 1 MiB is carried, which keeps
+a release one self-contained document. A file over 1 MiB is referenced: the
+release records only its digest and the bytes go into the Hub's
+content-addressed store. Two releases shipping the same file store it once.
+
+A reference carries a digest and never a URL, so the location comes from the
+channel the package is installed through:
+
+```text
+Hub asset      <data root>/services/hub-default/artifacts/{sha256}
+Remote hub     GET /api/hub/remote/assets/{package_id}/{version}/artifacts/{sha256}
+Local file     ./artifacts/{sha256} beside the document
+```
+
+The remote artifact route serves one release's referenced bytes and applies that
+release's own rules: a private package needs the publisher's token, a retracted
+release answers `410 Gone`, and a digest the release does not name answers
+`404`.
+
+Installing from a remote hub fetches every referenced artifact first, checks it
+against the declared size while it streams, and verifies its digest before
+anything is written. Redirects are not followed. A fetch that fails, is refused,
+overruns its declared size, or hashes to the wrong digest refuses the install
+with the project untouched:
+
+| Code | Meaning |
+| --- | --- |
+| `HUB_ARTIFACT_MISSING` | the hub answered, and does not have it |
+| `HUB_ARTIFACT_FORBIDDEN` | the hub refused to serve it |
+| `HUB_ARTIFACT_REDIRECTED` | the hub answered with a redirect, which is not followed |
+| `HUB_ARTIFACT_FETCH_FAILED` | the request itself failed |
+| `HUB_ARTIFACT_SIZE_MISMATCH` | the bytes are not the size the release declares |
+| `HUB_ARTIFACT_DIGEST_MISMATCH` | the bytes are not the bytes the release names |
+
+Verified bytes are kept in this instance's artifact store, so reviewing a
+package and then installing it fetches once.
+
+The safety review reads referenced bytes the same way the install does. A
+referenced pipeline is scanned from its real content, not from an empty file.
+
 ## Storage
 
 Hub operational state lives under the platform data root:
@@ -364,7 +413,9 @@ Hub operational state lives under the platform data root:
 ```text
 services/hub-default/hub.db
 services/hub-default/packages/{package_id}/versions/{version}/artifact.json
+services/hub-default/artifacts/{sha256}
 ```
 
 The package metadata is in `hub.db`; the installable package payload is in
-`artifact.json`.
+`artifact.json`. Referenced file bytes and cover images share
+`artifacts/{sha256}`, named by their own digest.
