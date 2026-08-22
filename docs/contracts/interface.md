@@ -106,8 +106,8 @@ alias is sugar; the canonical form is the vocabulary.
 
 | Alias | Expands to |
 | --- | --- |
-| `zeb install <name>` | **open — see §7** |
-| `zeb remove <name>` | the inverse of whatever §7 settles |
+| `zeb install <ref>` | `zeb project install <ref>` |
+| `zeb remove <ref>` | `zeb project remove <ref>` |
 | `zeb list` | `zeb project list` |
 
 The alias set is frozen at the four verbs in Group 2. Adding a fifth is a
@@ -134,11 +134,14 @@ zeb status
 | --- | --- |
 | instance | `http://localhost:10610` |
 | owner | the only user, when there is exactly one |
-| project | a new project named after the package |
 
-That last rule is what makes `zeb install kids-educational-games` work with no
-setup, and it is safe because the project is new: there is nothing to overwrite,
-and the review still prints before anything is written.
+Project context is **not** defaulted, because bare `zeb install` does not consult
+it (§7). `zeb install kids-educational-games` needs no setup for that reason, not
+because an unset context is filled in — the command materialises a project named
+by the reference, and the review prints before anything is written.
+
+Context matters for the scoped forms, `zeb project install` inside an existing
+project among them, where it is stated rather than inferred.
 
 ## 6. Transport
 
