@@ -8844,7 +8844,6 @@ dependencies = [
  "deno_core",
  "deno_error",
  "dirs-next",
- "dotenvy",
  "flate2",
  "futures",
  "geodatafusion",
