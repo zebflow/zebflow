@@ -1,7 +1,6 @@
 # Interface
 
-Status: **draft**. The vocabulary is proposed; the open question in §7 is
-unsettled and nothing should be built past it.
+Status: **draft**. The vocabulary is proposed. §8 is the work that remains.
 
 This is a contract, not a kind. It defines no document format. It defines the
 **words** Zebflow uses for the things a person can do, so that a terminal, a
@@ -160,28 +159,27 @@ shell out to the CLI: that would make process spawning, argument escaping, and
 output parsing into a permanent dependency between two surfaces that only need
 to agree on words.
 
-## 7. Open: what `zeb install` expands to
+## 7. What `zeb install` expands to
 
-Unsettled, and nothing should be built past it.
+Settled, in `distribution.md` §on verbs, before this document existed:
 
-`distribution.md` defines three verbs precisely: **install** is the managed one
-(content lands in `data/`, tracked, uninstallable), **add** makes content your
-own source in `repo/`, and **import** is destructive.
+```text
+zeb install <ref>        alias for: zeb project install <ref>
+```
 
-But `zeb install kids-educational-games` for a first-time user means "give me a
-working app", which creates a project. That is a different act from the
-contract's `install`, and it is irreversible.
+`install` means materialise a project at platform scope, and take on a managed
+dependency at project scope. **Bare `install` always means the first**, whatever
+project context is configured.
 
-Two ways out, and picking wrong is a rename after people have typed it:
+It is an alias, not an inference. That is deliberate: a command whose meaning
+changes with hidden state is the failure the distribution contract opens by
+naming. An earlier draft of this document proposed exactly that inference --
+create a project when no context is set, add a dependency when one is -- which
+was wrong, and is recorded here so it is not proposed a third time.
 
-1. The canonical is `zeb hub install`, and `distribution.md`'s wording changes so
-   one word means one thing across both documents.
-2. The canonical is a project-creating command — `zeb project create --from` or
-   similar — and `install` aliases to that, leaving `distribution.md` untouched.
-
-Whichever is chosen, project creation is irreversible and must route through the
-platform-scope install review, which exists and reports the SQL a package would
-run, the pipelines it would register, and what it would activate.
+Project creation is irreversible and routes through the platform-scope install
+review, which reports the SQL a package would run, the pipelines it would
+register, and what it would activate.
 
 ## 8. What is not yet mapped
 
