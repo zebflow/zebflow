@@ -1,0 +1,209 @@
+# Interface
+
+Status: **draft**. The vocabulary is proposed; the open question in §7 is
+unsettled and nothing should be built past it.
+
+This is a contract, not a kind. It defines no document format. It defines the
+**words** Zebflow uses for the things a person can do, so that a terminal, a
+web UI, and a future desktop launcher are three renderings of one vocabulary
+rather than three products that drifted apart.
+
+A term added by whoever ships a button is how two glossaries begin. This
+document is where a term is added.
+
+## 1. Why the words are the contract
+
+Nouns can be added forever. A verb someone has typed into a script, a README, or
+a blog post is permanent — it outlives the code that implemented it and the
+person who chose it.
+
+So the verbs are frozen and the nouns grow. A new capability becomes
+`zeb <newnoun> <verb>` and never a new top-level word. That rule is what kept
+`gcloud` coherent for a decade and what `npm` lost when `ci`, `exec`, and
+`dedupe` each arrived at the top level.
+
+## 2. Shape
+
+**`noun verb`, two levels, plus a small frozen set of blessed top-level verbs.**
+
+This is the `gh` shape rather than the `gcloud` one. `gcloud` earns three and
+four levels by covering hundreds of services; Zebflow has eight noun groups, and
+at that size a third level costs clarity and buys nothing.
+
+Rejected, with reasons, so they are not re-proposed:
+
+- **`kubectl`'s verb-first model** is the cleanest design in this space, and it
+  does not fit. It works when every noun supports every verb, so a new resource
+  type gains the whole verb set on the day it is defined. Zebflow's operations
+  are not uniform CRUD: `publish`, `activate`, `migrate`, `review`, and `retract`
+  do not collapse into get/create/delete, and forcing them would make the verbs
+  describe something other than what they do.
+- **`docker`'s dual surface** — `docker ps` beside `docker container ls` — is a
+  wart it grew, not a model. §4 permits aliases, but only with an exact
+  canonical expansion, which is the property docker's shortcuts lack.
+- **`git` / `npm` / `cargo`'s flat verbs** work because the noun is implicit: the
+  current repository, the current package. Zebflow has no implicit noun. One
+  instance holds many projects and a directory is not one of them (§5).
+
+## 3. The four groups
+
+Every command belongs to exactly one.
+
+### Group 1 — Server modes
+
+Bare verbs, no nouns, configured by environment. These are "be a server", not
+"do something to something", which is why they are the one deliberate exception
+to `noun verb`. `docker`, `caddy`, and `nginx` all behave this way and nobody
+is surprised.
+
+```
+zeb                    standalone: controller + office
+zeb controller         control plane
+zeb office             execution plane
+```
+
+### Group 2 — General use
+
+What a person who has never read this document types. Blessed top-level verbs,
+each an alias with an exact canonical expansion (§4).
+
+```
+zeb install <name>     get a thing and make it work
+zeb remove <name>      undo that
+zeb list               what do I have
+zeb status             what is running, where, as whom
+```
+
+### Group 3 — Project maintenance
+
+Already exists, already correct in shape, and already offline: these run
+directly against a data directory with no server, because they are what you run
+*when the server will not start*. One of them is why a server refused to boot on
+2026-08-20 until its configuration was explicitly migrated, which was correct
+behaviour.
+
+```
+zeb project config    migrate <owner> <project>
+zeb project lock      migrate <owner> <project>
+zeb project pipelines migrate <owner> <project>
+```
+
+This group is three levels deep, and stays that way: `config`, `lock`, and
+`pipelines` name genuinely different documents.
+
+### Group 4 — Kubernetes provisioning
+
+Ten commands, a third of the current CLI, that a general user never meets. It
+stays a deep noun group and is never promoted.
+
+```
+zeb k8s cluster init|describe|validate|set-image|set-replicas|…
+```
+
+## 4. Aliases
+
+An alias is permitted only when it names one canonical command exactly. The
+alias is sugar; the canonical form is the vocabulary.
+
+| Alias | Expands to |
+| --- | --- |
+| `zeb install <name>` | **open — see §7** |
+| `zeb remove <name>` | the inverse of whatever §7 settles |
+| `zeb list` | `zeb project list` |
+
+The alias set is frozen at the four verbs in Group 2. Adding a fifth is a
+change to this document.
+
+## 5. There is no current directory
+
+A Zebflow project lives at `<data-root>/users/{owner}/{project}/`. It is owned
+by the instance, not by a folder you `cd` into. Nothing about the shell's
+working directory identifies a project.
+
+So context is explicit and stated, the way `kubectl` and `gcloud` learned to do
+it, rather than inferred from where the user happens to be standing.
+
+```
+zeb login http://localhost:10610
+zeb use superadmin/default
+zeb status
+```
+
+**Defaults resolve so that the first command a person runs needs none of that:**
+
+| Unset | Resolves to |
+| --- | --- |
+| instance | `http://localhost:10610` |
+| owner | the only user, when there is exactly one |
+| project | a new project named after the package |
+
+That last rule is what makes `zeb install kids-educational-games` work with no
+setup, and it is safe because the project is new: there is nothing to overwrite,
+and the review still prints before anything is written.
+
+## 6. Transport
+
+**HTTP when the server owns the state; direct when the command exists to repair
+a server that will not start.**
+
+Groups 2 and 4 speak to a running instance over its API — the same routes the
+web UI uses, which is what keeps the two surfaces honest. Group 3 runs directly
+against the data directory.
+
+The reason is not taste. An install touches ten things beyond writing files,
+including `node_registry.refresh_project`, which is an in-memory cache inside the
+running server. A CLI that wrote to disk behind a live server would leave it
+believing something false about its own nodes.
+
+The UI is a rendering of this vocabulary over the same HTTP API. It does not
+shell out to the CLI: that would make process spawning, argument escaping, and
+output parsing into a permanent dependency between two surfaces that only need
+to agree on words.
+
+## 7. Open: what `zeb install` expands to
+
+Unsettled, and nothing should be built past it.
+
+`distribution.md` defines three verbs precisely: **install** is the managed one
+(content lands in `data/`, tracked, uninstallable), **add** makes content your
+own source in `repo/`, and **import** is destructive.
+
+But `zeb install kids-educational-games` for a first-time user means "give me a
+working app", which creates a project. That is a different act from the
+contract's `install`, and it is irreversible.
+
+Two ways out, and picking wrong is a rename after people have typed it:
+
+1. The canonical is `zeb hub install`, and `distribution.md`'s wording changes so
+   one word means one thing across both documents.
+2. The canonical is a project-creating command — `zeb project create --from` or
+   similar — and `install` aliases to that, leaving `distribution.md` untouched.
+
+Whichever is chosen, project creation is irreversible and must route through the
+platform-scope install review, which exists and reports the SQL a package would
+run, the pipelines it would register, and what it would activate.
+
+## 8. What is not yet mapped
+
+This document proposes a vocabulary. It has not yet been checked against the
+222 API routes, 37 MCP tools, and 27 CLI commands that exist, so "covers all
+current operations" is a goal here and not yet a fact.
+
+The noun groups below were read off the route table rather than invented, and
+are the starting point for that mapping:
+
+```
+hub 34 · pipelines 28 · templates 24 · db 21 · files 13 · transfer 10
+nodes 10 · git 10 · settings 8 · credentials 8 · docs 7 · rwe 5
+mapserver 5 · tables 4 · assets 4 · mcp 3 · assistant 3
+```
+
+Eighteen groups is more than a person can hold. Several collapse — `tables` into
+`db`, `assets` and `rwe` into source, `transfer` and `git` into `project` — and
+the reduction is the work. The deliverable of that pass is the list of
+operations **no proposed term covers**, because without it minimality and
+completeness are both claims nobody can check.
+
+`zebflow run <url>` is the first thing that mapping must resolve. It materializes
+a project from a hub asset and then serves it, which is half Group 2 and half
+Group 1, and it is the existing name most likely to collide with §7.

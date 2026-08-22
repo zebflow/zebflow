@@ -7,6 +7,8 @@ rely on them.
 - [Project contract](./project.md)
 - [Format contract](./formats.md)
 - [Distribution contract](./distribution.md)
+- [Confinement contract](./confinement.md)
+- [Interface contract](./interface.md)
 - [Registered contract kinds](./kinds/README.md)
 - [Contract stability matrix](./stability-matrix.md)
 - [Versioning contract](./versioning.md)
