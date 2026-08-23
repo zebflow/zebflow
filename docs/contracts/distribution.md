@@ -57,9 +57,10 @@ project and cannot be undone by an uninstall; project-scope install adds a
 tracked dependency that uninstall removes. A rule proven at one scope does not
 transfer to the other, and this document says which scope each rule belongs to.
 
-The CLI reflects the same split: `zebflow run` is platform scope, taking a
-project or Hub asset URL and materialising it. There is no project-scope CLI
-verb today; project-scope distribution is API and UI only.
+The CLI reflects the same split: `zebflow run` and `zebflow project install`
+are both platform scope, the first taking a project or Hub asset URL and the
+second a Hub package reference. There is no project-scope CLI verb today;
+project-scope distribution is API and UI only.
 
 ## 0b. Consumption modes
 
@@ -138,10 +139,13 @@ package manager works. Someone who wants a video pipeline built from ElevenLabs
 and Seedance nodes, or a set of office tools, should be able to obtain the whole
 thing and have it belong to their instance.
 
-**This section is a proposal, not a description.** The only distribution verb
-that exists today is `zebflow run`, which materialises a project or Hub asset
-and then serves it. Everything else below is unimplemented and is written here
-so the surface is designed once rather than grown one flag at a time.
+**This section is mostly a proposal.** Two of its verbs exist today:
+`zebflow run`, which materialises a project or Hub asset and then serves it,
+and `zebflow project install` with its `zebflow install` alias, which reviews a
+Hub project bundle, prints what it would write and what SQL it would run, asks,
+and then materialises it over the instance's HTTP API. Everything else below is
+unimplemented and is written here so the surface is designed once rather than
+grown one flag at a time.
 
 ### Which pattern this follows
 

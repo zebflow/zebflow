@@ -93,7 +93,16 @@ zeb run <ref>          materialise if needed, then serve
 zeb add <ref> --to <folder>     copy content in as this project's source
 zeb publish <source> --to <hub>
 zeb list · zeb status
+zeb login <instance-url> · zeb use <owner>/<project> · zeb logout
 ```
+
+The second line is the client context store (§5), which has no noun to sit
+under: it configures the client itself rather than acting on anything the
+instance holds, so `zeb context set` would name a resource that does not exist.
+`gcloud` and `kubectl` both landed on bare `auth`/`config` verbs here for the
+same reason. `logout` is the only one of the three §5 did not already name, and
+it is the counterpart that revokes what `login` stored; removing a credential
+must not require deleting a file by hand.
 
 The set is larger than it should be. `install` and `run` clearly earn a
 top-level place; `add` and `publish` do not say *what* is being added or
@@ -255,17 +264,24 @@ zeb status
 --owner / --project flag  →  stored client default  →  error
 ```
 
-**The stored client default does not exist yet.** `distribution.md` says
-`default_owner` and `default_project` "already exist in the CLI configuration".
-They exist, but as *server* configuration read from
+`distribution.md` says `default_owner` and `default_project` "already exist in
+the CLI configuration". They exist, but as *server* configuration read from
 `ZEBFLOW_PLATFORM_DEFAULT_OWNER` and `ZEBFLOW_PLATFORM_DEFAULT_PROJECT`, which
 name the owner and project the server bootstraps on first boot. They are not a
-client-side record of which project a person is working on, and no `zeb config
-set` writes one.
+client-side record of which project a person is working on, and nothing consults
+them to resolve `--owner` / `--project`.
 
-So a client context store — instance, credential, owner, project — is a
-prerequisite for the everyday path being short, and it is unbuilt. Until it
-exists, project-scope commands require their flags.
+**The client context store is separate, and is what `login`, `use`, and `logout`
+write.** It records four things — instance URL, credential, owner, project — in
+`~/.zebflow/client/context.json`, with the directory `0700` and the file `0600`,
+the same shape first-boot bootstrap uses for a generated password.
+
+What it stores as the credential is the **session token** the server issued, not
+the password that obtained it. A token expires, is revoked by `zeb logout`, and
+buys whoever reads the file one account's session rather than a password that
+was probably reused elsewhere. A context file readable by anyone but its owner
+is reported on stderr and tightened on the next write, rather than refused:
+refusing to read it would stop the `zeb logout` that revokes what leaked.
 
 
 Project context is **not** defaulted, because bare `zeb install` does not consult

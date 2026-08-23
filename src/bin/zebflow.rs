@@ -5,6 +5,8 @@
 //! - `zebflow` or `zebflow standalone` starts the current all-in-one server
 //! - `zebflow controller` starts the control-plane oriented server
 //! - `zebflow office` starts the execution-plane oriented server
+//! - `zebflow install|list|status|login|use|logout` talk to a running instance
+//!   over its HTTP API (`platform::cli`)
 //! - `zebflow k8s cluster ...` manages file-based Kubernetes manifest folders
 //!
 //! `master` and `worker` are deprecated spellings of `controller` and `office`;
@@ -26,6 +28,7 @@ use zebflow::infra::execution::sync::ProjectBootstrapPlan;
 use zebflow::infra::health::{
     HealthState, spawn_main_runtime_heartbeat, start_dedicated_health_server,
 };
+use zebflow::platform::cli;
 use zebflow::platform::model::CreateProjectRequest;
 use zebflow::platform::services::PlatformService;
 use zebflow::platform::services::project::{
@@ -140,6 +143,14 @@ fn top_level_help() -> String {
 
 Usage:
   zebflow [standalone]
+  zebflow install <ref> [--repo <repository-id>] [--yes]
+  zebflow list
+  zebflow status
+  zebflow login <instance-url> [--user <name>] [--password <pw>]
+  zebflow use <owner>/<project>
+  zebflow logout
+  zebflow project install <ref>
+  zebflow project list
   zebflow run <project-or-hub-asset-url> [--owner <owner>] [--project <project>]
   zebflow project config migrate <owner> <project>
   zebflow project lock migrate <owner> <project>
@@ -160,7 +171,10 @@ Runtime Modes:
   `master` and `worker` are deprecated spellings of `controller` and `office`.
   They still start the same role, print a warning, and will be removed.
 
-Project Maintenance:
+{client_help}
+
+Project Maintenance (offline: these run against a data directory with no server,
+because they are what you run when the server will not start):
   zebflow project config migrate <owner> <project>
                Explicitly migrate repo/zebflow.json to repo/zebflow.yaml
   zebflow project lock migrate <owner> <project>
@@ -233,7 +247,8 @@ Environment - rendering engine (advanced):
   ZEBFLOW_RWE_PREWARM                Set to 0 to disable post-compile SSR warmup
 
 Use `zebflow k8s --help` for the file-based Kubernetes cluster manager.",
-        version = APP_VERSION
+        version = APP_VERSION,
+        client_help = cli::help_section()
     )
 }
 
@@ -243,6 +258,24 @@ fn print_top_level_help() {
 
 fn print_version() {
     println!("{APP_VERSION}");
+}
+
+/// Routes the `project` noun group.
+///
+/// `install` and `list` reach a running instance over HTTP; `config`, `lock`
+/// and `pipelines` run offline against a data directory, because they are what
+/// you run when the server will not start. `interface.md` §6 draws that line.
+async fn project_command(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+    match args.first().map(String::as_str) {
+        Some("install") => cli::run_install(&args[1..]).await.map_err(Into::into),
+        Some("list") => cli::run_list(&args[1..]).await.map_err(Into::into),
+        Some("config") | Some("lock") | Some("pipelines") => project_maintenance(args),
+        _ => Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "usage: zebflow project <install|list> ...\n       zebflow project <config|lock|pipelines> migrate <owner> <project>",
+        )
+        .into()),
+    }
 }
 
 fn project_maintenance(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
@@ -812,14 +845,41 @@ async fn run_project(req: RunRequest) -> Result<(), Box<dyn std::error::Error>> 
 }
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+async fn main() {
+    if let Err(err) = run().await {
+        // Displayed, not debugged: returning the error from `main` prints its
+        // `Debug` form, which turns a refusal a person is meant to act on into
+        // `Custom { kind: NotFound, error: "..." }`.
+        eprintln!("Error: {err}");
+        std::process::exit(1);
+    }
+}
+
+async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut args = std::env::args().skip(1);
     let mode = args.next();
 
     match mode.as_deref() {
         None => run_server(ClusterRole::Standalone).await,
         Some("run") => run_project(parse_run_request(&args.collect::<Vec<_>>())?).await,
-        Some("project") => project_maintenance(&args.collect::<Vec<_>>()),
+        Some("project") => project_command(&args.collect::<Vec<_>>()).await,
+        // Group 2 aliases, each naming exactly one canonical command
+        // (interface.md §4). `install` never means the project-scope verb,
+        // whatever context is stored (§7).
+        Some("install") => cli::run_install(&args.collect::<Vec<_>>())
+            .await
+            .map_err(Into::into),
+        Some("list") => cli::run_list(&args.collect::<Vec<_>>())
+            .await
+            .map_err(Into::into),
+        Some("status") => cli::run_status(&args.collect::<Vec<_>>())
+            .await
+            .map_err(Into::into),
+        Some("login") => cli::run_login(&args.collect::<Vec<_>>())
+            .await
+            .map_err(Into::into),
+        Some("use") => cli::run_use(&args.collect::<Vec<_>>()).map_err(Into::into),
+        Some("logout") => cli::run_logout(&args.collect::<Vec<_>>()).map_err(Into::into),
         Some("help") | Some("--help") | Some("-h") => {
             print_top_level_help();
             Ok(())

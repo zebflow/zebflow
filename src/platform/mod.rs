@@ -6,9 +6,11 @@
 //! - provide service layer for auth/user/project
 //! - expose Axum router for platform flow:
 //!   `login -> home(project list) -> project page`
+//! - expose the client half of the CLI, which reaches that router over HTTP
 
 pub mod adapters;
 pub mod catalog;
+pub mod cli;
 pub mod db;
 pub mod error;
 pub mod help;
