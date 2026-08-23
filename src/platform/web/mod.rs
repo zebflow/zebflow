@@ -4568,30 +4568,23 @@ async fn read_project_doc_for_page(
 }
 
 async fn cluster_worker_registration_loop(state: PlatformAppState) {
-    let Some(master_url) = state
-        .platform
-        .cluster_bootstrap
-        .master_url()
-        .map(str::to_string)
-    else {
-        eprintln!("Zebflow office: controller_url missing; office registration loop disabled");
+    let bootstrap = state.platform.cluster_bootstrap.clone();
+    let (Some(master_url), Some(token), Some(base_url)) = (
+        bootstrap.master_url().map(str::to_string),
+        bootstrap.join_token().map(str::to_string),
+        bootstrap.advertise_url().map(str::to_string),
+    ) else {
+        // Unreachable through `zebflow office`, which refuses to start in this
+        // state. Still guarded, and reporting every missing name at once, because
+        // an embedder can build this router with settings no CLI check saw.
+        eprintln!(
+            "Zebflow office: registration loop disabled; missing {}",
+            bootstrap.settings().missing_required_env().join(", ")
+        );
         return;
     };
-    let Ok(token) = cluster_internal_token_value(&state).map(str::to_string) else {
-        eprintln!("Zebflow office: cluster token missing; office registration loop disabled");
-        return;
-    };
-    let node_id = state.platform.cluster_bootstrap.node_id();
-    let label = state.platform.cluster_bootstrap.node_label();
-    let Some(base_url) = state
-        .platform
-        .cluster_bootstrap
-        .advertise_url()
-        .map(str::to_string)
-    else {
-        eprintln!("Zebflow office: advertise_url missing; office registration loop disabled");
-        return;
-    };
+    let node_id = bootstrap.node_id();
+    let label = bootstrap.node_label();
     let register_url = format!(
         "{}/api/internal/cluster/workers/register",
         master_url.trim_end_matches('/')

@@ -9,6 +9,7 @@ use base64::Engine as _;
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
+use zebflow::infra::cluster::config::ClusterRole;
 use zebflow::platform::model::{
     CollectionAttribute, CreateHubTokenRequest, CreateSimpleTableRequest, TemplateSaveRequest,
     ZebflowJsonDistributionHub,
@@ -109,6 +110,60 @@ fn first_bootstrap_generates_password_and_restart_preserves_it() {
     drop(restarted);
 
     let _ = fs::remove_dir_all(data_root);
+}
+
+#[tokio::test]
+async fn office_refuses_to_start_without_cluster_configuration_and_starts_with_it() {
+    let unconfigured_root = temp_test_dir("office-without-cluster-config");
+    let mut unconfigured = PlatformConfig::default();
+    unconfigured.data_root = unconfigured_root.clone();
+    unconfigured.cluster.role = ClusterRole::Worker;
+    // The binary always fills advertise_url from its own listen address, so the
+    // realistic deployment failure is the two variables only an operator supplies.
+    unconfigured.cluster.advertise_url = Some("http://office-a:10610".to_string());
+
+    let refused = build_router(unconfigured)
+        .await
+        .err()
+        .expect("office without a controller URL must refuse to start");
+    assert_eq!(refused.code, "CLUSTER_CONFIG_INCOMPLETE");
+    assert!(
+        refused.message.contains("ZEBFLOW_CLUSTER_MASTER_URL")
+            && refused.message.contains("ZEBFLOW_CLUSTER_JOIN_TOKEN"),
+        "refusal must name every missing variable at once: {}",
+        refused.message
+    );
+    assert!(
+        !unconfigured_root.exists(),
+        "a refused office must not create its data root"
+    );
+
+    let configured_root = temp_test_dir("office-with-cluster-config");
+    let mut configured = PlatformConfig::default();
+    configured.data_root = configured_root.clone();
+    configured.cluster.role = ClusterRole::Worker;
+    configured.cluster.advertise_url = Some("http://office-a:10610".to_string());
+    // Unreachable on purpose: registration retries in the background and must not
+    // stop the office from serving.
+    configured.cluster.master_url = Some("http://127.0.0.1:1".to_string());
+    configured.cluster.join_token = Some("join-token".to_string());
+
+    let app = build_router(configured)
+        .await
+        .expect("office with complete cluster configuration starts");
+    let health = app
+        .oneshot(
+            Request::builder()
+                .uri("/health")
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("health response");
+    assert_eq!(health.status(), StatusCode::OK);
+    assert_eq!(response_json(health).await["status"], json!("ok"));
+
+    let _ = fs::remove_dir_all(configured_root);
 }
 
 fn multipart_body(field_name: &str, file_name: &str, bytes: &[u8]) -> (String, Vec<u8>) {

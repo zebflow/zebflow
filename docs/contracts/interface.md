@@ -67,6 +67,21 @@ zeb controller         control plane
 zeb office             execution plane
 ```
 
+**`master` and `worker` are deprecated spellings** of `controller` and `office`.
+The binary has always accepted both and documented neither, which is the docker
+wart in §2: two words for one role, with nothing telling a reader which is the
+real one. They are not dropped outright because a word already typed into a
+script outlives the code that chose it, and they are not left silent either —
+each names exactly one canonical word (§4's test), prints a deprecation line
+naming it, and is listed in `zeb help` as deprecated. They are removed when this
+document leaves draft. No third spelling is ever added.
+
+**A server mode that cannot perform its role refuses to start.** A process whose
+whole purpose is to join a control plane must not serve traffic outside one, so
+`zeb office` and `zeb controller` validate their cluster configuration before
+opening the data root, and the error names *every* missing variable at once
+rather than one per restart. §3a says which variables those are.
+
 ### Group 2 — General use
 
 What a person who has never read this document types. Blessed top-level verbs,
@@ -113,6 +128,93 @@ stays a deep noun group and is never promoted.
 zeb k8s cluster init|describe|validate|set-image|set-replicas|…
 ```
 
+## 3a. What configures a server mode
+
+Group 1 takes no nouns and no flags, so its whole input is the environment. That
+made the variables a flat list nobody could hold: `zeb help` used to name eight
+of the twenty-two below, in one block, in no order.
+
+They are grouped here by **what a variable decides**, because that is the
+question an operator arrives with. The tables below are the whole operator-facing
+set; they were read off `std::env::var` call sites, not remembered, and the
+paragraph after them accounts for every name that exists and is not in a table.
+
+**Process shape** — where this process listens and what it writes to.
+
+| Variable | Decides | Default |
+| --- | --- | --- |
+| `ZEBFLOW_PLATFORM_HOST` | listen host | `127.0.0.1` |
+| `ZEBFLOW_PLATFORM_PORT` | listen port | `10610` |
+| `ZEBFLOW_PLATFORM_DATA_DIR` | data root | `.zebflow-platform-data` |
+| `ZEBFLOW_PLATFORM_BASE_URL` | external base URL in OAuth redirect and MCP session URLs | derived from request headers |
+| `ZEBFLOW_HEALTH_PORT` | dedicated liveness port | unset: no separate server |
+| `ZEBFLOW_HEALTH_HOST` | dedicated liveness host | `ZEBFLOW_PLATFORM_HOST` |
+
+**First-boot bootstrap** — what exists inside the instance after its first start.
+
+| Variable | Decides | Default |
+| --- | --- | --- |
+| `ZEBFLOW_PLATFORM_DEFAULT_OWNER` | owner account created on first boot | `superadmin` |
+| `ZEBFLOW_PLATFORM_DEFAULT_PROJECT` | project created for that owner on first boot | `default` |
+| `ZEBFLOW_PLATFORM_DEFAULT_PASSWORD` | that owner's initial password | generated into `<data-dir>/.bootstrap/superadmin-password` |
+| `ZEBFLOW_PLATFORM_ALLOW_INSECURE_DEFAULT_PASSWORD` | permits the literal password `secret` | off |
+
+`DEFAULT_OWNER` and `DEFAULT_PROJECT` are **server** state, not client context.
+They name what the server creates on first boot. They are not a record of which
+project a person is working on, and reading them as one is the mistake §5
+records: `distribution.md` calls them "CLI configuration", and no `zeb config
+set` writes them. Nothing consults them to resolve `--owner` / `--project`.
+
+**Cluster membership** — how a controller and an office find and trust each other.
+
+| Variable | Decides | Required by |
+| --- | --- | --- |
+| `ZEBFLOW_CLUSTER_JOIN_TOKEN` | shared internal cluster token | controller **and** office |
+| `ZEBFLOW_CLUSTER_MASTER_URL` | controller base URL an office registers with | office |
+| `ZEBFLOW_CLUSTER_ADVERTISE_URL` | base URL this node advertises | optional; defaults to this process's listen URL |
+| `ZEBFLOW_CLUSTER_NODE_ID` | stable node id | optional; defaults to the role name |
+| `ZEBFLOW_CLUSTER_NODE_LABEL` | human-readable node label | optional; defaults to the node id |
+
+A required variable that is unset **or blank** is missing. An exported-but-empty
+variable is a misconfiguration, and treating it as a value is how a blank
+advertise URL used to disable office registration without saying so.
+
+**Sessions and tokens.**
+
+| Variable | Decides | Default |
+| --- | --- | --- |
+| `ZEBFLOW_COOKIE_SECURE` | `Secure` attribute on session cookies | on unless the listen host is loopback |
+| `ZEBFLOW_SECRET_ROTATION_EPOCH` | unix timestamp invalidating older platform-issued tokens | `0` |
+
+**Hub.**
+
+| Variable | Decides | Default |
+| --- | --- | --- |
+| `ZEBFLOW_HUB_DEFAULT_BASE_URL` | default hub API URL | `https://hub.zebflow.com/api` |
+| `ZEBFLOW_HUB_ALLOW_LOCALHOST_REMOTE` | permits localhost hub remotes | off; production must leave it unset |
+
+**Rendering engine**, advanced and rarely set.
+
+| Variable | Decides | Default |
+| --- | --- | --- |
+| `ZEBFLOW_PLATFORM_RWE_ENGINE_ID` | engine for the platform admin UI | built-in |
+| `ZEBFLOW_RWE_ENGINE_ID` | engine for project pipeline rendering | built-in |
+| `ZEBFLOW_RWE_PREWARM` | set to `0` to disable post-compile SSR warmup | on |
+
+Every other name in the source is deliberately not interface.
+`ZEBFLOW_RWE_DEMO_ENGINE_ID` belongs to the separate `axum_rwe_demo`
+binary, `ZEBFLOW_KEEP_DOCSGEN_TEST` and `MAPSERVER_BENCH_SOURCE` are test-only,
+and `RWE_WORKER_COUNT`, `RWE_SSR_CACHE_TTL_SECS`, and
+`PIPELINE_NODE_TIMEOUT_SECS` are unprefixed engine tuning knobs that should
+either take the `ZEBFLOW_` prefix and join the tables above or stop being
+environment-configurable. `ZEBFLOW_PORT` is a stray: its only effect is the
+fallback base URL of one WASM lifecycle callback, where it defaults to `10611`
+rather than the real listen port, and it should be deleted in favour of
+`ZEBFLOW_PLATFORM_BASE_URL`. `ZEBTUNE_LLM_PROVIDER` and its five
+`ZEBTUNE_OPENAI_*` / `ZEBTUNE_ANTHROPIC_*` companions are a fallback LLM
+credential for the agent node, read inside the server but belonging to the
+credential surface rather than to a server mode.
+
 ## 4. Aliases
 
 An alias is permitted only when it names one canonical command exactly. The
@@ -126,6 +228,11 @@ alias is sugar; the canonical form is the vocabulary.
 
 The alias set is frozen at the four verbs in Group 2. Adding a fifth is a
 change to this document.
+
+Group 1's `master` and `worker` are **not** additions to this set. They are
+deprecated spellings on their way out, not sugar being kept, and §3's rule that
+each names exactly one canonical word is what separates them from the docker
+wart §2 rejects.
 
 ## 5. There is no current directory
 

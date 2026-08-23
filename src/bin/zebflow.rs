@@ -3,9 +3,12 @@
 //! Current behavior:
 //!
 //! - `zebflow` or `zebflow standalone` starts the current all-in-one server
-//! - `zebflow master` or `zebflow controller` starts the control-plane oriented server
-//! - `zebflow worker` or `zebflow office` starts the execution-plane oriented server
+//! - `zebflow controller` starts the control-plane oriented server
+//! - `zebflow office` starts the execution-plane oriented server
 //! - `zebflow k8s cluster ...` manages file-based Kubernetes manifest folders
+//!
+//! `master` and `worker` are deprecated spellings of `controller` and `office`;
+//! they still resolve to the same roles and warn.
 //!
 //! The goal is one binary that still runs comfortably on a laptop or Raspberry Pi while also
 //! growing into controller/office and Kubernetes deployments.
@@ -18,7 +21,7 @@ use std::sync::Arc;
 use base64::Engine as _;
 use reqwest::Url;
 use serde_json::Value;
-use zebflow::infra::cluster::config::ClusterRole;
+use zebflow::infra::cluster::config::{ClusterRole, ClusterSettings};
 use zebflow::infra::execution::sync::ProjectBootstrapPlan;
 use zebflow::infra::health::{
     HealthState, spawn_main_runtime_heartbeat, start_dedicated_health_server,
@@ -154,6 +157,9 @@ Runtime Modes:
   controller   Start the control-plane oriented server
   office       Start the execution-plane oriented server
 
+  `master` and `worker` are deprecated spellings of `controller` and `office`.
+  They still start the same role, print a warning, and will be removed.
+
 Project Maintenance:
   zebflow project config migrate <owner> <project>
                Explicitly migrate repo/zebflow.json to repo/zebflow.yaml
@@ -179,15 +185,52 @@ Kubernetes:
   zebflow k8s cluster describe <path>
   zebflow k8s cluster validate <path>
 
-Environment:
-  ZEBFLOW_PLATFORM_DEFAULT_PASSWORD  Optional initial superadmin password
+Environment - process shape (where this process listens and stores):
   ZEBFLOW_PLATFORM_HOST              Listen host (default: 127.0.0.1)
   ZEBFLOW_PLATFORM_PORT              Listen port (default: 10610)
+  ZEBFLOW_PLATFORM_DATA_DIR          Data root override
+  ZEBFLOW_PLATFORM_BASE_URL          External base URL used for OAuth redirect and MCP session
+                                     URLs (default: derived from the request headers)
   ZEBFLOW_HEALTH_PORT                Optional dedicated liveness port, e.g. 10611
   ZEBFLOW_HEALTH_HOST                Dedicated liveness host (default: ZEBFLOW_PLATFORM_HOST)
-  ZEBFLOW_PLATFORM_DATA_DIR          Data root override
+
+Environment - first-boot bootstrap (server state created on first start; not CLI context):
+  ZEBFLOW_PLATFORM_DEFAULT_OWNER     Owner account created on first boot (default: superadmin)
+  ZEBFLOW_PLATFORM_DEFAULT_PROJECT   Project created for that owner on first boot
+                                     (default: default)
+  ZEBFLOW_PLATFORM_DEFAULT_PASSWORD  Initial password for that owner; when unset a random one is
+                                     generated into <data-dir>/.bootstrap/superadmin-password
+  ZEBFLOW_PLATFORM_ALLOW_INSECURE_DEFAULT_PASSWORD
+                                     Set to 1 to permit the literal password 'secret'
+                                     (disposable local development only)
+
+Environment - cluster membership (controller and office):
+  ZEBFLOW_CLUSTER_JOIN_TOKEN         Shared internal cluster token; required by controller
+                                     and office
+  ZEBFLOW_CLUSTER_MASTER_URL         Controller base URL an office registers with; required
+                                     by office
+  ZEBFLOW_CLUSTER_ADVERTISE_URL      Base URL this node advertises to the control plane
+                                     (default: this process's own listen URL)
+  ZEBFLOW_CLUSTER_NODE_ID            Stable node id (default: the role name)
+  ZEBFLOW_CLUSTER_NODE_LABEL         Human-readable node label (default: the node id)
+  A controller or office missing any variable marked required above refuses to start and
+  names every missing one at once.
+
+Environment - sessions and tokens:
+  ZEBFLOW_COOKIE_SECURE              Force the Secure attribute on session cookies
+                                     (default: on unless the listen host is loopback)
   ZEBFLOW_SECRET_ROTATION_EPOCH      Unix timestamp; invalidate older platform-issued tokens
-  ZEBFLOW_HUB_DEFAULT_BASE_URL          Default platform hub API URL
+
+Environment - hub:
+  ZEBFLOW_HUB_DEFAULT_BASE_URL       Default platform hub API URL
+                                     (default: https://hub.zebflow.com/api)
+  ZEBFLOW_HUB_ALLOW_LOCALHOST_REMOTE Set to 1 to allow localhost hub remotes (local development
+                                     only; production must leave this unset)
+
+Environment - rendering engine (advanced):
+  ZEBFLOW_PLATFORM_RWE_ENGINE_ID     Reactive web engine id for the platform admin UI
+  ZEBFLOW_RWE_ENGINE_ID              Reactive web engine id for project pipeline rendering
+  ZEBFLOW_RWE_PREWARM                Set to 0 to disable post-compile SSR warmup
 
 Use `zebflow k8s --help` for the file-based Kubernetes cluster manager.",
         version = APP_VERSION
@@ -320,14 +363,13 @@ fn load_platform_config_with_default_password(
             ))
         })?;
     }
-    config.cluster.role = role;
-    config.cluster.node_id = std::env::var("ZEBFLOW_CLUSTER_NODE_ID").ok();
-    config.cluster.node_label = std::env::var("ZEBFLOW_CLUSTER_NODE_LABEL").ok();
-    config.cluster.master_url = std::env::var("ZEBFLOW_CLUSTER_MASTER_URL").ok();
-    config.cluster.advertise_url = std::env::var("ZEBFLOW_CLUSTER_ADVERTISE_URL")
-        .ok()
-        .or_else(|| Some(default_advertise_url(&host, port)));
-    config.cluster.join_token = std::env::var("ZEBFLOW_CLUSTER_JOIN_TOKEN").ok();
+    config.cluster = ClusterSettings::from_env(role, &default_advertise_url(&host, port));
+    // Refused here as well as in `PlatformService::from_config`, so `zebflow office`
+    // names every missing variable before it opens the data root.
+    config
+        .cluster
+        .validate()
+        .map_err(|err| io::Error::other(err.to_string()))?;
 
     config.data_adapter = DataAdapterKind::Sqlite;
     config.file_adapter = FileAdapterKind::Filesystem;
@@ -775,7 +817,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mode = args.next();
 
     match mode.as_deref() {
-        None | Some("standalone") => run_server(ClusterRole::Standalone).await,
+        None => run_server(ClusterRole::Standalone).await,
         Some("run") => run_project(parse_run_request(&args.collect::<Vec<_>>())?).await,
         Some("project") => project_maintenance(&args.collect::<Vec<_>>()),
         Some("help") | Some("--help") | Some("-h") => {
@@ -786,13 +828,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             print_version();
             Ok(())
         }
-        Some("master") | Some("controller") => run_server(ClusterRole::Master).await,
-        Some("worker") | Some("office") => run_server(ClusterRole::Worker).await,
         Some("k8s") => k8s_provision::run_cli(&args.collect::<Vec<_>>()),
-        Some(other) => Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            format!("unknown zebflow mode '{other}'\n\n{}", top_level_help()),
-        )
-        .into()),
+        Some(other) => match ClusterRole::from_mode_arg(other) {
+            Some(mode) => {
+                if let Some(canonical) = mode.deprecated_alias_of {
+                    eprintln!(
+                        "Zebflow: `zebflow {other}` is a deprecated spelling of `zebflow {canonical}` and will be removed; use `zebflow {canonical}`."
+                    );
+                }
+                run_server(mode.role).await
+            }
+            None => Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("unknown zebflow mode '{other}'\n\n{}", top_level_help()),
+            )
+            .into()),
+        },
     }
 }

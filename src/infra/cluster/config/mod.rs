@@ -4,8 +4,8 @@
 //! topologies without changing the product surface:
 //!
 //! - standalone: today's all-in-one local install
-//! - master: future control-plane process
-//! - worker: future execution-plane process
+//! - controller: control-plane process
+//! - office: execution-plane process
 //!
 //! The point of this module is to keep role intent explicit and serializable early, before the
 //! transport and security layers are fully wired.
@@ -13,5 +13,5 @@
 pub mod role;
 pub mod settings;
 
-pub use role::ClusterRole;
-pub use settings::ClusterSettings;
+pub use role::{ClusterRole, ServerMode};
+pub use settings::{ClusterConfigError, ClusterSettings};

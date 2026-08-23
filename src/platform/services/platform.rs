@@ -98,6 +98,14 @@ pub struct PlatformService {
 impl PlatformService {
     /// Builds platform from config and runs bootstrap initialization.
     pub fn from_config(config: PlatformConfig) -> Result<Self, PlatformError> {
+        // A process asked for a role it cannot perform refuses here, before it
+        // creates a data root or binds a port. An office that cannot join a
+        // controller would otherwise serve traffic and report itself healthy
+        // while belonging to no cluster.
+        config
+            .cluster
+            .validate()
+            .map_err(|err| PlatformError::new("CLUSTER_CONFIG_INCOMPLETE", err.to_string()))?;
         std::fs::create_dir_all(&config.data_root)?;
         let data = build_data_adapter(config.data_adapter, &config.data_root)?;
         // The configuration service is built first: the file adapter resolves
