@@ -5,6 +5,7 @@ rely on them.
 
 - [Platform contract](./platform.md)
 - [Project contract](./project.md)
+- [Project directory](./project-directory.md)
 - [Format contract](./formats.md)
 - [Distribution contract](./distribution.md)
 - [Confinement contract](./confinement.md)
