@@ -24,9 +24,12 @@ use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::Arc;
 
-use zebflow::infra::cluster::config::{ClusterRole, ClusterSettings};
+use zebflow::infra::cluster::config::ClusterRole;
 use zebflow::infra::health::{
     HealthState, spawn_main_runtime_heartbeat, start_dedicated_health_server,
+};
+use zebflow::platform::boot::{
+    configured_host, configured_port, default_data_root, load_platform_config,
 };
 use zebflow::platform::cli;
 use zebflow::platform::services::PlatformService;
@@ -35,7 +38,7 @@ use zebflow::platform::services::{
     DependencyLockService, LibraryService, ProjectConfigurationService, ProjectService,
 };
 use zebflow::platform::web;
-use zebflow::platform::{DataAdapterKind, FileAdapterKind, PlatformConfig, build_router};
+use zebflow::platform::{FileAdapterKind, PlatformConfig, build_router};
 use zebflow::provision::k8s as k8s_provision;
 use zebflow::version::APP_VERSION;
 
@@ -70,17 +73,6 @@ async fn shutdown_signal(health_state: Option<Arc<HealthState>>) {
         state.mark_shutdown_requested();
     }
     eprintln!("Zebflow: graceful shutdown initiated; draining in-flight requests...");
-}
-
-fn configured_host() -> String {
-    std::env::var("ZEBFLOW_PLATFORM_HOST").unwrap_or_else(|_| "127.0.0.1".to_string())
-}
-
-fn configured_port() -> u16 {
-    std::env::var("ZEBFLOW_PLATFORM_PORT")
-        .ok()
-        .and_then(|v| v.parse::<u16>().ok())
-        .unwrap_or(10610)
 }
 
 fn configured_health_addr(default_host: &str) -> Result<Option<SocketAddr>, io::Error> {
@@ -119,11 +111,6 @@ fn maybe_start_dedicated_health_server(
     let handle = start_dedicated_health_server(addr, state.clone())?;
     spawn_main_runtime_heartbeat(state.clone());
     Ok(Some((state, handle, addr)))
-}
-
-fn default_advertise_url(host: &str, port: u16) -> String {
-    let host = if host == "0.0.0.0" { "127.0.0.1" } else { host };
-    format!("http://{host}:{port}")
 }
 
 fn display_mode(role: ClusterRole) -> &'static str {
@@ -201,7 +188,10 @@ Kubernetes:
 Environment - process shape (where this process listens and stores):
   ZEBFLOW_PLATFORM_HOST              Listen host (default: 127.0.0.1)
   ZEBFLOW_PLATFORM_PORT              Listen port (default: 10610)
-  ZEBFLOW_PLATFORM_DATA_DIR          Data root override
+  ZEBFLOW_PLATFORM_DATA_DIR          Data root. Unset, the OS user data path is used:
+                                     ~/.local/share/zebflow, ~/Library/Application Support/Zebflow,
+                                     or %LOCALAPPDATA%\\Zebflow. Never a path relative to the
+                                     working directory
   ZEBFLOW_PLATFORM_BASE_URL          External base URL used for OAuth redirect and MCP session
                                      URLs (default: derived from the request headers)
   ZEBFLOW_HEALTH_PORT                Optional dedicated liveness port, e.g. 10611
@@ -294,10 +284,7 @@ fn project_maintenance(args: &[String]) -> Result<(), Box<dyn std::error::Error>
         )
         .into());
     }
-    let mut data_root = PlatformConfig::default().data_root;
-    if let Ok(path) = std::env::var("ZEBFLOW_PLATFORM_DATA_DIR") {
-        data_root = path.into();
-    }
+    let data_root = default_data_root();
     match args[0].as_str() {
         "config" => {
             let service = ProjectConfigurationService::new(data_root.join("users"));
@@ -376,73 +363,6 @@ fn pipeline_identity_service(
     ))
 }
 
-/// Load the platform configuration for the requested runtime role from environment variables.
-fn load_platform_config_with_default_password(
-    role: ClusterRole,
-    default_password_fallback: Option<&str>,
-) -> Result<PlatformConfig, io::Error> {
-    let mut config = PlatformConfig::default();
-    let host = configured_host();
-    let port = configured_port();
-
-    if let Ok(path) = std::env::var("ZEBFLOW_PLATFORM_DATA_DIR") {
-        config.data_root = path.into();
-    }
-    if let Ok(owner) = std::env::var("ZEBFLOW_PLATFORM_DEFAULT_OWNER") {
-        config.default_owner = owner;
-    }
-    config.default_password = std::env::var("ZEBFLOW_PLATFORM_DEFAULT_PASSWORD")
-        .ok()
-        .filter(|value| !value.trim().is_empty())
-        .or_else(|| default_password_fallback.map(ToString::to_string))
-        .unwrap_or_default();
-    if let Ok(project) = std::env::var("ZEBFLOW_PLATFORM_DEFAULT_PROJECT") {
-        config.default_project = project;
-    }
-    if let Ok(value) = std::env::var("ZEBFLOW_SECRET_ROTATION_EPOCH") {
-        config.secret_rotation_epoch = value.trim().parse::<i64>().map_err(|err| {
-            io::Error::other(format!(
-                "invalid ZEBFLOW_SECRET_ROTATION_EPOCH '{}': {err}",
-                value.trim()
-            ))
-        })?;
-    }
-    config.cluster = ClusterSettings::from_env(role, &default_advertise_url(&host, port));
-    // Refused here as well as in `PlatformService::from_config`, so `zeb office`
-    // names every missing variable before it opens the data root.
-    config
-        .cluster
-        .validate()
-        .map_err(|err| io::Error::other(err.to_string()))?;
-
-    config.data_adapter = DataAdapterKind::Sqlite;
-    config.file_adapter = FileAdapterKind::Filesystem;
-
-    let allow_insecure_default = std::env::var("ZEBFLOW_PLATFORM_ALLOW_INSECURE_DEFAULT_PASSWORD")
-        .ok()
-        .map(|value| {
-            matches!(
-                value.trim().to_ascii_lowercase().as_str(),
-                "1" | "true" | "yes" | "on"
-            )
-        })
-        .unwrap_or(false);
-    if role != ClusterRole::Worker
-        && config.default_password.trim() == "secret"
-        && !allow_insecure_default
-    {
-        return Err(io::Error::other(
-            "refusing insecure ZEBFLOW_PLATFORM_DEFAULT_PASSWORD=secret; choose a strong password or set ZEBFLOW_PLATFORM_ALLOW_INSECURE_DEFAULT_PASSWORD=1 only for disposable local development",
-        ));
-    }
-
-    Ok(config)
-}
-
-fn load_platform_config(role: ClusterRole) -> Result<PlatformConfig, io::Error> {
-    load_platform_config_with_default_password(role, None)
-}
-
 /// Run the requested Zebflow server role.
 async fn run_server(role: ClusterRole) -> Result<(), Box<dyn std::error::Error>> {
     let host = configured_host();
@@ -450,6 +370,10 @@ async fn run_server(role: ClusterRole) -> Result<(), Box<dyn std::error::Error>>
     let health = maybe_start_dedicated_health_server(&host)?;
 
     let config = load_platform_config(role)?;
+    // Printed because it is no longer a constant: `interface.md` §5 makes the
+    // data root the OS user-data path unless a variable names another, and an
+    // operator reading this line should not have to work out which case applied.
+    let data_root = config.data_root.clone();
     let app = build_router(config).await.map_err(io::Error::other)?;
 
     let addr: SocketAddr = format!("{host}:{port}").parse()?;
@@ -460,6 +384,7 @@ async fn run_server(role: ClusterRole) -> Result<(), Box<dyn std::error::Error>>
         println!("Dedicated liveness: http://{health_addr}/health/runtime");
     }
     println!("Mode: {}", display_mode(role));
+    println!("Data: {}", data_root.display());
     println!("Flow: /login -> /home -> /projects/{{owner}}/{{project}}");
 
     axum::serve(listener, app)

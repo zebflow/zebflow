@@ -9,6 +9,7 @@
 //! - expose the client half of the CLI, which reaches that router over HTTP
 
 pub mod adapters;
+pub mod boot;
 pub mod catalog;
 pub mod cli;
 pub mod db;

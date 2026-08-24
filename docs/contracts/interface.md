@@ -78,6 +78,14 @@ that collision and this is its resolution. `run` now refuses a project that is
 not installed and names `install` as the command that installs it, so there is
 exactly one way a project comes into existence and it is the reviewed one.
 
+**`run` starts a server, and it is the command whose stated job that is.** That
+matters in the other direction too, since §6 lets a Group 2 command open the
+data root itself when nothing is listening. Such a command does its work in its
+own process and exits; it never leaves a server behind, because a daemon started
+as a side effect of an install is a process the person did not ask for and
+cannot see. When they want one, they say so, and the words for saying so are the
+four in this group.
+
 **`master` and `worker` are deprecated spellings** of `controller` and `office`.
 The binary has always accepted both and documented neither, which is the docker
 wart in §2: two words for one role, with nothing telling a reader which is the
@@ -174,7 +182,7 @@ paragraph after them accounts for every name that exists and is not in a table.
 | --- | --- | --- |
 | `ZEBFLOW_PLATFORM_HOST` | listen host | `127.0.0.1` |
 | `ZEBFLOW_PLATFORM_PORT` | listen port | `10610` |
-| `ZEBFLOW_PLATFORM_DATA_DIR` | data root | `.zebflow-platform-data` |
+| `ZEBFLOW_PLATFORM_DATA_DIR` | data root | the OS user-data path (§5) |
 | `ZEBFLOW_PLATFORM_BASE_URL` | external base URL in OAuth redirect and MCP session URLs | derived from request headers |
 | `ZEBFLOW_HEALTH_PORT` | dedicated liveness port | unset: no separate server |
 | `ZEBFLOW_HEALTH_HOST` | dedicated liveness host | `ZEBFLOW_PLATFORM_HOST` |
@@ -275,6 +283,45 @@ working directory identifies a project.
 So context is explicit and stated, the way `kubectl` and `gcloud` learned to do
 it, rather than inferred from where the user happens to be standing.
 
+**And neither does the working directory identify the instance.** The data root
+has exactly two cases:
+
+```text
+ZEBFLOW_PLATFORM_DATA_DIR set  ->  use it
+otherwise                      ->  the OS user-data path
+```
+
+which is `$XDG_DATA_HOME/zebflow` or `~/.local/share/zebflow` on Linux,
+`~/Library/Application Support/Zebflow` on macOS, and `%LOCALAPPDATA%\Zebflow`
+on Windows. An exported-but-blank variable is unset, the same rule §3a applies
+to the cluster variables.
+
+There is no third case, and in particular none that consults the working
+directory. The default used to be `.zebflow-platform-data` relative to it, which
+contradicted the paragraph above in the most direct way available: an installed
+binary created an instance wherever the user happened to be standing, and a `cd`
+lost the projects in it. **The contents of the directory do not change between
+the two cases.** `platform/`, `services/`, `users/{owner}/{project}/{repo,data,
+files}`, and `.bootstrap/` are identical either way, because both cases produce
+a `PathBuf` that goes into the same layout code and nothing downstream branches
+on which one produced it — `platform::boot` holds the one function that decides,
+and a test asserts the two trees are equal.
+
+This repository's own `dev.sh` sets the variable, like every other piece of
+explicit configuration in it. A development server sharing a data root with an
+installed `zebflow` would be the same conflation from the other side.
+
+**First use provisions itself.** `zeb install <ref>` on a machine with no
+instance at the resolved data root creates one, creates the superadmin account,
+writes the generated password 0600 as first boot already does, and then reads
+that file and logs in **normally** — the same `POST /login`, the same session
+token, the same context store below. Reading a file that is mode 0600 and owned
+by the same user *is* the check; no second authentication mechanism exists, and
+a file that cannot be read produces a login failure, which is the right outcome.
+The command prints where the instance is and where its password is, and the
+person does not have to go and read that file to continue, because the sign-in
+already happened.
+
 ```
 zeb login http://localhost:10610
 zeb use superadmin/default
@@ -285,7 +332,18 @@ zeb status
 
 ```text
 --owner / --project flag  →  stored client default  →  error
+--instance flag           →  stored client default  →  this machine
 ```
+
+The last step of the second line is the one addition, and it is not an
+inference from anywhere. With no flag and no stored context there is exactly one
+instance a person can be talking about — the one on the machine they are typing
+on, at the data root above — and naming it is what lets a cold machine install
+something without a `login` first. It reads nothing about the working directory,
+which is what the rest of this section forbids. A stored instance still wins
+over it and a flag over both, so nothing that was stated becomes a guess, and a
+*remote* instance that does not answer is an error rather than a quiet
+substitution of a local one.
 
 `distribution.md` says `default_owner` and `default_project` "already exist in
 the CLI configuration". They exist, but as *server* configuration read from
@@ -310,25 +368,50 @@ refusing to read it would stop the `zeb logout` that revokes what leaked.
 
 Project context is **not** defaulted, because bare `zeb install` does not consult
 it (§7). `zeb install kids-educational-games` needs no setup for that reason, not
-because an unset context is filled in — the command materialises a project named
-by the reference, and the review prints before anything is written.
+because an unset project is filled in — the command materialises a project named
+by the reference, and the review prints before anything is written. The instance
+is a different field and is defaulted, for the reason just given; owner and
+project are not.
 
 Context matters for the scoped forms, `zeb project install` inside an existing
 project among them, where it is stated rather than inferred.
 
 ## 6. Transport
 
-**HTTP when the server owns the state; direct when the command exists to repair
-a server that will not start.**
+**HTTP when a server owns the state, direct when none does.**
 
-Groups 2 and 4 speak to a running instance over its API — the same routes the
-web UI uses, which is what keeps the two surfaces honest. Group 3 runs directly
-against the data directory.
+That is one rule over three states, where the previous wording — "direct when
+the command exists to repair a server that will not start" — was one rule over
+two and left the third unnamed:
+
+```text
+a server is listening        ->  HTTP to it
+nothing is listening         ->  open the data root in this process, and exit
+Group 3 maintenance          ->  direct, because the server will not start
+```
+
+The repair commands and a cold machine are the same case under the restated
+rule: in neither does a server own the state.
 
 The reason is not taste. An install touches ten things beyond writing files,
 including `node_registry.refresh_project`, which is an in-memory cache inside the
 running server. A CLI that wrote to disk behind a live server would leave it
-believing something false about its own nodes.
+believing something false about its own nodes. **That argument holds only while
+a server is running.** With none, there is nothing to keep coherent, and
+starting a background daemon so that the client has something to talk to would
+be a process nobody asked for — §3 says which four words exist for asking.
+
+Groups 2 and 4 therefore speak to a running instance over its API — the same
+routes the web UI uses, which is what keeps the two surfaces honest — and reach
+the same router in-process when there is no instance to speak to. It is the same
+router either way, so a command cannot behave differently depending on which
+transport carried it. In-process means in-process: no socket is bound, which
+also keeps `/login` from being exposed to every other process on the machine for
+the length of an install. Group 3 runs directly against the data directory.
+
+An unreachable *remote* instance is an error, not a reason to fall back. Only
+this machine's own instance is opened directly, because it is the only one a
+client can open at all.
 
 The UI is a rendering of this vocabulary over the same HTTP API. It does not
 shell out to the CLI: that would make process spawning, argument escaping, and

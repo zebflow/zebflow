@@ -37,6 +37,10 @@ pub enum FileAdapterKind {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PlatformConfig {
     /// Root data directory where platform metadata + project files are stored.
+    ///
+    /// Defaults to `ZEBFLOW_PLATFORM_DATA_DIR` when it is set and to the OS
+    /// user-data path otherwise (`platform::boot`); never to a path relative to
+    /// the working directory, which `interface.md` §5 says identifies nothing.
     pub data_root: PathBuf,
     /// Selected metadata adapter.
     pub data_adapter: DataAdapterKind,
@@ -62,7 +66,10 @@ pub struct PlatformConfig {
 impl Default for PlatformConfig {
     fn default() -> Self {
         Self {
-            data_root: PathBuf::from(".zebflow-platform-data"),
+            // Not a literal: `boot::default_data_root` is the one place the
+            // two cases live, so every construction of this struct that does
+            // not name a root gets the same one a server mode would open.
+            data_root: crate::platform::boot::default_data_root(),
             data_adapter: DataAdapterKind::Sqlite,
             file_adapter: FileAdapterKind::Filesystem,
             default_owner: "superadmin".to_string(),

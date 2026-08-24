@@ -14,6 +14,7 @@
 pub mod client;
 pub mod context;
 pub mod install;
+pub mod local;
 pub mod remove;
 pub mod render;
 
@@ -298,8 +299,8 @@ pub async fn run_status(args: &[String]) -> Result<(), io::Error> {
 /// `zeb project list`, aliased as `zeb list`.
 pub async fn run_list(args: &[String]) -> Result<(), io::Error> {
     let flags = Flags::parse(args, &["--instance", "--owner"], &[])?;
-    let stored = context::load(&context::default_context_path()?)?;
-    let instance = open_instance(&stored, flags.value("--instance"))?;
+    let mut stored = context::load(&context::default_context_path()?)?;
+    let instance = open_instance(&mut stored, flags.value("--instance")).await?;
     let owner = context::resolve(
         flags.value("--owner"),
         &stored.owner,
@@ -340,8 +341,8 @@ pub async fn run_list(args: &[String]) -> Result<(), io::Error> {
 /// `zeb project install <ref>`, aliased as `zeb install <ref>`.
 pub async fn run_install(args: &[String]) -> Result<(), io::Error> {
     let parsed = install::parse_args(args)?;
-    let stored = context::load(&context::default_context_path()?)?;
-    let instance = open_instance(&stored, parsed.instance.as_deref())?;
+    let mut stored = context::load(&context::default_context_path()?)?;
+    let instance = open_instance(&mut stored, parsed.instance.as_deref()).await?;
     install::run(&instance, &parsed).await
 }
 
@@ -352,8 +353,8 @@ pub async fn run_remove(args: &[String]) -> Result<(), io::Error> {
         &["--instance", "--owner", "--password"],
         &["--yes", "-y"],
     )?;
-    let stored = context::load(&context::default_context_path()?)?;
-    let instance = open_instance(&stored, flags.value("--instance"))?;
+    let mut stored = context::load(&context::default_context_path()?)?;
+    let instance = open_instance(&mut stored, flags.value("--instance")).await?;
     let Some(reference) = flags.positional.first() else {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -380,14 +381,26 @@ pub async fn run_remove(args: &[String]) -> Result<(), io::Error> {
 
 /// Opens the instance the context names, refusing rather than guessing when
 /// the URL asked for is not the one the stored token belongs to.
-fn open_instance(stored: &ClientContext, flag: Option<&str>) -> Result<Instance, io::Error> {
-    let url = context::resolve(
-        flag,
-        &stored.instance,
-        "instance",
-        &format!("run `{} login <instance-url>`", program()),
-    )
-    .map(|value| context::normalize_instance_url(&value))?;
+///
+/// One exception, and it is a rule rather than a special case: when the
+/// resolved URL is *this machine's own*, `local` opens it — over HTTP if a
+/// server is listening, in this process if none is, creating the instance if
+/// there is not one yet. `interface.md` §6 states it as HTTP when a server owns
+/// the state and direct when none does, which is why a cold machine needs no
+/// `login` and no server started by hand.
+///
+/// A remote instance is untouched by that. An unreachable one is an error, not
+/// a reason to quietly install somewhere else.
+async fn open_instance(
+    stored: &mut ClientContext,
+    flag: Option<&str>,
+) -> Result<Instance, io::Error> {
+    let local_url = crate::platform::boot::local_instance_url();
+    let url = resolve_instance_url(stored, flag, &local_url);
+
+    if url == local_url {
+        return local::open(stored).await;
+    }
     if stored.token.trim().is_empty() || url != stored.instance {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
@@ -398,6 +411,20 @@ fn open_instance(stored: &ClientContext, flag: Option<&str>) -> Result<Instance,
         ));
     }
     Instance::new(&url, &stored.token)
+}
+
+/// Which instance a command is about: the flag, then the stored default, then
+/// this machine.
+///
+/// The last step is not a guess. §5 says nothing is inferred from the working
+/// directory, and this infers nothing from it: with no flag and no stored
+/// context there is exactly one instance a person can mean, and it is the one
+/// on the machine they are typing on.
+fn resolve_instance_url(stored: &ClientContext, flag: Option<&str>, local_url: &str) -> String {
+    match context::resolve(flag, &stored.instance, "instance", "") {
+        Ok(value) => context::normalize_instance_url(&value),
+        Err(_) => local_url.to_string(),
+    }
 }
 
 /// Reads the password without putting it anywhere it can be read back.
@@ -553,24 +580,44 @@ mod tests {
         assert!(err.to_string().contains("unknown flag '--nope'"), "{err}");
     }
 
-    #[test]
-    fn a_credential_for_another_instance_is_not_reused() {
-        let stored = ClientContext {
+    #[tokio::test]
+    async fn a_credential_for_another_instance_is_not_reused() {
+        let mut stored = ClientContext {
             instance: "http://localhost:10610".to_string(),
             token: "tok".to_string(),
             ..ClientContext::default()
         };
-        let err = open_instance(&stored, Some("https://elsewhere.example"))
+        let err = open_instance(&mut stored, Some("https://elsewhere.example"))
+            .await
             .map(|_| ())
             .expect_err("refused");
         assert!(err.to_string().contains("no stored credential"), "{err}");
     }
 
     #[test]
-    fn no_instance_at_all_names_the_command_that_sets_one() {
-        let err = open_instance(&ClientContext::default(), None)
-            .map(|_| ())
-            .expect_err("refused");
-        assert!(err.to_string().contains("zeb login"), "{err}");
+    fn no_stored_context_means_this_machine_rather_than_an_error() {
+        // This replaces a test that asserted the opposite. It required a
+        // `zeb login` before anything else could run, which is exactly the
+        // first-use step interface.md §5 now says a cold machine does not take:
+        // there is one instance a person can mean here, and this is it.
+        let local = "http://127.0.0.1:10610";
+        assert_eq!(
+            resolve_instance_url(&ClientContext::default(), None, local),
+            local
+        );
+        // A stored instance still wins over the local default, and a flag over
+        // both, so nothing that was explicit becomes a guess.
+        let stored = ClientContext {
+            instance: "https://zeb.example".to_string(),
+            ..ClientContext::default()
+        };
+        assert_eq!(
+            resolve_instance_url(&stored, None, local),
+            "https://zeb.example"
+        );
+        assert_eq!(
+            resolve_instance_url(&stored, Some("https://other.example/"), local),
+            "https://other.example"
+        );
     }
 }

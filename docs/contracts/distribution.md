@@ -31,6 +31,15 @@ POST /api/platform/hub/install          install a Hub project as a platform app
 zeb install <ref>                       the CLI client for the second of those
 ```
 
+`zeb install` is the client for the second of those and **does not assume an
+instance already exists**. On a machine that has just installed the binary it
+creates one at the data root above, signs in with the superadmin password first
+boot generates and writes 0600, and then installs. Whether it reaches those
+routes over the network or calls them in its own process depends only on whether
+a server is already listening: `interface.md` §6 is HTTP when a server owns the
+state and direct when none does. Nothing is left running by an install that took
+the second path, which is why `run` is still a separate command.
+
 Each of the two HTTP surfaces has a review sibling that reports what the install
 would do and does none of it:
 
@@ -111,14 +120,17 @@ than given a second copy of the review. `install` reviews and creates; `run`
 serves. Getting back to one command means teaching `run` to call the same
 install path, not teaching it to write files again.
 
-Run mode still needs somewhere to serve from. It reads the data root every
-server mode reads — `.zebflow-platform-data`, overridable with
-`ZEBFLOW_PLATFORM_DATA_DIR` — and that default is **relative to the working
-directory**, which is right for a developer running a server in a project folder
-and wrong for someone who typed `zeb run` from anywhere. A stable per-user
-location resolved once is still owed, and it is owed to `install` and `run`
-together rather than to run mode alone: they have to agree on where a project
-went, and today they agree only because both read the same environment variable.
+Run mode still needs somewhere to serve from, and now it and `install` agree on
+where by construction rather than by both happening to read one variable. The
+data root has exactly two cases — `ZEBFLOW_PLATFORM_DATA_DIR` when it is set,
+and the OS user-data path otherwise (`~/.local/share/zebflow`,
+`~/Library/Application Support/Zebflow`, `%LOCALAPPDATA%\Zebflow`). It is never
+relative to the working directory. The old default was `.zebflow-platform-data`
+beside wherever the shell happened to be, which meant an installed binary
+created an instance in whatever folder the user was standing in and a `cd` lost
+the projects in it — the stable per-user location this paragraph used to say was
+owed. `interface.md` §5 states the rule and one function in `platform::boot`
+implements it, so a client and a server mode cannot disagree.
 
 Someone who wants a geospatial selection tool should still obtain one thing and
 use it. That Zebflow is underneath is not their concern, and this is the mode

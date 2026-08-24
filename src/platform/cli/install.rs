@@ -305,6 +305,19 @@ pub async fn run(instance: &Instance, args: &InstallArgs) -> Result<(), io::Erro
         .await?;
     let result = response.get("install").cloned().unwrap_or(Value::Null);
     print!("{}", render::install_report(&result, instance.base_url()));
+
+    // An install that ran in-process left nothing listening, by design
+    // (`interface.md` §6). The project exists and its URL was just printed, so
+    // the one thing left to say is what turns that URL into a live address.
+    if instance.is_local() {
+        let zeb = super::program();
+        println!(
+            "\n  Nothing is serving it yet. Run `{zeb} run {}` for this project alone, or \
+             `{zeb}` for the whole instance at {}.",
+            render::destination(&result),
+            instance.base_url()
+        );
+    }
     Ok(())
 }
 
