@@ -6,7 +6,8 @@ named in §5 has moved, and a project built before this change migrates its
 `data/sekejap`, `data/local.db`, and `data/runtime` transparently the first
 time each is touched — verified live against a seeded pre-tier project, with
 before/after content identical and a second run a no-op (§7). `data/nodes/`
-is the one real path this document still does not classify; see §7. Not yet
+was investigated for the `cache` tier and the investigation disproved it,
+live, rather than confirming it — see §7. Not yet
 **candidate**: a directory-tier policy has no document envelope of its own to
 version, so most of the stability-matrix freeze checklist (versioned root,
 canonical writer, negative tests over malformed bytes) does not apply to it in
@@ -151,16 +152,88 @@ removing them is a `files/` change and out of scope for a `data/`-only sweep.
 
 ## 7. Open
 
-- **`data/nodes/` is not one of the four tiers.** Installed node bundles are
-  materialized from `zeb.lock` (an authored, git-tracked document) the same
-  way `data/cache/pipelines/` is materialized from `repo/`, which argues for
-  `cache`. It was left at `data/nodes/` rather than moved, for two reasons:
-  the tree in §2 does not name it, so moving it would be guessing rather than
-  applying a stated rule; and a bundle's `entry` path in `zeb.lock` resolves
-  against it by convention across `node_registry.rs`, `hub.rs`,
-  `dependency_lock.rs`, and `composite_host.rs`, with roughly a dozen tests
-  hardcoding the literal path — a real move, not a one-line rename. Deciding
-  its tier and applying that decision is the next piece of this row.
+- **`data/nodes/` is not one of the four tiers, and it is not `cache` either
+  — checked live, not assumed.** The plausible argument was: installed node
+  bundles are materialized from `zeb.lock` the same way `data/cache/pipelines/`
+  is materialized from `repo/`, so deleting `data/nodes/` and re-running the
+  install path against the same `zeb.lock` should reproduce it byte-for-byte.
+  That claim was tested against the running server, not just read out of the
+  code, and it fails for the only node-bundle install path currently wired to
+  a route:
+
+  1. `POST /api/projects/{owner}/{project}/nodes/install`
+     (`HubService::install_local_node_bundle`,
+     `src/platform/services/hub.rs`) is the sole production entry point for
+     project-scoped node bundles — `install_local_node_bundle_document` and
+     the `RemoteHubArtifacts` / `install_remote_pack_from_repository` path
+     exist in the same file but have no caller reachable from this route
+     table today. It resolves referenced artifacts through
+     `HubArtifactChannel::Unresolvable` — a channel that, by construction,
+     "cannot fetch referenced bytes" (its own doc comment). The bytes it
+     writes come from the request body and go nowhere else.
+  2. A real bundle — `src/pipeline/nodes/bundled/openai-embedding`, renamed
+     into the third-party `n.x.openai_embedding.embed` namespace so the
+     project-scope namespace gate accepts it — was installed through that
+     route against a scratch `ZEBFLOW_PLATFORM_DATA_DIR`. `zeb.lock` recorded
+     exactly this, nothing more:
+     ```json
+     "hub/local/openai-embedding": {
+       "version": "1.0.0", "source": "hub", "source_id": "local/openai-embedding",
+       "entry": "nodes/openai-embedding/definition.json",
+       "integrity": "sha256:b3b1a524582be8fdbf7a4daff60fe81cc9ca1b0f8d1d467b0fbcaee0fb0d3594",
+       "definitions": ["n.x.openai_embedding.embed"]
+     }
+     ```
+     `source_id` is a label (`local/{package_id}`), not an address — nothing
+     in the lock can be handed to a fetcher.
+  3. `data/nodes/openai-embedding/` (4 files) was deleted, and the server was
+     restarted — the same `node_registry::refresh_project` scan that would
+     run after any real cache eviction. The node silently disappeared
+     (`GET .../nodes/by-kind/n.x.openai_embedding.embed` → `404 "node kind
+     ... not found"`); `refresh_project` treats an empty directory as zero
+     installed bundles and does not error, so nothing surfaces the loss at
+     that point.
+  4. `GET /api/projects/{owner}/{project}/dependencies` (the status report
+     `zeb.lock` backs) does notice: `"status": "missing"`. `POST` on the same
+     route (`api_repair_project_dependencies`) is this project's repair
+     action, and it only calls `repair_rwe_libraries` — there is no
+     `repair_node_bundles`. Calling it left the item `"missing"`,
+     unchanged, before and after.
+  5. Re-POSTing the *original* install body reproduced the directory
+     byte-identical (same four SHA-256 hashes as the first install) — but
+     only because the request body was kept outside Zebflow, in this
+     session's own scratch files. `zeb.lock` played no part in that recovery;
+     it was never queried, because it has nothing a fetcher could use.
+
+  A directory is `cache` when the system's own durable state can rebuild it.
+  Here the system's own durable state (`zeb.lock`) provably cannot, for the
+  one route that actually writes to `data/nodes/` in production. Some entries
+  — installed through `install_remote_pack_from_repository`, whose bytes land
+  first in this instance's *platform-level*, content-addressed Hub store at
+  `{data_root}/services/{hub}/artifacts/<sha256>` (`hub_service_root()`),
+  outside any one project's `data/` — likely would survive a delete-and-reinstall,
+  since that store is itself durable and keyed by digest. But `data/nodes/`
+  does not distinguish, on disk, which of its entries came from which channel;
+  `zeb.lock`'s `source_id` prefix (`local/…` vs. a repository id) is the only
+  signal, and nothing reads it to decide what is safe to evict. A directory
+  that is cache for some of its content and irreplaceable for the rest, with
+  no marker separating the two, cannot be classified `cache` as a whole.
+  Moving it there would make "clear cache" a silent, undetectable data-loss
+  action for every project with a locally-installed bundle.
+
+  This is left where it was, `data/nodes/`, not because the tree in §2 omits
+  it — that was last session's reason — but because moving it now would be
+  applying `cache` semantics ("safe to delete at any time") to a directory
+  just shown to lose data on deletion for its primary write path. Closing
+  this needs a code decision first, not a docs decision: either
+  `install_local_node_bundle` starts retaining what `zeb.lock` would need to
+  reconstruct (the artifact bytes, content-addressed, the way the remote
+  channel already does), or `data/nodes/` is classified as carrying `store`
+  semantics for at least its locally-installed entries. Only after one of
+  those lands does moving it — updating `node_registry.rs`, `hub.rs`,
+  `dependency_lock.rs::node_root()`, `project_transfer.rs`, and the
+  `composite_host.rs` test fixtures that hardcode the literal path — become
+  applying a stated rule instead of guessing one.
 - Whether `data/logs/` retention is instance-configured or fixed — unchanged
   by this task; closer to stability-matrix row 16 (invocation and temporary
   state) than to this row's directory classification.

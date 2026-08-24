@@ -298,8 +298,9 @@ async fn platform_bootstrap_and_login_flow_works() {
     assert!(project_root.join("data").join("recovery").exists());
     assert!(project_root.join("data").join("logs").exists());
     assert!(project_root.join("files").exists());
-    assert!(project_root.join("files").join("public").exists());
-    assert!(project_root.join("files").join("private").exists());
+    // files/public and files/private are not scaffolded: ZebFS has no physical
+    // public/private split, only ZebFsAclManifest per-path visibility
+    // (project-directory.md section 4).
     assert!(project_root.join("repo").exists());
     assert!(project_root.join("repo").join(".git").exists());
     assert!(project_root.join("repo").join("pipelines").exists());
