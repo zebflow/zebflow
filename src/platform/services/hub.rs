@@ -42,6 +42,11 @@ use crate::platform::policy::package::{
 };
 use crate::platform::policy::report::PolicyRiskLevel;
 use crate::platform::sekejap;
+use crate::platform::services::hub_repository::{
+    DEFAULT_HUB_REPOSITORY_PRIORITY, HUB_REPOSITORY_KIND_API, HUB_REPOSITORY_KIND_STATIC,
+    HubRepositoryChannel, HubRepositoryPackage, HubRepositoryRef, is_direct_hub_base,
+    validate_remote_hub_url,
+};
 use crate::platform::services::project::{
     derive_trigger_kind_from_source, normalize_pipeline_file_rel_path,
 };
@@ -93,6 +98,45 @@ fn default_hub_base_url() -> String {
         .filter(|v| !v.is_empty())
         .unwrap_or_else(|| "https://hub.zebflow.com/api".to_string())
 }
+
+/// Where the official static repository is served from.
+///
+/// `github.com/zebflow/hub` is the repository; this is the raw-content host
+/// that serves its files as bytes. A static repository is not "a GitHub
+/// repository" -- the same fetcher works against GitLab, an object store, or a
+/// plain web server -- and this constant is the one place the official
+/// deployment's choice of host is written down.
+fn default_static_repository_base_url() -> String {
+    std::env::var("ZEBFLOW_HUB_DEFAULT_STATIC_BASE_URL")
+        .ok()
+        .map(|v| v.trim().trim_end_matches('/').to_string())
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| "https://raw.githubusercontent.com/zebflow/hub/main".to_string())
+}
+
+/// The official sources, in the order they are searched.
+///
+/// `distribution.md` §2 states this order and this is the array that
+/// implements it. It is two rows, not three: the API hub first because it is
+/// the instance's own default and answers about publisher identity and grants,
+/// the static repository second because it is the fallback that needs no server.
+#[allow(clippy::type_complexity)]
+const OFFICIAL_PLATFORM_REPOSITORIES: &[(&str, &str, fn() -> String, &str, i64)] = &[
+    (
+        "zebflow-com",
+        "Zebflow Hub",
+        default_hub_base_url,
+        HUB_REPOSITORY_KIND_API,
+        10,
+    ),
+    (
+        "zebflow-hub",
+        "Zebflow Hub (static)",
+        default_static_repository_base_url,
+        HUB_REPOSITORY_KIND_STATIC,
+        20,
+    ),
+];
 
 fn preserve_or_replace_token(existing: Option<&str>, incoming: &str) -> String {
     let trimmed = incoming.trim();
@@ -807,6 +851,10 @@ pub struct HubPublishMediaReview {
 pub struct HubRemotePackRow {
     pub repository_id: String,
     pub repository_title: String,
+    /// Which channel served this row: `api` or `static`.
+    pub repository_kind: String,
+    /// Where its source sits in resolution order. Lower is consulted first.
+    pub repository_priority: i64,
     pub package_id: String,
     #[serde(skip_serializing_if = "String::is_empty")]
     pub publisher_owner: String,
@@ -828,56 +876,67 @@ pub struct HubRemotePackRow {
     pub source: String,
 }
 
-#[derive(Debug, Clone, Deserialize)]
-struct RemoteHubListResponse {
-    items: Vec<RemoteHubAssetItem>,
+/// What one configured source answered when the listing walked it.
+///
+/// Every source is reported whether or not it answered, because "not found" and
+/// "the source that has it is unreachable" are different answers and a client
+/// that only saw the rows could not tell them apart.
+#[derive(Debug, Clone, Serialize)]
+pub struct HubRepositorySourceStatus {
+    pub repository_id: String,
+    pub title: String,
+    pub kind: String,
+    pub base_url: String,
+    pub priority: i64,
+    pub ok: bool,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub error: String,
 }
 
-#[derive(Debug, Clone, Deserialize)]
-struct RemoteHubAssetItem {
-    package_id: String,
-    #[serde(default)]
-    publisher_owner: String,
-    #[serde(default)]
-    publisher_id: String,
-    #[serde(default)]
-    publisher_display_name: String,
-    #[serde(default)]
-    publisher_url: String,
-    #[serde(default)]
-    publisher_email: String,
-    asset_kind: String,
-    title: String,
-    description: String,
-    #[serde(default)]
-    summary: String,
-    #[serde(default)]
-    image_url: String,
-    #[serde(default)]
-    gallery: Value,
-    visibility: String,
-    #[serde(default)]
-    tags: Vec<String>,
-    #[serde(default)]
-    latest_version: String,
-    #[serde(default)]
-    updated_at: i64,
+/// The platform-scope listing: what is available, and who was asked.
+///
+/// `items` is in resolution order -- source by source, in `priority` order --
+/// so a client resolving a reference takes the first match rather than ranking
+/// them itself.
+#[derive(Debug, Clone, Serialize)]
+pub struct PlatformHubListing {
+    pub items: Vec<HubRemotePackRow>,
+    pub sources: Vec<HubRepositorySourceStatus>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
-struct RemoteHubArtifactResponse {
-    version: RemoteHubAssetVersion,
-    #[serde(default)]
-    artifact_sha256: String,
-    #[serde(default)]
-    artifact_size_bytes: u64,
-    artifact: Value,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-struct RemoteHubAssetVersion {
-    #[serde(default)]
-    artifact_sha256: String,
+/// One listed package, as a row that names the source it came from.
+fn pack_row(
+    source: &HubRepositoryRef,
+    item: HubRepositoryPackage,
+    origin: &str,
+) -> HubRemotePackRow {
+    HubRemotePackRow {
+        repository_id: source.repository_id.clone(),
+        repository_title: source.title.clone(),
+        repository_kind: if source.kind.trim().is_empty() {
+            HUB_REPOSITORY_KIND_API.to_string()
+        } else {
+            source.kind.clone()
+        },
+        repository_priority: source.priority,
+        package_id: item.package_id,
+        publisher_owner: item.publisher_owner,
+        publisher_id: item.publisher_id,
+        publisher_display_name: item.publisher_display_name,
+        publisher_url: item.publisher_url,
+        publisher_email: item.publisher_email,
+        asset_kind: item.asset_kind,
+        title: item.title,
+        description: item.description,
+        summary: item.summary,
+        image_url: item.image_url,
+        gallery: item.gallery,
+        visibility: item.visibility,
+        tags: item.tags,
+        latest_version: item.latest_version,
+        updated_at: item.updated_at,
+        source: origin.to_string(),
+    }
 }
 
 /// One outward publish: an immutable release document plus the mutable
@@ -1737,6 +1796,7 @@ impl HubService {
             .list_platform_hub_repositories(&slug_segment(owner))
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn upsert_platform_repository(
         &self,
         owner: &str,
@@ -1746,6 +1806,8 @@ impl HubService {
         remote_owner: &str,
         remote_project: &str,
         read_token: &str,
+        kind: &str,
+        priority: Option<i64>,
         visibility: &str,
         enabled: bool,
     ) -> Result<PlatformHubRepository, PlatformError> {
@@ -1757,8 +1819,13 @@ impl HubService {
                 "repository fields must not be empty",
             ));
         }
+        let kind = normalize_hub_repository_kind(kind)?;
         validate_remote_hub_url(base_url.trim().trim_end_matches('/'))?;
-        let uses_direct_base = is_direct_hub_base(base_url);
+        // A static repository is a directory, not an instance: it has no owner
+        // and no project, so the check that an API base names one does not
+        // apply to it and is not asked.
+        let is_static = kind == HUB_REPOSITORY_KIND_STATIC;
+        let uses_direct_base = is_static || is_direct_hub_base(base_url);
         if !uses_direct_base && (remote_owner.trim().is_empty() || remote_project.trim().is_empty())
         {
             return Err(PlatformError::new(
@@ -1810,6 +1877,12 @@ impl HubService {
                 existing.as_ref().map(|item| item.read_token.as_str()),
                 read_token,
             ),
+            kind,
+            // An absent priority keeps what the row already had, so editing a
+            // title cannot silently reorder resolution.
+            priority: priority
+                .or_else(|| existing.as_ref().map(|item| item.priority))
+                .unwrap_or(DEFAULT_HUB_REPOSITORY_PRIORITY),
             visibility: normalize_platform_source_visibility(visibility),
             enabled,
             created_at: existing.as_ref().map(|item| item.created_at).unwrap_or(now),
@@ -1818,7 +1891,29 @@ impl HubService {
         self.control_data.put_platform_hub_repository(&row)?;
         Ok(row)
     }
+}
 
+/// The one spelling of a repository kind, or a refusal.
+///
+/// An empty kind means `api`, which is what every row written before static
+/// repositories existed is. Anything this build cannot open is refused at the
+/// point it is stored rather than at the point it is fetched from, so a source
+/// that can never work is never written.
+fn normalize_hub_repository_kind(kind: &str) -> Result<String, PlatformError> {
+    match kind.trim() {
+        "" | HUB_REPOSITORY_KIND_API => Ok(HUB_REPOSITORY_KIND_API.to_string()),
+        HUB_REPOSITORY_KIND_STATIC => Ok(HUB_REPOSITORY_KIND_STATIC.to_string()),
+        other => Err(PlatformError::new(
+            "HUB_REPOSITORY_INVALID",
+            format!(
+                "repository kind '{other}' is not one this build implements; use '{}' or '{}'",
+                HUB_REPOSITORY_KIND_API, HUB_REPOSITORY_KIND_STATIC
+            ),
+        )),
+    }
+}
+
+impl HubService {
     pub fn delete_platform_repository(
         &self,
         owner: &str,
@@ -1828,40 +1923,62 @@ impl HubService {
             .delete_platform_hub_repository(&slug_segment(owner), &slug_segment(repository_id))
     }
 
+    /// Makes the two official sources present, in the order they are searched.
+    ///
+    /// `distribution.md` §2 names them and this is where that order is
+    /// configured: the API hub at priority 10, the official static repository
+    /// at 20, and anything an operator adds later at
+    /// [`DEFAULT_HUB_REPOSITORY_PRIORITY`] behind both. A source that already
+    /// exists is left exactly as it is -- an operator who disabled one, changed
+    /// its URL, or reordered it has said something, and this must not say it
+    /// back.
     pub fn ensure_default_platform_repository(&self, owner: &str) -> Result<(), PlatformError> {
         let owner = slug_segment(owner);
         if owner.is_empty() {
             return Ok(());
         }
         let existing = self.control_data.list_platform_hub_repositories(&owner)?;
-        if existing
-            .iter()
-            .any(|item| item.repository_id == "zebflow-com")
-        {
-            return Ok(());
+        let mut owner_user_id = None;
+        for (repository_id, title, base_url, kind, priority) in OFFICIAL_PLATFORM_REPOSITORIES {
+            if existing
+                .iter()
+                .any(|item| item.repository_id == *repository_id)
+            {
+                continue;
+            }
+            let user_id = match &owner_user_id {
+                Some(value) => value,
+                None => {
+                    let value = self
+                        .control_data
+                        .get_user_auth(&owner)?
+                        .map(|user| user.profile.user_id)
+                        .ok_or_else(|| {
+                            PlatformError::new("PLATFORM_USER_NOT_FOUND", "owner user not found")
+                        })?;
+                    owner_user_id.get_or_insert(value)
+                }
+            };
+            let now = now_ts();
+            self.control_data
+                .put_platform_hub_repository(&PlatformHubRepository {
+                    source_id: format!("pmr_{}", random_hex(8)),
+                    owner_user_id: user_id.clone(),
+                    owner: owner.clone(),
+                    repository_id: (*repository_id).to_string(),
+                    title: (*title).to_string(),
+                    base_url: base_url(),
+                    remote_owner: String::new(),
+                    remote_project: String::new(),
+                    read_token: String::new(),
+                    kind: (*kind).to_string(),
+                    priority: *priority,
+                    visibility: "public".to_string(),
+                    enabled: true,
+                    created_at: now,
+                    updated_at: now,
+                })?;
         }
-        let now = now_ts();
-        let owner_user_id = self
-            .control_data
-            .get_user_auth(&owner)?
-            .map(|user| user.profile.user_id)
-            .ok_or_else(|| PlatformError::new("PLATFORM_USER_NOT_FOUND", "owner user not found"))?;
-        self.control_data
-            .put_platform_hub_repository(&PlatformHubRepository {
-                source_id: format!("pmr_{}", random_hex(8)),
-                owner_user_id,
-                owner,
-                repository_id: "zebflow-com".to_string(),
-                title: "Zebflow Hub".to_string(),
-                base_url: default_hub_base_url(),
-                remote_owner: String::new(),
-                remote_project: String::new(),
-                read_token: String::new(),
-                visibility: "public".to_string(),
-                enabled: true,
-                created_at: now,
-                updated_at: now,
-            })?;
         Ok(())
     }
 
@@ -2676,17 +2793,15 @@ impl HubService {
     /// Verified bytes land in this instance's content-addressed store, which is
     /// the cache: a review followed by its install fetches once, and two
     /// releases naming one runtime fetch it once between them.
-    async fn remote_artifact_channel<F>(
+    async fn remote_artifact_channel(
         &self,
         files: &[HubPackageFile],
-        origin: &str,
-        read_token: &str,
-        artifact_url: F,
-    ) -> Result<HubArtifactChannel, PlatformError>
-    where
-        F: Fn(&str) -> String,
-    {
+        channel: &HubRepositoryChannel,
+        package_id: &str,
+        version: &str,
+    ) -> Result<HubArtifactChannel, PlatformError> {
         let store_base = self.hub_service_root();
+        let source = channel.source();
         for file in files {
             let Some(HubPackageFileSupply::Referenced(artifact)) = file.supply() else {
                 continue;
@@ -2694,8 +2809,8 @@ impl HubService {
             validate_artifact_digest(&artifact.sha256)?;
             fetch_referenced_artifact(
                 &store_base,
-                &artifact_url(&artifact.sha256),
-                read_token,
+                &channel.artifact_url(package_id, version, &artifact.sha256),
+                &source.read_token,
                 &file.rel_path,
                 artifact,
                 file.size_bytes,
@@ -2704,7 +2819,7 @@ impl HubService {
         }
         Ok(HubArtifactChannel::Remote(RemoteHubArtifacts {
             cache_base: store_base,
-            origin: origin.to_string(),
+            origin: source.display(),
         }))
     }
 
@@ -3630,123 +3745,93 @@ impl HubService {
 
     pub async fn fetch_remote_pack_rows(
         &self,
-        http_client: &reqwest::Client,
         owner: &str,
         project: &str,
     ) -> Result<Vec<HubRemotePackRow>, PlatformError> {
         let repos = self.list_effective_repositories(owner, project)?;
         let mut out = Vec::new();
         for repo in repos.into_iter().filter(|item| item.enabled) {
-            let url = remote_hub_url(&repo, "remote/assets");
-            validate_remote_hub_url(&url)?;
-            let mut req = http_client.get(url);
-            if !repo.read_token.trim().is_empty() {
-                req = req.bearer_auth(repo.read_token.trim());
-            }
-            let response = req
-                .send()
-                .await
-                .map_err(|err| PlatformError::new("HUB_REMOTE_FETCH", err.to_string()))?;
-            if !response.status().is_success() {
+            let source = HubRepositoryRef::from(&repo);
+            let Ok(channel) = HubRepositoryChannel::open(&source) else {
                 continue;
-            }
-            let payload: RemoteHubListResponse = response
-                .json()
-                .await
-                .map_err(|err| PlatformError::new("HUB_REMOTE_FETCH", err.to_string()))?;
-            out.extend(payload.items.into_iter().map(|item| HubRemotePackRow {
-                repository_id: repo.repository_id.clone(),
-                repository_title: repo.title.clone(),
-                package_id: item.package_id,
-                publisher_owner: item.publisher_owner,
-                publisher_id: item.publisher_id,
-                publisher_display_name: item.publisher_display_name,
-                publisher_url: item.publisher_url,
-                publisher_email: item.publisher_email,
-                asset_kind: item.asset_kind,
-                title: item.title,
-                description: item.description,
-                summary: item.summary,
-                image_url: item.image_url,
-                gallery: item.gallery,
-                visibility: item.visibility,
-                tags: item.tags,
-                latest_version: item.latest_version,
-                updated_at: item.updated_at,
-                source: "remote".to_string(),
-            }));
+            };
+            let Ok(items) = channel.list().await else {
+                continue;
+            };
+            out.extend(
+                items
+                    .into_iter()
+                    .map(|item| pack_row(&source, item, "remote")),
+            );
         }
         Ok(out)
     }
 
     pub async fn fetch_platform_remote_app_rows(
         &self,
-        http_client: &reqwest::Client,
         owner: &str,
-    ) -> Result<Vec<HubRemotePackRow>, PlatformError> {
+    ) -> Result<PlatformHubListing, PlatformError> {
         let repos = self.list_platform_repositories(owner)?;
-        self.fetch_platform_remote_app_rows_from_repositories(http_client, repos)
-            .await
+        Ok(self
+            .fetch_platform_remote_app_rows_from_repositories(repos)
+            .await)
     }
 
+    /// Walks the configured sources **in order** and reports what each one
+    /// offered.
+    ///
+    /// The order is `PlatformHubRepository::priority` ascending, which is what
+    /// the adapter sorts by, so the caller receives the sources in resolution
+    /// order and a reference resolves to the first that carries it.
+    ///
+    /// A source that cannot be reached is recorded rather than dropped. It used
+    /// to be skipped silently, which made "no package named X" the answer to
+    /// both *nobody publishes it* and *the only source that does is down* --
+    /// two very different things told to the user as one.
     pub async fn fetch_platform_remote_app_rows_from_repositories(
         &self,
-        http_client: &reqwest::Client,
         repos: Vec<PlatformHubRepository>,
-    ) -> Result<Vec<HubRemotePackRow>, PlatformError> {
-        let mut out = Vec::new();
+    ) -> PlatformHubListing {
+        let mut items = Vec::new();
+        let mut sources = Vec::new();
         for repo in repos.into_iter().filter(|item| item.enabled) {
-            let url = remote_hub_url_for_platform(&repo, "remote/assets");
-            validate_remote_hub_url(&url)?;
-            let mut req = http_client.get(url);
-            if !repo.read_token.trim().is_empty() {
-                req = req.bearer_auth(repo.read_token.trim());
-            }
-            let response = match req.send().await {
-                Ok(response) => response,
-                Err(_) => continue,
+            let source = HubRepositoryRef::from(&repo);
+            let mut status = HubRepositorySourceStatus {
+                repository_id: source.repository_id.clone(),
+                title: source.title.clone(),
+                kind: if source.kind.trim().is_empty() {
+                    HUB_REPOSITORY_KIND_API.to_string()
+                } else {
+                    source.kind.clone()
+                },
+                base_url: source.base_url.clone(),
+                priority: source.priority,
+                ok: false,
+                error: String::new(),
             };
-            if !response.status().is_success() {
-                continue;
+            match HubRepositoryChannel::open(&source) {
+                Ok(channel) => match channel.list().await {
+                    Ok(listed) => {
+                        status.ok = true;
+                        items.extend(
+                            listed
+                                .into_iter()
+                                .filter(|item| item.asset_kind == HUB_ASSET_KIND_PROJECT_BUNDLE)
+                                .map(|item| pack_row(&source, item, "remote")),
+                        );
+                    }
+                    Err(error) => status.error = error.to_string(),
+                },
+                Err(error) => status.error = error.to_string(),
             }
-            let payload: RemoteHubListResponse = match response.json().await {
-                Ok(payload) => payload,
-                Err(_) => continue,
-            };
-            out.extend(
-                payload
-                    .items
-                    .into_iter()
-                    .filter(|item| item.asset_kind == HUB_ASSET_KIND_PROJECT_BUNDLE)
-                    .map(|item| HubRemotePackRow {
-                        repository_id: repo.repository_id.clone(),
-                        repository_title: repo.title.clone(),
-                        package_id: item.package_id,
-                        publisher_owner: item.publisher_owner,
-                        publisher_id: item.publisher_id,
-                        publisher_display_name: item.publisher_display_name,
-                        publisher_url: item.publisher_url,
-                        publisher_email: item.publisher_email,
-                        asset_kind: item.asset_kind,
-                        title: item.title,
-                        description: item.description,
-                        summary: item.summary,
-                        image_url: item.image_url,
-                        gallery: item.gallery,
-                        visibility: item.visibility,
-                        tags: item.tags,
-                        latest_version: item.latest_version,
-                        updated_at: item.updated_at,
-                        source: "remote".to_string(),
-                    }),
-            );
+            sources.push(status);
         }
-        Ok(out)
+        PlatformHubListing { items, sources }
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn install_remote_pack_from_repository(
         &self,
-        http_client: &reqwest::Client,
         target_owner: &str,
         target_project: &str,
         repository_id: &str,
@@ -3754,48 +3839,20 @@ impl HubService {
         version: &str,
         target_folder: &str,
     ) -> Result<HubInstallResult, PlatformError> {
-        let repo = self
-            .list_effective_repositories(target_owner, target_project)?
-            .into_iter()
-            .find(|item| item.repository_id == repository_id)
-            .ok_or_else(|| PlatformError::new("HUB_REPOSITORY_MISSING", "repository not found"))?;
-        let url = remote_hub_url(
-            &repo,
-            &format!("remote/assets/{}/{}/artifact", package_id, version),
-        );
-        validate_remote_hub_url(&url)?;
-        let mut req = http_client.get(url);
-        if !repo.read_token.trim().is_empty() {
-            req = req.bearer_auth(repo.read_token.trim());
-        }
-        let response = req
-            .send()
-            .await
-            .map_err(|err| PlatformError::new("HUB_REMOTE_FETCH", err.to_string()))?;
-        if !response.status().is_success() {
-            return Err(PlatformError::new(
-                "HUB_REMOTE_FETCH",
-                format!("remote fetch failed with {}", response.status()),
-            ));
-        }
-        let payload: RemoteHubArtifactResponse = response
-            .json()
-            .await
-            .map_err(|err| PlatformError::new("HUB_REMOTE_FETCH", err.to_string()))?;
-        verify_remote_artifact_hash(&payload)?;
-        let artifact = parse_hub_artifact_value(payload.artifact, "HUB_REMOTE_INVALID")?;
+        let (channel, artifact) = self
+            .fetch_project_scope_package(
+                target_owner,
+                target_project,
+                repository_id,
+                package_id,
+                version,
+            )
+            .await?;
         // Every referenced artifact is fetched and verified before the install
         // reaches the project, so a reference that cannot be obtained refuses
         // here rather than half-way through writing files.
         let artifacts = self
-            .remote_artifact_channel(
-                &artifact.files,
-                &repo.title.clone().if_empty_then(|| repo.base_url.clone()),
-                &repo.read_token,
-                |sha256| {
-                    remote_hub_url(&repo, &remote_artifact_suffix(package_id, version, sha256))
-                },
-            )
+            .remote_artifact_channel(&artifact.files, &channel, package_id, version)
             .await?;
         self.install_artifact_payload_from(
             slug_segment(target_owner),
@@ -3809,9 +3866,9 @@ impl HubService {
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn review_remote_pack_from_repository(
         &self,
-        http_client: &reqwest::Client,
         target_owner: &str,
         target_project: &str,
         repository_id: &str,
@@ -3819,48 +3876,20 @@ impl HubService {
         version: &str,
         target_folder: &str,
     ) -> Result<HubInstallReview, PlatformError> {
-        let repo = self
-            .list_effective_repositories(target_owner, target_project)?
-            .into_iter()
-            .find(|item| item.repository_id == repository_id)
-            .ok_or_else(|| PlatformError::new("HUB_REPOSITORY_MISSING", "repository not found"))?;
-        let url = remote_hub_url(
-            &repo,
-            &format!("remote/assets/{}/{}/artifact", package_id, version),
-        );
-        validate_remote_hub_url(&url)?;
-        let mut req = http_client.get(url);
-        if !repo.read_token.trim().is_empty() {
-            req = req.bearer_auth(repo.read_token.trim());
-        }
-        let response = req
-            .send()
-            .await
-            .map_err(|err| PlatformError::new("HUB_REMOTE_FETCH", err.to_string()))?;
-        if !response.status().is_success() {
-            return Err(PlatformError::new(
-                "HUB_REMOTE_FETCH",
-                format!("remote fetch failed with {}", response.status()),
-            ));
-        }
-        let payload: RemoteHubArtifactResponse = response
-            .json()
-            .await
-            .map_err(|err| PlatformError::new("HUB_REMOTE_FETCH", err.to_string()))?;
-        verify_remote_artifact_hash(&payload)?;
-        let artifact = parse_hub_artifact_value(payload.artifact, "HUB_REMOTE_INVALID")?;
+        let (channel, artifact) = self
+            .fetch_project_scope_package(
+                target_owner,
+                target_project,
+                repository_id,
+                package_id,
+                version,
+            )
+            .await?;
         // The review fetches what the install would fetch, so what it scans is
         // what would land. It reports rather than writes, and the fetch touches
         // only the shared artifact cache.
         let artifacts = self
-            .remote_artifact_channel(
-                &artifact.files,
-                &repo.title.clone().if_empty_then(|| repo.base_url.clone()),
-                &repo.read_token,
-                |sha256| {
-                    remote_hub_url(&repo, &remote_artifact_suffix(package_id, version, sha256))
-                },
-            )
+            .remote_artifact_channel(&artifact.files, &channel, package_id, version)
             .await?;
         self.review_artifact_payload(
             &slug_segment(target_owner),
@@ -3873,9 +3902,27 @@ impl HubService {
         )
     }
 
+    /// One project-scope package document, from the named repository.
+    async fn fetch_project_scope_package(
+        &self,
+        target_owner: &str,
+        target_project: &str,
+        repository_id: &str,
+        package_id: &str,
+        version: &str,
+    ) -> Result<(HubRepositoryChannel, HubPackageSpec), PlatformError> {
+        let repo = self
+            .list_effective_repositories(target_owner, target_project)?
+            .into_iter()
+            .find(|item| item.repository_id == repository_id)
+            .ok_or_else(|| PlatformError::new("HUB_REPOSITORY_MISSING", "repository not found"))?;
+        let channel = HubRepositoryChannel::open(&HubRepositoryRef::from(&repo))?;
+        let artifact = channel.fetch(package_id, version).await?;
+        Ok((channel, artifact))
+    }
+
     pub async fn install_remote_project_from_platform_repository(
         &self,
-        http_client: &reqwest::Client,
         owner: &str,
         repository_id: &str,
         package_id: &str,
@@ -3883,7 +3930,6 @@ impl HubService {
         scope: HubInstallScope,
     ) -> Result<ProjectBundleInstallResult, PlatformError> {
         self.install_remote_project_from_platform_source(
-            http_client,
             owner,
             owner,
             repository_id,
@@ -3897,7 +3943,6 @@ impl HubService {
     #[allow(clippy::too_many_arguments)]
     pub async fn install_remote_project_from_platform_source(
         &self,
-        http_client: &reqwest::Client,
         source_owner: &str,
         target_owner: &str,
         repository_id: &str,
@@ -3908,36 +3953,19 @@ impl HubService {
         // A contradictory scope is a request error, so it costs no download.
         scope.validate()?;
         let target_owner = slug_segment(target_owner);
-        let (repo, artifact) = self
-            .fetch_platform_project_bundle(
-                http_client,
-                source_owner,
-                repository_id,
-                package_id,
-                version,
-            )
+        let (channel, artifact) = self
+            .fetch_platform_project_bundle(source_owner, repository_id, package_id, version)
             .await?;
-        // The bundle's referenced bytes live at the hub that served the
+        // The bundle's referenced bytes live at the repository that served the
         // document, and are fetched and verified before the project exists.
         let artifacts = self
-            .remote_artifact_channel(
-                &artifact.files,
-                &repo.title.clone().if_empty_then(|| repo.base_url.clone()),
-                &repo.read_token,
-                |sha256| {
-                    remote_hub_url_for_platform(
-                        &repo,
-                        &remote_artifact_suffix(package_id, version, sha256),
-                    )
-                },
-            )
+            .remote_artifact_channel(&artifact.files, &channel, package_id, version)
             .await?;
         self.install_project_bundle(&target_owner, package_id, &artifact, &artifacts, scope)
     }
 
     pub async fn review_remote_project_from_platform_repository(
         &self,
-        http_client: &reqwest::Client,
         owner: &str,
         repository_id: &str,
         package_id: &str,
@@ -3945,7 +3973,6 @@ impl HubService {
         scope: HubInstallScope,
     ) -> Result<ProjectBundleInstallReview, PlatformError> {
         self.review_remote_project_from_platform_source(
-            http_client,
             owner,
             owner,
             repository_id,
@@ -3959,14 +3986,13 @@ impl HubService {
     /// Reports what installing this project bundle would do, without doing any
     /// of it.
     ///
-    /// It fetches the same document the install fetches and hands it to the
-    /// same planner, so the destinations, registrations, activations and SQL
-    /// reported here are the ones the install performs, not a second reading of
-    /// the package.
+    /// It fetches the same document the install fetches, through the same
+    /// channel, and hands it to the same planner, so the destinations,
+    /// registrations, activations and SQL reported here are the ones the
+    /// install performs, not a second reading of the package.
     #[allow(clippy::too_many_arguments)]
     pub async fn review_remote_project_from_platform_source(
         &self,
-        http_client: &reqwest::Client,
         source_owner: &str,
         target_owner: &str,
         repository_id: &str,
@@ -3976,27 +4002,11 @@ impl HubService {
     ) -> Result<ProjectBundleInstallReview, PlatformError> {
         scope.validate()?;
         let target_owner = slug_segment(target_owner);
-        let (repo, artifact) = self
-            .fetch_platform_project_bundle(
-                http_client,
-                source_owner,
-                repository_id,
-                package_id,
-                version,
-            )
+        let (channel, artifact) = self
+            .fetch_platform_project_bundle(source_owner, repository_id, package_id, version)
             .await?;
         let artifacts = self
-            .remote_artifact_channel(
-                &artifact.files,
-                &repo.title.clone().if_empty_then(|| repo.base_url.clone()),
-                &repo.read_token,
-                |sha256| {
-                    remote_hub_url_for_platform(
-                        &repo,
-                        &remote_artifact_suffix(package_id, version, sha256),
-                    )
-                },
-            )
+            .remote_artifact_channel(&artifact.files, &channel, package_id, version)
             .await?;
         self.review_project_bundle(
             &target_owner,
@@ -4015,47 +4025,23 @@ impl HubService {
     /// failed fetch can act on the target.
     async fn fetch_platform_project_bundle(
         &self,
-        http_client: &reqwest::Client,
         source_owner: &str,
         repository_id: &str,
         package_id: &str,
         version: &str,
-    ) -> Result<(PlatformHubRepository, HubPackageSpec), PlatformError> {
+    ) -> Result<(HubRepositoryChannel, HubPackageSpec), PlatformError> {
         let source_owner = slug_segment(source_owner);
         let repo = self
             .list_platform_repositories(&source_owner)?
             .into_iter()
             .find(|item| item.repository_id == repository_id)
             .ok_or_else(|| PlatformError::new("HUB_REPOSITORY_MISSING", "repository not found"))?;
-        let url = remote_hub_url_for_platform(
-            &repo,
-            &format!("remote/assets/{}/{}/artifact", package_id, version),
-        );
-        validate_remote_hub_url(&url)?;
-        let mut req = http_client.get(url);
-        if !repo.read_token.trim().is_empty() {
-            req = req.bearer_auth(repo.read_token.trim());
-        }
-        let response = req
-            .send()
-            .await
-            .map_err(|err| PlatformError::new("HUB_REMOTE_FETCH", err.to_string()))?;
-        if !response.status().is_success() {
-            return Err(PlatformError::new(
-                "HUB_REMOTE_FETCH",
-                format!("remote fetch failed with {}", response.status()),
-            ));
-        }
-        let payload: RemoteHubArtifactResponse = response
-            .json()
-            .await
-            .map_err(|err| PlatformError::new("HUB_REMOTE_FETCH", err.to_string()))?;
-        verify_remote_artifact_hash(&payload)?;
-        let artifact = parse_hub_artifact_value(payload.artifact, "HUB_REMOTE_INVALID")?;
-        // The repository travels back with the document: whichever of the two
+        let channel = HubRepositoryChannel::open(&HubRepositoryRef::from(&repo))?;
+        let artifact = channel.fetch(package_id, version).await?;
+        // The channel travels back with the document: whichever of the two
         // callers asked, the referenced bytes have to be fetched from the same
-        // hub that served it.
-        Ok((repo, artifact))
+        // repository that served it.
+        Ok((channel, artifact))
     }
 
     /// Installs a project bundle into a project this call creates.
@@ -4647,100 +4633,6 @@ impl HubService {
         }
         Ok(())
     }
-}
-
-fn remote_hub_api_base(base_url: &str) -> String {
-    base_url.trim().trim_end_matches('/').to_string()
-}
-
-fn is_direct_hub_base(base_url: &str) -> bool {
-    let base = remote_hub_api_base(base_url).to_lowercase();
-    is_legacy_project_hub_base(&base) || is_ownerless_hub_base(&base)
-}
-
-fn is_legacy_project_hub_base(base_url: &str) -> bool {
-    let base = remote_hub_api_base(base_url).to_lowercase();
-    base.contains("/api/projects/") && base.ends_with("/hub")
-}
-
-fn is_ownerless_hub_base(base_url: &str) -> bool {
-    let base = remote_hub_api_base(base_url).to_lowercase();
-    base.ends_with("/api") || base.ends_with("/api/hub")
-}
-
-fn ownerless_hub_url(api_base: &str, suffix: &str) -> String {
-    if api_base.to_lowercase().ends_with("/api/hub") {
-        format!("{}/{}", api_base, suffix)
-    } else {
-        format!("{}/hub/{}", api_base, suffix)
-    }
-}
-
-/// The hub path one referenced artifact is served at.
-///
-/// It is namespaced by the release that names it rather than being a bare
-/// content address, so the hub applies that release's own visibility and
-/// retraction rules to the bytes it hands over, and so a digest alone is not a
-/// key to the whole store.
-fn remote_artifact_suffix(package_id: &str, version: &str, sha256: &str) -> String {
-    format!("remote/assets/{package_id}/{version}/artifacts/{sha256}")
-}
-
-fn remote_hub_url(repo: &ProjectHubRepository, suffix: &str) -> String {
-    let api_base = remote_hub_api_base(&repo.base_url);
-    let suffix = suffix.trim_start_matches('/');
-    if is_legacy_project_hub_base(&api_base) {
-        format!("{}/{}", api_base, suffix)
-    } else if is_ownerless_hub_base(&api_base) {
-        ownerless_hub_url(&api_base, suffix)
-    } else {
-        format!(
-            "{}/projects/{}/{}/hub/{}",
-            api_base, repo.remote_owner, repo.remote_project, suffix
-        )
-    }
-}
-
-fn remote_hub_url_for_platform(repo: &PlatformHubRepository, suffix: &str) -> String {
-    let api_base = remote_hub_api_base(&repo.base_url);
-    let suffix = suffix.trim_start_matches('/');
-    if is_legacy_project_hub_base(&api_base) {
-        format!("{}/{}", api_base, suffix)
-    } else if is_ownerless_hub_base(&api_base) {
-        ownerless_hub_url(&api_base, suffix)
-    } else {
-        format!(
-            "{}/projects/{}/{}/hub/{}",
-            api_base, repo.remote_owner, repo.remote_project, suffix
-        )
-    }
-}
-
-fn validate_remote_hub_url(url: &str) -> Result<(), PlatformError> {
-    if hub_localhost_remote_allowed(url) {
-        return Ok(());
-    }
-    crate::pipeline::security::validate_outbound_http_url(url, "hub.remote")
-        .map_err(|err| PlatformError::new(err.code, err.message))
-}
-
-fn hub_localhost_remote_allowed(url: &str) -> bool {
-    // Test/dev escape hatch for two local Zebflow instances. Production must
-    // leave this unset so hub remotes follow the normal egress policy.
-    if std::env::var("ZEBFLOW_HUB_ALLOW_LOCALHOST_REMOTE")
-        .ok()
-        .as_deref()
-        != Some("1")
-    {
-        return false;
-    }
-    let Ok(parsed) = reqwest::Url::parse(url) else {
-        return false;
-    };
-    matches!(
-        parsed.host_str().unwrap_or(""),
-        "localhost" | "127.0.0.1" | "::1"
-    )
 }
 
 fn clear_repo_worktree_preserving_git(repo_dir: &Path) -> Result<(), PlatformError> {
@@ -7008,58 +6900,6 @@ fn collect_initial_data_steps(
     Ok(())
 }
 
-fn verify_remote_artifact_hash(payload: &RemoteHubArtifactResponse) -> Result<(), PlatformError> {
-    if payload.artifact_size_bytes > MAX_REMOTE_HUB_ARTIFACT_BYTES {
-        return Err(PlatformError::new(
-            "HUB_ARTIFACT_TOO_LARGE",
-            "remote artifact exceeds maximum install size",
-        ));
-    }
-    let expected = payload
-        .artifact_sha256
-        .trim()
-        .to_string()
-        .if_empty_then(|| payload.version.artifact_sha256.trim().to_string());
-    if expected.is_empty() {
-        return Err(PlatformError::new(
-            "HUB_REMOTE_HASH_MISSING",
-            "remote artifact response is missing artifact hash",
-        ));
-    }
-    let document =
-        decode_contract_value::<HubPackageContract>(payload.artifact.clone()).map_err(|err| {
-            PlatformError::new(
-                "HUB_REMOTE_INVALID",
-                format!("{} ({})", err, err.category()),
-            )
-        })?;
-    let bytes = encode_hub_package(document.metadata, document.spec)
-        .map_err(|err| PlatformError::new("HUB_REMOTE_INVALID", err.to_string()))?;
-    let actual = sha256_hex(&bytes);
-    if actual != expected {
-        return Err(PlatformError::new(
-            "HUB_REMOTE_HASH_MISMATCH",
-            "remote artifact hash mismatch",
-        ));
-    }
-    Ok(())
-}
-
-trait EmptyStringExt {
-    fn if_empty_then<F>(self, fallback: F) -> String
-    where
-        F: FnOnce() -> String;
-}
-
-impl EmptyStringExt for String {
-    fn if_empty_then<F>(self, fallback: F) -> String
-    where
-        F: FnOnce() -> String,
-    {
-        if self.is_empty() { fallback() } else { self }
-    }
-}
-
 fn sanitize_hub_export_entries(entries: &mut [HubPackageFile]) -> Result<(), PlatformError> {
     for entry in entries.iter_mut() {
         if normalize_repo_rel(&entry.rel_path)
@@ -9027,30 +8867,6 @@ mod tests {
         assert!(validate_hub_version("../secret").is_err());
         assert!(validate_hub_version("1/2").is_err());
         assert!(validate_hub_version("release candidate").is_err());
-    }
-
-    #[test]
-    fn ownerless_hub_api_base_builds_hub_routes() {
-        let repo = PlatformHubRepository {
-            source_id: "pmr_1".to_string(),
-            owner_user_id: "user_1".to_string(),
-            owner: "superadmin".to_string(),
-            repository_id: "zebflow-hub".to_string(),
-            title: "Zebflow Hub".to_string(),
-            base_url: "https://hub.zebflow.com/api".to_string(),
-            remote_owner: String::new(),
-            remote_project: String::new(),
-            read_token: String::new(),
-            visibility: "public".to_string(),
-            enabled: true,
-            created_at: 0,
-            updated_at: 0,
-        };
-
-        assert_eq!(
-            remote_hub_url_for_platform(&repo, "remote/assets"),
-            "https://hub.zebflow.com/api/hub/remote/assets"
-        );
     }
 
     /// Builds a platform with the hub service enabled, one publisher that may

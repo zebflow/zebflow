@@ -1,0 +1,47 @@
+{
+  "apiVersion": "zebflow.com/v1",
+  "kind": "HubRepositoryIndex",
+  "metadata": {
+    "name": "zebflow-hub"
+  },
+  "spec": {
+    "packages": [
+      {
+        "package_id": "zebflow.kids-educational-games",
+        "asset_kind": "project_bundle",
+        "title": "Kids Educational Games",
+        "description": "Number and letter games for young children.",
+        "latest_version": "1.0.0",
+        "releases": [
+          {
+            "version": "1.0.0",
+            "path": "packages/zebflow.kids-educational-games/1.0.0/package.json",
+            "sha256": "01dcc1463d3113bf2d7ac2ccedd28742d4cdef24755c118706b8689af48994ba",
+            "size_bytes": 265
+          },
+          {
+            "version": "0.9.0",
+            "path": "packages/zebflow.kids-educational-games/0.9.0/package.json",
+            "sha256": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
+            "size_bytes": 240
+          }
+        ]
+      },
+      {
+        "package_id": "zebflow.osgeo-spatial-tool",
+        "asset_kind": "project_bundle",
+        "title": "OSGeo Spatial Tool",
+        "description": "Draw, measure, and export geospatial selections.",
+        "latest_version": "2.1.0",
+        "releases": [
+          {
+            "version": "2.1.0",
+            "path": "packages/zebflow.osgeo-spatial-tool/2.1.0/package.json",
+            "sha256": "60303ae22b998861bce3b28f33eec1be758a213c86c93c076dbe9f558c11c752",
+            "size_bytes": 18422
+          }
+        ]
+      }
+    ]
+  }
+}

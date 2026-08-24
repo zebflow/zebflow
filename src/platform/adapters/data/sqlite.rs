@@ -108,6 +108,8 @@ CREATE TABLE IF NOT EXISTS platform_hub_repositories (
     remote_owner  TEXT NOT NULL DEFAULT '',
     remote_project TEXT NOT NULL DEFAULT '',
     read_token    TEXT NOT NULL DEFAULT '',
+    kind          TEXT NOT NULL DEFAULT 'api',
+    priority      INTEGER NOT NULL DEFAULT 100,
     visibility    TEXT NOT NULL DEFAULT 'public',
     enabled       INTEGER NOT NULL DEFAULT 1,
     created_at    INTEGER NOT NULL DEFAULT 0,
@@ -1665,6 +1667,8 @@ CREATE TABLE platform_hub_repositories (
     remote_owner   TEXT NOT NULL DEFAULT '',
     remote_project TEXT NOT NULL DEFAULT '',
     read_token     TEXT NOT NULL DEFAULT '',
+    kind           TEXT NOT NULL DEFAULT 'api',
+    priority       INTEGER NOT NULL DEFAULT 100,
     visibility     TEXT NOT NULL DEFAULT 'public',
     enabled        INTEGER NOT NULL DEFAULT 1,
     created_at     INTEGER NOT NULL DEFAULT 0,
@@ -1684,6 +1688,11 @@ CREATE TABLE platform_hub_repositories (
                 "remote_owner",
                 "remote_project",
                 "read_token",
+                // `kind` and `priority` are deliberately absent from the copy
+                // list: a table rebuilt from a schema that predates them has
+                // no such columns to read, and the new table's defaults --
+                // `api` and 100 -- are exactly what a row written before
+                // static repositories existed means.
                 "visibility",
                 "enabled",
                 "created_at",
@@ -2834,6 +2843,8 @@ CREATE TABLE IF NOT EXISTS platform_hub_repositories (
     remote_owner  TEXT NOT NULL DEFAULT '',
     remote_project TEXT NOT NULL DEFAULT '',
     read_token    TEXT NOT NULL DEFAULT '',
+    kind          TEXT NOT NULL DEFAULT 'api',
+    priority      INTEGER NOT NULL DEFAULT 100,
     visibility    TEXT NOT NULL DEFAULT 'public',
     enabled       INTEGER NOT NULL DEFAULT 1,
     created_at    INTEGER NOT NULL DEFAULT 0,
@@ -2866,6 +2877,20 @@ CREATE TABLE IF NOT EXISTS platform_hub_repositories (
             "platform_hub_repositories",
             "owner_user_id",
             "TEXT NOT NULL DEFAULT ''",
+        )?;
+        // Rows written before static repositories existed are API hubs, and
+        // sit behind the official sources until something says otherwise.
+        Self::ensure_table_column(
+            conn,
+            "platform_hub_repositories",
+            "kind",
+            "TEXT NOT NULL DEFAULT 'api'",
+        )?;
+        Self::ensure_table_column(
+            conn,
+            "platform_hub_repositories",
+            "priority",
+            "INTEGER NOT NULL DEFAULT 100",
         )?;
         Ok(())
     }
@@ -3639,8 +3664,8 @@ impl DataAdapter for SqliteDataAdapter {
         Self::ensure_hub_repository_schema(&conn)?;
         conn.execute(
             "INSERT INTO platform_hub_repositories
-             (source_id, owner_user_id, owner, repository_id, title, base_url, remote_owner, remote_project, read_token, visibility, enabled, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+             (source_id, owner_user_id, owner, repository_id, title, base_url, remote_owner, remote_project, read_token, kind, priority, visibility, enabled, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
              ON CONFLICT(owner, repository_id) DO UPDATE SET
                  source_id = excluded.source_id,
                  owner_user_id = excluded.owner_user_id,
@@ -3649,6 +3674,8 @@ impl DataAdapter for SqliteDataAdapter {
                  remote_owner = excluded.remote_owner,
                  remote_project = excluded.remote_project,
                  read_token = excluded.read_token,
+                 kind = excluded.kind,
+                 priority = excluded.priority,
                  visibility = excluded.visibility,
                  enabled = excluded.enabled,
                  created_at = excluded.created_at,
@@ -3663,6 +3690,8 @@ impl DataAdapter for SqliteDataAdapter {
                 &repository.remote_owner,
                 &repository.remote_project,
                 &repository.read_token,
+                &repository.kind,
+                repository.priority,
                 &repository.visibility,
                 if repository.enabled { 1 } else { 0 },
                 repository.created_at,
@@ -3681,9 +3710,14 @@ impl DataAdapter for SqliteDataAdapter {
         Self::ensure_hub_repository_schema(&conn)?;
         let mut stmt = conn
             .prepare(
-                "SELECT source_id, owner_user_id, owner, repository_id, title, base_url, remote_owner, remote_project, read_token, visibility, enabled, created_at, updated_at
+                // Resolution order is this ORDER BY. `distribution.md` says the
+                // configured sources are searched in a stated, stable order and
+                // that the first hit wins, so the list a caller walks is sorted
+                // by the field that states the order rather than by a display
+                // title anyone can rename.
+                "SELECT source_id, owner_user_id, owner, repository_id, title, base_url, remote_owner, remote_project, read_token, kind, priority, visibility, enabled, created_at, updated_at
                  FROM platform_hub_repositories WHERE owner = ?1
-                 ORDER BY title ASC, repository_id ASC",
+                 ORDER BY priority ASC, repository_id ASC",
             )
             .map_err(Self::qe)?;
         let items = stmt
@@ -3698,10 +3732,12 @@ impl DataAdapter for SqliteDataAdapter {
                     remote_owner: row.get(6)?,
                     remote_project: row.get(7)?,
                     read_token: row.get(8)?,
-                    visibility: row.get(9)?,
-                    enabled: row.get::<_, i64>(10)? != 0,
-                    created_at: row.get(11)?,
-                    updated_at: row.get(12)?,
+                    kind: row.get(9)?,
+                    priority: row.get(10)?,
+                    visibility: row.get(11)?,
+                    enabled: row.get::<_, i64>(12)? != 0,
+                    created_at: row.get(13)?,
+                    updated_at: row.get(14)?,
                 })
             })
             .map_err(Self::qe)?

@@ -24,6 +24,7 @@ pub mod db_connection;
 pub mod db_runtime;
 pub mod dependency_lock;
 pub mod hub;
+pub mod hub_repository;
 pub mod library;
 pub mod mcp_session;
 pub mod node_registry;

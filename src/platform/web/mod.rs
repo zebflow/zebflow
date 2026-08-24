@@ -2865,9 +2865,9 @@ async fn platform_hub_page(State(state): State<PlatformAppState>, headers: Heade
     let remote_apps = state
         .platform
         .hub
-        .fetch_platform_remote_app_rows_from_repositories(&state.http_client, source_rows)
+        .fetch_platform_remote_app_rows_from_repositories(source_rows)
         .await
-        .unwrap_or_default();
+        .items;
     let local_packages = match state.platform.hub.list_asset_packages() {
         Ok(items) => items
             .into_iter()
@@ -8983,6 +8983,8 @@ async fn api_upsert_platform_hub_source(
         &req.remote_owner,
         &req.remote_project,
         &req.read_token,
+        &req.kind,
+        req.priority,
         &req.visibility,
         req.enabled,
     ) {
@@ -9023,6 +9025,8 @@ async fn api_upsert_platform_hub_repository(
         &req.remote_owner,
         &req.remote_project,
         &req.read_token,
+        &req.kind,
+        req.priority,
         &req.visibility,
         req.enabled,
     ) {
@@ -9103,15 +9107,21 @@ async fn api_list_platform_hub_apps(
         Ok(value) => value,
         Err(err) => return internal_error(err),
     };
-    match state
+    // Every source is named in the answer, in resolution order, whether or not
+    // it answered. A client that only saw the rows could not tell "nobody
+    // publishes it" from "the source that does is unreachable", and one error
+    // naming both sources is what `zeb install` prints when neither has it.
+    let listing = state
         .platform
         .hub
-        .fetch_platform_remote_app_rows_from_repositories(&state.http_client, sources)
-        .await
-    {
-        Ok(items) => Json(json!({"ok": true, "items": items})).into_response(),
-        Err(err) => internal_error(err),
-    }
+        .fetch_platform_remote_app_rows_from_repositories(sources)
+        .await;
+    Json(json!({
+        "ok": true,
+        "items": listing.items,
+        "sources": listing.sources,
+    }))
+    .into_response()
 }
 
 async fn api_list_platform_hub_assets(
@@ -9143,10 +9153,15 @@ async fn api_list_platform_hub_assets(
     match state
         .platform
         .hub
-        .fetch_platform_remote_app_rows(&state.http_client, &owner)
+        .fetch_platform_remote_app_rows(&owner)
         .await
     {
-        Ok(items) => Json(json!({"ok": true, "items": items})).into_response(),
+        Ok(listing) => Json(json!({
+            "ok": true,
+            "items": listing.items,
+            "sources": listing.sources,
+        }))
+        .into_response(),
         Err(err) => internal_error(err),
     }
 }
@@ -9181,7 +9196,6 @@ async fn api_install_platform_hub_app(
         .platform
         .hub
         .install_remote_project_from_platform_source(
-            &state.http_client,
             &source_owner,
             &session,
             &req.repository_id,
@@ -9268,7 +9282,6 @@ async fn api_review_platform_hub_app(
         .platform
         .hub
         .review_remote_project_from_platform_source(
-            &state.http_client,
             &source_owner,
             &session,
             &req.repository_id,
@@ -9308,7 +9321,6 @@ async fn api_review_platform_hub_project(
         .platform
         .hub
         .review_remote_project_from_platform_repository(
-            &state.http_client,
             &owner,
             &req.repository_id,
             &req.package_id,
@@ -9346,7 +9358,6 @@ async fn api_install_platform_hub_project(
         .platform
         .hub
         .install_remote_project_from_platform_repository(
-            &state.http_client,
             &owner,
             &req.repository_id,
             &req.package_id,
@@ -16634,10 +16645,19 @@ struct UpsertHubRepositoryRequest {
     repository_id: String,
     title: String,
     base_url: String,
+    #[serde(default)]
     remote_owner: String,
+    #[serde(default)]
     remote_project: String,
     #[serde(default)]
     read_token: String,
+    /// Which channel serves this source: `api` or `static`. Absent means `api`.
+    #[serde(default)]
+    kind: String,
+    /// Where it sits in resolution order. Absent leaves an existing row's
+    /// priority alone, so editing a title cannot silently reorder resolution.
+    #[serde(default)]
+    priority: Option<i64>,
     #[serde(default = "default_public_visibility")]
     visibility: String,
     #[serde(default = "default_true")]
@@ -16801,6 +16821,8 @@ fn platform_hub_repository_json(item: crate::platform::model::PlatformHubReposit
         "remote_project": item.remote_project,
         "read_token": "",
         "has_read_token": !item.read_token.trim().is_empty(),
+        "kind": if item.kind.trim().is_empty() { "api" } else { item.kind.as_str() },
+        "priority": item.priority,
         "visibility": item.visibility,
         "enabled": item.enabled,
         "created_at": item.created_at,
@@ -17033,7 +17055,7 @@ async fn api_list_hub_assets(
     match state
         .platform
         .hub
-        .fetch_remote_pack_rows(&state.http_client, &owner, &project)
+        .fetch_remote_pack_rows(&owner, &project)
         .await
     {
         Ok(remote_rows) => {
@@ -18920,7 +18942,6 @@ async fn api_install_remote_hub_pack(
         .platform
         .hub
         .install_remote_pack_from_repository(
-            &state.http_client,
             &owner,
             &project,
             &repository_id,
@@ -18982,7 +19003,6 @@ async fn api_review_remote_hub_pack(
         .platform
         .hub
         .review_remote_pack_from_repository(
-            &state.http_client,
             &owner,
             &project,
             &repository_id,

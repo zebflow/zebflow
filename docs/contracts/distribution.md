@@ -242,15 +242,19 @@ zeb node install ./acme-tools.json              a local file
 ```
 
 **`--repo` takes a repository id, not a URL.** An earlier draft of this section
-wrote `--repo <url>`, which described the static repository channel §2 lists as
-not implemented. What `zeb install --repo` does today is name one of the hub
+wrote `--repo <url>`. What `zeb install --repo` does is name one of the hub
 repositories the receiving instance already has configured, which is what the
 transport allows: the command runs over the instance's HTTP API, and handing a
 server an arbitrary URL to fetch is a new channel with its own trust decision
-rather than a flag. It is needed only when more than one configured repository
-carries the same package id, because two sources offering one name is a question
-only the user can answer. If static repositories are enabled, a URL form is a
-change to this line, made then and not assumed now.
+rather than a flag. Static repositories are now implemented and this line is
+unchanged by that: a static source is *configured*, with an id, and then named
+by that id.
+
+It is needed only to **override** the resolution order in §2, not to disambiguate
+a failure. Two configured sources carrying one package id resolve to the first
+one searched; `--repo` is how a person asks for the other. An earlier draft of
+that rule refused rather than resolving, which stopped being tenable the moment
+a fresh instance had two official sources.
 
 ### Blessed top-level verbs
 
@@ -391,7 +395,7 @@ reason they are listed separately rather than treated as one "install".
 | Remote pack | another instance's Hub over HTTP | repository grant + artifact digest | packs, projects |
 | Transfer archive | an export file | whoever produced it | project bundle, files |
 | Git remote | a git repository | the remote's own access control | project `repo/` |
-| Static repository | an HTTPS location serving an index and package documents | the repository URL the user named, plus a locked digest | **not implemented** |
+| Static repository | an HTTPS location serving an index and package documents | the repository URL the user named, plus a locked digest | project bundles, platform scope |
 
 **Embedded is not a channel a user invokes.** It is listed because it is how
 official content arrives, and because a resource moving from embedded to
@@ -424,7 +428,7 @@ implementation detail behind those three calls.
 | Local file | the one document supplied | that document | `artifacts/<sha256>` beside it |
 | Zebflow Hub | this instance's asset store | the stored artifact | `<hub root>/artifacts/<sha256>` |
 | Remote Hub | another instance's HTTP API | that instance's artifact endpoint | `remote/assets/{id}/{version}/artifacts/{sha256}` |
-| Static repository | `zebflow-repository.json` | a document path from the index | not implemented |
+| Static repository | `zebflow-repository.json` | a document path from the index, pinned by digest | `<base>/artifacts/<sha256>` |
 
 This matters because it means a new source is a **fetcher**, not a new package
 format, a new installer, or a new review path. Adding static repositories should
@@ -436,12 +440,21 @@ is the implementation that happens to always be available offline. A library
 resolved from the binary and one resolved from a repository produce the same
 lock entry shape, differing only in `source`.
 
-**What exists today does not yet have this shape.** `ProjectHubRepository` is
-hardwired to a remote Zebflow instance — it carries `base_url`, `remote_owner`,
-`remote_project`, and `read_token`, none of which a static repository or a local
-file has. Generalising it is the work that makes the rest of this section
-implementable, and it should happen before a second remote source is added
-rather than after.
+**That is now what the code does.** `ProjectHubRepository` and
+`PlatformHubRepository` were each hardwired to a remote Zebflow instance —
+`base_url`, `remote_owner`, `remote_project`, `read_token`, none of which a
+static repository has. Both now convert into one `HubRepositoryRef`, and
+`HubRepositoryChannel` in `src/platform/services/hub_repository.rs` is the
+interface above: `list`, `fetch`, and `artifact_url`, with one variant per
+channel. `HubService` calls those three and knows nothing else about where a
+package came from.
+
+The claim that adding a source should not touch the installer is checkable, and
+it holds: `fetch_platform_project_bundle` returns a `HubPackageSpec` and a
+channel, and everything after it — `ProjectBundleInstallPlan::build`, the safety
+review, `refuse_unreviewable_project_bundle`, `PreparedProjectBundle`,
+`install_project_bundle` — is the same code it was, unchanged, and cannot
+observe which channel produced the document.
 
 ### Static repositories
 
@@ -456,6 +469,8 @@ https://<host>/<path>/
   packages/
     acme-tools/1.0.0/package.json  a HubPackage document
     data-table/2.1.0/package.json
+  artifacts/
+    <sha256>                       bytes a package references rather than carries
 ```
 
 One fetch of the index for discovery, then direct fetches of the documents it
@@ -464,11 +479,119 @@ names. No vendor API, no rate limits, and no token for a public repository.
 This carries nothing new: a package document is the same `HubPackage` envelope a
 local file install already accepts. A repository is a transport, not a format.
 
+The `artifacts/` directory is the same content-addressed layout every other
+channel keeps — `<channel-base>/artifacts/<sha256>` — so a package that
+references bytes instead of carrying them is installable from a static
+repository too. The interface table above listed that call as not implemented
+for this channel; it was the one place a static repository would have been a
+lesser channel, and implementing it cost nothing, because the reference resolver
+already takes the location from whichever channel served the document.
+
+#### The index
+
+`zebflow-repository.json` is a registered contract kind, `HubRepositoryIndex`,
+defined at [`kinds/hub-repository-index/README.md`](./kinds/hub-repository-index/README.md).
+It is a durable format other people publish, so it is versioned, strictly
+decoded, and refuses what it cannot mean:
+
+```json
+{
+  "apiVersion": "zebflow.com/v1",
+  "kind": "HubRepositoryIndex",
+  "metadata": { "name": "zebflow-hub" },
+  "spec": {
+    "packages": [
+      {
+        "package_id": "zebflow.kids-educational-games",
+        "asset_kind": "project_bundle",
+        "title": "Kids Educational Games",
+        "description": "Number and letter games for young children.",
+        "latest_version": "1.0.0",
+        "releases": [
+          {
+            "version": "1.0.0",
+            "path": "packages/zebflow.kids-educational-games/1.0.0/package.json",
+            "sha256": "01dcc1463d3113bf2d7ac2ccedd28742d4cdef24755c118706b8689af48994ba",
+            "size_bytes": 265
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+It carries **no package content**. Discovery costs one file; a release costs one
+more, and nothing serving either has to run code.
+
 **Mutability is the risk that has to be answered.** A git tag can be moved and a
-static file can be replaced, so a version string alone is not an identity. The
-answer is the one already used everywhere else: resolve, hash, and record the
-digest in `zeb.lock`. A document that changes under a version then appears as a
-digest mismatch and fails closed, exactly like a tampered bundle.
+static file can be replaced, so a version string alone is not an identity.
+
+The index answers it for the fetch. `releases[].sha256` is **required**, and the
+fetch refuses a document whose bytes hash to anything else, so a file replaced
+under its path fails closed rather than installing whatever is there now. The
+index and the document must also agree on who they are — the document's
+`metadata.name` and `metadata.version` are checked against the entry that
+pointed at it — so an index cannot aim one name at another package's bytes and
+pass the digest check by pinning them.
+
+Two honest limits sit beside that, and neither is closed by this section.
+
+The index is itself mutable. Republishing it with a new digest for new bytes at
+the same version is indistinguishable, to a reader, from a legitimate release.
+What the digest buys is that the *path* stops being the identity: nothing
+between the index and the document can be swapped without detection.
+
+And the earlier draft of this paragraph said the answer was to "record the digest
+in `zeb.lock`". That is true of the resources §4 covers — RWE libraries and node
+bundles — and **not** of a platform-scope project bundle install, which records
+no digest anywhere: `ProjectBundleInstallResult` carries destinations and
+pipelines and no provenance at all, and the `zeb.lock` a bundle installs is the
+publisher's lock for *its* dependencies, not a record of the bundle itself.
+Whichever channel it came from, an installed project cannot say what it was
+installed from. That is a gap in §4 rather than in this channel, and it is
+recorded in §7.
+
+#### Resolution order
+
+`zeb install <ref>` with no `--repo` searches the configured sources **in order,
+and the first hit wins.** A fresh instance seeds exactly two, and this is the
+order:
+
+| # | Source | Kind | Where |
+| --- | --- | --- | --- |
+| 1 | `zebflow-com` | API hub | `https://hub.zebflow.com/api` |
+| 2 | `zebflow-hub` | static repository | `https://raw.githubusercontent.com/zebflow/hub/main` |
+
+The API hub is first because it is the instance's own default and is the source
+that can answer about publisher identity, grants, and retraction. The static
+repository is second because it is the one that needs no server.
+
+**The order is configured, not compiled in.** It is
+`PlatformHubRepository.priority`, ascending, with `repository_id` breaking ties;
+the two official sources are seeded at 10 and 20 and anything added later
+defaults to 100, behind both. The listing endpoint returns the sources in that
+order alongside the packages, so the client resolves by walking the list the
+instance handed back rather than ranking anything itself.
+
+Ordering settles only the question ordering can settle:
+
+- Two **sources** offering one package id → the first one searched wins, and
+  `--repo <id>` names the other.
+- Two **publishers** within one source offering one slug — `acme.quiz` and
+  `globex.quiz` for the reference `quiz` — → refused, naming both full ids.
+  They are equally near, so nothing about order answers it.
+
+The second rule is the one this document already had. The first replaces a rule
+that refused both cases, which was wrong once there were two official sources:
+a package present in both — the normal state of any migration between them —
+would have failed rather than resolved.
+
+**A reference no source carries is one failure, so it is one error**, naming
+every source that was searched, in order, and saying which of them did not
+answer. A source that is unreachable is reported as unreachable rather than
+being dropped, because "nobody publishes it" and "the only source that does is
+down" are different answers and used to be told to the user as one.
 
 **Trust.** A static repository is not meaningfully more dangerous than a remote
 Hub: both execute someone else's bytes and both run the same review. What a Hub
@@ -480,8 +603,27 @@ package rather than judging what it does. No detector refuses a pipeline for its
 behaviour, so a static repository still buys exactly what any other channel does:
 one review, and no protection from a package that is honest about being
 hostile. The condition this paragraph originally set — design static
-repositories now, enable them once the first detectors land — is met; whether to
-enable them is a separate decision and still open.
+repositories now, enable them once the first detectors land — is met, and they
+are enabled.
+
+Enabling them added no gate and skipped none. A static repository's document
+reaches `ProjectBundleInstallPlan::build` exactly as a remote hub's does, so
+`refuse_unreviewable_project_bundle` runs over its entries and
+`refuse_prepared_install_violations` over its prepared bytes, and a package the
+review refuses has no prepared work at all whichever channel carried it. The
+channel-specific code stops at `fetch`.
+
+Three things the channel does add, because a URL a user named is a weaker claim
+than an instance's own hub:
+
+- **Redirects are refused, not followed.** The URL is the whole trust decision,
+  and a redirect moves it to a host the egress check never saw.
+- **Every fetch is bounded before it starts** — the index by the contract's own
+  ceiling, a document by the size the index declares — so a repository cannot
+  make a client download something it did not ask for.
+- **A release path may only descend.** `..`, an absolute path, and a backslash
+  are each refused by the index validator, because a path from the index is
+  joined onto the base URL the user trusted.
 
 ## 3. One review, every channel
 
@@ -591,6 +733,15 @@ nothing about what it depends on. Moving that project to an instance on a
 different Zebflow release changes its dependencies silently. Either official
 content becomes locked like anything else, or the lock records the runtime
 version it assumes.
+
+**A platform-scope install records no provenance.** Nothing written by a project
+bundle install says which package, version, digest, or repository produced it.
+§4 requires identity, integrity, and provenance of every distributed resource
+and `DependencyLock` supplies all three — for libraries and node bundles. A whole
+project has no equivalent record, so an installed app cannot be re-obtained,
+verified, or updated, and the digest a static repository pins protects only the
+fetch that used it. Found while implementing static repositories; it belongs to
+every channel equally and is not fixed here.
 
 **Intra-project references.** `n.function.call` targets another pipeline by
 slug and nothing verifies the target resolves, so an export that omits it fails

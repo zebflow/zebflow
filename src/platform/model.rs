@@ -391,6 +391,20 @@ pub struct PlatformHubRepository {
     pub remote_project: String,
     /// Optional bearer token for read access.
     pub read_token: String,
+    /// Which channel serves this source: `api` or `static`.
+    ///
+    /// Absent means `api`, which is what every row written before static
+    /// repositories existed is. A kind this build does not implement refuses
+    /// rather than being fetched from as though it were an API hub.
+    #[serde(default)]
+    pub kind: String,
+    /// Where this source sits in resolution order. Lower is consulted first.
+    ///
+    /// This is where the order in `distribution.md` is configured: the official
+    /// sources are seeded at 10 and 20, and anything added later defaults to
+    /// 100 so it is consulted after them.
+    #[serde(default)]
+    pub priority: i64,
     /// Source visibility in Platform Home hub explorer: public or private.
     #[serde(default)]
     pub visibility: String,

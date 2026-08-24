@@ -3,6 +3,7 @@
 mod database_schema;
 mod dependency_lock;
 mod hub_package;
+mod hub_repository_index;
 mod library_manifest;
 mod map_publish_manifest;
 mod node;
@@ -29,6 +30,12 @@ pub use hub_package::{
     MAX_HUB_PACKAGE_INITIAL_DATA_STEPS, MAX_HUB_PACKAGE_LIBRARIES,
     MAX_HUB_PACKAGE_REFERENCED_FILE_BYTES, MAX_HUB_PACKAGE_TEXT_BYTES, decode_hub_package,
     encode_hub_package,
+};
+pub use hub_repository_index::{
+    HUB_REPOSITORY_INDEX_FILE, HubRepositoryIndexContract, HubRepositoryIndexPackage,
+    HubRepositoryIndexRelease, HubRepositoryIndexSpec, MAX_HUB_REPOSITORY_INDEX_BYTES,
+    MAX_HUB_REPOSITORY_INDEX_PACKAGES, MAX_HUB_REPOSITORY_INDEX_RELEASES,
+    decode_hub_repository_index, encode_hub_repository_index,
 };
 pub use library_manifest::LibraryManifestContract;
 pub use map_publish_manifest::{MapPublishManifestContract, MapserverLayerRecord};

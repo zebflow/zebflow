@@ -18,6 +18,7 @@ pub enum ContractKind {
     ProjectBundle,
     RuntimeBundle,
     HubPackage,
+    HubRepositoryIndex,
     LibraryManifest,
     MapPublishManifest,
     InvocationRecord,
@@ -42,6 +43,7 @@ impl ContractKind {
             Self::ProjectBundle => "ProjectBundle",
             Self::RuntimeBundle => "RuntimeBundle",
             Self::HubPackage => "HubPackage",
+            Self::HubRepositoryIndex => "HubRepositoryIndex",
             Self::LibraryManifest => "LibraryManifest",
             Self::MapPublishManifest => "MapPublishManifest",
             Self::InvocationRecord => "InvocationRecord",
@@ -104,6 +106,7 @@ const ALL_CONTRACT_DESCRIPTORS: &[ContractDescriptor] = &[
     envelope(ContractKind::ProjectBundle, "platform", "transferred"),
     envelope(ContractKind::RuntimeBundle, "execution", "transferred"),
     envelope(ContractKind::HubPackage, "platform", "transferred"),
+    envelope(ContractKind::HubRepositoryIndex, "platform", "transferred"),
     envelope(ContractKind::LibraryManifest, "rwe", "persisted"),
     envelope(ContractKind::MapPublishManifest, "mapserver", "persisted"),
     database_record(ContractKind::InvocationRecord, "pipeline", "persisted"),
@@ -195,7 +198,7 @@ mod tests {
             assert!(!descriptor.owner.is_empty());
             assert!(!descriptor.boundary.is_empty());
         }
-        assert_eq!(kinds.len(), 18);
+        assert_eq!(kinds.len(), 19);
         assert_eq!(
             ALL_CONTRACT_DESCRIPTORS
                 .iter()

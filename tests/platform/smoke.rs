@@ -1491,6 +1491,8 @@ export default function SpatialBlogPage({ input }) {
             "",
             "",
             "",
+            "api",
+            None,
             "public",
             true,
         )
@@ -3339,4 +3341,397 @@ async fn platform_registry_is_hierarchical_from_virtual_path() {
     let html = String::from_utf8(body.to_vec()).expect("utf8");
     assert!(html.contains("Editor"));
     assert!(html.contains("Registry"));
+}
+
+/// A static repository is a directory over HTTP, and it reaches the same gates.
+///
+/// `distribution.md` §3 says every channel runs one review. This proves it for
+/// the channel that has no server behind it: the package is served as two plain
+/// files, and the install refuses it for exactly the reasons a hub-served one
+/// would be refused, through the same `ProjectBundleInstallPlan`.
+///
+/// It also proves the answer to the mutability question the same section asks.
+/// The index pins the release document's digest, so replacing that document
+/// under its path fails closed rather than installing whatever is there now.
+#[tokio::test]
+async fn a_static_repository_installs_through_the_same_review_and_pins_its_release() {
+    unsafe {
+        std::env::set_var("ZEBFLOW_HUB_ALLOW_LOCALHOST_REMOTE", "1");
+        // The two official sources are seeded into every instance and this test
+        // must not reach the internet to find that out. Pointed at the discard
+        // port they refuse instantly, which is also the state this test wants
+        // them in: an unreachable source is reported, not dropped.
+        std::env::set_var("ZEBFLOW_HUB_DEFAULT_BASE_URL", "http://127.0.0.1:9/api");
+        std::env::set_var("ZEBFLOW_HUB_DEFAULT_STATIC_BASE_URL", "http://127.0.0.1:9");
+    }
+
+    // --- a publisher, only so the fixture is a real project bundle ---------
+    let mut publisher_config = PlatformConfig::default();
+    publisher_config.data_root = temp_test_dir("static-repo-publisher");
+    publisher_config.default_password = "test-pass".to_string();
+    let publisher = Arc::new(PlatformService::from_config(publisher_config).expect("publisher"));
+    publisher
+        .projects
+        .create_or_update_project(
+            "superadmin",
+            &CreateProjectRequest {
+                project: "static-source".to_string(),
+                title: Some("Static Source".to_string()),
+                local_branch: None,
+                runtime: Default::default(),
+            },
+        )
+        .expect("source project");
+    publisher
+        .projects
+        .write_template_file(
+            "superadmin",
+            "static-source",
+            &TemplateSaveRequest {
+                rel_path: "pages/home.tsx".to_string(),
+                content: "export default function Home() { return <main>Static</main>; }\n"
+                    .to_string(),
+            },
+        )
+        .expect("template");
+    publisher
+        .projects
+        .upsert_pipeline_definition(
+            "superadmin",
+            "static-source",
+            "pipelines/pages/home.zf.json",
+            "Home",
+            "Serve the home page.",
+            "webhook",
+            r#"{
+  "apiVersion":"zebflow.com/v1",
+  "kind":"Pipeline",
+  "metadata":{"name":"home"},
+  "spec":{
+  "id":"home",
+  "entry_nodes":["trigger"],
+  "nodes":[
+    {"id":"trigger","kind":"n.trigger.webhook","input_pins":[],"output_pins":["out"],"config":{"path":"/","method":"GET"}},
+    {"id":"response","kind":"n.web.response","input_pins":["in"],"output_pins":["out"],"config":{"template":"pages/home.tsx"}}
+  ],
+  "edges":[
+    {"from_node":"trigger","from_pin":"out","to_node":"response","to_pin":"in"}
+  ]}
+}"#,
+        )
+        .expect("pipeline");
+    publisher
+        .hub
+        .ensure_default_service_instance("standalone", "http://127.0.0.1:1/api", true)
+        .expect("enable publisher hub");
+    publisher
+        .hub
+        .upsert_publisher(
+            "superadmin",
+            "static-source",
+            "zebflow-labs",
+            "Zebflow Labs",
+            "https://publishers.example/zebflow-labs",
+            "labs@example.com",
+            "",
+            "",
+            "",
+            true,
+            true,
+            true,
+            false,
+            20,
+            10 * 1024 * 1024,
+            8,
+            2 * 1024 * 1024,
+        )
+        .expect("publisher identity");
+    publisher
+        .hub
+        .publish_asset(
+            "superadmin",
+            "static-source",
+            "superadmin",
+            "zebflow-labs",
+            "",
+            "",
+            "",
+            "superadmin",
+            "static-source",
+            "project_files",
+            ".",
+            "static-tool",
+            "1.0.0",
+            "Static Tool",
+            "A project bundle served by a plain directory.",
+            "",
+            "public",
+            zebflow::platform::services::hub::HubProjectBundlePublishOptions::default(),
+            vec!["demo".to_string()],
+        )
+        .expect("publish project bundle");
+    let (_, document) = publisher
+        .hub
+        .get_asset_version_artifact("zebflow-labs.static-tool", "1.0.0")
+        .expect("artifact document");
+
+    // --- the repository: an index and one document, and nothing else -------
+    let static_root = temp_test_dir("static-repo-files");
+    let release_rel = "packages/zebflow-labs.static-tool/1.0.0/package.json";
+    let release_path = static_root.join(release_rel);
+    fs::create_dir_all(release_path.parent().expect("release dir")).expect("release dir");
+    let release_bytes = serde_json::to_vec_pretty(&document).expect("release bytes");
+    fs::write(&release_path, &release_bytes).expect("release file");
+    let write_index = |sha256: &str, size_bytes: usize| {
+        fs::write(
+            static_root.join("zebflow-repository.json"),
+            serde_json::to_vec_pretty(&json!({
+                "apiVersion": "zebflow.com/v1",
+                "kind": "HubRepositoryIndex",
+                "metadata": {"name": "test-repository"},
+                "spec": {"packages": [{
+                    "package_id": "zebflow-labs.static-tool",
+                    "asset_kind": "project_bundle",
+                    "title": "Static Tool",
+                    "description": "A project bundle served by a plain directory.",
+                    "latest_version": "1.0.0",
+                    "releases": [{
+                        "version": "1.0.0",
+                        "path": release_rel,
+                        "sha256": sha256,
+                        "size_bytes": size_bytes,
+                    }],
+                }]},
+            }))
+            .expect("index bytes"),
+        )
+        .expect("index file");
+    };
+    write_index(&sha256_hex(&release_bytes), release_bytes.len());
+
+    // A plain file server. No Zebflow, no API, no logic: the whole point of the
+    // channel is that this is all a repository has to be.
+    let served_root = static_root.clone();
+    let files = axum::Router::new().route(
+        "/{*path}",
+        axum::routing::get(
+            move |axum::extract::Path(path): axum::extract::Path<String>| {
+                let root = served_root.clone();
+                async move {
+                    use axum::response::IntoResponse as _;
+                    match fs::read(root.join(path)) {
+                        Ok(bytes) => (StatusCode::OK, bytes).into_response(),
+                        Err(_) => StatusCode::NOT_FOUND.into_response(),
+                    }
+                }
+            },
+        ),
+    );
+    let files_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("file listener");
+    let files_addr = files_listener.local_addr().expect("file addr");
+    let files_server = tokio::spawn(async move {
+        axum::serve(files_listener, files)
+            .await
+            .expect("file server");
+    });
+
+    // --- a consumer that has that directory as its second source -----------
+    let mut consumer_config = PlatformConfig::default();
+    consumer_config.data_root = temp_test_dir("static-repo-consumer");
+    consumer_config.default_password = "test-pass".to_string();
+    let consumer = Arc::new(PlatformService::from_config(consumer_config).expect("consumer"));
+    let consumer_app = zebflow::platform::web::router(consumer.clone()).await;
+    let cookie = login_cookie(consumer_app.clone(), "superadmin", "test-pass").await;
+    let repository = consumer
+        .hub
+        .upsert_platform_repository(
+            "superadmin",
+            "test-static",
+            "Test Static Repository",
+            &format!("http://{files_addr}"),
+            "",
+            "",
+            "",
+            "static",
+            Some(20),
+            "public",
+            true,
+        )
+        .expect("static source");
+    assert_eq!(repository.kind, "static");
+    assert_eq!(repository.priority, 20);
+
+    let body = json!({
+        "repository_id": "test-static",
+        "package_id": "zebflow-labs.static-tool",
+        "version": "1.0.0",
+    })
+    .to_string();
+    let post = |uri: &'static str, body: String, cookie: String, app: axum::Router| async move {
+        app.oneshot(
+            Request::builder()
+                .uri(uri)
+                .method("POST")
+                .header(header::COOKIE, cookie)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(body))
+                .expect("request"),
+        )
+        .await
+        .expect("response")
+    };
+
+    // The listing walks the configured sources in order and names each one.
+    let listing = consumer_app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/platform/hub/assets")
+                .header(header::COOKIE, &cookie)
+                .body(Body::empty())
+                .expect("listing request"),
+        )
+        .await
+        .expect("listing response");
+    let listing = response_json(listing).await;
+    let sources = listing["sources"].as_array().expect("sources array");
+    // Priority ascending, then repository id: the two official sources at 10
+    // and 20, and this test's at 20 beside the second.
+    assert_eq!(
+        sources
+            .iter()
+            .map(|item| item["repository_id"].as_str().unwrap_or_default())
+            .collect::<Vec<_>>(),
+        vec!["zebflow-com", "test-static", "zebflow-hub"],
+        "sources are returned in resolution order: {listing}"
+    );
+    assert_eq!(sources[1]["kind"], json!("static"), "{listing}");
+    assert_eq!(sources[1]["ok"], json!(true), "{listing}");
+    // A source that did not answer is named as such rather than dropped, which
+    // is what lets one "not found" error tell the two cases apart.
+    assert_eq!(sources[0]["ok"], json!(false), "{listing}");
+    assert!(
+        !sources[0]["error"].as_str().unwrap_or_default().is_empty(),
+        "an unreachable source says why: {listing}"
+    );
+    assert_eq!(
+        listing["items"]
+            .as_array()
+            .expect("items")
+            .iter()
+            .filter(|item| item["repository_id"] == json!("test-static"))
+            .count(),
+        1,
+        "the static repository's package is listed: {listing}"
+    );
+
+    let review = post(
+        "/api/platform/hub/install/review",
+        body.clone(),
+        cookie.clone(),
+        consumer_app.clone(),
+    )
+    .await;
+    let review_status = review.status();
+    let review = response_json(review).await;
+    assert_eq!(review_status, StatusCode::OK, "{review}");
+    assert_eq!(review["review"]["installable"], json!(true), "{review}");
+
+    let install = post(
+        "/api/platform/hub/install",
+        body.clone(),
+        cookie.clone(),
+        consumer_app.clone(),
+    )
+    .await;
+    let install_status = install.status();
+    let install = response_json(install).await;
+    assert_eq!(install_status, StatusCode::OK, "{install}");
+    let installed = install["install"]["project"]
+        .as_str()
+        .expect("installed project")
+        .to_string();
+    assert!(
+        consumer
+            .projects
+            .get_project("superadmin", &installed)
+            .expect("project lookup")
+            .is_some(),
+        "a static repository materialises a project like any other channel"
+    );
+
+    // --- the release is pinned: replacing it under its path fails closed ---
+    let mut tampered: Value = serde_json::from_slice(&release_bytes).expect("document json");
+    tampered["spec"]["description"] = json!("Replaced after the index was published.");
+    fs::write(
+        &release_path,
+        serde_json::to_vec_pretty(&tampered).expect("tampered bytes"),
+    )
+    .expect("tampered file");
+
+    let refused = post(
+        "/api/platform/hub/install",
+        body.clone(),
+        cookie.clone(),
+        consumer_app.clone(),
+    )
+    .await;
+    let refused = response_json(refused).await;
+    assert_eq!(
+        refused["error"]["code"],
+        json!("HUB_REMOTE_HASH_MISMATCH"),
+        "a document swapped under its path is refused: {refused}"
+    );
+
+    // --- and the review's refusals are the install's refusals --------------
+    // A pipeline whose bytes the review cannot read is a violation, and it is a
+    // violation on this channel too, reached through the same plan.
+    let mut hostile: Value = serde_json::from_slice(&release_bytes).expect("document json");
+    for file in hostile["spec"]["files"]
+        .as_array_mut()
+        .expect("files array")
+        .iter_mut()
+    {
+        if file["rel_path"]
+            .as_str()
+            .is_some_and(|path| path.ends_with(".zf.json"))
+        {
+            let raw = vec![0x00_u8, 0x01, 0x02, 0xff, 0xfe].repeat(20);
+            file["encoding"] = json!("base64");
+            file["content"] = json!(base64::engine::general_purpose::STANDARD.encode(&raw));
+            file["size_bytes"] = json!(raw.len());
+        }
+    }
+    let hostile_bytes = serde_json::to_vec_pretty(&hostile).expect("hostile bytes");
+    fs::write(&release_path, &hostile_bytes).expect("hostile file");
+    write_index(&sha256_hex(&hostile_bytes), hostile_bytes.len());
+
+    let refused = post(
+        "/api/platform/hub/install",
+        body,
+        cookie,
+        consumer_app.clone(),
+    )
+    .await;
+    let refused = response_json(refused).await;
+    assert_eq!(
+        refused["error"]["code"],
+        json!("HUB_REMOTE_INSTALL_REFUSED"),
+        "the one review refuses a static repository's package too: {refused}"
+    );
+
+    files_server.abort();
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    use sha2::Digest as _;
+    let mut hasher = sha2::Sha256::new();
+    hasher.update(bytes);
+    hasher
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
 }
