@@ -1,39 +1,36 @@
-//! Unified Zebflow binary.
+//! Unified Zebflow binary, built twice as `zeb` and `zebflow`.
 //!
 //! Current behavior:
 //!
-//! - `zebflow` or `zebflow standalone` starts the current all-in-one server
-//! - `zebflow controller` starts the control-plane oriented server
-//! - `zebflow office` starts the execution-plane oriented server
-//! - `zebflow install|list|status|login|use|logout` talk to a running instance
-//!   over its HTTP API (`platform::cli`)
-//! - `zebflow k8s cluster ...` manages file-based Kubernetes manifest folders
+//! - `zeb` or `zeb standalone` starts the current all-in-one server
+//! - `zeb controller` starts the control-plane oriented server
+//! - `zeb office` starts the execution-plane oriented server
+//! - `zeb run <owner>/<project>` serves one installed project's public route
+//! - `zeb install|remove|list|status|login|use|logout` talk to a running
+//!   instance over its HTTP API (`platform::cli`)
+//! - `zeb k8s cluster ...` manages file-based Kubernetes manifest folders
 //!
 //! `master` and `worker` are deprecated spellings of `controller` and `office`;
 //! they still resolve to the same roles and warn.
+//!
+//! Nothing here writes the program's own name: `distribution.md` §Binary name
+//! ships two, so every message reads argv[0] through `cli::program()`.
 //!
 //! The goal is one binary that still runs comfortably on a laptop or Raspberry Pi while also
 //! growing into controller/office and Kubernetes deployments.
 
 use std::io;
 use std::net::SocketAddr;
-use std::path::{Component, Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 
-use base64::Engine as _;
-use reqwest::Url;
-use serde_json::Value;
 use zebflow::infra::cluster::config::{ClusterRole, ClusterSettings};
-use zebflow::infra::execution::sync::ProjectBootstrapPlan;
 use zebflow::infra::health::{
     HealthState, spawn_main_runtime_heartbeat, start_dedicated_health_server,
 };
 use zebflow::platform::cli;
-use zebflow::platform::model::CreateProjectRequest;
 use zebflow::platform::services::PlatformService;
-use zebflow::platform::services::project::{
-    derive_trigger_kind_from_source, webhook_triggers_from_source,
-};
+use zebflow::platform::services::project::webhook_triggers_from_source;
 use zebflow::platform::services::{
     DependencyLockService, LibraryService, ProjectConfigurationService, ProjectService,
 };
@@ -142,29 +139,31 @@ fn top_level_help() -> String {
         "Zebflow {version}
 
 Usage:
-  zebflow [standalone]
-  zebflow install <ref> [--repo <repository-id>] [--yes]
-  zebflow list
-  zebflow status
-  zebflow login <instance-url> [--user <name>] [--password <pw>]
-  zebflow use <owner>/<project>
-  zebflow logout
-  zebflow project install <ref>
-  zebflow project list
-  zebflow run <project-or-hub-asset-url> [--owner <owner>] [--project <project>]
-  zebflow project config migrate <owner> <project>
-  zebflow project lock migrate <owner> <project>
-  zebflow project pipelines migrate <owner> <project>
-  zebflow controller
-  zebflow office
-  zebflow k8s cluster <command> ...
-  zebflow help
-  zebflow --help
-  zebflow --version
+  {zeb} [standalone]
+  {zeb} install <ref> [--repo <repository-id>] [--yes]
+  {zeb} remove <owner>/<project>
+  {zeb} list
+  {zeb} status
+  {zeb} login <instance-url> [--user <name>] [--password <pw>]
+  {zeb} use <owner>/<project>
+  {zeb} logout
+  {zeb} project install <ref>
+  {zeb} project remove <owner>/<project>
+  {zeb} project list
+  {zeb} run <owner>/<project>
+  {zeb} project config migrate <owner> <project>
+  {zeb} project lock migrate <owner> <project>
+  {zeb} project pipelines migrate <owner> <project>
+  {zeb} controller
+  {zeb} office
+  {zeb} k8s cluster <command> ...
+  {zeb} help
+  {zeb} --help
+  {zeb} --version
 
 Runtime Modes:
   standalone   Start the combined controller + office server (default)
-  run          Materialize one app project if needed, then serve its public route
+  run          Serve one installed project's public route (install it first)
   controller   Start the control-plane oriented server
   office       Start the execution-plane oriented server
 
@@ -175,29 +174,29 @@ Runtime Modes:
 
 Project Maintenance (offline: these run against a data directory with no server,
 because they are what you run when the server will not start):
-  zebflow project config migrate <owner> <project>
+  {zeb} project config migrate <owner> <project>
                Explicitly migrate repo/zebflow.json to repo/zebflow.yaml
-  zebflow project lock migrate <owner> <project>
+  {zeb} project lock migrate <owner> <project>
                Explicitly migrate the pre-v1 repo/zeb.lock format
-  zebflow project pipelines migrate <owner> <project>
+  {zeb} project pipelines migrate <owner> <project>
                Rewrite persisted pipeline ids to the source-relative form
 
 Kubernetes:
-  zebflow k8s cluster init <path>
-  zebflow k8s cluster add-office <path> <office-id>
-  zebflow k8s cluster set-controller <path> <office-id>
-  zebflow k8s cluster set-namespace <path> <namespace>
-  zebflow k8s cluster set-resource-suffix <path> <suffix>
-  zebflow k8s cluster set-image <path> <image>
-  zebflow k8s cluster use-secret <path> <secret-name>
-  zebflow k8s cluster set-replicas <path> <replicas>
-  zebflow k8s cluster enable-precreate-pvcs <path>
-  zebflow k8s cluster disable-precreate-pvcs <path>
-  zebflow k8s cluster enable-auto-update <path>
-  zebflow k8s cluster disable-auto-update <path>
-  zebflow k8s cluster render-copy-jobs <source-path> <target-path> <output-file>
-  zebflow k8s cluster describe <path>
-  zebflow k8s cluster validate <path>
+  {zeb} k8s cluster init <path>
+  {zeb} k8s cluster add-office <path> <office-id>
+  {zeb} k8s cluster set-controller <path> <office-id>
+  {zeb} k8s cluster set-namespace <path> <namespace>
+  {zeb} k8s cluster set-resource-suffix <path> <suffix>
+  {zeb} k8s cluster set-image <path> <image>
+  {zeb} k8s cluster use-secret <path> <secret-name>
+  {zeb} k8s cluster set-replicas <path> <replicas>
+  {zeb} k8s cluster enable-precreate-pvcs <path>
+  {zeb} k8s cluster disable-precreate-pvcs <path>
+  {zeb} k8s cluster enable-auto-update <path>
+  {zeb} k8s cluster disable-auto-update <path>
+  {zeb} k8s cluster render-copy-jobs <source-path> <target-path> <output-file>
+  {zeb} k8s cluster describe <path>
+  {zeb} k8s cluster validate <path>
 
 Environment - process shape (where this process listens and stores):
   ZEBFLOW_PLATFORM_HOST              Listen host (default: 127.0.0.1)
@@ -246,7 +245,8 @@ Environment - rendering engine (advanced):
   ZEBFLOW_RWE_ENGINE_ID              Reactive web engine id for project pipeline rendering
   ZEBFLOW_RWE_PREWARM                Set to 0 to disable post-compile SSR warmup
 
-Use `zebflow k8s --help` for the file-based Kubernetes cluster manager.",
+Use `{zeb} k8s --help` for the file-based Kubernetes cluster manager.",
+        zeb = cli::program(),
         version = APP_VERSION,
         client_help = cli::help_section()
     )
@@ -268,11 +268,16 @@ fn print_version() {
 async fn project_command(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     match args.first().map(String::as_str) {
         Some("install") => cli::run_install(&args[1..]).await.map_err(Into::into),
+        Some("remove") => cli::run_remove(&args[1..]).await.map_err(Into::into),
         Some("list") => cli::run_list(&args[1..]).await.map_err(Into::into),
         Some("config") | Some("lock") | Some("pipelines") => project_maintenance(args),
         _ => Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            "usage: zebflow project <install|list> ...\n       zebflow project <config|lock|pipelines> migrate <owner> <project>",
+            format!(
+                "usage: {zeb} project <install|remove|list> ...\n       \
+                 {zeb} project <config|lock|pipelines> migrate <owner> <project>",
+                zeb = cli::program()
+            ),
         )
         .into()),
     }
@@ -282,7 +287,10 @@ fn project_maintenance(args: &[String]) -> Result<(), Box<dyn std::error::Error>
     if args.len() != 4 || args[1] != "migrate" {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            "usage: zebflow project <config|lock|pipelines> migrate <owner> <project>",
+            format!(
+                "usage: {} project <config|lock|pipelines> migrate <owner> <project>",
+                cli::program()
+            ),
         )
         .into());
     }
@@ -331,7 +339,10 @@ fn project_maintenance(args: &[String]) -> Result<(), Box<dyn std::error::Error>
         }
         _ => Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            "usage: zebflow project <config|lock|pipelines> migrate <owner> <project>",
+            format!(
+                "usage: {} project <config|lock|pipelines> migrate <owner> <project>",
+                cli::program()
+            ),
         )
         .into()),
     }
@@ -397,7 +408,7 @@ fn load_platform_config_with_default_password(
         })?;
     }
     config.cluster = ClusterSettings::from_env(role, &default_advertise_url(&host, port));
-    // Refused here as well as in `PlatformService::from_config`, so `zebflow office`
+    // Refused here as well as in `PlatformService::from_config`, so `zeb office`
     // names every missing variable before it opens the data root.
     config
         .cluster
@@ -461,29 +472,33 @@ async fn run_server(role: ClusterRole) -> Result<(), Box<dyn std::error::Error>>
     Ok(())
 }
 
+/// `zeb run <owner>/<project>` — which project to serve, and nothing about
+/// where it comes from.
+///
+/// `run` used to accept a hub asset URL and materialise it, which was a second
+/// materialisation path that skipped the review every other channel runs
+/// (`distribution.md` §3). It serves only what is already installed now, so
+/// `install` is the one way a project comes into existence.
 #[derive(Debug, Clone)]
 struct RunRequest {
-    target: String,
     owner: Option<String>,
-    project: Option<String>,
-}
-
-#[derive(Debug, Clone)]
-struct RemoteAssetRef {
-    url: String,
-    package_id: String,
-    version: String,
+    project: String,
 }
 
 fn parse_run_request(args: &[String]) -> Result<RunRequest, io::Error> {
     let Some(target) = args.first() else {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            "missing run target",
+            format!(
+                "usage: {} run <owner>/<project>\n\nA project has to be installed before it can \
+                 be served: `{} install <ref>`.",
+                cli::program(),
+                cli::program()
+            ),
         ));
     };
-    let mut owner = None;
-    let mut project = None;
+    let mut owner_flag = None;
+    let mut project_flag = None;
     let mut index = 1;
     while index < args.len() {
         match args[index].as_str() {
@@ -495,7 +510,7 @@ fn parse_run_request(args: &[String]) -> Result<RunRequest, io::Error> {
                         "missing value for --owner",
                     ));
                 };
-                owner = Some(value.clone());
+                owner_flag = Some(value.clone());
             }
             "--project" => {
                 index += 1;
@@ -505,7 +520,7 @@ fn parse_run_request(args: &[String]) -> Result<RunRequest, io::Error> {
                         "missing value for --project",
                     ));
                 };
-                project = Some(value.clone());
+                project_flag = Some(value.clone());
             }
             other => {
                 return Err(io::Error::new(
@@ -516,107 +531,43 @@ fn parse_run_request(args: &[String]) -> Result<RunRequest, io::Error> {
         }
         index += 1;
     }
+    // `<owner>/<project>` is the same reference shape `use` and `remove` take.
+    // The flags predate it and still work, but a flag that disagrees with the
+    // reference is refused rather than ranked: no reading of
+    // `zeb run a/b --owner c` is obviously the right one.
+    let (reference_owner, project) = match target.split_once('/') {
+        Some((left, right)) => (Some(left.trim().to_string()), right.trim().to_string()),
+        None => (None, target.trim().to_string()),
+    };
+    if project.is_empty() || project.contains('/') {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("'{target}' is not <owner>/<project>"),
+        ));
+    }
+    if let Some(flag) = owner_flag.as_deref()
+        && reference_owner
+            .as_deref()
+            .is_some_and(|named| named != flag.trim())
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("'{target}' and --owner name different owners; give the owner once"),
+        ));
+    }
+    if let Some(flag) = project_flag.as_deref()
+        && flag.trim() != project
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("'{target}' and --project name different projects; give it once"),
+        ));
+    }
+
     Ok(RunRequest {
-        target: target.clone(),
-        owner,
+        owner: reference_owner.or(owner_flag),
         project,
     })
-}
-
-fn parse_remote_asset_ref(raw: &str) -> Option<RemoteAssetRef> {
-    let url = Url::parse(raw).ok()?;
-    let segments = url
-        .path_segments()?
-        .filter(|segment| !segment.is_empty())
-        .collect::<Vec<_>>();
-    let remote_idx = segments
-        .windows(2)
-        .position(|window| window == ["remote", "assets"])?;
-    let package_id = segments.get(remote_idx + 2)?.to_string();
-    let version = segments.get(remote_idx + 3)?.to_string();
-    Some(RemoteAssetRef {
-        url: raw.to_string(),
-        package_id,
-        version,
-    })
-}
-
-fn sanitize_project_slug(raw: &str) -> String {
-    let mut out = String::new();
-    let mut last_dash = false;
-    for ch in raw.chars() {
-        let lower = ch.to_ascii_lowercase();
-        if lower.is_ascii_alphanumeric() {
-            out.push(lower);
-            last_dash = false;
-        } else if !last_dash {
-            out.push('-');
-            last_dash = true;
-        }
-    }
-    out.trim_matches('-').to_string()
-}
-
-fn repo_rel_path(raw: &str) -> Result<PathBuf, io::Error> {
-    let path = Path::new(raw);
-    if path.is_absolute() {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            format!("absolute repo path is not allowed: {raw}"),
-        ));
-    }
-    let mut out = PathBuf::new();
-    for component in path.components() {
-        match component {
-            Component::Normal(part) => out.push(part),
-            Component::CurDir => {}
-            Component::ParentDir => {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    format!("repo path must not escape project root: {raw}"),
-                ));
-            }
-            _ => {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    format!("unsupported repo path component in '{raw}'"),
-                ));
-            }
-        }
-    }
-    if out.as_os_str().is_empty() {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "repo path must not be empty",
-        ));
-    }
-    Ok(out)
-}
-
-fn decode_artifact_entry_bytes(entry: &Value) -> Result<Vec<u8>, io::Error> {
-    let encoding = entry
-        .get("encoding")
-        .and_then(Value::as_str)
-        .unwrap_or("text");
-    let content = entry
-        .get("content")
-        .and_then(Value::as_str)
-        .unwrap_or_default();
-    if encoding == "base64" {
-        return base64::engine::general_purpose::STANDARD
-            .decode(content)
-            .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err.to_string()));
-    }
-    Ok(content.as_bytes().to_vec())
-}
-
-fn fallback_pipeline_title(file_rel_path: &str) -> String {
-    Path::new(file_rel_path)
-        .file_stem()
-        .and_then(|value| value.to_str())
-        .unwrap_or("Imported Pipeline")
-        .replace(".zf", "")
-        .replace('-', " ")
 }
 
 fn choose_public_app_path(
@@ -662,154 +613,48 @@ fn choose_public_app_path(
         .ok_or_else(|| io::Error::other("no webhook-triggered public route found for project"))
 }
 
-async fn install_remote_project_asset(
-    platform: &PlatformService,
-    owner: &str,
-    project: &str,
-    remote: &RemoteAssetRef,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let response = reqwest::Client::new().get(&remote.url).send().await?;
-    if !response.status().is_success() {
-        return Err(io::Error::other(format!(
-            "remote hub fetch failed with {}",
-            response.status()
-        ))
-        .into());
-    }
-    let payload: Value = response.json().await?;
-    let artifact = payload
-        .get("artifact")
-        .cloned()
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "missing artifact payload"))?;
-    let files = artifact
-        .get("files")
-        .and_then(Value::as_array)
-        .ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::InvalidData,
-                "artifact.files must be an array",
-            )
-        })?;
-
-    platform.projects.create_or_update_project(
-        owner,
-        &CreateProjectRequest {
-            project: project.to_string(),
-            title: Some(remote.package_id.replace('-', " ")),
-            local_branch: None,
-            runtime: Default::default(),
-        },
-    )?;
-    let layout = platform.projects.project_layout(owner, project)?;
-
-    let mut activated = Vec::<String>::new();
-    for entry in files {
-        let rel_path_raw = entry
-            .get("rel_path")
-            .and_then(Value::as_str)
-            .ok_or_else(|| {
-                io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "artifact entry missing rel_path",
-                )
-            })?;
-        let rel_path = repo_rel_path(rel_path_raw)?;
-        let dest_abs = layout.repo_dir.join(&rel_path);
-        if let Some(parent) = dest_abs.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        let bytes = decode_artifact_entry_bytes(entry)?;
-        std::fs::write(&dest_abs, bytes)?;
-
-        if rel_path
-            .extension()
-            .and_then(|value| value.to_str())
-            .map(|value| value.eq_ignore_ascii_case("json"))
-            .unwrap_or(false)
-            && rel_path
-                .to_str()
-                .map(|value| layout.repo_layout.is_pipeline_rel_path(value))
-                .unwrap_or(false)
-        {
-            let rel_string = rel_path.to_string_lossy().to_string();
-            let source = std::fs::read_to_string(&dest_abs)?;
-            let title = fallback_pipeline_title(&rel_string);
-            let trigger_kind =
-                derive_trigger_kind_from_source(&source).unwrap_or_else(|| "webhook".to_string());
-            let meta = platform.projects.upsert_pipeline_definition(
-                owner,
-                project,
-                &rel_string,
-                &title,
-                "",
-                &trigger_kind,
-                &source,
-            )?;
-            activated.push(meta.file_rel_path);
-        }
-    }
-
-    if !activated.is_empty() {
-        platform.zebflow_cfg.set_bootstrap(
-            owner,
-            project,
-            ProjectBootstrapPlan {
-                activate: activated.clone(),
-            },
-        )?;
-        platform
-            .cluster_runtime_sync
-            .refresh_local_repo_state(owner, project)?;
-    }
-
-    Ok(())
-}
-
 async fn run_project(req: RunRequest) -> Result<(), Box<dyn std::error::Error>> {
     let config = load_platform_config(ClusterRole::Standalone)?;
     let host = configured_host();
     let port = configured_port();
     let health = maybe_start_dedicated_health_server(&host)?;
 
-    let remote = parse_remote_asset_ref(&req.target);
-    let owner = req
-        .owner
-        .clone()
-        .unwrap_or_else(|| config.default_owner.clone());
-    let project = req.project.clone().unwrap_or_else(|| {
-        remote
-            .as_ref()
-            .map(|item| sanitize_project_slug(&item.package_id))
-            .unwrap_or_else(|| sanitize_project_slug(&req.target))
-    });
-    if project.trim().is_empty() {
-        return Err(io::Error::new(io::ErrorKind::InvalidInput, "empty project slug").into());
-    }
+    // No fallback to ZEBFLOW_PLATFORM_DEFAULT_OWNER: §3a of `interface.md` says
+    // that variable names what the server bootstraps, not who a command acts
+    // for, and nothing resolves an owner from it.
+    let Some(owner) = req.owner.clone() else {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "run needs an owner; write `{zeb} run <owner>/{project}` or pass `--owner <name>`",
+                zeb = cli::program(),
+                project = req.project
+            ),
+        )
+        .into());
+    };
+    let project = req.project.clone();
 
     let platform = Arc::new(PlatformService::from_config(config)?);
-    if let Some(remote) = remote {
-        println!(
-            "Installing {}@{} from remote hub asset...",
-            remote.package_id, remote.version
-        );
-        install_remote_project_asset(platform.as_ref(), &owner, &project, &remote).await?;
-    } else {
-        let exists = platform
-            .projects
-            .list_projects(&owner)?
-            .into_iter()
-            .any(|item| item.project == project);
-        if !exists {
-            return Err(io::Error::new(
-                io::ErrorKind::NotFound,
-                format!("project '{owner}/{project}' is not installed"),
-            )
-            .into());
-        }
-        platform
-            .cluster_runtime_sync
-            .refresh_local_repo_state(&owner, &project)?;
+    let exists = platform
+        .projects
+        .list_projects(&owner)?
+        .into_iter()
+        .any(|item| item.project == project);
+    if !exists {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            format!(
+                "project '{owner}/{project}' is not installed in this data root; install it \
+                 first with `{} install <ref>`",
+                cli::program()
+            ),
+        )
+        .into());
     }
+    platform
+        .cluster_runtime_sync
+        .refresh_local_repo_state(&owner, &project)?;
 
     let public_path = choose_public_app_path(platform.as_ref(), &owner, &project)?;
     let app_url = format!(
@@ -845,7 +690,7 @@ async fn run_project(req: RunRequest) -> Result<(), Box<dyn std::error::Error>> 
 }
 
 #[tokio::main]
-async fn main() {
+pub async fn main() {
     if let Err(err) = run().await {
         // Displayed, not debugged: returning the error from `main` prints its
         // `Debug` form, which turns a refusal a person is meant to act on into
@@ -856,7 +701,11 @@ async fn main() {
 }
 
 async fn run() -> Result<(), Box<dyn std::error::Error>> {
-    let mut args = std::env::args().skip(1);
+    let mut argv = std::env::args();
+    // Recorded before anything can print: `zeb` and `zebflow` are one binary,
+    // and every usage line and hint has to name the one that was typed.
+    cli::set_program_name(argv.next().as_deref());
+    let mut args = argv;
     let mode = args.next();
 
     match mode.as_deref() {
@@ -867,6 +716,9 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         // (interface.md §4). `install` never means the project-scope verb,
         // whatever context is stored (§7).
         Some("install") => cli::run_install(&args.collect::<Vec<_>>())
+            .await
+            .map_err(Into::into),
+        Some("remove") => cli::run_remove(&args.collect::<Vec<_>>())
             .await
             .map_err(Into::into),
         Some("list") => cli::run_list(&args.collect::<Vec<_>>())
@@ -893,14 +745,19 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             Some(mode) => {
                 if let Some(canonical) = mode.deprecated_alias_of {
                     eprintln!(
-                        "Zebflow: `zebflow {other}` is a deprecated spelling of `zebflow {canonical}` and will be removed; use `zebflow {canonical}`."
+                        "Zebflow: `{zeb} {other}` is a deprecated spelling of `{zeb} {canonical}` and will be removed; use `{zeb} {canonical}`.",
+                        zeb = cli::program()
                     );
                 }
                 run_server(mode.role).await
             }
             None => Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
-                format!("unknown zebflow mode '{other}'\n\n{}", top_level_help()),
+                format!(
+                    "unknown {} mode '{other}'\n\n{}",
+                    cli::program(),
+                    top_level_help()
+                ),
             )
             .into()),
         },

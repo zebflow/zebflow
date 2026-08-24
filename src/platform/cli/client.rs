@@ -69,6 +69,20 @@ impl Instance {
         read_json(response).await
     }
 
+    /// `DELETE` with a body, which is how the platform takes the confirmation
+    /// an irreversible delete requires.
+    pub async fn delete_json(&self, path: &str, body: &Value) -> Result<Value, io::Error> {
+        let response = self
+            .http
+            .delete(format!("{}{path}", self.base))
+            .header(COOKIE, self.cookie())
+            .json(body)
+            .send()
+            .await
+            .map_err(transport_error)?;
+        read_json(response).await
+    }
+
     fn cookie(&self) -> String {
         format!("{SESSION_COOKIE_NAME}={}", self.token)
     }

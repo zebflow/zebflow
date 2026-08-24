@@ -10568,8 +10568,14 @@ struct DeleteProjectRequest {
 /// - `password` in the body authenticates the current user.
 ///
 /// Deletes:
-/// - Project metadata node from the platform DB.
+/// - The project row and every platform-DB row keyed to it: policies and their
+///   bindings, members, invites, runtime placement, operations, credentials,
+///   database connections, hub repositories, pipeline metadata and
+///   invocations, and MCP sessions.
 /// - Entire `data_root/users/{owner}/{project}/` directory tree from disk.
+///
+/// Refuses with 409 when the project hosts a hub authority: that would cascade
+/// into a published catalogue, which has to be a deliberate act of its own.
 async fn api_delete_project(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
@@ -10635,12 +10641,21 @@ async fn api_delete_project(
         Ok(Some(_)) => {}
     }
 
-    // Delete metadata from the platform DB
+    // Delete metadata from the platform DB. A project that hosts a hub
+    // authority is refused rather than cascaded, and that refusal is a
+    // conflict the caller can act on, not a server fault.
     if let Err(e) = state
         .platform
         .data
         .delete_project(&owner_slug, &project_slug)
     {
+        if e.code == "PLATFORM_PROJECT_HOSTS_HUB_AUTHORITY" {
+            return (
+                StatusCode::CONFLICT,
+                Json(json!({"ok": false, "error": e.message})),
+            )
+                .into_response();
+        }
         return internal_error(e);
     }
 

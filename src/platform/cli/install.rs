@@ -1,4 +1,4 @@
-//! `zeb project install <ref>`, and its `zebflow install <ref>` alias.
+//! `zeb project install <ref>`, and its `zeb install <ref>` alias.
 //!
 //! Platform-scope install: it materialises a whole project, which
 //! `distribution.md` §0 separates from the project-scope `install` that takes
@@ -54,7 +54,7 @@ impl ConsentScope {
     }
 }
 
-/// A parsed `zebflow install` invocation.
+/// A parsed `zeb install` invocation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InstallArgs {
     /// `<package-id>` or `<package-id>@<version>`.
@@ -123,7 +123,10 @@ pub fn parse_args(args: &[String]) -> Result<InstallArgs, io::Error> {
     let reference = reference.ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::InvalidInput,
-            "usage: zebflow install <package-id>[@version] [--repo <repository-id>] [--yes]",
+            format!(
+                "usage: {} install <package-id>[@version] [--repo <repository-id>] [--yes]",
+                super::program()
+            ),
         )
     })?;
     scope.validate()?;

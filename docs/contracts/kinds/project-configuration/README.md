@@ -180,7 +180,7 @@ file operations.
 | `spec.rwe` | Settings > Policy and Settings > Libraries | RWE compilation, rendering, assets, and editor libraries |
 | `spec.pipelines` | Settings > General and Settings > Logs | Node timeout and bounded invocation retention |
 | `spec.runtime` | Project creation and explicit project configuration edits | Runtime synchronization and placement planning |
-| `spec.bootstrap` | Project package installation and the `zebflow run` flow | Pipeline activation during materialization and repo refresh |
+| `spec.bootstrap` | Project package installation | Pipeline activation during materialization and repo refresh |
 | `spec.git` | Settings > General Git Remote | Git sync and push target selection |
 | `spec.assistant` | Settings > Automatons | Project assistant credentials and execution bounds |
 | `spec.locks` | Template editor lock control | REST, MCP, and assistant template access checks |

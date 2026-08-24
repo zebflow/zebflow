@@ -56,16 +56,26 @@ Every command belongs to exactly one.
 
 ### Group 1 — Server modes
 
-Bare verbs, no nouns, configured by environment. These are "be a server", not
-"do something to something", which is why they are the one deliberate exception
-to `noun verb`. `docker`, `caddy`, and `nginx` all behave this way and nobody
-is surprised.
+Bare verbs, configured by environment. These are "be a server", not "do
+something to something", which is why they are the one deliberate exception to
+`noun verb`. `docker`, `caddy`, and `nginx` all behave this way and nobody is
+surprised. Only `run` takes an argument, and it takes it for the same reason
+`nginx -c` does: to say which thing this process is serving.
 
 ```
-zeb                    standalone: controller + office
-zeb controller         control plane
-zeb office             execution plane
+zeb                            standalone: controller + office
+zeb controller                 control plane
+zeb office                     execution plane
+zeb run <owner>/<project>      serve one installed project's public route
 ```
+
+`run` is the one server mode that names what it serves, and it is a server mode
+rather than a Group 2 verb because that is all it does: it starts a process. It
+used to also materialise a project from a hub asset URL, which made it half of
+each group and put a second materialisation path beside `install` — §8 named
+that collision and this is its resolution. `run` now refuses a project that is
+not installed and names `install` as the command that installs it, so there is
+exactly one way a project comes into existence and it is the reviewed one.
 
 **`master` and `worker` are deprecated spellings** of `controller` and `office`.
 The binary has always accepted both and documented neither, which is the docker
@@ -88,28 +98,37 @@ What a person who has never read this document types. Blessed top-level verbs,
 each an alias with an exact canonical expansion (§4).
 
 ```
-zeb install <ref>      materialise a project  (= zeb project install)
-zeb run <ref>          materialise if needed, then serve
-zeb add <ref> --to <folder>     copy content in as this project's source
-zeb publish <source> --to <hub>
+zeb install <ref>                    materialise a project  (= zeb project install)
+zeb remove <owner>/<project>         delete a project       (= zeb project remove)
 zeb list · zeb status
 zeb login <instance-url> · zeb use <owner>/<project> · zeb logout
 ```
 
-The second line is the client context store (§5), which has no noun to sit
-under: it configures the client itself rather than acting on anything the
-instance holds, so `zeb context set` would name a resource that does not exist.
+`login`, `use`, and `logout` are the client context store (§5), which has no
+noun to sit under: it configures the client itself rather than acting on
+anything the instance holds, so `zeb context set` would name a resource that
+does not exist.
 `gcloud` and `kubectl` both landed on bare `auth`/`config` verbs here for the
 same reason. `logout` is the only one of the three §5 did not already name, and
 it is the counterpart that revokes what `login` stored; removing a credential
 must not require deleting a file by hand.
 
-The set is larger than it should be. `install` and `run` clearly earn a
-top-level place; `add` and `publish` do not say *what* is being added or
-published without their noun, and reading them left to right tells you less than
-`zeb hub publish` would. That is a disagreement to settle with
-`distribution.md`, which blesses them, rather than a decision this document
-makes alone.
+`remove` is the counterpart to `install`, and it is a blunter word than it
+looks: it deletes the project, its source, its database, and the files it
+stored. It is **not** an uninstall. `distribution.md` §0 says a platform-scope
+install "produces a project and cannot be undone by an uninstall" — what
+arrived belongs to the receiving instance and nothing records which bytes came
+from the package — so there is nothing to undo and the only removal that exists
+is deleting the whole project. The command says so before it asks.
+
+**`add` and `publish` are no longer blessed here, and are not built.** Neither
+says *what* is being added or published without its noun, and reading them left
+to right tells you less than `zeb hub publish` does. That was recorded as a
+disagreement with `distribution.md`, which blessed them; the disagreement is
+settled in favour of the nouns, and both documents now spell them
+`zeb hub add <ref> --to <folder>` and `zeb hub publish <source> --to <hub>`,
+under the `hub` group that already owns the routes they would call. Neither
+exists in the binary today and neither document claims it does.
 
 ### Group 3 — Project maintenance
 
@@ -235,8 +254,11 @@ alias is sugar; the canonical form is the vocabulary.
 | `zeb remove <ref>` | `zeb project remove <ref>` |
 | `zeb list` | `zeb project list` |
 
-The alias set is frozen at the four verbs in Group 2. Adding a fifth is a
-change to this document.
+The alias set is frozen at the three rows above. Adding a fourth is a change to
+this document. The remaining Group 2 words — `status`, `login`, `use`, and
+`logout` — are not aliases and never gain one: they name no canonical longer
+form, because §3 explains they configure the client rather than acting on
+anything an instance holds.
 
 Group 1's `master` and `worker` are **not** additions to this set. They are
 deprecated spellings on their way out, not sugar being kept, and §3's rule that
@@ -333,6 +355,11 @@ Project creation is irreversible and routes through the platform-scope install
 review, which reports the SQL a package would run, the pipelines it would
 register, and what it would activate.
 
+`zeb remove` is not the inverse. It deletes a project, which is the only
+removal the platform has at this scope, and it says so rather than presenting
+itself as an undo. Project-scope uninstall — the one that does remove a tracked
+dependency — exists as an API for node bundles and has no CLI verb.
+
 ## 8. What is not yet mapped
 
 This document proposes a vocabulary. It has not yet been checked against the
@@ -354,6 +381,10 @@ the reduction is the work. The deliverable of that pass is the list of
 operations **no proposed term covers**, because without it minimality and
 completeness are both claims nobody can check.
 
-`zebflow run <url>` is the first thing that mapping must resolve. It materializes
-a project from a hub asset and then serves it, which is half Group 2 and half
-Group 1, and it is the existing name most likely to collide with §7.
+`zeb run` was the first thing that mapping had to resolve, and it is resolved.
+It materialised a project from a hub asset URL and then served it, which was
+half Group 2 and half Group 1 and put a second, unreviewed materialisation path
+beside `install`. It now only serves, and only what is already installed, so it
+sits wholly in Group 1 (§3) and collides with nothing. The rest of §8 — the 222
+API routes, the 37 MCP tools, and the eighteen noun groups above — is still
+unmapped.

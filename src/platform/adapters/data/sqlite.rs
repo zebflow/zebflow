@@ -7,7 +7,7 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use rusqlite::{Connection, Row, Transaction, TransactionBehavior, params};
+use rusqlite::{Connection, OptionalExtension, Row, Transaction, TransactionBehavior, params};
 use serde_json::Value;
 
 use crate::infra::cluster::registry::WorkerRegistryRecord;
@@ -3124,13 +3124,106 @@ impl DataAdapter for SqliteDataAdapter {
         Ok(items)
     }
 
+    /// Deletes a project and every row this database holds *about* that
+    /// project.
+    ///
+    /// Six tables reference `projects(project_id)` with `ON DELETE RESTRICT`,
+    /// so deleting the row alone failed with a foreign key error for any
+    /// project that had ever been opened — which is every project, since
+    /// creation writes policies and a membership. The rest are keyed by
+    /// `(owner, project)` with no constraint to catch them, and leaving them
+    /// behind is worse than an error: a project recreated under the same slug
+    /// would inherit the previous one's credentials and members.
+    ///
+    /// Every project carries a `hub_authorities` row — a migration backfills one
+    /// per project, disabled and empty — so the row alone means nothing and is
+    /// deleted with the project. An authority that has *published* something is
+    /// different: it is a publisher identity other instances trust, and
+    /// dropping its publishers, packages, and tokens as a side effect of
+    /// removing a project would delete a catalogue without saying so. That case
+    /// is refused, naming what stands in the way.
     fn delete_project(&self, owner: &str, project: &str) -> Result<(), PlatformError> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
-        conn.execute(
+        let mut conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let tx = conn
+            .transaction_with_behavior(TransactionBehavior::Exclusive)
+            .map_err(Self::qe)?;
+
+        let authority_id: Option<String> = tx
+            .query_row(
+                "SELECT authority_id FROM hub_authorities WHERE owner = ?1 AND project = ?2",
+                params![owner, project],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(Self::qe)?;
+        if let Some(authority_id) = authority_id.as_deref() {
+            let mut published = Vec::new();
+            for (label, sql) in [
+                (
+                    "publisher",
+                    "SELECT COUNT(*) FROM hub_publishers WHERE authority_id = ?1",
+                ),
+                (
+                    "package",
+                    "SELECT COUNT(*) FROM hub_asset_packages WHERE authority_id = ?1",
+                ),
+                (
+                    "token",
+                    "SELECT COUNT(*) FROM hub_tokens WHERE authority_id = ?1",
+                ),
+            ] {
+                let count: i64 = tx
+                    .query_row(sql, params![authority_id], |row| row.get(0))
+                    .map_err(Self::qe)?;
+                if count > 0 {
+                    published.push(format!("{count} {label}(s)"));
+                }
+            }
+            if !published.is_empty() {
+                return Err(PlatformError::new(
+                    "PLATFORM_PROJECT_HOSTS_HUB_AUTHORITY",
+                    format!(
+                        "{owner}/{project} hosts a hub authority with {}; remove them before the \
+                         project so a published catalogue is not deleted as a side effect",
+                        published.join(", ")
+                    ),
+                ));
+            }
+            tx.execute(
+                "DELETE FROM hub_authorities WHERE authority_id = ?1",
+                params![authority_id],
+            )
+            .map_err(Self::qe)?;
+        }
+
+        // Bindings before policies: they carry a composite key into them.
+        for table in [
+            "project_policy_bindings",
+            "project_policies",
+            "project_members",
+            "project_invites",
+            "project_runtime_placements",
+            "project_operations",
+            "project_credentials",
+            "project_db_connections",
+            "project_hub_repositories",
+            "pipeline_invocations",
+            "pipeline_meta",
+            "mcp_sessions",
+        ] {
+            tx.execute(
+                &format!("DELETE FROM {table} WHERE owner = ?1 AND project = ?2"),
+                params![owner, project],
+            )
+            .map_err(Self::qe)?;
+        }
+
+        tx.execute(
             "DELETE FROM projects WHERE owner = ?1 AND project = ?2",
             params![owner, project],
         )
         .map_err(Self::qe)?;
+        tx.commit().map_err(Self::qe)?;
         Ok(())
     }
 
@@ -6438,6 +6531,101 @@ mod tests {
     use super::*;
     use crate::pipeline::model::NodeTraceEntry;
     use crate::platform::adapters::data::DataAdapter;
+
+    /// A project with the rows a real project has must actually delete.
+    ///
+    /// Six tables reference `projects(project_id)` with `ON DELETE RESTRICT`,
+    /// so deleting the project row alone failed with a foreign key error for
+    /// every project that had ever had a policy or a member — which creation
+    /// gives it. This asserts both halves: the delete succeeds, and it takes
+    /// the project's own rows with it rather than leaving them for a project
+    /// later recreated under the same slug to inherit.
+    #[test]
+    fn deleting_a_project_takes_its_dependent_rows_with_it() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let adapter = SqliteDataAdapter::new(tmp.path()).expect("adapter");
+        adapter
+            .put_user(&StoredUser {
+                profile: PlatformUser {
+                    user_id: String::new(),
+                    owner: "superadmin".to_string(),
+                    role: "superadmin".to_string(),
+                    git_name: String::new(),
+                    git_email: String::new(),
+                    created_at: 1,
+                    updated_at: 1,
+                },
+                auth: PlatformUserLocalAuth {
+                    user_id: String::new(),
+                    password_hash: "x".to_string(),
+                    password_alg: "test".to_string(),
+                    password_updated_at: 1,
+                },
+            })
+            .expect("put user");
+        adapter
+            .put_project(&PlatformProject {
+                project_id: String::new(),
+                owner_user_id: String::new(),
+                owner: "superadmin".to_string(),
+                project: "doomed".to_string(),
+                title: "Doomed".to_string(),
+                created_at: 1,
+                updated_at: 1,
+            })
+            .expect("put project");
+        adapter
+            .put_project_policy(&ProjectPolicy {
+                project_id: String::new(),
+                owner: "superadmin".to_string(),
+                project: "doomed".to_string(),
+                policy_id: "owner".to_string(),
+                title: "Owner".to_string(),
+                capabilities: vec![],
+                managed: true,
+                created_at: 1,
+                updated_at: 1,
+            })
+            .expect("put policy");
+        adapter
+            .put_project_credential(&ProjectCredential {
+                owner: "superadmin".to_string(),
+                project: "doomed".to_string(),
+                credential_id: "db".to_string(),
+                title: "DB".to_string(),
+                kind: "postgres".to_string(),
+                secret: json!({"password": "hunter2"}),
+                notes: String::new(),
+                created_at: 1,
+                updated_at: 1,
+            })
+            .expect("put credential");
+
+        adapter
+            .delete_project("superadmin", "doomed")
+            .expect("delete project");
+
+        assert!(
+            adapter
+                .list_projects("superadmin")
+                .expect("list")
+                .is_empty()
+        );
+        assert!(
+            adapter
+                .list_project_policies("superadmin", "doomed")
+                .expect("policies")
+                .is_empty(),
+            "policies must not outlive their project"
+        );
+        assert!(
+            adapter
+                .get_project_credential("superadmin", "doomed", "db")
+                .expect("credential")
+                .is_none(),
+            "a recreated project must not inherit the old one's secrets"
+        );
+    }
 
     #[test]
     fn invocation_logs_are_project_local_under_data_logs() {

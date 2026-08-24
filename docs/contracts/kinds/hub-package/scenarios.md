@@ -1263,10 +1263,12 @@ promise — you can run it, and you can open the same installation and change it
 > anywhere. A plain HTTPS location serving an index plus package documents is
 > designed and absent.
 
-> **Not built: the CLI.** `zeb install`, `zeb node install`, `zeb add`,
-> `zeb publish` are a proposal in `distribution.md` §0a. The only distribution
-> verb the binary has is `zebflow run`, which materialises a project or Hub asset
-> and serves it. Every command in this document is `curl` for that reason.
+> **Partly built: the CLI.** `zeb install` exists and is the client for the
+> platform-scope install below: it reviews, prints, asks, and then calls the
+> same HTTP route. `zeb remove`, `zeb list`, and `zeb run` exist too. The
+> project-scope verbs — `zeb node install`, `zeb hub add`, `zeb hub publish` —
+> remain a proposal in `distribution.md` §0a, which is why every command in this
+> document is `curl`.
 
 ### 9.3 What travels when Acme publishes to someone else's hub
 

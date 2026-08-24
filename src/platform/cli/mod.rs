@@ -7,32 +7,67 @@
 //! touches an in-memory registry inside the live server, so writing to its data
 //! directory behind its back would leave it believing something false.
 //!
-//! `zebflow login` / `zebflow use` / `zebflow status` are the context commands
+//! `zeb login` / `zeb use` / `zeb status` are the context commands
 //! `interface.md` §5 names, filling in the client context store the same
 //! section records as missing.
 
 pub mod client;
 pub mod context;
 pub mod install;
+pub mod remove;
 pub mod render;
 
+use std::ffi::OsStr;
 use std::io::{self, IsTerminal, Read, Write};
+use std::path::Path;
+use std::sync::OnceLock;
 
 use serde_json::Value;
 
 use client::Instance;
 use context::ClientContext;
 
+/// The name this binary was invoked as.
+///
+/// `distribution.md` §Binary name ships two names for one binary, `zeb` primary
+/// and `zebflow` kept working. Hardcoding either one means half the users are
+/// told to run a command they did not install, so every message asks argv[0]
+/// instead. The fallback is the primary name, which is what an unnamed caller
+/// should be taught.
+static PROGRAM: OnceLock<String> = OnceLock::new();
+
+/// Records argv[0] once, at the top of `main`.
+pub fn set_program_name(argv0: Option<&str>) {
+    let name = argv0
+        .map(Path::new)
+        .and_then(Path::file_stem)
+        .and_then(OsStr::to_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("zeb")
+        .to_string();
+    let _ = PROGRAM.set(name);
+}
+
+/// What this program calls itself in help and in every "run `… login`" hint.
+pub fn program() -> &'static str {
+    PROGRAM.get().map(String::as_str).unwrap_or("zeb")
+}
+
 /// The client commands, as `zeb help` lists them.
-pub fn help_section() -> &'static str {
-    "Everyday Use (these talk to a running instance over its HTTP API):
-  zebflow install <ref> [--repo <repository-id>] [--instance <url>] [--yes]
+pub fn help_section() -> String {
+    let zeb = program();
+    format!(
+        "Everyday Use (these talk to a running instance over its HTTP API):
+  {zeb} install <ref> [--repo <repository-id>] [--instance <url>] [--yes]
                Materialize a project from a hub package. Alias for
-               `zebflow project install`; bare `install` always means this,
+               `{zeb} project install`; bare `install` always means this,
                whatever project context is set.
                <ref> is a package id, optionally @version. A publisher-qualified
                id (acme.kids-games) and its short name (kids-games) both work;
                a name two packages answer to is refused, never ranked.
+               --repo names one of the instance's own hub repositories by id,
+               needed only when more than one carries the same package.
                Reviews first and prints what would happen, including the SQL,
                then asks before creating the project. --yes skips the question.
                A package the review reports violations for is refused outright,
@@ -42,32 +77,41 @@ pub fn help_section() -> &'static str {
                  --no-include-schema     do not write its .sql files
                  --no-execute-schema     write the SQL but do not run it
                `--execute-schema` without `--include-schema` is refused.
-  zebflow project install <ref>
+  {zeb} project install <ref>
                The canonical spelling of the above.
-  zebflow list [--owner <name>] [--instance <url>]
-               Projects on this instance. Alias for `zebflow project list`.
-  zebflow status [--instance <url>]
+  {zeb} remove <owner>/<project> [--instance <url>] [--password <pw>] [--yes]
+               Delete a project: its record, its source, its database, and the
+               files it stores. Alias for `{zeb} project remove`.
+               This is not an uninstall. A platform-scope install produces a
+               project the instance then owns, so nothing tracks which bytes
+               came from a package and nothing is put back by reinstalling one.
+               Asks for the project name back, then for the password the API
+               re-verifies. --yes skips the name, never the password.
+  {zeb} list [--owner <name>] [--instance <url>]
+               Projects on this instance. Alias for `{zeb} project list`.
+  {zeb} status [--instance <url>]
                Instance, user, project, and whether the server answers.
 
 Client Context (interface.md §5: nothing is inferred from the working directory):
-  zebflow login <instance-url> [--user <name>] [--password <pw>]
+  {zeb} login <instance-url> [--user <name>] [--password <pw>]
                Exchange a password for a session token and store the token.
                With no URL, re-authenticates the stored instance.
                The password is read from stdin when stdin is not a terminal, so
-               `printf %s \"$PW\" | zebflow login <url> --user alice` keeps it out
+               `printf %s \"$PW\" | {zeb} login <url> --user alice` keeps it out
                of the process table and shell history that --password lands in.
-  zebflow use <owner>/<project>
+  {zeb} use <owner>/<project>
                Set the stored default owner and project.
-  zebflow logout
+  {zeb} logout
                Forget the stored context, token included.
 
   Context resolves as: explicit flag, then stored default, then error.
   Stored in ~/.zebflow/client/context.json, directory 0700 and file 0600.
   It holds the session token, never the password; a file readable by anyone
   else is reported on stderr and tightened on the next write."
+    )
 }
 
-/// `zebflow login [<instance-url>] [--user <name>] [--password <pw>]`
+/// `zeb login [<instance-url>] [--user <name>] [--password <pw>]`
 pub async fn run_login(args: &[String]) -> Result<(), io::Error> {
     let flags = Flags::parse(args, &["--user", "--password"], &[])?;
     let path = context::default_context_path()?;
@@ -77,7 +121,7 @@ pub async fn run_login(args: &[String]) -> Result<(), io::Error> {
         flags.positional.first().map(String::as_str),
         &stored.instance,
         "instance",
-        "run `zebflow login <instance-url>`",
+        &format!("run `{} login <instance-url>`", program()),
     )
     .map(|value| context::normalize_instance_url(&value))?;
 
@@ -97,12 +141,15 @@ pub async fn run_login(args: &[String]) -> Result<(), io::Error> {
 
     println!("Signed in to {instance} as {user}");
     if stored.project.trim().is_empty() {
-        println!("No default project set. Run `zebflow use {user}/<project>` to set one.");
+        println!(
+            "No default project set. Run `{} use {user}/<project>` to set one.",
+            program()
+        );
     }
     Ok(())
 }
 
-/// `zebflow logout`
+/// `zeb logout`
 pub fn run_logout(args: &[String]) -> Result<(), io::Error> {
     Flags::parse(args, &[], &[])?.expect_no_positionals("logout")?;
     let path = context::default_context_path()?;
@@ -116,13 +163,13 @@ pub fn run_logout(args: &[String]) -> Result<(), io::Error> {
     Ok(())
 }
 
-/// `zebflow use <owner>/<project>`
+/// `zeb use <owner>/<project>`
 pub fn run_use(args: &[String]) -> Result<(), io::Error> {
     let flags = Flags::parse(args, &[], &[])?;
     let Some(target) = flags.positional.first() else {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            "usage: zebflow use <owner>/<project>",
+            format!("usage: {} use <owner>/<project>", program()),
         ));
     };
     let Some((owner, project)) = target.split_once('/') else {
@@ -146,7 +193,7 @@ pub fn run_use(args: &[String]) -> Result<(), io::Error> {
     Ok(())
 }
 
-/// `zebflow status`
+/// `zeb status`
 pub async fn run_status(args: &[String]) -> Result<(), io::Error> {
     let flags = Flags::parse(args, &["--instance"], &[])?;
     let path = context::default_context_path()?;
@@ -156,11 +203,14 @@ pub async fn run_status(args: &[String]) -> Result<(), io::Error> {
         flags.value("--instance"),
         &stored.instance,
         "instance",
-        "run `zebflow login <instance-url>`",
+        &format!("run `{} login <instance-url>`", program()),
     ) {
         Ok(value) => context::normalize_instance_url(&value),
         Err(_) => {
-            println!("Instance  none stored — run `zebflow login <instance-url>`");
+            println!(
+                "Instance  none stored — run `{} login <instance-url>`",
+                program()
+            );
             println!("Context   {}", path.display());
             return Ok(());
         }
@@ -180,7 +230,10 @@ pub async fn run_status(args: &[String]) -> Result<(), io::Error> {
     // The stored token is checked rather than trusted: sessions live in the
     // server's memory, so a restart invalidates one that still looks fine here.
     if stored.token.trim().is_empty() {
-        println!("User      not signed in — run `zebflow login {instance_url}`");
+        println!(
+            "User      not signed in — run `{} login {instance_url}`",
+            program()
+        );
     } else if !reachable {
         println!(
             "User      {} (unverified: instance not answering)",
@@ -198,7 +251,8 @@ pub async fn run_status(args: &[String]) -> Result<(), io::Error> {
             }
             Err(err) if err.kind() == io::ErrorKind::PermissionDenied => {
                 println!(
-                    "User      stored token rejected — run `zebflow login {instance_url}` again"
+                    "User      stored token rejected — run `{} login {instance_url}` again",
+                    program()
                 );
             }
             Err(err) => return Err(err),
@@ -209,13 +263,16 @@ pub async fn run_status(args: &[String]) -> Result<(), io::Error> {
         (owner, project) if !owner.is_empty() && !project.is_empty() => {
             println!("Project   {owner}/{project}");
         }
-        _ => println!("Project   none set — run `zebflow use <owner>/<project>`"),
+        _ => println!(
+            "Project   none set — run `{} use <owner>/<project>`",
+            program()
+        ),
     }
     println!("Context   {}", path.display());
     Ok(())
 }
 
-/// `zeb project list`, aliased as `zebflow list`.
+/// `zeb project list`, aliased as `zeb list`.
 pub async fn run_list(args: &[String]) -> Result<(), io::Error> {
     let flags = Flags::parse(args, &["--instance", "--owner"], &[])?;
     let stored = context::load(&context::default_context_path()?)?;
@@ -224,7 +281,10 @@ pub async fn run_list(args: &[String]) -> Result<(), io::Error> {
         flags.value("--owner"),
         &stored.owner,
         "owner",
-        "pass `--owner <name>` or run `zebflow use <owner>/<project>`",
+        &format!(
+            "pass `--owner <name>` or run `{} use <owner>/<project>`",
+            program()
+        ),
     )?;
 
     let response = instance
@@ -254,12 +314,45 @@ pub async fn run_list(args: &[String]) -> Result<(), io::Error> {
     Ok(())
 }
 
-/// `zeb project install <ref>`, aliased as `zebflow install <ref>`.
+/// `zeb project install <ref>`, aliased as `zeb install <ref>`.
 pub async fn run_install(args: &[String]) -> Result<(), io::Error> {
     let parsed = install::parse_args(args)?;
     let stored = context::load(&context::default_context_path()?)?;
     let instance = open_instance(&stored, parsed.instance.as_deref())?;
     install::run(&instance, &parsed).await
+}
+
+/// `zeb project remove <ref>`, aliased as `zeb remove <ref>`.
+pub async fn run_remove(args: &[String]) -> Result<(), io::Error> {
+    let flags = Flags::parse(
+        args,
+        &["--instance", "--owner", "--password"],
+        &["--yes", "-y"],
+    )?;
+    let stored = context::load(&context::default_context_path()?)?;
+    let instance = open_instance(&stored, flags.value("--instance"))?;
+    let Some(reference) = flags.positional.first() else {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("usage: {} remove <owner>/<project>", program()),
+        ));
+    };
+    // An owner named in the reference wins over both, so the flag and the
+    // stored default only have to answer the bare `<project>` form.
+    let owner = flags.value("--owner").unwrap_or(&stored.owner);
+    let (owner, project) = remove::split_reference(reference, owner)?;
+
+    remove::run(
+        &instance,
+        &remove::RemoveArgs {
+            owner,
+            project,
+            instance: flags.value("--instance").map(str::to_string),
+            password: flags.value("--password").map(str::to_string),
+            assume_yes: flags.value("--yes").is_some() || flags.value("-y").is_some(),
+        },
+    )
+    .await
 }
 
 /// Opens the instance the context names, refusing rather than guessing when
@@ -269,13 +362,16 @@ fn open_instance(stored: &ClientContext, flag: Option<&str>) -> Result<Instance,
         flag,
         &stored.instance,
         "instance",
-        "run `zebflow login <instance-url>`",
+        &format!("run `{} login <instance-url>`", program()),
     )
     .map(|value| context::normalize_instance_url(&value))?;
     if stored.token.trim().is_empty() || url != stored.instance {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
-            format!("no stored credential for {url}; run `zebflow login {url}`"),
+            format!(
+                "no stored credential for {url}; run `{} login {url}`",
+                program()
+            ),
         ));
     }
     Instance::new(&url, &stored.token)
@@ -285,7 +381,7 @@ fn open_instance(stored: &ClientContext, flag: Option<&str>) -> Result<Instance,
 ///
 /// A pipe wins over a prompt so a script never has to put the password in
 /// `argv`, where it is visible in the process table and the shell history.
-fn read_password(flag: Option<&str>, user: &str) -> Result<String, io::Error> {
+pub(crate) fn read_password(flag: Option<&str>, user: &str) -> Result<String, io::Error> {
     if let Some(value) = flag {
         return Ok(value.to_string());
     }
@@ -398,7 +494,10 @@ impl Flags {
         match self.positional.first() {
             Some(extra) => Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
-                format!("`zebflow {command}` takes no arguments, got '{extra}'"),
+                format!(
+                    "`{} {command}` takes no arguments, got '{extra}'",
+                    program()
+                ),
             )),
             None => Ok(()),
         }
@@ -449,6 +548,6 @@ mod tests {
         let err = open_instance(&ClientContext::default(), None)
             .map(|_| ())
             .expect_err("refused");
-        assert!(err.to_string().contains("zebflow login"), "{err}");
+        assert!(err.to_string().contains("zeb login"), "{err}");
     }
 }

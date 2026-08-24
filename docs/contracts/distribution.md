@@ -28,7 +28,7 @@ that did not exist:
 ```text
 POST /api/users/{owner}/hub/install     install a Hub project into an account
 POST /api/platform/hub/install          install a Hub project as a platform app
-zebflow run <project-or-hub-asset-url>  materialise the project, then serve it
+zeb install <ref>                       the CLI client for the second of those
 ```
 
 Each of the two HTTP surfaces has a review sibling that reports what the install
@@ -42,7 +42,10 @@ POST /api/platform/hub/install/review
 They take the same body as the install, including the three consent flags, and
 answer with the destinations that would be written, the pipelines that would be
 registered and activated, what the install-time SQL does, the safety review, and
-whether the package is installable at all. `zebflow run` has no review step.
+whether the package is installable at all. Nothing materialises a project
+without going through them: `zeb run` used to take a hub asset URL and write one
+directly, which was a second path with no review, and it no longer materialises
+anything.
 
 At project scope, `install` means take on a managed dependency. The project
 already exists and gains something:
@@ -57,10 +60,16 @@ project and cannot be undone by an uninstall; project-scope install adds a
 tracked dependency that uninstall removes. A rule proven at one scope does not
 transfer to the other, and this document says which scope each rule belongs to.
 
-The CLI reflects the same split: `zebflow run` and `zebflow project install`
-are both platform scope, the first taking a project or Hub asset URL and the
-second a Hub package reference. There is no project-scope CLI verb today;
-project-scope distribution is API and UI only.
+The CLI reflects the same split. `zeb project install <ref>`, with its
+`zeb install` alias, is the only platform-scope CLI verb that creates anything;
+it takes a Hub package reference and runs the review above. `zeb run
+<owner>/<project>` serves a project that is already installed and materialises
+nothing. `zeb project remove <owner>/<project>`, aliased `zeb remove`, deletes a
+project outright — the paragraph above says platform-scope install "cannot be
+undone by an uninstall", and `remove` is not one: it is the deletion of the
+whole project, and the command says so before it asks. There is no project-scope
+CLI verb today; project-scope distribution, uninstall included, is API and UI
+only.
 
 ## 0b. Consumption modes
 
@@ -69,7 +78,7 @@ independent.
 
 | Mode | Command | What the user sees |
 | --- | --- | --- |
-| **Run** | `zeb app run <ref>` | the app, served at its entry point |
+| **Run** | `zeb run <owner>/<project>` | the app, served at its entry point |
 | **Develop** | the Zebflow server | the same project, as editable source |
 
 **These are two ways of opening one installation, not two kinds of install.**
@@ -89,26 +98,31 @@ is not there.
 
 ### Where it lands
 
-Run mode is used by people who never chose a data directory, so it needs a
-default and must not ask. `PlatformConfig` already supplies one:
-`.zebflow-platform-data`, overridable with `ZEBFLOW_PLATFORM_DATA_DIR`.
-
-That default is **relative to the working directory**, which is right for a
-developer running a server in a project folder and wrong for someone who typed
-`zeb app run` from anywhere. Run mode needs a stable per-user location, resolved
-once, so that running the same app from two different directories does not
-install it twice.
-
 ```text
-zeb app run osgeo-spatial-tool        obtain if needed, then serve it
+zeb install osgeo-spatial-tool             review it, then materialise it
+zeb run superadmin/osgeo-spatial-tool      serve it
 ```
 
-Someone who wants a geospatial selection tool obtains one thing and uses it.
-That Zebflow is underneath is not their concern, and this is the mode that makes
-distribution worth having: obtaining a working tool should cost one command.
+**Obtaining now costs two commands, not one, and that is a deliberate trade.**
+The one-command form existed: `zeb run <hub-asset-url>` fetched an artifact and
+wrote it straight into a project. It was the only install path in the system
+that ran no review, which §3 forbids of every channel, so it was removed rather
+than given a second copy of the review. `install` reviews and creates; `run`
+serves. Getting back to one command means teaching `run` to call the same
+install path, not teaching it to write files again.
 
-`zebflow run` implements this today, and its usage line — "materialize one app
-project if needed, then serve its public route" — is exactly this mode.
+Run mode still needs somewhere to serve from. It reads the data root every
+server mode reads — `.zebflow-platform-data`, overridable with
+`ZEBFLOW_PLATFORM_DATA_DIR` — and that default is **relative to the working
+directory**, which is right for a developer running a server in a project folder
+and wrong for someone who typed `zeb run` from anywhere. A stable per-user
+location resolved once is still owed, and it is owed to `install` and `run`
+together rather than to run mode alone: they have to agree on where a project
+went, and today they agree only because both read the same environment variable.
+
+Someone who wants a geospatial selection tool should still obtain one thing and
+use it. That Zebflow is underneath is not their concern, and this is the mode
+that makes distribution worth having.
 
 ### A project needs a declared entry point
 
@@ -139,13 +153,15 @@ package manager works. Someone who wants a video pipeline built from ElevenLabs
 and Seedance nodes, or a set of office tools, should be able to obtain the whole
 thing and have it belong to their instance.
 
-**This section is mostly a proposal.** Two of its verbs exist today:
-`zebflow run`, which materialises a project or Hub asset and then serves it,
-and `zebflow project install` with its `zebflow install` alias, which reviews a
-Hub project bundle, prints what it would write and what SQL it would run, asks,
-and then materialises it over the instance's HTTP API. Everything else below is
-unimplemented and is written here so the surface is designed once rather than
-grown one flag at a time.
+**This section is mostly a proposal, and every line below says which.** Four of
+its verbs exist today: `zeb project install` with its `zeb install` alias, which
+reviews a Hub project bundle, prints what it would write and what SQL it would
+run, asks, and then materialises it over the instance's HTTP API; `zeb project
+remove` with its `zeb remove` alias, which deletes a project; `zeb project list`
+with its `zeb list` alias; and `zeb run`, which serves an installed project.
+Everything marked **not built** is unimplemented, and is written here so the
+surface is designed once rather than grown one flag at a time — not so that a
+reader can expect to type it.
 
 ### Which pattern this follows
 
@@ -160,10 +176,10 @@ grown one flag at a time.
 **Zebflow follows `gcloud` and `wrangler`: noun group first, verb second, with a
 small number of blessed top-level verbs.**
 
-That is not a new choice. `zebflow project config migrate` and `zebflow k8s
-cluster init` already have this shape, and `zebflow run` is already a blessed
-top-level verb. The design below continues an existing pattern rather than
-introducing one.
+That is not a new choice. `zeb project config migrate` and `zeb k8s cluster
+init` already have this shape, and `zeb install` is already a blessed top-level
+verb. The design below continues an existing pattern rather than introducing
+one.
 
 The deciding argument is scope. `project install` and `node install` mean
 different things — one creates a project, the other changes one — and putting
@@ -173,22 +189,31 @@ would put the ambiguous word first and the disambiguating word second.
 ### The surface
 
 ```text
-# Platform scope — creates a project
-zeb project install <ref> [--repo <url>]   materialise a project into this instance
-zeb project export <kind>                  write a transfer archive
-zeb run <ref>                              materialise if needed, then serve
+# Platform scope — creates or destroys a project
+zeb project install <ref> [--repo <id>]    materialise a project into this instance
+zeb project remove <owner>/<project>       delete a project, its data, and its files
+zeb project list                           what this instance holds
+zeb project export <kind>                  write a transfer archive          (not built)
+zeb run <owner>/<project>                  serve an installed project
 
-# Project scope — changes the current project
-zeb node install <ref> [--repo <url>]      take on a node bundle dependency
+# Project scope — changes the current project                     (none of it built)
+zeb node install <ref> [--repo <id>]       take on a node bundle dependency
 zeb node uninstall <kind>
-zeb lib add <ref> [--repo <url>]           resolve an RWE library
-zeb add <ref> --to <folder>                copy content in as this project's source
-zeb publish <source> --to <hub>            share outward
+zeb lib add <ref> [--repo <id>]            resolve an RWE library
+zeb hub add <ref> --to <folder>            copy content in as this project's source
+zeb hub publish <source> --to <hub>        share outward
 ```
 
 `project install` creates something; `node install` changes something that
 already exists. Reading the noun tells you which, which is the property the
 scope split in §0 exists to protect.
+
+`add` and `publish` sit under `hub` rather than at the top level. They were
+blessed as top-level verbs by an earlier draft of this section, and
+`interface.md` §3 objected that neither says *what* is being added or published
+without its noun. That objection is accepted: `hub` is where the routes they
+would call already live, and moving them costs nothing because neither is
+built.
 
 **Context.** Project-scope commands need to know which project. `--owner` and
 `--project` already exist as flags, and `default_owner` and `default_project`
@@ -200,22 +225,38 @@ channels in §2, and the channel is the trust decision, so it is never inferred:
 
 ```text
 zeb node install acme-tools                     this instance's Hub
-zeb node install acme-tools --repo <url>        a static repository
+zeb node install acme-tools --repo acme-mirror  a named repository on this instance
 zeb node install ./acme-tools.json              a local file
 ```
 
+**`--repo` takes a repository id, not a URL.** An earlier draft of this section
+wrote `--repo <url>`, which described the static repository channel §2 lists as
+not implemented. What `zeb install --repo` does today is name one of the hub
+repositories the receiving instance already has configured, which is what the
+transport allows: the command runs over the instance's HTTP API, and handing a
+server an arbitrary URL to fetch is a new channel with its own trust decision
+rather than a flag. It is needed only when more than one configured repository
+carries the same package id, because two sources offering one name is a question
+only the user can answer. If static repositories are enabled, a URL form is a
+change to this line, made then and not assumed now.
+
 ### Blessed top-level verbs
 
-One verb earns a top-level place, because it is the headline: obtaining a whole
-project should be one short command.
+Three verbs earn a top-level place, because they are the headline: obtaining a
+whole project, being rid of one, and seeing what you have should each be one
+short command.
 
 ```text
-zeb install <ref>        alias for: zeb project install <ref>
+zeb install <ref>                 alias for: zeb project install <ref>
+zeb remove <owner>/<project>      alias for: zeb project remove <owner>/<project>
+zeb list                          alias for: zeb project list
 ```
 
-It is an **alias**, not an inference. Bare `install` always means the same thing
-regardless of any configured project context, because a command whose meaning
-changes with hidden state is the failure §0 exists to prevent.
+Each is an **alias**, not an inference. Bare `install` always means the same
+thing regardless of any configured project context, because a command whose
+meaning changes with hidden state is the failure §0 exists to prevent.
+`interface.md` §4 holds the frozen list; this section blesses no verb that is
+not in it.
 
 ### Binary name
 
@@ -223,10 +264,16 @@ The long name is `zebflow`; the short name is `zeb`. Shortening is the norm —
 Kubernetes ships `kubectl`, Google Cloud ships `gcloud`, Cloudflare ships
 `wrangler` — and `zeb install` is the shape people will actually type.
 
-Both names should exist, with `zeb` as the primary and `zebflow` kept working,
-so that installing a product called Zebflow and finding only a `zeb` binary is
-never surprising. `zeb` also matches the `zeb/*` library namespace and the
-`zeb.lock` file, so the short name is already the project's own vocabulary.
+Both names exist. The crate builds two binary targets from one source, so `zeb`
+and `zebflow` are the same program under two names rather than two programs, and
+installing a product called Zebflow and finding only a `zeb` binary is never
+surprising. `zeb` also matches the `zeb/*` library namespace and the `zeb.lock`
+file, so the short name is already the project's own vocabulary.
+
+Neither name is written into the program. Every usage line, error, and hint
+reads `argv[0]`, so a person who typed `zebflow` is told to run `zebflow` and a
+person who typed `zeb` is told to run `zeb`. A binary invoked under some third
+name reports the primary one.
 
 ## 1. What is distributable
 

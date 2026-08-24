@@ -8,7 +8,7 @@
 //! guesses.
 //!
 //! What is stored is the session token the server issued, never the password
-//! that obtained it. The token expires, is revoked by `zebflow logout`, and buys an
+//! that obtained it. The token expires, is revoked by `zeb logout`, and buys an
 //! attacker who reads the file one account's session rather than the password
 //! it was probably reused from.
 
@@ -35,7 +35,7 @@ pub struct ClientContext {
     /// Account the token authenticated as, and the default `--owner`.
     #[serde(default)]
     pub owner: String,
-    /// Default `--project`. Set by `zebflow use`, never inferred.
+    /// Default `--project`. Set by `zeb use`, never inferred.
     #[serde(default)]
     pub project: String,
 }
@@ -65,7 +65,7 @@ pub fn default_context_path() -> Result<PathBuf, io::Error> {
 ///
 /// A file readable by anyone but its owner is reported on stderr rather than
 /// refused: the token inside is already exposed, and refusing to read it would
-/// only stop the user from running the `zebflow logout` that revokes it.
+/// only stop the user from running the `zeb logout` that revokes it.
 pub fn load(path: &Path) -> Result<ClientContext, io::Error> {
     let raw = match fs::read_to_string(path) {
         Ok(value) => value,
@@ -74,10 +74,12 @@ pub fn load(path: &Path) -> Result<ClientContext, io::Error> {
     };
     if let Some(mode) = group_or_world_permissions(path) {
         eprintln!(
-            "zeb: warning: {} is mode {:04o} and holds a session token; \
-             anyone who can read it can act as this account until `zebflow logout`.",
+            "{}: warning: {} is mode {:04o} and holds a session token; \
+             anyone who can read it can act as this account until `{} logout`.",
+            super::program(),
             path.display(),
-            mode
+            mode,
+            super::program()
         );
     }
     serde_json::from_str(&raw).map_err(|err| {
