@@ -133,8 +133,6 @@ impl FileAdapter for FilesystemFileAdapter {
             &resolved.data_recovery_dir(),
             &resolved.data_logs_dir(),
             &resolved.files_dir,
-            &resolved.files_dir.join("public"),
-            &resolved.files_dir.join("private"),
             &resolved.repo_dir,
             &resolved.repo_source_dir(),
             &resolved.repo_docs_dir(),
