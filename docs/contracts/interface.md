@@ -1,6 +1,7 @@
 # Interface
 
-Status: **draft**. The vocabulary is proposed. §8 is the work that remains.
+Status: **draft**. The vocabulary is proposed. §8 has now been checked against
+the code and reports what it does not cover.
 
 This is a contract, not a kind. It defines no document format. It defines the
 **words** Zebflow uses for the things a person can do, so that a terminal, a
@@ -149,8 +150,8 @@ This group is three levels deep, and stays that way: `config`, `lock`, and
 
 ### Group 4 — Kubernetes provisioning
 
-Ten commands, a third of the current CLI, that a general user never meets. It
-stays a deep noun group and is never promoted.
+Fifteen commands, near half the current CLI, that a general user never meets.
+It stays a deep noun group and is never promoted.
 
 ```
 zeb k8s cluster init|describe|validate|set-image|set-replicas|…
@@ -299,7 +300,8 @@ write.** It records four things — instance URL, credential, owner, project —
 the same shape first-boot bootstrap uses for a generated password.
 
 What it stores as the credential is the **session token** the server issued, not
-the password that obtained it. A token expires, is revoked by `zeb logout`, and
+the password that obtained it. A token expires, is revoked by `zeb logout`, which ends the session on the server
+before forgetting it locally, and
 buys whoever reads the file one account's session rather than a password that
 was probably reused elsewhere. A context file readable by anyone but its owner
 is reported on stderr and tightened on the next write, rather than refused:
@@ -360,31 +362,315 @@ removal the platform has at this scope, and it says so rather than presenting
 itself as an undo. Project-scope uninstall — the one that does remove a tracked
 dependency — exists as an API for node bundles and has no CLI verb.
 
-## 8. What is not yet mapped
+## 8. The mapping, and what it does not cover
 
-This document proposes a vocabulary. It has not yet been checked against the
-222 API routes, 37 MCP tools, and 27 CLI commands that exist, so "covers all
-current operations" is a goal here and not yet a fact.
+This section was a promise. It is now the result of running it.
 
-The noun groups below were read off the route table rather than invented, and
-are the starting point for that mapping:
+The vocabulary was checked against every operation the binary actually
+performs. The counts below were extracted from the code, not remembered: the
+`.route(` calls in `src/platform/web/mod.rs`, the `#[tool(` attributes in
+`src/platform/mcp/handler.rs`, and the dispatch in `src/bin/zebflow.rs`,
+`src/platform/cli/`, and `src/provision/k8s.rs`.
+
+`zeb run` was the first collision this mapping had to resolve and the only one
+already settled: it materialised a project from a hub asset URL and then served
+it, which was half Group 2 and half Group 1. It now only serves, and only what
+is already installed, so it sits wholly in Group 1 (§3). Everything below is
+what the rest of the pass found.
+
+### 8.1 What exists
+
+| Surface | Verified | This section previously said |
+| --- | --- | --- |
+| HTTP route registrations | **222** | 222 |
+| HTTP method handlers | **264** | not counted |
+| Person-facing HTTP operations | **184** | not counted |
+| MCP tools | **37** | 37 |
+| CLI commands | **31** | 27 |
+
+The route number was right by accident and wrong as a unit. An earlier count
+grepped path string literals, which catches `format!()` calls that *build* a
+URL, doc examples, and test fixtures alongside real registrations. Forty-four of
+the unique `"/api/…"` literals in the Rust source name no registered route at
+all, among them
+`/api/projects/{owner}/{project}/pipelines/{virtual_path}/{name}/activate` — a
+route shape deleted when `file_rel_path` became a pipeline's only identifier.
+There are also, separately, 222 `.route(` calls. The sets are not the same set.
+The per-noun figures that count produced were not a coincidence and were simply
+wrong: `pipelines 28` against eleven registrations, `templates 24` against ten.
+
+**One `.route(` is not one operation.** Thirty-six of the 222 registrations
+carry more than one method, adding forty-two handlers;
+`/api/projects/{owner}/{project}/mcp/session` alone is four. The unit that can
+be mapped to a word is the method handler, and there are 264 of them.
+
+`31` CLI commands is four canonical modes (`standalone`, `controller`,
+`office`, `run`), seven client verbs, three `project … migrate` commands,
+`help` and `version`, and fifteen `k8s cluster` commands — counting an alias
+and its expansion once, and the deprecated `master` / `worker` spellings not at
+all. Two corrections fall out of that: §3 called Group 4 "ten commands, a third
+of the current CLI" when it is fifteen of thirty-one, and now says so; and
+`help` and `version` are top-level words belonging to none of §3's four groups,
+which claims every command belongs to exactly one. The second is left standing,
+because deciding where those two words go is a change to the groups.
+
+### 8.2 What is excluded, and why
+
+Eighty of the 264 method handlers are not operations a person invokes by name.
+Each group is listed with its reason, because an unexplained omission is how a
+coverage claim becomes false.
+
+| Group | Handlers | Why not an operation |
+| --- | --- | --- |
+| Page routes | 26 | A person navigates to these; they render HTML and change nothing. Every one is a `GET`. |
+| Asset and object serving | 17 | Favicons, branding, platform and project assets, compiled RWE scripts, library files, ZebFS object reads, node icons, hub publisher media. These serve bytes at a URL. |
+| Public ingress and delivery | 9 | `/wh/*`, `/ms/*`, the WebSocket room and preview sockets, and the debug reload stream. A person triggers these by using an application, not by naming a command. |
+| Internal machine-to-machine | 8 | All of `/api/internal/*`: cluster register and heartbeat, runtime materialize, execute, and webhook forwarding, and project-transfer internals. Authenticated by the cluster token, never by a session. |
+| Remote-hub far end | 9 | `/api/hub/remote/*` plus the four `artifact` / `artifacts/{sha256}` byte fetches. These answer *another* instance holding a publisher token or a digest. Nothing in this instance's own UI or CLI calls them; they are the server half of an operation whose client half is counted under `hub`. `distribution.md` §2 names the byte fetch `artifact()`, one of three calls behind the repository interface, and it is the one no person makes. |
+| Second spellings | 6 | One operation reachable two ways: `POST /home/projects/create` is the form twin of `POST /api/users/{owner}/projects`; `POST …/files/access` of the `PUT`; `PUT …/credentials/{id}` of `POST …/credentials`; `PUT …/db/connections/{slug}` of `POST …/db/connections`; `PUT …/docs/file` of `POST …/docs`; and `GET …/hub/assets/preview` is literally the same handler as `GET …/hub/publish-preview`. |
+| Liveness and readiness | 2 | `/health` and `/ready`. Probes. The three routes on the dedicated health server are a separate router and are not in the 222 at all. |
+| Protocol discovery | 3 | The two `/.well-known/oauth-*` documents and `/oauth/callback`. Transport for an OAuth exchange a person starts elsewhere. |
+
+`POST /login` and `POST /logout` are **not** excluded. They are session
+operations with CLI counterparts, and §8.4 records that one of those
+counterparts does not actually call its route.
+
+### 8.3 The mapping
+
+184 operations, grouped by the noun that would reach them. The nouns are read
+off what the operations do, not off the route path — §8.5 says where those two
+disagree.
+
+| Noun | Ops | Reached by a built term | Named, not built | Uncovered |
+| --- | --- | --- | --- | --- |
+| `hub` | 49 | 2 | 3 | 44 |
+| `source` | 20 | — | — | 20 |
+| `db` | 20 | — | — | 20 |
+| `project` | 20 | 2 | 1 | 17 |
+| `pipeline` | 12 | — | — | 12 |
+| `docs` | 10 | — | — | 10 |
+| `git` | 8 | — | — | 8 |
+| `instance` | 7 | — | — | 7 |
+| `credential` | 6 | — | — | 6 |
+| `node` | 5 | — | 3 | 2 |
+| `file` | 5 | — | — | 5 |
+| `mcp` | 5 | — | — | 5 |
+| `account` | 4 | — | — | 4 |
+| `mapserver` | 4 | — | — | 4 |
+| `lib` | 3 | — | 1 | 2 |
+| `assistant` | 3 | — | — | 3 |
+| `session` | 2 | 1 | — | 1 |
+| `help` | 1 | — | — | 1 |
+| | **184** | **5** | **8** | **171** |
+
+**Five operations are reachable by a word that exists and works.** `zeb list`
+reaches `GET /api/users/{owner}/projects` and `zeb remove` reaches
+`DELETE /api/users/{owner}/projects/{project}`, which are the two under
+`project`. `zeb install` reaches `POST /api/platform/hub/install` and its
+`…/review` sibling, which are counted under `hub` because that is whose routes
+they are — the one Group 2 verb that creates a project is a hub operation, and
+the noun the vocabulary gives it is not the noun the route table gives it.
+`zeb login` reaches `POST /login`. `zeb status` and `zeb use` are the client
+context store and reach nothing on the instance except `GET /health` and
+`GET /api/profile`, which they read rather than command.
+
+**Eight are named by `distribution.md` §0a and marked not built**, which is a
+different thing from uncovered and is kept separate here:
+
+```text
+zeb project export <kind>   → POST …/transfer/export/{kind}
+zeb node install <ref>      → POST …/nodes/install  and  …/nodes/install/review
+zeb node uninstall <kind>   → DELETE …/nodes/uninstall/{kind}
+zeb lib add <ref>           → POST …/rwe/libraries/enable
+zeb hub add <ref> --to      → POST …/hub/assets/{id}/{version}/add
+zeb hub publish <src> --to  → POST …/hub/assets/publish  and  …/hub/remote/assets/publish
+```
+
+**The remaining 171 are covered by no term at all.**
+
+The 37 MCP tools add nothing to that total and change nothing about it: every
+one of them is an operation, and not one has a CLI word. Thirty-two are the
+agent-facing rendering of routes already counted. Five reach behaviour no HTTP
+route offers, and so are operations the API surface does not contain:
+`pipeline_run` executes a node body ephemerally with nothing saved, logged, or
+counted as a hit; `pipeline_search` and `template_deps` have no route at all;
+and `start_here` and `help_search` are entry points into the help corpus that
+`GET …/help` returns whole. A sixth is partial: `git_command` permits `log` and
+`diff`, which the six `git/*` routes do not.
+
+### 8.4 The gap list
+
+This is the deliverable. Without it, "covers all current operations" is a claim
+nobody can check.
+
+**`project` — 17 uncovered.** `install` creates a project from a hub reference
+and `remove` destroys one. Nothing in the vocabulary touches a project that
+already exists. Uncovered: create an empty project
+(`POST /api/users/{owner}/projects` — a project can be made without a package,
+and no word says so); clone a project from a git remote
+(`POST /home/projects/clone`, which creates a project and is the only route
+that does so outside the hub install path); change a project's owner
+(`POST …/transfer/owner`); import a transfer archive; download a completed
+export; list transfer operations; read and write any settings section; read and
+clear the invocation log; read runtime status; sync the runtime; toggle
+preview; read preview status; read dependency status; repair dependencies;
+reindex.
+
+**`hub` — 44 uncovered**, more than double the next largest, and it is four
+surfaces wearing one name. *Assets*: publish, publish-review, retract,
+presentation, add, review, browse local, browse remote, browse mine, list
+publish sources, preview a publish source. *Repositories*: create, list, and
+delete — at **three** scopes, `/api/projects/{owner}/{project}/hub/repositories`,
+`/api/users/{owner}/hub/repositories`, and `/api/platform/hub/repositories`,
+which are three route families for one concept. *Identity*: publishers, tokens,
+and grants, each with create, list, and delete. *Service*: producer mode, and
+the hub service configuration that decides whether this instance serves a hub
+at all. `zeb hub add` covers one route and `zeb hub publish <source> --to <hub>`
+covers two, local and remote, depending on what `<hub>` names; the other
+forty-four are unnamed.
+
+**`source` — 20 uncovered.** Template workspace, search, page list, file read,
+save, delete, outline, create, move, git-status, diagnostics, lock-toggle;
+project asset list, upload, delete; RWE compile-cache clear; the editor
+completion catalog; and the UI component catalog's list, review, and install.
+
+**`db` — 20 uncovered.** Connection create, read, update, delete, and test;
+describe, schemas, tables, functions, query, table-preview; the sekejap store's
+table create, update, delete, and list; schema export and sync; maintenance
+health, sync, and compact.
+
+**`pipeline` — 12 uncovered.** Registry, list, get-by-id, upsert, delete,
+lock-toggle, activate, deactivate, execute, DSL, hits, invocations. §2 rejects
+`kubectl`'s verb-first model on the grounds that `activate` and `execute` do
+not collapse into get/create/delete. They do not, they exist, and neither has a
+word.
+
+**`docs` — 10 uncovered.** Project docs list, read, write, delete, folder
+create, move, entry delete; agent docs list, read, write.
+
+**`git` — 8 uncovered.** Status, health, repair, commit, remote read, remote
+set, branch list, branch checkout.
+
+**`instance` — 7 uncovered.** `GET /api/meta`, `GET /api/system/info`, the four
+admin database routes (collection list, query, node read, node delete), and
+`GET /api/cluster/workers`. `zeb status` reports the client's stored context
+and reads `/health`; it reports nothing an instance knows about itself.
+
+**`credential` — 6 uncovered.** Type list, list, upsert, read, delete, and
+OAuth authorize. `distribution.md` §1 rules that credential *values* are never
+distributed; managing them is a separate act and has no word either.
+
+**`node` — 2 uncovered** beyond the three named-not-built: list node
+definitions, and read one by kind.
+
+**`file` — 5 uncovered.** List, mkdir, upload, remove, set access.
+
+**`mcp` — 5 uncovered.** Session read, create, toggle, revoke, reset token.
+The instance can mint an agent credential and the vocabulary cannot say so.
+
+**`account` — 4 uncovered.** List users, create a user, read profile, update
+profile. Every operation in this document is scoped by an owner and there is no
+word for one.
+
+**`mapserver` — 4 uncovered.** Source list, layer list, layer publish, layer
+delete.
+
+**`lib` — 2 uncovered** beyond `zeb lib add`: list available libraries, and
+disable an enabled one. `add` is named with no removal counterpart, while the
+route exists.
+
+**`assistant` — 3 uncovered.** Config read, config write, chat.
+
+**`session` — 1 uncovered, and it is a stated behaviour the code does not
+perform.** `POST /logout` removes the server-side session and clears the
+cookie. `zeb logout` clears `~/.zebflow/client/context.json` and calls nothing.
+§5 says the stored token "is revoked by `zeb logout`, which ends the session on the server
+before forgetting it locally"; it is forgotten, not
+revoked, and the session stays valid on the instance until it expires. Either
+`zeb logout` calls the route or §5 stops claiming a revocation.
+
+**`help` — 1 uncovered.** `GET …/help` returns the project help corpus.
+`zeb help` prints the CLI's own usage. One word, two unrelated things.
+
+### 8.5 The route-table nouns, and which collapses hold
+
+The list this section used to carry was produced by counting path segments. It
+proposed five collapses. Three survive contact with the code and two do not.
+Each is recorded with its evidence so none is re-proposed.
+
+**`tables` into `db` — correct, and the evidence is stronger than the guess.**
+`…/tables/*` is the sekejap store's schema surface and
+`…/db/sekejap/maintenance/*` is the same store's health surface. One store
+already has routes on both sides of the split, which is not a design.
+
+**`assets` into source — correct.** `api_upload_asset` writes to
+`layout.repo_assets_dir()` and requires `ProjectCapability::TemplatesWrite`.
+By `distribution.md` §6, `repo/` is what the human declares. Same area, same
+capability, same noun.
+
+**`transfer` into `project` — correct.** Export, import, download, operation
+list, and owner change all act on a whole project, and `distribution.md` §0a
+already spells the first of them `zeb project export <kind>`.
+
+**`rwe` into source — wrong.** `POST …/rwe/libraries/enable` resolves a lock
+entry and writes it through `dependency_lock.enable_rwe_library`. That is
+dependency management, not source: `distribution.md` §1 classifies an RWE
+library as a distributable resource with `LibraryManifest` as its kind and
+`DependencyLock` as its record, and §0a already names the verb `zeb lib add`.
+`lib` is the noun, and only `…/rwe/cache/clear` — which evicts compiled
+templates — belongs with source.
+
+**`git` into `project` — wrong.** `distribution.md` §2 lists a git remote as a
+**channel**, beside Hub asset, local file, and transfer archive, each with its
+own trust story. The routes carry git's own verb names, the MCP surface exposes
+`git_command` as a subcommand passthrough, and `zeb project commit` would say
+neither that it commits nor that it commits `repo/`. The one git-shaped
+operation that *is* a project act is `POST /home/projects/clone`, which creates
+a project and belongs under `project` for that reason — which is exactly the
+evidence that the two are separable.
+
+**The reduction this section hoped for does not exist.** Correcting the five
+collapses leaves eighteen nouns, the same number it started with, because the
+old list was never eighteen nouns: it enumerated seventeen despite claiming
+eighteen, five of its entries (`settings`, `transfer`, `rwe`, `tables`,
+`assets`) were paths inside other nouns, and it omitted five groups the route
+table does have (`account`, `instance`, `session`, `help`, and the UI catalog).
+Renaming does not shrink the surface.
+
+The reduction has to come from a different decision: **which operations are
+interface at all.** Six nouns — `project`, `hub`, `node`, `lib`, `source`,
+`pipeline` — carry everything a person obtains, publishes, or authors, and are
+the plausible terminal vocabulary. The other twelve are administration console
+surfaces that a terminal may never need. A vocabulary that is minimal and
+complete does not have to cover 184 operations; it has to state which ones it
+declines to cover, and why. That statement does not exist yet, and it is the
+next piece of work, not a thing this survey may decide.
+
+### 8.6 Proposed nouns
+
+Proposed, not added. §1 says nouns grow and verbs freeze, and a noun a survey
+found is still a term nobody agreed. None of these is in the vocabulary until
+it is added here deliberately.
 
 ```
-hub 34 · pipelines 28 · templates 24 · db 21 · files 13 · transfer 10
-nodes 10 · git 10 · settings 8 · credentials 8 · docs 7 · rwe 5
-mapserver 5 · tables 4 · assets 4 · mcp 3 · assistant 3
+project · hub · node · lib · source · pipeline
+db · file · credential · docs · git · mcp
+assistant · mapserver · account · instance · session · help
 ```
 
-Eighteen groups is more than a person can hold. Several collapse — `tables` into
-`db`, `assets` and `rwe` into source, `transfer` and `git` into `project` — and
-the reduction is the work. The deliverable of that pass is the list of
-operations **no proposed term covers**, because without it minimality and
-completeness are both claims nobody can check.
+Four of these already appear in a shipped document and are the least
+contentious: `project` is built, and `hub`, `node`, and `lib` are named in
+`distribution.md` §0a. `source` is the name §8 used informally for the
+`templates` / `assets` collapse and has never been proposed as a word.
+`account`, `instance`, `session`, and `help` are new here and were found by
+this survey, not designed.
 
-`zeb run` was the first thing that mapping had to resolve, and it is resolved.
-It materialised a project from a hub asset URL and then served it, which was
-half Group 2 and half Group 1 and put a second, unreviewed materialisation path
-beside `install`. It now only serves, and only what is already installed, so it
-sits wholly in Group 1 (§3) and collides with nothing. The rest of §8 — the 222
-API routes, the 37 MCP tools, and the eighteen noun groups above — is still
-unmapped.
+The verbs are a separate and larger problem. §2 rejected uniform CRUD because
+`publish`, `activate`, `migrate`, `review`, and `retract` do not collapse into
+it. All five exist as operations. So do twenty-two more the survey turned up —
+`add`, `checkout`, `commit`, `compact`, `deactivate`, `delete`, `disable`,
+`enable`, `execute`, `export`, `get`, `import`, `move`, `query`, `reindex`,
+`repair`, `search`, `set`, `sync`, `test`, `toggle`, `upload` — against a
+frozen set of nine outside Group 4. §1 says a verb is permanent once typed.
+Freezing twenty-seven at once is not a survey's decision, and this document is
+where it would be made.

@@ -69,6 +69,24 @@ impl Instance {
         read_json(response).await
     }
 
+    /// Ends this token's session on the server.
+    ///
+    /// The route answers with a redirect rather than JSON, so the body is not
+    /// read: the only question is whether the server accepted it. Returns
+    /// `false` when the instance could not be reached, so the caller can say
+    /// that the local context was forgotten while the session was not ended --
+    /// a distinction that matters, because a token nobody revoked stays usable
+    /// by anyone who already copied it.
+    pub async fn end_session(&self) -> bool {
+        self.http
+            .post(format!("{}/logout", self.base))
+            .header(COOKIE, self.cookie())
+            .send()
+            .await
+            .map(|response| response.status().is_success() || response.status().is_redirection())
+            .unwrap_or(false)
+    }
+
     /// `DELETE` with a body, which is how the platform takes the confirmation
     /// an irreversible delete requires.
     pub async fn delete_json(&self, path: &str, body: &Value) -> Result<Value, io::Error> {

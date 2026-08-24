@@ -731,7 +731,9 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             .await
             .map_err(Into::into),
         Some("use") => cli::run_use(&args.collect::<Vec<_>>()).map_err(Into::into),
-        Some("logout") => cli::run_logout(&args.collect::<Vec<_>>()).map_err(Into::into),
+        Some("logout") => cli::run_logout(&args.collect::<Vec<_>>())
+            .await
+            .map_err(Into::into),
         Some("help") | Some("--help") | Some("-h") => {
             print_top_level_help();
             Ok(())

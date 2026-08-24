@@ -150,15 +150,38 @@ pub async fn run_login(args: &[String]) -> Result<(), io::Error> {
 }
 
 /// `zeb logout`
-pub fn run_logout(args: &[String]) -> Result<(), io::Error> {
+pub async fn run_logout(args: &[String]) -> Result<(), io::Error> {
     Flags::parse(args, &[], &[])?.expect_no_positionals("logout")?;
     let path = context::default_context_path()?;
     let stored = context::load(&path)?;
-    context::clear(&path)?;
     if stored.is_empty() {
+        context::clear(&path)?;
         println!("No stored context to forget.");
+        return Ok(());
+    }
+
+    // End the session before forgetting the token, so a failure here is still
+    // reported. Forgetting a token does not revoke it: the server's session
+    // stands until it expires, and anyone who copied the file meanwhile keeps
+    // the account. The local context is cleared either way -- refusing to
+    // forget an unreachable instance would strand the one command that exists
+    // to get out of it.
+    let revoked = match client::Instance::new(&stored.instance, &stored.token) {
+        Ok(instance) => instance.end_session().await,
+        Err(_) => false,
+    };
+    context::clear(&path)?;
+
+    if revoked {
+        println!("Signed out of {} and forgot the context.", stored.instance);
     } else {
         println!("Forgot the context for {}.", stored.instance);
+        eprintln!(
+            "{}: warning: {} could not be reached, so the session was not ended. \
+             The stored token stays valid there until it expires.",
+            program(),
+            stored.instance
+        );
     }
     Ok(())
 }
