@@ -65,6 +65,16 @@ impl ProjectConfigurationService {
             .join("repo")
     }
 
+    /// `.../data/recovery` — where migration safety copies live
+    /// (`project-directory.md` §5), never inside `repo/`.
+    fn recovery_path(&self, owner: &str, project: &str) -> PathBuf {
+        self.users_root
+            .join(slug_segment(owner))
+            .join(slug_segment(project))
+            .join("data")
+            .join("recovery")
+    }
+
     fn config_path(&self, owner: &str, project: &str) -> PathBuf {
         self.repo_path(owner, project)
             .join(PROJECT_CONFIGURATION_FILE)
@@ -252,7 +262,10 @@ impl ProjectConfigurationService {
     /// Explicitly migrates `repo/zebflow.json` into canonical `repo/zebflow.yaml`.
     ///
     /// Normal reads never invoke this path. The original JSON bytes remain in
-    /// `zebflow.pre-yaml.json` so an operator can inspect or restore them.
+    /// `data/recovery/zebflow-config-{date}.json` so an operator can inspect
+    /// or restore them — `data/recovery/`, not `repo/`, because a
+    /// machine-generated recovery copy must never enter the git-tracked
+    /// repository (`project-directory.md` §1, §5).
     pub fn migrate_legacy_json(
         &self,
         owner: &str,
@@ -260,9 +273,10 @@ impl ProjectConfigurationService {
     ) -> Result<ProjectConfigurationMigration, PlatformError> {
         let path = self.config_path(owner, project);
         let legacy_path = self.legacy_path(owner, project);
-        let backup_path = self
-            .repo_path(owner, project)
-            .join(PROJECT_CONFIGURATION_BACKUP_FILE);
+        let backup_path = self.recovery_path(owner, project).join(format!(
+            "{PROJECT_CONFIGURATION_BACKUP_FILE}-{}.json",
+            crate::platform::model::recovery_date_stamp()
+        ));
         let lock = self.update_lock(&path);
         let _guard = lock.lock().unwrap_or_else(|err| err.into_inner());
 
@@ -311,6 +325,9 @@ impl ProjectConfigurationService {
             }
             Ok(_) => {}
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                if let Some(parent) = backup_path.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
                 atomic_write(&backup_path, &bytes).map_err(|err| {
                     PlatformError::new(
                         "PROJECT_CONFIG_MIGRATE",
@@ -712,10 +729,8 @@ mod tests {
         assert_eq!(std::fs::read(&legacy).unwrap(), invalid);
         assert!(!service.config_path("owner", "project").exists());
         assert!(
-            !service
-                .repo_path("owner", "project")
-                .join(PROJECT_CONFIGURATION_BACKUP_FILE)
-                .exists()
+            !service.recovery_path("owner", "project").exists(),
+            "a refused migration writes nothing, not even the recovery directory"
         );
     }
 
@@ -724,10 +739,12 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let service = ProjectConfigurationService::new(root.path().join("users"));
         let legacy = service.legacy_path("owner", "project");
-        let recovery = service
-            .repo_path("owner", "project")
-            .join(PROJECT_CONFIGURATION_BACKUP_FILE);
+        let recovery = service.recovery_path("owner", "project").join(format!(
+            "{PROJECT_CONFIGURATION_BACKUP_FILE}-{}.json",
+            crate::platform::model::recovery_date_stamp()
+        ));
         std::fs::create_dir_all(legacy.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(recovery.parent().unwrap()).unwrap();
         std::fs::write(
             &legacy,
             br#"{"version":"1.0","metadata":{},"configs":{},"distribution":{}}"#,

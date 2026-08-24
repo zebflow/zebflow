@@ -27,8 +27,10 @@ use crate::platform::model::{
 pub const PROJECT_CONFIGURATION_FILE: &str = "zebflow.yaml";
 /// Previous repository filename accepted only by the explicit migration path.
 pub const LEGACY_PROJECT_CONFIGURATION_FILE: &str = "zebflow.json";
-/// Recovery copy retained by the explicit JSON-to-YAML migration.
-pub const PROJECT_CONFIGURATION_BACKUP_FILE: &str = "zebflow.pre-yaml.json";
+/// Recovery copy stem retained by the explicit JSON-to-YAML migration,
+/// combined with the migration date (`project-directory.md` §5) into
+/// `data/recovery/zebflow-config-{date}.json`.
+pub const PROJECT_CONFIGURATION_BACKUP_FILE: &str = "zebflow-config";
 
 /// Canonical `zebflow.yaml` contract.
 pub struct ProjectConfigurationContract;

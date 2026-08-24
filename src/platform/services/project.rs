@@ -26,7 +26,7 @@ use crate::platform::model::{
     PlatformProject, ProjectDocItem, ProjectDocMoveRequest, ProjectFileLayout, RegistryFileItem,
     ResolvedProjectLayout, TemplateCreateKind, TemplateCreateRequest, TemplateFilePayload,
     TemplateGitStatusItem, TemplateMoveRequest, TemplateSaveRequest, TemplateTreeItem,
-    TemplateWorkspaceListing, normalize_virtual_path, now_ts, slug_segment,
+    TemplateWorkspaceListing, normalize_virtual_path, now_ts, recovery_date_stamp, slug_segment,
 };
 use crate::platform::services::dependency_lock::DependencyLockService;
 use crate::platform::services::project_config::ProjectConfigurationService;
@@ -426,8 +426,14 @@ impl ProjectService {
         }
 
         // The recovery copy is written before the first row moves, so an
-        // interrupted migration leaves a readable record of what the ids were.
-        let recovery_path = layout.repo_dir.join(PIPELINE_IDENTITY_BACKUP_FILE);
+        // interrupted migration leaves a readable record of what the ids
+        // were. It lives in `data/recovery/`, not `repo/`: a
+        // machine-generated recovery copy must never enter the git-tracked
+        // repository (`project-directory.md` §1, §5).
+        let recovery_path = layout.data_recovery_dir().join(format!(
+            "{PIPELINE_IDENTITY_BACKUP_FILE}-{}.json",
+            recovery_date_stamp()
+        ));
         let record = serde_json::json!({
             "source": layout.repo_layout.source,
             "pipelines": rewrites
@@ -450,6 +456,9 @@ impl ProjectService {
             }
             Ok(_) => {}
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                if let Some(parent) = recovery_path.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
                 atomic_write(&recovery_path, &bytes)?;
             }
             Err(error) => {
@@ -2187,8 +2196,8 @@ impl ProjectService {
         } else {
             format!("{sub}.{}", slug_segment(hash))
         };
-        let abs = layout.data_runtime_pipelines_dir.join(&snapshot_name);
-        if !abs.starts_with(&layout.data_runtime_pipelines_dir) {
+        let abs = layout.data_cache_pipelines_dir().join(&snapshot_name);
+        if !abs.starts_with(layout.data_cache_pipelines_dir()) {
             return Err(PlatformError::new(
                 "PLATFORM_PIPELINE_PATH",
                 "resolved runtime pipeline snapshot escaped runtime root",
@@ -2215,7 +2224,7 @@ impl ProjectService {
         } else {
             format!("{sub}.")
         };
-        let runtime_root = &layout.data_runtime_pipelines_dir;
+        let runtime_root = layout.data_cache_pipelines_dir();
         let parent = runtime_root.join(
             Path::new(sub)
                 .parent()
@@ -2242,7 +2251,7 @@ impl ProjectService {
             if !path.is_file() {
                 continue;
             }
-            let Ok(rel) = path.strip_prefix(runtime_root) else {
+            let Ok(rel) = path.strip_prefix(&runtime_root) else {
                 continue;
             };
             let rel = rel.to_string_lossy().replace('\\', "/");
@@ -2488,7 +2497,7 @@ impl ProjectService {
         let project = slug_segment(project);
         let layout = self.file.ensure_project_layout(&owner, &project)?;
         let safe_name = Self::validate_agent_doc_name(name)?;
-        let path = layout.agent_docs_dir.join(safe_name);
+        let path = layout.data_cache_agent_docs_dir().join(safe_name);
         if path.is_file() {
             fs::read_to_string(&path).map_err(PlatformError::from)
         } else {
@@ -2508,7 +2517,7 @@ impl ProjectService {
         let project = slug_segment(project);
         let layout = self.file.ensure_project_layout(&owner, &project)?;
         let safe_name = Self::validate_agent_doc_name(name)?;
-        let path = layout.agent_docs_dir.join(safe_name);
+        let path = layout.data_cache_agent_docs_dir().join(safe_name);
         fs::write(&path, content).map_err(PlatformError::from)
     }
 
@@ -2527,7 +2536,7 @@ impl ProjectService {
             ("MEMORY.md", MEMORY_MD_DEFAULT),
         ];
         for (name, content) in defaults {
-            let path = layout.agent_docs_dir.join(name);
+            let path = layout.data_cache_agent_docs_dir().join(name);
             if !path.exists() {
                 fs::write(&path, content)?;
             }
@@ -3383,7 +3392,7 @@ mod tests {
             .file
             .ensure_project_layout("superadmin", "default")
             .expect("layout");
-        let runtime_pages = layout.data_runtime_pipelines_dir.join("pages");
+        let runtime_pages = layout.data_cache_pipelines_dir().join("pages");
         let files = std::fs::read_dir(&runtime_pages)
             .expect("runtime pages dir")
             .map(|entry| {
@@ -3563,7 +3572,7 @@ mod tests {
             .file
             .ensure_project_layout("superadmin", "default")
             .expect("layout");
-        assert!(!layout.data_runtime_pipelines_dir.join("functions").exists());
+        assert!(!layout.data_cache_pipelines_dir().join("functions").exists());
     }
 
     #[test]
@@ -4215,12 +4224,12 @@ mod tests {
             .expect_err("collision must refuse");
         assert_eq!(err.code, "PIPELINE_IDENTITY_MIGRATE");
         assert!(err.message.contains("both become"));
+        let recovery_dir = svc
+            .project_layout("superadmin", "default")
+            .expect("layout")
+            .data_recovery_dir();
         assert!(
-            !svc.project_layout("superadmin", "default")
-                .expect("layout")
-                .repo_dir
-                .join(PIPELINE_IDENTITY_BACKUP_FILE)
-                .exists(),
+            !recovery_dir.is_dir() || std::fs::read_dir(&recovery_dir).unwrap().next().is_none(),
             "a refused migration writes nothing"
         );
     }

@@ -2131,7 +2131,7 @@ async fn project_asset(
         Ok(layout) => layout,
         Err(err) => return internal_error(err),
     };
-    let root = layout.data_runtime_dir.join("web-assets");
+    let root = layout.data_cache_dir().join("web-assets");
     let abs = root.join(&normalized);
     if !abs.starts_with(&root) {
         return (StatusCode::BAD_REQUEST, "invalid asset path").into_response();
@@ -16019,7 +16019,7 @@ fn load_chat_history(
         Ok(l) => l,
         Err(_) => return vec![],
     };
-    let path = layout.data_runtime_dir.join("chat_history.json");
+    let path = layout.data_cache_dir().join("chat_history.json");
     let content = match std::fs::read_to_string(&path) {
         Ok(c) => c,
         Err(_) => return vec![],
@@ -16040,7 +16040,7 @@ fn save_chat_history(
         Ok(l) => l,
         Err(_) => return,
     };
-    let path = layout.data_runtime_dir.join("chat_history.json");
+    let path = layout.data_cache_dir().join("chat_history.json");
     let mut history: Vec<Value> = std::fs::read_to_string(&path)
         .ok()
         .and_then(|c| serde_json::from_str(&c).ok())
@@ -16053,7 +16053,7 @@ fn save_chat_history(
         history.drain(0..history.len() - keep);
     }
     if let Ok(json) = serde_json::to_string(&history) {
-        std::fs::create_dir_all(&layout.data_runtime_dir).ok();
+        std::fs::create_dir_all(layout.data_cache_dir()).ok();
         std::fs::write(&path, json).ok();
     }
 }

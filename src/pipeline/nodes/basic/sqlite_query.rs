@@ -259,12 +259,15 @@ impl NodeHandler for Node {
         } else {
             resolve_array_values(&input.payload, self.config.params_path.as_deref())
         };
+        crate::platform::sqlite_schema::ensure_local_db_migrated(&self.data_root, owner, project)
+            .map_err(|err| PipelineError::new("FW_NODE_SQLITE_QUERY_MIGRATE", err.message))?;
         let db_path = self
             .data_root
             .join("users")
             .join(owner)
             .join(project)
             .join("data")
+            .join("store")
             .join("local.db");
         let rows = tokio::task::spawn_blocking(move || -> Result<Vec<Value>, String> {
             let conn = rusqlite::Connection::open(&db_path).map_err(|e| format!("open db: {e}"))?;

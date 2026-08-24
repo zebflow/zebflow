@@ -15,8 +15,10 @@ use crate::contracts::{
 
 /// Canonical dependency lock filename inside a project repository.
 pub const DEPENDENCY_LOCK_FILE: &str = "zeb.lock";
-/// Recovery copy retained after converting a pre-v1 lock.
-pub const DEPENDENCY_LOCK_BACKUP_FILE: &str = "zeb.pre-v1.lock";
+/// Recovery copy stem retained after converting a pre-v1 lock, combined with
+/// the migration date (`project-directory.md` §5) into
+/// `data/recovery/zeb-lock-{date}.lock`.
+pub const DEPENDENCY_LOCK_BACKUP_FILE: &str = "zeb-lock";
 /// Maximum accepted size of one dependency lock document.
 pub const MAX_DEPENDENCY_LOCK_BYTES: usize = 4 * 1024 * 1024;
 /// Maximum RWE libraries in one project.

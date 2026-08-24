@@ -62,7 +62,12 @@ An installed bundle is not declared, it is *materialized from* a declaration.
 The declaration is `zeb.lock`, which is authored and stays in `repo/`. The bytes
 are the machine's output, so they belong in `data/nodes/`. This mirrors the
 split that already exists between `repo/pipelines/` and the activated snapshots
-under `data/runtime/pipelines/`.
+under `data/cache/pipelines/` (`project-directory.md` §5).
+
+`data/nodes/` is not yet one of the four tiers `project-directory.md` §3 names
+for the rest of `data/` (`store`, `cache`, `recovery`, `logs`); that document
+records it as open rather than guessing it into `cache` alongside the
+pipeline snapshots it is compared to here.
 
 A bundle's `entry` path in `zeb.lock` is unchanged by this: it is still
 `nodes/{slug}/definition.json`, now resolved against the project's `data/` root.

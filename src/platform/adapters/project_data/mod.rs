@@ -7,8 +7,22 @@
 use std::path::Path;
 use std::sync::Arc;
 
+use crate::infra::io::durable::migrate_tier_entry;
 use crate::platform::error::PlatformError;
 use crate::platform::model::ProjectFileLayout;
+
+/// Moves a pre-tier child of `data/` into its `data/store/` home
+/// (`project-directory.md` §5), once. See
+/// [`crate::infra::io::durable::migrate_tier_entry`] for the atomicity and
+/// idempotency this relies on.
+fn migrate_legacy_data_dir_entry(
+    layout: &ProjectFileLayout,
+    old_name: &str,
+    new_path: &std::path::Path,
+) -> Result<(), PlatformError> {
+    migrate_tier_entry(&layout.data_dir.join(old_name), new_path)
+        .map_err(|err| PlatformError::new("PLATFORM_DATA_TIER_MIGRATE", err.to_string()))
+}
 
 /// One project runtime data engine implementation.
 pub trait ProjectDataEngine: Send + Sync {
@@ -38,8 +52,9 @@ impl ProjectDataEngine for ProjectSqliteEngine {
     }
 
     fn initialize(&self, layout: &ProjectFileLayout) -> Result<(), PlatformError> {
-        std::fs::create_dir_all(&layout.data_dir)?;
-        let db_path = layout.data_dir.join("local.db");
+        migrate_legacy_data_dir_entry(layout, "local.db", &layout.data_store_local_db_file())?;
+        std::fs::create_dir_all(&layout.data_store_dir())?;
+        let db_path = layout.data_store_local_db_file();
         let conn = rusqlite::Connection::open(&db_path)
             .map_err(|e| PlatformError::new("PROJECT_DATA_SQLITE_INIT", e.to_string()))?;
         conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;")
@@ -62,7 +77,8 @@ impl ProjectDataEngine for ProjectPostgresEngine {
     }
 }
 
-/// Project Sekejap runtime engine — creates the persistent `data/sekejap` directory.
+/// Project Sekejap runtime engine — creates the persistent `data/store/sekejap`
+/// directory.
 #[derive(Default)]
 pub struct ProjectSekejapEngine;
 
@@ -72,7 +88,12 @@ impl ProjectDataEngine for ProjectSekejapEngine {
     }
 
     fn initialize(&self, layout: &ProjectFileLayout) -> Result<(), PlatformError> {
-        std::fs::create_dir_all(layout.data_dir.join("sekejap"))?;
+        // Migrate before creating: an eager `create_dir_all` at the new path
+        // would otherwise make `data/store/sekejap` exist before the real
+        // migration in `sekejap::ensure_project_dir` runs, and that function
+        // refuses to move data onto a path that already exists.
+        migrate_legacy_data_dir_entry(layout, "sekejap", &layout.data_store_sekejap_dir())?;
+        std::fs::create_dir_all(layout.data_store_sekejap_dir())?;
         Ok(())
     }
 }

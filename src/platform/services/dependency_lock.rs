@@ -144,6 +144,12 @@ impl DependencyLockService {
         self.repo_path(owner, project).join(DEPENDENCY_LOCK_FILE)
     }
 
+    /// `.../data/recovery` — where migration safety copies live
+    /// (`project-directory.md` §5), never inside `repo/`.
+    fn recovery_path(&self, owner: &str, project: &str) -> PathBuf {
+        self.node_root(owner, project).join("recovery")
+    }
+
     fn update_lock(&self, path: &Path) -> Arc<Mutex<()>> {
         let mut locks = self
             .update_locks
@@ -885,17 +891,20 @@ impl DependencyLockService {
     /// Explicitly migrates the pre-contract `version: 1` lock in place.
     ///
     /// Missing digests are calculated from the registered library bytes. The
-    /// original file remains at `repo/zeb.pre-v1.lock` before canonical bytes
-    /// replace `repo/zeb.lock`.
+    /// original file remains at `data/recovery/zeb-lock-{date}.lock` before
+    /// canonical bytes replace `repo/zeb.lock` — `data/recovery/`, not
+    /// `repo/`, because a machine-generated recovery copy must never enter
+    /// the git-tracked repository (`project-directory.md` §1, §5).
     pub fn migrate_legacy(
         &self,
         owner: &str,
         project: &str,
     ) -> Result<DependencyLockMigration, PlatformError> {
         let path = self.lock_path(owner, project);
-        let backup_path = self
-            .repo_path(owner, project)
-            .join(DEPENDENCY_LOCK_BACKUP_FILE);
+        let backup_path = self.recovery_path(owner, project).join(format!(
+            "{DEPENDENCY_LOCK_BACKUP_FILE}-{}.lock",
+            crate::platform::model::recovery_date_stamp()
+        ));
         let lock = self.update_lock(&path);
         let _guard = lock.lock().unwrap_or_else(|error| error.into_inner());
         let bytes = std::fs::read(&path).map_err(|error| {
@@ -1006,6 +1015,9 @@ impl DependencyLockService {
             }
             Ok(_) => {}
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                if let Some(parent) = backup_path.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
                 atomic_write(&backup_path, &bytes).map_err(|error| {
                     PlatformError::new(
                         "ZEB_LOCK_MIGRATE",
@@ -1534,10 +1546,8 @@ mod tests {
         assert!(service.migrate_legacy("owner", "project").is_err());
         assert_eq!(std::fs::read(&path).unwrap(), legacy);
         assert!(
-            !service
-                .repo_path("owner", "project")
-                .join(DEPENDENCY_LOCK_BACKUP_FILE)
-                .exists()
+            !service.recovery_path("owner", "project").exists(),
+            "a refused migration writes nothing, not even the recovery directory"
         );
     }
 
@@ -1546,10 +1556,12 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let service = DependencyLockService::new(root.path().join("users"));
         let path = service.lock_path("owner", "project");
-        let recovery = service
-            .repo_path("owner", "project")
-            .join(DEPENDENCY_LOCK_BACKUP_FILE);
+        let recovery = service.recovery_path("owner", "project").join(format!(
+            "{DEPENDENCY_LOCK_BACKUP_FILE}-{}.lock",
+            crate::platform::model::recovery_date_stamp()
+        ));
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(recovery.parent().unwrap()).unwrap();
         let legacy = format!(
             r#"{{"version":1,"libraries":{{"zeb/example":{{"version":"1.0.0","source":"offline","entry":"dist/main.mjs","integrity":"sha256:{}"}}}}}}"#,
             "a".repeat(64)

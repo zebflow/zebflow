@@ -274,16 +274,29 @@ async fn platform_bootstrap_and_login_flow_works() {
     assert!(html.contains("Credentials"));
     assert!(html.contains("Files"));
     assert!(html.contains("Settings"));
+    // `data/` splits into the four tiers `project-directory.md` §3 draws:
+    // store (durable), cache (disposable, rebuilds from repo/), recovery and
+    // logs (disposable, bounded). A fresh project gets all four up front.
     let project_root = data_root.join("users").join("superadmin").join("default");
     assert!(project_root.join("data").exists());
-    assert!(project_root.join("data").join("runtime").exists());
+    assert!(project_root.join("data").join("store").exists());
+    assert!(project_root.join("data").join("cache").exists());
     assert!(
         project_root
             .join("data")
-            .join("runtime")
+            .join("cache")
             .join("pipelines")
             .exists()
     );
+    assert!(
+        project_root
+            .join("data")
+            .join("cache")
+            .join("agent_docs")
+            .exists()
+    );
+    assert!(project_root.join("data").join("recovery").exists());
+    assert!(project_root.join("data").join("logs").exists());
     assert!(project_root.join("files").exists());
     assert!(project_root.join("files").join("public").exists());
     assert!(project_root.join("files").join("private").exists());

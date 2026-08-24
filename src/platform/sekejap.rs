@@ -287,6 +287,7 @@ pub fn project_dir(data_root: &Path, owner: &str, project: &str) -> PathBuf {
         .join(slug_segment(owner))
         .join(slug_segment(project))
         .join("data")
+        .join("store")
         .join("sekejap")
 }
 
@@ -323,8 +324,34 @@ fn ensure_project_dir(
     project: &str,
 ) -> Result<PathBuf, PlatformError> {
     let dir = project_dir(data_root, owner, project);
+    migrate_legacy_sekejap_dir(data_root, owner, project, &dir)?;
     std::fs::create_dir_all(&dir)?;
     Ok(dir)
+}
+
+/// Moves a pre-tier `data/sekejap` into `data/store/sekejap`
+/// (`project-directory.md` §5), once.
+///
+/// This is the one chokepoint every Sekejap access already runs through
+/// (`get_db`, `record_project_write`, health and maintenance all call
+/// `ensure_project_dir`), independent of whether anything has resolved a full
+/// `ProjectFileLayout` for the request. See
+/// [`crate::infra::io::durable::migrate_tier_entry`] for the atomicity and
+/// idempotency this relies on.
+fn migrate_legacy_sekejap_dir(
+    data_root: &Path,
+    owner: &str,
+    project: &str,
+    new_dir: &Path,
+) -> Result<(), PlatformError> {
+    let old_dir = data_root
+        .join("users")
+        .join(slug_segment(owner))
+        .join(slug_segment(project))
+        .join("data")
+        .join("sekejap");
+    crate::infra::io::durable::migrate_tier_entry(&old_dir, new_dir)
+        .map_err(|err| PlatformError::new("PLATFORM_DATA_TIER_MIGRATE", err.to_string()))
 }
 
 fn load_catalog(

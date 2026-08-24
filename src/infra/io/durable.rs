@@ -28,6 +28,32 @@ pub fn durable_persist(temporary: tempfile::NamedTempFile, path: &Path) -> io::R
     sync_directory(path.parent().unwrap_or_else(|| Path::new(".")))
 }
 
+/// Moves `old` to `new` when `old` exists and `new` does not; a no-op once
+/// `old` is gone, and a refusal rather than a guess when both are present.
+///
+/// Used by the `data/` tier migration (`project-directory.md` §5) to move a
+/// pre-tier `data/sekejap`, `data/local.db`, or `data/runtime` into its
+/// `store`/`cache` home. A file or directory move is one `rename`, atomic on
+/// a same-filesystem move: either `old` lands fully at `new` or `old` is left
+/// untouched, never a partial tree recognizable as neither shape.
+pub fn migrate_tier_entry(old: &Path, new: &Path) -> io::Result<()> {
+    if old == new || !old.exists() {
+        return Ok(());
+    }
+    if new.exists() {
+        return Err(io::Error::other(format!(
+            "both '{}' and '{}' exist; refusing to guess which is current — \
+             remove the stale one by hand once its content is confirmed",
+            old.display(),
+            new.display()
+        )));
+    }
+    if let Some(parent) = new.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::rename(old, new)
+}
+
 /// Removes one file and synchronizes its parent directory.
 ///
 /// A missing file is already in the requested state and succeeds.

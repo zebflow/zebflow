@@ -22,7 +22,7 @@ runtime state, activation timestamps, or invocation history.
 | Contract definition | `src/contracts/kinds/pipeline.rs` |
 | Runtime model | `src/pipeline/model.rs` |
 | Save and activation service | `src/platform/services/project.rs` |
-| Active snapshots | `data/runtime/pipelines/**/*.zf.json` |
+| Active snapshots | `data/cache/pipelines/**/*.zf.json` |
 | Golden fixture | `tests/fixtures/contracts/pipeline/v1-complete.json` |
 
 The logical pipeline id and its project-relative file path serve different

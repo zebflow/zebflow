@@ -133,9 +133,9 @@ part of the kind-by-extension scheme:
 - `zebflow.init.json` — initialization payload
 - `schema.json` — under the schema directory
 - `AGENTS.md`, `SOUL.md` — assistant instruction files. These live in
-  `data/runtime/agent_docs`, NOT in `repo/`, and are not git-synced. Note that
-  `docs/contracts/project.md` says they belong in `repo/`; the code disagrees,
-  and the code is what runs.
+  `data/cache/agent_docs` (`project-directory.md` §5), NOT in `repo/`, and are
+  not git-synced. Note that `docs/contracts/project.md` says they belong in
+  `repo/`; the code disagrees, and the code is what runs.
 
 ## 4. Extensions currently present in a repo
 

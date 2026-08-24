@@ -1948,16 +1948,18 @@ pub struct SimpleTableQueryResult {
 }
 
 /// File-system tree returned for one project.
+///
+/// `data/` splits into four tiers (`project-directory.md` §3), and every tier
+/// below `data_dir` is an accessor derived from it — the same pattern
+/// `repo_source_dir()` and the other `repo_*` methods already use for `repo/`
+/// — rather than a separately stored field, so there is exactly one place
+/// that can disagree with the tree the contract draws.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProjectFileLayout {
     /// `{data_root}/users/{owner}/{project}`
     pub root: PathBuf,
     /// `.../data`
     pub data_dir: PathBuf,
-    /// `.../data/runtime`
-    pub data_runtime_dir: PathBuf,
-    /// `.../data/runtime/pipelines`
-    pub data_runtime_pipelines_dir: PathBuf,
     /// `.../files`
     pub files_dir: PathBuf,
     /// `.../repo` (git-sync workspace root).
@@ -1966,12 +1968,14 @@ pub struct ProjectFileLayout {
     pub repo_git_dir: PathBuf,
     /// `.../repo/zebflow.yaml` (non-sensitive project configuration, git-synced).
     pub project_config_file: PathBuf,
-    /// `.../data/runtime/agent_docs` (AGENTS.md, SOUL.md, MEMORY.md — agent context)
-    pub agent_docs_dir: PathBuf,
     /// `.../data/nodes` — installed node bundles.
     ///
     /// These are materialized from `zeb.lock`, not authored, so they live with
     /// the machine's other derived state rather than in the source repository.
+    ///
+    /// Not yet one of the four `data/` tiers: `project-directory.md`'s tree
+    /// does not name this directory, so it is left where it was rather than
+    /// guessed into `store` or `cache`. Recorded as open in that contract.
     pub data_nodes_dir: PathBuf,
     /// The repository layout these paths project onto disk.
     ///
@@ -2005,6 +2009,49 @@ impl ProjectFileLayout {
     /// readable and reimplementable on an instance where the bundle is absent.
     pub fn repo_node_interfaces_dir(&self) -> PathBuf {
         self.repo_dir.join(&self.repo_layout.node_interfaces)
+    }
+
+    /// `.../data/store` — durable, generated, irreplaceable. Back this up.
+    pub fn data_store_dir(&self) -> PathBuf {
+        self.data_dir.join("store")
+    }
+
+    /// `.../data/store/sekejap` — the project's database: WAL, indexes, snapshot.
+    pub fn data_store_sekejap_dir(&self) -> PathBuf {
+        self.data_store_dir().join("sekejap")
+    }
+
+    /// `.../data/store/local.db` — the project's SQLite runtime database.
+    pub fn data_store_local_db_file(&self) -> PathBuf {
+        self.data_store_dir().join("local.db")
+    }
+
+    /// `.../data/cache` — disposable, rebuilds from `repo/`.
+    pub fn data_cache_dir(&self) -> PathBuf {
+        self.data_dir.join("cache")
+    }
+
+    /// `.../data/cache/pipelines` — materialized pipeline runtime (active
+    /// snapshots compiled from `repo/`).
+    pub fn data_cache_pipelines_dir(&self) -> PathBuf {
+        self.data_cache_dir().join("pipelines")
+    }
+
+    /// `.../data/cache/agent_docs` (AGENTS.md, SOUL.md, MEMORY.md — agent
+    /// context, materialized from `repo/`).
+    pub fn data_cache_agent_docs_dir(&self) -> PathBuf {
+        self.data_cache_dir().join("agent_docs")
+    }
+
+    /// `.../data/recovery` — disposable, bounded. Migration safety copies,
+    /// named with the date the migration ran (`project-directory.md` §5).
+    pub fn data_recovery_dir(&self) -> PathBuf {
+        self.data_dir.join("recovery")
+    }
+
+    /// `.../data/logs` — disposable, bounded. Invocation records, traces.
+    pub fn data_logs_dir(&self) -> PathBuf {
+        self.data_dir.join("logs")
     }
 }
 
@@ -2478,8 +2525,10 @@ pub const PIPELINE_DEFINITION_EXTENSION: &str = ".zf.json";
 /// The source root every persisted pipeline id carried before identity became
 /// source-relative. It is the one prefix the migration knows how to remove.
 pub const LEGACY_PIPELINE_IDENTITY_ROOT: &str = "pipelines";
-/// Recovery copy written by the pipeline identity migration.
-pub const PIPELINE_IDENTITY_BACKUP_FILE: &str = "pipelines.pre-source-relative.json";
+/// Recovery copy stem written by the pipeline identity migration, combined
+/// with the migration date (`project-directory.md` §5) into
+/// `data/recovery/pipeline-identity-{date}.json`.
+pub const PIPELINE_IDENTITY_BACKUP_FILE: &str = "pipeline-identity";
 /// Filename of the exported schema document inside the schema directory.
 pub const SCHEMA_DOCUMENT_FILE: &str = "schema.json";
 /// Filename of the SQLite schema export inside the SQLite schema directory.
@@ -3301,6 +3350,15 @@ pub fn now_ts() -> i64 {
         Ok(d) => d.as_secs() as i64,
         Err(_) => 0,
     }
+}
+
+/// Current UTC date as `YYYY-MM-DD`.
+///
+/// Every migration that writes a recovery copy into `data/recovery/` names the
+/// file with this stamp (`project-directory.md` §5), so the file itself
+/// records when the migration ran without a separate audit log.
+pub fn recovery_date_stamp() -> String {
+    chrono::Utc::now().format("%Y-%m-%d").to_string()
 }
 
 /// Slug-normalize a segment for ids/paths.

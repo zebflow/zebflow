@@ -4,6 +4,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::{fs, process::Command};
 
+use crate::infra::io::durable::migrate_tier_entry;
 use crate::platform::error::PlatformError;
 use crate::platform::model::{FileAdapterKind, ProjectFileLayout, slug_segment};
 use crate::platform::services::project_config::ProjectConfigurationService;
@@ -83,15 +84,12 @@ impl FileAdapter for FilesystemFileAdapter {
     ) -> Result<ProjectFileLayout, PlatformError> {
         let root = self.project_root(owner, project);
         let data_dir = root.join("data");
-        let data_runtime_dir = data_dir.join("runtime");
-        let data_runtime_pipelines_dir = data_runtime_dir.join("pipelines");
         let files_dir = root.join("files");
         let repo_dir = root.join("repo");
         let repo_git_dir = repo_dir.join(".git");
         let data_nodes_dir = data_dir.join("nodes");
         let project_config_file =
             repo_dir.join(crate::contracts::kinds::PROJECT_CONFIGURATION_FILE);
-        let agent_docs_dir = data_runtime_dir.join("agent_docs");
 
         // The declaration takes effect here. A project that declares nothing
         // resolves to the platform defaults, and a malformed or unmigrated
@@ -103,30 +101,43 @@ impl FileAdapter for FilesystemFileAdapter {
         let resolved = ProjectFileLayout {
             root,
             data_dir,
-            data_runtime_dir,
-            data_runtime_pipelines_dir,
             files_dir,
             repo_dir,
             repo_git_dir,
             project_config_file,
-            agent_docs_dir,
             data_nodes_dir,
             repo_layout,
         };
+
+        // A pre-tier project has its whole runtime cache sitting at the old
+        // `data/runtime`, not just the `pipelines`/`agent_docs` children this
+        // adapter used to scaffold individually — so the entire directory
+        // moves in one `rename` onto its new `data/cache` home, carrying
+        // those children with it. This must run before the base-dirs loop
+        // below, which would otherwise create an empty `data/cache` first and
+        // turn the migration into a same-path no-op.
+        migrate_tier_entry(
+            &resolved.data_dir.join("runtime"),
+            &resolved.data_cache_dir(),
+        )
+        .map_err(|err| PlatformError::new("PLATFORM_DATA_TIER_MIGRATE", err.to_string()))?;
 
         // Base dirs
         for dir in [
             &resolved.root,
             &resolved.data_dir,
-            &resolved.data_runtime_dir,
-            &resolved.data_runtime_pipelines_dir,
+            &resolved.data_store_dir(),
+            &resolved.data_cache_dir(),
+            &resolved.data_cache_pipelines_dir(),
+            &resolved.data_cache_agent_docs_dir(),
+            &resolved.data_recovery_dir(),
+            &resolved.data_logs_dir(),
             &resolved.files_dir,
             &resolved.files_dir.join("public"),
             &resolved.files_dir.join("private"),
             &resolved.repo_dir,
             &resolved.repo_source_dir(),
             &resolved.repo_docs_dir(),
-            &resolved.agent_docs_dir,
             // Only assets/ and styles/ are scaffolded inside the source root.
             // All other folders (automation, web, components, lib, etc.) are
             // created explicitly by the user — not auto-scaffolded on every

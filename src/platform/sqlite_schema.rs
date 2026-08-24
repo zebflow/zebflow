@@ -30,7 +30,30 @@ fn project_data_dir(data_root: &Path, owner: &str, project: &str) -> PathBuf {
 }
 
 pub fn local_db_path(data_root: &Path, owner: &str, project: &str) -> PathBuf {
-    project_data_dir(data_root, owner, project).join("local.db")
+    project_data_dir(data_root, owner, project)
+        .join("store")
+        .join("local.db")
+}
+
+/// Moves a pre-tier `data/local.db` into `data/store/local.db`
+/// (`project-directory.md` §5), once.
+///
+/// Every caller that opens `local.db` — the SQLite node engine and the
+/// `n.sqlite.query`/`n.sqlite.mutate` nodes — builds its path independently of
+/// `ProjectFileLayout`, so this must run at each of those call sites rather
+/// than behind one shared accessor. See
+/// [`crate::infra::io::durable::migrate_tier_entry`] for the atomicity and
+/// idempotency this relies on: opening the new path can never silently
+/// create an empty database next to an abandoned old one.
+pub fn ensure_local_db_migrated(
+    data_root: &Path,
+    owner: &str,
+    project: &str,
+) -> Result<(), PlatformError> {
+    let old_path = project_data_dir(data_root, owner, project).join("local.db");
+    let new_path = local_db_path(data_root, owner, project);
+    crate::infra::io::durable::migrate_tier_entry(&old_path, &new_path)
+        .map_err(|err| PlatformError::new("PLATFORM_DATA_TIER_MIGRATE", err.to_string()))
 }
 
 pub fn repo_schema_path(
@@ -43,6 +66,7 @@ pub fn repo_schema_path(
 }
 
 pub fn has_schema(data_root: &Path, owner: &str, project: &str) -> Result<bool, PlatformError> {
+    ensure_local_db_migrated(data_root, owner, project)?;
     let path = local_db_path(data_root, owner, project);
     if !path.is_file() {
         return Ok(false);
@@ -139,6 +163,7 @@ pub fn execute_sql(
     if trimmed.is_empty() {
         return Ok(());
     }
+    ensure_local_db_migrated(data_root, owner, project)?;
     let db_path = local_db_path(data_root, owner, project);
     if let Some(parent) = db_path.parent() {
         std::fs::create_dir_all(parent)?;
