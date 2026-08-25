@@ -76,7 +76,7 @@ zeb install <ref>
   → review → refuse violations → consent
   → write by kind:
         node bundle   → data/hub/nodes/{package}/
-        RWE library   → data/hub/libraries/{package}/
+        RWE library   → data/hub/rwe-libraries/{package}/
         project       → repo/  (a new project)
   → record in zeb.lock: version, source_id, integrity
 ```
