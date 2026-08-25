@@ -64,10 +64,12 @@ are the machine's output, so they belong in `data/nodes/`. This mirrors the
 split that already exists between `repo/pipelines/` and the activated snapshots
 under `data/cache/pipelines/` (`project-directory.md` §5).
 
-`data/nodes/` is not yet one of the four tiers `project-directory.md` §3 names
-for the rest of `data/` (`store`, `cache`, `recovery`, `logs`); that document
-records it as open rather than guessing it into `cache` alongside the
-pipeline snapshots it is compared to here.
+`data/nodes/` is classified by `project-directory.md` §3 as the **installed**
+tier, whose ratified home is `data/hub/nodes/` — deliberately not `cache`,
+because live testing showed a locally-installed bundle cannot be rebuilt from
+`zeb.lock` alone, unlike the pipeline snapshots it is compared to here. The
+physical move from `data/nodes/` to `data/hub/nodes/` has not landed yet; until
+it does, the bytes stay at `data/nodes/`.
 
 A bundle's `entry` path in `zeb.lock` is unchanged by this: it is still
 `nodes/{slug}/definition.json`, now resolved against the project's `data/` root.

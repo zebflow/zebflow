@@ -1,13 +1,15 @@
 # Project directory
 
 Status: **review, with evidence**. The reclassification below is applied to
-the code: `ProjectFileLayout` carries the four `data/` tiers, every writer
+the code: `ProjectFileLayout` carries the `data/` tiers, every writer
 named in §5 has moved, and a project built before this change migrates its
 `data/sekejap`, `data/local.db`, and `data/runtime` transparently the first
 time each is touched — verified live against a seeded pre-tier project, with
 before/after content identical and a second run a no-op (§7). `data/nodes/`
-was investigated for the `cache` tier and the investigation disproved it,
-live, rather than confirming it — see §7. Not yet
+was investigated for the `cache` tier and the investigation disproved it live;
+that evidence ratified the **installed** tier instead — `data/hub/`, one child
+per kind (§3, §7) — whose physical migration to `data/hub/nodes/` is the one
+piece still to land in code. Not yet
 **candidate**: a directory-tier policy has no document envelope of its own to
 version, so most of the stability-matrix freeze checklist (versioned root,
 canonical writer, negative tests over malformed bytes) does not apply to it in
@@ -60,6 +62,10 @@ This finishes it.
 │   │   ├── pipelines/      materialized pipeline runtime
 │   │   └── agent_docs/
 │   │
+│   ├── hub/                INSTALLED — unpacked hub content, one child per kind
+│   │   ├── nodes/          installed node bundles (today at data/nodes/, unmigrated)
+│   │   └── rwe-libraries/  installed RWE libraries (none materialize yet; embedded only)
+│   │
 │   ├── recovery/           DISPOSABLE, BOUNDED — migration safety copies
 │   └── logs/                DISPOSABLE, BOUNDED — invocation records, traces
 │
@@ -70,16 +76,17 @@ This finishes it.
         └── acl.json         ZebFsAclManifest: path → {Private|PublicRead} × {Object|Prefix}
 ```
 
-## 3. The four tiers
+## 3. The five tiers
 
 | Tier | Rule | Directories |
 | --- | --- | --- |
 | **authored** | what a person wrote. Never auto-deleted, never auto-generated, back it up. | `repo/`, `files/` |
 | **store** | what the machine wrote and cannot regenerate. Losing it loses user data. Back it up. | `data/store/` |
 | **cache** | what the machine wrote and can regenerate from `repo/`. Safe to delete at any time; nothing reads a deletion as data loss. | `data/cache/` |
+| **installed** | what an install unpacked from a hub or a local document. The installed form is the artifact — the same contract Blender addons, npm packages, and apt packages keep. Reconstructible only when its source still resolves, so it is never auto-evicted like cache and never assumed irreplaceable like store. Removing an entry is `uninstall`, an explicit act recorded in `zeb.lock` — not a cleanup. | `data/hub/` |
 | **bounded** | what the machine wrote, disposable, kept only for a retention window. Not backed up; not silently deleted before its window either. | `data/recovery/`, `data/logs/` |
 
-Four words. A tool that needs to know whether a path is safe to delete asks
+Five words. A tool that needs to know whether a path is safe to delete asks
 which tier it is in, not what the path is named or what code wrote it.
 
 ## 4. `files/` has no physical public/private split
@@ -152,7 +159,7 @@ removing them is a `files/` change and out of scope for a `data/`-only sweep.
 
 ## 7. Open
 
-- **`data/nodes/` is not one of the four tiers, and it is not `cache` either
+- **`data/nodes/` is not `store`, `cache`, `recovery`, or `logs` — and it is not `cache` in particular
   — checked live, not assumed.** The plausible argument was: installed node
   bundles are materialized from `zeb.lock` the same way `data/cache/pipelines/`
   is materialized from `repo/`, so deleting `data/nodes/` and re-running the
