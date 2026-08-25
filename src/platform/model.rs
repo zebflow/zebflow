@@ -2026,6 +2026,22 @@ impl ProjectFileLayout {
         self.data_store_dir().join("local.db")
     }
 
+    /// `.../data/store/kv.db` — the project's durable `n.kv.*` state.
+    ///
+    /// `MemStateBus` (`src/infra/io/state/mem.rs`) builds this path itself
+    /// from the data root because infra cannot see this type; the two sites
+    /// are named in `project-directory.md` §5 so a layout change updates both.
+    pub fn data_store_kv_db_file(&self) -> PathBuf {
+        self.data_store_dir().join("kv.db")
+    }
+
+    /// `.../data/store/chat_history.json` — the project's assistant
+    /// conversation history. User state, not cache: deleting it loses a
+    /// conversation, so it lives in the `store` tier.
+    pub fn data_store_chat_history_file(&self) -> PathBuf {
+        self.data_store_dir().join("chat_history.json")
+    }
+
     /// `.../data/cache` — disposable, rebuilds from `repo/`.
     pub fn data_cache_dir(&self) -> PathBuf {
         self.data_dir.join("cache")

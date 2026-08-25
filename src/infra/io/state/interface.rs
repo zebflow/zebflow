@@ -338,6 +338,15 @@ fn validate_namespace_segment(
     if value.is_empty() {
         return Err(StateBusError::invalid_namespace(field, "must not be empty"));
     }
+    // A namespace segment becomes a path component of the project's durable
+    // KV file (`users/{owner}/{project}/data/store/kv.db`), so `.` and `..`
+    // must never pass — they are traversal, not names.
+    if value.bytes().all(|b| b == b'.') {
+        return Err(StateBusError::invalid_namespace(
+            field,
+            "must not consist solely of dots",
+        ));
+    }
     if value.len() > max_len {
         return Err(StateBusError::invalid_namespace(
             field,
@@ -403,6 +412,11 @@ mod tests {
         assert!(validate_namespace("bad/owner", "default", &limits).is_err());
         assert!(validate_namespace("bad owner", "default", &limits).is_err());
         assert!(validate_namespace("", "default", &limits).is_err());
+        // Segments become path components of the per-project durable KV file.
+        assert!(validate_namespace(".", "default", &limits).is_err());
+        assert!(validate_namespace("..", "default", &limits).is_err());
+        assert!(validate_namespace("superadmin", "..", &limits).is_err());
+        validate_namespace("a.b", "v1.2", &limits).expect("interior dots stay valid");
     }
 
     #[test]

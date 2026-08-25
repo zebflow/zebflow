@@ -16009,7 +16009,22 @@ fn apply_rwe_project_options(
     Ok(())
 }
 
-/// Load up to `max_pairs * 2` chat messages from the project's runtime data dir.
+/// Resolves the chat history file at its `store`-tier home, migrating a
+/// pre-tier copy out of `data/cache/` the first time it is touched
+/// (`project-directory.md` §5). A file present at both paths is refused
+/// rather than guessed, per `migrate_tier_entry`.
+fn chat_history_file(
+    layout: &crate::platform::model::ProjectFileLayout,
+) -> std::io::Result<std::path::PathBuf> {
+    let new_path = layout.data_store_chat_history_file();
+    crate::infra::io::durable::migrate_tier_entry(
+        &layout.data_cache_dir().join("chat_history.json"),
+        &new_path,
+    )?;
+    Ok(new_path)
+}
+
+/// Load up to `max_pairs * 2` chat messages from the project's store tier.
 fn load_chat_history(
     file: &Arc<dyn crate::platform::adapters::file::FileAdapter>,
     owner: &str,
@@ -16019,7 +16034,13 @@ fn load_chat_history(
         Ok(l) => l,
         Err(_) => return vec![],
     };
-    let path = layout.data_cache_dir().join("chat_history.json");
+    let path = match chat_history_file(&layout) {
+        Ok(path) => path,
+        Err(err) => {
+            eprintln!("WARN: chat history tier migration refused for {owner}/{project}: {err}");
+            return vec![];
+        }
+    };
     let content = match std::fs::read_to_string(&path) {
         Ok(c) => c,
         Err(_) => return vec![],
@@ -16040,7 +16061,15 @@ fn save_chat_history(
         Ok(l) => l,
         Err(_) => return,
     };
-    let path = layout.data_cache_dir().join("chat_history.json");
+    let path = match chat_history_file(&layout) {
+        Ok(path) => path,
+        Err(err) => {
+            // A refused migration must not fork history by writing to either
+            // path; surface it and write nothing.
+            eprintln!("WARN: chat history tier migration refused for {owner}/{project}: {err}");
+            return;
+        }
+    };
     let mut history: Vec<Value> = std::fs::read_to_string(&path)
         .ok()
         .and_then(|c| serde_json::from_str(&c).ok())
@@ -16053,7 +16082,7 @@ fn save_chat_history(
         history.drain(0..history.len() - keep);
     }
     if let Ok(json) = serde_json::to_string(&history) {
-        std::fs::create_dir_all(layout.data_cache_dir()).ok();
+        std::fs::create_dir_all(layout.data_store_dir()).ok();
         std::fs::write(&path, json).ok();
     }
 }
