@@ -56,7 +56,11 @@ This finishes it.
 ├── data/
 │   ├── store/             DURABLE, GENERATED — irreplaceable, back this up
 │   │   ├── sekejap/       the project's database: WAL, indexes, snapshot
-│   │   └── local.db
+│   │   ├── local.db
+│   │   ├── kv.db          durable n.kv.* state (decided 2026-08-25; today one
+│   │   │                  global kv_durable.db at the data root — migrating)
+│   │   └── chat_history.json  assistant conversation (decided 2026-08-25;
+│   │                      today wrongly in data/cache/ — migrating)
 │   │
 │   ├── cache/              DISPOSABLE — delete anytime, rebuilds from repo/
 │   │   ├── pipelines/      materialized pipeline runtime
