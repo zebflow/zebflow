@@ -161,7 +161,7 @@ pub fn load_platform_config(role: ClusterRole) -> Result<PlatformConfig, io::Err
         })
         .unwrap_or(false);
     if role != ClusterRole::Worker
-        && config.default_password.trim() == "secret"
+        && crate::platform::services::bootstrap::is_insecure_password(&config.default_password)
         && !allow_insecure_default
     {
         return Err(io::Error::other(

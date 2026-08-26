@@ -17,14 +17,15 @@ use crate::infra::execution::placement::{
 use crate::platform::adapters::data::DataAdapter;
 use crate::platform::error::PlatformError;
 use crate::platform::model::{
-    HubAccessGrant, HubAssetPackage, HubAssetVersion, HubAuthority, HubPublisher, HubToken,
-    McpSession, PipelineInvocationEntry, PipelineInvocationLogPipelineStats,
-    PipelineInvocationLogStats, PipelineMeta, PlatformHubRepository, PlatformOffice,
-    PlatformOfficeNode, PlatformProject, PlatformServiceInstance, PlatformUser,
-    PlatformUserLocalAuth, ProjectAccessRolePreset, ProjectCapability, ProjectCredential,
-    ProjectDbConnection, ProjectHubRepository, ProjectInvite, ProjectInviteStatus, ProjectMember,
-    ProjectOperationKind, ProjectOperationRecord, ProjectOperationStatus, ProjectPolicy,
-    ProjectPolicyBinding, ProjectSubjectKind, StoredUser, now_ts, slug_segment,
+    CREDENTIAL_STATE_CHOSEN, HubAccessGrant, HubAssetPackage, HubAssetVersion, HubAuthority,
+    HubPublisher, HubToken, McpSession, PipelineInvocationEntry,
+    PipelineInvocationLogPipelineStats, PipelineInvocationLogStats, PipelineMeta,
+    PlatformHubRepository, PlatformOffice, PlatformOfficeNode, PlatformProject,
+    PlatformServiceInstance, PlatformUser, PlatformUserLocalAuth, ProjectAccessRolePreset,
+    ProjectCapability, ProjectCredential, ProjectDbConnection, ProjectHubRepository, ProjectInvite,
+    ProjectInviteStatus, ProjectMember, ProjectOperationKind, ProjectOperationRecord,
+    ProjectOperationStatus, ProjectPolicy, ProjectPolicyBinding, ProjectSubjectKind, StoredUser,
+    now_ts, slug_segment,
 };
 
 const SCHEMA_SQL: &str = "
@@ -661,7 +662,7 @@ impl SqliteDataAdapter {
         Ok(exists)
     }
 
-    fn migrations() -> [MigrationDef; 15] {
+    fn migrations() -> [MigrationDef; 16] {
         [
             MigrationDef {
                 version: 1,
@@ -737,6 +738,11 @@ impl SqliteDataAdapter {
                 version: 15,
                 name: "hub_access_grants",
                 apply: Self::apply_migration_0015_hub_access_grants,
+            },
+            MigrationDef {
+                version: 16,
+                name: "user_credential_state",
+                apply: Self::apply_migration_0016_user_credential_state,
             },
         ]
     }
@@ -2559,6 +2565,24 @@ CREATE INDEX IF NOT EXISTS idx_platform_service_instances_host
         Ok(())
     }
 
+    /// Adds `user_local_auth.credential_state` — `generated` while the
+    /// password is a platform-generated one, `chosen` once a person set it.
+    ///
+    /// Existing rows default to `chosen`: their operators have been running
+    /// with those passwords, and retroactively forcing every account through
+    /// the change screen is not what this column is for. First boot marks a
+    /// freshly generated superadmin `generated` explicitly.
+    fn apply_migration_0016_user_credential_state(
+        tx: &Transaction<'_>,
+    ) -> Result<(), PlatformError> {
+        Self::ensure_table_column(
+            tx,
+            "user_local_auth",
+            "credential_state",
+            "TEXT NOT NULL DEFAULT 'chosen'",
+        )
+    }
+
     fn ensure_table_column<C>(
         conn: &C,
         table: &str,
@@ -2966,7 +2990,7 @@ impl DataAdapter for SqliteDataAdapter {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let result = conn.query_row(
             "SELECT u.user_id, u.owner, u.role, u.git_name, u.git_email, u.created_at, u.updated_at,
-                    a.password_hash, a.password_alg, a.password_updated_at
+                    a.password_hash, a.password_alg, a.password_updated_at, a.credential_state
              FROM users u
              LEFT JOIN user_local_auth a ON a.user_id = u.user_id
              WHERE u.owner = ?1",
@@ -2989,6 +3013,9 @@ impl DataAdapter for SqliteDataAdapter {
                             .get::<_, Option<String>>(8)?
                             .unwrap_or_else(|| "sha256".to_string()),
                         password_updated_at: row.get::<_, Option<i64>>(9)?.unwrap_or_default(),
+                        credential_state: row
+                            .get::<_, Option<String>>(10)?
+                            .unwrap_or_else(|| CREDENTIAL_STATE_CHOSEN.to_string()),
                     },
                 })
             },
@@ -3026,17 +3053,19 @@ impl DataAdapter for SqliteDataAdapter {
         .map_err(Self::qe)?;
         conn.execute(
             "INSERT INTO user_local_auth
-             (user_id, password_hash, password_alg, password_updated_at)
-             VALUES (?1, ?2, ?3, ?4)
+             (user_id, password_hash, password_alg, password_updated_at, credential_state)
+             VALUES (?1, ?2, ?3, ?4, ?5)
              ON CONFLICT(user_id) DO UPDATE SET
                  password_hash = excluded.password_hash,
                  password_alg = excluded.password_alg,
-                 password_updated_at = excluded.password_updated_at",
+                 password_updated_at = excluded.password_updated_at,
+                 credential_state = excluded.credential_state",
             params![
                 &user.auth.user_id,
                 &user.auth.password_hash,
                 &user.auth.password_alg,
                 user.auth.password_updated_at,
+                &user.auth.credential_state,
             ],
         )
         .map_err(Self::qe)?;
@@ -6596,6 +6625,7 @@ mod tests {
                     password_hash: "x".to_string(),
                     password_alg: "test".to_string(),
                     password_updated_at: 1,
+                    credential_state: CREDENTIAL_STATE_CHOSEN.to_string(),
                 },
             })
             .expect("put user");

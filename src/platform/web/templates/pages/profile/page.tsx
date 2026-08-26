@@ -138,6 +138,21 @@ export default function Page(input) {
 
             <Card>
               <CardContent className="py-5">
+                <CardTitle className="text-lg">Password</CardTitle>
+                <CardDescription className="mt-1">
+                  Change the password this account signs in with. Every other
+                  signed-in session ends when it changes.
+                </CardDescription>
+                <div className="mt-4">
+                  <Button as="a" href="/account/password" variant="outline">
+                    Change password
+                  </Button>
+                </div>
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardContent className="py-5">
                 <CardTitle className="text-lg">Effective identity</CardTitle>
                 <div className="mt-4 space-y-3 text-sm">
                   <div>

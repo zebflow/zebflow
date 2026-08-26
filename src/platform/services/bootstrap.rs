@@ -117,10 +117,42 @@ pub fn resolve_superadmin_password(
     }
 }
 
-fn random_password() -> String {
+/// Generates a cryptographically random password.
+///
+/// Used at first boot and by `zeb admin reset-password`, so a recovered
+/// account carries the same strength of credential a fresh install does.
+pub fn random_password() -> String {
     let mut bytes = [0u8; GENERATED_PASSWORD_BYTES];
     rand::rng().fill(&mut bytes);
     hex::encode(bytes)
+}
+
+/// The insecure-value list every password acceptance path refuses.
+///
+/// `boot::load_platform_config` refuses these for
+/// `ZEBFLOW_PLATFORM_DEFAULT_PASSWORD` (with a development-only override), and
+/// the change-password operation refuses them with no override at all.
+pub fn is_insecure_password(value: &str) -> bool {
+    matches!(value.trim(), "secret")
+}
+
+/// Where first boot leaves the generated superadmin password.
+pub fn generated_password_path(data_root: &Path) -> PathBuf {
+    data_root.join(BOOTSTRAP_DIR).join(SUPERADMIN_PASSWORD_FILE)
+}
+
+/// Deletes the generated-password file, ending the zero-ceremony window.
+///
+/// Called after the first successful password change: the cleartext on disk no
+/// longer matches anything, so keeping it would only mislead. Returns whether
+/// a file was actually removed; an absent file is not an error.
+pub fn remove_generated_password_file(data_root: &Path) -> std::io::Result<bool> {
+    let path = generated_password_path(data_root);
+    match fs::remove_file(&path) {
+        Ok(()) => Ok(true),
+        Err(err) if err.kind() == ErrorKind::NotFound => Ok(false),
+        Err(err) => Err(err),
+    }
 }
 
 fn create_private_dir(path: &Path) -> Result<(), PlatformError> {

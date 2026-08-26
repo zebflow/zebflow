@@ -134,15 +134,19 @@ fn announce_provisioning(data_root: &Path, owner: &str) {
         // not land in a terminal scrollback or a CI log, and nobody has to go
         // and read it to continue -- the sign-in already happened.
         println!(
-            "Its generated password is in {} (mode 0600). No command changes it yet: set \
-             ZEBFLOW_PLATFORM_DEFAULT_PASSWORD before an instance's first start to choose one.",
+            "Its generated password is in {} (mode 0600). Changing it from the web UI's \
+             change-password screen deletes this file; set ZEBFLOW_PLATFORM_DEFAULT_PASSWORD \
+             before an instance's first start to choose one instead.",
             password_path.display()
         );
     }
 }
 
 /// Whether anything answers the liveness route at this machine's own URL.
-async fn listening(url: &str) -> bool {
+///
+/// Also used by `zeb admin reset-password` to refuse to write behind a running
+/// server's back.
+pub(crate) async fn listening(url: &str) -> bool {
     let Ok(client) = reqwest::Client::builder().timeout(PROBE_TIMEOUT).build() else {
         return false;
     };
@@ -165,8 +169,9 @@ fn superadmin_password(data_root: &Path, configured: &str) -> Result<String, io:
         io::Error::new(
             err.kind(),
             format!(
-                "cannot read the generated password at {}: {err}. Sign in with `{} login {}` \
-                 instead.",
+                "cannot read the generated password at {}: {err}. The file is deleted when the \
+                 password is changed, so the zero-ceremony window has likely closed. Sign in \
+                 once with `{} login {}` and this command will use the stored session.",
                 path.display(),
                 super::program(),
                 boot::local_instance_url()

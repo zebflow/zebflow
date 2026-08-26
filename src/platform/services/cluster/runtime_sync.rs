@@ -156,6 +156,7 @@ impl ClusterRuntimeSyncService {
                 password_hash: String::new(),
                 password_alg: "shadow".to_string(),
                 password_updated_at: now,
+                credential_state: crate::platform::model::CREDENTIAL_STATE_CHOSEN.to_string(),
             },
         })?;
         Ok(())

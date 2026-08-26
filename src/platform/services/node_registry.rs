@@ -930,6 +930,7 @@ mod tests {
                 password_hash: String::new(),
                 password_alg: "sha256".into(),
                 password_updated_at: now,
+                credential_state: crate::platform::model::CREDENTIAL_STATE_CHOSEN.to_string(),
             },
         })
         .expect("seed owner");

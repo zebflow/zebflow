@@ -12,9 +12,10 @@ use uuid::Uuid;
 use crate::platform::adapters::data::DataAdapter;
 use crate::platform::error::PlatformError;
 use crate::platform::model::{
-    CreateUserRequest, PlatformUser, PlatformUserLocalAuth, StoredUser, UpdateUserSettingsRequest,
-    now_ts, slug_segment,
+    CREDENTIAL_STATE_CHOSEN, CREDENTIAL_STATE_GENERATED, CreateUserRequest, PlatformUser,
+    PlatformUserLocalAuth, StoredUser, UpdateUserSettingsRequest, now_ts, slug_segment,
 };
+use crate::platform::services::bootstrap::{is_insecure_password, random_password};
 
 /// User service backed by a swappable data adapter.
 pub struct UserService {
@@ -117,6 +118,11 @@ impl UserService {
                 password_hash: Self::hash_password(&req.password)?,
                 password_alg: "argon2id".to_string(),
                 password_updated_at: now,
+                // A password that arrives through a create/update request was
+                // named by whoever made the request. First-boot bootstrap
+                // downgrades this to `generated` right after creating the
+                // account, via `mark_credential_generated`.
+                credential_state: CREDENTIAL_STATE_CHOSEN.to_string(),
             },
         };
         self.data.put_user(&stored)?;
@@ -203,5 +209,88 @@ impl UserService {
             }
             _ => Ok(false),
         }
+    }
+
+    /// Marks the account's current password as platform-generated.
+    ///
+    /// First-boot bootstrap calls this after creating the account with a
+    /// random password, so browser logins are forced to choose one.
+    pub fn mark_credential_generated(&self, owner: &str) -> Result<(), PlatformError> {
+        let mut stored = self.require_stored(owner)?;
+        stored.auth.credential_state = CREDENTIAL_STATE_GENERATED.to_string();
+        self.data.put_user(&stored)
+    }
+
+    /// Whether browser logins for this account must change the password first.
+    pub fn must_change_password(&self, owner: &str) -> Result<bool, PlatformError> {
+        let owner = slug_segment(owner);
+        Ok(self
+            .data
+            .get_user_auth(&owner)?
+            .map(|stored| stored.auth.credential_state == CREDENTIAL_STATE_GENERATED)
+            .unwrap_or(false))
+    }
+
+    /// Replaces the account's password after re-verifying the current one.
+    ///
+    /// The new password is hashed with the same scheme `authenticate` verifies
+    /// (argon2id), refused when it is on the insecure-value list the boot
+    /// guard refuses, and the credential is marked operator-chosen.
+    pub fn change_password(
+        &self,
+        owner: &str,
+        current_password: &str,
+        new_password: &str,
+    ) -> Result<(), PlatformError> {
+        if new_password.trim().is_empty() {
+            return Err(PlatformError::new(
+                "PLATFORM_PASSWORD_INVALID",
+                "new password must not be empty",
+            ));
+        }
+        if is_insecure_password(new_password) {
+            return Err(PlatformError::new(
+                "PLATFORM_PASSWORD_INSECURE",
+                "refusing a well-known insecure password; choose a different one",
+            ));
+        }
+        if !self.authenticate(owner, current_password)? {
+            return Err(PlatformError::new(
+                "PLATFORM_PASSWORD_INCORRECT",
+                "current password is incorrect",
+            ));
+        }
+        let mut stored = self.require_stored(owner)?;
+        stored.auth.password_hash = Self::hash_password(new_password)?;
+        stored.auth.password_alg = "argon2id".to_string();
+        stored.auth.password_updated_at = now_ts();
+        stored.auth.credential_state = CREDENTIAL_STATE_CHOSEN.to_string();
+        self.data.put_user(&stored)
+    }
+
+    /// Offline recovery: replaces the password with a fresh random one.
+    ///
+    /// Returns the cleartext exactly once, for the caller to print. The
+    /// credential is marked `generated`, so the next browser login is forced
+    /// through the change-password screen again.
+    pub fn reset_password_generated(&self, owner: &str) -> Result<String, PlatformError> {
+        let mut stored = self.require_stored(owner)?;
+        let password = random_password();
+        stored.auth.password_hash = Self::hash_password(&password)?;
+        stored.auth.password_alg = "argon2id".to_string();
+        stored.auth.password_updated_at = now_ts();
+        stored.auth.credential_state = CREDENTIAL_STATE_GENERATED.to_string();
+        self.data.put_user(&stored)?;
+        Ok(password)
+    }
+
+    fn require_stored(&self, owner: &str) -> Result<StoredUser, PlatformError> {
+        let owner = slug_segment(owner);
+        self.data.get_user_auth(&owner)?.ok_or_else(|| {
+            PlatformError::new(
+                "PLATFORM_USER_NOT_FOUND",
+                format!("user '{owner}' not found"),
+            )
+        })
     }
 }

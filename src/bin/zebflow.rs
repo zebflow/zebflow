@@ -141,6 +141,7 @@ Usage:
   {zeb} project config migrate <owner> <project>
   {zeb} project lock migrate <owner> <project>
   {zeb} project pipelines migrate <owner> <project>
+  {zeb} admin reset-password <owner>
   {zeb} controller
   {zeb} office
   {zeb} k8s cluster <command> ...
@@ -167,6 +168,13 @@ because they are what you run when the server will not start):
                Explicitly migrate the pre-v1 repo/zeb.lock format
   {zeb} project pipelines migrate <owner> <project>
                Rewrite persisted pipeline ids to the source-relative form
+  {zeb} admin reset-password <owner>
+               Rotate the account's password to a fresh random one, printed
+               once. The account is marked `generated` again, so the next
+               browser login is forced to choose a new password. Refuses when
+               a server answers on this machine's configured address; a server
+               listening on an unusual port is not detected, so make sure none
+               holds the data root before running this.
 
 Kubernetes:
   {zeb} k8s cluster init <path>
@@ -637,6 +645,12 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         None => run_server(ClusterRole::Standalone).await,
         Some("run") => run_project(parse_run_request(&args.collect::<Vec<_>>())?).await,
         Some("project") => project_command(&args.collect::<Vec<_>>()).await,
+        // Group 3 maintenance: offline against the data root, like the
+        // `project * migrate` commands, because it exists for when no
+        // credential works any more.
+        Some("admin") => cli::admin::run(&args.collect::<Vec<_>>())
+            .await
+            .map_err(Into::into),
         // Group 2 aliases, each naming exactly one canonical command
         // (interface.md §4). `install` never means the project-scope verb,
         // whatever context is stored (§7).

@@ -11,6 +11,7 @@
 //! `interface.md` §5 names, filling in the client context store the same
 //! section records as missing.
 
+pub mod admin;
 pub mod client;
 pub mod context;
 pub mod install;

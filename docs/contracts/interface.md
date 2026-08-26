@@ -322,6 +322,15 @@ The command prints where the instance is and where its password is, and the
 person does not have to go and read that file to continue, because the sign-in
 already happened.
 
+The file's existence is the zero-ceremony window, and it closes: the first
+successful password change (the web UI's change-password screen, backed by
+`POST /api/profile/password`) deletes it. From then on the self-login above
+fails with an error naming `zeb login` — one explicit sign-in, after which the
+stored session token carries every later command, the gh/docker pattern.
+`zeb admin reset-password <owner>` is the offline recovery: it rotates the
+credential in the catalog directly and prints it once, without recreating the
+file.
+
 ```
 zeb login http://localhost:10610
 zeb use superadmin/default

@@ -45,17 +45,18 @@ use crate::platform::error::PlatformError;
 use crate::platform::model::NodePackageManifest;
 use crate::platform::model::ResolvedProjectLayout;
 use crate::platform::model::{
-    ClusterWorkerHeartbeatRequest, ClusterWorkerRegisterRequest, CreateHubTokenRequest,
-    CreateProjectDocFolderRequest, CreateProjectRequest, CreateSimpleTableRequest,
-    CreateUserRequest, DeletePipelineRequest, DescribeProjectDbConnectionRequest,
-    ExecutePipelineRequest, GitCommitRequest, LoginRequest, McpSessionCreateRequest,
-    McpSessionToggleRequest, PipelineExecuteTrigger, PipelineInvocationEntry,
-    PipelineLocateRequest, ProjectAccessSubject, ProjectCapability, ProjectDocItem,
-    ProjectDocMoveRequest, ProjectOperationKind, ProjectRuntimeMaterializationRequest,
-    ProjectTransferArtifactKind, QueryProjectDbConnectionRequest, TemplateCompileRequest,
-    TemplateCompileResponse, TemplateCreateRequest, TemplateDiagnostic, TemplateMoveRequest,
-    TemplateSaveRequest, TestProjectDbConnectionRequest, UpdateSettingsSectionRequest,
-    UpdateSimpleTableRequest, UpdateUserSettingsRequest, UpsertPipelineDefinitionRequest,
+    ChangePasswordRequest, ClusterWorkerHeartbeatRequest, ClusterWorkerRegisterRequest,
+    CreateHubTokenRequest, CreateProjectDocFolderRequest, CreateProjectRequest,
+    CreateSimpleTableRequest, CreateUserRequest, DeletePipelineRequest,
+    DescribeProjectDbConnectionRequest, ExecutePipelineRequest, GitCommitRequest, LoginRequest,
+    McpSessionCreateRequest, McpSessionToggleRequest, PipelineExecuteTrigger,
+    PipelineInvocationEntry, PipelineLocateRequest, ProjectAccessSubject, ProjectCapability,
+    ProjectDocItem, ProjectDocMoveRequest, ProjectOperationKind,
+    ProjectRuntimeMaterializationRequest, ProjectTransferArtifactKind,
+    QueryProjectDbConnectionRequest, TemplateCompileRequest, TemplateCompileResponse,
+    TemplateCreateRequest, TemplateDiagnostic, TemplateMoveRequest, TemplateSaveRequest,
+    TestProjectDbConnectionRequest, UpdateSettingsSectionRequest, UpdateSimpleTableRequest,
+    UpdateUserSettingsRequest, UpsertPipelineDefinitionRequest,
     UpsertProjectAssistantConfigRequest, UpsertProjectCredentialRequest,
     UpsertProjectDbConnectionRequest, UpsertProjectDocRequest, slug_segment,
 };
@@ -73,6 +74,9 @@ use embedded::{PLATFORM_TEMPLATE_ASSETS, platform_library_asset, platform_node_i
 
 /// Platform login path — used for unauthenticated page redirects and frontend 401 handling.
 const LOGIN_PATH: &str = "/login";
+/// The change-password screen a `generated`-credential browser session is
+/// forced to until the password is chosen.
+const ACCOUNT_PASSWORD_PATH: &str = "/account/password";
 /// Platform home path — redirect target after successful login.
 const HOME_PATH: &str = "/home";
 const SESSION_COOKIE_NAME: &str = "zebflow_session";
@@ -144,6 +148,11 @@ const PAGE_DEFS: &[(&str, &str, &str)] = &[
         "platform-profile",
         "platform.profile",
         "pages/profile/page.tsx",
+    ),
+    (
+        "platform-account-password",
+        "platform.account_password",
+        "pages/account-password/page.tsx",
     ),
     ("platform-hub", "platform.hub", "pages/hub/page.tsx"),
     (
@@ -397,6 +406,7 @@ pub async fn router(platform: Arc<PlatformService>) -> Router {
         .route("/logout", post(logout_submit))
         .route("/home", get(home_page))
         .route("/profile", get(profile_page))
+        .route("/account/password", get(account_password_page))
         .route("/hub", get(platform_hub_page))
         .route("/dev/design-system", get(design_system_page))
         .route("/docs/node", get(docs_node_contract))
@@ -499,6 +509,7 @@ pub async fn router(platform: Arc<PlatformService>) -> Router {
         )
         .route("/api/users", get(api_list_users).post(api_create_user))
         .route("/api/profile", get(api_get_profile).put(api_update_profile))
+        .route("/api/profile/password", post(api_change_password))
         .route("/api/cluster/workers", get(api_cluster_workers))
         .route(
             "/api/internal/cluster/workers/register",
@@ -1159,6 +1170,17 @@ pub async fn router(platform: Arc<PlatformService>) -> Router {
     if app_state.platform.cluster_bootstrap.is_worker() {
         tokio::spawn(cluster_worker_registration_loop(app_state.clone()));
     }
+
+    // Forced password change (Grafana's rule): while an account's credential
+    // is still the platform-generated one, every browser page request is
+    // redirected to the change-password screen. Applied as a layer because the
+    // page handlers resolve their sessions individually; the gate never
+    // touches /api, /wh, /ws, /mcp, or asset paths, so the CLI's zero-ceremony
+    // window (authenticating with the generated password) keeps working.
+    let router = router.layer(axum::middleware::from_fn_with_state(
+        app_state.clone(),
+        credential_change_gate,
+    ));
 
     let router = router.with_state(app_state);
 
@@ -2581,7 +2603,15 @@ async fn login_submit(
 ) -> Response {
     match state.platform.auth.login(&req.identifier, &req.password) {
         Ok(Some(session)) => {
-            let mut resp = Redirect::to(HOME_PATH).into_response();
+            // Grafana's rule: while the credential is still the generated one,
+            // the browser lands on the change-password screen instead of home.
+            // The session cookie is issued either way, so API/CLI callers that
+            // POST /login for the Set-Cookie header are unaffected.
+            let target = match state.platform.users.must_change_password(&session.owner) {
+                Ok(true) => ACCOUNT_PASSWORD_PATH,
+                _ => HOME_PATH,
+            };
+            let mut resp = Redirect::to(target).into_response();
             let token = issue_session(&state, &session.owner);
             let cookie = session_cookie_header(&token, SESSION_TTL_SECS);
             if let Ok(v) = HeaderValue::from_str(&cookie) {
@@ -3177,6 +3207,94 @@ async fn profile_page(State(state): State<PlatformAppState>, headers: HeaderMap)
         Ok(html) => Html(html).into_response(),
         Err(err) => internal_error(err),
     }
+}
+
+async fn account_password_page(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+) -> Response {
+    let Some(owner) = session_owner(&state, &headers) else {
+        return Redirect::to(LOGIN_PATH).into_response();
+    };
+    let forced = state
+        .platform
+        .users
+        .must_change_password(&owner)
+        .unwrap_or(false);
+    match render_page(
+        &state,
+        "platform-account-password",
+        ACCOUNT_PASSWORD_PATH,
+        json!({
+            "seo": {
+                "title": "Change Password",
+                "description": "Choose a new password for this account"
+            },
+            "owner": owner,
+            "forced": forced,
+            "password_api": "/api/profile/password",
+            "app_version": APP_VERSION,
+        }),
+    ) {
+        Ok(html) => Html(html).into_response(),
+        Err(err) => internal_error(err),
+    }
+}
+
+async fn api_change_password(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Json(req): Json<ChangePasswordRequest>,
+) -> Response {
+    let Some(owner) = session_owner(&state, &headers) else {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({"ok": false, "error": "login required"})),
+        )
+            .into_response();
+    };
+    if let Err(err) =
+        state
+            .platform
+            .users
+            .change_password(&owner, &req.current_password, &req.new_password)
+    {
+        let status = match err.code {
+            "PLATFORM_PASSWORD_INCORRECT" => StatusCode::FORBIDDEN,
+            "PLATFORM_PASSWORD_INVALID" | "PLATFORM_PASSWORD_INSECURE" => StatusCode::BAD_REQUEST,
+            "PLATFORM_USER_NOT_FOUND" => StatusCode::NOT_FOUND,
+            _ => return internal_error(err),
+        };
+        return (
+            status,
+            Json(json!({"ok": false, "error": {"code": err.code, "message": err.message}})),
+        )
+            .into_response();
+    }
+
+    // The password is chosen now, so the bootstrap cleartext no longer opens
+    // anything and its zero-ceremony window closes: delete it. Only the
+    // first-boot owner ever had one.
+    if owner == state.platform.config.default_owner {
+        match crate::platform::services::bootstrap::remove_generated_password_file(
+            &state.platform.config.data_root,
+        ) {
+            Ok(true) => eprintln!("Removed the generated bootstrap password file."),
+            Ok(false) => {}
+            Err(err) => eprintln!("warning: failed removing the bootstrap password file: {err}"),
+        }
+    }
+
+    // Every other session of this user is now on a dead password; end them.
+    // The session that just proved it knows the new password stays.
+    let current_token = session_token(&headers);
+    if let Ok(mut sessions) = state.sessions.lock() {
+        sessions.retain(|token, session| {
+            session.owner != owner || Some(token.as_str()) == current_token.as_deref()
+        });
+    }
+
+    Json(json!({"ok": true})).into_response()
 }
 
 async fn design_system_page(State(state): State<PlatformAppState>, headers: HeaderMap) -> Response {
@@ -23562,6 +23680,46 @@ fn resolve_pipeline_registry_scope(
             }
         }
     }
+}
+
+/// Whether the forced password change intercepts this path.
+///
+/// Deliberately a list of the browser-facing platform UI pages rather than a
+/// catch-all: API, webhook, WS, MCP, asset, file-serve, and public ingress
+/// paths must keep answering to the generated credential, because the CLI's
+/// zero-ceremony local install authenticates with it before any human has
+/// logged in. The change screen itself and login/logout stay reachable or the
+/// redirect would loop.
+fn forced_change_applies_to(path: &str) -> bool {
+    path == "/home"
+        || path == "/profile"
+        || path == "/hub"
+        || path.starts_with("/home/")
+        || path.starts_with("/projects/")
+        || path.starts_with("/dev/")
+        || path.starts_with("/docs/")
+        || path.starts_with("/preview/")
+}
+
+/// Redirects browser page requests to the change-password screen while the
+/// session owner's credential is still `generated`.
+async fn credential_change_gate(
+    State(state): State<PlatformAppState>,
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    if request.method() == Method::GET
+        && forced_change_applies_to(request.uri().path())
+        && let Some(owner) = session_owner(&state, request.headers())
+        && state
+            .platform
+            .users
+            .must_change_password(&owner)
+            .unwrap_or(false)
+    {
+        return Redirect::to(ACCOUNT_PASSWORD_PATH).into_response();
+    }
+    next.run(request).await
 }
 
 fn random_session_token() -> String {

@@ -127,7 +127,8 @@ them.
 <data-root>/                           resolved: ZEBFLOW_PLATFORM_DATA_DIR, else OS user-data path
 │
 ├── .bootstrap/
-│   └── superadmin-password            0600. STORE — first-boot credential
+│   └── superadmin-password            0600. bootstrap secret — dies on the first successful
+│                                      password change (the change deletes it)
 │
 ├── platform/
 │   ├── layout.json                    STORE — { "version": N }; migrations key off this
@@ -214,7 +215,9 @@ orphan rows for deleted projects keep the file alive until hand-drained.
 ### Superseded open items
 
 - `data/logs/` and `project-operations/` retention windows: unset.
-- `.bootstrap/superadmin-password` lifecycle (rotation/removal): unset.
+- `.bootstrap/superadmin-password` lifecycle: shipped — the first successful
+  password change deletes it (rule 9), and `zeb admin reset-password` rotates
+  the credential offline without recreating the file.
 - `data/nodes/` → `data/hub/nodes/`: shipped — transparent first-touch move,
   both-paths-present refuses; `zeb.lock` entries resolve against `data/hub/`.
 

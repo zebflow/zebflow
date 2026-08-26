@@ -514,6 +514,12 @@ impl PlatformService {
                 git_email: String::new(),
             })?;
             if let Some(path) = password.generated_path {
+                // Generated, not chosen: browser logins are forced through the
+                // change-password screen until a person replaces it. A host
+                // that set ZEBFLOW_PLATFORM_DEFAULT_PASSWORD skips this branch
+                // entirely — no bootstrap file, credential stays `chosen`.
+                self.users
+                    .mark_credential_generated(&self.config.default_owner)?;
                 eprintln!(
                     "Generated initial superadmin password at {}. Read it now and store it securely.",
                     path.display()
