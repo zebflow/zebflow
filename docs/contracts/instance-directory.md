@@ -18,7 +18,8 @@ records what is on disk today.
 │   ├── layout.json                    STORE — { "version": N }; migrations key off this
 │   ├── catalog.db (+ -wal, -shm)      STORE — users, projects, sessions, offices,
 │   │                                          credentials, members, policies, placements
-│   ├── operations/                    BOUNDED (terminal + 7d) — transfer staging
+│   ├── operations/                    BOUNDED (terminal + 7d) — finished transfer
+│   │                                          artifacts (staging is in tmp/)
 │   └── cache/                         CACHE — rwe script blobs, content-addressed
 │
 ├── services/
@@ -147,10 +148,16 @@ them.
 ├── platform/
 │   ├── layout.json                    STORE — { "version": N }; migrations key off this
 │   ├── catalog.db                     STORE — users, projects, sessions, offices
-│   ├── project-operations/            BOUNDED — transfer/export staging
-│   │   └── op-{kind}-{ts}/            one operation: staged copy + manifest.json + archive
+│   ├── project-operations/            BOUNDED — finished transfer artifacts
+│   │   └── op-{kind}-{ts}/            one operation: archive (manifest.json embedded)
 │   └── rwe-script-cache/              CACHE — compiled RWE, content-addressed
 │       └── {hash}.blob
+│
+├── run/                               EPHEMERAL — wiped on startup (contents, never
+│                                      the directory); locks, pids, sockets
+├── tmp/                               EPHEMERAL — wiped on startup
+│   └── transfer/                      in-flight export/import staging; crash
+│                                      residue dies at the next boot
 │
 ├── services/
 │   └── hub-default/                   this instance's own hub (local hub)
@@ -220,6 +227,7 @@ them.
 | INSTALLED | unpacked from a hub or local document. The installed form is the artifact. Removal is `uninstall`, recorded in `zeb.lock` — never a cleanup. |
 | CACHE | machine-written, regenerates. Deleting is never data loss. |
 | BOUNDED | disposable after a retention window. Not backed up; not deleted early. |
+| EPHEMERAL | wiped on startup, before anything serves. `run/` and `tmp/` contents only, never through a symlink (a symlinked tier refuses boot). Never backed up, never exported. |
 
 ### Migration mechanics shipped
 

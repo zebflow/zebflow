@@ -111,6 +111,11 @@ impl PlatformService {
         // the root: a newer-versioned root refuses here, a pre-versioned one
         // is stamped (`platform/layout.json`, `instance-directory.md`).
         crate::platform::layout::open_data_root(&config.data_root)?;
+        // The EPHEMERAL tier (`run/`, `tmp/`) is wiped and recreated next,
+        // still before any adapter opens: deletion is that tier's contract
+        // (`instance-directory.md` rule 3), and it must finish before
+        // anything can hold an ephemeral file open or begin serving.
+        crate::platform::ephemeral::prepare_ephemeral_tier(&config.data_root)?;
         let data = build_data_adapter(config.data_adapter, &config.data_root)?;
         // The configuration service is built first: the file adapter resolves
         // every project directory through the layout that service reads.

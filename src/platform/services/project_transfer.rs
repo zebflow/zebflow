@@ -76,6 +76,26 @@ impl ProjectTransferService {
         self.operation_dir(operation_id).join(kind.archive_name())
     }
 
+    /// One unique in-flight staging directory under the EPHEMERAL tier.
+    ///
+    /// Staging lives at `<data-root>/tmp/transfer/{label}-{kind}-{random}`,
+    /// never beside the finished archives in `platform/project-operations/`:
+    /// the archives an operation produces are the durable artifact, while a
+    /// crash mid-operation leaves its half-copied staging here, where the
+    /// next boot's ephemeral wipe removes it (`instance-directory.md` rule 3).
+    /// The `TempDir` guard also removes it on every non-crash exit path.
+    fn staging_dir(
+        &self,
+        label: &str,
+        kind: ProjectTransferArtifactKind,
+    ) -> Result<tempfile::TempDir, PlatformError> {
+        let staging_root = self.data_root.join("tmp").join("transfer");
+        fs::create_dir_all(&staging_root)?;
+        Ok(tempfile::Builder::new()
+            .prefix(&format!("{label}-{}-", kind.key()))
+            .tempdir_in(&staging_root)?)
+    }
+
     /// Build an export archive for one project and return the embedded manifest.
     pub fn export_project(
         &self,
@@ -97,18 +117,8 @@ impl ProjectTransferService {
             fs::create_dir_all(parent)?;
         }
 
-        let staging = output_path
-            .parent()
-            .unwrap_or_else(|| Path::new("."))
-            .join(format!(
-                ".staging-export-{}-{}",
-                kind.key(),
-                std::process::id()
-            ));
-        if staging.exists() {
-            fs::remove_dir_all(&staging)?;
-        }
-        fs::create_dir_all(&staging)?;
+        let staging_guard = self.staging_dir("export", kind)?;
+        let staging = staging_guard.path().to_path_buf();
 
         let mut manifest = ProjectTransferManifest {
             owner: owner.clone(),
@@ -152,7 +162,7 @@ impl ProjectTransferService {
             )
         })?;
         create_tar_archive(&staging, output_path)?;
-        fs::remove_dir_all(&staging)?;
+        drop(staging_guard);
         Ok(manifest)
     }
 
@@ -168,18 +178,8 @@ impl ProjectTransferService {
         let project = slug_segment(project);
         let layout = self.file.ensure_project_layout(&owner, &project)?;
 
-        let extract_dir = archive_path
-            .parent()
-            .unwrap_or_else(|| Path::new("."))
-            .join(format!(
-                ".extract-import-{}-{}",
-                kind.key(),
-                std::process::id()
-            ));
-        if extract_dir.exists() {
-            fs::remove_dir_all(&extract_dir)?;
-        }
-        fs::create_dir_all(&extract_dir)?;
+        let extract_guard = self.staging_dir("import", kind)?;
+        let extract_dir = extract_guard.path().to_path_buf();
         extract_tar_archive(archive_path, &extract_dir)?;
 
         let manifest_path = extract_dir.join("manifest.json");
@@ -198,7 +198,6 @@ impl ProjectTransferService {
             })?
             .spec;
         if manifest.owner != owner || manifest.project != project {
-            fs::remove_dir_all(&extract_dir)?;
             return Err(PlatformError::new(
                 "PROJECT_TRANSFER_SCOPE_MISMATCH",
                 format!(
@@ -208,7 +207,6 @@ impl ProjectTransferService {
             ));
         }
         if manifest.artifact_kind != kind {
-            fs::remove_dir_all(&extract_dir)?;
             return Err(PlatformError::new(
                 "PROJECT_TRANSFER_KIND_MISMATCH",
                 format!(
@@ -240,7 +238,7 @@ impl ProjectTransferService {
             }
         }
 
-        fs::remove_dir_all(&extract_dir)?;
+        drop(extract_guard);
         let _ = self.file.ensure_project_layout(&owner, &project)?;
         Ok(manifest)
     }

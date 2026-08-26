@@ -14,6 +14,7 @@ pub mod boot;
 pub mod catalog;
 pub mod cli;
 pub mod db;
+pub mod ephemeral;
 pub mod error;
 pub mod help;
 pub mod interaction;
