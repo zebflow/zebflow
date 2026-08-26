@@ -298,7 +298,7 @@ Unless a row says otherwise, these are project-scope acts.
 | Resource | Kind that owns its format | Channels | Direction |
 | --- | --- | --- | --- |
 | Node bundle | `NodeBundle` | Hub asset, remote pack, local file, project transfer | export, publish, install |
-| RWE library | `LibraryManifest` | embedded in binary; Hub and Git planned | install only, today |
+| RWE library | `LibraryManifest` | local hub (`rwe_library` asset, seeded from the binary's blessed tree); embedded fallback for pre-existing locks; Git planned | install only, today |
 | Pipeline | `Pipeline` | Hub asset (`pipeline_bundle`) | export, publish, add |
 | RWE source: page, component, script, style | no kind yet | Hub asset (`template_bundle`) | export, publish, add |
 | Folder of project files | no kind yet | Hub asset (`folder_bundle`) | export, publish, add |
@@ -431,7 +431,13 @@ reason they are listed separately rather than treated as one "install".
 
 **Embedded is not a channel a user invokes.** It is listed because it is how
 official content arrives, and because a resource moving from embedded to
-installed is a distribution change even though no bytes travel.
+installed is a distribution change even though no bytes travel. It is now
+first of all **the seed**: on first boot the blessed content the binary
+carries — RWE libraries and the UI template sets, as `zebflow.*` — is
+published into the local hub through the ordinary publish gates, and what a
+project installs afterwards is a hub asset with a lock entry, not embedded
+bytes. Embedded remains the serving fallback for locks that still say
+`source: embedded`, so no pre-existing project changes behaviour.
 
 ### One repository interface
 
@@ -749,12 +755,14 @@ Zebflow moves from `n.x.acme.thing` to `n.acme.thing`, which is a rename and
 therefore a breaking change. Promotion must be a deliberate versioned event, or
 must not happen to packages authored by others.
 
-**Reproducibility of official content.** Official node bundles and libraries are
-embedded in the binary and get no lock entry, so a project using them records
-nothing about what it depends on. Moving that project to an instance on a
-different Zebflow release changes its dependencies silently. Either official
-content becomes locked like anything else, or the lock records the runtime
-version it assumes.
+**Reproducibility of official content.** Resolved for RWE libraries and the UI
+template sets: the first-boot seeder publishes the binary's blessed content
+into the local hub as `zebflow.*`, so an installed library carries a real
+`zeb.lock` entry (`source: hub`, digest of the installed bytes) and a template
+set is an ordinary reviewed package. What remains open is official *node
+bundles*, which are still embedded with no lock entry, and libraries a project
+enabled as `embedded` before the seed existed — those keep resolving against
+the running release until re-installed from the hub.
 
 **A platform-scope install records no provenance.** Nothing written by a project
 bundle install says which package, version, digest, or repository produced it.

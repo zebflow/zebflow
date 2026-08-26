@@ -126,9 +126,13 @@ level.
 ## RWE Library Rules
 
 `spec.rwe.libraries` is keyed by a lowercase namespaced library name such as
-`zeb/deckgl`. In `zebflow.com/v1`, its source must be `embedded`. Hub and
-project RWE ingestion are not accepted states until a later contract version
-defines and implements their resolver behavior.
+`zeb/deckgl`. In `zebflow.com/v1`, its source is `embedded` or `hub` — widened
+deliberately when the local hub gained `rwe_library` packages: a hub-installed
+library resolves against its installed copy at
+`data/hub/rwe-libraries/{package}/`, with `entry` resolving against `data/hub/`
+the same way node-bundle entries do and `integrity` hashing the installed
+bytes. `project` RWE ingestion is not an accepted state until a later contract
+version defines and implements its resolver behavior.
 
 An RWE library is locked when project configuration or compiled RWE imports
 require it. Project-local `.ts` and `.tsx` files are source and are not lock

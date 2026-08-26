@@ -140,10 +140,14 @@ impl DependencyLockSpec {
         for (name, entry) in &self.rwe.libraries {
             let path = format!("spec.rwe.libraries[{name:?}]");
             validate_namespaced_name(&path, name)?;
-            if entry.source != DependencyLockSource::Embedded {
+            // Widened deliberately when the local hub gained rwe_library
+            // packages: an installed library carries hub provenance and a real
+            // digest. `project` stays refused — no channel produces it for a
+            // library in zebflow.com/v1.
+            if entry.source == DependencyLockSource::Project {
                 return Err(ContractError::violation(
                     "ZF_DEPENDENCY_LOCK_SOURCE",
-                    format!("{path}.source must be embedded in zebflow.com/v1"),
+                    format!("{path}.source must be embedded or hub in zebflow.com/v1"),
                 ));
             }
             validate_artifact_fields(
@@ -393,8 +397,15 @@ mod tests {
 
     #[test]
     fn rejects_dependency_sources_without_v1_resolvers() {
+        // `hub` became a v1 resolver for libraries when the local hub gained
+        // rwe_library packages; `project` remains the source no channel
+        // produces for a library.
         let mut value: serde_json::Value = serde_json::from_slice(fixture()).unwrap();
         value["spec"]["rwe"]["libraries"]["zeb/deckgl"]["source"] = serde_json::json!("hub");
+        assert!(decode_dependency_lock(&serde_json::to_vec(&value).unwrap()).is_ok());
+
+        let mut value: serde_json::Value = serde_json::from_slice(fixture()).unwrap();
+        value["spec"]["rwe"]["libraries"]["zeb/deckgl"]["source"] = serde_json::json!("project");
         assert!(decode_dependency_lock(&serde_json::to_vec(&value).unwrap()).is_err());
 
         let mut value: serde_json::Value = serde_json::from_slice(fixture()).unwrap();

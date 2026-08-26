@@ -2049,6 +2049,26 @@ impl ProjectFileLayout {
         self.data_store_dir().join("chat_history.json")
     }
 
+    /// `.../data/store/assistant` — per-user assistant state.
+    pub fn data_store_assistant_dir(&self) -> PathBuf {
+        self.data_store_dir().join("assistant")
+    }
+
+    /// `.../data/store/assistant/{user_id}/memory.md` — one user's assistant
+    /// memory. Machine-written by the assistant, irreplaceable, so `store`
+    /// tier — deleting it loses everything the assistant learned.
+    ///
+    /// The format stays markdown: every reader and writer (MCP
+    /// `docs_agent_read`/`docs_agent_write`, the assistant chat tools, the
+    /// system-prompt embed) speaks markdown under the `MEMORY.md` doc name.
+    /// Only the tier and the per-user keying changed with the move out of
+    /// `data/cache/agent_docs/`.
+    pub fn data_store_assistant_memory_file(&self, user_id: &str) -> PathBuf {
+        self.data_store_assistant_dir()
+            .join(slug_segment(user_id))
+            .join("memory.md")
+    }
+
     /// `.../data/cache` — disposable, rebuilds from `repo/`.
     pub fn data_cache_dir(&self) -> PathBuf {
         self.data_dir.join("cache")
@@ -2060,10 +2080,51 @@ impl ProjectFileLayout {
         self.data_cache_dir().join("pipelines")
     }
 
-    /// `.../data/cache/agent_docs` (AGENTS.md, SOUL.md, MEMORY.md — agent
-    /// context, materialized from `repo/`).
+    /// `.../data/cache/agent_docs` (AGENTS.md, SOUL.md — agent context.
+    /// MEMORY moved to the `store` tier: [`Self::data_store_assistant_memory_file`]).
     pub fn data_cache_agent_docs_dir(&self) -> PathBuf {
         self.data_cache_dir().join("agent_docs")
+    }
+
+    /// `.../data/cache/mapserver-artifacts` — generated map layer artifacts
+    /// (chunked NDJSON + manifest per layer, `{instance}/{layer}/`). The
+    /// engine builds them from the uploaded source in `files/mapserver/`, so
+    /// they regenerate: CACHE, not OBJECT.
+    pub fn data_cache_mapserver_artifacts_dir(&self) -> PathBuf {
+        self.data_cache_dir().join("mapserver-artifacts")
+    }
+
+    /// First-touch tier move of `files/mapserver/.artifacts` onto its cache
+    /// home `data/cache/mapserver-artifacts` (`instance-directory.md`). One
+    /// atomic whole-directory rename; both-paths-present refuses rather than
+    /// guesses, per `migrate_tier_entry`. Returns the cache root.
+    pub fn ensure_mapserver_artifacts_home(&self) -> std::io::Result<PathBuf> {
+        let new_root = self.data_cache_mapserver_artifacts_dir();
+        crate::infra::io::durable::migrate_tier_entry(
+            &self.files_dir.join("mapserver").join(".artifacts"),
+            &new_root,
+        )?;
+        Ok(new_root)
+    }
+
+    /// Resolves a layer registry's stored artifact-manifest rel path to its
+    /// absolute location under the cache root.
+    ///
+    /// Registry records written before the tier move carry
+    /// `mapserver/.artifacts/{...}`; records written after carry
+    /// `mapserver-artifacts/{...}`. Both are identifiers into the same moved
+    /// tree — the registry (`{instance}.layers.json`, STORE) is not rewritten
+    /// by the move, so both shapes must keep resolving.
+    pub fn resolve_mapserver_artifact_path(&self, rel: &str) -> PathBuf {
+        let rel = rel.trim_start_matches('/');
+        if let Some(rest) = rel.strip_prefix("mapserver/.artifacts/") {
+            self.data_cache_mapserver_artifacts_dir().join(rest)
+        } else if let Some(rest) = rel.strip_prefix("mapserver-artifacts/") {
+            self.data_cache_mapserver_artifacts_dir().join(rest)
+        } else {
+            // Unknown shape: resolve against files/ as before the move.
+            self.files_dir.join(rel)
+        }
     }
 
     /// `.../data/hub` — the INSTALLED tier: content unpacked from a hub or a

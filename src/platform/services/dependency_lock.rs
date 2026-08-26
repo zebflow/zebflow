@@ -464,6 +464,58 @@ impl DependencyLockService {
                 });
                 continue;
             };
+            // A hub-installed library resolves against its installed copy in
+            // `data/hub/`, not against the binary's embedded registry: the
+            // installed form is the artifact, and the lock's digest is checked
+            // against those bytes.
+            if requested.source == "hub" {
+                let (status, message) = if locked.source != DependencyLockSource::Hub
+                    || locked.version != requested.version
+                {
+                    (
+                        DependencyResolutionStatus::VersionMismatch,
+                        "requested library resolution differs from zeb.lock".to_string(),
+                    )
+                } else {
+                    let installed = self.node_root(owner, project).join(&locked.entry);
+                    match std::fs::read(&installed) {
+                        Ok(bytes) => {
+                            let digest = format!(
+                                "sha256:{:x}",
+                                <sha2::Sha256 as sha2::Digest>::digest(&bytes)
+                            );
+                            if digest == locked.integrity {
+                                (
+                                    DependencyResolutionStatus::Resolved,
+                                    "exact installed library is available".to_string(),
+                                )
+                            } else {
+                                (
+                                    DependencyResolutionStatus::IntegrityMismatch,
+                                    "installed library bytes do not match zeb.lock".to_string(),
+                                )
+                            }
+                        }
+                        Err(_) => (
+                            DependencyResolutionStatus::Missing,
+                            format!(
+                                "installed library bytes are missing at data/hub/{}",
+                                locked.entry
+                            ),
+                        ),
+                    }
+                };
+                items.push(DependencyStatusItem {
+                    family: "rwe_library",
+                    name: name.clone(),
+                    status,
+                    version: locked.version.clone(),
+                    source: locked.source.as_str().to_string(),
+                    message,
+                    definitions: Vec::new(),
+                });
+                continue;
+            }
             let Some(library) = &self.library else {
                 items.push(DependencyStatusItem {
                     family: "rwe_library",
@@ -665,10 +717,27 @@ impl DependencyLockService {
                 "this runtime has no RWE library resolver",
             )
         })?;
+        let current = self.read(owner, project)?;
         let mut resolved = std::collections::BTreeMap::new();
         let mut requested = requested_libraries.iter().collect::<Vec<_>>();
         requested.sort_by(|left, right| left.0.cmp(right.0));
         for (name, entry) in requested {
+            // A hub-installed library cannot be re-resolved from the binary:
+            // its resolution is the installed copy the lock already pins, so
+            // repair keeps that entry rather than inventing one. Reinstalling
+            // the package is the way to re-resolve it.
+            if entry.source == "hub" {
+                let Some(existing) = current.rwe.libraries.get(name) else {
+                    return Err(PlatformError::new(
+                        "ZEB_LOCK_REPAIR_UNAVAILABLE",
+                        format!(
+                            "hub-installed library '{name}' has no lock entry to keep; reinstall it from the hub"
+                        ),
+                    ));
+                };
+                resolved.insert(name.clone(), existing.clone());
+                continue;
+            }
             resolved.insert(
                 name.clone(),
                 library.resolve_lock_entry(name, &entry.version, &entry.source)?,
@@ -827,10 +896,14 @@ impl DependencyLockService {
                     version: entry.version.clone(),
                     source: match entry.source {
                         DependencyLockSource::Embedded => "offline".to_string(),
-                        DependencyLockSource::Hub | DependencyLockSource::Project => {
+                        // Widened with the local hub's rwe_library packages:
+                        // an installed copy at `data/hub/rwe-libraries/` is a
+                        // durable source the configuration can request.
+                        DependencyLockSource::Hub => "hub".to_string(),
+                        DependencyLockSource::Project => {
                             return Err(PlatformError::new(
                                 "ZEB_LOCK_RWE_SOURCE",
-                                "RWE configuration currently supports only embedded libraries",
+                                "RWE configuration supports embedded and hub-installed libraries",
                             ));
                         }
                     },

@@ -64,6 +64,9 @@ pub struct UiInstallReview {
     pub large_files: Vec<String>,
     pub seed_data: Vec<String>,
     pub warnings: Vec<String>,
+    /// Findings that refuse the install outright; never overridable.
+    #[serde(default)]
+    pub violations: Vec<String>,
     pub risk_level: String,
 }
 
@@ -81,7 +84,13 @@ macro_rules! ui_sources {
     ( $( ($name:expr, $file:expr, $cat:expr, $desc:expr) ),* $(,)? ) => {
         &[
             $(
-                ($name, include_str!(concat!("ui/", $file)), $file, $cat, $desc),
+                (
+                    $name,
+                    include_str!(concat!("../../../blessed/templates/", $cat, "/", $file)),
+                    $file,
+                    $cat,
+                    $desc,
+                ),
             )*
         ]
     };
@@ -310,11 +319,69 @@ static UI_SOURCES: &[(&str, &str, &str, &str, &str)] = ui_sources![
     ),
 ];
 
+/// The publish metadata beside each blessed template set, embedded so the
+/// hub seeder can publish the sets without touching the source tree at run
+/// time.
+static TEMPLATE_SET_MANIFESTS: &[(&str, &str)] = &[
+    (
+        "primitives",
+        include_str!("../../../blessed/templates/primitives/package.yaml"),
+    ),
+    (
+        "display",
+        include_str!("../../../blessed/templates/display/package.yaml"),
+    ),
+    (
+        "layout",
+        include_str!("../../../blessed/templates/layout/package.yaml"),
+    ),
+    (
+        "navigation",
+        include_str!("../../../blessed/templates/navigation/package.yaml"),
+    ),
+    (
+        "overlay",
+        include_str!("../../../blessed/templates/overlay/package.yaml"),
+    ),
+    (
+        "complex",
+        include_str!("../../../blessed/templates/complex/package.yaml"),
+    ),
+];
+
+/// One blessed template set: the catalog's components grouped by category,
+/// with the `package.yaml` the seeder publishes them under.
+pub struct TemplateSet {
+    /// Directory name under `blessed/templates/`, equal to the catalog
+    /// category.
+    pub set: &'static str,
+    /// Raw `package.yaml` publish metadata.
+    pub package_yaml: &'static str,
+    /// `(filename, source)` for every component in the set.
+    pub files: Vec<(&'static str, &'static str)>,
+}
+
 // ── CatalogService ─────────────────────────────────────────────────────────────
 
 pub struct CatalogService;
 
 impl CatalogService {
+    /// The blessed template sets, grouped by catalog category.
+    pub fn template_sets() -> Vec<TemplateSet> {
+        TEMPLATE_SET_MANIFESTS
+            .iter()
+            .map(|(set, package_yaml)| TemplateSet {
+                set,
+                package_yaml,
+                files: UI_SOURCES
+                    .iter()
+                    .filter(|(_, _, _, category, _)| category == set)
+                    .map(|(_, source, filename, _, _)| (*filename, *source))
+                    .collect(),
+            })
+            .collect()
+    }
+
     /// Return all UI catalog entries (without presence info).
     pub fn list_ui() -> Vec<CatalogEntry> {
         UI_SOURCES
@@ -443,8 +510,30 @@ impl CatalogService {
             large_files: policy.large_files,
             seed_data: policy.seed_data,
             warnings: policy.warnings,
+            violations: policy.violations,
             risk_level: policy.risk_level,
         }
+    }
+
+    /// Install the requested components with the shared package review as a
+    /// gate: a violation refuses the install outright, exactly as it refuses
+    /// every hub channel. The bytes reviewed here are the same bytes the
+    /// seeded `zebflow.ui-*` template packages carry — the catalog stopped
+    /// being an unreviewed channel when both facts became true.
+    pub fn install_ui_reviewed(
+        layout: &ResolvedProjectLayout,
+        names: &[String],
+        shared_ui_dir: &PathBuf,
+        overwrite: bool,
+    ) -> Result<CloneReport, String> {
+        let review = Self::review_ui(layout, names, shared_ui_dir, overwrite);
+        if !review.violations.is_empty() {
+            return Err(format!(
+                "components cannot be installed: {}",
+                review.violations.join("; ")
+            ));
+        }
+        Self::install_ui(names, shared_ui_dir, overwrite)
     }
 
     /// Install the requested components into `shared_ui_dir`.

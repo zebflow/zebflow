@@ -1,0 +1,6 @@
+# Publish metadata for the blessed local-hub seed.
+# The seeder publishes this package as the reserved `zebflow` publisher.
+id: zebflow.ui-display
+version: 0.1.0
+title: "Zeb UI Display"
+description: "Display components: badge, avatar, progress, skeleton, separator, kbd, alert."

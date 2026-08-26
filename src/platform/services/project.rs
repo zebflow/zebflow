@@ -252,6 +252,12 @@ impl ProjectService {
         }
     }
 
+    /// The configuration reader/writer this service resolves layouts through,
+    /// for callers that must update `zebflow.yaml` and `zeb.lock` together.
+    pub fn configuration_service(&self) -> Arc<ProjectConfigurationService> {
+        self.zebflow_cfg.clone()
+    }
+
     fn put_pipeline_meta(&self, meta: &PipelineMeta) -> Result<(), PlatformError> {
         #[cfg(test)]
         if self
@@ -2487,6 +2493,10 @@ impl ProjectService {
     }
 
     /// Reads one agent doc file (AGENTS.md, SOUL.md, or MEMORY.md).
+    ///
+    /// MEMORY reads from its `store`-tier per-user home; an absent memory
+    /// file reads as the default text without scaffolding a file — the store
+    /// tier only gains a file once the assistant actually writes memory.
     pub fn read_agent_doc(
         &self,
         owner: &str,
@@ -2497,9 +2507,15 @@ impl ProjectService {
         let project = slug_segment(project);
         let layout = self.file.ensure_project_layout(&owner, &project)?;
         let safe_name = Self::validate_agent_doc_name(name)?;
-        let path = layout.data_cache_agent_docs_dir().join(safe_name);
+        let path = if safe_name == "MEMORY.md" {
+            Self::assistant_memory_file(&layout, &owner)?
+        } else {
+            layout.data_cache_agent_docs_dir().join(safe_name)
+        };
         if path.is_file() {
             fs::read_to_string(&path).map_err(PlatformError::from)
+        } else if safe_name == "MEMORY.md" {
+            Ok(MEMORY_MD_DEFAULT.to_string())
         } else {
             Ok(String::new())
         }
@@ -2517,11 +2533,47 @@ impl ProjectService {
         let project = slug_segment(project);
         let layout = self.file.ensure_project_layout(&owner, &project)?;
         let safe_name = Self::validate_agent_doc_name(name)?;
-        let path = layout.data_cache_agent_docs_dir().join(safe_name);
+        let path = if safe_name == "MEMORY.md" {
+            let path = Self::assistant_memory_file(&layout, &owner)?;
+            if let Some(parent) = path.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            path
+        } else {
+            layout.data_cache_agent_docs_dir().join(safe_name)
+        };
         fs::write(&path, content).map_err(PlatformError::from)
     }
 
+    /// Resolves one user's assistant memory file at its `store`-tier home,
+    /// migrating a pre-tier project-wide `data/cache/agent_docs/MEMORY.md`
+    /// the first time it is touched. A file present at both paths is refused
+    /// rather than guessed, per `migrate_tier_entry`.
+    ///
+    /// `{user_id}` is the owner slug: every memory writer today — the
+    /// assistant chat tools and MCP `docs_agent_write` — is scoped by the
+    /// project owner, with no finer acting-user identity threaded into the
+    /// write path. The pre-move project-wide MEMORY.md therefore migrates to
+    /// the project owner's file, the only honest attribution available.
+    fn assistant_memory_file(
+        layout: &crate::platform::model::ProjectFileLayout,
+        user_id: &str,
+    ) -> Result<PathBuf, PlatformError> {
+        let target = layout.data_store_assistant_memory_file(user_id);
+        crate::infra::io::durable::migrate_tier_entry(
+            &layout.data_cache_agent_docs_dir().join("MEMORY.md"),
+            &target,
+        )
+        .map_err(|err| PlatformError::new("PLATFORM_MEMORY_TIER_MIGRATE", err.to_string()))?;
+        Ok(target)
+    }
+
     /// Creates default agent doc files if they don't exist yet.
+    ///
+    /// MEMORY is deliberately absent here: its home is the `store` tier
+    /// (`data/store/assistant/{user_id}/memory.md`), created lazily on first
+    /// write. Scaffolding a MEMORY.md into `agent_docs/` would collide with
+    /// the tier migration as a both-paths refusal.
     pub fn ensure_agent_docs_defaults(
         &self,
         owner: &str,
@@ -2533,7 +2585,6 @@ impl ProjectService {
         let defaults: &[(&str, &str)] = &[
             ("AGENTS.md", AGENTS_MD_DEFAULT),
             ("SOUL.md", SOUL_MD_DEFAULT),
-            ("MEMORY.md", MEMORY_MD_DEFAULT),
         ];
         for (name, content) in defaults {
             let path = layout.data_cache_agent_docs_dir().join(name);

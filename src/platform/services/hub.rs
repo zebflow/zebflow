@@ -83,13 +83,38 @@ const HUB_ASSET_KIND_TEMPLATE_BUNDLE: &str = "template_bundle";
 const HUB_ASSET_KIND_FOLDER_BUNDLE: &str = "folder_bundle";
 const HUB_ASSET_KIND_PROJECT_BUNDLE: &str = "project_bundle";
 const HUB_ASSET_KIND_NODE_BUNDLE: &str = "node_bundle";
+/// The sixth asset kind: an opaque, pinned RWE library bundle. Installing one
+/// always copies — bytes land at `data/hub/rwe-libraries/{package}/` and the
+/// resolution is recorded in `zeb.lock` with `source: hub` and a real digest.
+pub const HUB_ASSET_KIND_RWE_LIBRARY: &str = "rwe_library";
 const HUB_ASSET_KINDS: &[&str] = &[
     HUB_ASSET_KIND_PIPELINE_BUNDLE,
     HUB_ASSET_KIND_TEMPLATE_BUNDLE,
     HUB_ASSET_KIND_FOLDER_BUNDLE,
     HUB_ASSET_KIND_PROJECT_BUNDLE,
     HUB_ASSET_KIND_NODE_BUNDLE,
+    HUB_ASSET_KIND_RWE_LIBRARY,
 ];
+
+/// Refuses any publish under the reserved `zebflow.*` namespace.
+///
+/// `distribution.md` §1b reserves the publisher for the first-boot seeder:
+/// the local hub's blessed content must be exactly what the binary blesses,
+/// so every public publish surface refuses the id — superadmin included.
+/// The seeder itself does not pass through here; it calls the shared publish
+/// core directly and runs every other gate.
+fn refuse_reserved_publisher(publisher_id: &str) -> Result<(), PlatformError> {
+    if publisher_id == crate::platform::blessed::RESERVED_HUB_PUBLISHER_ID {
+        return Err(PlatformError::new(
+            "HUB_PUBLISHER_RESERVED",
+            format!(
+                "publisher '{publisher_id}' is reserved for the platform's blessed content \
+                 and cannot be published to"
+            ),
+        ));
+    }
+    Ok(())
+}
 
 fn default_hub_base_url() -> String {
     std::env::var("ZEBFLOW_HUB_DEFAULT_BASE_URL")
@@ -163,6 +188,35 @@ fn prune_empty_hub_dirs(start: Option<&Path>, stop: &Path) {
     }
 }
 
+/// Everything the shared publish core needs, prepared by one of its two
+/// front halves: a project-source publish or the blessed first-boot seeder.
+struct PublishSubmission {
+    authority: HubAuthority,
+    publisher: HubPublisher,
+    publisher_owner: String,
+    publisher_id: String,
+    publisher_display_name: String,
+    publisher_url: String,
+    publisher_email: String,
+    source_owner: String,
+    source_project: String,
+    source_type: String,
+    source_ref: String,
+    package_id: String,
+    version: String,
+    resolved_title: String,
+    resolved_description: String,
+    preview: HubExportPreview,
+    review_layout: ResolvedProjectLayout,
+    recorded_layout: Option<HubPackageLayout>,
+    active_pipelines: Vec<String>,
+    project_initialization: HubPackageInitialization,
+    existing_package: Option<HubAssetPackage>,
+    cover_source: Option<(String, Vec<u8>)>,
+    visibility: String,
+    tags: Vec<String>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct HubPublishSourceItem {
     pub source_type: String,
@@ -183,6 +237,38 @@ pub struct HubExportPreview {
     pub warnings: Vec<String>,
     pub total_files: usize,
     pub total_bytes: usize,
+}
+
+/// What one boot's blessed seeding did.
+#[derive(Debug, Default, Clone, Serialize)]
+pub struct HubSeedReport {
+    /// Coordinates published this boot.
+    pub published: Vec<String>,
+    /// Coordinates already present — live or retracted — and left alone.
+    pub skipped: Vec<String>,
+    /// Coordinates that failed a gate, with the refusal.
+    pub errors: Vec<String>,
+}
+
+/// One carried package entry from in-memory bytes, read exactly the way
+/// `read_repo_entry` reads a repository file.
+fn hub_entry_from_bytes(rel_path: &str, bytes: &[u8]) -> HubPackageFile {
+    let (encoding, content) = match std::str::from_utf8(bytes) {
+        Ok(text) => ("text".to_string(), text.to_string()),
+        Err(_) => (
+            "base64".to_string(),
+            base64::engine::general_purpose::STANDARD.encode(bytes),
+        ),
+    };
+    HubPackageFile {
+        rel_path: rel_path.to_string(),
+        kind: file_kind_from_path(Path::new(rel_path)),
+        size_bytes: bytes.len(),
+        reason: "blessed content carried by this release".to_string(),
+        encoding,
+        content: Some(content),
+        artifact: None,
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -1194,7 +1280,7 @@ impl HubService {
     }
 
     pub fn list_asset_packages(&self) -> Result<Vec<HubAssetPackage>, PlatformError> {
-        self.require_enabled()?;
+        // Shelf read: available without the outward hub service.
         self.hub_data.list_hub_asset_packages()
     }
 
@@ -1203,7 +1289,7 @@ impl HubService {
         owner: &str,
     ) -> Result<Vec<HubAssetPackage>, PlatformError> {
         let owner = slug_segment(owner);
-        self.require_enabled()?;
+        // Shelf read: available without the outward hub service.
         let mut items = self.hub_data.list_hub_asset_packages()?;
         items.retain(|item| item.publisher_owner == owner);
         Ok(items)
@@ -1213,8 +1299,20 @@ impl HubService {
         &self,
         package_id: &str,
     ) -> Result<Vec<HubAssetVersion>, PlatformError> {
-        self.require_enabled()?;
+        // Shelf read: available without the outward hub service.
         self.hub_data.list_hub_asset_versions(package_id)
+    }
+
+    /// The newest live release of one package, by creation time.
+    pub fn latest_live_asset_version(
+        &self,
+        package_id: &str,
+    ) -> Result<Option<String>, PlatformError> {
+        // Shelf read: available without the outward hub service.
+        let mut versions = self.hub_data.list_hub_asset_versions(package_id)?;
+        versions.retain(|version| version.retracted_at.is_none());
+        versions.sort_by_key(|version| version.created_at);
+        Ok(versions.pop().map(|version| version.version))
     }
 
     /// Retract every release of one package: the bytes go, the coordinates stay.
@@ -2247,18 +2345,15 @@ impl HubService {
     ) -> Result<(HubAssetPackage, HubAssetVersion), PlatformError> {
         let _ = (authority_owner, authority_project);
         self.require_enabled()?;
-        let authority_owner = HUB_SERVICE_SCOPE_OWNER.to_string();
-        let authority_project = HUB_SERVICE_SCOPE_PROJECT.to_string();
         let publisher_owner = slug_segment(publisher_owner);
         let publisher_id = normalize_hub_id_segment(publisher_id, "publisher id")?;
+        refuse_reserved_publisher(&publisher_id)?;
         let source_owner = slug_segment(source_owner);
         let source_project = slug_segment(source_project);
         let source_type = normalize_source_type(source_type);
         let package_id = canonical_hub_package_id(&publisher_id, package_id)?;
         let version = version.trim();
-        if authority_owner.is_empty()
-            || authority_project.is_empty()
-            || publisher_owner.is_empty()
+        if publisher_owner.is_empty()
             || publisher_id.is_empty()
             || source_owner.is_empty()
             || source_project.is_empty()
@@ -2344,6 +2439,80 @@ impl HubService {
         } else {
             description.trim().to_string()
         };
+        let active_pipelines = if preview.asset_kind == HUB_ASSET_KIND_PROJECT_BUNDLE {
+            self.projects
+                .list_active_pipeline_meta(&source_owner, &source_project)?
+                .into_iter()
+                .map(|meta| meta.file_rel_path)
+                .collect()
+        } else {
+            Vec::new()
+        };
+        self.finish_publish(PublishSubmission {
+            authority,
+            publisher,
+            publisher_owner,
+            publisher_id,
+            publisher_display_name: publisher_display_name.to_string(),
+            publisher_url: publisher_url.to_string(),
+            publisher_email: publisher_email.to_string(),
+            source_owner,
+            source_project,
+            source_type,
+            source_ref: source_ref.to_string(),
+            package_id,
+            version: version.to_string(),
+            resolved_title,
+            resolved_description,
+            preview,
+            review_layout: publish_review_layout(&source_layout.repo_layout),
+            recorded_layout: Some(recorded_publisher_layout(&source_layout.repo_layout)),
+            active_pipelines,
+            project_initialization,
+            existing_package,
+            cover_source,
+            visibility: visibility.to_string(),
+            tags,
+        })
+    }
+
+    /// The shared back half of every publish: the review gate, the artifact
+    /// store, and the two durable rows.
+    ///
+    /// `publish_asset` reaches it after resolving a project source; the
+    /// first-boot seeder reaches it after enumerating a blessed package. The
+    /// gates are identical by construction — the seeder is not a second
+    /// publish path, only a second way of preparing one submission.
+    fn finish_publish(
+        &self,
+        submission: PublishSubmission,
+    ) -> Result<(HubAssetPackage, HubAssetVersion), PlatformError> {
+        let PublishSubmission {
+            authority,
+            publisher,
+            publisher_owner,
+            publisher_id,
+            publisher_display_name,
+            publisher_url,
+            publisher_email,
+            source_owner,
+            source_project,
+            source_type,
+            source_ref,
+            package_id,
+            version,
+            resolved_title,
+            resolved_description,
+            mut preview,
+            review_layout,
+            recorded_layout,
+            active_pipelines,
+            project_initialization,
+            existing_package,
+            cover_source,
+            visibility,
+            tags,
+        } = submission;
         // Beside `enforce_release_immutability`, and for the same reason: the
         // entries are final here -- previewed, option-filtered, sanitized --
         // and nothing durable has been written yet. A violation refuses every
@@ -2352,7 +2521,7 @@ impl HubService {
         refuse_publish_violations(
             "HUB_PUBLISH_REFUSED",
             &review_publish_entries(
-                &publish_review_layout(&source_layout.repo_layout),
+                &review_layout,
                 &preview.asset_kind,
                 &preview.entries,
                 preview.warnings.clone(),
@@ -2379,15 +2548,6 @@ impl HubService {
             }
             None => None,
         };
-        let active_pipelines = if preview.asset_kind == HUB_ASSET_KIND_PROJECT_BUNDLE {
-            self.projects
-                .list_active_pipeline_meta(&source_owner, &source_project)?
-                .into_iter()
-                .map(|meta| meta.file_rel_path)
-                .collect()
-        } else {
-            Vec::new()
-        };
         let mut presentation = HubPresentation::from_existing(existing_package.as_ref());
         presentation.replace_cover(&package_id, cover);
         let artifact_rel = format!(
@@ -2407,7 +2567,7 @@ impl HubService {
         let resolved_publisher_url = if publisher_url.trim().is_empty() {
             publisher.publisher_url.clone()
         } else {
-            normalize_publisher_url(&publisher_id, publisher_url)
+            normalize_publisher_url(&publisher_id, &publisher_url)
         };
         let resolved_publisher_email = if publisher_email.trim().is_empty() {
             publisher.email.clone()
@@ -2423,7 +2583,7 @@ impl HubService {
             asset_kind: preview.asset_kind.clone(),
             title: resolved_title,
             description: resolved_description,
-            layout: Some(recorded_publisher_layout(&source_layout.repo_layout)),
+            layout: recorded_layout,
             active_pipelines,
             project_initialization,
             files: preview.entries.clone(),
@@ -2457,8 +2617,8 @@ impl HubService {
             authority_id: authority.authority_id.clone(),
             publisher_pk: publisher.publisher_pk.clone(),
             package_id: package_id.clone(),
-            authority_owner: authority_owner.clone(),
-            authority_project: authority_project.clone(),
+            authority_owner: authority.owner.clone(),
+            authority_project: authority.project.clone(),
             publisher_owner: publisher_owner.clone(),
             publisher_id: publisher_id.clone(),
             publisher_display_name: resolved_publisher_display_name,
@@ -2472,7 +2632,7 @@ impl HubService {
             image_url: presentation.image_url,
             media: presentation.media,
             gallery: presentation.gallery,
-            visibility: normalize_visibility(visibility),
+            visibility: normalize_visibility(&visibility),
             tags,
             // A live release makes the package live again. The retracted
             // version rows keep their own markers, so no retracted coordinate
@@ -2486,14 +2646,14 @@ impl HubService {
             package_pk: package.package_pk.clone(),
             package_id: package_id.clone(),
             version: version.to_string(),
-            authority_owner,
-            authority_project,
+            authority_owner: authority.owner.clone(),
+            authority_project: authority.project.clone(),
             publisher_owner,
             publisher_id,
             source_owner,
             source_project,
             source_kind: source_type,
-            source_ref: source_ref.to_string(),
+            source_ref,
             artifact_rel_path: artifact_rel,
             artifact_sha256,
             manifest: serde_json::to_value(&manifest)
@@ -2508,6 +2668,165 @@ impl HubService {
         self.hub_data.put_hub_asset_package(&package)?;
         self.hub_data.put_hub_asset_version(&version_row)?;
         Ok((package, version_row))
+    }
+
+    /// Publishes every blessed package the binary carries into the local hub.
+    ///
+    /// Runs on every boot and is idempotent: a coordinate already present —
+    /// live or retracted — is skipped, with `enforce_release_immutability`
+    /// still standing behind the check as the gate a race would hit. A binary
+    /// carrying a newer version of a package publishes it beside the old one.
+    ///
+    /// Seeding touches the store half only. The outward-facing hub service
+    /// stays exactly as the operator left it — absent, enabled, or disabled:
+    /// the local hub is the instance's own shelf (`distribution.md` §1b, hub
+    /// type three), and "seeded on first boot" cannot wait for anyone to add
+    /// the optional network-facing service. Everything under
+    /// `/api/hub/remote/*` keeps requiring that service; the shelf does not.
+    pub fn seed_blessed_catalog(&self) -> Result<HubSeedReport, PlatformError> {
+        let mut report = HubSeedReport::default();
+        let authority = self.ensure_store_authority()?;
+        let publisher = self.ensure_reserved_publisher()?;
+        for package in crate::platform::blessed::blessed_packages()? {
+            let coordinate = format!("{}@{}", package.package_id, package.version);
+            match self
+                .hub_data
+                .get_hub_asset_version(&package.package_id, &package.version)?
+            {
+                Some(_) => {
+                    report.skipped.push(coordinate);
+                    continue;
+                }
+                None => {}
+            }
+            match self.seed_blessed_package(&authority, &publisher, package) {
+                Ok(()) => report.published.push(coordinate),
+                Err(error) => report
+                    .errors
+                    .push(format!("{coordinate}: {}", error.message)),
+            }
+        }
+        Ok(report)
+    }
+
+    /// The reserved `zebflow` publisher row, created once and then left alone.
+    ///
+    /// Written directly rather than through `upsert_publisher`, because that
+    /// surface requires the outward hub service and the shelf must not.
+    fn ensure_reserved_publisher(&self) -> Result<HubPublisher, PlatformError> {
+        let reserved = crate::platform::blessed::RESERVED_HUB_PUBLISHER_ID;
+        if let Some(existing) = self.hub_data.get_hub_publisher(
+            HUB_SERVICE_SCOPE_OWNER,
+            HUB_SERVICE_SCOPE_PROJECT,
+            reserved,
+        )? {
+            return Ok(existing);
+        }
+        let authority = self.ensure_store_authority()?;
+        let now = now_ts();
+        let row = HubPublisher {
+            authority_id: authority.authority_id,
+            publisher_pk: format!("mpub_{}", random_hex(8)),
+            owner: HUB_SERVICE_SCOPE_OWNER.to_string(),
+            project: HUB_SERVICE_SCOPE_PROJECT.to_string(),
+            publisher_id: reserved.to_string(),
+            display_name: "Zebflow".to_string(),
+            publisher_url: normalize_publisher_url(reserved, ""),
+            email: String::new(),
+            description:
+                "Blessed content carried by the platform release and seeded on first boot."
+                    .to_string(),
+            icon_url: String::new(),
+            website_url: "https://zebflow.com".to_string(),
+            enabled: true,
+            can_read: true,
+            can_publish: true,
+            can_manage: false,
+            max_packages: 1024,
+            max_package_bytes: 1024 * 1024 * 1024,
+            max_media_files: DEFAULT_PUBLISHER_MAX_MEDIA_FILES,
+            max_image_bytes: DEFAULT_PUBLISHER_MAX_IMAGE_BYTES,
+            created_at: now,
+            updated_at: now,
+        };
+        self.hub_data.put_hub_publisher(&row)?;
+        Ok(row)
+    }
+
+    /// Publishes one blessed package through the shared publish core.
+    ///
+    /// This is not a second publish path: the version gate, the immutability
+    /// gate, the package review, the artifact store, and the quota all run in
+    /// the same code a project publish runs. Only the preparation differs —
+    /// the entries come from the binary's blessed tree instead of a project
+    /// repository, and the reserved-publisher refusal that guards the public
+    /// surface is what lets this be the one writer under `zebflow.*`.
+    fn seed_blessed_package(
+        &self,
+        authority: &HubAuthority,
+        publisher: &HubPublisher,
+        package: crate::platform::blessed::BlessedPackage,
+    ) -> Result<(), PlatformError> {
+        if !publisher.enabled || !publisher.can_publish {
+            return Err(PlatformError::new(
+                "HUB_PUBLISHER_FORBIDDEN",
+                "the reserved publisher is disabled",
+            ));
+        }
+        let package_id = canonical_hub_package_id(&publisher.publisher_id, &package.package_id)?;
+        validate_hub_version(&package.version)?;
+        self.enforce_release_immutability(&package_id, &package.version)?;
+        let existing_package = self.hub_data.get_hub_asset_package(&package_id)?;
+        let entries: Vec<HubPackageFile> = package
+            .files
+            .iter()
+            .map(|file| hub_entry_from_bytes(&file.rel_path, file.bytes))
+            .collect();
+        if entries.is_empty() {
+            return Err(PlatformError::new(
+                "HUB_PUBLISH_EMPTY",
+                "blessed package carries no files",
+            ));
+        }
+        let total_bytes = entries.iter().map(|entry| entry.size_bytes).sum();
+        let preview = HubExportPreview {
+            asset_kind: package.asset_kind.to_string(),
+            source_type: "blessed".to_string(),
+            source_ref: package.source_ref.clone(),
+            name: package.title.clone(),
+            description: package.description.clone(),
+            total_files: entries.len(),
+            total_bytes,
+            entries,
+            warnings: Vec::new(),
+        };
+        self.finish_publish(PublishSubmission {
+            authority: authority.clone(),
+            publisher: publisher.clone(),
+            publisher_owner: publisher.publisher_id.clone(),
+            publisher_id: publisher.publisher_id.clone(),
+            publisher_display_name: String::new(),
+            publisher_url: String::new(),
+            publisher_email: String::new(),
+            source_owner: publisher.publisher_id.clone(),
+            source_project: "blessed".to_string(),
+            source_type: "blessed".to_string(),
+            source_ref: package.source_ref,
+            package_id,
+            version: package.version,
+            resolved_title: package.title,
+            resolved_description: package.description,
+            preview,
+            review_layout: publish_review_layout(&ResolvedProjectLayout::platform_default()),
+            recorded_layout: None,
+            active_pipelines: Vec::new(),
+            project_initialization: HubPackageInitialization::default(),
+            existing_package,
+            cover_source: None,
+            visibility: "public".to_string(),
+            tags: vec!["blessed".to_string()],
+        })?;
+        Ok(())
     }
 
     pub fn review_publish_asset(
@@ -2736,7 +3055,8 @@ impl HubService {
     ) -> Result<HubInstallResult, PlatformError> {
         let target_owner = slug_segment(target_owner);
         let target_project = slug_segment(target_project);
-        self.require_enabled()?;
+        // Project-scope install from the instance's own shelf: available
+        // without the outward hub service (`distribution.md` §1b).
         let Some(version_row) = self.hub_data.get_hub_asset_version(package_id, version)? else {
             return Err(PlatformError::new(
                 "HUB_ASSET_MISSING",
@@ -2859,7 +3179,8 @@ impl HubService {
     ) -> Result<HubInstallReview, PlatformError> {
         let target_owner = slug_segment(target_owner);
         let target_project = slug_segment(target_project);
-        self.require_enabled()?;
+        // Project-scope install from the instance's own shelf: available
+        // without the outward hub service (`distribution.md` §1b).
         let Some(version_row) = self.hub_data.get_hub_asset_version(package_id, version)? else {
             return Err(PlatformError::new(
                 "HUB_ASSET_MISSING",
@@ -3065,11 +3386,7 @@ impl HubService {
         // it at `data/hub/nodes/{id}`, and the locked `entry` resolves against
         // the same base. Everything else is project source and installs under
         // repo/.
-        let install_base = if payload.asset_kind == HUB_ASSET_KIND_NODE_BUNDLE {
-            layout.data_hub_dir()
-        } else {
-            layout.repo_dir.clone()
-        };
+        let install_base = hub_install_base(&layout, &payload.asset_kind);
         // Every entry's bytes — carried and referenced alike — are produced and
         // verified here, before the first write. A digest mismatch or a missing
         // artifact returns now, with the project untouched.
@@ -3077,7 +3394,9 @@ impl HubService {
             prepare_hub_install_entries(&placement, &install_base, &payload.files, artifacts)?;
         validate_prepared_pipeline_sources(&layout.repo_layout, &prepared)?;
         refuse_prepared_install_violations(&layout.repo_layout, &payload.asset_kind, &prepared)?;
-        let previous_lock = if payload.asset_kind == HUB_ASSET_KIND_NODE_BUNDLE {
+        let previous_lock = if payload.asset_kind == HUB_ASSET_KIND_NODE_BUNDLE
+            || payload.asset_kind == HUB_ASSET_KIND_RWE_LIBRARY
+        {
             Some(self.dependency_lock.read(&target_owner, &target_project)?)
         } else {
             None
@@ -3130,6 +3449,24 @@ impl HubService {
                 pipelines_registered.push(meta.file_rel_path);
             }
         }
+        if payload.asset_kind == HUB_ASSET_KIND_RWE_LIBRARY {
+            if let Err(error) = self.record_installed_rwe_library(
+                &target_owner,
+                &target_project,
+                &install_root,
+                source_id,
+                &install_base,
+            ) {
+                return Err(self.recover_failed_install(
+                    &target_owner,
+                    &target_project,
+                    &install_base,
+                    &prepared,
+                    previous_lock.as_ref(),
+                    error,
+                ));
+            }
+        }
         if payload.asset_kind == HUB_ASSET_KIND_NODE_BUNDLE {
             let dependency_result = self
                 .node_registry
@@ -3166,6 +3503,88 @@ impl HubService {
             files_written: payload.files.len(),
             pipelines_registered,
         })
+    }
+
+    /// Records an installed RWE library in `zeb.lock` and `zebflow.yaml`.
+    ///
+    /// The installed copy is the artifact: its own `manifest.json` names the
+    /// library and its releases, the bundled ("offline") release's bytes are
+    /// hashed from disk, and the lock entry pins `source: hub` with that
+    /// digest. The entry path resolves against `data/hub/`, beside the node
+    /// bundle entries that already do.
+    fn record_installed_rwe_library(
+        &self,
+        owner: &str,
+        project: &str,
+        install_root: &str,
+        source_id: &str,
+        install_base: &Path,
+    ) -> Result<(), PlatformError> {
+        let package_dir = install_base.join(install_root);
+        let manifest_bytes = fs::read(package_dir.join("manifest.json")).map_err(|error| {
+            PlatformError::new(
+                "HUB_INSTALL",
+                format!("rwe library package has no readable manifest.json: {error}"),
+            )
+        })?;
+        let manifest =
+            decode_contract::<crate::contracts::kinds::LibraryManifestContract>(&manifest_bytes)
+                .map_err(|error| {
+                    PlatformError::new(
+                        "HUB_INSTALL",
+                        format!("rwe library manifest.json is invalid: {error}"),
+                    )
+                })?
+                .spec;
+        let Some((version_key, release)) = manifest
+            .versions
+            .iter()
+            .find(|(_, release)| release.source == "offline")
+        else {
+            return Err(PlatformError::new(
+                "HUB_INSTALL",
+                "rwe library package carries no offline release to pin",
+            ));
+        };
+        let bundle_abs = package_dir.join(&release.entry);
+        if !bundle_abs.starts_with(&package_dir) {
+            return Err(PlatformError::new(
+                "HUB_INSTALL",
+                format!("rwe library entry '{}' escapes its package", release.entry),
+            ));
+        }
+        let bundle_bytes = fs::read(&bundle_abs).map_err(|error| {
+            PlatformError::new(
+                "HUB_INSTALL",
+                format!(
+                    "rwe library entry '{}' is not readable after install: {error}",
+                    release.entry
+                ),
+            )
+        })?;
+        let integrity = format!("sha256:{:x}", Sha256::digest(&bundle_bytes));
+        if !release.integrity.is_empty() && release.integrity != integrity {
+            return Err(PlatformError::new(
+                "HUB_INSTALL",
+                format!(
+                    "rwe library entry '{}' does not match the digest its manifest declares",
+                    release.entry
+                ),
+            ));
+        }
+        self.dependency_lock.enable_rwe_library(
+            &self.projects.configuration_service(),
+            owner,
+            project,
+            &manifest.name,
+            crate::contracts::kinds::DependencyLockArtifactSpec {
+                version: version_key.clone(),
+                source: crate::contracts::kinds::DependencyLockSource::Hub,
+                source_id: source_id.to_string(),
+                entry: format!("{install_root}/{}", release.entry),
+                integrity,
+            },
+        )
     }
 
     fn install_lock(&self, repo_dir: &Path) -> Arc<Mutex<()>> {
@@ -3275,11 +3694,7 @@ impl HubService {
         let install_root = placement.install_root().to_string();
         // The same choice the install makes, so what the review calls an
         // overwrite is what the install would actually overwrite.
-        let install_base = if payload.asset_kind == HUB_ASSET_KIND_NODE_BUNDLE {
-            layout.data_hub_dir()
-        } else {
-            layout.repo_dir.clone()
-        };
+        let install_base = hub_install_base(&layout, &payload.asset_kind);
         let mut files_added = Vec::new();
         let mut files_overwritten = Vec::new();
         let mut pipelines_registered = Vec::new();
@@ -3522,6 +3937,9 @@ impl HubService {
         let authority_project = HUB_SERVICE_SCOPE_PROJECT.to_string();
         let publisher_owner = slug_segment(&token.owner);
         let publisher_id = slug_segment(&token.publisher_id);
+        // The reserved namespace holds on the ingest surface too: `zebflow.*`
+        // is written only by the first-boot seeder, never over a token.
+        refuse_reserved_publisher(&publisher_id)?;
         let package_id = canonical_hub_package_id(&publisher_id, &req.package_id)?;
         let version = req.version.trim().to_string();
         if authority_owner.is_empty()
@@ -4451,6 +4869,37 @@ impl HubService {
                 "hub service is not enabled",
             )),
         }
+    }
+
+    /// The store's authority row, created without requiring the outward
+    /// service: the local hub is the instance's own shelf and exists whether
+    /// or not an operator ever adds the network-facing hub service. When the
+    /// service exists its placement is recorded; otherwise the authority is
+    /// created neutral and the service, if added later, reuses it.
+    fn ensure_store_authority(&self) -> Result<HubAuthority, PlatformError> {
+        if let Some(authority) = self
+            .hub_data
+            .get_hub_authority(HUB_SERVICE_SCOPE_OWNER, HUB_SERVICE_SCOPE_PROJECT)?
+        {
+            return Ok(authority);
+        }
+        let service = self.get_default_service_instance()?;
+        let now = now_ts();
+        let authority = HubAuthority {
+            authority_id: DEFAULT_HUB_SERVICE_INSTANCE_ID.to_string(),
+            host_project_id: service
+                .as_ref()
+                .map(|item| item.host_office_id.clone())
+                .unwrap_or_default(),
+            owner: HUB_SERVICE_SCOPE_OWNER.to_string(),
+            project: HUB_SERVICE_SCOPE_PROJECT.to_string(),
+            enabled: true,
+            public_base_url: service.map(|item| item.public_base_url).unwrap_or_default(),
+            created_at: now,
+            updated_at: now,
+        };
+        self.hub_data.put_hub_authority(&authority)?;
+        Ok(authority)
     }
 
     fn ensure_service_authority(&self) -> Result<HubAuthority, PlatformError> {
@@ -5635,6 +6084,7 @@ fn normalize_install_target_folder(
     // pipelines too, and were landing outside the source root for the same
     // reason under a different asset kind.
     if asset_kind != HUB_ASSET_KIND_NODE_BUNDLE
+        && asset_kind != HUB_ASSET_KIND_RWE_LIBRARY
         && !layout.is_in_source(&folder)
         && folder != layout.source
     {
@@ -5650,8 +6100,30 @@ fn default_install_target_folder(
 ) -> String {
     if asset_kind == HUB_ASSET_KIND_NODE_BUNDLE {
         format!("nodes/{package_id}")
+    } else if asset_kind == HUB_ASSET_KIND_RWE_LIBRARY {
+        format!("rwe-libraries/{}", hub_package_asset_slug(package_id))
     } else {
         layout.source_rel(&format!("hub/{package_id}"))
+    }
+}
+
+/// The package's own slug, without its publisher prefix: `zebflow.deckgl`
+/// installs under `rwe-libraries/deckgl`.
+fn hub_package_asset_slug(package_id: &str) -> &str {
+    package_id
+        .split_once('.')
+        .map(|(_, rest)| rest)
+        .unwrap_or(package_id)
+}
+
+/// Where a package's entries are written: bundles and libraries are
+/// materialized artifacts and land in the INSTALLED tier (`data/hub/`);
+/// everything else is project source and lands in `repo/`.
+fn hub_install_base(layout: &ProjectFileLayout, asset_kind: &str) -> PathBuf {
+    if asset_kind == HUB_ASSET_KIND_NODE_BUNDLE || asset_kind == HUB_ASSET_KIND_RWE_LIBRARY {
+        layout.data_hub_dir()
+    } else {
+        layout.repo_dir.clone()
     }
 }
 
@@ -5712,7 +6184,12 @@ impl HubInstallPlacement {
     ) -> Self {
         let install_root =
             install_root_for_target_folder(target, package_id, &payload.asset_kind, target_folder);
-        if payload.asset_kind == HUB_ASSET_KIND_NODE_BUNDLE {
+        // A node bundle's paths name files inside the bundle, and so do an RWE
+        // library's — `0.1/runtime/...` is bundle structure, not anyone's
+        // project layout — so both install verbatim under their root.
+        if payload.asset_kind == HUB_ASSET_KIND_NODE_BUNDLE
+            || payload.asset_kind == HUB_ASSET_KIND_RWE_LIBRARY
+        {
             return Self::Verbatim { install_root };
         }
         let folder = target
@@ -8874,6 +9351,25 @@ mod tests {
 
     /// Builds a platform with the hub service enabled, one publisher that may
     /// publish, and one pipeline to publish from.
+    /// The artifact store's current file names. The fixture's data root is
+    /// seeded with the blessed catalog on boot, so tests assert what one
+    /// publish changed against this baseline rather than expecting an empty
+    /// store.
+    fn artifact_store_entries(root: &tempfile::TempDir) -> std::collections::BTreeSet<String> {
+        let dir = root
+            .path()
+            .join("services")
+            .join(DEFAULT_HUB_SERVICE_INSTANCE_ID)
+            .join("artifacts");
+        match std::fs::read_dir(&dir) {
+            Ok(entries) => entries
+                .filter_map(|entry| entry.ok())
+                .map(|entry| entry.file_name().to_string_lossy().to_string())
+                .collect(),
+            Err(_) => std::collections::BTreeSet::new(),
+        }
+    }
+
     fn hub_publish_fixture(
         label: &str,
     ) -> (
@@ -9037,6 +9533,7 @@ mod tests {
     #[test]
     fn a_cover_is_stored_as_an_artifact_and_never_enters_the_release() {
         let (root, platform) = hub_publish_fixture("Calculator One");
+        let baseline = artifact_store_entries(&root);
         let image_file_path = write_cover_source(&root, 64, 36);
 
         let (package, version) =
@@ -9104,15 +9601,8 @@ mod tests {
         // store is content-addressed, so one image costs one file.
         publish_calc_tools_with_cover(&platform, "1.0.1", &image_file_path)
             .expect("second version publishes");
-        let artifact_files = std::fs::read_dir(
-            root.path()
-                .join("services")
-                .join(DEFAULT_HUB_SERVICE_INSTANCE_ID)
-                .join("artifacts"),
-        )
-        .expect("artifact dir")
-        .count();
-        assert_eq!(artifact_files, 1, "identical bytes are stored once");
+        let added = artifact_store_entries(&root).difference(&baseline).count();
+        assert_eq!(added, 1, "identical bytes are stored once");
     }
 
     /// The quota is checked against the converted WebP, before anything is
@@ -9120,6 +9610,7 @@ mod tests {
     #[test]
     fn an_oversized_cover_is_refused_before_it_is_stored() {
         let (root, platform) = hub_publish_fixture("Calculator One");
+        let baseline = artifact_store_entries(&root);
         platform
             .hub
             .upsert_publisher(
@@ -9149,13 +9640,9 @@ mod tests {
             .expect_err("the cover is refused");
 
         assert_eq!(error.code, "HUB_PUBLISHER_QUOTA_EXCEEDED");
-        assert!(
-            !root
-                .path()
-                .join("services")
-                .join(DEFAULT_HUB_SERVICE_INSTANCE_ID)
-                .join("artifacts")
-                .exists(),
+        assert_eq!(
+            artifact_store_entries(&root),
+            baseline,
             "nothing is stored for a refused cover"
         );
     }
@@ -9298,6 +9785,7 @@ mod tests {
     #[test]
     fn a_publish_carrying_a_file_type_no_project_accepts_is_refused() {
         let (root, platform) = hub_publish_fixture("Calculator One");
+        let baseline = artifact_store_entries(&root);
         write_repo_file(&root, "pipelines/folder-pack/postinstall.sh", "true\n");
         let image_file_path = write_cover_source(&root, 64, 36);
 
@@ -9343,8 +9831,9 @@ mod tests {
                 .exists(),
             "a refused publish creates no release directory"
         );
-        assert!(
-            !root.path().join("services/hub-default/artifacts").exists(),
+        assert_eq!(
+            artifact_store_entries(&root),
+            baseline,
             "a refused publish stores no cover either"
         );
     }
@@ -10919,6 +11408,138 @@ mod tests {
         assert_eq!(
             placement.destination("pipelines-old/feed.zf.json"),
             "src/hub/demo/pipelines-old/feed.zf.json"
+        );
+    }
+
+    /// The first boot seeded the fixture's local hub; a second seed run must
+    /// publish nothing and skip every coordinate — immutability makes the
+    /// republish refuse anyway, and the seeder treats "already present" as the
+    /// skip rather than the error.
+    #[test]
+    fn the_blessed_seed_is_idempotent_across_boots() {
+        let (_root, platform) = hub_publish_fixture("Blessed Seed");
+        let deckgl = platform
+            .hub
+            .hub_data
+            .get_hub_asset_version("zebflow.deckgl", "0.1.0")
+            .expect("version lookup")
+            .expect("the first boot seeded deckgl");
+        let report = platform
+            .hub
+            .seed_blessed_catalog()
+            .expect("second seed run");
+        assert!(report.published.is_empty(), "{:?}", report.published);
+        assert!(report.errors.is_empty(), "{:?}", report.errors);
+        assert!(report.skipped.contains(&"zebflow.deckgl@0.1.0".to_string()));
+        let unchanged = platform
+            .hub
+            .hub_data
+            .get_hub_asset_version("zebflow.deckgl", "0.1.0")
+            .expect("version lookup")
+            .expect("still present");
+        assert_eq!(unchanged.artifact_sha256, deckgl.artifact_sha256);
+        assert_eq!(unchanged.created_at, deckgl.created_at);
+    }
+
+    /// `zebflow.*` is the seeder's namespace: the public publish surface
+    /// refuses the reserved publisher no matter who authenticated.
+    #[test]
+    fn a_publish_as_the_reserved_publisher_is_refused() {
+        let (_root, platform) = hub_publish_fixture("Reserved Publisher");
+        let error = platform
+            .hub
+            .publish_asset(
+                "superadmin",
+                "default",
+                "superadmin",
+                "zebflow",
+                "",
+                "",
+                "",
+                "superadmin",
+                "default",
+                "folder_files",
+                "pipelines",
+                "impostor",
+                "9.9.9",
+                "Impostor",
+                "not blessed",
+                "",
+                "public",
+                HubProjectBundlePublishOptions::default(),
+                Vec::new(),
+            )
+            .expect_err("the reserved namespace refuses");
+        assert_eq!(error.code, "HUB_PUBLISHER_RESERVED");
+    }
+
+    /// Installing a seeded `rwe_library` package copies its bytes into the
+    /// INSTALLED tier and records a hub-sourced lock entry whose digest is the
+    /// digest of the installed bundle.
+    #[test]
+    fn installing_a_blessed_rwe_library_copies_bytes_and_locks_them() {
+        let (root, platform) = hub_publish_fixture("Blessed Install");
+
+        let result = platform
+            .hub
+            .install_asset("superadmin", "default", "zebflow.deckgl", "0.1.0", "")
+            .expect("deckgl installs from the seeded local hub");
+        assert_eq!(result.asset_kind, HUB_ASSET_KIND_RWE_LIBRARY);
+        assert_eq!(result.install_root, "rwe-libraries/deckgl");
+
+        let package_dir = root
+            .path()
+            .join("users/superadmin/default/data/hub/rwe-libraries/deckgl");
+        assert!(package_dir.join("manifest.json").is_file());
+        let bundle = package_dir.join("0.1/runtime/deckgl.bundle.mjs");
+        assert!(bundle.is_file(), "the runtime bundle is copied");
+
+        let lock = platform
+            .dependency_lock
+            .read("superadmin", "default")
+            .expect("lock reads");
+        let entry = lock
+            .rwe
+            .libraries
+            .get("zeb/deckgl")
+            .expect("the install recorded a lock entry");
+        assert_eq!(
+            entry.source,
+            crate::contracts::kinds::DependencyLockSource::Hub
+        );
+        assert_eq!(entry.source_id, "local/zebflow.deckgl");
+        assert_eq!(
+            entry.entry,
+            "rwe-libraries/deckgl/0.1/runtime/deckgl.bundle.mjs"
+        );
+        let bytes = std::fs::read(&bundle).expect("installed bundle bytes");
+        assert_eq!(
+            entry.integrity,
+            format!("sha256:{:x}", Sha256::digest(&bytes))
+        );
+
+        // The requested state follows: zebflow.yaml asks for the hub source,
+        // and the dependency status resolves it against the installed copy.
+        let requested = platform
+            .zebflow_cfg
+            .get_rwe_libraries("superadmin", "default")
+            .expect("requested libraries");
+        let requested_entry = requested.get("zeb/deckgl").expect("requested entry");
+        assert_eq!(requested_entry.source, "hub");
+        let report = platform
+            .dependency_lock
+            .status("superadmin", "default", &requested)
+            .expect("status");
+        let item = report
+            .items
+            .iter()
+            .find(|item| item.name == "zeb/deckgl")
+            .expect("status row");
+        assert_eq!(
+            item.status,
+            crate::platform::services::dependency_lock::DependencyResolutionStatus::Resolved,
+            "{}",
+            item.message
         );
     }
 

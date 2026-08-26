@@ -1998,7 +1998,8 @@ impl PlatformOps {
         {
             Ok(layout) => {
                 let shared_ui_dir = layout.repo_source_dir().join("shared").join("ui");
-                match crate::platform::catalog::CatalogService::install_ui(
+                match crate::platform::catalog::CatalogService::install_ui_reviewed(
+                    &layout.repo_layout,
                     &names,
                     &shared_ui_dir,
                     overwrite.unwrap_or(false),

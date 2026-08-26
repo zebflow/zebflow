@@ -49,17 +49,18 @@ records what is on disk today.
             │   │   ├── local.db (+ sidecars)
             │   │   ├── kv.db (+ sidecars)
             │   │   ├── chat_history.json
-            │   │   └── assistant/{user_id}/memory.json
+            │   │   └── assistant/{user_id}/memory.md
             │   │
             │   ├── cache/             CACHE — regenerates
             │   │   ├── pipelines/
             │   │   ├── web-assets/
-            │   │   ├── media/         thumbnails, tts
-            │   │   └── mapserver-artifacts/
+            │   │   └── mapserver-artifacts/   {instance}/{layer}/
             │   │
             │   ├── hub/               INSTALLED — from any hub or local file
             │   │   ├── nodes/
-            │   │   └── rwe-libraries/ (writer arrives with seeding)
+            │   │   └── rwe-libraries/ written by `rwe_library` installs from
+            │   │                      the seeded local hub; `zeb.lock` entries
+            │   │                      resolve here.
             │   │                      repo derivatives never land here → repo/
             │   │
             │   ├── recovery/          BOUNDED — next success + 14d, keep 3
@@ -91,13 +92,20 @@ records what is on disk today.
    DB connections, hub bindings live in catalog.db. Zipping
    `users/{owner}/{project}` is NOT a project backup, and export does not
    carry them.
-8. **Generated media leaves files/:** map artifacts, thumbnails, tts output
-   move to `data/cache/`; if an engine made it and can remake it, it is not
-   an OBJECT.
+8. **Generated media leaves files/ only when the engine can remake it:** map
+   artifacts moved to `data/cache/mapserver-artifacts/` (shipped — the engine
+   rebuilds them from the uploaded source). Thumbnails and TTS output were
+   read for the same move and refused it: TTS requires a user-chosen
+   `output_path` (`ai_tts.rs`) and thumbnails are handed back as durable
+   FileRefs at user-chosen folders whose source `--delete-source` may have
+   destroyed (`fs_thumbnail.rs`) — user-addressed, possibly irreplaceable,
+   hence OBJECT, and they stay. `data/cache/media/` is not drawn until a
+   machine-addressed media writer exists (rule 10).
 9. **Bootstrap secret gets a death:** password file is removed after first
    successful authentication change; class is "bootstrap secret", not STORE.
-10. **Unwritten paths are not drawn:** `rwe-libraries/` returns to the tree
-    the day a writer exists.
+10. **Unwritten paths are not drawn:** `rwe-libraries/` returned to the tree
+    when its writer landed — installing an `rwe_library` package from the
+    seeded local hub copies its bytes there and records them in `zeb.lock`.
 
 ### Migration from the current disk state
 
@@ -117,7 +125,13 @@ them.
 - `{owner}/{project}` path coupling: renames/transfers move gigabytes. A
   stable-id layer was proposed (agy) and deferred — re-architecture, not a
   contract fix.
-- MEMORY: file vs record store, and eviction.
+- MEMORY eviction. The tier move shipped: MEMORY lives at
+  `data/store/assistant/{user_id}/memory.md`, kept as the markdown every
+  reader/writer already speaks (the contract's `.json` was a sketch;
+  a record store remains a possible future). `{user_id}` is the owner slug —
+  the only identity the memory writers (assistant chat tools, MCP
+  `docs_agent_write`) carry today; a finer acting-user key waits on identity
+  being threaded into those paths.
 
 ## Appendix — on-disk state today (pre-migration)
 
@@ -167,13 +181,15 @@ them.
             │   │
             │   ├── cache/             CACHE — regenerates from repo/
             │   │   ├── pipelines/     activated pipeline snapshots (*.zf.json)
-            │   │   ├── agent_docs/    AGENTS.md, SOUL.md, MEMORY.md
+            │   │   ├── agent_docs/    AGENTS.md, SOUL.md (MEMORY.md moved to
+            │   │   │                  store/assistant/{owner}/memory.md on first touch)
             │   │   └── web-assets/    compiled web assets
             │   │
             │   ├── hub/               INSTALLED — unpacked hub content
             │   │   ├── nodes/         node bundles (migrated from data/nodes/ on first touch)
             │   │   │   └── {package}/ definition.json, functions/, *.wasm, icons
-            │   │   └── rwe-libraries/ RWE libraries (none materialize yet)
+            │   │   └── rwe-libraries/ RWE libraries installed from the local hub
+            │   │       └── {package}/  manifest.json + versioned runtime/wrappers
             │   │
             │   ├── recovery/          BOUNDED — dated migration copies
             │   │   └── {name}-{date}.{ext}
@@ -188,9 +204,9 @@ them.
                 ├── mapserver/         map feature area
                 │   ├── {source}.geojson            uploaded sources
                 │   ├── {instance}.layers.json      layer registry, machine-written
-                │   └── .artifacts/
-                │       └── {instance}/{layer}/     generated chunks
-                │           └── {chunk}.ndjson
+                │   └── .artifacts/                 generated chunks — moved to
+                │       └── {instance}/{layer}/     data/cache/mapserver-artifacts/
+                │           └── {chunk}.ndjson      on first touch
                 └── ...                anything applications store (uploads,
                                        thumbnails, tts output, exports)
 ```
@@ -220,6 +236,17 @@ orphan rows for deleted projects keep the file alive until hand-drained.
   the credential offline without recreating the file.
 - `data/nodes/` → `data/hub/nodes/`: shipped — transparent first-touch move,
   both-paths-present refuses; `zeb.lock` entries resolve against `data/hub/`.
+- `data/cache/agent_docs/MEMORY.md` → `data/store/assistant/{owner}/memory.md`:
+  shipped — transparent first-touch move on any MEMORY read/write,
+  both-paths-present refuses; the pre-move project-wide file migrates to the
+  project owner's file (the only writer identity threaded today).
+  AGENTS.md and SOUL.md stay in `data/cache/agent_docs/` per the open item.
+- `files/mapserver/.artifacts/` → `data/cache/mapserver-artifacts/`: shipped —
+  whole-directory first-touch rename at every artifact writer, reader, and
+  cleanup site; the layer registry (`{instance}.layers.json`, STORE, stays in
+  `files/`) is not rewritten — stored `mapserver/.artifacts/...` rel paths
+  keep resolving into the moved tree alongside new `mapserver-artifacts/...`
+  entries.
 
 ### Evidence
 

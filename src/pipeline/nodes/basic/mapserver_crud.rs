@@ -954,8 +954,16 @@ impl Node {
             if (source_kind == "geojson_file" && self.config.build_artifact)
                 || source_kind == "geojson_artifact"
             {
-                let artifact_rel = format!("mapserver/.artifacts/{name}");
-                let artifact_abs = layout.files_dir.join(&artifact_rel);
+                // Artifacts live in the cache tier; a pre-tier
+                // `files/mapserver/.artifacts` tree migrates on first touch.
+                let artifact_home = layout.ensure_mapserver_artifacts_home().map_err(|e| {
+                    PipelineError::new(
+                        "FW_NODE_MS_PUBLISH",
+                        format!("artifact tier migration refused: {e}"),
+                    )
+                })?;
+                let artifact_rel = format!("mapserver-artifacts/{DEFAULT_INSTANCE}/{name}");
+                let artifact_abs = artifact_home.join(DEFAULT_INSTANCE).join(name);
                 let build_out = crate::mapserver::publish::build::build_geojson_artifact(
                     &source_abs,
                     name,
@@ -1071,6 +1079,7 @@ impl Node {
     fn exec_unpublish(&self, owner: &str, project: &str) -> Result<Value, PipelineError> {
         let name = require_non_empty(&self.config.name, "--name", "FW_NODE_MS_UNPUBLISH")?;
         let mut layers = read_layers(&self.platform, owner, project)?;
+        let removed_record = layers.iter().find(|l| l.layer_id == name).cloned();
         let before = layers.len();
         layers.retain(|l| l.layer_id != name);
         let removed = layers.len() < before;
@@ -1079,14 +1088,25 @@ impl Node {
         // Clean up artifact directory and optimized file if they exist
         if removed {
             if let Ok(layout) = self.platform.file.ensure_project_layout(owner, project) {
-                let artifact_dir = layout
-                    .files_dir
-                    .join("mapserver")
-                    .join(".artifacts")
-                    .join(DEFAULT_INSTANCE)
-                    .join(name);
-                if artifact_dir.exists() {
-                    let _ = std::fs::remove_dir_all(&artifact_dir);
+                // Move a pre-tier artifact tree to its cache home first so
+                // the cleanup hits the tree wherever it actually lives.
+                let artifact_home = layout.ensure_mapserver_artifacts_home().ok();
+                if let Some(rel) = removed_record
+                    .as_ref()
+                    .and_then(|record| record.artifact_manifest_path.as_deref())
+                {
+                    // The record's own rel path covers legacy shapes such as
+                    // `mapserver/.artifacts/{name}` (no instance segment).
+                    if let Some(dir) = layout.resolve_mapserver_artifact_path(rel).parent() {
+                        let _ = std::fs::remove_dir_all(dir);
+                    }
+                }
+                if let Some(artifact_dir) =
+                    artifact_home.map(|home| home.join(DEFAULT_INSTANCE).join(name))
+                {
+                    if artifact_dir.exists() {
+                        let _ = std::fs::remove_dir_all(&artifact_dir);
+                    }
                 }
 
                 let optimized_file = layout

@@ -131,9 +131,12 @@ impl ProjectConfigurationSpec {
                     "spec.rwe.libraries.*.version must not be empty",
                 ));
             }
-            if !matches!(library.source.as_str(), "offline" | "online") {
+            // `hub` joined `offline`/`online` when the local hub gained
+            // `rwe_library` packages: a hub-installed library is requested by
+            // configuration and resolved against its installed copy.
+            if !matches!(library.source.as_str(), "offline" | "online" | "hub") {
                 return Err(ContractError::invalid(
-                    "spec.rwe.libraries.*.source must be offline or online",
+                    "spec.rwe.libraries.*.source must be offline, online, or hub",
                 ));
             }
         }

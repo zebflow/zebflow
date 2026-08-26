@@ -247,6 +247,24 @@ impl PlatformService {
         svc.bootstrap_local_office()?;
         if !svc.cluster_bootstrap.is_worker() {
             svc.bootstrap_defaults()?;
+            // Seed the local hub with the blessed content this binary carries
+            // (`distribution.md` §1b: seeded on first boot, reserved `zebflow`
+            // publisher). The seed touches the store only — the outward hub
+            // service stays exactly as the operator left it. Idempotent —
+            // already-published coordinates are skipped — and never fatal: a
+            // refused package is reported and retried next boot rather than
+            // keeping the instance down.
+            match svc.hub.seed_blessed_catalog() {
+                Ok(report) => {
+                    if !report.published.is_empty() {
+                        println!("hub: seeded {}", report.published.join(", "));
+                    }
+                    for error in &report.errors {
+                        eprintln!("⚠ hub seed: {error}");
+                    }
+                }
+                Err(error) => eprintln!("⚠ hub seed failed: {}", error.message),
+            }
         }
         // Reload active pipelines for every project across all users.
         if let Ok(users) = svc.data.list_users() {

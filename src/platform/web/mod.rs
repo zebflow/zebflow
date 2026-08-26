@@ -1613,16 +1613,41 @@ fn externalize_rwe_scripts(
         None => None,
     };
 
+    // A project whose lock pins hub-installed RWE libraries must load them
+    // from its own installed copies at `data/hub/rwe-libraries/`, and only the
+    // project-scoped asset route can serve those. When a deployment asset base
+    // is set the existing `{base}/libraries/` rewrite already lands on that
+    // route, so this only applies without one.
+    let hub_library_base = match (project_scope, &deployment_asset_base) {
+        (Some((owner, project)), None) => state
+            .platform
+            .dependency_lock
+            .read(owner, project)
+            .ok()
+            .filter(|lock| {
+                lock.rwe
+                    .libraries
+                    .values()
+                    .any(|entry| entry.source == crate::contracts::kinds::DependencyLockSource::Hub)
+            })
+            .map(|_| format!("/assets/{owner}/{project}/libraries/")),
+        _ => None,
+    };
+
     // Rewrite remaining `/assets/{owner}/{project}/` occurrences that were not
     // handled by the script-tag logic below (images, uploads, library chunks).
     let rewrite_assets = |s: String| -> String {
-        match (project_scope, &deployment_asset_base) {
+        let s = match (project_scope, &deployment_asset_base) {
             (Some((owner, project)), Some(base)) => {
                 let from = format!("/assets/{}/{}/", owner, project);
                 let to = format!("{}/", base.trim_end_matches('/'));
                 s.replace(&from, &to)
             }
             _ => s,
+        };
+        match &hub_library_base {
+            Some(to) => s.replace("/assets/libraries/", to),
+            None => s,
         }
     };
 
@@ -1646,23 +1671,28 @@ fn externalize_rwe_scripts(
         // runtime — they must be rewritten to point to the same CDN base.
         // We do a content-patch here, store under the new hash, and use the new
         // hash for the script tag src so CAS integrity is maintained.
-        let maybe_patched: Option<CompiledScript> = if let Some(ref base) = deployment_asset_base {
+        let maybe_patched: Option<CompiledScript> = {
             const LIB_FROM: &str = "/assets/libraries/";
-            if script.content.contains(LIB_FROM) {
-                use sha2::{Digest, Sha256};
-                let lib_to = format!("{}/libraries/", base.trim_end_matches('/'));
-                let new_content = script.content.replace(LIB_FROM, &lib_to);
-                let new_hash = hex::encode(Sha256::digest(new_content.as_bytes()));
-                Some(CompiledScript {
-                    content: new_content,
-                    content_hash: new_hash,
-                    ..script.clone()
-                })
-            } else {
-                None
+            let lib_to = match &deployment_asset_base {
+                Some(base) => Some(format!("{}/libraries/", base.trim_end_matches('/'))),
+                // Same content-patch for hub-installed libraries: the compiled
+                // script must import from the project-scoped route that serves
+                // the installed copy.
+                None => hub_library_base.clone(),
+            };
+            match lib_to {
+                Some(lib_to) if script.content.contains(LIB_FROM) => {
+                    use sha2::{Digest, Sha256};
+                    let new_content = script.content.replace(LIB_FROM, &lib_to);
+                    let new_hash = hex::encode(Sha256::digest(new_content.as_bytes()));
+                    Some(CompiledScript {
+                        content: new_content,
+                        content_hash: new_hash,
+                        ..script.clone()
+                    })
+                }
+                _ => None,
             }
-        } else {
-            None
         };
         let script = maybe_patched.as_ref().unwrap_or(script);
 
@@ -2017,9 +2047,35 @@ async fn library_asset(Path(path): Path<String>) -> Response {
 /// (e.g. `/assets/{owner}/{project}/libraries/zeb/preact/...`) are routed here
 /// so a single nginx rule covers both project assets and library bundles.
 async fn project_scoped_library_asset(
-    Path((_, _, path)): Path<(String, String, String)>,
+    State(state): State<PlatformAppState>,
+    Path((owner, project, path)): Path<(String, String, String)>,
 ) -> Response {
     let normalized = path.trim_start_matches('/').replace('\\', "/");
+    // A library the project installed from the hub is served from its
+    // installed copy: `zeb/{name}/{rest}` maps onto
+    // `data/hub/rwe-libraries/{name}/{rest}`. Anything not installed falls
+    // back to the embedded bytes, so pre-existing embedded-locked projects
+    // keep working unchanged.
+    if !normalized.split('/').any(|segment| segment == "..")
+        && let Some(rest) = normalized.strip_prefix("zeb/")
+    {
+        let installed = state
+            .platform
+            .config
+            .data_root
+            .join("users")
+            .join(crate::platform::model::slug_segment(&owner))
+            .join(crate::platform::model::slug_segment(&project))
+            .join("data")
+            .join("hub")
+            .join("rwe-libraries")
+            .join(rest);
+        if installed.is_file()
+            && let Ok(bytes) = fs::read(&installed)
+        {
+            return asset_response(content_type_for_path(FsPath::new(&normalized)), &bytes);
+        }
+    }
     match platform_library_asset(&normalized) {
         Some(bytes) => asset_response(content_type_for_path(FsPath::new(&normalized)), bytes),
         None => (StatusCode::NOT_FOUND, "asset not found").into_response(),
@@ -14409,7 +14465,7 @@ async fn api_mapserver_layers_publish(
         })
         .collect::<String>();
     let artifact_abs_dir = artifact_root.join(&safe_layer_id);
-    let artifact_rel_dir = format!("mapserver/.artifacts/{instance}/{safe_layer_id}");
+    let artifact_rel_dir = format!("mapserver-artifacts/{instance}/{safe_layer_id}");
     let build = match crate::mapserver::publish::build::build_geojson_artifact(
         &source_abs_path,
         layer_id,
@@ -14523,7 +14579,10 @@ async fn api_mapserver_layers_delete(
     if let Some(removed) = removed {
         if let Some(artifact_rel) = removed.artifact_manifest_path {
             if let Ok(layout) = state.platform.file.ensure_project_layout(&owner, &project) {
-                let artifact_manifest = layout.files_dir.join(artifact_rel.trim_start_matches('/'));
+                // Move a pre-tier artifact tree to its cache home first so the
+                // cleanup hits the tree wherever it actually lives.
+                let _ = layout.ensure_mapserver_artifacts_home();
+                let artifact_manifest = layout.resolve_mapserver_artifact_path(&artifact_rel);
                 if let Some(dir) = artifact_manifest.parent() {
                     let _ = std::fs::remove_dir_all(dir);
                 }
@@ -15879,6 +15938,50 @@ async fn api_enable_rwe_library(
             Json(json!({"ok": false, "error": "library name must not be empty"})),
         )
             .into_response();
+    }
+    // Enabling from the hub IS the local-hub install path: the package's
+    // bytes are copied to `data/hub/rwe-libraries/` and the lock records
+    // `source: hub` with the installed digest. The embedded path below stays
+    // for pre-existing projects and for the offline source.
+    if req.source.trim() == "hub" {
+        let name = req.name.trim();
+        let slug = name.strip_prefix("zeb/").unwrap_or(name);
+        let package_id = format!("zebflow.{slug}");
+        let version = match req.version.trim() {
+            "" => match state.platform.hub.latest_live_asset_version(&package_id) {
+                Ok(Some(version)) => version,
+                Ok(None) => {
+                    return (
+                        StatusCode::NOT_FOUND,
+                        Json(json!({
+                            "ok": false,
+                            "error": format!("the local hub has no live release of '{package_id}'")
+                        })),
+                    )
+                        .into_response();
+                }
+                Err(err) => return internal_error(err),
+            },
+            explicit => explicit.to_string(),
+        };
+        return match state
+            .platform
+            .hub
+            .install_asset(&owner, &project, &package_id, &version, "")
+        {
+            Ok(result) => {
+                let actor_user = session_owner(&state, &headers);
+                let _ = rwe_library_git_commit(
+                    &state,
+                    actor_user.as_deref(),
+                    &owner,
+                    &project,
+                    &format!("chore(rwe): install library {package_id}@{version} from hub"),
+                );
+                Json(json!({"ok": true, "install": result})).into_response()
+            }
+            Err(err) => internal_error(err),
+        };
     }
     // Verify library exists in embedded registry.
     if state.platform.library.get(req.name.trim()).is_none() {
@@ -22932,6 +23035,9 @@ fn mapserver_layers_manifest_path(
         .join(format!("{instance}.layers.json")))
 }
 
+/// Resolves the per-instance artifact root at its `cache`-tier home,
+/// migrating a pre-tier `files/mapserver/.artifacts` tree the first time it
+/// is touched (`instance-directory.md` rule 8). Both-paths-present refuses.
 fn mapserver_artifacts_root(
     state: &PlatformAppState,
     owner: &str,
@@ -22939,11 +23045,10 @@ fn mapserver_artifacts_root(
     instance: &str,
 ) -> Result<std::path::PathBuf, PlatformError> {
     let layout = state.platform.file.ensure_project_layout(owner, project)?;
-    Ok(layout
-        .files_dir
-        .join("mapserver")
-        .join(".artifacts")
-        .join(instance))
+    let root = layout
+        .ensure_mapserver_artifacts_home()
+        .map_err(|err| PlatformError::new("MAPSERVER_ARTIFACT_TIER_MIGRATE", err.to_string()))?;
+    Ok(root.join(instance))
 }
 
 fn read_mapserver_layers(
@@ -23029,40 +23134,49 @@ fn resolve_mapserver_manifest_for_path(
     let layer = layers.into_iter().find(|item| item.path == normalized);
     let layout = state.platform.file.ensure_project_layout(owner, project)?;
     Ok(layer.map(|item| {
-        let (source_kind, source_ref) =
-            if let Some(artifact_rel) = item.artifact_manifest_path.clone() {
-                (
-                    crate::mapserver::publish::manifest::SourceKind::GeoJsonArtifact,
-                    layout
-                        .files_dir
-                        .join(artifact_rel.trim_start_matches('/'))
-                        .display()
-                        .to_string(),
-                )
-            } else if item.source_kind == "geoparquet" {
-                (
-                    crate::mapserver::publish::manifest::SourceKind::GeoParquet,
-                    layout
-                        .files_dir
-                        .join(item.source_path.trim_start_matches('/'))
-                        .display()
-                        .to_string(),
-                )
-            } else if item.source_kind == "geojson_function" {
-                (
-                    crate::mapserver::publish::manifest::SourceKind::GeoJsonFunction,
-                    String::new(),
-                )
-            } else {
-                (
-                    crate::mapserver::publish::manifest::SourceKind::GeoJsonFile,
-                    layout
-                        .files_dir
-                        .join(item.source_path.trim_start_matches('/'))
-                        .display()
-                        .to_string(),
-                )
-            };
+        let (source_kind, source_ref) = if let Some(artifact_rel) =
+            item.artifact_manifest_path.clone()
+        {
+            // Serving may be the first touch after the tier move: migrate
+            // a pre-tier `.artifacts` tree before resolving into it. A
+            // both-paths refusal surfaces later as a missing manifest
+            // rather than silently serving the stale copy.
+            if let Err(err) = layout.ensure_mapserver_artifacts_home() {
+                eprintln!(
+                    "WARN: mapserver artifact tier migration refused for {owner}/{project}: {err}"
+                );
+            }
+            (
+                crate::mapserver::publish::manifest::SourceKind::GeoJsonArtifact,
+                layout
+                    .resolve_mapserver_artifact_path(&artifact_rel)
+                    .display()
+                    .to_string(),
+            )
+        } else if item.source_kind == "geoparquet" {
+            (
+                crate::mapserver::publish::manifest::SourceKind::GeoParquet,
+                layout
+                    .files_dir
+                    .join(item.source_path.trim_start_matches('/'))
+                    .display()
+                    .to_string(),
+            )
+        } else if item.source_kind == "geojson_function" {
+            (
+                crate::mapserver::publish::manifest::SourceKind::GeoJsonFunction,
+                String::new(),
+            )
+        } else {
+            (
+                crate::mapserver::publish::manifest::SourceKind::GeoJsonFile,
+                layout
+                    .files_dir
+                    .join(item.source_path.trim_start_matches('/'))
+                    .display()
+                    .to_string(),
+            )
+        };
         crate::mapserver::publish::registry::manifest_from_runtime(
             item.layer_id,
             item.path,
@@ -25067,7 +25181,8 @@ async fn api_install_ui_components(
         Err(e) => return internal_error(e),
     };
     let shared_ui_dir = layout.repo_source_dir().join("shared").join("ui");
-    match crate::platform::catalog::CatalogService::install_ui(
+    match crate::platform::catalog::CatalogService::install_ui_reviewed(
+        &layout.repo_layout,
         &req.names,
         &shared_ui_dir,
         req.overwrite,

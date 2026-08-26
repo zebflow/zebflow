@@ -1,0 +1,6 @@
+# Publish metadata for the blessed local-hub seed.
+# The seeder publishes this package as the reserved `zebflow` publisher.
+id: zebflow.graphui
+version: 0.1.0
+title: zeb/graphui
+description: "Interactive graph canvas for pipeline and node visualisation in RWE templates."
