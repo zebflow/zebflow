@@ -83,7 +83,7 @@ Two placements follow from the above and neither is what exists today.
 `AGENTS.md` and `SOUL.md` are authored declarations, so they belong under `repo/`
 with the project's other source, where git records how a project's rules
 changed. They currently sit under `data/cache/agent_docs/`
-(`project-directory.md` §5), which is now explicitly the tier that is safe to
+(`instance-directory.md` §5), which is now explicitly the tier that is safe to
 delete at any time because nothing reads a deletion as data loss — a stronger
 statement of the same defect this section already named.
 

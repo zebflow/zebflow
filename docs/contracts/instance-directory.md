@@ -58,7 +58,7 @@ records what is on disk today.
             │   │   └── mapserver-artifacts/
             │   │
             │   ├── hub/               INSTALLED — from any hub or local file
-            │   │   ├── nodes/         (code move from data/nodes/ pending)
+            │   │   ├── nodes/
             │   │   └── rwe-libraries/ (writer arrives with seeding)
             │   │                      repo derivatives never land here → repo/
             │   │
@@ -130,6 +130,7 @@ them.
 │   └── superadmin-password            0600. STORE — first-boot credential
 │
 ├── platform/
+│   ├── layout.json                    STORE — { "version": N }; migrations key off this
 │   ├── catalog.db                     STORE — users, projects, sessions, offices
 │   ├── project-operations/            BOUNDED — transfer/export staging
 │   │   └── op-{kind}-{ts}/            one operation: staged copy + manifest.json + archive
@@ -169,7 +170,7 @@ them.
             │   │   └── web-assets/    compiled web assets
             │   │
             │   ├── hub/               INSTALLED — unpacked hub content
-            │   │   ├── nodes/         node bundles (migrating from data/nodes/)
+            │   │   ├── nodes/         node bundles (migrated from data/nodes/ on first touch)
             │   │   │   └── {package}/ definition.json, functions/, *.wasm, icons
             │   │   └── rwe-libraries/ RWE libraries (none materialize yet)
             │   │
@@ -214,7 +215,8 @@ orphan rows for deleted projects keep the file alive until hand-drained.
 
 - `data/logs/` and `project-operations/` retention windows: unset.
 - `.bootstrap/superadmin-password` lifecycle (rotation/removal): unset.
-- `data/nodes/` → `data/hub/nodes/`: ratified, code move pending.
+- `data/nodes/` → `data/hub/nodes/`: shipped — transparent first-touch move,
+  both-paths-present refuses; `zeb.lock` entries resolve against `data/hub/`.
 
 ### Evidence
 

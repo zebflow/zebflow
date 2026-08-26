@@ -528,7 +528,9 @@ mod tests {
     /// Writes a one-node composite bundle whose function runs exactly one inner
     /// node, so what that node reaches is the only variable.
     fn write_bundle(root: &Path, slug: &str, hosts: Value, call_kind: &str, call_config: Value) {
-        let package_dir = root.join("users/superadmin/default/data/nodes").join(slug);
+        let package_dir = root
+            .join("users/superadmin/default/data/hub/nodes")
+            .join(slug);
         std::fs::create_dir_all(package_dir.join("functions")).expect("package dirs");
 
         let spec: crate::platform::model::MultiNodePackageDefinition =

@@ -1968,15 +1968,6 @@ pub struct ProjectFileLayout {
     pub repo_git_dir: PathBuf,
     /// `.../repo/zebflow.yaml` (non-sensitive project configuration, git-synced).
     pub project_config_file: PathBuf,
-    /// `.../data/nodes` — installed node bundles.
-    ///
-    /// These are materialized from `zeb.lock`, not authored, so they live with
-    /// the machine's other derived state rather than in the source repository.
-    ///
-    /// Not yet one of the four `data/` tiers: `project-directory.md`'s tree
-    /// does not name this directory, so it is left where it was rather than
-    /// guessed into `store` or `cache`. Recorded as open in that contract.
-    pub data_nodes_dir: PathBuf,
     /// The repository layout these paths project onto disk.
     ///
     /// Every directory inside `repo/` is derived from this rather than stored
@@ -2057,6 +2048,32 @@ impl ProjectFileLayout {
     /// context, materialized from `repo/`).
     pub fn data_cache_agent_docs_dir(&self) -> PathBuf {
         self.data_cache_dir().join("agent_docs")
+    }
+
+    /// `.../data/hub` — the INSTALLED tier: content unpacked from a hub or a
+    /// local document (`instance-directory.md`). Removal is `uninstall`,
+    /// recorded in `zeb.lock` — never a cleanup.
+    pub fn data_hub_dir(&self) -> PathBuf {
+        self.data_dir.join("hub")
+    }
+
+    /// `.../data/hub/nodes` — installed node bundles.
+    ///
+    /// These are materialized from `zeb.lock`, not authored, so they live with
+    /// the machine's other derived state rather than in the source repository.
+    /// A locked bundle's `entry` (`nodes/{slug}/definition.json`) resolves
+    /// against [`Self::data_hub_dir`], so the recorded string survives the
+    /// move from the pre-contract `data/nodes` home unchanged.
+    pub fn data_hub_nodes_dir(&self) -> PathBuf {
+        self.data_hub_dir().join("nodes")
+    }
+
+    /// `.../data/hub/rwe-libraries` — installed RWE libraries.
+    ///
+    /// Drawn by `instance-directory.md`; the writer arrives with library
+    /// seeding. Scaffolded empty until then so the tree matches the contract.
+    pub fn data_hub_rwe_libraries_dir(&self) -> PathBuf {
+        self.data_hub_dir().join("rwe-libraries")
     }
 
     /// `.../data/recovery` — disposable, bounded. Migration safety copies,
@@ -2347,7 +2364,7 @@ pub struct MultiNodeEntryDefinition {
 /// Runtime-enriched entry for an installed node package.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InstalledNodePackage {
-    /// The slug (directory name under `data/nodes/`).
+    /// The slug (directory name under `data/hub/nodes/`).
     pub slug: String,
     /// Owner this package belongs to.
     pub owner: String,

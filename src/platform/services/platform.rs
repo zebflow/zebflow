@@ -107,6 +107,10 @@ impl PlatformService {
             .validate()
             .map_err(|err| PlatformError::new("CLUSTER_CONFIG_INCOMPLETE", err.to_string()))?;
         std::fs::create_dir_all(&config.data_root)?;
+        // The layout version gate runs before any adapter opens anything in
+        // the root: a newer-versioned root refuses here, a pre-versioned one
+        // is stamped (`platform/layout.json`, `instance-directory.md`).
+        crate::platform::layout::open_data_root(&config.data_root)?;
         let data = build_data_adapter(config.data_adapter, &config.data_root)?;
         // The configuration service is built first: the file adapter resolves
         // every project directory through the layout that service reads.

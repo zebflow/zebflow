@@ -128,16 +128,23 @@ impl DependencyLockService {
             .join("repo")
     }
 
-    /// Root that a node bundle's `entry` path resolves against.
-    ///
-    /// Bundles are materialized artifacts, so they live under `data/` while the
-    /// lock that declares them stays in `repo/`. The recorded `entry` string is
-    /// unchanged by that split; only its base directory differs.
-    fn node_root(&self, owner: &str, project: &str) -> PathBuf {
+    fn data_path(&self, owner: &str, project: &str) -> PathBuf {
         self.users_root
             .join(slug_segment(owner))
             .join(slug_segment(project))
             .join("data")
+    }
+
+    /// Root that a node bundle's `entry` path resolves against.
+    ///
+    /// Bundles are materialized artifacts, so they live in the INSTALLED tier,
+    /// `data/hub/`, while the lock that declares them stays in `repo/`. The
+    /// recorded `entry` string (`nodes/{slug}/definition.json`) is unchanged
+    /// by that split — and was unchanged again by the `data/nodes` →
+    /// `data/hub/nodes` move; only the base directory it resolves against
+    /// differs.
+    fn node_root(&self, owner: &str, project: &str) -> PathBuf {
+        self.data_path(owner, project).join("hub")
     }
 
     fn lock_path(&self, owner: &str, project: &str) -> PathBuf {
@@ -145,9 +152,9 @@ impl DependencyLockService {
     }
 
     /// `.../data/recovery` — where migration safety copies live
-    /// (`project-directory.md` §5), never inside `repo/`.
+    /// (`instance-directory.md`), never inside `repo/`.
     fn recovery_path(&self, owner: &str, project: &str) -> PathBuf {
-        self.node_root(owner, project).join("recovery")
+        self.data_path(owner, project).join("recovery")
     }
 
     fn update_lock(&self, path: &Path) -> Arc<Mutex<()>> {
@@ -1645,7 +1652,7 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let users = root.path().join("users");
         let service = DependencyLockService::new(users.clone());
-        let package_dir = users.join("owner/project/data/nodes/example");
+        let package_dir = users.join("owner/project/data/hub/nodes/example");
         std::fs::create_dir_all(&package_dir).unwrap();
         std::fs::write(
             package_dir.join("definition.json"),

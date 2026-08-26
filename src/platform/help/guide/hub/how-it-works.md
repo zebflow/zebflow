@@ -72,7 +72,7 @@ anything. A project may narrow it in `repo/zebflow.yaml` under
 name whatever the list says, because an install cannot proceed without them.
 
 A node bundle is judged by its own contract rather than by a project's list: it
-materializes into `data/nodes/` and never writes into `repo/`.
+materializes into `data/hub/nodes/` and never writes into `repo/`.
 
 ## Publishing refuses the same things
 

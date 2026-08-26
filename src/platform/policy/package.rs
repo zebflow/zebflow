@@ -195,7 +195,7 @@ pub struct PackageReviewOptions {
     /// than inside a project's `repo/`.
     ///
     /// A node bundle is the only package this is true of: it materializes into
-    /// `data/nodes/` and its file set is fixed by the `NodeBundle` contract,
+    /// `data/hub/nodes/` and its file set is fixed by the `NodeBundle` contract,
     /// not by a project's layout. Applying a repository rule to it would let a
     /// project that narrowed its own extensions refuse a bundle that never
     /// touches its repository.
@@ -1592,7 +1592,7 @@ TRUNCATE TABLE tags;
         assert!(review.violations.is_empty(), "{:?}", review.violations);
     }
 
-    /// A node bundle materializes into `data/nodes/` under its own contract,
+    /// A node bundle materializes into `data/hub/nodes/` under its own contract,
     /// not into anyone's repository, so the repository rule does not apply to
     /// it -- and a project that narrowed its own extensions cannot refuse a
     /// bundle that never touches its repository.

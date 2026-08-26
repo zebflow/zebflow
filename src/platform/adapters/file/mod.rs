@@ -87,7 +87,6 @@ impl FileAdapter for FilesystemFileAdapter {
         let files_dir = root.join("files");
         let repo_dir = root.join("repo");
         let repo_git_dir = repo_dir.join(".git");
-        let data_nodes_dir = data_dir.join("nodes");
         let project_config_file =
             repo_dir.join(crate::contracts::kinds::PROJECT_CONFIGURATION_FILE);
 
@@ -105,7 +104,6 @@ impl FileAdapter for FilesystemFileAdapter {
             repo_dir,
             repo_git_dir,
             project_config_file,
-            data_nodes_dir,
             repo_layout,
         };
 
@@ -122,6 +120,19 @@ impl FileAdapter for FilesystemFileAdapter {
         )
         .map_err(|err| PlatformError::new("PLATFORM_DATA_TIER_MIGRATE", err.to_string()))?;
 
+        // Same shape for the INSTALLED tier: a pre-contract project keeps its
+        // node bundles at `data/nodes`, and the whole directory moves in one
+        // `rename` onto `data/hub/nodes` — before the base-dirs loop below
+        // scaffolds an empty `data/hub/nodes`, which would turn this into a
+        // both-paths refusal. The locked `entry` strings
+        // (`nodes/{slug}/definition.json`) are untouched; only the base they
+        // resolve against (`data` → `data/hub`) changes with the move.
+        migrate_tier_entry(
+            &resolved.data_dir.join("nodes"),
+            &resolved.data_hub_nodes_dir(),
+        )
+        .map_err(|err| PlatformError::new("PLATFORM_DATA_TIER_MIGRATE", err.to_string()))?;
+
         // Base dirs
         for dir in [
             &resolved.root,
@@ -130,6 +141,9 @@ impl FileAdapter for FilesystemFileAdapter {
             &resolved.data_cache_dir(),
             &resolved.data_cache_pipelines_dir(),
             &resolved.data_cache_agent_docs_dir(),
+            &resolved.data_hub_dir(),
+            &resolved.data_hub_nodes_dir(),
+            &resolved.data_hub_rwe_libraries_dir(),
             &resolved.data_recovery_dir(),
             &resolved.data_logs_dir(),
             &resolved.files_dir,

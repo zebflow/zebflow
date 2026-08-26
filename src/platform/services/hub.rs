@@ -3060,10 +3060,13 @@ impl HubService {
         let placement =
             HubInstallPlacement::new(&layout.repo_layout, &payload, package_id, target_folder);
         let install_root = placement.install_root().to_string();
-        // A node bundle is a materialized artifact, so it installs under data/.
-        // Everything else is project source and installs under repo/.
+        // A node bundle is a materialized artifact, so it installs under the
+        // INSTALLED tier, `data/hub/` — the `nodes/{id}` target folder lands
+        // it at `data/hub/nodes/{id}`, and the locked `entry` resolves against
+        // the same base. Everything else is project source and installs under
+        // repo/.
         let install_base = if payload.asset_kind == HUB_ASSET_KIND_NODE_BUNDLE {
-            layout.data_dir.clone()
+            layout.data_hub_dir()
         } else {
             layout.repo_dir.clone()
         };
@@ -3273,9 +3276,9 @@ impl HubService {
         // The same choice the install makes, so what the review calls an
         // overwrite is what the install would actually overwrite.
         let install_base = if payload.asset_kind == HUB_ASSET_KIND_NODE_BUNDLE {
-            &layout.data_dir
+            layout.data_hub_dir()
         } else {
-            &layout.repo_dir
+            layout.repo_dir.clone()
         };
         let mut files_added = Vec::new();
         let mut files_overwritten = Vec::new();
@@ -7525,7 +7528,7 @@ mod tests {
 
         let installed = root
             .path()
-            .join("users/superadmin/default/data/nodes/storepkg/wasm/core.wasm");
+            .join("users/superadmin/default/data/hub/nodes/storepkg/wasm/core.wasm");
         assert_eq!(
             std::fs::read(&installed).unwrap(),
             REFERENCED_MODULE,
@@ -7588,7 +7591,7 @@ mod tests {
         assert_eq!(
             std::fs::read(
                 root.path()
-                    .join("users/superadmin/default/data/nodes/filepkg/wasm/core.wasm")
+                    .join("users/superadmin/default/data/hub/nodes/filepkg/wasm/core.wasm")
             )
             .unwrap(),
             REFERENCED_MODULE
@@ -7647,7 +7650,7 @@ mod tests {
             .expect("the referenced package installs");
 
         for rel in ["definition.json", "icon.svg", "wasm/core.wasm"] {
-            let installed = format!("users/superadmin/default/data/nodes/bothpkg/{rel}");
+            let installed = format!("users/superadmin/default/data/hub/nodes/bothpkg/{rel}");
             assert_eq!(
                 std::fs::read(carried_root.path().join(&installed)).unwrap(),
                 std::fs::read(referenced_root.path().join(&installed)).unwrap(),
@@ -8188,9 +8191,9 @@ mod tests {
             .hub
             .install_local_node_bundle("superadmin", "default", package_id, "1.0.0", "", document)
             .expect("the first install succeeds");
-        let package_dir = root
-            .path()
-            .join(format!("users/superadmin/default/data/nodes/{package_id}"));
+        let package_dir = root.path().join(format!(
+            "users/superadmin/default/data/hub/nodes/{package_id}"
+        ));
         (
             std::fs::read(package_dir.join("definition.json")).unwrap(),
             std::fs::read(package_dir.join("wasm/core.wasm")).unwrap(),
@@ -8211,9 +8214,9 @@ mod tests {
             crate::contracts::kinds::DependencyLockSpec,
         ),
     ) {
-        let package_dir = root
-            .path()
-            .join(format!("users/superadmin/default/data/nodes/{package_id}"));
+        let package_dir = root.path().join(format!(
+            "users/superadmin/default/data/hub/nodes/{package_id}"
+        ));
         assert_eq!(
             std::fs::read(package_dir.join("definition.json")).unwrap(),
             previous.0,
@@ -8329,7 +8332,7 @@ mod tests {
         assert!(
             !root
                 .path()
-                .join("users/superadmin/default/data/nodes/bodypkg")
+                .join("users/superadmin/default/data/hub/nodes/bodypkg")
                 .exists(),
             "a refused install writes nothing at all"
         );
@@ -8654,7 +8657,7 @@ mod tests {
         assert_eq!(error.code, "NODE_MANIFEST_PARSE");
         let package_dir = root
             .path()
-            .join("users/superadmin/default/data/nodes/broken-bundle");
+            .join("users/superadmin/default/data/hub/nodes/broken-bundle");
         assert!(!package_dir.join("README.md").exists());
         assert!(!package_dir.join("definition.json").exists());
         assert_eq!(

@@ -16,6 +16,7 @@ pub mod db;
 pub mod error;
 pub mod help;
 pub mod interaction;
+pub mod layout;
 pub mod mcp;
 pub mod model;
 pub mod operations;

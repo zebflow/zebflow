@@ -18,7 +18,7 @@ A bundle is the only install source. One node and many nodes use the same
 | Kind | `NodeBundle` |
 | Representation | Strict UTF-8 JSON envelope |
 | Owner | Platform node packaging |
-| Durable source | `data/nodes/{package-slug}/definition.json` |
+| Durable source | `data/hub/nodes/{package-slug}/definition.json` |
 | Platform bundles | `src/pipeline/nodes/bundled/{package-slug}/`, consumed at build time |
 | Rust model | `src/platform/model.rs` |
 | Contract and validator | `src/contracts/kinds/node.rs` |
@@ -45,7 +45,7 @@ paths, parent traversal, and files outside the root are rejected.
 
 This layout is identical wherever a bundle appears: authored in
 `src/pipeline/nodes/bundled/` for platform bundles, published to the Hub, and
-materialized into `data/nodes/` on install. One layout, three consumers.
+materialized into `data/hub/nodes/` on install. One layout, three consumers.
 
 ### Why installed bundles live under `data/`
 
@@ -60,19 +60,21 @@ storage buckets:
 
 An installed bundle is not declared, it is *materialized from* a declaration.
 The declaration is `zeb.lock`, which is authored and stays in `repo/`. The bytes
-are the machine's output, so they belong in `data/nodes/`. This mirrors the
+are the machine's output, so they belong in `data/hub/nodes/`. This mirrors the
 split that already exists between `repo/pipelines/` and the activated snapshots
-under `data/cache/pipelines/` (`project-directory.md` §5).
+under `data/cache/pipelines/` (`instance-directory.md` §5).
 
-`data/nodes/` is classified by `project-directory.md` §3 as the **installed**
-tier, whose ratified home is `data/hub/nodes/` — deliberately not `cache`,
-because live testing showed a locally-installed bundle cannot be rebuilt from
-`zeb.lock` alone, unlike the pipeline snapshots it is compared to here. The
-physical move from `data/nodes/` to `data/hub/nodes/` has not landed yet; until
-it does, the bytes stay at `data/nodes/`.
+`data/hub/nodes/` is classified by `instance-directory.md` §3 as the
+**installed** tier — deliberately not `cache`, because live testing showed a
+locally-installed bundle cannot be rebuilt from `zeb.lock` alone, unlike the
+pipeline snapshots it is compared to here. The physical move from the
+pre-contract `data/nodes/` home landed as a transparent first-touch migration;
+a straggler still holding `data/nodes/` moves in one atomic rename, and
+both-paths-present refuses.
 
 A bundle's `entry` path in `zeb.lock` is unchanged by this: it is still
-`nodes/{slug}/definition.json`, now resolved against the project's `data/` root.
+`nodes/{slug}/definition.json`, now resolved against the project's `data/hub/`
+root.
 
 ## Canonical Shape
 
@@ -434,7 +436,7 @@ because publication only happens on a fully validated refresh.
 
 The honest limit: steps 5, 6, and 7 touch separate durable objects. A process
 kill between them can leave files on disk that the lock and registry do not know
-about. The next refresh re-validates the whole `data/nodes` tree and fails closed
+about. The next refresh re-validates the whole `data/hub/nodes` tree and fails closed
 on an invalid bundle, so a partial install is detected rather than executed, but
 it is not silently repaired.
 
@@ -669,7 +671,7 @@ Third-party:
   `POST .../nodes/install/review` and `POST .../nodes/install`
 - the same flow through the Hub page: choose file, review every category,
   install, both endpoints returning 200
-- bundle bytes landed in `data/nodes/acme/`, and both `n.x.acme.*` kinds
+- bundle bytes landed in `data/hub/nodes/acme/`, and both `n.x.acme.*` kinds
   appeared as `community` with `source: wasm`
 - a third-party WASM node executed, returning its own export
 - saving a pipeline that references them materialised
