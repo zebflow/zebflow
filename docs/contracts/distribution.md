@@ -369,18 +369,50 @@ with no diff and no copy.
 Both are corrections owed to the catalog path, recorded here because the rule
 belongs to `add`, not to one endpoint.
 
-## 1b. Publish targets
+## 1b. Hub types
 
-"Publish" is two different acts and must not be written as one:
+One ACL system exists, ever: publisher / token / grant, on the Public Hub.
+Sharing IS publishing; privacy is network exposure, not a second permission
+model.
 
-| Target | Route | Who can see it | Trust basis |
+**Public Hub — hub type one.** The hub's original need: sharing between
+instances with no network connection to each other, over the internet, like
+npm. **Optional**: any master may add a hub service or not; adding one installs
+it as a service onto a chosen office. It is the ONLY sharing mechanism, with
+the one ACL model. Exposed by k8s/nginx → an internet hub. Not exposed → users
+add it by internal URL, and privacy comes from the network topology.
+Admin sugar: superadmin may auto-create publisher accounts and grants directed
+at chosen projects — syntactic sugar over the manual flow, same mechanism.
+
+**Static repository hub — hub type two.** A plain HTTPS location — GitHub,
+GitLab, any file host — serving `zebflow-repository.json`
+([`HubRepositoryIndex`](./kinds/hub-repository-index/README.md)) plus package
+documents and content-addressed artifacts. No server logic, read-only: publish
+is committing files. Trust is the URL the user named plus locked digests.
+Official: `github.com/zebflow/hub`.
+
+**Local hub — hub type three.** The instance's curated shelf. Seeded on first
+boot with the blessed embedded content (`zebflow.*` — reserved publisher:
+deckgl, threejs, prosemirror, UI template sets, official node bundles), so
+built-in content stops coming from nowhere and gets real lock entries.
+Writable by **superadmin only** (curating converted npm libraries,
+LLM-generated libraries, company-approved packages); read-only for everyone
+else. **No sharing semantics and no ACL of its own** — nothing to govern when
+only the curator writes. Every user and project on the instance installs from
+it. Superadmin deletion is retraction: installed copies survive, new installs
+refuse with the reason.
+
+Hub asset kinds, uniformly: nodes (INSTALLED), rwe libraries (INSTALLED —
+opaque compiled bundles, pinned), repo derivatives (SOURCE — pipelines,
+templates, components, scripts, styles; a UI component set is a template
+package, not a separate kind), whole projects. A project may also install from
+a local file, direct to the project: the installed form is the artifact, per
+the instance-directory INSTALLED tier.
+
+| Publish target | Route | Who can see it | Trust basis |
 | --- | --- | --- | --- |
-| **Local Hub** | `hub/assets/publish` | this instance, subject to its access rules | the publishing instance itself |
-| **Remote Hub** | `hub/remote/assets/publish` | another instance over HTTP | publisher token plus a repository grant |
-
-Publishing to a local Hub shares within one deployment. Publishing to a remote
-Hub sends bytes to a system you do not control, which is an outward-facing act
-with a different consent requirement.
+| Local hub | superadmin curation only | everyone on this instance | the curator |
+| Public Hub | `hub/remote/assets/publish` | per its access rules and exposure | publisher token plus a repository grant |
 
 ## 2. Channels
 
@@ -695,21 +727,11 @@ answer or an explicit statement that they have none.
 
 ## 6. Where distributed bytes land
 
-Distribution follows the project's ownership model:
-
-| Area | Meaning | Example |
-| --- | --- | --- |
-| `repo/` | what the human declares | `zeb.lock`, pipelines, node interfaces |
-| `data/` | what the machine materialises | installed node bundles |
-| `files/` | what the application stores for users | ZebFS objects |
-
-An installed dependency is materialised from a declaration, so its bytes belong
-in `data/` while the declaration stays in `repo/`. A resource that is *authored*
-by the receiving project — a pipeline, a template, a folder of source — is the
-opposite: it lands in `repo/` and becomes that project's own work.
-
-That difference is why `node_bundle` installs under `data/` while
-`pipeline_bundle` and `template_bundle` install under `repo/`.
+The directory tree and tiers are owned by
+[`instance-directory.md`](./instance-directory.md) — one source, not repeated
+here. Distribution's only rule: an installed dependency lands in the INSTALLED
+tier (`data/hub/`); authored content a project adopts (`pipeline_bundle`,
+`template_bundle`, `add`) lands in `repo/`.
 
 ## 7. Open decisions
 
