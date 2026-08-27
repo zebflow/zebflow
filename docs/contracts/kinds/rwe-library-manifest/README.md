@@ -49,14 +49,15 @@ compiles it, it is source (`template_bundle`), not a library.
 | `exports` | the symbols a page may import; non-empty; the compiler and UI resolve imports against this list and nothing else |
 | `versions` | at least one; keys non-empty |
 | `entry` | relative path to the runtime bundle inside the library directory; may only descend |
-| `source` | `offline` (bytes embedded in the binary / carried in the package) or `hub` (installed from a hub). **`online` — a bare download URL with no digest and no review — is removed**; "host it yourself" is the static repository channel, which is digest-pinned and reviewed. |
+| `source` | packaging: `offline` — the version's bundle bytes are carried inside the package; `hub` — fetched from a hub at install. **`online` — a bare download URL with no digest and no review — is removed**; "host it yourself" is the static repository channel, which is digest-pinned and reviewed. |
 | `integrity` | `sha256:` + 64 hex over the entry bundle. **Required — empty refused.** Filled by the publisher/seeder, verified at install and by the dependency report. |
 | `size_bytes` | decoded size of the entry bundle; required, non-zero |
 
 Manifest `source` and lock `source` are different facts and both are kept:
-the manifest's says how the entry **loads** (embedded bytes vs installed copy);
-the lock's says where the **package came from** (`hub.*` | `direct.*`). They were
-coherent by accident before this line existed.
+the manifest's is **packaging** — whether the version's bytes are carried in
+the package or fetched at install; the lock's is **provenance** of the package
+(`hub.*` | `direct.*`). Every installed library loads from its installed copy.
+They were coherent by accident before this line existed.
 
 ## Rejections
 

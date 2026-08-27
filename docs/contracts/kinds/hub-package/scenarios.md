@@ -36,15 +36,10 @@ content is invented.
 
 ### Vocabulary, in one table
 
-The three verbs are not synonyms and this document uses them strictly. See
-[`../../distribution.md`](../../distribution.md#1a-the-verbs).
-
-| Verb | Scope | Lands in | Receiver may edit | Removal |
-| --- | --- | --- | --- | --- |
-| **install** (project scope) | one project gains a managed dependency | `data/` | no | uninstall |
-| **install** (platform scope) | a whole project is materialised | a new project | yes, it is theirs | none; irreversible |
-| **add** | content is copied in as the receiver's own source | `repo/` | yes | delete the files |
-| **import** | whole project areas replaced or merged | `repo/`, `data/`, `files/` | yes | none; destructive |
+The three verbs are not synonyms and this document uses them strictly. The
+table — scope, landing area, editability, removal, both install scopes — is
+[`distribution.md` §1a's](../../distribution.md#1a-the-verbs) and is not
+duplicated here.
 
 One route name is a trap worth stating once: the Hub project-scope endpoint is
 `POST .../hub/assets/{id}/{version}/add`, and for a `node_bundle` it performs an
@@ -58,7 +53,7 @@ things.
 
 | | |
 | --- | --- |
-| `studio.example` | the publishing instance, running a local Hub |
+| `studio.example` | the publishing instance, exposing a Public Hub |
 | `acme` | a publisher registered on that Hub |
 | `dana` | someone on a second instance who wants the package |
 | `mirror.example` | a third instance holding a copy, which nobody has audited |
@@ -68,6 +63,14 @@ things.
 ## 1. A publisher ships their first release
 
 **Runs today.**
+
+> **2026-08-27.** The local store is now sealed immutable — seeded by the
+> release, no publisher tokens (`distribution.md` §1b) — and publisher publish
+> is re-scoped to the Public Hub. The run below is dated evidence of the
+> publish core, which the seed and the Public Hub both use. Wherever a run in
+> this document lands bytes in `services/hub-default/`, that is the pre-split
+> store; the contract now names `services/hub-local/` (blessed shelf) and
+> `services/hub-public/` (the one publish target). Code catch-up owed.
 
 Acme has a pipeline in the project `acme/billing` that turns a webhook into an
 invoice PDF, plus the TSX page it renders. They want it on their instance's Hub
@@ -624,14 +627,16 @@ curl -s -b /tmp/zf.txt -X POST -H "Content-Type: application/json" -d '{}' \
 The bytes landed under `data/`, not `repo/`:
 
 ```text
-users/dana/ops/data/nodes/acme.pdfkit/
+users/dana/ops/data/hub/nodes/acme.pdfkit/
   definition.json
   icon.svg
   functions/render.zf.json
   wasm/pdfkit.wasm
 ```
 
-and `repo/zeb.lock` gained a declaration:
+and `repo/zeb.lock` gained a declaration. The lock shown is the 2026-08-27
+**target contract** — sealed source vocabulary and Public Hub store scoping
+(`../dependency-lock/README.md`); code catch-up is owed:
 
 ```json
 {
@@ -642,10 +647,10 @@ and `repo/zeb.lock` gained a declaration:
     "rwe": { "libraries": {} },
     "nodes": {
       "bundles": {
-        "hub/local/acme.pdfkit": {
+        "acme.pdfkit": {
           "version": "2.0.0",
-          "source": "hub",
-          "source_id": "local/acme.pdfkit",
+          "source": "hub.public",
+          "source_id": "acme.pdfkit@2.0.0",
           "entry": "nodes/acme.pdfkit/definition.json",
           "integrity": "sha256:…64 hex, illustrative…",
           "definitions": ["n.x.acme.pdf.render"]
@@ -656,13 +661,14 @@ and `repo/zeb.lock` gained a declaration:
 }
 ```
 
-That is the ownership model working: the declaration is authored state in
-`repo/` and travels with the git history; the bytes are machine output in
-`data/` and are rebuildable from the declaration. Uninstall
+That is the ownership model working: the declaration is declared in `repo/` —
+machine-written, per instance-directory Rule 1 — and travels with the git
+history; the bytes are machine output in `data/` and are rebuildable from the
+declaration. Uninstall
 (`DELETE .../nodes/uninstall/{kind}`) removes both.
 
 **Read `integrity` carefully.** It is
-`directory_tree_sha256(data/nodes/acme.pdfkit)` — a digest of the installed
+`directory_tree_sha256(data/hub/nodes/acme.pdfkit)` — a digest of the installed
 tree, computed after the install. It is **not** the sha256 of the `HubPackage`
 release document. So the lock detects local tampering with installed bytes, and
 does not by itself let you prove the release you have is the release that was
@@ -1039,6 +1045,11 @@ nothing in the document names where it was published from.
 
 ### 7.2 Publishing one, and installing it from this instance's Hub
 
+> **2026-08-27.** Same re-scope as [§1](#1-a-publisher-ships-their-first-release):
+> publish now targets the Public Hub store `services/hub-public/`; the run
+> below is dated evidence against the pre-split local store (code catch-up
+> owed).
+
 **Runs today.** A publish carries a file up to 1 MiB and references anything
 larger. The bytes go into `<data_root>/services/hub-default/artifacts/<sha256>`
 through `store_artifact`, and the release records only the digest:
@@ -1209,8 +1220,8 @@ of them and never clears one.
 
 The premise is that hubs are pluggable the way apt repositories are:
 `hub.telkomsel.com`, `hub.mit.edu`, `github.com/google/zebflow-hub`. A repository
-is a transport, not a format, and answers two questions: `list()` and
-`fetch(id, version)`.
+is a transport, not a format, and answers three questions: `list()`,
+`fetch(id, version)`, and `artifact(id, version, digest)`.
 
 ### 9.1 What runs today
 
@@ -1250,18 +1261,11 @@ promise — you can run it, and you can open the same installation and change it
 
 ### 9.2 What does not
 
-> **Not built: one repository interface.** `ProjectHubRepository` carries
-> `base_url`, `remote_owner`, `remote_project`, and `read_token` — four fields a
-> static repository and a local file do not have. Every remote path builds a URL
-> with `remote_hub_url` and expects another Zebflow instance's API on the other
-> end. "A new source is a fetcher, not a new installer" is the design; the code
-> has one hardwired fetcher. `distribution.md` §2 says this generalisation should
-> happen *before* a second remote source is added rather than after, and it has
-> not happened.
+> **Built: one repository interface.** `HubRepositoryChannel` now fronts the
+> five package channels — `distribution.md` §2, "One repository interface";
+> transfer archives and git remotes move projects outside it.
 
-> **Not built: static repositories.** No `zebflow-repository.json` index is read
-> anywhere. A plain HTTPS location serving an index plus package documents is
-> designed and absent.
+> **Built: static repositories.** Live-proven — `kinds/hub-repository-index/README.md`.
 
 > **Partly built: the CLI.** `zeb install` exists and is the client for the
 > platform-scope install below: it reviews, prints, asks, and then calls the
@@ -1271,6 +1275,12 @@ promise — you can run it, and you can open the same installation and change it
 > document is `curl`.
 
 ### 9.3 What travels when Acme publishes to someone else's hub
+
+> **2026-08-27.** Same re-scope as [§1](#1-a-publisher-ships-their-first-release):
+> every publish now lands in a Public Hub store `services/hub-public/` — this
+> instance's or another's — so "publishing locally" below is dated evidence of
+> the pre-split local store (code catch-up owed). What travels on the wire is
+> unchanged.
 
 Publishing outward is a different act from publishing locally, with a different
 consent requirement, and it is the only path that carries presentation:

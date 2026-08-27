@@ -123,9 +123,8 @@ install path, not teaching it to write files again.
 Run mode still needs somewhere to serve from, and now it and `install` agree on
 where by construction rather than by both happening to read one variable. The
 data root has exactly two cases — `ZEBFLOW_PLATFORM_DATA_DIR` when it is set,
-and the OS user-data path otherwise (`~/.local/share/zebflow`,
-`~/Library/Application Support/Zebflow`, `%LOCALAPPDATA%\Zebflow`). It is never
-relative to the working directory. The old default was `.zebflow-platform-data`
+and the OS user-data path otherwise (the per-OS list is `interface.md` §5's).
+It is never relative to the working directory. The old default was `.zebflow-platform-data`
 beside wherever the shell happened to be, which meant an installed binary
 created an instance in whatever folder the user was standing in and a `cd` lost
 the projects in it — the stable per-user location this paragraph used to say was
@@ -227,10 +226,11 @@ without its noun. That objection is accepted: `hub` is where the routes they
 would call already live, and moving them costs nothing because neither is
 built.
 
-**Context.** Project-scope commands need to know which project. `--owner` and
-`--project` already exist as flags, and `default_owner` and `default_project`
-already exist in the CLI configuration, so the resolution order is settled:
-explicit flag, then configured default, then error. No command guesses.
+**Context.** Project-scope commands need to know which project. Context comes
+from the client context store, `~/.zebflow/client/context.json`
+(`interface.md` §5), and the resolution order is settled: explicit
+`--owner` / `--project` flag, then stored context, then error. No command
+guesses.
 
 **A reference must name its channel.** `<ref>` alone is ambiguous across the
 channels in §2, and the channel is the trust decision, so it is never inferred:
@@ -298,7 +298,7 @@ Unless a row says otherwise, these are project-scope acts.
 | Resource | Kind that owns its format | Channels | Direction |
 | --- | --- | --- | --- |
 | Node bundle | `NodeBundle` | Hub asset, remote pack, local file, project transfer | export, publish, install |
-| RWE library | `RweLibraryManifest` | local hub (`rwe_library` asset, seeded from the binary's blessed tree); direct ingestion (same package, same gates, locked `direct.file` / `direct.npm`); Git planned | install only, today |
+| RWE library | `RweLibraryManifest` | any hub serving (`rwe_library` package: local blessed, public, static); direct ingestion (same package, same gates, locked `direct.file` / `direct.npm`); Git planned | install only, today |
 | Pipeline | `Pipeline` | Hub asset (`pipeline_bundle`) | export, publish, add |
 | RWE source: page, component, script, style | no kind yet | Hub asset (`template_bundle`) | export, publish, add |
 | Folder of project files | no kind yet | Hub asset (`folder_bundle`) | export, publish, add |
@@ -325,14 +325,15 @@ That is a real gap, recorded here rather than in a kind that does not exist.
 Direction alone is not enough, because two resources can both arrive over the
 same channel and mean different things afterwards.
 
-These are project-scope verbs. Platform-scope install is described in §0 and
-behaves differently: it produces a whole project, which the receiving instance
-then owns and edits freely. At project scope `install` means *managed*; at
-platform scope it means *materialised and yours*.
+Platform-scope install is described in §0 and behaves differently: it produces
+a whole project, which the receiving instance then owns and edits freely. At
+project scope `install` means *managed*; at platform scope it means
+*materialised and yours*.
 
 | Verb | What it means | Lands in | Editable by the receiver | Recorded in `zeb.lock` | Removal |
 | --- | --- | --- | --- | --- | --- |
-| **Install** | takes on a managed dependency | `data/` | no | yes | uninstall |
+| **Install** (project scope) | takes on a managed dependency | `data/` | no | yes | uninstall |
+| **Install** (platform scope) | a whole project is materialised (§0) | a new project | yes, it is theirs | no — the §7 provenance gap | none; irreversible |
 | **Add** | copies content into this project's own source | `repo/` | **yes, it becomes their file** | no | delete the files |
 | **Import** | replaces or merges whole project areas | `repo/`, `data/`, `files/` | yes | n/a | destructive; no undo |
 
@@ -350,7 +351,7 @@ not: it is materialised at a path the platform owns.
 | Path | Destination | Default |
 | --- | --- | --- |
 | Hub add | `target_folder`, chosen by the receiver, inside the project's source root | `{source}/hub/{id}` |
-| Hub install, node bundle | not chosen | `data/nodes/{package}` |
+| Hub install, node bundle | not chosen | `data/hub/nodes/{package}` |
 | UI catalog add | **not offered** | fixed by the catalog |
 
 A package's paths were produced by the publisher's layout, so `target_folder`
@@ -377,19 +378,33 @@ a byte, and the installer cannot tell the difference. The only differentiator
 is how it is served; the catalogue wrapper (how packages are *found*) differs
 per serving and is never part of the package.
 
-**Local** — the instance's own store, read in-process at
-`services/hub-default/`. Always present, seeded on first boot with the blessed
-`zebflow.*` content, superadmin-write-only, read-only for everyone else, delete
-is retraction. This serving is why an offline machine — a Raspberry Pi with
-nothing but the installer — still installs blessed content. No sharing semantics and no ACL of its own — nothing to govern
-when only the curator writes.
+**Local** — the blessed shelf, read in-process at `services/hub-local/`.
+Present in every office's data root unconditionally (same release →
+byte-identical) and **immutable**: its only writer is the seed, which runs at
+every boot, check-first — it publishes the running release's blessed
+`zebflow.*` content through the real publish core as the reserved `zebflow`
+publisher, publishing only coordinates absent from the shelf; a coordinate
+already present is never rewritten or deleted. No other write path exists —
+not superadmin — and no publisher token can be minted for or target it. There
+is no blessed retraction, deliberately: a bad blessed version is superseded by
+a release update seeding a fixed coordinate beside it. This serving is why an
+offline machine — a Raspberry Pi with nothing but the installer — still
+installs blessed content. No sharing semantics and no ACL of its own — nothing
+to govern when nothing but the seed writes. All publishing by anyone on this
+instance, superadmin included, goes to the Public Hub.
 
-**Public** — the same store served to others over HTTP by an optional hub
-service, placed on a chosen office. The ONLY sharing mechanism, with the one
-ACL model: publisher / token / grant. Exposed by k8s/nginx → an internet hub
-like npm. Not exposed → reached by internal URL, and privacy is network
-topology, not a second permission system. Admin sugar: superadmin may
-auto-create publisher accounts and grants directed at chosen projects.
+**Public** — the Public Hub service's own store, `services/hub-public/`,
+served over HTTP. The service is placed: an OfficeTopology
+`PlatformServiceInstance` — host office, state owner, `placement_generation`
+([`kinds/office-topology/README.md`](./kinds/office-topology/README.md)) — and
+`services/hub-public/` exists only in the state-owning office's data root.
+Every consumer, other offices and the host's own projects alike, reaches it by
+its base URL and locks `hub.public`. The ONE publish target and the ONLY
+sharing mechanism, with the one ACL model: publisher / token / grant. Exposed
+by k8s/nginx → an internet hub like npm. Not exposed → reached by internal URL
+(localhost included), and privacy is network topology, not a second permission
+system. Admin sugar: superadmin may auto-create publisher accounts and grants
+directed at chosen projects.
 
 **Static** — the same content as plain read-only files at any HTTPS URL:
 `zebflow-repository.json` ([`HubRepositoryIndex`](./kinds/hub-repository-index/README.md))
@@ -400,7 +415,7 @@ smuggled executables regardless of origin. Official: `github.com/zebflow/hub`.
 
 | Publish target | Route | Who can see it | Trust basis |
 | --- | --- | --- | --- |
-| Local hub | superadmin curation only | everyone on this instance | the curator |
+| Local hub | none — seeded by the release, immutable | everyone on this instance | the release itself |
 | Public Hub | `hub/remote/assets/publish` | per its access rules and exposure | publisher token plus a repository grant |
 
 ## 2. Channels
@@ -416,10 +431,10 @@ without any hub at all.
 
 | Channel | Source of bytes | Trust basis | Today |
 | --- | --- | --- | --- |
-| Embedded | the Zebflow binary | the release itself | libraries, official node bundles |
+| Embedded | the Zebflow binary | the release itself | the seed; official node bundles |
 | Local file | a document the user supplies | the reviewing user | node bundles; RWE libraries |
-| Hub asset | this instance's Hub store | publisher identity + stored digest | all asset kinds |
-| Remote pack | another instance's Hub over HTTP | repository grant + artifact digest | packs, projects |
+| Hub asset | the blessed shelf (`services/hub-local/`), read in-process | the release seed + stored digest | what the release seeds: RWE libraries, template sets — the format takes all six asset kinds; the shelf's content is the seed |
+| Remote pack | a public hub over HTTP — any instance's, including this one's own | repository grant + artifact digest | all asset kinds; packs, projects |
 | Transfer archive | an export file | whoever produced it | project bundle, files |
 | Git remote | a git repository | the remote's own access control | project `repo/` |
 | Static repository | an HTTPS location serving an index and package documents | the repository URL the user named, plus a locked digest | project bundles, platform scope |
@@ -427,21 +442,23 @@ without any hub at all.
 **Embedded is not a channel a user invokes.** It is listed because it is how
 official content arrives, and because a resource moving from embedded to
 installed is a distribution change even though no bytes travel. It is now
-first of all **the seed**: on first boot the blessed content the binary
-carries — RWE libraries and the UI template sets, as `zebflow.*` — is
-published into the local hub through the ordinary publish gates, and what a
+first of all **the seed**: at every boot, check-first, the blessed content the
+binary carries — RWE libraries and the UI template sets, as `zebflow.*` — is
+published into the local hub through the ordinary publish gates (a coordinate
+already present is skipped, per §1b), and what a
 project installs afterwards is a hub asset with a lock entry, not embedded
-bytes. Locks written before the seed said `source: embedded`; first resolve rewrites
-them to `hub.local` — the seed published the same bytes there — so `embedded`
-is gone from the lock vocabulary and the binary's blessed tree is only the
-seed, never a serving a lock can name.
+bytes. `embedded` is gone from the lock vocabulary — a lock still saying it is
+invalid and is regenerated by ordinary resolution — and the binary's blessed
+tree is only the seed, never a serving a lock can name.
 
 ### One repository interface
 
-The channels above are not five mechanisms. They are five **implementations of
-one interface**, and the format they carry is the same in every case.
+The repository interface fronts the five **package** channels — embedded,
+local file, hub local, hub public/remote, static — as five implementations of
+one interface, and the format they carry is the same in every case. Transfer
+archives and git remotes move whole projects outside it.
 
-A repository answers two questions:
+A repository answers three questions:
 
 ```text
 list()                    what packages and versions are available here
@@ -461,8 +478,8 @@ implementation detail behind those three calls.
 | --- | --- | --- | --- |
 | Embedded | the binary's asset table | bytes compiled into the binary | n/a: nothing embedded references |
 | Local file | the one document supplied | that document | `artifacts/<sha256>` beside it |
-| Zebflow Hub | this instance's asset store | the stored artifact | `<hub root>/artifacts/<sha256>` |
-| Remote Hub | another instance's HTTP API | that instance's artifact endpoint | `remote/assets/{id}/{version}/artifacts/{sha256}` |
+| Hub local | the blessed shelf, read in-process | the stored artifact | `<hub root>/artifacts/<sha256>` |
+| Hub public | a placed hub service's store over HTTP — any instance's, including this one's own | that service's artifact endpoint | `remote/assets/{id}/{version}/artifacts/{sha256}` |
 | Static repository | `zebflow-repository.json` | a document path from the index, pinned by digest | `<base>/artifacts/<sha256>` |
 
 This matters because it means a new source is a **fetcher**, not a new package
@@ -470,10 +487,10 @@ format, a new installer, or a new review path. Adding static repositories should
 add one implementation and nothing else. If it requires touching the installer,
 the abstraction is in the wrong place.
 
-The same reasoning applies to RWE libraries: embedded is not a special case, it
-is the implementation that happens to always be available offline. A library
-resolved from the binary and one resolved from a repository produce the same
-lock entry shape, differing only in `source`.
+The same reasoning applies to RWE libraries: a library resolved from any
+serving produces the same lock entry shape, differing only in `source`. The
+binary is only the seed (§2), never a serving a lock can name; the shelf it
+seeds is the implementation that is always available offline.
 
 **That is now what the code does.** `ProjectHubRepository` and
 `PlatformHubRepository` were each hardwired to a remote Zebflow instance —
@@ -720,7 +737,7 @@ produces a project that cannot be made whole.
 
 | Source | Reproducible | Export must carry bytes |
 | --- | --- | --- |
-| `hub.local` | yes — this instance's own hub, offline; blessed content always | no |
+| `hub.local` | yes on this instance — the shelf never deletes; across instances, only for coordinates the receiving release seeds | no (a transfer to an unknown release should carry bytes) |
 | `hub.public` | if the remote hub is reachable and still grants | no |
 | `hub.static` | if the URL is still alive | no |
 | `direct.npm` | weakly — the npm coordinate in `source_id` can be re-converted | **yes** |
@@ -757,13 +774,14 @@ therefore a breaking change. Promotion must be a deliberate versioned event, or
 must not happen to packages authored by others.
 
 **Reproducibility of official content.** Resolved for RWE libraries and the UI
-template sets: the first-boot seeder publishes the binary's blessed content
+template sets: the seeder — every boot, check-first (§1b) — publishes the binary's blessed content
 into the local hub as `zebflow.*`, so an installed library carries a real
-`zeb.lock` entry (`source: hub`, digest of the installed bytes) and a template
+`zeb.lock` entry (`source: hub.local`, digest of the installed bytes) and a template
 set is an ordinary reviewed package. What remains open is official *node
-bundles*, which are still embedded with no lock entry, and libraries a project
-enabled as `embedded` before the seed existed — those keep resolving against
-the running release until re-installed from the hub.
+bundles*, which are still embedded with no lock entry. A lock a project wrote
+before the seed existed, still saying `embedded`, is simply invalid and
+regenerates through ordinary resolution
+([`kinds/dependency-lock/README.md`](./kinds/dependency-lock/README.md)).
 
 **A platform-scope install records no provenance.** Nothing written by a project
 bundle install says which package, version, digest, or repository produced it.

@@ -133,7 +133,8 @@ part of the kind-by-extension scheme:
 - `zebflow.init.json` — initialization payload
 - `schema.json` — under the schema directory
 - `AGENTS.md`, `SOUL.md` — assistant instruction files. These live in
-  `data/cache/agent_docs` (`instance-directory.md` §5), NOT in `repo/`, and are
+  `data/cache/agent_docs` (`instance-directory.md`, the "Open" item on
+  assistant docs), NOT in `repo/`, and are
   not git-synced. Note that `docs/contracts/project.md` says they belong in
   `repo/`; the code disagrees, and the code is what runs.
 
@@ -284,16 +285,15 @@ answers every destination. The review and the install build it from the same
 inputs and ask it the same questions, so the destinations a review shows are the
 destinations the install writes, by construction rather than by coincidence.
 
-| Publisher area | Where it lands in the receiver |
-| --- | --- |
-| `source` | the target folder inside the receiver's `source` |
-| `assets` | the receiver's `assets`, under the same folder name |
-| `docs` | the receiver's `docs`, under the same folder name |
-| anything else | inside the package's own folder, verbatim |
+The per-area destinations are
+[hub-package/README.md's placement table](../hub-package/README.md#install-maps-into-the-receiving-projects-layout)
+and are not duplicated here.
 
-The last row is deliberate. The schema exports and the node interface directory
-hold one document for the whole project: a second copy cannot merge, and writing
-it at the canonical path would overwrite the receiver's own. That is also why a
+Its last row — anything outside `source`/`assets`/`docs` stays inside the
+package's own folder — is deliberate. The schema exports and the node interface
+directory hold one document for the whole project: a second copy cannot merge,
+and writing it at the canonical path would overwrite the receiver's own. That
+is also why a
 package's `zebflow.yaml` lands inside its folder and never replaces the
 receiver's.
 
@@ -375,7 +375,7 @@ path can construct a layout that accepts more than the platform does.
 
 A node bundle is exempt, for the reason
 [hub-package/README.md](../hub-package/README.md) already gives about its
-paths: it materializes into `data/nodes/` under the `NodeBundle` contract's own
+paths: it materializes into `data/hub/nodes/` under the `NodeBundle` contract's own
 fixed layout, and its `rel_path`s name files inside the bundle rather than
 inside anyone's repository. Applying a repository rule there would let a project
 that narrowed its own extensions refuse a bundle that never touches its

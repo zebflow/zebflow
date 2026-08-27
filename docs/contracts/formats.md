@@ -47,11 +47,13 @@ The review and freeze status for each kind is maintained in the
 | `ProjectBundle` | Envelope | Manifest inside a project transfer archive |
 | `RuntimeBundle` | Envelope | Office-to-office runtime materialization request |
 | `HubPackage` | Envelope | Published Hub package artifact |
-| `RweLibraryManifest` | Envelope | Embedded or distributed RWE library definition |
+| `RweLibraryManifest` | Envelope | Offline or hub-distributed RWE library definition |
 | `MapPublishManifest` | Envelope | Project MapServer published-layer registry |
 | `InvocationRecord` | Database record | Bounded project invocation history row |
 | `RweSource` | Source file | One authored page, component, script, or stylesheet |
 | `Credential` | Database record | One stored credential value, never distributed |
+| `OfficeTopology` | Envelope | Where a deployment may run work: offices, roles, service placement, registered runtime nodes |
+| `HubRepositoryIndex` | Envelope | Static repository index `zebflow-repository.json`: offered packages, releases, document paths, digests |
 
 Reserved kinds are not usable formats. They keep a name from being assigned a
 different meaning before its contract is designed.

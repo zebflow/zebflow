@@ -228,8 +228,10 @@ The channel behind it ran live, not only in units
 (`93be173`, "search two official sources in order, one of them static"; the
 CLI's serverless install path in `2195664` reaches the same sources):
 
-- **Ordered resolution.** A fresh instance seeds two official sources —
-  `hub.zebflow.com` at priority 10, `github.com/zebflow/hub` (static) at 20 —
+- **Ordered resolution.** As seeded at the time of this run, a fresh instance
+  seeded two official sources — `hub.zebflow.com` at priority 10,
+  `github.com/zebflow/hub` (static) at 20; the sealed order flipped
+  2026-08-27 — static first (`distribution.md` §2, "Resolution order") —
   and a package present in both resolves by order instead of refusing, while
   two publishers offering one id within a source still refuse. `--repo`
   overrides the order rather than rescuing a failure. Not-found names every

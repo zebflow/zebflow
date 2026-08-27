@@ -119,7 +119,7 @@ anything the instance holds, so `zeb context set` would name a resource that
 does not exist.
 `gcloud` and `kubectl` both landed on bare `auth`/`config` verbs here for the
 same reason. `logout` is the only one of the three §5 did not already name, and
-it is the counterpart that revokes what `login` stored; removing a credential
+it is the counterpart that discards what `login` stored; removing a credential
 must not require deleting a file by hand.
 
 `remove` is the counterpart to `install`, and it is a blunter word than it
@@ -198,9 +198,11 @@ paragraph after them accounts for every name that exists and is not in a table.
 
 `DEFAULT_OWNER` and `DEFAULT_PROJECT` are **server** state, not client context.
 They name what the server creates on first boot. They are not a record of which
-project a person is working on, and reading them as one is the mistake §5
-records: `distribution.md` calls them "CLI configuration", and no `zeb config
-set` writes them. Nothing consults them to resolve `--owner` / `--project`.
+project a person is working on — the misreading §5 records. An earlier
+`distribution.md` called them "CLI configuration"; that disagreement is
+resolved (2026-08-27) and distribution now states the client-context rule. No
+`zeb config set` writes them, and nothing consults them to resolve `--owner` /
+`--project`.
 
 **Cluster membership** — how a controller and an office find and trust each other.
 
@@ -354,12 +356,14 @@ over it and a flag over both, so nothing that was stated becomes a guess, and a
 *remote* instance that does not answer is an error rather than a quiet
 substitution of a local one.
 
-`distribution.md` says `default_owner` and `default_project` "already exist in
-the CLI configuration". They exist, but as *server* configuration read from
-`ZEBFLOW_PLATFORM_DEFAULT_OWNER` and `ZEBFLOW_PLATFORM_DEFAULT_PROJECT`, which
-name the owner and project the server bootstraps on first boot. They are not a
-client-side record of which project a person is working on, and nothing consults
-them to resolve `--owner` / `--project`.
+An earlier `distribution.md` said `default_owner` and `default_project`
+"already exist in the CLI configuration"; resolved 2026-08-27 — distribution
+now states the client-context rule this section defines. They exist, but as
+*server* configuration read from `ZEBFLOW_PLATFORM_DEFAULT_OWNER` and
+`ZEBFLOW_PLATFORM_DEFAULT_PROJECT`, which name the owner and project the
+server bootstraps on first boot. They are not a client-side record of which
+project a person is working on, and nothing consults them to resolve
+`--owner` / `--project`.
 
 **The client context store is separate, and is what `login`, `use`, and `logout`
 write.** It records four things — instance URL, credential, owner, project — in
@@ -367,12 +371,13 @@ write.** It records four things — instance URL, credential, owner, project —
 the same shape first-boot bootstrap uses for a generated password.
 
 What it stores as the credential is the **session token** the server issued, not
-the password that obtained it. A token expires, is revoked by `zeb logout`, which ends the session on the server
-before forgetting it locally, and
+the password that obtained it. A token expires, is forgotten locally by `zeb logout` — server-side revocation
+is owed, not performed: today the session stays valid on the instance until it
+expires (§8.4) — and
 buys whoever reads the file one account's session rather than a password that
 was probably reused elsewhere. A context file readable by anyone but its owner
 is reported on stderr and tightened on the next write, rather than refused:
-refusing to read it would stop the `zeb logout` that revokes what leaked.
+refusing to read it would stop the `zeb logout` that discards what leaked.
 
 
 Project context is **not** defaulted, because bare `zeb install` does not consult
@@ -382,8 +387,10 @@ by the reference, and the review prints before anything is written. The instance
 is a different field and is defaulted, for the reason just given; owner and
 project are not.
 
-Context matters for the scoped forms, `zeb project install` inside an existing
-project among them, where it is stated rather than inferred.
+Context matters for the scoped forms — `zeb node install` and `zeb lib add`
+among them — where it is stated rather than inferred. `zeb project install` is
+not one of them: it is the platform-scope creation bare `install` expands to
+(`distribution.md` §0).
 
 ## 6. Transport
 
@@ -429,7 +436,7 @@ to agree on words.
 
 ## 7. What `zeb install` expands to
 
-Settled, in `distribution.md` §on verbs, before this document existed:
+Settled, in `distribution.md` §1a, before this document existed:
 
 ```text
 zeb install <ref>        alias for: zeb project install <ref>
@@ -575,8 +582,12 @@ zeb node install <ref>      → POST …/nodes/install  and  …/nodes/install/r
 zeb node uninstall <kind>   → DELETE …/nodes/uninstall/{kind}
 zeb lib add <ref>           → POST …/rwe/libraries/enable
 zeb hub add <ref> --to      → POST …/hub/assets/{id}/{version}/add
-zeb hub publish <src> --to  → POST …/hub/assets/publish  and  …/hub/remote/assets/publish
+zeb hub publish <src> --to  → POST …/hub/remote/assets/publish   Public Hub only
 ```
+
+`zeb hub publish` targets the Public Hub only (`distribution.md` §1b: the
+blessed shelf takes no publishes); the local `POST …/hub/assets/publish` route
+still exists and its removal is owed code.
 
 **The remaining 171 are covered by no term at all.**
 
@@ -618,8 +629,9 @@ which are three route families for one concept. *Identity*: publishers, tokens,
 and grants, each with create, list, and delete. *Service*: producer mode, and
 the hub service configuration that decides whether this instance serves a hub
 at all. `zeb hub add` covers one route and `zeb hub publish <source> --to <hub>`
-covers two, local and remote, depending on what `<hub>` names; the other
-forty-four are unnamed.
+covers the Public Hub publish route — the local publish route it once also
+named awaits removal (`distribution.md` §1b); the other forty-four are
+unnamed.
 
 **`source` — 20 uncovered.** Template workspace, search, page list, file read,
 save, delete, outline, create, move, git-status, diagnostics, lock-toggle;
@@ -673,13 +685,11 @@ route exists.
 
 **`assistant` — 3 uncovered.** Config read, config write, chat.
 
-**`session` — 1 uncovered, and it is a stated behaviour the code does not
-perform.** `POST /logout` removes the server-side session and clears the
-cookie. `zeb logout` clears `~/.zebflow/client/context.json` and calls nothing.
-§5 says the stored token "is revoked by `zeb logout`, which ends the session on the server
-before forgetting it locally"; it is forgotten, not
-revoked, and the session stays valid on the instance until it expires. Either
-`zeb logout` calls the route or §5 stops claiming a revocation.
+**`session` — 1 uncovered.** `POST /logout` removes the server-side session
+and clears the cookie. `zeb logout` clears `~/.zebflow/client/context.json` and
+calls nothing, so the session stays valid on the instance until it expires.
+§5 states this and records server-side revocation as owed; closing it means
+`zeb logout` calling the route.
 
 **`help` — 1 uncovered.** `GET …/help` returns the project help corpus.
 `zeb help` prints the CLI's own usage. One word, two unrelated things.

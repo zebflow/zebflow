@@ -57,13 +57,16 @@ it is offline.
 | Release | `HubAssetVersion` plus its `HubPackage` document | no |
 | Presentation | `HubAssetPackage`: `summary`, `description_md`, `image_url`, `media`, `gallery` | yes |
 | Publisher identity | `HubAssetPackage`: `publisher_*` | yes |
-| Provenance | `HubAssetVersion`: `source_owner`, `source_project`, `source_kind`, `source_ref` | local only |
+| Provenance | `HubAssetVersion`: `source_owner`, `source_project`, `source_kind`, `source_ref` | no — a version-row fact, never in the release document |
 
 Publisher identity belongs to the store that serves the package, not to the
 package: a document copied into a second repository does not carry an assertion
-the second repository never made. Provenance names the publishing instance's own
-project structure, so it stays in that instance's version row and is never
-published.
+the second repository never made. Provenance names the publishing instance's
+own project structure. It never enters the release document — a document copied
+onward carries no provenance — but the four `source_*` fields do travel on a
+remote pack publish, beside `artifact`, and the receiving hub keeps them in its
+own version row ([scenarios §9.3](./scenarios.md#93-what-travels-when-acme-publishes-to-someone-elses-hub));
+the public read API exposes only `source_kind`.
 
 ### A cover image is an artifact, not a field
 
@@ -260,7 +263,7 @@ attribution for credit and contact, not a trust boundary.
 | Artifact location | `HubArtifactChannel` | the channel's answer to "where are the referenced bytes": a local base directory, a remote hub already fetched from, or a refusal that says why |
 | Reader, artifact | `HubArtifactChannel::resolve` | reads `<base>/artifacts/<sha256>`, checks the declared size, and verifies the digest |
 | Reader, artifact over HTTP | `HubService::remote_artifact_channel` then `fetch_referenced_artifact` | fetches every digest a package names from the hub that served it, bounded by the declared size and verified before it is stored |
-| Writer, artifact | `HubService::store_artifact` | puts bytes into this instance's Hub store, content-addressed, and returns the digest |
+| Writer, artifact | `HubService::store_artifact` | puts bytes into the Public Hub's store, content-addressed, and returns the digest (the blessed local shelf takes only the release seed — `distribution.md` §1b) |
 | Producer, reference | `reference_large_publish_entries` | moves an entry over 1 MiB out of the document and replaces it with its digest, after the publish review and before the store is written |
 | Reader, release artifact | `get_release_referenced_artifact` | serves one artifact a named release references, under that release's visibility and retraction |
 | Writer, publish | `publish_asset` | builds a manifest, writes an artifact file, records a version row; refuses a version that already exists or was retracted, refuses a release the safety review reports violations for, and carries forward presentation it was not given |
@@ -563,15 +566,17 @@ than issued.
 
 ## Still to review
 
+- code catch-up owed (decided 2026-08-27, `distribution.md` §1b): rename
+  `services/hub-default/` → `services/hub-local/`; create the
+  `services/hub-public/` store for the placed Public Hub service; fence
+  publisher writes to `hub-public` only — today publisher tokens still write
+  the release-seeded immutable local shelf
 - `HUB_INSTALL_REFUSED` and `HUB_REMOTE_INSTALL_REFUSED` are unmapped in
   `hub_api_error` and answer 500. The publish refusals were mapped to 400 when
   they were added; the install pair still reads as a server fault
 - publisher identity now lives on the package row rather than in the release.
   What it *asserts*, and what a static repository asserts having none, is still
   open
-- generalising `ProjectHubRepository`, which is hardwired to `base_url`,
-  `remote_owner`, `remote_project`, and `read_token`, into the `list()` and
-  `fetch()` interface described in `distribution.md`
 - size and count limits are now declared in the contract: 25 MB per document
   (the existing remote cap), 18 MB per carried file, 512 MB per referenced file.
   The per-file numbers still need review against real packages, and so does the

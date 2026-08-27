@@ -26,7 +26,8 @@ cluster file, and how a topology change is applied without stranding work.
 
 The records are persisted through the `DataAdapter` and the cluster file is
 written by `src/provision/k8s.rs`. A migration governs the columns; nothing
-governs what an office *is*.
+governs what an office *is*. The Public Hub service is one such placed
+`PlatformServiceInstance`; its hub semantics live in `distribution.md` §1b.
 
 ## Why it exists
 

@@ -54,17 +54,18 @@ storage buckets:
 
 | | |
 | --- | --- |
-| `repo/` | what the human declares — authored, versioned, git-tracked |
-| `data/` | what the machine derives and keeps — materialized, rebuildable |
+| `repo/` | what the human declares — versioned, git-tracked; machine files inside it (`zeb.lock`, `.git/`) are instance-directory.md Rule 1's exception |
+| `data/` | what the machine derives and keeps — materialized; rebuildable for `hub.*` sources, carried by export for `direct.*`/`project` sources (`distribution.md` §5) |
 | `files/` | what the application stores for its users |
 
 An installed bundle is not declared, it is *materialized from* a declaration.
-The declaration is `zeb.lock`, which is authored and stays in `repo/`. The bytes
+The declaration is `zeb.lock` — declared in `repo/`, machine-written
+(`instance-directory.md` Rule 1) — and it stays the project's. The bytes
 are the machine's output, so they belong in `data/hub/nodes/`. This mirrors the
 split that already exists between `repo/pipelines/` and the activated snapshots
-under `data/cache/pipelines/` (`instance-directory.md` §5).
+under `data/cache/pipelines/` (`instance-directory.md`, "The tree").
 
-`data/hub/nodes/` is classified by `instance-directory.md` §3 as the
+`data/hub/nodes/` is classified by `instance-directory.md` (its tiers table) as the
 **installed** tier — deliberately not `cache`, because live testing showed a
 locally-installed bundle cannot be rebuilt from `zeb.lock` alone, unlike the
 pipeline snapshots it is compared to here. The physical move from the
@@ -359,7 +360,7 @@ repo/
     n.x.acme.thing.json           a frozen NodeDefinition document
 
 data/
-  nodes/acme/                     the materialized bundle
+  hub/nodes/acme/                 the materialized bundle
 ```
 
 `NodeDefinition` is implementation-neutral by design, which is exactly what lets

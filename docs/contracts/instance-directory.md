@@ -23,14 +23,21 @@ records what is on disk today.
 │   └── cache/                         CACHE — rwe script blobs, content-addressed
 │
 ├── services/
-│   └── hub-default/                   LOCAL HUB — curated shelf, seeded
-│       │                              with blessed zebflow.*, superadmin-write-only,
-│       │                              read-only for all, delete = retraction
-│       ├── hub.db (+ sidecars)        STORE
-│       ├── packages/
-│       │   └── {id}/versions/{ver}/artifact.json      STORE
-│       └── artifacts/
-│           └── {sha256}               STORE if reachable from hub.db, else GC
+│   ├── hub-local/                     LOCAL HUB — blessed shelf, release-seeded
+│   │   │                              (zebflow.*, every boot, check-first:
+│   │   │                              absent coordinates only, existing ones
+│   │   │                              never rewritten or deleted), immutable;
+│   │   │                              no write path, no tokens
+│   │   ├── hub.db (+ sidecars)        STORE
+│   │   ├── packages/
+│   │   │   └── {id}/versions/{ver}/artifact.json      STORE
+│   │   └── artifacts/
+│   │       └── {sha256}               STORE if reachable from hub.db, else GC
+│   └── hub-public/                    PUBLIC HUB STORE — exists only on the
+│                                      office hosting the placed hub service;
+│                                      the one publish target
+│                                      (publisher/token/grant ACL); same
+│                                      internal layout as hub-local
 │
 ├── run/                               EPHEMERAL — wiped on startup: locks, pids, sockets
 ├── tmp/                               EPHEMERAL — staging, upload chunks, scratch
@@ -160,10 +167,12 @@ them.
 │                                      residue dies at the next boot
 │
 ├── services/
-│   └── hub-default/                   this instance's own hub (local hub)
+│   └── hub-default/                   this instance's own hub (renamed
+│       │                              hub-local in the contract; code
+│       │                              catch-up owed)
 │       ├── hub.db                     STORE — packages, versions, publishers, tokens
 │       ├── packages/                  STORE — release documents
-│       │   └── {package_id}/{version}/package.json
+│       │   └── {package_id}/versions/{version}/artifact.json
 │       └── artifacts/                 STORE — content-addressed blobs
 │           └── {sha256}
 │

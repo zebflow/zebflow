@@ -59,19 +59,19 @@ reference allows the dependency service to remove the unused lock entry.
         "zeb/deckgl": {
           "version": "0.1",
           "source": "hub.local",
-          "source_id": "zebflow/zeb/deckgl",
-          "entry": "zeb/deckgl/0.1/runtime/deckgl.patched.mjs",
+          "source_id": "zebflow.deckgl@0.1.1",
+          "entry": "rwe-libraries/zebflow.deckgl/0.1/runtime/deckgl.patched.mjs",
           "integrity": "sha256:9c1e385bc9918e55ca7214dd995efbfc73bff14806ba13ee5c3f6ffcb4761eae"
         }
       }
     },
     "nodes": {
       "bundles": {
-        "zebflow/sim-des": {
+        "zebflow.sim-des": {
           "version": "1.0.0",
           "source": "hub.public",
-          "source_id": "zebflow-official/sim-des",
-          "entry": "nodes/sim-des/definition.json",
+          "source_id": "zebflow.sim-des@1.0.0",
+          "entry": "nodes/zebflow.sim-des/definition.json",
           "integrity": "sha256:3ac2f46cf9e862d73b115e2806c86d1794fa2ca6c3025dcfea1f337a48d72ef3",
           "definitions": [
             "n.x.sim.des"
@@ -109,7 +109,7 @@ Every RWE library and node bundle entry requires:
 | `version` | Exact resolved artifact release |
 | `source` | Provenance: `hub.local`, `hub.public`, `hub.static`, `direct.npm`, `direct.file`, or `project` |
 | `source_id` | Stable source coordinate with no credential or mutable query value |
-| `entry` | Normalized local or embedded artifact path |
+| `entry` | Normalized installed artifact path |
 | `integrity` | SHA-256 digest of the resolved artifact bytes |
 
 Names, versions, and source identifiers must be non-empty and bounded. Entry
@@ -135,17 +135,23 @@ resolving against `data/hub/` the same way node-bundle entries do and
 resolution order** — the digest pins identity, so the resolver may satisfy an
 entry from any source whose bytes match, and the dependency report may hint
 (never auto-install) when a declared dependency is present in the local hub.
+The lock records the serving kind and coordinate, never a host: a re-fetch may
+use any configured repository offering the coordinate, provided the bytes
+match the digest.
 
 `source_id` per value: `hub.*` — the package coordinate
 (`publisher.package@version`); `direct.npm` — the converted npm coordinate
 (`npm/{name}@{version}`), which is what makes it weakly reproducible;
 `direct.file` — the supplied package's declared identity. `hub.*` names the
-serving the bytes arrived through; `direct.*` is a `rwe_library` package that
+serving the bytes arrived through — `hub.local` is the blessed shelf,
+release-seeded and release-guaranteed content only (`distribution.md` §1b),
+never user-published; `direct.*` is a `rwe_library` package that
 never touched a hub (npm-converted or user-supplied), reviewed by the same
-install gates. Locks written before the restructure migrate on first resolve:
-`embedded` → `hub.local` (the seed published the same bytes there) and `hub` →
-`hub.local` (the only serving that ever wrote it; no other value ever reached
-disk). `project` RWE ingestion is not an accepted state until a later
+install gates. The replaced words are simply invalid: a lock carrying
+`embedded` or bare `hub` is refused like any other unknown value, and ordinary
+resolution regenerates the lock from requested state. There is no migration
+path — nothing shipped, pre-release instances regenerate or rot. `project` RWE
+ingestion is not an accepted state until a later
 contract version defines and implements its resolver behavior.
 
 An RWE library is locked when project configuration or compiled RWE imports
@@ -160,8 +166,9 @@ stays outside this contract.
 
 ## Node Bundle Rules
 
-`spec.nodes.bundles` is keyed by the canonical lowercase bundle identity, not
-by one node kind. One bundle may provide several node definitions.
+`spec.nodes.bundles` is keyed by the canonical lowercase bundle identity — the
+package coordinate `publisher.package`, e.g. `zebflow.sim-des` — not by one
+node kind. One bundle may provide several node definitions.
 
 Each node bundle adds:
 
@@ -178,9 +185,10 @@ Native nodes compiled into Zebflow are runtime capabilities and are not lock
 entries. A pipeline using a native node is checked against the active runtime
 node registry.
 
-In `zebflow.com/v1`, node-bundle sources are `hub.*` or `project`. An `embedded`
-node bundle is a runtime capability and must not be written to the project
-lock.
+In `zebflow.com/v1`, node-bundle sources are `hub.*`, `direct.file`, or
+`project` — a node bundle supplied as a local file installs into
+`data/hub/nodes/` and locks `direct.file`. An `embedded` node bundle is a
+runtime capability and must not be written to the project lock.
 
 Composite and WASM nodes copied into project source are discovered through
 their strict `NodeBundle` manifest. Each entry is normalized into a validated
@@ -333,6 +341,19 @@ rules, digest rules, ordering, and namespace ownership cannot change.
 Renaming or moving a field, adding a source type, changing integrity meaning, or
 changing which artifacts are locked requires a new contract API version and an
 explicit converter. A `zebflow.com/v1` reader rejects newer versions.
+
+### Before first release
+
+Zebflow has not published a v1 release; no `zeb.lock` exists outside this
+repository and its test instances, so `zebflow.com/v1` may be amended in place,
+each amendment dated here. After first release this section closes and the
+rules above apply literally.
+
+| Date | Change | Why it was safe |
+| --- | --- | --- |
+| 2026-08-27 | Source vocabulary restructured: `embedded`/`hub`/`file` replaced by `hub.local`, `hub.public`, `hub.static`, `direct.npm`, `direct.file`, `project` | Pre-release, nothing shipped; old values refuse and the lock regenerates through ordinary resolution — no converter for documents that never existed. |
+| 2026-08-27 | Node-bundle key fixed to the package coordinate (`publisher.package`, e.g. `zebflow.sim-des`), replacing the slash form the canonical example used | Pre-release, nothing shipped; no lock with a slash-form bundle key exists outside test instances. |
+| 2026-08-27 | Node-bundle sources widened to `hub.*`, `direct.file`, or `project` | Pre-release, nothing shipped; the local-file node install already exists and had no lockable source value. |
 
 ## Frozen Implementation Guarantees
 
