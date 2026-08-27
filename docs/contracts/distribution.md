@@ -369,45 +369,33 @@ with no diff and no copy.
 Both are corrections owed to the catalog path, recorded here because the rule
 belongs to `add`, not to one endpoint.
 
-## 1b. Hub types
+## 1b. Hub: one format, three servings
 
-One ACL system exists, ever: publisher / token / grant, on the Public Hub.
-Sharing IS publishing; privacy is network exposure, not a second permission
-model.
+A hub is one format: `HubPackage` release documents plus content-addressed
+artifacts (sha256). A release moves between all three servings without changing
+a byte, and the installer cannot tell the difference. The only differentiator
+is how it is served; the catalogue wrapper (how packages are *found*) differs
+per serving and is never part of the package.
 
-**Public Hub — hub type one.** The hub's original need: sharing between
-instances with no network connection to each other, over the internet, like
-npm. **Optional**: any master may add a hub service or not; adding one installs
-it as a service onto a chosen office. It is the ONLY sharing mechanism, with
-the one ACL model. Exposed by k8s/nginx → an internet hub. Not exposed → users
-add it by internal URL, and privacy comes from the network topology.
-Admin sugar: superadmin may auto-create publisher accounts and grants directed
-at chosen projects — syntactic sugar over the manual flow, same mechanism.
+**Local** — the instance's own store, read in-process at
+`services/hub-default/`. Always present, seeded on first boot with the blessed
+`zebflow.*` content, superadmin-write-only, read-only for everyone else, delete
+is retraction. No sharing semantics and no ACL of its own — nothing to govern
+when only the curator writes.
 
-**Static repository hub — hub type two.** A plain HTTPS location — GitHub,
-GitLab, any file host — serving `zebflow-repository.json`
-([`HubRepositoryIndex`](./kinds/hub-repository-index/README.md)) plus package
-documents and content-addressed artifacts. No server logic, read-only: publish
-is committing files. Trust is the URL the user named plus locked digests.
-Official: `github.com/zebflow/hub`.
+**Public** — the same store served to others over HTTP by an optional hub
+service, placed on a chosen office. The ONLY sharing mechanism, with the one
+ACL model: publisher / token / grant. Exposed by k8s/nginx → an internet hub
+like npm. Not exposed → reached by internal URL, and privacy is network
+topology, not a second permission system. Admin sugar: superadmin may
+auto-create publisher accounts and grants directed at chosen projects.
 
-**Local hub — hub type three.** The instance's curated shelf. Seeded on first
-boot with the blessed embedded content (`zebflow.*` — reserved publisher:
-deckgl, threejs, prosemirror, UI template sets, official node bundles), so
-built-in content stops coming from nowhere and gets real lock entries.
-Writable by **superadmin only** (curating converted npm libraries,
-LLM-generated libraries, company-approved packages); read-only for everyone
-else. **No sharing semantics and no ACL of its own** — nothing to govern when
-only the curator writes. Every user and project on the instance installs from
-it. Superadmin deletion is retraction: installed copies survive, new installs
-refuse with the reason.
-
-Hub asset kinds, uniformly: nodes (INSTALLED), rwe libraries (INSTALLED —
-opaque compiled bundles, pinned), repo derivatives (SOURCE — pipelines,
-templates, components, scripts, styles; a UI component set is a template
-package, not a separate kind), whole projects. A project may also install from
-a local file, direct to the project: the installed form is the artifact, per
-the instance-directory INSTALLED tier.
+**Static** — the same content as plain read-only files at any HTTPS URL:
+`zebflow-repository.json` ([`HubRepositoryIndex`](./kinds/hub-repository-index/README.md))
+plus package documents and artifacts. Publish is committing files. Trust is the
+URL the user named plus locked digests; the host (GitHub or anyone) is pure
+transport — substituted bytes fail the digest, and the install review refuses
+smuggled executables regardless of origin. Official: `github.com/zebflow/hub`.
 
 | Publish target | Route | Who can see it | Trust basis |
 | --- | --- | --- | --- |
@@ -418,6 +406,12 @@ the instance-directory INSTALLED tier.
 
 A channel is a way bytes move. Each has a different trust story, and that is the
 reason they are listed separately rather than treated as one "install".
+
+Channels are finer-grained than §1b's three hub servings, and the two
+vocabularies do not compete: **hub asset** is the local serving, **remote pack**
+is the public serving, **static repository** is the static serving — and the
+other channels (embedded, local file, transfer archive, git remote) move bytes
+without any hub at all.
 
 | Channel | Source of bytes | Trust basis | Today |
 | --- | --- | --- | --- |

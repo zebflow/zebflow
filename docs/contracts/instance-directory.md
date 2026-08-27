@@ -23,7 +23,7 @@ records what is on disk today.
 │   └── cache/                         CACHE — rwe script blobs, content-addressed
 │
 ├── services/
-│   └── hub-default/                   LOCAL HUB (type three) — curated shelf, seeded
+│   └── hub-default/                   LOCAL HUB — curated shelf, seeded
 │       │                              with blessed zebflow.*, superadmin-write-only,
 │       │                              read-only for all, delete = retraction
 │       ├── hub.db (+ sidecars)        STORE

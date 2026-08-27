@@ -4,8 +4,9 @@ Status: **Pending**
 
 ## 1. Purpose and owner
 
-`zebflow-repository.json` is what a **static repository** serves at its base
-URL. It says which packages that location offers, which releases of each it
+`zebflow-repository.json` is what the hub's **static serving**
+(`distribution.md` §1b: local, public, static) offers at its base URL — a
+static URL like GitHub raw content, GitLab, or any HTTPS file host. It says which packages that location offers, which releases of each it
 holds, where each release document sits, and which bytes are the right ones.
 
 Owner: `platform`. Boundary: transferred.
