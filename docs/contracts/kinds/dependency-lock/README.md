@@ -58,7 +58,7 @@ reference allows the dependency service to remove the unused lock entry.
       "libraries": {
         "zeb/deckgl": {
           "version": "0.1",
-          "source": "embedded",
+          "source": "hub.local",
           "source_id": "zebflow/zeb/deckgl",
           "entry": "zeb/deckgl/0.1/runtime/deckgl.patched.mjs",
           "integrity": "sha256:9c1e385bc9918e55ca7214dd995efbfc73bff14806ba13ee5c3f6ffcb4761eae"
@@ -69,7 +69,7 @@ reference allows the dependency service to remove the unused lock entry.
       "bundles": {
         "zebflow/sim-des": {
           "version": "1.0.0",
-          "source": "hub",
+          "source": "hub.public",
           "source_id": "zebflow-official/sim-des",
           "entry": "nodes/sim-des/definition.json",
           "integrity": "sha256:3ac2f46cf9e862d73b115e2806c86d1794fa2ca6c3025dcfea1f337a48d72ef3",
@@ -107,7 +107,7 @@ Every RWE library and node bundle entry requires:
 | Field | Meaning |
 | --- | --- |
 | `version` | Exact resolved artifact release |
-| `source` | One of `embedded`, `hub`, or `project` |
+| `source` | Provenance: `hub.local`, `hub.public`, `hub.static`, `direct.npm`, `direct.file`, or `project` |
 | `source_id` | Stable source coordinate with no credential or mutable query value |
 | `entry` | Normalized local or embedded artifact path |
 | `integrity` | SHA-256 digest of the resolved artifact bytes |
@@ -126,21 +126,37 @@ level.
 ## RWE Library Rules
 
 `spec.rwe.libraries` is keyed by a lowercase namespaced library name such as
-`zeb/deckgl`. In `zebflow.com/v1`, its source is `embedded` or `hub` — the lock's `source` names where the package came from, while the manifest's names how the entry loads (`rwe-library-manifest/README.md`) — widened
-deliberately when the local hub gained `rwe_library` packages: a hub-installed
-library resolves against its installed copy at
-`data/hub/rwe-libraries/{package}/`, with `entry` resolving against `data/hub/`
-the same way node-bundle entries do and `integrity` hashing the installed
-bytes. `project` RWE ingestion is not an accepted state until a later contract
-version defines and implements its resolver behavior.
+`zeb/deckgl`. In `zebflow.com/v1` an RWE source is `hub.local`, `hub.public`,
+`hub.static`, `direct.npm`, or `direct.file` (restructured 2026-08-27,
+pre-release, replacing `embedded`/`hub`/`file`). All five resolve identically:
+against the installed copy at `data/hub/rwe-libraries/{package}/`, with `entry`
+resolving against `data/hub/` the same way node-bundle entries do and
+`integrity` hashing the installed bytes. `source` records **provenance, not a
+resolution order** — the digest pins identity, so the resolver may satisfy an
+entry from any source whose bytes match, and the dependency report may hint
+(never auto-install) when a declared dependency is present in the local hub.
+
+`source_id` per value: `hub.*` — the package coordinate
+(`publisher.package@version`); `direct.npm` — the converted npm coordinate
+(`npm/{name}@{version}`), which is what makes it weakly reproducible;
+`direct.file` — the supplied package's declared identity. `hub.*` names the
+serving the bytes arrived through; `direct.*` is a `rwe_library` package that
+never touched a hub (npm-converted or user-supplied), reviewed by the same
+install gates. Locks written before the restructure migrate on first resolve:
+`embedded` → `hub.local` (the seed published the same bytes there) and `hub` →
+`hub.local` (the only serving that ever wrote it; no other value ever reached
+disk). `project` RWE ingestion is not an accepted state until a later
+contract version defines and implements its resolver behavior.
 
 An RWE library is locked when project configuration or compiled RWE imports
 require it. Project-local `.ts` and `.tsx` files are source and are not lock
 entries. Imports through `@/` are checked as local-file requirements.
 
-Direct npm, JSR, and CDN package ingestion is not part of this contract. A
-future package-ingestion design must first define a reviewed artifact and then
-lock that normalized artifact here.
+Direct npm, JSR, and CDN package ingestion is not part of this contract. The
+reviewed artifact it must produce is defined: a `rwe_library` `HubPackage`
+carrying a valid `RweLibraryManifest`, entering through the local-file channel
+and locking as `direct.npm` or `direct.file`. The conversion tooling itself
+stays outside this contract.
 
 ## Node Bundle Rules
 
@@ -162,7 +178,7 @@ Native nodes compiled into Zebflow are runtime capabilities and are not lock
 entries. A pipeline using a native node is checked against the active runtime
 node registry.
 
-In `zebflow.com/v1`, node-bundle sources are `hub` or `project`. An `embedded`
+In `zebflow.com/v1`, node-bundle sources are `hub.*` or `project`. An `embedded`
 node bundle is a runtime capability and must not be written to the project
 lock.
 
@@ -326,7 +342,7 @@ The v1 implementation provides:
 2. One `DependencyLockService` for all canonical reads, writes, migration,
    status, repair, and activation checks.
 3. Saved-pipeline requirement scanning plus recursive composite-pipeline checks.
-4. Exact resolution against embedded RWE libraries, project node bundles, Hub
+4. Exact resolution against installed RWE libraries, project node bundles, Hub
    provenance, and the native runtime registry.
 5. Pipeline activation and runtime materialization gates without per-hit scans.
 6. Project Studio status, refresh, and deterministic repair controls.

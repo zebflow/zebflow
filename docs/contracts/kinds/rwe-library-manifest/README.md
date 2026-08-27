@@ -55,7 +55,7 @@ compiles it, it is source (`template_bundle`), not a library.
 
 Manifest `source` and lock `source` are different facts and both are kept:
 the manifest's says how the entry **loads** (embedded bytes vs installed copy);
-the lock's says where the **package came from** (`embedded` | `hub`). They were
+the lock's says where the **package came from** (`hub.*` | `direct.*`). They were
 coherent by accident before this line existed.
 
 ## Rejections

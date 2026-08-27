@@ -298,7 +298,7 @@ Unless a row says otherwise, these are project-scope acts.
 | Resource | Kind that owns its format | Channels | Direction |
 | --- | --- | --- | --- |
 | Node bundle | `NodeBundle` | Hub asset, remote pack, local file, project transfer | export, publish, install |
-| RWE library | `RweLibraryManifest` | local hub (`rwe_library` asset, seeded from the binary's blessed tree); embedded fallback for pre-existing locks; Git planned | install only, today |
+| RWE library | `RweLibraryManifest` | local hub (`rwe_library` asset, seeded from the binary's blessed tree); direct ingestion (same package, same gates, locked `direct.file` / `direct.npm`); Git planned | install only, today |
 | Pipeline | `Pipeline` | Hub asset (`pipeline_bundle`) | export, publish, add |
 | RWE source: page, component, script, style | no kind yet | Hub asset (`template_bundle`) | export, publish, add |
 | Folder of project files | no kind yet | Hub asset (`folder_bundle`) | export, publish, add |
@@ -380,7 +380,8 @@ per serving and is never part of the package.
 **Local** — the instance's own store, read in-process at
 `services/hub-default/`. Always present, seeded on first boot with the blessed
 `zebflow.*` content, superadmin-write-only, read-only for everyone else, delete
-is retraction. No sharing semantics and no ACL of its own — nothing to govern
+is retraction. This serving is why an offline machine — a Raspberry Pi with
+nothing but the installer — still installs blessed content. No sharing semantics and no ACL of its own — nothing to govern
 when only the curator writes.
 
 **Public** — the same store served to others over HTTP by an optional hub
@@ -416,7 +417,7 @@ without any hub at all.
 | Channel | Source of bytes | Trust basis | Today |
 | --- | --- | --- | --- |
 | Embedded | the Zebflow binary | the release itself | libraries, official node bundles |
-| Local file | a document the user supplies | the reviewing user | node bundles |
+| Local file | a document the user supplies | the reviewing user | node bundles; RWE libraries |
 | Hub asset | this instance's Hub store | publisher identity + stored digest | all asset kinds |
 | Remote pack | another instance's Hub over HTTP | repository grant + artifact digest | packs, projects |
 | Transfer archive | an export file | whoever produced it | project bundle, files |
@@ -430,8 +431,10 @@ first of all **the seed**: on first boot the blessed content the binary
 carries — RWE libraries and the UI template sets, as `zebflow.*` — is
 published into the local hub through the ordinary publish gates, and what a
 project installs afterwards is a hub asset with a lock entry, not embedded
-bytes. Embedded remains the serving fallback for locks that still say
-`source: embedded`, so no pre-existing project changes behaviour.
+bytes. Locks written before the seed said `source: embedded`; first resolve rewrites
+them to `hub.local` — the seed published the same bytes there — so `embedded`
+is gone from the lock vocabulary and the binary's blessed tree is only the
+seed, never a serving a lock can name.
 
 ### One repository interface
 
@@ -592,12 +595,14 @@ order:
 
 | # | Source | Kind | Where |
 | --- | --- | --- | --- |
-| 1 | `zebflow-com` | API hub | `https://hub.zebflow.com/api` |
-| 2 | `zebflow-hub` | static repository | `https://raw.githubusercontent.com/zebflow/hub/main` |
+| 1 | `zebflow-hub` | static repository | `https://raw.githubusercontent.com/zebflow/hub/main` |
+| 2 | `zebflow-com` | API hub | `https://hub.zebflow.com/api` |
 
-The API hub is first because it is the instance's own default and is the source
-that can answer about publisher identity, grants, and retraction. The static
-repository is second because it is the one that needs no server.
+The static repository is first because it needs no server and static file
+hosting absorbs install traffic that would otherwise hammer the API hub. The
+API hub is second, as the source that can answer about publisher identity,
+grants, and retraction (decided 2026-08-27; the seeded priorities were
+previously reversed).
 
 **The order is configured, not compiled in.** It is
 `PlatformHubRepository.priority`, ascending, with `repository_id` breaking ties;
@@ -715,9 +720,11 @@ produces a project that cannot be made whole.
 
 | Source | Reproducible | Export must carry bytes |
 | --- | --- | --- |
-| `embedded` | yes, by the matching Zebflow release | no |
-| `hub` | yes, if the Hub is reachable | no |
-| `project` / local file | **no** | **yes** |
+| `hub.local` | yes — this instance's own hub, offline; blessed content always | no |
+| `hub.public` | if the remote hub is reachable and still grants | no |
+| `hub.static` | if the URL is still alive | no |
+| `direct.npm` | weakly — the npm coordinate in `source_id` can be re-converted | **yes** |
+| `direct.file` / `project` | **no** | **yes** |
 
 Where bytes cannot travel and are not carried, the receiver must be told
 precisely what is missing. For node bundles this is what

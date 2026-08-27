@@ -59,9 +59,9 @@ records what is on disk today.
             │   │
             │   ├── hub/               INSTALLED — from any hub or local file
             │   │   ├── nodes/
-            │   │   └── rwe-libraries/ written by `rwe_library` installs from
-            │   │                      the seeded local hub; `zeb.lock` entries
-            │   │                      resolve here.
+            │   │   └── rwe-libraries/ written by `rwe_library` installs — any
+            │   │                      hub serving or direct ingestion;
+            │   │                      `zeb.lock` entries resolve here.
             │   │                      repo derivatives never land here → repo/
             │   │
             │   ├── recovery/          BOUNDED — next success + 14d, keep 3
@@ -195,7 +195,7 @@ them.
             │   ├── hub/               INSTALLED — unpacked hub content
             │   │   ├── nodes/         node bundles (migrated from data/nodes/ on first touch)
             │   │   │   └── {package}/ definition.json, functions/, *.wasm, icons
-            │   │   └── rwe-libraries/ RWE libraries installed from the local hub
+            │   │   └── rwe-libraries/ installed RWE libraries (hub or supplied file)
             │   │       └── {package}/  manifest.json + versioned runtime/wrappers
             │   │
             │   ├── recovery/          BOUNDED — dated migration copies
