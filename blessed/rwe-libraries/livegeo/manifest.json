@@ -1,24 +1,26 @@
 {
   "apiVersion": "zebflow.com/v1",
-  "kind": "LibraryManifest",
-  "metadata": { "name": "zeb/livegeo" },
+  "kind": "RweLibraryManifest",
+  "metadata": {
+    "name": "zeb/livegeo"
+  },
   "spec": {
-  "name": "zeb/livegeo",
-  "description": "Frontend hooks for live geospatial interactivity: playback, track playback, smoothing, and map follow.",
-  "exports": [
-    "usePlayback",
-    "useTrackPlayback",
-    "useTrackSmoothing",
-    "useMapFollow"
-  ],
-  "versions": {
-    "full-0.1": {
-      "entry": "0.1/runtime/livegeo.bundle.mjs",
-      "source": "offline",
-      "package_version": "0.1",
-      "size_bytes": 0,
-      "integrity": ""
+    "name": "zeb/livegeo",
+    "description": "Frontend hooks for live geospatial interactivity: playback, track playback, smoothing, and map follow.",
+    "exports": [
+      "usePlayback",
+      "useTrackPlayback",
+      "useTrackSmoothing",
+      "useMapFollow"
+    ],
+    "versions": {
+      "full-0.1": {
+        "entry": "0.1/runtime/livegeo.bundle.mjs",
+        "source": "offline",
+        "package_version": "0.1",
+        "size_bytes": 7578,
+        "integrity": "sha256:f472a6a3cae4d1683fc6df0392bfa4087eeea9df98e4bc8923be7b1c07896b17"
+      }
     }
-  }
   }
 }

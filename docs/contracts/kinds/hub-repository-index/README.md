@@ -1,6 +1,6 @@
 # HubRepositoryIndex
 
-Status: **Pending**
+Status: **Candidate** — freeze judgement below, 2026-08-27.
 
 ## 1. Purpose and owner
 
@@ -210,3 +210,61 @@ In `src/platform/services/hub_repository.rs`:
 - an API hub keeps the release-namespaced artifact path
 - an empty kind still means the API hub
 - a kind this build does not implement refuses rather than guessing
+
+## Freeze judgement — 2026-08-27
+
+Status: **Candidate**. Not Frozen.
+
+### What the evidence covers
+
+The format gates are all unit-proven in the kind (§10): the reference index
+round-trips, an unknown field is refused rather than ignored, a path may not
+leave the base, a release without a usable digest is refused, `latest_version`
+must name a carried release, duplicate ids and versions refuse, another kind's
+document is not read as an index, and a future `apiVersion` refuses rather
+than guesses.
+
+The channel behind it ran live, not only in units
+(`93be173`, "search two official sources in order, one of them static"; the
+CLI's serverless install path in `2195664` reaches the same sources):
+
+- **Ordered resolution.** A fresh instance seeds two official sources —
+  `hub.zebflow.com` at priority 10, `github.com/zebflow/hub` (static) at 20 —
+  and a package present in both resolves by order instead of refusing, while
+  two publishers offering one id within a source still refuse. `--repo`
+  overrides the order rather than rescuing a failure. Not-found names every
+  source in order, and an unreachable source says so instead of masquerading
+  as "nobody publishes it".
+- **Digest refusal.** A document whose bytes disagree with the index's
+  `sha256` is refused by hash, proven against the API rather than the CLI's
+  pre-check. The host is pure transport; substituted bytes fail closed.
+- **Review refusal.** A static package passes the same review as every other
+  channel: an unreadable pipeline is refused with **no project created**.
+- **Fetcher hardening.** Redirects are refused (the base URL is the whole
+  trust decision), every fetch is bounded before it starts, and the static
+  channel serves artifacts under `artifacts/<sha256>` like every other
+  serving, so a referenced package installs from a static repository as it
+  does from a hub.
+
+The abstraction's own test is that `ProjectBundleInstallPlan` and everything
+after it did not change when the channel landed: a new source is a fetcher,
+not a second installer (`distribution.md`, "One repository interface").
+
+### Why it is not Frozen
+
+The kind is three days old (registered 2026-08-24) and every index it has
+ever decoded was written by this repository's own seeder or its tests. Anyone
+can publish one — that is the point of the kind — and no index authored
+outside this codebase has been read yet. The format has no extension point,
+so freezing is cheap and a change is a new `apiVersion` either way; that is
+exactly why waiting for a stranger's index costs nothing and freezing early
+is how a permanent format acquires a permanent mistake. The sibling
+judgements' lesson (`hub-package`, `spec.layout`) applies whole: days of
+exercise is not evidence of age.
+
+### What would close it
+
+Time, plus one real repository not produced by this repo — the official
+`github.com/zebflow/hub` once it carries real releases qualifies — resolved,
+digest-checked, and installed from, with nothing about the format needing to
+move.

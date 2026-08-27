@@ -1,33 +1,35 @@
 {
   "apiVersion": "zebflow.com/v1",
-  "kind": "LibraryManifest",
-  "metadata": { "name": "zeb/use" },
+  "kind": "RweLibraryManifest",
+  "metadata": {
+    "name": "zeb/use"
+  },
   "spec": {
-  "name": "zeb/use",
-  "description": "RWE hooks collection. useDebounce, useThrottle, useLocalStorage, useClipboard, useTemporaryState, useWindowEvent, useLazyModule, useSearchParams, useSplitPane, useClickAway, useInterval, useGeolocation, useTree.",
-  "exports": [
-    "useDebounce",
-    "useThrottle",
-    "useLocalStorage",
-    "useClipboard",
-    "useTemporaryState",
-    "useWindowEvent",
-    "useLazyModule",
-    "useSearchParams",
-    "useSplitPane",
-    "useClickAway",
-    "useInterval",
-    "useGeolocation",
-    "useTree"
-  ],
-  "versions": {
-    "full-0.1": {
-      "entry": "0.1/runtime/use.bundle.mjs",
-      "source": "offline",
-      "package_version": "0.1",
-      "size_bytes": 11754,
-      "integrity": ""
+    "name": "zeb/use",
+    "description": "RWE hooks collection. useDebounce, useThrottle, useLocalStorage, useClipboard, useTemporaryState, useWindowEvent, useLazyModule, useSearchParams, useSplitPane, useClickAway, useInterval, useGeolocation, useTree.",
+    "exports": [
+      "useDebounce",
+      "useThrottle",
+      "useLocalStorage",
+      "useClipboard",
+      "useTemporaryState",
+      "useWindowEvent",
+      "useLazyModule",
+      "useSearchParams",
+      "useSplitPane",
+      "useClickAway",
+      "useInterval",
+      "useGeolocation",
+      "useTree"
+    ],
+    "versions": {
+      "full-0.1": {
+        "entry": "0.1/runtime/use.bundle.mjs",
+        "source": "offline",
+        "package_version": "0.1",
+        "size_bytes": 11754,
+        "integrity": "sha256:334473b66ea6f775e84d046b58ab805f829be9d4f8f3231f6c2ee98fea6924e4"
+      }
     }
-  }
   }
 }

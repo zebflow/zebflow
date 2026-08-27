@@ -4,13 +4,13 @@ mod database_schema;
 mod dependency_lock;
 mod hub_package;
 mod hub_repository_index;
-mod library_manifest;
 mod map_publish_manifest;
 mod node;
 mod pipeline;
 mod project_bundle;
 mod project_configuration;
 mod runtime_bundle;
+mod rwe_library_manifest;
 mod zebfs_acl;
 
 pub use database_schema::DatabaseSchemaContract;
@@ -37,7 +37,6 @@ pub use hub_repository_index::{
     MAX_HUB_REPOSITORY_INDEX_PACKAGES, MAX_HUB_REPOSITORY_INDEX_RELEASES,
     decode_hub_repository_index, encode_hub_repository_index,
 };
-pub use library_manifest::LibraryManifestContract;
 pub use map_publish_manifest::{MapPublishManifestContract, MapserverLayerRecord};
 pub use node::{
     BUNDLE_TRIGGER_TYPES, BundleScope, INSTALLED_NODE_KIND_PREFIX, MAX_NODE_BUNDLE_BYTES,
@@ -61,4 +60,5 @@ pub use project_configuration::{
     ProjectInitialDataDirSpec, ProjectLayoutSpec, decode_legacy_project_configuration,
 };
 pub use runtime_bundle::RuntimeBundleContract;
+pub use rwe_library_manifest::RweLibraryManifestContract;
 pub use zebfs_acl::ZebFsAclContract;

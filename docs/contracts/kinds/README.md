@@ -22,15 +22,15 @@ explicitly.
 | 8 | [`DatabaseSchema`](./database-schema/README.md) | Envelope, persisted file | Pending |
 | 9 | [`ProjectBundle`](./project-bundle/README.md) | Envelope, transfer archive | Pending |
 | 10 | [`RuntimeBundle`](./runtime-bundle/README.md) | Envelope, runtime transfer | Pending |
-| 11 | [`HubPackage`](./hub-package/README.md) | Envelope, stored and transferred package | Pending |
-| 12 | [`RweLibraryManifest`](./rwe-library-manifest/README.md) | Envelope, persisted library source | Pending |
+| 11 | [`HubPackage`](./hub-package/README.md) | Envelope, stored and transferred package | Candidate |
+| 12 | [`RweLibraryManifest`](./rwe-library-manifest/README.md) | Envelope, persisted library source | Review |
 | 13 | [`MapPublishManifest`](./map-publish-manifest/README.md) | Envelope, persisted file | Pending |
 | 14 | [`InvocationRecord`](./invocation-record/README.md) | Database record | Pending |
 | 15 | [`ProjectManifest`](./project-manifest/README.md) | Reserved | Pending decision |
 | 16 | [`RweSource`](./rwe-source/README.md) | Source file, persisted | Pending |
 | 17 | [`Credential`](./credential/README.md) | Database record | Pending |
 | 18 | [`OfficeTopology`](./office-topology/README.md) | Envelope, persisted | Pending |
-| 19 | [`HubRepositoryIndex`](./hub-repository-index/README.md) | Envelope, transferred index | Pending |
+| 19 | [`HubRepositoryIndex`](./hub-repository-index/README.md) | Envelope, transferred index | Candidate |
 
 ## Required Contents
 

@@ -1,24 +1,26 @@
 {
   "apiVersion": "zebflow.com/v1",
-  "kind": "LibraryManifest",
-  "metadata": { "name": "zeb/codemirror" },
+  "kind": "RweLibraryManifest",
+  "metadata": {
+    "name": "zeb/codemirror"
+  },
   "spec": {
-  "name": "zeb/codemirror",
-  "description": "CodeMirror 6 editor runtime. Rich code editing with syntax highlighting, autocompletion, and markdown support.",
-  "exports": [
-    "codemirror",
-    "presets",
-    "createZebflowEditorExtensions",
-    "CodeEditor"
-  ],
-  "versions": {
-    "full-0.1": {
-      "entry": "0.1/runtime/entry.mjs",
-      "source": "offline",
-      "package_version": "0.1",
-      "size_bytes": 527146,
-      "integrity": ""
+    "name": "zeb/codemirror",
+    "description": "CodeMirror 6 editor runtime. Rich code editing with syntax highlighting, autocompletion, and markdown support.",
+    "exports": [
+      "codemirror",
+      "presets",
+      "createZebflowEditorExtensions",
+      "CodeEditor"
+    ],
+    "versions": {
+      "full-0.1": {
+        "entry": "0.1/runtime/entry.mjs",
+        "source": "offline",
+        "package_version": "0.1",
+        "size_bytes": 61464,
+        "integrity": "sha256:a02cecc1340ffe28e10587a0f7a074ce4ca1c5fb49321999e706540b16ae719b"
+      }
     }
-  }
   }
 }

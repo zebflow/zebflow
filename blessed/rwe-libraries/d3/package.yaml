@@ -1,6 +1,6 @@
 # Publish metadata for the blessed local-hub seed.
 # The seeder publishes this package as the reserved `zebflow` publisher.
 id: zebflow.d3
-version: 0.1.0
+version: 0.1.1
 title: zeb/d3
 description: "D3.js v7 runtime for RWE templates. Full d3 namespace bundled offline. Bar, line, pie chart helpers with reactive stateKey bridge."

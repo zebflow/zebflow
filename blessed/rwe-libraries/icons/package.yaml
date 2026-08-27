@@ -1,6 +1,6 @@
 # Publish metadata for the blessed local-hub seed.
 # The seeder publishes this package as the reserved `zebflow` publisher.
 id: zebflow.icons
-version: 0.1.0
+version: 0.1.1
 title: zeb/icons
 description: "Lucide-style SVG icon components for RWE templates. 78 icons covering navigation, actions, status, data, files, and auth. Includes devicons CSS helpers (ensureDevicons, dbKindIconClass, dbObjectIconClass)."

@@ -1,6 +1,6 @@
 # HubPackage
 
-Status: **Review**
+Status: **Candidate** — re-judged 2026-08-27, below.
 
 This contract defines one published package and its content manifest. It is the
 document every distribution channel carries: a Hub asset, a remote pack, a file
@@ -693,3 +693,61 @@ and installed.
 And this closes a disagreement about how a document is *read*, not about what a
 package is allowed to do. The violation tier still refuses three things, all of
 them properties of the package rather than of its behaviour.
+
+## Freeze re-judgement — 2026-08-27
+
+Status: **Candidate**. Not Frozen.
+
+### The recorded blocker is closed
+
+The 2026-08-21 judgement left one reason standing: `spec.layout` was days old,
+and a field frozen on a week's exercise is how a contract acquires a permanent
+mistake. That reason has aged out on its own terms:
+
+- **A week has passed with the field unchanged.** `spec.layout` landed
+  2026-08-20 (`220ac4d`, `77c5ec9`) and its shape has not moved since.
+- **Cross-layout installs exist that were not written the week the field
+  was** — `a_package_published_from_pipelines_installs_into_a_project_declaring_src`
+  installs a `pipelines`-rooted publish into a project declaring `src` and
+  requires the publisher's root removed rather than carried along, and
+  `a_package_published_before_this_field_existed_still_installs` proves a
+  layoutless pre-field document still resolves through the platform default.
+- **The gates were reconciled** (`50d2b36`, 2026-08-22): publish and both
+  install gates read one document through one reader, with a test that puts
+  one document to all three and requires one answer.
+- **The referenced-artifact half ran live** (`cbf1b5b`, judged 2026-08-21):
+  publish over 1 MiB references, the HTTP artifact channel fetches, tampered
+  bytes refuse by digest with nothing written.
+- **A new asset kind flowed through the contract without moving it.** The
+  blessed seeder publishes `rwe_library` packages through the ordinary publish
+  gates on every boot (`2ea71f7`), installs copy bytes into `data/hub/` and
+  pin a hub-sourced lock entry, and the carried `RweLibraryManifest` rename
+  reseeded as new versions beside the old — immutability held exactly as
+  written: changed bytes were a new version, never a rewrite.
+- **The same documents moved between servings unchanged** (`93be173`): a
+  static repository serves the identical release document and
+  content-addressed artifacts, digest-pinned, through the same review — the
+  §1b claim ("a release moves between all three servings without changing a
+  byte") exercised rather than asserted.
+
+### Why it is not Frozen
+
+Not the format — nothing in "Still to review" moves the on-disk shape. But
+Frozen here is the NodeBundle standard, and that kind's judgement rested on
+live-and-browser evidence with its remaining gaps named as deliberate. This
+kind still carries edges that are neither closed nor declared deliberate:
+`HUB_INSTALL_REFUSED`/`HUB_REMOTE_INSTALL_REFUSED` still answer 500,
+retraction is per-package rather than per-release, an uninstalled add leaves
+three destinations nothing records, and a hand-authored `project_bundle` whose
+`spec.layout` disagrees with the `zebflow.yaml` it carries is checked by
+nothing. And the serving vocabulary this document anchors — §1b's
+local/public/static triple — was rewritten today (`d9d49da`); freezing the
+kind the same day its surrounding language settled repeats the mistake the
+2026-08-21 judgement was written to avoid.
+
+### What would close it
+
+Decide each "Still to review" edge — close it or record it as deliberate the
+way NodeBundle's known gaps are recorded — and let the §1b vocabulary sit
+unmoved. No format change is expected from any of it; that is what Candidate
+asserts.

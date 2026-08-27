@@ -1,27 +1,29 @@
 {
   "apiVersion": "zebflow.com/v1",
-  "kind": "LibraryManifest",
-  "metadata": { "name": "zeb/d3" },
+  "kind": "RweLibraryManifest",
+  "metadata": {
+    "name": "zeb/d3"
+  },
   "spec": {
-  "name": "zeb/d3",
-  "description": "D3.js v7 runtime for RWE templates. Full d3 namespace bundled offline. Bar, line, pie chart helpers with reactive stateKey bridge.",
-  "exports": [
-    "ensureD3",
-    "mountBarChart",
-    "mountLineChart",
-    "mountPieChart",
-    "d3lib",
-    "D3Bars"
-  ],
-  "versions": {
-    "full-7.x": {
-      "entry": "0.1/runtime/d3.bundle.mjs",
-      "source": "offline",
-      "package_version": "7.x",
-      "size_bytes": 292815,
-      "integrity": "",
-      "note": "Full d3 v7 bundle via esbuild. Build: cd /tmp/zeb-d3-build && npm install && node_modules/.bin/esbuild entry.mjs --bundle --format=esm --minify --outfile=d3.bundle.mjs"
+    "name": "zeb/d3",
+    "description": "D3.js v7 runtime for RWE templates. Full d3 namespace bundled offline. Bar, line, pie chart helpers with reactive stateKey bridge.",
+    "exports": [
+      "ensureD3",
+      "mountBarChart",
+      "mountLineChart",
+      "mountPieChart",
+      "d3lib",
+      "D3Bars"
+    ],
+    "versions": {
+      "full-7.x": {
+        "entry": "0.1/runtime/d3.bundle.mjs",
+        "source": "offline",
+        "package_version": "7.x",
+        "size_bytes": 292151,
+        "integrity": "sha256:a615e39ff6b7c38549d71b7ba6b196a8110ef63883f69b717956ac02d73c3269",
+        "note": "Full d3 v7 bundle via esbuild. Build: cd /tmp/zeb-d3-build && npm install && node_modules/.bin/esbuild entry.mjs --bundle --format=esm --minify --outfile=d3.bundle.mjs"
+      }
     }
-  }
   }
 }

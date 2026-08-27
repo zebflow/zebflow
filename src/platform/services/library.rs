@@ -1,7 +1,7 @@
 //! In-memory registry of embedded `zeb/*` frontend library manifests.
 //!
 //! Built once at startup from [`PLATFORM_LIBRARY_ASSETS`]. Each `manifest.json`
-//! embedded in the binary is parsed into a [`LibraryManifest`] and stored in
+//! embedded in the binary is parsed into a [`RweLibraryManifest`] and stored in
 //! insertion order for stable listing.
 
 use std::collections::BTreeMap;
@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::contracts::decode_contract;
-use crate::contracts::kinds::LibraryManifestContract;
+use crate::contracts::kinds::RweLibraryManifestContract;
 use crate::contracts::kinds::{DependencyLockArtifactSpec, DependencyLockSource};
 use crate::platform::error::PlatformError;
 use crate::platform::web::embedded::{PLATFORM_LIBRARY_ASSETS, platform_library_asset};
@@ -18,29 +18,23 @@ use crate::platform::web::embedded::{PLATFORM_LIBRARY_ASSETS, platform_library_a
 /// Strict source form stored in each library `manifest.json` contract.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct LibraryManifestSpec {
+pub struct RweLibraryManifestSpec {
     pub name: String,
     pub description: String,
-    #[serde(default)]
     pub exports: Vec<String>,
-    pub versions: BTreeMap<String, LibraryVersionSpec>,
+    pub versions: BTreeMap<String, RweLibraryVersionSpec>,
 }
 
 /// Strict source form for one library release.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct LibraryVersionSpec {
+pub struct RweLibraryVersionSpec {
     pub entry: String,
     pub source: String,
     pub package_version: String,
     pub size_bytes: u64,
-    #[serde(default)]
-    pub size_gzip_bytes: Option<u64>,
-    #[serde(default)]
     pub integrity: String,
-    #[serde(default)]
-    pub registry_url: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
 }
 
@@ -51,7 +45,7 @@ pub struct LibraryVersion {
     pub key: String,
     /// Relative path to the bundle within the library dir, e.g. `"r183/bundle.min.mjs"`.
     pub entry: String,
-    /// `"offline"` (embedded in binary) or `"online"` (download required).
+    /// `"offline"` (bytes embedded in this binary) or `"hub"` (installed copy).
     pub source: String,
     /// Upstream package version, e.g. `"0.183.2"`.
     pub package_version: String,
@@ -59,13 +53,11 @@ pub struct LibraryVersion {
     pub size_bytes: u64,
     /// sha256 integrity hash of the bundle file.
     pub integrity: String,
-    /// Download URL for online versions.
-    pub registry_url: Option<String>,
 }
 
 /// Parsed manifest for one embedded `zeb/*` library.
 #[derive(Debug, Clone)]
-pub struct LibraryManifest {
+pub struct RweLibraryManifest {
     /// Stable library name, e.g. `"zeb/threejs"`.
     pub name: String,
     /// Human-readable description shown in the settings UI.
@@ -76,7 +68,7 @@ pub struct LibraryManifest {
     pub versions: Vec<LibraryVersion>,
 }
 
-impl LibraryManifest {
+impl RweLibraryManifest {
     /// Returns the default offline version, if any (first version with source == "offline").
     pub fn default_offline_version(&self) -> Option<&LibraryVersion> {
         self.versions.iter().find(|v| v.source == "offline")
@@ -95,19 +87,20 @@ impl LibraryManifest {
             .unwrap_or("unknown")
     }
 
-    /// `packed_kind` — `"full"` if offline bundle exists, else `"online"`.
+    /// `packed_kind` — `"full"` if an offline bundle is embedded in this
+    /// binary, else `"hub"` (only an installed copy can serve it).
     pub fn packed_kind(&self) -> &str {
         if self.versions.iter().any(|v| v.source == "offline") {
             "full"
         } else {
-            "online"
+            "hub"
         }
     }
 }
 
 /// In-memory ordered registry of all embedded library manifests.
 pub struct LibraryService {
-    manifests: Vec<LibraryManifest>,
+    manifests: Vec<RweLibraryManifest>,
 }
 
 impl LibraryService {
@@ -120,7 +113,7 @@ impl LibraryService {
                 continue;
             }
             let document =
-                decode_contract::<LibraryManifestContract>(asset.bytes).map_err(|err| {
+                decode_contract::<RweLibraryManifestContract>(asset.bytes).map_err(|err| {
                     PlatformError::new(
                         "PLATFORM_LIBRARY_MANIFEST",
                         format!("invalid embedded library manifest '{}': {err}", asset.path),
@@ -137,11 +130,10 @@ impl LibraryService {
                     package_version: version.package_version,
                     size_bytes: version.size_bytes,
                     integrity: version.integrity,
-                    registry_url: version.registry_url,
                 })
                 .collect();
 
-            manifests.push(LibraryManifest {
+            manifests.push(RweLibraryManifest {
                 name: spec.name,
                 description: spec.description,
                 exports: spec.exports,
@@ -152,17 +144,17 @@ impl LibraryService {
     }
 
     /// Returns an iterator over all registered manifests in insertion order.
-    pub fn list(&self) -> impl Iterator<Item = &LibraryManifest> {
+    pub fn list(&self) -> impl Iterator<Item = &RweLibraryManifest> {
         self.manifests.iter()
     }
 
     /// Returns the manifest for one library by name, or `None` if not registered.
-    pub fn get(&self, name: &str) -> Option<&LibraryManifest> {
+    pub fn get(&self, name: &str) -> Option<&RweLibraryManifest> {
         self.manifests.iter().find(|m| m.name == name)
     }
 
     /// Returns true if a library exports a given symbol name.
-    pub fn find_library_for_symbol(&self, symbol: &str) -> Option<&LibraryManifest> {
+    pub fn find_library_for_symbol(&self, symbol: &str) -> Option<&RweLibraryManifest> {
         self.manifests
             .iter()
             .find(|m| m.exports.iter().any(|e| e == symbol))
@@ -170,9 +162,8 @@ impl LibraryService {
 
     /// Resolves one exact library release into a verified dependency-lock entry.
     ///
-    /// Offline releases are hashed from the bytes embedded in this binary. An
-    /// optional manifest digest must match those bytes. Online releases cannot
-    /// be pinned unless their manifest already provides a valid digest.
+    /// Offline releases are hashed from the bytes embedded in this binary, and
+    /// the manifest's required digest must match those bytes.
     pub fn resolve_lock_entry(
         &self,
         name: &str,
@@ -201,68 +192,45 @@ impl LibraryService {
             ));
         }
 
-        let integrity = if resolved.source == "offline" {
-            let asset_path = format!("{name}/{}", resolved.entry);
-            let bytes = platform_library_asset(&asset_path).ok_or_else(|| {
-                PlatformError::new(
-                    "PLATFORM_LIBRARY_ASSET_MISSING",
-                    format!("embedded library asset '{asset_path}' is missing"),
-                )
-            })?;
-            let computed = format!("sha256:{:x}", Sha256::digest(bytes));
-            if !resolved.integrity.is_empty() && resolved.integrity != computed {
-                return Err(PlatformError::new(
-                    "PLATFORM_LIBRARY_INTEGRITY",
-                    format!(
-                        "library '{name}' version '{version}' manifest digest does not match its embedded bytes"
-                    ),
-                ));
-            }
-            computed
-        } else {
-            validate_sha256(&resolved.integrity).map_err(|message| {
-                PlatformError::new(
-                    "PLATFORM_LIBRARY_INTEGRITY",
-                    format!("library '{name}' version '{version}' {message}"),
-                )
-            })?;
-            resolved.integrity.clone()
-        };
-
-        let source = match resolved.source.as_str() {
-            "offline" => DependencyLockSource::Embedded,
-            unsupported => {
-                return Err(PlatformError::new(
-                    "PLATFORM_LIBRARY_SOURCE_UNSUPPORTED",
-                    format!(
-                        "library '{name}' version '{version}' uses unsupported durable source '{unsupported}'"
-                    ),
-                ));
-            }
-        };
+        // This resolver answers for the embedded registry only. A `hub`
+        // release resolves against its installed copy in `data/hub/`, which
+        // the dependency service handles before it reaches here.
+        if resolved.source != "offline" {
+            return Err(PlatformError::new(
+                "PLATFORM_LIBRARY_SOURCE_UNSUPPORTED",
+                format!(
+                    "library '{name}' version '{version}' uses unsupported durable source '{}'",
+                    resolved.source
+                ),
+            ));
+        }
+        let asset_path = format!("{name}/{}", resolved.entry);
+        let bytes = platform_library_asset(&asset_path).ok_or_else(|| {
+            PlatformError::new(
+                "PLATFORM_LIBRARY_ASSET_MISSING",
+                format!("embedded library asset '{asset_path}' is missing"),
+            )
+        })?;
+        let integrity = format!("sha256:{:x}", Sha256::digest(bytes));
+        // The contract requires integrity, so the manifest always declares
+        // one and it must be the digest of the bytes this binary embeds.
+        if resolved.integrity != integrity {
+            return Err(PlatformError::new(
+                "PLATFORM_LIBRARY_INTEGRITY",
+                format!(
+                    "library '{name}' version '{version}' manifest digest does not match its embedded bytes"
+                ),
+            ));
+        }
 
         Ok(DependencyLockArtifactSpec {
             version: resolved.key.clone(),
-            source,
+            source: DependencyLockSource::Embedded,
             source_id: format!("zebflow/{name}"),
             entry: resolved.entry.clone(),
             integrity,
         })
     }
-}
-
-fn validate_sha256(value: &str) -> Result<(), &'static str> {
-    let Some(hex) = value.strip_prefix("sha256:") else {
-        return Err("must declare integrity as sha256:<hex>");
-    };
-    if hex.len() != 64
-        || !hex
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-    {
-        return Err("must declare exactly 64 lowercase hexadecimal digest characters");
-    }
-    Ok(())
 }
 
 #[cfg(test)]
@@ -279,8 +247,63 @@ mod tests {
     #[test]
     fn legacy_library_manifest_shape_is_rejected() {
         let raw = br#"{"name":"zeb/example","description":"example","exports":[],"versions":{}}"#;
-        let err = decode_contract::<LibraryManifestContract>(raw).unwrap_err();
+        let err = decode_contract::<RweLibraryManifestContract>(raw).unwrap_err();
         assert_eq!(err.category(), "invalid");
+    }
+
+    /// The checked-in integrity and size values are honest: every embedded
+    /// manifest's declared digest and decoded size are recomputed here from
+    /// the bytes this binary actually embeds.
+    #[test]
+    fn every_embedded_manifest_declares_the_digest_and_size_of_its_real_bytes() {
+        let service = LibraryService::from_embedded().expect("embedded library contracts");
+        let mut releases = 0usize;
+        for manifest in service.list() {
+            for version in &manifest.versions {
+                let asset_path = format!("{}/{}", manifest.name, version.entry);
+                let bytes = platform_library_asset(&asset_path)
+                    .unwrap_or_else(|| panic!("embedded bundle '{asset_path}' exists"));
+                assert_eq!(
+                    version.integrity,
+                    format!("sha256:{:x}", Sha256::digest(bytes)),
+                    "{} '{}' integrity matches its embedded bytes",
+                    manifest.name,
+                    version.key
+                );
+                assert_eq!(
+                    version.size_bytes,
+                    bytes.len() as u64,
+                    "{} '{}' size_bytes matches its embedded bytes",
+                    manifest.name,
+                    version.key
+                );
+                releases += 1;
+            }
+        }
+        assert!(releases >= 12, "every library carries at least one release");
+    }
+
+    /// The blessed documents are canonical: decoding one and re-encoding it
+    /// through the one canonical writer reproduces the file byte for byte.
+    #[test]
+    fn every_embedded_manifest_is_canonical_byte_for_byte() {
+        for asset in PLATFORM_LIBRARY_ASSETS {
+            if !asset.path.ends_with("/manifest.json") {
+                continue;
+            }
+            let document = decode_contract::<RweLibraryManifestContract>(asset.bytes)
+                .unwrap_or_else(|err| panic!("'{}' decodes: {err}", asset.path));
+            let encoded = crate::contracts::encode_contract::<RweLibraryManifestContract>(
+                document.metadata,
+                document.spec,
+            )
+            .expect("re-encode");
+            assert_eq!(
+                encoded, asset.bytes,
+                "'{}' is written in canonical form",
+                asset.path
+            );
+        }
     }
 
     #[test]
@@ -301,7 +324,7 @@ mod tests {
     fn lock_resolution_rejects_source_substitution() {
         let service = LibraryService::from_embedded().expect("embedded library contracts");
         let error = service
-            .resolve_lock_entry("zeb/deckgl", "full-9.x", "online")
+            .resolve_lock_entry("zeb/deckgl", "full-9.x", "hub")
             .unwrap_err();
         assert_eq!(error.code, "PLATFORM_LIBRARY_SOURCE_MISMATCH");
     }

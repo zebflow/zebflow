@@ -3528,7 +3528,7 @@ impl HubService {
             )
         })?;
         let manifest =
-            decode_contract::<crate::contracts::kinds::LibraryManifestContract>(&manifest_bytes)
+            decode_contract::<crate::contracts::kinds::RweLibraryManifestContract>(&manifest_bytes)
                 .map_err(|error| {
                     PlatformError::new(
                         "HUB_INSTALL",
@@ -11421,7 +11421,7 @@ mod tests {
         let deckgl = platform
             .hub
             .hub_data
-            .get_hub_asset_version("zebflow.deckgl", "0.1.0")
+            .get_hub_asset_version("zebflow.deckgl", "0.1.1")
             .expect("version lookup")
             .expect("the first boot seeded deckgl");
         let report = platform
@@ -11430,11 +11430,11 @@ mod tests {
             .expect("second seed run");
         assert!(report.published.is_empty(), "{:?}", report.published);
         assert!(report.errors.is_empty(), "{:?}", report.errors);
-        assert!(report.skipped.contains(&"zebflow.deckgl@0.1.0".to_string()));
+        assert!(report.skipped.contains(&"zebflow.deckgl@0.1.1".to_string()));
         let unchanged = platform
             .hub
             .hub_data
-            .get_hub_asset_version("zebflow.deckgl", "0.1.0")
+            .get_hub_asset_version("zebflow.deckgl", "0.1.1")
             .expect("version lookup")
             .expect("still present");
         assert_eq!(unchanged.artifact_sha256, deckgl.artifact_sha256);
@@ -11482,7 +11482,7 @@ mod tests {
 
         let result = platform
             .hub
-            .install_asset("superadmin", "default", "zebflow.deckgl", "0.1.0", "")
+            .install_asset("superadmin", "default", "zebflow.deckgl", "0.1.1", "")
             .expect("deckgl installs from the seeded local hub");
         assert_eq!(result.asset_kind, HUB_ASSET_KIND_RWE_LIBRARY);
         assert_eq!(result.install_root, "rwe-libraries/deckgl");

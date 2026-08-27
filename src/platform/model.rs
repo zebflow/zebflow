@@ -3086,7 +3086,7 @@ pub type ZebflowJsonRweLibraries = HashMap<String, ZebflowJsonRweLibraryEntry>;
 pub struct ZebflowJsonRweLibraryEntry {
     /// Pinned packed version string (e.g. `"bridge-0.1"`).
     pub version: String,
-    /// Source kind: `"offline"` (embedded binary) or `"online"` (CDN fetch).
+    /// Source kind: `"offline"` (embedded binary) or `"hub"` (installed copy).
     pub source: String,
 }
 

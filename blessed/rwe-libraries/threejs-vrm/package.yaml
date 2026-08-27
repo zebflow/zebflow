@@ -1,6 +1,6 @@
 # Publish metadata for the blessed local-hub seed.
 # The seeder publishes this package as the reserved `zebflow` publisher.
 id: zebflow.threejs-vrm
-version: 0.1.0
+version: 0.1.1
 title: zeb/threejs-vrm
 description: "VRM 0.x/1.0 avatar viewer for RWE templates. Three.js + @pixiv/three-vrm bundled offline. Auto-mount, expression control, animation mixer, look-at, spring bones."

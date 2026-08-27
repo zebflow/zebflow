@@ -1,6 +1,6 @@
-# RweRweLibraryManifest
+# RweLibraryManifest
 
-Status: **review** — spec settled 2026-08-27, code catching up (see Open).
+Status: **review** — spec settled 2026-08-27, code caught up 2026-08-27.
 
 One RWE library — and this kind governs RWE libraries ONLY: an opaque, pre-built runtime bundle plus typed wrappers,
 loaded at runtime, never compiled by the RWE compiler. If the compiler
@@ -10,7 +10,7 @@ compiles it, it is source (`template_bundle`), not a library.
 
 | | |
 | --- | --- |
-| API version / kind | `zebflow.com/v1` `RweRweLibraryManifest` |
+| API version / kind | `zebflow.com/v1` `RweLibraryManifest` |
 | Format | JSON, canonical envelope |
 | Document | `manifest.json` beside the library's version directories |
 | Lives | `blessed/rwe-libraries/{name}/` (build source) · inside a `rwe_library` hub package · installed at `data/hub/rwe-libraries/{name}/` |
@@ -21,7 +21,7 @@ compiles it, it is source (`template_bundle`), not a library.
 ```json
 {
   "apiVersion": "zebflow.com/v1",
-  "kind": "RweRweLibraryManifest",
+  "kind": "RweLibraryManifest",
   "metadata": { "name": "zeb/prosemirror" },
   "spec": {
     "name": "zeb/prosemirror",
@@ -70,10 +70,37 @@ Adding an optional spec field before first release follows the dated-amendment
 rule (`project-configuration/README.md`). After release: new `apiVersion` plus
 converter, per `versioning.md`.
 
+## Code catch-up — closed 2026-08-27
+
+Everything the Open section owed is done:
+
+- The validator enforces this spec: `source` ∈ `offline | hub` (`online`
+  refused, and no serving path branches on it any more), `integrity` required
+  as `sha256:` + 64 hex with empty refused, `size_bytes` required non-zero,
+  `entry` may only descend, `exports` non-empty. Unknown fields were already
+  refused at every level.
+- The twelve blessed manifests carry the real digest and decoded size of their
+  entry bundles, written in the canonical form the one writer emits. The values
+  are checked in; two `library.rs` tests keep them honest by recomputing the
+  digest and size from the bytes the binary embeds and by re-encoding every
+  embedded manifest byte-for-byte
+  (`every_embedded_manifest_declares_the_digest_and_size_of_its_real_bytes`,
+  `every_embedded_manifest_is_canonical_byte_for_byte`).
+- Golden fixture at
+  `tests/fixtures/contracts/rwe-library-manifest/v1-complete.json`, with a
+  byte-for-byte roundtrip test and negative tests covering malformed bytes,
+  unknown root/spec/version fields, wrong kind, the pre-rename kind name,
+  future `apiVersion`, missing/empty/malformed integrity, zero size, escaping
+  entries, and `online` specifically.
+- The changed manifest bytes are a new blessed release: the twelve packages
+  whose manifests changed reseed as `zebflow.{name}@0.1.1` beside the old
+  `0.1.0`, because a coordinate already present is skipped, never rewritten.
+
 ## Open
 
-- Code catch-up to this spec: validator still accepts `online` and empty
-  `integrity`/`size_bytes`; the blessed manifests carry empty integrity and
-  some zero sizes; golden fixture and negative tests do not exist yet.
-- Canonical serialization (the current machine-written documents carry
-  non-canonical indentation).
+- `blessed/rwe-libraries/preact/` carries no `manifest.json`. It is seeded as
+  an `rwe_library` hub package (`zebflow.preact@0.1.0`), but installing it
+  would refuse at "no readable manifest.json" — and a truthful manifest cannot
+  be written for it today because it exports nothing a page imports; it is the
+  runtime itself. Either it gains a manifest with a real export surface or it
+  stops being an `rwe_library` package.
