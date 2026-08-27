@@ -281,6 +281,25 @@ pub struct SekejapMaintenanceReport {
     pub duration_ms: u64,
 }
 
+/// Drops the pooled in-memory handle for one project store.
+///
+/// A `ProjectBundle` import swaps `data/store/` as a unit
+/// (`kinds/project-bundle/README.md`), so a `CoreDB` opened against the
+/// displaced directory must not keep serving its bytes. Callers still holding
+/// a cloned `Arc` finish their in-flight call on the old handle; the next
+/// `get_db` reopens from the swapped-in directory.
+pub fn evict_project_pool(data_root: &Path, owner: &str, project: &str) {
+    let dir = project_dir(data_root, owner, project);
+    pool()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .remove(&dir);
+    maintenance_pool()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .remove(&dir);
+}
+
 pub fn project_dir(data_root: &Path, owner: &str, project: &str) -> PathBuf {
     data_root
         .join("users")

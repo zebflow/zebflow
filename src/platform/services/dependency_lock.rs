@@ -526,11 +526,13 @@ impl DependencyLockService {
                 .map(|definition| definition.kind),
         );
         let mut required = BTreeSet::new();
+        let mut functions = FunctionPipelineScan::default();
         let source_root = self.source_root(owner, project);
         collect_project_pipeline_requirements(
             &source_root,
             &source_root,
             &mut required,
+            &mut functions,
             &mut items,
         )?;
         for (name, bundle) in &lock.nodes.bundles {
@@ -621,6 +623,28 @@ impl DependencyLockService {
                 version: String::new(),
                 source: "unresolved".to_string(),
                 message,
+                definitions: Vec::new(),
+            });
+        }
+
+        // Fifth family: unresolved `n.function.call` targets. A missing
+        // function pipeline cannot be installed from anywhere, so the honest
+        // response is a precise report — import verifies through it and never
+        // refuses on it.
+        for slug in functions.targets {
+            if functions.providers.contains(&slug) {
+                continue;
+            }
+            items.push(DependencyStatusItem {
+                family: "function_pipeline",
+                name: slug,
+                status: DependencyResolutionStatus::Missing,
+                version: String::new(),
+                source: "project".to_string(),
+                message: "n.function.call targets a pipeline with an n.trigger.function \
+                          entry that does not exist in this project; it should have \
+                          travelled with the project"
+                    .to_string(),
                 definitions: Vec::new(),
             });
         }
@@ -1169,10 +1193,48 @@ fn safe_node_bundle_path(package_dir: &Path, relative: &str) -> Result<PathBuf, 
     Ok(package_dir.join(relative_path))
 }
 
+/// `n.function.call` targets and `n.trigger.function` providers found by one
+/// project scan. A target with no provider is the fifth report family: a
+/// function pipeline cannot be fetched from anywhere — it should have
+/// travelled with the project (`kinds/project-bundle/README.md`).
+#[derive(Debug, Default)]
+struct FunctionPipelineScan {
+    /// Slugs named by `n.function.call` nodes.
+    targets: BTreeSet<String>,
+    /// Slugs of pipelines carrying an `n.trigger.function` entry — the only
+    /// pipelines the call resolver accepts.
+    providers: BTreeSet<String>,
+}
+
+impl FunctionPipelineScan {
+    fn record(&mut self, relative: &str, nodes: &[crate::pipeline::model::PipelineNode]) {
+        if nodes.iter().any(|node| node.kind == "n.trigger.function") {
+            self.providers
+                .insert(crate::platform::services::project::name_from_file_rel_path(
+                    relative,
+                ));
+        }
+        for node in nodes {
+            if node.kind != "n.function.call" {
+                continue;
+            }
+            if let Some(slug) = node
+                .config
+                .get("function")
+                .and_then(|value| value.as_str())
+                .filter(|slug| !slug.trim().is_empty())
+            {
+                self.targets.insert(slug.to_string());
+            }
+        }
+    }
+}
+
 fn collect_project_pipeline_requirements(
     root: &Path,
     current: &Path,
     required: &mut BTreeSet<String>,
+    functions: &mut FunctionPipelineScan,
     items: &mut Vec<DependencyStatusItem>,
 ) -> Result<(), PlatformError> {
     let entries = match std::fs::read_dir(current) {
@@ -1202,7 +1264,7 @@ fn collect_project_pipeline_requirements(
             )
         })?;
         if file_type.is_dir() {
-            collect_project_pipeline_requirements(root, &path, required, items)?;
+            collect_project_pipeline_requirements(root, &path, required, functions, items)?;
             continue;
         }
         if !file_type.is_file()
@@ -1228,6 +1290,7 @@ fn collect_project_pipeline_requirements(
         })?;
         match decode_pipeline_graph(&source) {
             Ok(document) => {
+                functions.record(&relative, &document.spec.nodes);
                 required.extend(document.spec.nodes.into_iter().map(|node| node.kind));
             }
             Err(error) => items.push(DependencyStatusItem {
@@ -1870,6 +1933,99 @@ mod tests {
                 && item.name == "n.x.example.thing"
                 && item.status == DependencyResolutionStatus::Missing
         }));
+    }
+
+    #[test]
+    fn status_reports_unresolved_function_call_targets_as_the_fifth_family() {
+        let root = tempfile::tempdir().unwrap();
+        let users = root.path().join("users");
+        let service = DependencyLockService::new(users.clone());
+        service
+            .write("owner", "project", &DependencyLockSpec::default())
+            .unwrap();
+        let pipelines = users.join("owner/project/repo/pipelines");
+        std::fs::create_dir_all(&pipelines).unwrap();
+        // One resolvable target: `present-fn` exists and carries the
+        // function trigger. One dangling target: `absent-fn` does not exist.
+        // One near-miss: `not-a-function` exists but has no
+        // `n.trigger.function` entry, so the call resolver would never accept
+        // it and the report must not either.
+        std::fs::write(
+            pipelines.join("present-fn.zf.json"),
+            br#"{
+              "apiVersion":"zebflow.com/v1",
+              "kind":"Pipeline",
+              "metadata":{"name":"present-fn"},
+              "spec":{
+                "id":"present-fn",
+                "entry_nodes":["t"],
+                "nodes":[{"id":"t","kind":"n.trigger.function","output_pins":["out"]}],
+                "edges":[]
+              }
+            }"#,
+        )
+        .unwrap();
+        std::fs::write(
+            pipelines.join("not-a-function.zf.json"),
+            br#"{
+              "apiVersion":"zebflow.com/v1",
+              "kind":"Pipeline",
+              "metadata":{"name":"not-a-function"},
+              "spec":{
+                "id":"not-a-function",
+                "entry_nodes":["t"],
+                "nodes":[{"id":"t","kind":"n.trigger.webhook","output_pins":["out"]}],
+                "edges":[]
+              }
+            }"#,
+        )
+        .unwrap();
+        std::fs::write(
+            pipelines.join("caller.zf.json"),
+            br#"{
+              "apiVersion":"zebflow.com/v1",
+              "kind":"Pipeline",
+              "metadata":{"name":"caller"},
+              "spec":{
+                "id":"caller",
+                "entry_nodes":["t"],
+                "nodes":[
+                  {"id":"t","kind":"n.trigger.webhook","output_pins":["out"]},
+                  {"id":"a","kind":"n.function.call","output_pins":["out","error"],
+                   "config":{"function":"present-fn"}},
+                  {"id":"b","kind":"n.function.call","output_pins":["out","error"],
+                   "config":{"function":"absent-fn"}},
+                  {"id":"c","kind":"n.function.call","output_pins":["out","error"],
+                   "config":{"function":"not-a-function"}}
+                ],
+                "edges":[]
+              }
+            }"#,
+        )
+        .unwrap();
+
+        let report = service
+            .status("owner", "project", &ZebflowJsonRweLibraries::new())
+            .unwrap();
+        let missing = report
+            .items
+            .iter()
+            .filter(|item| item.family == "function_pipeline")
+            .collect::<Vec<_>>();
+        assert_eq!(
+            missing
+                .iter()
+                .map(|item| item.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["absent-fn", "not-a-function"],
+            "{report:?}"
+        );
+        assert!(
+            missing
+                .iter()
+                .all(|item| item.status == DependencyResolutionStatus::Missing
+                    && item.source == "project")
+        );
     }
 
     fn locked_bundle(source: DependencyLockSource, digest: char) -> DependencyLockNodeBundleSpec {

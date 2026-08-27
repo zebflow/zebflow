@@ -2958,6 +2958,10 @@ CREATE INDEX IF NOT EXISTS idx_hub_access_grants_project
             "export_files" => Ok(ProjectOperationKind::ExportFiles),
             "import_bundle" => Ok(ProjectOperationKind::ImportBundle),
             "import_files" => Ok(ProjectOperationKind::ImportFiles),
+            "export_full" => Ok(ProjectOperationKind::ExportFull),
+            "import_full" => Ok(ProjectOperationKind::ImportFull),
+            "platform_import" => Ok(ProjectOperationKind::PlatformImport),
+            "rollback_import" => Ok(ProjectOperationKind::RollbackImport),
             other => Err(PlatformError::new(
                 "PLATFORM_SQLITE_DECODE",
                 format!("unknown project operation kind '{other}'"),

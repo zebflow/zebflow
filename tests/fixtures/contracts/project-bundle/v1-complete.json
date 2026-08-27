@@ -1,0 +1,34 @@
+{
+  "apiVersion": "zebflow.com/v1",
+  "kind": "ProjectBundle",
+  "metadata": {
+    "name": "superadmin/spatial-blog"
+  },
+  "spec": {
+    "classes": [
+      "repo",
+      "store",
+      "files"
+    ],
+    "exported_at": 1787175600,
+    "source_office_id": "office-a",
+    "class_digests": {
+      "repo": "sha256:aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11",
+      "store": "sha256:bb22bb22bb22bb22bb22bb22bb22bb22bb22bb22bb22bb22bb22bb22bb22bb22",
+      "files": "sha256:cc33cc33cc33cc33cc33cc33cc33cc33cc33cc33cc33cc33cc33cc33cc33cc33"
+    },
+    "carried_dependencies": [
+      {
+        "name": "zeb/my-chart",
+        "source": "direct.file",
+        "integrity": "sha256:ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12"
+      }
+    ],
+    "counts": {
+      "repo": 41,
+      "store": 7,
+      "files": 128,
+      "total_bytes": 5242880
+    }
+  }
+}

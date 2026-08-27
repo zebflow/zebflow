@@ -392,6 +392,7 @@ function ProjectTransferPanel({ owner, project, api, initialOperations }) {
   const [busyKey, setBusyKey] = useState("");
   const [bundleFile, setBundleFile] = useState(null);
   const [filesFile, setFilesFile] = useState(null);
+  const [fullFile, setFullFile] = useState(null);
   const primaryButtonClass = "!rounded-none";
   const outlineButtonClass = "!rounded-none !border !border-dark-border !bg-transparent !text-body hover:!bg-dark-border";
   const ghostButtonClass = "!rounded-none !border !border-dark-border !bg-transparent !text-body-soft hover:!bg-dark-border hover:!text-body";
@@ -405,7 +406,8 @@ function ProjectTransferPanel({ owner, project, api, initialOperations }) {
   }
 
   async function handleExport(kind) {
-    const url = kind === "bundle" ? api?.export_bundle : api?.export_files;
+    const url =
+      kind === "bundle" ? api?.export_bundle : kind === "full" ? api?.export_full : api?.export_files;
     if (!url) return;
     setBusyKey(`export:${kind}`);
     setStatusMsg(`Preparing ${kind} export…`);
@@ -416,7 +418,7 @@ function ProjectTransferPanel({ owner, project, api, initialOperations }) {
       if (payload?.download_url) {
         window.location.href = payload.download_url;
       }
-      setStatusMsg(`${kind === "bundle" ? "Bundle" : "Files"} export ready.`);
+      setStatusMsg(`${kind === "bundle" ? "Bundle" : kind === "full" ? "Full" : "Files"} export ready.`);
       setStatusTone("ok");
     } catch (err) {
       setStatusMsg(`Export failed: ${err?.message || String(err)}`);
@@ -428,8 +430,9 @@ function ProjectTransferPanel({ owner, project, api, initialOperations }) {
   }
 
   async function handleImport(kind) {
-    const file = kind === "bundle" ? bundleFile : filesFile;
-    const url = kind === "bundle" ? api?.import_bundle : api?.import_files;
+    const file = kind === "bundle" ? bundleFile : kind === "full" ? fullFile : filesFile;
+    const url =
+      kind === "bundle" ? api?.import_bundle : kind === "full" ? api?.import_full : api?.import_files;
     if (!url || !file) return;
     setBusyKey(`import:${kind}`);
     setStatusMsg(`Importing ${kind} archive…`);
@@ -448,10 +451,11 @@ function ProjectTransferPanel({ owner, project, api, initialOperations }) {
         );
       }
       await refreshOperations();
-      setStatusMsg(`${kind === "bundle" ? "Bundle" : "Files"} import applied.`);
+      setStatusMsg(`${kind === "bundle" ? "Bundle" : kind === "full" ? "Full" : "Files"} import applied.`);
       setStatusTone("ok");
       if (kind === "bundle") setBundleFile(null);
       if (kind === "files") setFilesFile(null);
+      if (kind === "full") setFullFile(null);
     } catch (err) {
       setStatusMsg(`Import failed: ${err?.message || String(err)}`);
       setStatusTone("error");
@@ -467,7 +471,7 @@ function ProjectTransferPanel({ owner, project, api, initialOperations }) {
       title="Project Export"
       description={
         <>
-            Download or apply first-class project archives. Bundle includes <code>repo/</code> and <code>data/</code>. Files archive includes Zebflow FS objects.
+            Download or apply ProjectBundle archives. Bundle carries the <code>repo</code> and <code>store</code> classes (<code>repo/</code> + <code>data/store/</code>, plus direct dependency bytes). Files carries the <code>files</code> class (Zebflow FS objects). Full carries all three. Imports stage, verify digests, then swap per class with recovery copies under <code>data/recovery/</code>.
         </>
       }
       tag="Portability"
@@ -476,7 +480,7 @@ function ProjectTransferPanel({ owner, project, api, initialOperations }) {
         <section className="bg-dark-border px-4 py-4">
           <p className="text-[0.8rem] font-medium text-body">Export</p>
           <p className="mt-2 text-[0.78rem] leading-[1.45] text-body-soft">
-            Credentials and DB connections stay platform-managed. Export only project workspace and files.
+            Credentials and DB connections stay platform-managed. Caches, installed hub content, logs, and recovery copies stay home and rebuild or regenerate.
           </p>
           <div className="mt-4 flex flex-wrap gap-2">
             <Button
@@ -498,6 +502,16 @@ function ProjectTransferPanel({ owner, project, api, initialOperations }) {
               onClick={() => handleExport("files")}
             >
               {busyKey === "export:files" ? "Preparing…" : "Export Files"}
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className={outlineButtonClass}
+              disabled={busyKey !== ""}
+              onClick={() => handleExport("full")}
+            >
+              {busyKey === "export:full" ? "Preparing…" : "Export Full"}
             </Button>
           </div>
         </section>
@@ -547,6 +561,26 @@ function ProjectTransferPanel({ owner, project, api, initialOperations }) {
               onClick={() => handleImport("files")}
             >
               {busyKey === "import:files" ? "Importing…" : "Import Files"}
+            </Button>
+            <Field label="Full archive">
+              <input
+                type="file"
+                accept=".tar"
+                onChange={(e) => {
+                  const files = e?.target?.files;
+                  setFullFile(files && files[0] ? files[0] : null);
+                }}
+              />
+            </Field>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className={outlineButtonClass}
+              disabled={!fullFile || busyKey !== ""}
+              onClick={() => handleImport("full")}
+            >
+              {busyKey === "import:full" ? "Importing…" : "Import Full"}
             </Button>
           </div>
         </section>

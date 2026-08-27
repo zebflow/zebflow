@@ -20,7 +20,7 @@ explicitly.
 | 6 | [`FileRef`](./file-ref/README.md) | Inline payload | Pending |
 | 7 | [`ZebFsAcl`](./zebfs-acl/README.md) | Envelope, persisted file | Pending |
 | 8 | [`DatabaseSchema`](./database-schema/README.md) | Envelope, persisted file | Pending |
-| 9 | [`ProjectBundle`](./project-bundle/README.md) | Envelope, transfer archive | Pending |
+| 9 | [`ProjectBundle`](./project-bundle/README.md) | Envelope, transfer archive | Review |
 | 10 | [`RuntimeBundle`](./runtime-bundle/README.md) | Envelope, runtime transfer | Pending |
 | 11 | [`HubPackage`](./hub-package/README.md) | Envelope, stored and transferred package | Candidate |
 | 12 | [`RweLibraryManifest`](./rwe-library-manifest/README.md) | Envelope, persisted library source | Review |

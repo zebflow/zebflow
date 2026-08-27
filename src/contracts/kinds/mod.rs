@@ -53,7 +53,11 @@ pub use pipeline::{
     PipelineSettingsSpec, PipelineSpec, decode_pipeline_graph, encode_pipeline_graph,
     validate_pipeline_activation, validate_pipeline_graph,
 };
-pub use project_bundle::ProjectBundleContract;
+pub use project_bundle::{
+    PROJECT_BUNDLE_CARRIED_DEPENDENCIES_DIR, PROJECT_BUNDLE_MANIFEST_FILE,
+    ProjectBundleCarriedDependency, ProjectBundleClass, ProjectBundleContract, ProjectBundleCounts,
+    ProjectBundleSpec,
+};
 pub use project_configuration::{
     LEGACY_PROJECT_CONFIGURATION_FILE, PROJECT_CONFIGURATION_BACKUP_FILE,
     PROJECT_CONFIGURATION_FILE, ProjectConfigurationContract, ProjectConfigurationSpec,

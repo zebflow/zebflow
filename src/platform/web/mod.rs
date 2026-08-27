@@ -617,6 +617,11 @@ pub async fn router(platform: Arc<PlatformService>) -> Router {
             post(api_review_platform_hub_app),
         )
         .route(
+            "/api/platform/transfer/import",
+            post(api_platform_transfer_import)
+                .layer(axum::extract::DefaultBodyLimit::max(1024 * 1024 * 1024)),
+        )
+        .route(
             "/api/users/{owner}/projects/{project}",
             delete(api_delete_project),
         )
@@ -1133,6 +1138,10 @@ pub async fn router(platform: Arc<PlatformService>) -> Router {
             "/api/projects/{owner}/{project}/transfer/import/{kind}",
             post(api_project_transfer_import)
                 .layer(axum::extract::DefaultBodyLimit::max(1024 * 1024 * 1024)),
+        )
+        .route(
+            "/api/projects/{owner}/{project}/transfer/rollback",
+            post(api_project_transfer_rollback),
         )
         .route(
             "/api/projects/{owner}/{project}/transfer/download/{operation_id}",
@@ -4259,13 +4268,14 @@ fn parse_project_transfer_kind(raw: &str) -> Result<ProjectTransferArtifactKind,
     match raw.trim().to_ascii_lowercase().as_str() {
         "bundle" => Ok(ProjectTransferArtifactKind::Bundle),
         "files" => Ok(ProjectTransferArtifactKind::Files),
+        "full" => Ok(ProjectTransferArtifactKind::Full),
         _ => Err((
             StatusCode::BAD_REQUEST,
             Json(json!({
                 "ok": false,
                 "error": {
                     "code": "PROJECT_TRANSFER_KIND_INVALID",
-                    "message": "kind must be 'bundle' or 'files'"
+                    "message": "kind must be 'bundle', 'files', or 'full'"
                 }
             })),
         )
@@ -7206,8 +7216,11 @@ async fn render_settings_tab_page(
                         "operations": format!("/api/projects/{owner}/{project}/transfer/operations"),
                         "export_bundle": format!("/api/projects/{owner}/{project}/transfer/export/bundle"),
                         "export_files": format!("/api/projects/{owner}/{project}/transfer/export/files"),
+                        "export_full": format!("/api/projects/{owner}/{project}/transfer/export/full"),
                         "import_bundle": format!("/api/projects/{owner}/{project}/transfer/import/bundle"),
                         "import_files": format!("/api/projects/{owner}/{project}/transfer/import/files"),
+                        "import_full": format!("/api/projects/{owner}/{project}/transfer/import/full"),
+                        "rollback": format!("/api/projects/{owner}/{project}/transfer/rollback"),
                     },
                     "operations": transfer_operations,
                 },
@@ -10113,14 +10126,6 @@ fn local_office_id(state: &PlatformAppState) -> Option<String> {
     }
 }
 
-fn controller_id(state: &PlatformAppState) -> Option<String> {
-    if state.platform.cluster_bootstrap.is_worker() {
-        None
-    } else {
-        local_office_id(state)
-    }
-}
-
 fn project_transfer_operation_kind(
     kind: ProjectTransferArtifactKind,
     is_import: bool,
@@ -10128,8 +10133,10 @@ fn project_transfer_operation_kind(
     match (is_import, kind) {
         (false, ProjectTransferArtifactKind::Bundle) => ProjectOperationKind::ExportBundle,
         (false, ProjectTransferArtifactKind::Files) => ProjectOperationKind::ExportFiles,
+        (false, ProjectTransferArtifactKind::Full) => ProjectOperationKind::ExportFull,
         (true, ProjectTransferArtifactKind::Bundle) => ProjectOperationKind::ImportBundle,
         (true, ProjectTransferArtifactKind::Files) => ProjectOperationKind::ImportFiles,
+        (true, ProjectTransferArtifactKind::Full) => ProjectOperationKind::ImportFull,
     }
 }
 
@@ -10177,15 +10184,8 @@ async fn api_internal_project_transfer_export(
     let export = state.platform.project_transfer.export_project(
         &owner,
         &project,
-        kind,
+        kind.classes(),
         local_office_id(&state).as_deref(),
-        controller_id(&state).as_deref(),
-        state
-            .platform
-            .cluster_placement
-            .get(&owner, &project)
-            .ok()
-            .flatten(),
         &output_path,
     );
     match export {
@@ -10239,20 +10239,21 @@ async fn api_internal_project_transfer_import(
     if let Err(err) = fs::write(&archive_path, &body) {
         return internal_error(err.into());
     }
-    let import =
-        state
-            .platform
-            .project_transfer
-            .import_project(&owner, &project, kind, &archive_path);
-    let manifest = match import {
-        Ok(manifest) => manifest,
+    let import = state.platform.project_transfer.import_project(
+        &owner,
+        &project,
+        Some(kind.classes()),
+        &archive_path,
+    );
+    let outcome = match import {
+        Ok(outcome) => outcome,
         Err(err) => return internal_error(err),
     };
     if let Err(err) = refresh_local_project_workspace(&state, &owner, &project) {
         return internal_error(err);
     }
     let _ = fs::remove_dir_all(state.platform.project_transfer.operation_dir(&op_id));
-    Json(json!({"ok": true, "manifest": manifest})).into_response()
+    Json(json!({"ok": true, "import": outcome})).into_response()
 }
 
 async fn api_project_transfer_operations(
@@ -10378,15 +10379,8 @@ async fn api_project_transfer_export(
         match state.platform.project_transfer.export_project(
             &owner,
             &project,
-            kind,
+            kind.classes(),
             local_office_id(&state).as_deref(),
-            controller_id(&state).as_deref(),
-            state
-                .platform
-                .cluster_placement
-                .get(&owner, &project)
-                .ok()
-                .flatten(),
             &artifact_path,
         ) {
             Ok(_) => Ok(()),
@@ -10579,7 +10573,7 @@ async fn api_project_transfer_import(
             .send()
             .await
         {
-            Ok(response) if response.status().is_success() => Ok(()),
+            Ok(response) if response.status().is_success() => Ok(None),
             Ok(response) => {
                 let status = response.status();
                 let body = response.text().await.unwrap_or_default();
@@ -10594,26 +10588,47 @@ async fn api_project_transfer_import(
             )),
         }
     } else {
-        match state
-            .platform
-            .project_transfer
-            .import_project(&owner, &project, kind, &archive_path)
-        {
-            Ok(_) => refresh_local_project_workspace(&state, &owner, &project),
+        match state.platform.project_transfer.import_project(
+            &owner,
+            &project,
+            Some(kind.classes()),
+            &archive_path,
+        ) {
+            Ok(outcome) => {
+                refresh_local_project_workspace(&state, &owner, &project).map(|()| Some(outcome))
+            }
             Err(err) => Err(err),
         }
     };
-    if let Err(err) = import_result {
-        let _ = state.platform.project_operations.mark_failed(
-            &operation,
-            "import failed",
-            err.message.clone(),
-        );
-        return internal_error(err);
-    }
+    let outcome = match import_result {
+        Ok(outcome) => outcome,
+        Err(err) => {
+            let _ = state.platform.project_operations.mark_failed(
+                &operation,
+                "import failed",
+                err.message.clone(),
+            );
+            return internal_error(err);
+        }
+    };
+    // Provenance is recorded and shown, never a gate; the recovery copies are
+    // named so rollback — the reverse swap — can find them.
+    let step = match &outcome {
+        Some(outcome) => format!(
+            "import completed from '{}'; recovery: {}",
+            outcome.provenance,
+            outcome
+                .recovery
+                .iter()
+                .map(|swap| swap.recovery_dir.clone())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        None => "import completed".to_string(),
+    };
     let operation = match state.platform.project_operations.mark_completed(
         &operation,
-        "import completed",
+        step,
         None,
         None,
         Some(bytes.len() as u64),
@@ -10621,7 +10636,340 @@ async fn api_project_transfer_import(
         Ok(record) => record,
         Err(err) => return internal_error(err),
     };
-    Json(json!({"ok": true, "operation": operation})).into_response()
+    Json(json!({"ok": true, "operation": operation, "import": outcome})).into_response()
+}
+
+/// Request body for `POST /api/projects/{owner}/{project}/transfer/rollback`.
+#[derive(serde::Deserialize)]
+struct ProjectTransferRollbackRequest {
+    /// The recovery swaps an import returned — rollback is their reverse.
+    entries: Vec<crate::platform::services::project_transfer::ProjectImportRecoverySwap>,
+}
+
+/// `POST /api/projects/{owner}/{project}/transfer/rollback`
+///
+/// The reverse swap of `kinds/project-bundle/README.md`: each named recovery
+/// copy under `data/recovery/` moves back over its class, and the displaced
+/// imported bytes become a recovery copy of their own.
+async fn api_project_transfer_rollback(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((owner, project)): Path<(String, String)>,
+    Json(body): Json<ProjectTransferRollbackRequest>,
+) -> Response {
+    if let Err(response) = require_project_api_capability(
+        &state,
+        &headers,
+        &owner,
+        &project,
+        ProjectCapability::SettingsWrite,
+    ) {
+        return response;
+    }
+    if body.entries.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"ok": false, "error": {"code":"PROJECT_TRANSFER_ROLLBACK","message":"entries must name at least one recovery swap"}})),
+        )
+            .into_response();
+    }
+    // The recovery copies live where the import ran. Rolling back a
+    // remote-placed project is the same unbuilt remote wiring as directing a
+    // platform import at a remote office — recorded, not invented here.
+    match remote_project_worker_id(&state, &owner, &project) {
+        Ok(None) => {}
+        Ok(Some(worker_id)) => {
+            return (
+                StatusCode::BAD_GATEWAY,
+                Json(json!({"ok": false, "error": {"code":"PROJECT_TRANSFER_ROLLBACK_REMOTE","message": format!("project is placed on office '{worker_id}'; remote rollback is not built")}})),
+            )
+                .into_response();
+        }
+        Err(err) => return internal_error(err),
+    }
+    let mut operation = match state.platform.project_operations.create(
+        &owner,
+        &project,
+        ProjectOperationKind::RollbackImport,
+        None,
+        local_office_id(&state),
+    ) {
+        Ok(record) => record,
+        Err(err) => return internal_error(err),
+    };
+    operation = match state
+        .platform
+        .project_operations
+        .mark_running(&operation, "restoring recovery copies")
+    {
+        Ok(record) => record,
+        Err(err) => return internal_error(err),
+    };
+    let displaced =
+        match state
+            .platform
+            .project_transfer
+            .rollback_import(&owner, &project, &body.entries)
+        {
+            Ok(displaced) => displaced,
+            Err(err) => {
+                let _ = state.platform.project_operations.mark_failed(
+                    &operation,
+                    "rollback failed",
+                    err.message.clone(),
+                );
+                return internal_error(err);
+            }
+        };
+    if let Err(err) = refresh_local_project_workspace(&state, &owner, &project) {
+        let _ = state.platform.project_operations.mark_failed(
+            &operation,
+            "refreshing workspace",
+            err.message.clone(),
+        );
+        return internal_error(err);
+    }
+    let step = format!(
+        "rollback completed; displaced imports: {}",
+        displaced
+            .iter()
+            .map(|swap| swap.recovery_dir.clone())
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+    let operation = match state
+        .platform
+        .project_operations
+        .mark_completed(&operation, step, None, None, None)
+    {
+        Ok(record) => record,
+        Err(err) => return internal_error(err),
+    };
+    Json(json!({"ok": true, "operation": operation, "displaced": displaced})).into_response()
+}
+
+/// `POST /api/platform/transfer/import` — platform-scope import: creates a
+/// project from a `ProjectBundle` archive.
+///
+/// Superadmin only, like every platform-scope install. The importer supplies
+/// `owner` and `project`; the office is the one this import runs on —
+/// directing an import at a remote office is the same unbuilt wiring as
+/// remote `hub-public` provisioning (`stability-matrix.md` row 14) and is
+/// not invented here.
+///
+/// Any bundle carrying `repo` qualifies. A bundle without `store` is
+/// auto-initiated: the repo's declared schema and initial-data steps replay
+/// into the fresh store. A carried store snapshot wins and nothing replays.
+async fn api_platform_transfer_import(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    mut multipart: Multipart,
+) -> Response {
+    if let Err(response) = require_superadmin(&state, &headers) {
+        return response;
+    }
+    let mut owner = String::new();
+    let mut project = String::new();
+    let mut archive: Option<Bytes> = None;
+    loop {
+        let field = match multipart.next_field().await {
+            Ok(Some(field)) => field,
+            Ok(None) => break,
+            Err(err) => {
+                return internal_error(PlatformError::new(
+                    "PROJECT_TRANSFER_UPLOAD",
+                    err.to_string(),
+                ));
+            }
+        };
+        let name = field.name().unwrap_or_default().to_string();
+        match name.as_str() {
+            "owner" => owner = field.text().await.unwrap_or_default(),
+            "project" => project = field.text().await.unwrap_or_default(),
+            "archive" => match field.bytes().await {
+                Ok(bytes) => archive = Some(bytes),
+                Err(err) => {
+                    return internal_error(PlatformError::new(
+                        "PROJECT_TRANSFER_UPLOAD",
+                        err.to_string(),
+                    ));
+                }
+            },
+            _ => {}
+        }
+    }
+    let owner = crate::platform::model::slug_segment(&owner);
+    let project = crate::platform::model::slug_segment(&project);
+    if owner.is_empty() || project.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"ok": false, "error": {"code":"PROJECT_TRANSFER_TARGET","message":"multipart fields 'owner' and 'project' are required"}})),
+        )
+            .into_response();
+    }
+    let Some(archive) = archive else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"ok": false, "error": {"code":"PROJECT_TRANSFER_UPLOAD_MISSING","message":"no 'archive' file in multipart body"}})),
+        )
+            .into_response();
+    };
+    match state.platform.users.get_user(&owner) {
+        Ok(Some(_)) => {}
+        Ok(None) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"ok": false, "error": {"code":"PROJECT_TRANSFER_TARGET","message":"owner does not exist"}})),
+            )
+                .into_response();
+        }
+        Err(err) => return internal_error(err),
+    }
+    match state.platform.projects.get_project(&owner, &project) {
+        Ok(None) => {}
+        Ok(Some(_)) => {
+            return (
+                StatusCode::CONFLICT,
+                Json(json!({"ok": false, "error": {"code":"PROJECT_EXISTS","message":"target project already exists; import inside the project to replace its classes"}})),
+            )
+                .into_response();
+        }
+        Err(err) => return internal_error(err),
+    }
+
+    // Stage into the EPHEMERAL tier and verify the whole archive before any
+    // project exists: a refused archive leaves nothing behind.
+    let staging_root = state.platform.config.data_root.join("tmp").join("transfer");
+    if let Err(err) = fs::create_dir_all(&staging_root) {
+        return internal_error(err.into());
+    }
+    let upload_dir = match tempfile::Builder::new()
+        .prefix("platform-import-")
+        .tempdir_in(&staging_root)
+    {
+        Ok(dir) => dir,
+        Err(err) => return internal_error(err.into()),
+    };
+    let archive_path = upload_dir
+        .path()
+        .join(ProjectTransferArtifactKind::Bundle.archive_name());
+    if let Err(err) = fs::write(&archive_path, &archive) {
+        return internal_error(err.into());
+    }
+    let staging = match state.platform.project_transfer.stage_archive(&archive_path) {
+        Ok(staging) => staging,
+        Err(err) => return internal_error(err),
+    };
+    if !staging.carries(crate::contracts::kinds::ProjectBundleClass::Repo) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"ok": false, "error": {"code":"PROJECT_TRANSFER_CLASSES","message":"a platform import creates a project, so the archive must carry the repo class"}})),
+        )
+            .into_response();
+    }
+    let store_carried = staging.carries(crate::contracts::kinds::ProjectBundleClass::Store);
+    let archive_sha256 = match state.platform.project_transfer.sha256_hex(&archive_path) {
+        Ok(value) => value,
+        Err(err) => return internal_error(err),
+    };
+
+    if let Err(err) = state.platform.projects.create_or_update_project(
+        &owner,
+        &crate::platform::model::CreateProjectRequest {
+            project: project.clone(),
+            title: None,
+            local_branch: None,
+            runtime: Default::default(),
+        },
+    ) {
+        return internal_error(err);
+    }
+    let mut operation = match state.platform.project_operations.create(
+        &owner,
+        &project,
+        ProjectOperationKind::PlatformImport,
+        None,
+        local_office_id(&state),
+    ) {
+        Ok(record) => record,
+        Err(err) => return internal_error(err),
+    };
+    operation = match state
+        .platform
+        .project_operations
+        .mark_running(&operation, "materializing classes")
+    {
+        Ok(record) => record,
+        Err(err) => return internal_error(err),
+    };
+    let outcome = match state
+        .platform
+        .project_transfer
+        .import_staged(&owner, &project, staging)
+    {
+        Ok(outcome) => outcome,
+        Err(err) => {
+            let _ = state.platform.project_operations.mark_failed(
+                &operation,
+                "materializing classes",
+                err.message.clone(),
+            );
+            return internal_error(err);
+        }
+    };
+    // The catalog has no rows for the imported repo's pipelines yet; the
+    // reindex walk registers them, exactly as crash recovery does.
+    let reindex = match reindex_project_repo_files(&state, &owner, &project) {
+        Ok(report) => report,
+        Err(err) => json!({ "errors": [err.message] }),
+    };
+    // Auto-initiation per the schema/initial-data rule: a carried store
+    // snapshot already contains its applied state and nothing replays.
+    let initial_data_steps = if store_carried {
+        Vec::new()
+    } else {
+        match state.platform.hub.initiate_project_store(&owner, &project) {
+            Ok(steps) => steps.into_iter().map(|step| step.path).collect(),
+            Err(err) => {
+                let _ = state.platform.project_operations.mark_failed(
+                    &operation,
+                    "auto-initiating store",
+                    err.message.clone(),
+                );
+                return internal_error(err);
+            }
+        }
+    };
+    if let Err(err) = refresh_local_project_workspace(&state, &owner, &project) {
+        let _ = state.platform.project_operations.mark_failed(
+            &operation,
+            "refreshing workspace",
+            err.message.clone(),
+        );
+        return internal_error(err);
+    }
+    let step = format!("platform import completed from '{}'", outcome.provenance);
+    let operation = match state.platform.project_operations.mark_completed(
+        &operation,
+        step,
+        None,
+        Some(archive_sha256),
+        Some(archive.len() as u64),
+    ) {
+        Ok(record) => record,
+        Err(err) => return internal_error(err),
+    };
+    Json(json!({
+        "ok": true,
+        "owner": owner,
+        "project": project,
+        "operation": operation,
+        "import": outcome,
+        "store_auto_initiated": !store_carried,
+        "initial_data_replayed": initial_data_steps,
+        "pipelines_indexed": reindex,
+    }))
+    .into_response()
 }
 
 async fn api_project_transfer_download(
@@ -10667,6 +11015,14 @@ async fn api_project_transfer_download(
         }
         ProjectOperationKind::ExportFiles | ProjectOperationKind::ImportFiles => {
             ProjectTransferArtifactKind::Files.archive_name()
+        }
+        ProjectOperationKind::ExportFull | ProjectOperationKind::ImportFull => {
+            ProjectTransferArtifactKind::Full.archive_name()
+        }
+        // Platform imports and rollbacks record no downloadable artifact; the
+        // missing artifact_rel_path already returned 404 above.
+        ProjectOperationKind::PlatformImport | ProjectOperationKind::RollbackImport => {
+            ProjectTransferArtifactKind::Bundle.archive_name()
         }
     };
     let mut response = Response::new(Body::from(bytes));
@@ -25290,17 +25646,30 @@ async fn api_reindex_project(
         Err(err) => return internal_error(err),
     }
 
-    let owner_slug = crate::platform::model::slug_segment(&owner);
-    let project_slug = crate::platform::model::slug_segment(&project);
+    let report = match reindex_project_repo_files(&state, &owner, &project) {
+        Ok(report) => report,
+        Err(err) => return internal_error(err),
+    };
+    let mut body = report;
+    body["ok"] = json!(true);
+    Json(body).into_response()
+}
 
-    let layout = match state
+/// Scans `repo/` on disk and re-registers every found pipeline into the
+/// catalog. Shared by explicit reindex and platform import, where a freshly
+/// materialized repo has no catalog rows yet.
+fn reindex_project_repo_files(
+    state: &PlatformAppState,
+    owner: &str,
+    project: &str,
+) -> Result<serde_json::Value, PlatformError> {
+    let owner_slug = crate::platform::model::slug_segment(owner);
+    let project_slug = crate::platform::model::slug_segment(project);
+
+    let layout = state
         .platform
         .file
-        .ensure_project_layout(&owner_slug, &project_slug)
-    {
-        Ok(l) => l,
-        Err(e) => return internal_error(e),
-    };
+        .ensure_project_layout(&owner_slug, &project_slug)?;
 
     let repo_root = layout.repo_source_dir();
     let assets_root = layout.repo_assets_dir();
@@ -25368,14 +25737,12 @@ async fn api_reindex_project(
         }
     }
 
-    Json(json!({
-        "ok": true,
+    Ok(json!({
         "pipelines": pipelines_indexed,
         "templates": templates_indexed,
         "assets": assets_indexed,
         "errors": errors
     }))
-    .into_response()
 }
 
 async fn project_settings_clone_ui_preview_page(

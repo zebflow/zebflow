@@ -166,6 +166,33 @@ async fn office_refuses_to_start_without_cluster_configuration_and_starts_with_i
     let _ = fs::remove_dir_all(configured_root);
 }
 
+/// Multipart body with text fields plus one file field, for platform import.
+fn multipart_import_body(owner: &str, project: &str, archive: &[u8]) -> (String, Vec<u8>) {
+    let boundary = format!(
+        "zebflow-boundary-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    );
+    let mut body = Vec::new();
+    for (name, value) in [("owner", owner), ("project", project)] {
+        body.extend_from_slice(format!("--{}\r\n", boundary).as_bytes());
+        body.extend_from_slice(
+            format!("Content-Disposition: form-data; name=\"{name}\"\r\n\r\n{value}\r\n")
+                .as_bytes(),
+        );
+    }
+    body.extend_from_slice(format!("--{}\r\n", boundary).as_bytes());
+    body.extend_from_slice(
+        b"Content-Disposition: form-data; name=\"archive\"; filename=\"project.full.tar\"\r\n",
+    );
+    body.extend_from_slice(b"Content-Type: application/x-tar\r\n\r\n");
+    body.extend_from_slice(archive);
+    body.extend_from_slice(format!("\r\n--{}--\r\n", boundary).as_bytes());
+    (boundary, body)
+}
+
 fn multipart_body(field_name: &str, file_name: &str, bytes: &[u8]) -> (String, Vec<u8>) {
     multipart_body_with_type(field_name, file_name, "application/x-tar", bytes)
 }
@@ -3118,7 +3145,215 @@ async fn project_transfer_export_import_roundtrip_restores_repo_and_files() {
 }
 
 #[tokio::test]
-async fn project_transfer_failed_import_is_recorded() {
+async fn platform_import_creates_project_and_auto_initiates_repo_only_store() {
+    let mut config = PlatformConfig::default();
+    config.data_root = temp_test_dir("platform-import");
+    config.default_password = "test-pass".to_string();
+    let data_root = config.data_root.clone();
+
+    let app = build_router(config).await.expect("platform router");
+    let cookie = login_cookie(app.clone(), "superadmin", "test-pass").await;
+
+    // Fixture state on the default project: declared initial data in repo/
+    // (the layout's `initial-data/sekejap` prefix) plus one live-only store
+    // row the initial data does not know about — the discriminator between
+    // "steps replayed" and "snapshot restored".
+    let seed_dir = data_root.join("users/superadmin/default/repo/initial-data/sekejap");
+    fs::create_dir_all(&seed_dir).expect("seed dir");
+    fs::write(
+        seed_dir.join("seed.sql"),
+        "CREATE TABLE seeded (id TEXT, title TEXT);\nINSERT INTO seeded (id, title) VALUES ('s1', 'from-initial-data');\n",
+    )
+    .expect("seed file");
+    zebflow::platform::sekejap::execute_sql(
+        &data_root,
+        "superadmin",
+        "default",
+        "CREATE TABLE seeded (id TEXT, title TEXT)",
+        &[],
+        0,
+        false,
+    )
+    .expect("create live table");
+    zebflow::platform::sekejap::execute_sql(
+        &data_root,
+        "superadmin",
+        "default",
+        "INSERT INTO seeded (id, title) VALUES ('live1', 'live-only-row')",
+        &[],
+        0,
+        false,
+    )
+    .expect("insert live row");
+
+    let export_full = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/projects/superadmin/default/transfer/export/full")
+                .method("POST")
+                .header(header::COOKIE, &cookie)
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("full export response");
+    assert_eq!(export_full.status(), StatusCode::OK);
+    let export_full = response_json(export_full).await;
+    let full_archive = data_root.join("platform").join("project-operations").join(
+        export_full["operation"]["artifact_rel_path"]
+            .as_str()
+            .expect("artifact path"),
+    );
+    let full_bytes = fs::read(&full_archive).expect("full archive bytes");
+
+    // A repo + store import restores the snapshot and replays nothing.
+    let (boundary, body) = multipart_import_body("superadmin", "full-clone", &full_bytes);
+    let full_import = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/platform/transfer/import")
+                .method("POST")
+                .header(header::COOKIE, &cookie)
+                .header(
+                    header::CONTENT_TYPE,
+                    format!("multipart/form-data; boundary={boundary}"),
+                )
+                .body(Body::from(body))
+                .expect("request"),
+        )
+        .await
+        .expect("full import response");
+    assert_eq!(full_import.status(), StatusCode::OK);
+    let full_import = response_json(full_import).await;
+    assert_eq!(full_import["store_auto_initiated"], json!(false));
+    assert_eq!(full_import["initial_data_replayed"], json!([]));
+    let cloned = zebflow::platform::sekejap::execute_sql(
+        &data_root,
+        "superadmin",
+        "full-clone",
+        "SELECT id FROM seeded",
+        &[],
+        0,
+        true,
+    )
+    .expect("query full clone");
+    let mut cloned_ids = cloned
+        .rows
+        .iter()
+        .map(|row| row[0].as_str().unwrap_or_default().to_string())
+        .collect::<Vec<_>>();
+    cloned_ids.sort();
+    // The source never replayed its declared seed, so the snapshot holds only
+    // the live row — and the clone restores exactly that, replaying nothing.
+    assert_eq!(cloned_ids, vec!["live1"], "snapshot wins whole");
+
+    // A repo-only import auto-initiates: declared steps replay into a fresh
+    // store, so the seeded row exists and the live-only row does not.
+    let unpack = data_root.join("tmp-repo-only");
+    fs::create_dir_all(&unpack).expect("unpack dir");
+    let extract = std::process::Command::new("tar")
+        .arg("-xf")
+        .arg(&full_archive)
+        .arg("-C")
+        .arg(&unpack)
+        .status()
+        .expect("tar extract");
+    assert!(extract.success());
+    let mut manifest: Value =
+        serde_json::from_slice(&fs::read(unpack.join("manifest.json")).expect("manifest"))
+            .expect("manifest json");
+    manifest["spec"]["classes"] = json!(["repo"]);
+    let repo_digest = manifest["spec"]["class_digests"]["repo"].clone();
+    manifest["spec"]["class_digests"] = json!({ "repo": repo_digest });
+    let repo_count = manifest["spec"]["counts"]["repo"].clone();
+    let total = manifest["spec"]["counts"]["total_bytes"].clone();
+    manifest["spec"]["counts"] = json!({ "repo": repo_count, "total_bytes": total });
+    fs::write(
+        unpack.join("manifest.json"),
+        serde_json::to_vec_pretty(&manifest).expect("manifest bytes"),
+    )
+    .expect("manifest write");
+    fs::remove_dir_all(unpack.join("store")).expect("drop store class");
+    fs::remove_dir_all(unpack.join("files")).expect("drop files class");
+    let repo_only_archive = data_root.join("repo-only.tar");
+    let pack = std::process::Command::new("tar")
+        .arg("-cf")
+        .arg(&repo_only_archive)
+        .arg("-C")
+        .arg(&unpack)
+        .arg(".")
+        .status()
+        .expect("tar create");
+    assert!(pack.success());
+
+    let repo_only_bytes = fs::read(&repo_only_archive).expect("repo-only bytes");
+    let (boundary, body) = multipart_import_body("superadmin", "init-clone", &repo_only_bytes);
+    let repo_only_import = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/platform/transfer/import")
+                .method("POST")
+                .header(header::COOKIE, &cookie)
+                .header(
+                    header::CONTENT_TYPE,
+                    format!("multipart/form-data; boundary={boundary}"),
+                )
+                .body(Body::from(body))
+                .expect("request"),
+        )
+        .await
+        .expect("repo-only import response");
+    assert_eq!(repo_only_import.status(), StatusCode::OK);
+    let repo_only_import = response_json(repo_only_import).await;
+    assert_eq!(repo_only_import["store_auto_initiated"], json!(true));
+    assert_eq!(
+        repo_only_import["initial_data_replayed"],
+        json!(["initial-data/sekejap/seed.sql"])
+    );
+    let fresh = zebflow::platform::sekejap::execute_sql(
+        &data_root,
+        "superadmin",
+        "init-clone",
+        "SELECT id FROM seeded",
+        &[],
+        0,
+        true,
+    )
+    .expect("query fresh clone");
+    let fresh_ids = fresh
+        .rows
+        .iter()
+        .map(|row| row[0].as_str().unwrap_or_default().to_string())
+        .collect::<Vec<_>>();
+    assert_eq!(fresh_ids, vec!["s1"], "fresh store has only declared data");
+
+    // A second platform import at the same name refuses: it creates, never
+    // replaces — replacing is the project-scope import's job.
+    let (boundary, body) = multipart_import_body("superadmin", "init-clone", &repo_only_bytes);
+    let duplicate = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/platform/transfer/import")
+                .method("POST")
+                .header(header::COOKIE, &cookie)
+                .header(
+                    header::CONTENT_TYPE,
+                    format!("multipart/form-data; boundary={boundary}"),
+                )
+                .body(Body::from(body))
+                .expect("request"),
+        )
+        .await
+        .expect("duplicate import response");
+    assert_eq!(duplicate.status(), StatusCode::CONFLICT);
+}
+
+#[tokio::test]
+async fn project_transfer_import_records_provenance_and_failures() {
     let mut config = PlatformConfig::default();
     config.data_root = temp_test_dir("transfer-failure");
     config.default_password = "test-pass".to_string();
@@ -3176,6 +3411,9 @@ async fn project_transfer_failed_import_is_recorded() {
         .expect("create project response");
     assert_eq!(create_project.status(), StatusCode::OK);
 
+    // Identity is provenance, never a gate (`kinds/project-bundle/README.md`):
+    // importing superadmin/default's archive into other-project succeeds, the
+    // provenance is recorded, and the displaced classes have recovery copies.
     let bundle_bytes = fs::read(&bundle_archive).expect("bundle archive bytes");
     let (boundary, body) = multipart_body("archive", "project.bundle.tar", &bundle_bytes);
     let import_bundle = app
@@ -3194,7 +3432,45 @@ async fn project_transfer_failed_import_is_recorded() {
         )
         .await
         .expect("import response");
-    assert_eq!(import_bundle.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    if import_bundle.status() != StatusCode::OK {
+        let status = import_bundle.status();
+        let body = response_text(import_bundle).await;
+        panic!("foreign-provenance import failed with {status}: {body}");
+    }
+    let import_bundle = response_json(import_bundle).await;
+    assert_eq!(import_bundle["import"]["provenance"], "superadmin/default");
+    let recovery = import_bundle["import"]["recovery"]
+        .as_array()
+        .expect("recovery swaps");
+    assert_eq!(recovery.len(), 2);
+    for swap in recovery {
+        let recovery_dir = data_root
+            .join("users/superadmin/other-project/data/recovery")
+            .join(swap["recovery_dir"].as_str().expect("recovery dir"));
+        assert!(recovery_dir.is_dir(), "missing {}", recovery_dir.display());
+    }
+
+    // A genuinely broken archive fails, and the operation record says so.
+    // (Operation ids carry second resolution; step past the completed one.)
+    tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+    let (boundary, body) = multipart_body("archive", "project.bundle.tar", b"not a tar archive");
+    let import_garbage = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/projects/superadmin/other-project/transfer/import/bundle")
+                .method("POST")
+                .header(header::COOKIE, &cookie)
+                .header(
+                    header::CONTENT_TYPE,
+                    format!("multipart/form-data; boundary={boundary}"),
+                )
+                .body(Body::from(body))
+                .expect("request"),
+        )
+        .await
+        .expect("import response");
+    assert_eq!(import_garbage.status(), StatusCode::INTERNAL_SERVER_ERROR);
 
     let operations = app
         .oneshot(
@@ -3209,19 +3485,21 @@ async fn project_transfer_failed_import_is_recorded() {
         .expect("operations response");
     assert_eq!(operations.status(), StatusCode::OK);
     let operations = response_json(operations).await;
-    let failed = operations["items"]
-        .as_array()
-        .expect("operation items")
+    let items = operations["items"].as_array().expect("operation items");
+    let failed = items
         .iter()
-        .find(|item| item["kind"] == "import_bundle")
+        .find(|item| item["kind"] == "import_bundle" && item["status"] == "failed")
         .expect("failed import record");
-    assert_eq!(failed["status"], "failed");
     assert_eq!(failed["current_step"], "import failed");
+    let completed = items
+        .iter()
+        .find(|item| item["kind"] == "import_bundle" && item["status"] == "completed")
+        .expect("completed import record");
     assert!(
-        failed["error_message"]
+        completed["current_step"]
             .as_str()
-            .expect("error message")
-            .contains("archive belongs to superadmin/default")
+            .expect("completed step")
+            .contains("import completed from 'superadmin/default'")
     );
 }
 

@@ -3215,6 +3215,31 @@ impl HubService {
         Ok(steps)
     }
 
+    /// Auto-initiates a fresh project store from its repo's declared state:
+    /// applies the schema and replays every declared initial-data step —
+    /// the `repo`-only import rule of `kinds/project-bundle/README.md`.
+    ///
+    /// This is the same schema/initial-data core the `project_bundle` install
+    /// runs; a `repo` + `store` import must not call it, because the store
+    /// snapshot already contains the applied schema and its data.
+    pub fn initiate_project_store(
+        &self,
+        owner: &str,
+        project: &str,
+    ) -> Result<Vec<HubPackageInitialDataStep>, PlatformError> {
+        let layout = self.projects.project_layout(owner, project)?;
+        sekejap::apply_schema_from_repo(&self.data_root, owner, project)?;
+        sqlite_schema::apply_schema_from_repo(
+            &self.data_root,
+            owner,
+            project,
+            &layout.repo_layout,
+        )?;
+        let steps = self.list_project_initial_data(owner, project)?;
+        execute_project_initial_data(&self.data_root, owner, project, &layout, &steps)?;
+        Ok(steps)
+    }
+
     pub fn install_asset(
         &self,
         target_owner: &str,

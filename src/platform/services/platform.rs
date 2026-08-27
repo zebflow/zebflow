@@ -183,7 +183,6 @@ impl PlatformService {
         let project_operations = Arc::new(ProjectOperationService::new(data.clone()));
         let project_transfer = Arc::new(ProjectTransferService::new(
             file.clone(),
-            zebflow_cfg.clone(),
             config.data_root.clone(),
             config.data_root.join("platform").join("project-operations"),
         ));

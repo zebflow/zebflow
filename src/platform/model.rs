@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::infra::cluster::config::ClusterSettings;
 use crate::infra::cluster::registry::WorkerHeartbeat;
-use crate::infra::execution::placement::{ProjectRuntimePlacement, ProjectRuntimeProfile};
+use crate::infra::execution::placement::ProjectRuntimeProfile;
 use crate::infra::execution::runner::RunnerCapabilities;
 use crate::infra::execution::sync::{ProjectBootstrapPlan, ProjectRuntimeBundle};
 
@@ -3282,6 +3282,8 @@ pub enum ProjectTransferArtifactKind {
     Bundle,
     /// Project Zebflow FS object tree.
     Files,
+    /// Full backup: every movable class in one archive.
+    Full,
 }
 
 impl ProjectTransferArtifactKind {
@@ -3290,6 +3292,7 @@ impl ProjectTransferArtifactKind {
         match self {
             Self::Bundle => "bundle",
             Self::Files => "files",
+            Self::Full => "full",
         }
     }
 
@@ -3298,46 +3301,28 @@ impl ProjectTransferArtifactKind {
         match self {
             Self::Bundle => "project.bundle.tar",
             Self::Files => "project.files.tar",
+            Self::Full => "project.full.tar",
         }
     }
-}
 
-/// Versioned manifest embedded in exported project portability archives.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(deny_unknown_fields)]
-pub struct ProjectTransferManifest {
-    /// Stable owner id.
-    pub owner: String,
-    /// Stable project slug.
-    pub project: String,
-    /// Exported artifact type.
-    pub artifact_kind: ProjectTransferArtifactKind,
-    /// Office that produced the archive.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub source_office_id: Option<String>,
-    /// Controller that instructed the export, when available.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub source_controller_id: Option<String>,
-    /// Unix timestamp seconds.
-    pub exported_at: i64,
-    /// Repo-owned runtime profile at export time.
-    #[serde(default)]
-    pub runtime_profile: ProjectRuntimeProfile,
-    /// Environment-owned placement snapshot at export time.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub placement: Option<ProjectRuntimePlacement>,
-    /// File count inside `repo/` when exporting a bundle.
-    #[serde(default)]
-    pub repo_file_count: u64,
-    /// File count inside `data/` when exporting a bundle.
-    #[serde(default)]
-    pub data_file_count: u64,
-    /// File count inside `files/` when exporting project FS objects.
-    #[serde(default)]
-    pub files_file_count: u64,
-    /// Total exported payload bytes before tar packaging.
-    #[serde(default)]
-    pub total_bytes: u64,
+    /// The `ProjectBundle` classes this artifact kind selects.
+    ///
+    /// The artifact kinds are class selections of one archive format
+    /// (`kinds/project-bundle/README.md`): `bundle` = repo + store, `files` =
+    /// files, `full` = every movable class. The route/UI surface keeps the
+    /// legacy words; the archive speaks classes.
+    pub fn classes(self) -> &'static [crate::contracts::kinds::ProjectBundleClass] {
+        use crate::contracts::kinds::ProjectBundleClass;
+        match self {
+            Self::Bundle => &[ProjectBundleClass::Repo, ProjectBundleClass::Store],
+            Self::Files => &[ProjectBundleClass::Files],
+            Self::Full => &[
+                ProjectBundleClass::Repo,
+                ProjectBundleClass::Store,
+                ProjectBundleClass::Files,
+            ],
+        }
+    }
 }
 
 /// Durable controller-side operation kind for project portability and sync flows.
@@ -3352,6 +3337,14 @@ pub enum ProjectOperationKind {
     ImportBundle,
     /// Import Zebflow FS files.
     ImportFiles,
+    /// Export every movable class.
+    ExportFull,
+    /// Import every movable class.
+    ImportFull,
+    /// Platform-scope import that created this project from an archive.
+    PlatformImport,
+    /// Reverse swap restoring recovery copies displaced by an import.
+    RollbackImport,
 }
 
 impl ProjectOperationKind {
@@ -3362,6 +3355,10 @@ impl ProjectOperationKind {
             Self::ExportFiles => "export_files",
             Self::ImportBundle => "import_bundle",
             Self::ImportFiles => "import_files",
+            Self::ExportFull => "export_full",
+            Self::ImportFull => "import_full",
+            Self::PlatformImport => "platform_import",
+            Self::RollbackImport => "rollback_import",
         }
     }
 }
