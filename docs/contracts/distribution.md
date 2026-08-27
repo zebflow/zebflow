@@ -298,7 +298,7 @@ Unless a row says otherwise, these are project-scope acts.
 | Resource | Kind that owns its format | Channels | Direction |
 | --- | --- | --- | --- |
 | Node bundle | `NodeBundle` | Hub asset, remote pack, local file, project transfer | export, publish, install |
-| RWE library | `LibraryManifest` | local hub (`rwe_library` asset, seeded from the binary's blessed tree); embedded fallback for pre-existing locks; Git planned | install only, today |
+| RWE library | `RweLibraryManifest` | local hub (`rwe_library` asset, seeded from the binary's blessed tree); embedded fallback for pre-existing locks; Git planned | install only, today |
 | Pipeline | `Pipeline` | Hub asset (`pipeline_bundle`) | export, publish, add |
 | RWE source: page, component, script, style | no kind yet | Hub asset (`template_bundle`) | export, publish, add |
 | Folder of project files | no kind yet | Hub asset (`folder_bundle`) | export, publish, add |
@@ -747,7 +747,7 @@ here so each kind's review does not settle them separately.
 **Git source installation.** Installing a library or bundle directly from a
 public repository was deliberately deferred: the safety surface is large and the
 trust basis is unclear. `spec.hosts` and the `violations` tier are the shape of
-an answer but are declared, not enforced. Decide during the `LibraryManifest`
+an answer but are declared, not enforced. Decide during the `RweLibraryManifest`
 review, and apply the decision to every channel at once.
 
 **Promotion into the curated namespace.** A third-party package adopted by

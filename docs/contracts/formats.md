@@ -47,7 +47,7 @@ The review and freeze status for each kind is maintained in the
 | `ProjectBundle` | Envelope | Manifest inside a project transfer archive |
 | `RuntimeBundle` | Envelope | Office-to-office runtime materialization request |
 | `HubPackage` | Envelope | Published Hub package artifact |
-| `LibraryManifest` | Envelope | Embedded or distributed RWE library definition |
+| `RweLibraryManifest` | Envelope | Embedded or distributed RWE library definition |
 | `MapPublishManifest` | Envelope | Project MapServer published-layer registry |
 | `InvocationRecord` | Database record | Bounded project invocation history row |
 | `RweSource` | Source file | One authored page, component, script, or stylesheet |

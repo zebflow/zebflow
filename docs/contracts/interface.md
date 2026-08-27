@@ -707,7 +707,7 @@ already spells the first of them `zeb project export <kind>`.
 **`rwe` into source — wrong.** `POST …/rwe/libraries/enable` resolves a lock
 entry and writes it through `dependency_lock.enable_rwe_library`. That is
 dependency management, not source: `distribution.md` §1 classifies an RWE
-library as a distributable resource with `LibraryManifest` as its kind and
+library as a distributable resource with `RweLibraryManifest` as its kind and
 `DependencyLock` as its record, and §0a already names the verb `zeb lib add`.
 `lib` is the noun, and only `…/rwe/cache/clear` — which evicts compiled
 templates — belongs with source.

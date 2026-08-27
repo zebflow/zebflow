@@ -126,7 +126,7 @@ level.
 ## RWE Library Rules
 
 `spec.rwe.libraries` is keyed by a lowercase namespaced library name such as
-`zeb/deckgl`. In `zebflow.com/v1`, its source is `embedded` or `hub` — widened
+`zeb/deckgl`. In `zebflow.com/v1`, its source is `embedded` or `hub` — the lock's `source` names where the package came from, while the manifest's names how the entry loads (`rwe-library-manifest/README.md`) — widened
 deliberately when the local hub gained `rwe_library` packages: a hub-installed
 library resolves against its installed copy at
 `data/hub/rwe-libraries/{package}/`, with `entry` resolving against `data/hub/`
