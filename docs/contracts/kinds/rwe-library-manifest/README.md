@@ -13,7 +13,7 @@ compiles it, it is source (`template_bundle`), not a library.
 | API version / kind | `zebflow.com/v1` `RweLibraryManifest` |
 | Format | JSON, canonical envelope |
 | Document | `manifest.json` beside the library's version directories |
-| Lives | `blessed/rwe-libraries/{name}/` (build source) · inside a `rwe_library` hub package · installed at `data/hub/rwe-libraries/{name}/` |
+| Lives | `blessed/rwe-libraries/{name}/` (build source) · inside a `rwe_library` hub package · installed at `data/hub/rwe-libraries/{package_id}/` (e.g. `zebflow.deckgl`) |
 | Adapter | `src/contracts/kinds/rwe_library_manifest.rs` |
 
 ## Spec

@@ -57,7 +57,15 @@ use crate::zebfs::{LocalZebFs, normalize_object_path};
 
 pub struct HubService {
     control_data: Arc<dyn DataAdapter>,
-    hub_data: Arc<dyn DataAdapter>,
+    /// The blessed shelf at `services/hub-local/`: seed-written, read
+    /// in-process by blessed installs. No publish surface reaches it.
+    local_store: HubStore,
+    /// The Public Hub service's own store at `services/hub-public/`: the one
+    /// publish target, with the publisher/token/grant ACL. Created behind
+    /// service enablement, opened lazily when it already exists on disk.
+    public_store: Mutex<Option<HubStore>>,
+    /// How the public store's catalog is built when it is first created.
+    public_adapter: crate::platform::model::DataAdapterKind,
     projects: Arc<ProjectService>,
     node_registry: Arc<NodeRegistryService>,
     dependency_lock: Arc<DependencyLockService>,
@@ -65,10 +73,41 @@ pub struct HubService {
     install_locks: Mutex<HashMap<PathBuf, Arc<Mutex<()>>>>,
 }
 
+/// One hub store: a catalog DB plus a content root under
+/// `<data-root>/services/{dir}/`. The seed core and the publish core operate
+/// on a store handle, which is what keeps the two stores one machinery
+/// instantiated at two roots (`distribution.md` §1b).
+#[derive(Clone)]
+struct HubStore {
+    /// Directory name under `services/`, also the artifact-path prefix.
+    dir: &'static str,
+    data: Arc<dyn DataAdapter>,
+    root: PathBuf,
+}
+
+impl HubStore {
+    /// This store, as an artifact channel: `<root>/artifacts/<sha256>`.
+    fn artifact_channel(&self) -> HubArtifactChannel {
+        HubArtifactChannel::local(self.root.clone())
+    }
+
+    /// The data-root-relative release document path this store uses.
+    fn artifact_rel(&self, package_id: &str, version: &str) -> String {
+        format!(
+            "services/{}/packages/{package_id}/versions/{version}/artifact.json",
+            self.dir
+        )
+    }
+}
+
 pub const DEFAULT_HUB_SERVICE_INSTANCE_ID: &str = "hub-default";
 pub const HUB_SERVICE_KIND: &str = "hub";
+/// The blessed shelf's directory under `services/` (`instance-directory.md`).
+pub const LOCAL_HUB_STORE_DIR: &str = "hub-local";
+/// The Public Hub service store's directory under `services/`.
+pub const PUBLIC_HUB_STORE_DIR: &str = "hub-public";
 const HUB_SERVICE_SCOPE_OWNER: &str = "hub-service";
-const HUB_SERVICE_SCOPE_PROJECT: &str = "hub-default";
+const HUB_SERVICE_SCOPE_PROJECT: &str = "hub-service";
 /// One package document ceiling, shared with the contract that defines it.
 const MAX_REMOTE_HUB_ARTIFACT_BYTES: u64 = MAX_HUB_PACKAGE_BYTES as u64;
 const DEFAULT_PUBLISHER_MAX_PACKAGES: i64 = 20;
@@ -142,23 +181,26 @@ fn default_static_repository_base_url() -> String {
 /// The official sources, in the order they are searched.
 ///
 /// `distribution.md` §2 states this order and this is the array that
-/// implements it. It is two rows, not three: the API hub first because it is
-/// the instance's own default and answers about publisher identity and grants,
-/// the static repository second because it is the fallback that needs no server.
+/// implements it. The static repository is first (priority 10) because it
+/// needs no server and static file hosting absorbs install traffic that
+/// would otherwise hammer the API hub; the API hub is second (priority 20),
+/// as the source that can answer about publisher identity, grants, and
+/// retraction. Decided 2026-08-27 — the seeded priorities were previously
+/// reversed.
 #[allow(clippy::type_complexity)]
 const OFFICIAL_PLATFORM_REPOSITORIES: &[(&str, &str, fn() -> String, &str, i64)] = &[
-    (
-        "zebflow-com",
-        "Zebflow Hub",
-        default_hub_base_url,
-        HUB_REPOSITORY_KIND_API,
-        10,
-    ),
     (
         "zebflow-hub",
         "Zebflow Hub (static)",
         default_static_repository_base_url,
         HUB_REPOSITORY_KIND_STATIC,
+        10,
+    ),
+    (
+        "zebflow-com",
+        "Zebflow Hub",
+        default_hub_base_url,
+        HUB_REPOSITORY_KIND_API,
         20,
     ),
 ];
@@ -169,6 +211,33 @@ fn preserve_or_replace_token(existing: Option<&str>, incoming: &str) -> String {
         existing.unwrap_or_default().to_string()
     } else {
         trimmed.to_string()
+    }
+}
+
+/// The lock-facing identity of one project-scope install: the channel the
+/// bytes arrived through and the coordinate they arrived under.
+///
+/// `distribution.md` and `kinds/dependency-lock/README.md` fix the vocabulary:
+/// blessed shelf installs lock `hub.local`, installs over the HTTP remote
+/// channel lock `hub.public`, static-repository installs lock `hub.static`,
+/// and a supplied document locks `direct.file`. `source_id` for every `hub.*`
+/// entry is the package coordinate `publisher.package@version`.
+#[derive(Debug, Clone)]
+pub struct HubInstallProvenance {
+    pub source: crate::contracts::kinds::DependencyLockSource,
+    pub source_id: String,
+}
+
+impl HubInstallProvenance {
+    fn new(
+        source: crate::contracts::kinds::DependencyLockSource,
+        package_id: &str,
+        version: &str,
+    ) -> Self {
+        Self {
+            source,
+            source_id: format!("{package_id}@{version}"),
+        }
     }
 }
 
@@ -1161,15 +1230,23 @@ pub struct RemoteHubPublishMedia {
 impl HubService {
     pub fn new(
         control_data: Arc<dyn DataAdapter>,
-        hub_data: Arc<dyn DataAdapter>,
+        local_hub_data: Arc<dyn DataAdapter>,
+        public_adapter: crate::platform::model::DataAdapterKind,
         projects: Arc<ProjectService>,
         node_registry: Arc<NodeRegistryService>,
         dependency_lock: Arc<DependencyLockService>,
         data_root: PathBuf,
     ) -> Self {
+        let local_root = data_root.join("services").join(LOCAL_HUB_STORE_DIR);
         Self {
             control_data,
-            hub_data,
+            local_store: HubStore {
+                dir: LOCAL_HUB_STORE_DIR,
+                data: local_hub_data,
+                root: local_root,
+            },
+            public_store: Mutex::new(None),
+            public_adapter,
             projects,
             node_registry,
             dependency_lock,
@@ -1178,13 +1255,61 @@ impl HubService {
         }
     }
 
-    pub fn get_authority(
-        &self,
-        owner: &str,
-        project: &str,
-    ) -> Result<Option<HubAuthority>, PlatformError> {
-        self.hub_data
-            .get_hub_authority(&slug_segment(owner), &slug_segment(project))
+    /// Opens the Public Hub store if it already exists on disk, without
+    /// creating it: a read surface must not materialize the store of a
+    /// service nobody placed.
+    fn public_store_if_exists(&self) -> Result<Option<HubStore>, PlatformError> {
+        let mut guard = self
+            .public_store
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if let Some(store) = guard.as_ref() {
+            return Ok(Some(store.clone()));
+        }
+        let root = self.data_root.join("services").join(PUBLIC_HUB_STORE_DIR);
+        if !root.join("hub.db").is_file() {
+            return Ok(None);
+        }
+        let data = crate::platform::adapters::data::build_hub_data_adapter(
+            self.public_adapter,
+            &root.join("hub.db"),
+        )?;
+        let store = HubStore {
+            dir: PUBLIC_HUB_STORE_DIR,
+            data,
+            root,
+        };
+        *guard = Some(store.clone());
+        Ok(Some(store))
+    }
+
+    /// The Public Hub store, created behind service enablement.
+    ///
+    /// `services/hub-public/` exists only where the hub service is placed
+    /// (`instance-directory.md`), so creation happens here — reached from
+    /// service enablement and the publish/serving surfaces, all of which
+    /// require the enabled service first.
+    fn require_public_store(&self) -> Result<HubStore, PlatformError> {
+        self.require_enabled()?;
+        let mut guard = self
+            .public_store
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if let Some(store) = guard.as_ref() {
+            return Ok(store.clone());
+        }
+        let root = self.data_root.join("services").join(PUBLIC_HUB_STORE_DIR);
+        let data = crate::platform::adapters::data::build_hub_data_adapter(
+            self.public_adapter,
+            &root.join("hub.db"),
+        )?;
+        let store = HubStore {
+            dir: PUBLIC_HUB_STORE_DIR,
+            data,
+            root,
+        };
+        *guard = Some(store.clone());
+        Ok(store)
     }
 
     pub fn get_default_service_instance(
@@ -1258,6 +1383,12 @@ impl HubService {
             updated_at: now,
         };
         self.control_data.put_platform_service_instance(&service)?;
+        if enabled {
+            // Enablement is what materializes the Public Hub store:
+            // `services/hub-public/` exists only where the placed service
+            // lives (`instance-directory.md`).
+            self.require_public_store()?;
+        }
         Ok(service)
     }
 
@@ -1268,48 +1399,66 @@ impl HubService {
         enabled: bool,
     ) -> Result<HubAuthority, PlatformError> {
         let _ = (owner, project);
-        let authority = self.ensure_service_authority()?;
+        let store = self.require_public_store()?;
+        let authority = self.ensure_service_authority(&store)?;
         let now = now_ts();
         let next = HubAuthority {
             enabled,
             updated_at: now,
             ..authority
         };
-        self.hub_data.put_hub_authority(&next)?;
+        store.data.put_hub_authority(&next)?;
         Ok(next)
     }
 
+    /// The blessed shelf's packages. Shelf read: available without the
+    /// outward hub service.
     pub fn list_asset_packages(&self) -> Result<Vec<HubAssetPackage>, PlatformError> {
-        // Shelf read: available without the outward hub service.
-        self.hub_data.list_hub_asset_packages()
+        self.local_store.data.list_hub_asset_packages()
     }
 
+    /// Packages this owner published to the Public Hub store.
     pub fn list_asset_packages_by_owner(
         &self,
         owner: &str,
     ) -> Result<Vec<HubAssetPackage>, PlatformError> {
         let owner = slug_segment(owner);
-        // Shelf read: available without the outward hub service.
-        let mut items = self.hub_data.list_hub_asset_packages()?;
+        let store = self.require_public_store()?;
+        let mut items = store.data.list_hub_asset_packages()?;
         items.retain(|item| item.publisher_owner == owner);
         Ok(items)
     }
 
+    /// The blessed shelf's releases of one package.
     pub fn list_asset_versions(
         &self,
         package_id: &str,
     ) -> Result<Vec<HubAssetVersion>, PlatformError> {
-        // Shelf read: available without the outward hub service.
-        self.hub_data.list_hub_asset_versions(package_id)
+        self.local_store.data.list_hub_asset_versions(package_id)
     }
 
-    /// The newest live release of one package, by creation time.
+    /// The Public Hub store's packages, for the serving surface.
+    pub fn list_public_asset_packages(&self) -> Result<Vec<HubAssetPackage>, PlatformError> {
+        let store = self.require_public_store()?;
+        store.data.list_hub_asset_packages()
+    }
+
+    /// The Public Hub store's releases of one package.
+    pub fn list_public_asset_versions(
+        &self,
+        package_id: &str,
+    ) -> Result<Vec<HubAssetVersion>, PlatformError> {
+        let store = self.require_public_store()?;
+        store.data.list_hub_asset_versions(package_id)
+    }
+
+    /// The newest live blessed release of one package, by creation time.
+    /// Shelf read: available without the outward hub service.
     pub fn latest_live_asset_version(
         &self,
         package_id: &str,
     ) -> Result<Option<String>, PlatformError> {
-        // Shelf read: available without the outward hub service.
-        let mut versions = self.hub_data.list_hub_asset_versions(package_id)?;
+        let mut versions = self.local_store.data.list_hub_asset_versions(package_id)?;
         versions.retain(|version| version.retracted_at.is_none());
         versions.sort_by_key(|version| version.created_at);
         Ok(versions.pop().map(|version| version.version))
@@ -1330,7 +1479,7 @@ impl HubService {
         package_id: &str,
         reason: &str,
     ) -> Result<usize, PlatformError> {
-        self.require_enabled()?;
+        let store = self.require_public_store()?;
         let package_id = canonical_hub_package_id(&token.publisher_id, package_id)?;
         if package_id.is_empty() {
             return Err(PlatformError::new(
@@ -1338,7 +1487,7 @@ impl HubService {
                 "package id must not be empty",
             ));
         }
-        let Some(mut package) = self.hub_data.get_hub_asset_package(&package_id)? else {
+        let Some(mut package) = store.data.get_hub_asset_package(&package_id)? else {
             return Err(PlatformError::new(
                 "HUB_ASSET_MISSING",
                 "asset package not found",
@@ -1354,7 +1503,7 @@ impl HubService {
                 "token cannot retract this package",
             ));
         }
-        let versions = self.hub_data.list_hub_asset_versions(&package_id)?;
+        let versions = store.data.list_hub_asset_versions(&package_id)?;
         let now = now_ts();
         let reason = reason.trim();
         // The markers land before the bytes go: a row that still points at a
@@ -1365,16 +1514,18 @@ impl HubService {
             if version.retracted_at.is_some() {
                 continue;
             }
-            self.hub_data
+            store
+                .data
                 .retract_hub_asset_version(&package_id, &version.version, now, reason)?;
             retracted += 1;
         }
         package.retracted_at = Some(package.retracted_at.unwrap_or(now));
         package.retracted_reason = reason.to_string();
         package.updated_at = now;
-        self.hub_data.put_hub_asset_package(&package)?;
+        store.data.put_hub_asset_package(&package)?;
         for version in &versions {
-            let Ok(path) = self.hub_artifact_path_for_delete(&version.artifact_rel_path) else {
+            let Ok(path) = self.hub_artifact_path_for_delete(&store, &version.artifact_rel_path)
+            else {
                 continue;
             };
             match fs::remove_file(&path) {
@@ -1404,9 +1555,9 @@ impl HubService {
         package_id: &str,
         update: &HubPresentationUpdate,
     ) -> Result<HubAssetPackage, PlatformError> {
-        self.require_enabled()?;
+        let store = self.require_public_store()?;
         let package_id = canonical_hub_package_id(&token.publisher_id, package_id)?;
-        let Some(existing) = self.hub_data.get_hub_asset_package(&package_id)? else {
+        let Some(existing) = store.data.get_hub_asset_package(&package_id)? else {
             return Err(PlatformError::new(
                 "HUB_ASSET_MISSING",
                 "asset package not found",
@@ -1438,7 +1589,7 @@ impl HubService {
             .filter(|value| !value.is_empty())
         {
             Some(path) => {
-                let Some(publisher) = self.hub_data.get_hub_publisher(
+                let Some(publisher) = store.data.get_hub_publisher(
                     HUB_SERVICE_SCOPE_OWNER,
                     HUB_SERVICE_SCOPE_PROJECT,
                     &existing.publisher_id,
@@ -1481,7 +1632,7 @@ impl HubService {
                 .unwrap_or_default();
         }
         if let Some((_, bytes)) = cover_bytes.as_ref() {
-            self.store_artifact(bytes)?;
+            self.store_artifact_in(&store, bytes)?;
         }
         let package = HubAssetPackage {
             summary: presentation.summary,
@@ -1492,7 +1643,7 @@ impl HubService {
             updated_at: now_ts(),
             ..existing
         };
-        self.hub_data.put_hub_asset_package(&package)?;
+        store.data.put_hub_asset_package(&package)?;
         Ok(package)
     }
 
@@ -1502,8 +1653,9 @@ impl HubService {
         project: &str,
     ) -> Result<Vec<HubPublisher>, PlatformError> {
         let _ = (owner, project);
-        self.require_enabled()?;
-        self.hub_data
+        let store = self.require_public_store()?;
+        store
+            .data
             .list_hub_publishers(HUB_SERVICE_SCOPE_OWNER, HUB_SERVICE_SCOPE_PROJECT)
     }
 
@@ -1528,9 +1680,12 @@ impl HubService {
         max_image_bytes: i64,
     ) -> Result<HubPublisher, PlatformError> {
         let _ = (owner, project);
-        self.require_enabled()?;
-        let authority = self.ensure_service_authority()?;
+        let store = self.require_public_store()?;
+        let authority = self.ensure_service_authority(&store)?;
         let publisher_id = normalize_hub_id_segment(publisher_id, "publisher id")?;
+        // The reserved namespace holds at the row, not only at publish time:
+        // a `zebflow` publisher account cannot exist on the public surface.
+        refuse_reserved_publisher(&publisher_id)?;
         if publisher_id.is_empty() {
             return Err(PlatformError::new(
                 "HUB_PUBLISHER_INVALID",
@@ -1538,7 +1693,7 @@ impl HubService {
             ));
         }
         let now = now_ts();
-        let existing = self.hub_data.get_hub_publisher(
+        let existing = store.data.get_hub_publisher(
             HUB_SERVICE_SCOPE_OWNER,
             HUB_SERVICE_SCOPE_PROJECT,
             &publisher_id,
@@ -1577,7 +1732,7 @@ impl HubService {
             created_at: existing.as_ref().map(|v| v.created_at).unwrap_or(now),
             updated_at: now,
         };
-        self.hub_data.put_hub_publisher(&row)?;
+        store.data.put_hub_publisher(&row)?;
         Ok(row)
     }
 
@@ -1588,7 +1743,8 @@ impl HubService {
         publisher_id: &str,
     ) -> Result<(), PlatformError> {
         let _ = (owner, project);
-        self.hub_data.delete_hub_publisher(
+        let store = self.require_public_store()?;
+        store.data.delete_hub_publisher(
             HUB_SERVICE_SCOPE_OWNER,
             HUB_SERVICE_SCOPE_PROJECT,
             &slug_segment(publisher_id),
@@ -1603,8 +1759,8 @@ impl HubService {
     ) -> Result<(HubToken, String), PlatformError> {
         let owner = slug_segment(owner);
         let project = slug_segment(project);
-        self.require_enabled()?;
-        let authority = self.ensure_service_authority()?;
+        let store = self.require_public_store()?;
+        let authority = self.ensure_service_authority(&store)?;
         if owner.is_empty() || project.is_empty() {
             return Err(PlatformError::new(
                 "HUB_TOKEN_INVALID",
@@ -1612,6 +1768,7 @@ impl HubService {
             ));
         }
         let publisher_id = normalize_hub_id_segment(&req.publisher_id, "publisher id")?;
+        refuse_reserved_publisher(&publisher_id)?;
         let title = req.title.trim();
         if title.is_empty() || publisher_id.is_empty() {
             return Err(PlatformError::new(
@@ -1619,7 +1776,7 @@ impl HubService {
                 "token title and publisher id must not be empty",
             ));
         }
-        let Some(publisher) = self.hub_data.get_hub_publisher(
+        let Some(publisher) = store.data.get_hub_publisher(
             HUB_SERVICE_SCOPE_OWNER,
             HUB_SERVICE_SCOPE_PROJECT,
             &publisher_id,
@@ -1665,20 +1822,20 @@ impl HubService {
             updated_at: now,
         };
         let token = apply_scope_flags(token);
-        self.hub_data.put_hub_token(&token)?;
+        store.data.put_hub_token(&token)?;
         Ok((token, plain))
     }
 
     pub fn list_tokens(&self, owner: &str, project: &str) -> Result<Vec<HubToken>, PlatformError> {
         let owner = slug_segment(owner);
         let project = slug_segment(project);
-        self.require_enabled()?;
-        self.hub_data.list_hub_tokens(&owner, &project)
+        let store = self.require_public_store()?;
+        store.data.list_hub_tokens(&owner, &project)
     }
 
     pub fn list_all_tokens(&self) -> Result<Vec<HubToken>, PlatformError> {
-        self.require_enabled()?;
-        self.hub_data.list_all_hub_tokens()
+        let store = self.require_public_store()?;
+        store.data.list_all_hub_tokens()
     }
 
     pub fn revoke_token(
@@ -1689,7 +1846,12 @@ impl HubService {
     ) -> Result<(), PlatformError> {
         let owner = slug_segment(owner);
         let project = slug_segment(project);
-        let Some(mut token) = self.hub_data.get_hub_token(token_id)? else {
+        // Revocation must work even while the outward service is disabled,
+        // so this opens the store rather than requiring the service.
+        let Some(store) = self.public_store_if_exists()? else {
+            return Ok(());
+        };
+        let Some(mut token) = store.data.get_hub_token(token_id)? else {
             return Ok(());
         };
         if token.owner != owner || token.project != project {
@@ -1700,18 +1862,20 @@ impl HubService {
         }
         token.revoked_at = Some(now_ts());
         token.updated_at = now_ts();
-        self.hub_data.put_hub_token(&token)?;
+        store.data.put_hub_token(&token)?;
         Ok(())
     }
 
     pub fn revoke_token_any(&self, token_id: &str) -> Result<(), PlatformError> {
-        self.require_enabled()?;
-        let Some(mut token) = self.hub_data.get_hub_token(token_id)? else {
+        let Some(store) = self.public_store_if_exists()? else {
+            return Ok(());
+        };
+        let Some(mut token) = store.data.get_hub_token(token_id)? else {
             return Ok(());
         };
         token.revoked_at = Some(now_ts());
         token.updated_at = now_ts();
-        self.hub_data.put_hub_token(&token)?;
+        store.data.put_hub_token(&token)?;
         Ok(())
     }
 
@@ -2170,14 +2334,14 @@ impl HubService {
         bearer_token: &str,
         required_scope: &str,
     ) -> Result<HubToken, PlatformError> {
-        self.require_enabled()?;
+        let store = self.require_public_store()?;
         let token_value = bearer_token.trim();
         if token_value.is_empty() {
             return Err(PlatformError::new("HUB_TOKEN_INVALID", "token missing"));
         }
         let token_hash = sha256_hex(token_value.as_bytes());
-        let matched = self
-            .hub_data
+        let matched = store
+            .data
             .list_all_hub_tokens()?
             .into_iter()
             .find(|token| token.secret_hash == token_hash);
@@ -2196,7 +2360,7 @@ impl HubService {
         if !token.grants_scope(required_scope) {
             return Err(PlatformError::new("HUB_TOKEN_FORBIDDEN", "scope missing"));
         }
-        let Some(publisher) = self.hub_data.get_hub_publisher(
+        let Some(publisher) = store.data.get_hub_publisher(
             HUB_SERVICE_SCOPE_OWNER,
             HUB_SERVICE_SCOPE_PROJECT,
             &token.publisher_id,
@@ -2216,7 +2380,7 @@ impl HubService {
         validate_publisher_scopes(&publisher, &[required_scope.to_string()])?;
         token.last_used_at = Some(now_ts());
         token.updated_at = now_ts();
-        self.hub_data.put_hub_token(&token)?;
+        store.data.put_hub_token(&token)?;
         Ok(token)
     }
 
@@ -2344,7 +2508,7 @@ impl HubService {
         tags: Vec<String>,
     ) -> Result<(HubAssetPackage, HubAssetVersion), PlatformError> {
         let _ = (authority_owner, authority_project);
-        self.require_enabled()?;
+        let store = self.require_public_store()?;
         let publisher_owner = slug_segment(publisher_owner);
         let publisher_id = normalize_hub_id_segment(publisher_id, "publisher id")?;
         refuse_reserved_publisher(&publisher_id)?;
@@ -2363,7 +2527,7 @@ impl HubService {
                 "authority, publisher, and source must not be empty",
             ));
         }
-        let Some(publisher) = self.hub_data.get_hub_publisher(
+        let Some(publisher) = store.data.get_hub_publisher(
             HUB_SERVICE_SCOPE_OWNER,
             HUB_SERVICE_SCOPE_PROJECT,
             &publisher_id,
@@ -2386,7 +2550,7 @@ impl HubService {
                 "publisher does not have publish permission",
             ));
         }
-        let authority = self.ensure_service_authority()?;
+        let authority = self.ensure_service_authority(&store)?;
         if package_id.is_empty() || version.is_empty() {
             return Err(PlatformError::new(
                 "HUB_PUBLISH_INVALID",
@@ -2396,11 +2560,11 @@ impl HubService {
         validate_hub_version(version)?;
         // Before the source is even read: a republish must not reach the
         // artifact file or the version row.
-        self.enforce_release_immutability(&package_id, version)?;
+        self.enforce_release_immutability(&store, &package_id, version)?;
         // The mutable half is read up front so a publish that carries no
         // presentation can leave the existing presentation alone. Publishing a
         // fix must not cost the publisher the description they wrote.
-        let existing_package = self.hub_data.get_hub_asset_package(&package_id)?;
+        let existing_package = store.data.get_hub_asset_package(&package_id)?;
         let mut preview =
             self.preview_publish_source(&source_owner, &source_project, &source_type, source_ref)?;
         if preview.entries.is_empty() {
@@ -2448,32 +2612,35 @@ impl HubService {
         } else {
             Vec::new()
         };
-        self.finish_publish(PublishSubmission {
-            authority,
-            publisher,
-            publisher_owner,
-            publisher_id,
-            publisher_display_name: publisher_display_name.to_string(),
-            publisher_url: publisher_url.to_string(),
-            publisher_email: publisher_email.to_string(),
-            source_owner,
-            source_project,
-            source_type,
-            source_ref: source_ref.to_string(),
-            package_id,
-            version: version.to_string(),
-            resolved_title,
-            resolved_description,
-            preview,
-            review_layout: publish_review_layout(&source_layout.repo_layout),
-            recorded_layout: Some(recorded_publisher_layout(&source_layout.repo_layout)),
-            active_pipelines,
-            project_initialization,
-            existing_package,
-            cover_source,
-            visibility: visibility.to_string(),
-            tags,
-        })
+        self.finish_publish(
+            store,
+            PublishSubmission {
+                authority,
+                publisher,
+                publisher_owner,
+                publisher_id,
+                publisher_display_name: publisher_display_name.to_string(),
+                publisher_url: publisher_url.to_string(),
+                publisher_email: publisher_email.to_string(),
+                source_owner,
+                source_project,
+                source_type,
+                source_ref: source_ref.to_string(),
+                package_id,
+                version: version.to_string(),
+                resolved_title,
+                resolved_description,
+                preview,
+                review_layout: publish_review_layout(&source_layout.repo_layout),
+                recorded_layout: Some(recorded_publisher_layout(&source_layout.repo_layout)),
+                active_pipelines,
+                project_initialization,
+                existing_package,
+                cover_source,
+                visibility: visibility.to_string(),
+                tags,
+            },
+        )
     }
 
     /// The shared back half of every publish: the review gate, the artifact
@@ -2485,6 +2652,7 @@ impl HubService {
     /// publish path, only a second way of preparing one submission.
     fn finish_publish(
         &self,
+        store: HubStore,
         submission: PublishSubmission,
     ) -> Result<(HubAssetPackage, HubAssetVersion), PlatformError> {
         let PublishSubmission {
@@ -2528,7 +2696,7 @@ impl HubService {
                 &resolved_title,
                 &resolved_description,
                 cover_source.is_some(),
-                &self.artifact_store(),
+                &store.artifact_channel(),
             ),
         )?;
         // The review has passed, so the release may now be shaped for the store
@@ -2537,7 +2705,7 @@ impl HubService {
         let referenced_artifacts = reference_large_publish_entries(&mut preview.entries)?;
         let cover = match cover_source {
             Some((name, bytes)) => {
-                let artifact_sha256 = self.store_artifact(&bytes)?;
+                let artifact_sha256 = self.store_artifact_in(&store, &bytes)?;
                 Some(HubAssetMedia {
                     name,
                     role: "cover".to_string(),
@@ -2550,10 +2718,7 @@ impl HubService {
         };
         let mut presentation = HubPresentation::from_existing(existing_package.as_ref());
         presentation.replace_cover(&package_id, cover);
-        let artifact_rel = format!(
-            "services/{}/packages/{}/versions/{}/artifact.json",
-            DEFAULT_HUB_SERVICE_INSTANCE_ID, package_id, version
-        );
+        let artifact_rel = store.artifact_rel(&package_id, &version);
         let artifact_abs = self.data_root.join(&artifact_rel);
         if let Some(parent) = artifact_abs.parent() {
             fs::create_dir_all(parent)?;
@@ -2594,6 +2759,7 @@ impl HubService {
         // weighs, so moving a file out of the document does not move it out of
         // the publisher's allowance.
         self.enforce_publisher_package_quota(
+            &store,
             &publisher,
             &package_id,
             existing_package.as_ref(),
@@ -2605,7 +2771,7 @@ impl HubService {
         // content-addressed, so a second release shipping the same file costs
         // nothing.
         for bytes in &referenced_artifacts {
-            self.store_artifact(bytes)?;
+            self.store_artifact_in(&store, bytes)?;
         }
         atomic_write(&artifact_abs, &artifact_bytes)?;
         let package = HubAssetPackage {
@@ -2665,8 +2831,8 @@ impl HubService {
             // the release was created and stays that way for its whole life.
             created_at: now,
         };
-        self.hub_data.put_hub_asset_package(&package)?;
-        self.hub_data.put_hub_asset_version(&version_row)?;
+        store.data.put_hub_asset_package(&package)?;
+        store.data.put_hub_asset_version(&version_row)?;
         Ok((package, version_row))
     }
 
@@ -2690,7 +2856,8 @@ impl HubService {
         for package in crate::platform::blessed::blessed_packages()? {
             let coordinate = format!("{}@{}", package.package_id, package.version);
             match self
-                .hub_data
+                .local_store
+                .data
                 .get_hub_asset_version(&package.package_id, &package.version)?
             {
                 Some(_) => {
@@ -2715,7 +2882,7 @@ impl HubService {
     /// surface requires the outward hub service and the shelf must not.
     fn ensure_reserved_publisher(&self) -> Result<HubPublisher, PlatformError> {
         let reserved = crate::platform::blessed::RESERVED_HUB_PUBLISHER_ID;
-        if let Some(existing) = self.hub_data.get_hub_publisher(
+        if let Some(existing) = self.local_store.data.get_hub_publisher(
             HUB_SERVICE_SCOPE_OWNER,
             HUB_SERVICE_SCOPE_PROJECT,
             reserved,
@@ -2749,7 +2916,7 @@ impl HubService {
             created_at: now,
             updated_at: now,
         };
-        self.hub_data.put_hub_publisher(&row)?;
+        self.local_store.data.put_hub_publisher(&row)?;
         Ok(row)
     }
 
@@ -2775,8 +2942,8 @@ impl HubService {
         }
         let package_id = canonical_hub_package_id(&publisher.publisher_id, &package.package_id)?;
         validate_hub_version(&package.version)?;
-        self.enforce_release_immutability(&package_id, &package.version)?;
-        let existing_package = self.hub_data.get_hub_asset_package(&package_id)?;
+        self.enforce_release_immutability(&self.local_store, &package_id, &package.version)?;
+        let existing_package = self.local_store.data.get_hub_asset_package(&package_id)?;
         let entries: Vec<HubPackageFile> = package
             .files
             .iter()
@@ -2800,32 +2967,35 @@ impl HubService {
             entries,
             warnings: Vec::new(),
         };
-        self.finish_publish(PublishSubmission {
-            authority: authority.clone(),
-            publisher: publisher.clone(),
-            publisher_owner: publisher.publisher_id.clone(),
-            publisher_id: publisher.publisher_id.clone(),
-            publisher_display_name: String::new(),
-            publisher_url: String::new(),
-            publisher_email: String::new(),
-            source_owner: publisher.publisher_id.clone(),
-            source_project: "blessed".to_string(),
-            source_type: "blessed".to_string(),
-            source_ref: package.source_ref,
-            package_id,
-            version: package.version,
-            resolved_title: package.title,
-            resolved_description: package.description,
-            preview,
-            review_layout: publish_review_layout(&ResolvedProjectLayout::platform_default()),
-            recorded_layout: None,
-            active_pipelines: Vec::new(),
-            project_initialization: HubPackageInitialization::default(),
-            existing_package,
-            cover_source: None,
-            visibility: "public".to_string(),
-            tags: vec!["blessed".to_string()],
-        })?;
+        self.finish_publish(
+            self.local_store.clone(),
+            PublishSubmission {
+                authority: authority.clone(),
+                publisher: publisher.clone(),
+                publisher_owner: publisher.publisher_id.clone(),
+                publisher_id: publisher.publisher_id.clone(),
+                publisher_display_name: String::new(),
+                publisher_url: String::new(),
+                publisher_email: String::new(),
+                source_owner: publisher.publisher_id.clone(),
+                source_project: "blessed".to_string(),
+                source_type: "blessed".to_string(),
+                source_ref: package.source_ref,
+                package_id,
+                version: package.version,
+                resolved_title: package.title,
+                resolved_description: package.description,
+                preview,
+                review_layout: publish_review_layout(&ResolvedProjectLayout::platform_default()),
+                recorded_layout: None,
+                active_pipelines: Vec::new(),
+                project_initialization: HubPackageInitialization::default(),
+                existing_package,
+                cover_source: None,
+                visibility: "public".to_string(),
+                tags: vec!["blessed".to_string()],
+            },
+        )?;
         Ok(())
     }
 
@@ -2845,7 +3015,7 @@ impl HubService {
         project_options: HubProjectBundlePublishOptions,
         tags: Vec<String>,
     ) -> Result<HubPublishReview, PlatformError> {
-        self.require_enabled()?;
+        let store = self.require_public_store()?;
         let source_owner = slug_segment(source_owner);
         let source_project = slug_segment(source_project);
         let publisher_id = normalize_hub_id_segment(publisher_id, "publisher id")?;
@@ -2853,7 +3023,7 @@ impl HubService {
         let package_id = canonical_hub_package_id(&publisher_id, package_id)?;
         let version = version.trim().to_string();
         validate_hub_version(&version)?;
-        let Some(publisher) = self.hub_data.get_hub_publisher(
+        let Some(publisher) = store.data.get_hub_publisher(
             HUB_SERVICE_SCOPE_OWNER,
             HUB_SERVICE_SCOPE_PROJECT,
             &publisher_id,
@@ -2910,7 +3080,7 @@ impl HubService {
             // An export carries every entry inline today, so this channel is the
             // answer for a referenced one: only an artifact already in this
             // instance's store could be published and resolved by a receiver.
-            &self.artifact_store(),
+            &store.artifact_channel(),
         )
     }
 
@@ -3053,11 +3223,57 @@ impl HubService {
         version: &str,
         target_folder: &str,
     ) -> Result<HubInstallResult, PlatformError> {
+        // Project-scope install from the instance's own shelf: available
+        // without the outward hub service (`distribution.md` §1b), and the
+        // path that locks `source: hub.local`. A coordinate the shelf does
+        // not carry falls through to this instance's own Public Hub store —
+        // the same rows the base URL would serve, read in-process by the
+        // office that hosts them — and locks `source: hub.public`.
+        let store = self.local_store.clone();
+        let result = self.install_asset_from_store(
+            &store,
+            crate::contracts::kinds::DependencyLockSource::HubLocal,
+            target_owner,
+            target_project,
+            package_id,
+            version,
+            target_folder,
+        );
+        match result {
+            Err(error) if error.code == "HUB_ASSET_MISSING" => {
+                let Some(public) = self.public_store_if_exists()? else {
+                    return Err(error);
+                };
+                self.install_asset_from_store(
+                    &public,
+                    crate::contracts::kinds::DependencyLockSource::HubPublic,
+                    target_owner,
+                    target_project,
+                    package_id,
+                    version,
+                    target_folder,
+                )
+            }
+            other => other,
+        }
+    }
+
+    /// The store-parameterized install core: same review, same installer,
+    /// whichever store the release row and bytes live in.
+    #[allow(clippy::too_many_arguments)]
+    fn install_asset_from_store(
+        &self,
+        store: &HubStore,
+        source: crate::contracts::kinds::DependencyLockSource,
+        target_owner: &str,
+        target_project: &str,
+        package_id: &str,
+        version: &str,
+        target_folder: &str,
+    ) -> Result<HubInstallResult, PlatformError> {
         let target_owner = slug_segment(target_owner);
         let target_project = slug_segment(target_project);
-        // Project-scope install from the instance's own shelf: available
-        // without the outward hub service (`distribution.md` §1b).
-        let Some(version_row) = self.hub_data.get_hub_asset_version(package_id, version)? else {
+        let Some(version_row) = store.data.get_hub_asset_version(package_id, version)? else {
             return Err(PlatformError::new(
                 "HUB_ASSET_MISSING",
                 "asset version not found",
@@ -3081,25 +3297,30 @@ impl HubService {
             package_id,
             version,
             target_folder,
-            &format!("local/{package_id}"),
+            HubInstallProvenance::new(source, package_id, version),
             payload,
-            &self.artifact_store(),
+            &store.artifact_channel(),
         )
     }
 
-    /// This instance's Hub store, as an artifact channel.
+    /// The blessed shelf, as an artifact channel.
     ///
-    /// Artifacts sit at `<hub service root>/artifacts/<sha256>`, beside the
+    /// Artifacts sit at `<store root>/artifacts/<sha256>`, beside the
     /// package documents rather than under any one of them, so two packages
     /// naming one runtime share the single stored file.
     pub fn artifact_store(&self) -> HubArtifactChannel {
-        HubArtifactChannel::local(self.hub_service_root())
+        self.local_store.artifact_channel()
     }
 
-    fn hub_service_root(&self) -> PathBuf {
+    /// Where remotely fetched referenced artifacts are cached,
+    /// content-addressed. A cache, not a store: neither hub store may be
+    /// written by a fetch — the shelf is seed-only and the public store is
+    /// publish-only (`distribution.md` §1b).
+    fn remote_artifact_cache_root(&self) -> PathBuf {
         self.data_root
-            .join("services")
-            .join(DEFAULT_HUB_SERVICE_INSTANCE_ID)
+            .join("platform")
+            .join("cache")
+            .join("hub-artifacts")
     }
 
     /// A hub reached over HTTP, as an artifact channel.
@@ -3120,7 +3341,7 @@ impl HubService {
         package_id: &str,
         version: &str,
     ) -> Result<HubArtifactChannel, PlatformError> {
-        let store_base = self.hub_service_root();
+        let store_base = self.remote_artifact_cache_root();
         let source = channel.source();
         for file in files {
             let Some(HubPackageFileSupply::Referenced(artifact)) = file.supply() else {
@@ -3150,6 +3371,11 @@ impl HubService {
     /// form: a package that references an artifact is only installable from a
     /// Hub that holds it.
     pub fn store_artifact(&self, bytes: &[u8]) -> Result<String, PlatformError> {
+        let store = self.local_store.clone();
+        self.store_artifact_in(&store, bytes)
+    }
+
+    fn store_artifact_in(&self, store: &HubStore, bytes: &[u8]) -> Result<String, PlatformError> {
         if bytes.len() > MAX_HUB_PACKAGE_REFERENCED_FILE_BYTES {
             return Err(PlatformError::new(
                 "HUB_ARTIFACT_TOO_LARGE",
@@ -3161,7 +3387,7 @@ impl HubService {
             ));
         }
         let sha256 = sha256_hex(bytes);
-        let path = referenced_artifact_path(&self.hub_service_root(), &sha256)?;
+        let path = referenced_artifact_path(&store.root, &sha256)?;
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }
@@ -3177,11 +3403,49 @@ impl HubService {
         version: &str,
         target_folder: &str,
     ) -> Result<HubInstallReview, PlatformError> {
+        // Project-scope review from the instance's own shelf, falling through
+        // to this instance's own Public Hub store like `install_asset`.
+        let store = self.local_store.clone();
+        let result = self.review_asset_install_from_store(
+            &store,
+            target_owner,
+            target_project,
+            package_id,
+            version,
+            target_folder,
+        );
+        match result {
+            Err(error) if error.code == "HUB_ASSET_MISSING" => {
+                let Some(public) = self.public_store_if_exists()? else {
+                    return Err(error);
+                };
+                self.review_asset_install_from_store(
+                    &public,
+                    target_owner,
+                    target_project,
+                    package_id,
+                    version,
+                    target_folder,
+                )
+            }
+            other => other,
+        }
+    }
+
+    /// The store-parameterized review core beside `install_asset_from_store`.
+    #[allow(clippy::too_many_arguments)]
+    fn review_asset_install_from_store(
+        &self,
+        store: &HubStore,
+        target_owner: &str,
+        target_project: &str,
+        package_id: &str,
+        version: &str,
+        target_folder: &str,
+    ) -> Result<HubInstallReview, PlatformError> {
         let target_owner = slug_segment(target_owner);
         let target_project = slug_segment(target_project);
-        // Project-scope install from the instance's own shelf: available
-        // without the outward hub service (`distribution.md` §1b).
-        let Some(version_row) = self.hub_data.get_hub_asset_version(package_id, version)? else {
+        let Some(version_row) = store.data.get_hub_asset_version(package_id, version)? else {
             return Err(PlatformError::new(
                 "HUB_ASSET_MISSING",
                 "asset version not found",
@@ -3206,7 +3470,7 @@ impl HubService {
             version,
             target_folder,
             &payload,
-            &self.artifact_store(),
+            &store.artifact_channel(),
         )
     }
 
@@ -3351,7 +3615,11 @@ impl HubService {
             package_id,
             version,
             target_folder,
-            &format!("local/{package_id}"),
+            HubInstallProvenance::new(
+                crate::contracts::kinds::DependencyLockSource::DirectFile,
+                package_id,
+                version,
+            ),
             payload,
             artifacts,
         )
@@ -3367,7 +3635,7 @@ impl HubService {
         package_id: &str,
         version: &str,
         target_folder: &str,
-        source_id: &str,
+        provenance: HubInstallProvenance,
         payload: HubPackageSpec,
         artifacts: &HubArtifactChannel,
     ) -> Result<HubInstallResult, PlatformError> {
@@ -3454,7 +3722,7 @@ impl HubService {
                 &target_owner,
                 &target_project,
                 &install_root,
-                source_id,
+                &provenance,
                 &install_base,
             ) {
                 return Err(self.recover_failed_install(
@@ -3472,11 +3740,13 @@ impl HubService {
                 .node_registry
                 .refresh_project(&target_owner, &target_project)
                 .and_then(|_| {
-                    self.dependency_lock.record_hub_node_bundles(
+                    self.dependency_lock.record_installed_node_bundles(
                         &target_owner,
                         &target_project,
                         &install_root,
-                        source_id,
+                        package_id,
+                        provenance.source,
+                        &provenance.source_id,
                         version,
                     )
                 })
@@ -3509,15 +3779,16 @@ impl HubService {
     ///
     /// The installed copy is the artifact: its own `manifest.json` names the
     /// library and its releases, the bundled ("offline") release's bytes are
-    /// hashed from disk, and the lock entry pins `source: hub` with that
-    /// digest. The entry path resolves against `data/hub/`, beside the node
-    /// bundle entries that already do.
+    /// hashed from disk, and the lock entry pins the install channel's source
+    /// with that digest. The entry path — `rwe-libraries/{package_id}/…` —
+    /// resolves against `data/hub/`, beside the node bundle entries that
+    /// already do.
     fn record_installed_rwe_library(
         &self,
         owner: &str,
         project: &str,
         install_root: &str,
-        source_id: &str,
+        provenance: &HubInstallProvenance,
         install_base: &Path,
     ) -> Result<(), PlatformError> {
         let package_dir = install_base.join(install_root);
@@ -3579,8 +3850,8 @@ impl HubService {
             &manifest.name,
             crate::contracts::kinds::DependencyLockArtifactSpec {
                 version: version_key.clone(),
-                source: crate::contracts::kinds::DependencyLockSource::Hub,
-                source_id: source_id.to_string(),
+                source: provenance.source,
+                source_id: provenance.source_id.clone(),
                 entry: format!("{install_root}/{}", release.entry),
                 integrity,
             },
@@ -3775,8 +4046,8 @@ impl HubService {
         package_id: &str,
         version: &str,
     ) -> Result<Option<HubAssetVersion>, PlatformError> {
-        self.require_enabled()?;
-        self.hub_data.get_hub_asset_version(package_id, version)
+        let store = self.require_public_store()?;
+        store.data.get_hub_asset_version(package_id, version)
     }
 
     pub fn get_asset_version_artifact(
@@ -3794,8 +4065,8 @@ impl HubService {
         package_id: &str,
         version: &str,
     ) -> Result<(HubAssetVersion, Value, u64), PlatformError> {
-        self.require_enabled()?;
-        let Some(version_row) = self.hub_data.get_hub_asset_version(package_id, version)? else {
+        let store = self.require_public_store()?;
+        let Some(version_row) = store.data.get_hub_asset_version(package_id, version)? else {
             return Err(PlatformError::new(
                 "HUB_ASSET_MISSING",
                 "asset version not found",
@@ -3810,7 +4081,7 @@ impl HubService {
                 retraction_message(package_id, version, &version_row.retracted_reason),
             ));
         }
-        let artifact_abs = self.hub_artifact_path(&version_row.artifact_rel_path)?;
+        let artifact_abs = self.hub_artifact_path(&store, &version_row.artifact_rel_path)?;
         let artifact_size_bytes = fs::metadata(&artifact_abs)?.len();
         if artifact_size_bytes > MAX_REMOTE_HUB_ARTIFACT_BYTES {
             return Err(PlatformError::new(
@@ -3848,8 +4119,8 @@ impl HubService {
         version: &str,
         sha256: &str,
     ) -> Result<(HubAssetVersion, String, Vec<u8>), PlatformError> {
-        self.require_enabled()?;
-        let Some(version_row) = self.hub_data.get_hub_asset_version(package_id, version)? else {
+        let store = self.require_public_store()?;
+        let Some(version_row) = store.data.get_hub_asset_version(package_id, version)? else {
             return Err(PlatformError::new(
                 "HUB_ASSET_MISSING",
                 "asset version not found",
@@ -3862,7 +4133,7 @@ impl HubService {
             ));
         }
         validate_artifact_digest(sha256)?;
-        let artifact_abs = self.hub_artifact_path(&version_row.artifact_rel_path)?;
+        let artifact_abs = self.hub_artifact_path(&store, &version_row.artifact_rel_path)?;
         let raw = fs::read(&artifact_abs)?;
         verify_hub_artifact_bytes(&raw, &version_row.artifact_sha256)?;
         let payload = parse_hub_artifact_bytes(&raw, "HUB_ARTIFACT_MISSING")?;
@@ -3879,9 +4150,10 @@ impl HubService {
         };
         // Resolved through the same channel an install on this instance reads,
         // so the digest is verified on the way out as well as on the way in.
-        let bytes = self
-            .artifact_store()
-            .resolve(&entry.rel_path, artifact, entry.size_bytes)?;
+        let bytes =
+            store
+                .artifact_channel()
+                .resolve(&entry.rel_path, artifact, entry.size_bytes)?;
         let media_type = if artifact.media_type.is_empty() {
             "application/octet-stream".to_string()
         } else {
@@ -3895,8 +4167,8 @@ impl HubService {
         package_id: &str,
         media_name: &str,
     ) -> Result<(HubAssetPackage, HubAssetMedia, Vec<u8>), PlatformError> {
-        self.require_enabled()?;
-        let Some(package) = self.hub_data.get_hub_asset_package(package_id)? else {
+        let store = self.require_public_store()?;
+        let Some(package) = store.data.get_hub_asset_package(package_id)? else {
             return Err(PlatformError::new(
                 "HUB_ASSET_MISSING",
                 "asset package not found",
@@ -3913,7 +4185,7 @@ impl HubService {
         else {
             return Err(PlatformError::new("HUB_MEDIA_MISSING", "media not found"));
         };
-        let bytes = self.artifact_store().resolve(
+        let bytes = store.artifact_channel().resolve(
             &media.name,
             &HubPackageArtifactRef {
                 sha256: media.artifact_sha256.clone(),
@@ -3932,7 +4204,7 @@ impl HubService {
         req: &RemoteHubPublishRequest,
     ) -> Result<(HubAssetPackage, HubAssetVersion), PlatformError> {
         let _ = (authority_owner, authority_project);
-        self.require_enabled()?;
+        let store = self.require_public_store()?;
         let authority_owner = HUB_SERVICE_SCOPE_OWNER.to_string();
         let authority_project = HUB_SERVICE_SCOPE_PROJECT.to_string();
         let publisher_owner = slug_segment(&token.owner);
@@ -3955,7 +4227,7 @@ impl HubService {
             ));
         }
         validate_hub_version(&version)?;
-        let Some(publisher) = self.hub_data.get_hub_publisher(
+        let Some(publisher) = store.data.get_hub_publisher(
             HUB_SERVICE_SCOPE_OWNER,
             HUB_SERVICE_SCOPE_PROJECT,
             &publisher_id,
@@ -3979,10 +4251,10 @@ impl HubService {
             ));
         }
         // The remote publish route lands here, and it carries the same
-        // release-immutability rule as a local publish. Checked before the
+        // release-immutability rule as any other publish. Checked before the
         // inbound document is decoded, so nothing durable is written.
-        self.enforce_release_immutability(&package_id, &version)?;
-        let existing_package = self.hub_data.get_hub_asset_package(&package_id)?;
+        self.enforce_release_immutability(&store, &package_id, &version)?;
+        let existing_package = store.data.get_hub_asset_package(&package_id)?;
         let source_owner = slug_segment(&req.source_owner);
         let source_project = slug_segment(&req.source_project);
         let mut artifact = parse_hub_artifact_value(req.artifact.clone(), "HUB_REMOTE_INVALID")?;
@@ -4065,13 +4337,10 @@ impl HubService {
                 &artifact.title,
                 &artifact.description,
                 !decoded_media.is_empty(),
-                &self.artifact_store(),
+                &store.artifact_channel(),
             ),
         )?;
-        let artifact_rel = format!(
-            "services/{}/packages/{}/versions/{}/artifact.json",
-            DEFAULT_HUB_SERVICE_INSTANCE_ID, package_id, version
-        );
+        let artifact_rel = store.artifact_rel(&package_id, &version);
         let artifact_abs = self.data_root.join(&artifact_rel);
         if let Some(parent) = artifact_abs.parent() {
             fs::create_dir_all(parent)?;
@@ -4081,8 +4350,9 @@ impl HubService {
         let artifact_value = serde_json::from_slice(&artifact_bytes)
             .map_err(|err| PlatformError::new("HUB_REMOTE_INVALID", err.to_string()))?;
         let now = now_ts();
-        let authority = self.ensure_service_authority()?;
+        let authority = self.ensure_service_authority(&store)?;
         self.enforce_publisher_package_quota(
+            &store,
             &publisher,
             &package_id,
             existing_package.as_ref(),
@@ -4090,7 +4360,7 @@ impl HubService {
         )?;
         atomic_write(&artifact_abs, &artifact_bytes)?;
         for (item, bytes) in &decoded_media {
-            let stored = self.store_artifact(bytes)?;
+            let stored = self.store_artifact_in(&store, bytes)?;
             if stored != item.artifact_sha256 {
                 return Err(PlatformError::new(
                     "HUB_MEDIA_INVALID",
@@ -4159,8 +4429,8 @@ impl HubService {
             // New row by construction — see the note on the local publish path.
             created_at: now,
         };
-        self.hub_data.put_hub_asset_package(&package)?;
-        self.hub_data.put_hub_asset_version(&version_row)?;
+        store.data.put_hub_asset_package(&package)?;
+        store.data.put_hub_asset_version(&version_row)?;
         Ok((package, version_row))
     }
 
@@ -4275,13 +4545,23 @@ impl HubService {
         let artifacts = self
             .remote_artifact_channel(&artifact.files, &channel, package_id, version)
             .await?;
+        // The channel decides the locked source: an API hub is the public
+        // serving, a static repository is the static serving.
+        let source = match &channel {
+            HubRepositoryChannel::Api(_) => {
+                crate::contracts::kinds::DependencyLockSource::HubPublic
+            }
+            HubRepositoryChannel::Static(_) => {
+                crate::contracts::kinds::DependencyLockSource::HubStatic
+            }
+        };
         self.install_artifact_payload_from(
             slug_segment(target_owner),
             slug_segment(target_project),
             package_id,
             version,
             target_folder,
-            &format!("{repository_id}/{package_id}"),
+            HubInstallProvenance::new(source, package_id, version),
             artifact,
             &artifacts,
         )
@@ -4878,7 +5158,8 @@ impl HubService {
     /// created neutral and the service, if added later, reuses it.
     fn ensure_store_authority(&self) -> Result<HubAuthority, PlatformError> {
         if let Some(authority) = self
-            .hub_data
+            .local_store
+            .data
             .get_hub_authority(HUB_SERVICE_SCOPE_OWNER, HUB_SERVICE_SCOPE_PROJECT)?
         {
             return Ok(authority);
@@ -4886,7 +5167,7 @@ impl HubService {
         let service = self.get_default_service_instance()?;
         let now = now_ts();
         let authority = HubAuthority {
-            authority_id: DEFAULT_HUB_SERVICE_INSTANCE_ID.to_string(),
+            authority_id: LOCAL_HUB_STORE_DIR.to_string(),
             host_project_id: service
                 .as_ref()
                 .map(|item| item.host_office_id.clone())
@@ -4898,13 +5179,15 @@ impl HubService {
             created_at: now,
             updated_at: now,
         };
-        self.hub_data.put_hub_authority(&authority)?;
+        self.local_store.data.put_hub_authority(&authority)?;
         Ok(authority)
     }
 
-    fn ensure_service_authority(&self) -> Result<HubAuthority, PlatformError> {
-        if let Some(authority) = self
-            .hub_data
+    /// The Public Hub store's authority row, created behind the enabled
+    /// service the store belongs to.
+    fn ensure_service_authority(&self, store: &HubStore) -> Result<HubAuthority, PlatformError> {
+        if let Some(authority) = store
+            .data
             .get_hub_authority(HUB_SERVICE_SCOPE_OWNER, HUB_SERVICE_SCOPE_PROJECT)?
         {
             return Ok(authority);
@@ -4921,11 +5204,15 @@ impl HubService {
             created_at: now,
             updated_at: now,
         };
-        self.hub_data.put_hub_authority(&authority)?;
+        store.data.put_hub_authority(&authority)?;
         Ok(authority)
     }
 
-    fn hub_artifact_path(&self, rel_path: &str) -> Result<PathBuf, PlatformError> {
+    fn hub_artifact_path(
+        &self,
+        store: &HubStore,
+        rel_path: &str,
+    ) -> Result<PathBuf, PlatformError> {
         let rel_path = rel_path.trim().replace('\\', "/");
         if rel_path.is_empty() || rel_path.contains('\0') {
             return Err(PlatformError::new(
@@ -4944,17 +5231,14 @@ impl HubService {
                 "artifact path must be a contained relative path",
             ));
         }
-        let service_rel_prefix = format!("services/{DEFAULT_HUB_SERVICE_INSTANCE_ID}/");
+        let service_rel_prefix = format!("services/{}/", store.dir);
         if !rel_path.starts_with(&service_rel_prefix) {
             return Err(PlatformError::new(
                 "HUB_ARTIFACT_PATH_INVALID",
                 "artifact path must live under the hub service root",
             ));
         }
-        let service_root = self
-            .data_root
-            .join("services")
-            .join(DEFAULT_HUB_SERVICE_INSTANCE_ID);
+        let service_root = store.root.clone();
         let abs = self.data_root.join(rel);
         let service_root = fs::canonicalize(&service_root)?;
         let abs = fs::canonicalize(&abs)?;
@@ -4967,7 +5251,11 @@ impl HubService {
         Ok(abs)
     }
 
-    fn hub_artifact_path_for_delete(&self, rel_path: &str) -> Result<PathBuf, PlatformError> {
+    fn hub_artifact_path_for_delete(
+        &self,
+        store: &HubStore,
+        rel_path: &str,
+    ) -> Result<PathBuf, PlatformError> {
         let rel_path = rel_path.trim().replace('\\', "/");
         if rel_path.is_empty() || rel_path.contains('\0') {
             return Err(PlatformError::new(
@@ -4986,7 +5274,7 @@ impl HubService {
                 "artifact path must be a contained relative path",
             ));
         }
-        let service_rel_prefix = format!("services/{DEFAULT_HUB_SERVICE_INSTANCE_ID}/");
+        let service_rel_prefix = format!("services/{}/", store.dir);
         if !rel_path.starts_with(&service_rel_prefix) {
             return Err(PlatformError::new(
                 "HUB_ARTIFACT_PATH_INVALID",
@@ -5009,10 +5297,11 @@ impl HubService {
     /// exactly as the first publish left them.
     fn enforce_release_immutability(
         &self,
+        store: &HubStore,
         package_id: &str,
         version: &str,
     ) -> Result<(), PlatformError> {
-        let Some(existing) = self.hub_data.get_hub_asset_version(package_id, version)? else {
+        let Some(existing) = store.data.get_hub_asset_version(package_id, version)? else {
             return Ok(());
         };
         // A retracted release keeps its row precisely so this branch is
@@ -5035,6 +5324,7 @@ impl HubService {
 
     fn enforce_publisher_package_quota(
         &self,
+        store: &HubStore,
         publisher: &HubPublisher,
         package_id: &str,
         existing_package: Option<&HubAssetPackage>,
@@ -5062,8 +5352,8 @@ impl HubService {
             }
             return Ok(());
         }
-        let package_count = self
-            .hub_data
+        let package_count = store
+            .data
             .list_hub_asset_packages()?
             .into_iter()
             .filter(|item| {
@@ -6101,19 +6391,13 @@ fn default_install_target_folder(
     if asset_kind == HUB_ASSET_KIND_NODE_BUNDLE {
         format!("nodes/{package_id}")
     } else if asset_kind == HUB_ASSET_KIND_RWE_LIBRARY {
-        format!("rwe-libraries/{}", hub_package_asset_slug(package_id))
+        // The full package coordinate is the directory: installed copies live
+        // at `data/hub/rwe-libraries/{package_id}/…` and `zeb.lock` entries
+        // are `rwe-libraries/{package_id}/…` (`kinds/dependency-lock/README.md`).
+        format!("rwe-libraries/{package_id}")
     } else {
         layout.source_rel(&format!("hub/{package_id}"))
     }
-}
-
-/// The package's own slug, without its publisher prefix: `zebflow.deckgl`
-/// installs under `rwe-libraries/deckgl`.
-fn hub_package_asset_slug(package_id: &str) -> &str {
-    package_id
-        .split_once('.')
-        .map(|(_, rest)| rest)
-        .unwrap_or(package_id)
 }
 
 /// Where a package's entries are written: bundles and libraries are
@@ -7997,7 +8281,11 @@ mod tests {
                 "storepkg",
                 "1.0.0",
                 "",
-                "local/storepkg",
+                HubInstallProvenance::new(
+                    crate::contracts::kinds::DependencyLockSource::DirectFile,
+                    "storepkg",
+                    "1.0.0",
+                ),
                 spec_of(&document),
                 &platform.hub.artifact_store(),
             )
@@ -8120,7 +8408,11 @@ mod tests {
                 "bothpkg",
                 "1.0.0",
                 "",
-                "local/bothpkg",
+                HubInstallProvenance::new(
+                    crate::contracts::kinds::DependencyLockSource::DirectFile,
+                    "bothpkg",
+                    "1.0.0",
+                ),
                 spec_of(&referenced_document),
                 &referenced.hub.artifact_store(),
             )
@@ -8902,7 +9194,11 @@ mod tests {
                 "wasmtrig",
                 "1.0.0",
                 "",
-                "test/wasmtrig",
+                HubInstallProvenance::new(
+                    crate::contracts::kinds::DependencyLockSource::DirectFile,
+                    "wasmtrig",
+                    "1.0.0",
+                ),
                 payload,
                 &no_channel(),
             )
@@ -9028,7 +9324,11 @@ mod tests {
                 "e2ewasm",
                 "1.0.0",
                 "",
-                "test/e2ewasm",
+                HubInstallProvenance::new(
+                    crate::contracts::kinds::DependencyLockSource::DirectFile,
+                    "e2ewasm",
+                    "1.0.0",
+                ),
                 payload,
                 &no_channel(),
             )
@@ -9126,7 +9426,11 @@ mod tests {
                 "broken-bundle",
                 "1.0.0",
                 "",
-                "test/broken-bundle",
+                HubInstallProvenance::new(
+                    crate::contracts::kinds::DependencyLockSource::DirectFile,
+                    "broken-bundle",
+                    "1.0.0",
+                ),
                 payload,
                 &no_channel(),
             )
@@ -9214,7 +9518,11 @@ mod tests {
                 "openai-embedding-test",
                 "1.0.0",
                 "",
-                "test/openai-embedding-test",
+                HubInstallProvenance::new(
+                    crate::contracts::kinds::DependencyLockSource::DirectFile,
+                    "openai-embedding-test",
+                    "1.0.0",
+                ),
                 payload,
                 &no_channel(),
             )
@@ -9236,9 +9544,9 @@ mod tests {
             .unwrap();
         assert_eq!(
             bundle.source,
-            crate::contracts::kinds::DependencyLockSource::Hub
+            crate::contracts::kinds::DependencyLockSource::DirectFile
         );
-        assert_eq!(bundle.source_id, "test/openai-embedding-test");
+        assert_eq!(bundle.source_id, "openai-embedding-test@1.0.0");
         assert_eq!(bundle.entry, "nodes/openai-embedding-test/definition.json");
     }
 
@@ -9355,11 +9663,12 @@ mod tests {
     /// seeded with the blessed catalog on boot, so tests assert what one
     /// publish changed against this baseline rather than expecting an empty
     /// store.
+    /// Artifact files in the Public Hub store — where every publish lands.
     fn artifact_store_entries(root: &tempfile::TempDir) -> std::collections::BTreeSet<String> {
         let dir = root
             .path()
             .join("services")
-            .join(DEFAULT_HUB_SERVICE_INSTANCE_ID)
+            .join(PUBLIC_HUB_STORE_DIR)
             .join("artifacts");
         match std::fs::read_dir(&dir) {
             Ok(entries) => entries
@@ -9576,11 +9885,12 @@ mod tests {
             Some("cover.webp")
         );
 
-        // Those bytes are in the shared artifact store, under their digest.
+        // Those bytes are in the public store's artifact store, under their
+        // digest — publishes never touch the blessed shelf.
         let stored = root
             .path()
             .join("services")
-            .join(DEFAULT_HUB_SERVICE_INSTANCE_ID)
+            .join(PUBLIC_HUB_STORE_DIR)
             .join("artifacts")
             .join(&cover.artifact_sha256);
         assert!(stored.is_file(), "the cover is stored content-addressed");
@@ -9657,7 +9967,9 @@ mod tests {
         assert_eq!(version.version, "1.0.0");
         let stored = platform
             .hub
-            .hub_data
+            .require_public_store()
+            .expect("public store")
+            .data
             .get_hub_asset_version("calc-studio.calc-tools", "1.0.0")
             .expect("version lookup")
             .expect("version row is stored");
@@ -9701,7 +10013,9 @@ mod tests {
 
         let stored = platform
             .hub
-            .hub_data
+            .require_public_store()
+            .expect("public store")
+            .data
             .get_hub_asset_version("calc-studio.calc-tools", "1.0.0")
             .expect("version lookup")
             .expect("the original row survives");
@@ -9720,7 +10034,7 @@ mod tests {
         assert_eq!(
             platform
                 .hub
-                .list_asset_versions("calc-studio.calc-tools")
+                .list_public_asset_versions("calc-studio.calc-tools")
                 .expect("versions")
                 .len(),
             1,
@@ -9809,7 +10123,9 @@ mod tests {
         assert!(
             platform
                 .hub
-                .hub_data
+                .require_public_store()
+                .expect("public store")
+                .data
                 .get_hub_asset_version("calc-studio.folder-pack", "1.0.0")
                 .expect("version lookup")
                 .is_none(),
@@ -9818,7 +10134,9 @@ mod tests {
         assert!(
             platform
                 .hub
-                .hub_data
+                .require_public_store()
+                .expect("public store")
+                .data
                 .get_hub_asset_package("calc-studio.folder-pack")
                 .expect("package lookup")
                 .is_none(),
@@ -9827,9 +10145,13 @@ mod tests {
         assert!(
             !root
                 .path()
-                .join("services/hub-default/packages/calc-studio.folder-pack")
-                .exists(),
-            "a refused publish creates no release directory"
+                .join("services/hub-public/packages/calc-studio.folder-pack")
+                .exists()
+                && !root
+                    .path()
+                    .join("services/hub-local/packages/calc-studio.folder-pack")
+                    .exists(),
+            "a refused publish creates no release directory in either store"
         );
         assert_eq!(
             artifact_store_entries(&root),
@@ -9939,7 +10261,9 @@ mod tests {
         assert!(
             platform
                 .hub
-                .hub_data
+                .require_public_store()
+                .expect("public store")
+                .data
                 .get_hub_asset_version("calc-studio.remote-pack", "1.0.0")
                 .expect("version lookup")
                 .is_none(),
@@ -9948,9 +10272,13 @@ mod tests {
         assert!(
             !root
                 .path()
-                .join("services/hub-default/packages/calc-studio.remote-pack")
-                .exists(),
-            "a refused remote publish creates no release directory"
+                .join("services/hub-public/packages/calc-studio.remote-pack")
+                .exists()
+                && !root
+                    .path()
+                    .join("services/hub-local/packages/calc-studio.remote-pack")
+                    .exists(),
+            "a refused remote publish creates no release directory in either store"
         );
     }
 
@@ -10103,7 +10431,9 @@ mod tests {
         assert_eq!(error.code, "HUB_VERSION_EXISTS");
         let stored = platform
             .hub
-            .hub_data
+            .require_public_store()
+            .expect("public store")
+            .data
             .get_hub_asset_version("calc-studio.calc-tools", "1.0.0")
             .expect("version lookup")
             .expect("the original row survives");
@@ -10127,13 +10457,17 @@ mod tests {
         rewritten.artifact_sha256 = "0".repeat(64);
         platform
             .hub
-            .hub_data
+            .require_public_store()
+            .expect("public store")
+            .data
             .put_hub_asset_version(&rewritten)
             .expect("row rewrite");
 
         let stored = platform
             .hub
-            .hub_data
+            .require_public_store()
+            .expect("public store")
+            .data
             .get_hub_asset_version("calc-studio.calc-tools", "1.0.0")
             .expect("version lookup")
             .expect("version row");
@@ -10296,7 +10630,7 @@ mod tests {
         assert_eq!(
             platform
                 .hub
-                .list_asset_versions("calc-studio.calc-tools")
+                .list_public_asset_versions("calc-studio.calc-tools")
                 .expect("versions")
                 .len(),
             1,
@@ -10333,7 +10667,7 @@ mod tests {
         assert_eq!(row.retracted_reason, "leaked an API key");
         let package = platform
             .hub
-            .list_asset_packages()
+            .list_public_asset_packages()
             .expect("packages")
             .into_iter()
             .find(|item| item.package_id == "calc-studio.calc-tools")
@@ -11162,9 +11496,19 @@ mod tests {
         );
         let target = project_declaring_src(&platform, "atlas");
 
+        // Published releases live in the Public Hub store; installing one over
+        // the remote channel runs the same store-parameterized core.
+        let public = platform.hub.require_public_store().expect("public store");
         let review = platform
             .hub
-            .review_asset_install("superadmin", "atlas", "calc-studio.feed-tools", "1.0.0", "")
+            .review_asset_install_from_store(
+                &public,
+                "superadmin",
+                "atlas",
+                "calc-studio.feed-tools",
+                "1.0.0",
+                "",
+            )
             .expect("review");
         assert_eq!(review.install_root, "src/hub/calc-studio.feed-tools");
         assert_eq!(
@@ -11182,7 +11526,15 @@ mod tests {
 
         let result = platform
             .hub
-            .install_asset("superadmin", "atlas", "calc-studio.feed-tools", "1.0.0", "")
+            .install_asset_from_store(
+                &public,
+                crate::contracts::kinds::DependencyLockSource::HubPublic,
+                "superadmin",
+                "atlas",
+                "calc-studio.feed-tools",
+                "1.0.0",
+                "",
+            )
             .expect("install");
         assert_eq!(result.pipelines_registered, review.pipelines_registered);
         for destination in reviewed_destinations(&review) {
@@ -11266,7 +11618,11 @@ mod tests {
                 "legacy-tools",
                 "1.0.0",
                 "",
-                "local/legacy-tools",
+                HubInstallProvenance::new(
+                    crate::contracts::kinds::DependencyLockSource::DirectFile,
+                    "legacy-tools",
+                    "1.0.0",
+                ),
                 payload,
                 &no_channel(),
             )
@@ -11290,15 +11646,24 @@ mod tests {
             std::fs::read(target.project_config_file.as_path()).expect("target configuration");
 
         let package = "calc-studio.spatial-blogging";
+        let public = platform.hub.require_public_store().expect("public store");
         let review = platform
             .hub
-            .review_asset_install("superadmin", "atlas", package, "1.0.0", "")
+            .review_asset_install_from_store(&public, "superadmin", "atlas", package, "1.0.0", "")
             .expect("review");
         let destinations = reviewed_destinations(&review);
 
         let result = platform
             .hub
-            .install_asset("superadmin", "atlas", package, "1.0.0", "")
+            .install_asset_from_store(
+                &public,
+                crate::contracts::kinds::DependencyLockSource::HubPublic,
+                "superadmin",
+                "atlas",
+                package,
+                "1.0.0",
+                "",
+            )
             .expect("install");
 
         let folder = format!("hub/{package}");
@@ -11420,7 +11785,8 @@ mod tests {
         let (_root, platform) = hub_publish_fixture("Blessed Seed");
         let deckgl = platform
             .hub
-            .hub_data
+            .local_store
+            .data
             .get_hub_asset_version("zebflow.deckgl", "0.1.1")
             .expect("version lookup")
             .expect("the first boot seeded deckgl");
@@ -11433,7 +11799,8 @@ mod tests {
         assert!(report.skipped.contains(&"zebflow.deckgl@0.1.1".to_string()));
         let unchanged = platform
             .hub
-            .hub_data
+            .local_store
+            .data
             .get_hub_asset_version("zebflow.deckgl", "0.1.1")
             .expect("version lookup")
             .expect("still present");
@@ -11485,11 +11852,11 @@ mod tests {
             .install_asset("superadmin", "default", "zebflow.deckgl", "0.1.1", "")
             .expect("deckgl installs from the seeded local hub");
         assert_eq!(result.asset_kind, HUB_ASSET_KIND_RWE_LIBRARY);
-        assert_eq!(result.install_root, "rwe-libraries/deckgl");
+        assert_eq!(result.install_root, "rwe-libraries/zebflow.deckgl");
 
         let package_dir = root
             .path()
-            .join("users/superadmin/default/data/hub/rwe-libraries/deckgl");
+            .join("users/superadmin/default/data/hub/rwe-libraries/zebflow.deckgl");
         assert!(package_dir.join("manifest.json").is_file());
         let bundle = package_dir.join("0.1/runtime/deckgl.bundle.mjs");
         assert!(bundle.is_file(), "the runtime bundle is copied");
@@ -11505,12 +11872,12 @@ mod tests {
             .expect("the install recorded a lock entry");
         assert_eq!(
             entry.source,
-            crate::contracts::kinds::DependencyLockSource::Hub
+            crate::contracts::kinds::DependencyLockSource::HubLocal
         );
-        assert_eq!(entry.source_id, "local/zebflow.deckgl");
+        assert_eq!(entry.source_id, "zebflow.deckgl@0.1.1");
         assert_eq!(
             entry.entry,
-            "rwe-libraries/deckgl/0.1/runtime/deckgl.bundle.mjs"
+            "rwe-libraries/zebflow.deckgl/0.1/runtime/deckgl.bundle.mjs"
         );
         let bytes = std::fs::read(&bundle).expect("installed bundle bytes");
         assert_eq!(

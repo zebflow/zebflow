@@ -533,22 +533,23 @@ mod tests {
         })
     }
 
-    /// The two official sources, in the order a fresh instance searches them.
+    /// The two official sources, in the order a fresh instance searches them:
+    /// static first, API hub second (`distribution.md` §2, decided 2026-08-27).
     fn official_sources() -> Vec<Value> {
         vec![
-            json!({
-                "repository_id": "zebflow-com",
-                "title": "Zebflow Hub",
-                "kind": "api",
-                "base_url": "https://hub.zebflow.com/api",
-                "priority": 10,
-                "ok": true,
-            }),
             json!({
                 "repository_id": "zebflow-hub",
                 "title": "Zebflow Hub (static)",
                 "kind": "static",
                 "base_url": "https://raw.githubusercontent.com/zebflow/hub/main",
+                "priority": 10,
+                "ok": true,
+            }),
+            json!({
+                "repository_id": "zebflow-com",
+                "title": "Zebflow Hub",
+                "kind": "api",
+                "base_url": "https://hub.zebflow.com/api",
                 "priority": 20,
                 "ok": true,
             }),
@@ -633,10 +634,10 @@ mod tests {
         ];
         let sources = official_sources();
         let found = resolve_asset(&items, &sources, "shared", None, None).expect("resolve");
-        assert_eq!(found.repository_id, "zebflow-com");
+        assert_eq!(found.repository_id, "zebflow-hub");
         let overridden =
-            resolve_asset(&items, &sources, "shared", None, Some("zebflow-hub")).expect("resolve");
-        assert_eq!(overridden.repository_id, "zebflow-hub");
+            resolve_asset(&items, &sources, "shared", None, Some("zebflow-com")).expect("resolve");
+        assert_eq!(overridden.repository_id, "zebflow-com");
     }
 
     #[test]

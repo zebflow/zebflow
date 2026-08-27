@@ -304,9 +304,10 @@ A published `package@version` is fixed. Correcting anything — content, title,
 description — means publishing a new version.
 
 A second publish of a version that already exists is refused with
-`HUB_VERSION_EXISTS` (HTTP 409) on both the project publish route and
-`/api/hub/remote/assets`. The refusal happens before anything is written, so
-the stored artifact, its digest, and its creation time are left untouched.
+`HUB_VERSION_EXISTS` (HTTP 409) on both forms of the publish route —
+`.../hub/remote/assets/publish` and `/api/hub/remote/assets`. The refusal
+happens before anything is written, so the stored artifact, its digest, and
+its creation time are left untouched.
 
 This is what makes `zeb.lock` meaningful: a lock entry pins a version to a
 digest, and a digest only means something when the bytes it names cannot change
@@ -375,7 +376,7 @@ A reference carries a digest and never a URL, so the location comes from the
 channel the package is installed through:
 
 ```text
-Hub asset      <data root>/services/hub-default/artifacts/{sha256}
+Blessed shelf  <data root>/services/hub-local/artifacts/{sha256}
 Remote hub     GET /api/hub/remote/assets/{package_id}/{version}/artifacts/{sha256}
 Local file     ./artifacts/{sha256} beside the document
 ```
@@ -400,22 +401,43 @@ with the project untouched:
 | `HUB_ARTIFACT_SIZE_MISMATCH` | the bytes are not the size the release declares |
 | `HUB_ARTIFACT_DIGEST_MISMATCH` | the bytes are not the bytes the release names |
 
-Verified bytes are kept in this instance's artifact store, so reviewing a
-package and then installing it fetches once.
+Verified bytes are kept in this instance's content-addressed fetch cache
+(`platform/cache/hub-artifacts/`), so reviewing a package and then installing
+it fetches once. Neither hub store is written by a fetch: the blessed shelf is
+seed-only and the Public Hub store is publish-only.
 
 The safety review reads referenced bytes the same way the install does. A
 referenced pipeline is scanned from its real content, not from an empty file.
 
 ## Storage
 
-Hub operational state lives under the platform data root:
+There are two hub stores under the platform data root, one format, one
+machinery, two roots:
 
 ```text
-services/hub-default/hub.db
-services/hub-default/packages/{package_id}/versions/{version}/artifact.json
-services/hub-default/artifacts/{sha256}
+services/hub-local/    the blessed shelf: seeded from the release at every
+                       boot (check-first), written by nothing else, read
+                       in-process by blessed installs
+services/hub-public/   the Public Hub service's own store: the ONE publish
+                       target (publisher/token/grant ACL), served over
+                       /api/hub/remote/*; exists only where the hub service
+                       is placed and enabled
+```
+
+Each store keeps the same internal layout:
+
+```text
+services/{store}/hub.db
+services/{store}/packages/{package_id}/versions/{version}/artifact.json
+services/{store}/artifacts/{sha256}
 ```
 
 The package metadata is in `hub.db`; the installable package payload is in
 `artifact.json`. Referenced file bytes and cover images share
 `artifacts/{sha256}`, named by their own digest.
+
+Publishing goes only to `services/hub-public/` — the retired local-write
+publish endpoint (`POST .../hub/assets/publish`) is gone, and no publisher
+token can write the blessed shelf. Publishing from a project uses
+`POST .../hub/remote/assets/publish` with a publisher token (project-source
+body), or `POST /api/hub/remote/assets` with a prebuilt release document.

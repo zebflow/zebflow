@@ -7,13 +7,11 @@
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 
 use crate::contracts::decode_contract;
 use crate::contracts::kinds::RweLibraryManifestContract;
-use crate::contracts::kinds::{DependencyLockArtifactSpec, DependencyLockSource};
 use crate::platform::error::PlatformError;
-use crate::platform::web::embedded::{PLATFORM_LIBRARY_ASSETS, platform_library_asset};
+use crate::platform::web::embedded::PLATFORM_LIBRARY_ASSETS;
 
 /// Strict source form stored in each library `manifest.json` contract.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -159,83 +157,14 @@ impl LibraryService {
             .iter()
             .find(|m| m.exports.iter().any(|e| e == symbol))
     }
-
-    /// Resolves one exact library release into a verified dependency-lock entry.
-    ///
-    /// Offline releases are hashed from the bytes embedded in this binary, and
-    /// the manifest's required digest must match those bytes.
-    pub fn resolve_lock_entry(
-        &self,
-        name: &str,
-        version: &str,
-        requested_source: &str,
-    ) -> Result<DependencyLockArtifactSpec, PlatformError> {
-        let manifest = self.get(name).ok_or_else(|| {
-            PlatformError::new(
-                "PLATFORM_LIBRARY_NOT_FOUND",
-                format!("library '{name}' is not registered"),
-            )
-        })?;
-        let resolved = manifest.version(version).ok_or_else(|| {
-            PlatformError::new(
-                "PLATFORM_LIBRARY_VERSION_NOT_FOUND",
-                format!("library '{name}' has no version '{version}'"),
-            )
-        })?;
-        if requested_source != resolved.source {
-            return Err(PlatformError::new(
-                "PLATFORM_LIBRARY_SOURCE_MISMATCH",
-                format!(
-                    "library '{name}' version '{version}' uses source '{}', not '{requested_source}'",
-                    resolved.source
-                ),
-            ));
-        }
-
-        // This resolver answers for the embedded registry only. A `hub`
-        // release resolves against its installed copy in `data/hub/`, which
-        // the dependency service handles before it reaches here.
-        if resolved.source != "offline" {
-            return Err(PlatformError::new(
-                "PLATFORM_LIBRARY_SOURCE_UNSUPPORTED",
-                format!(
-                    "library '{name}' version '{version}' uses unsupported durable source '{}'",
-                    resolved.source
-                ),
-            ));
-        }
-        let asset_path = format!("{name}/{}", resolved.entry);
-        let bytes = platform_library_asset(&asset_path).ok_or_else(|| {
-            PlatformError::new(
-                "PLATFORM_LIBRARY_ASSET_MISSING",
-                format!("embedded library asset '{asset_path}' is missing"),
-            )
-        })?;
-        let integrity = format!("sha256:{:x}", Sha256::digest(bytes));
-        // The contract requires integrity, so the manifest always declares
-        // one and it must be the digest of the bytes this binary embeds.
-        if resolved.integrity != integrity {
-            return Err(PlatformError::new(
-                "PLATFORM_LIBRARY_INTEGRITY",
-                format!(
-                    "library '{name}' version '{version}' manifest digest does not match its embedded bytes"
-                ),
-            ));
-        }
-
-        Ok(DependencyLockArtifactSpec {
-            version: resolved.key.clone(),
-            source: DependencyLockSource::Embedded,
-            source_id: format!("zebflow/{name}"),
-            entry: resolved.entry.clone(),
-            integrity,
-        })
-    }
 }
 
 #[cfg(test)]
 mod tests {
+    use sha2::{Digest, Sha256};
+
     use super::*;
+    use crate::platform::web::embedded::platform_library_asset;
 
     #[test]
     fn every_embedded_library_uses_the_canonical_contract() {
@@ -304,28 +233,5 @@ mod tests {
                 asset.path
             );
         }
-    }
-
-    #[test]
-    fn offline_lock_entries_use_the_digest_of_embedded_bytes() {
-        let service = LibraryService::from_embedded().expect("embedded library contracts");
-        let entry = service
-            .resolve_lock_entry("zeb/deckgl", "full-9.x", "offline")
-            .expect("resolved offline release");
-        let bytes = platform_library_asset("zeb/deckgl/0.1/runtime/deckgl.bundle.mjs")
-            .expect("embedded deckgl bundle");
-        assert_eq!(
-            entry.integrity,
-            format!("sha256:{:x}", Sha256::digest(bytes))
-        );
-    }
-
-    #[test]
-    fn lock_resolution_rejects_source_substitution() {
-        let service = LibraryService::from_embedded().expect("embedded library contracts");
-        let error = service
-            .resolve_lock_entry("zeb/deckgl", "full-9.x", "hub")
-            .unwrap_err();
-        assert_eq!(error.code, "PLATFORM_LIBRARY_SOURCE_MISMATCH");
     }
 }

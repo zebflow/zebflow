@@ -566,11 +566,23 @@ than issued.
 
 ## Still to review
 
-- code catch-up owed (decided 2026-08-27, `distribution.md` §1b): rename
-  `services/hub-default/` → `services/hub-local/`; create the
-  `services/hub-public/` store for the placed Public Hub service; fence
-  publisher writes to `hub-public` only — today publisher tokens still write
-  the release-seeded immutable local shelf
+- code catch-up (decided 2026-08-27, `distribution.md` §1b): **done
+  2026-08-28** — the store split shipped as one machinery at two roots.
+  `services/hub-local/` is the blessed shelf (seed-only, every boot,
+  check-first; no publish surface or token can reach it — the fence is
+  structural, publish paths hold only the `hub-public` store handle) and
+  `services/hub-public/` is the Public Hub service's own store, holding the
+  publisher/token/grant rows and every published release; it is created on
+  service enablement or first publish and opened lazily when it already
+  exists. The retired local-write publish endpoint
+  (`POST .../hub/assets/publish`) is removed; both forms of publish
+  (`.../hub/remote/assets/publish`, `/api/hub/remote/assets`) land in
+  `hub-public`. Remaining: the hub service placement row is still the single
+  seeded `PlatformServiceInstance` (`hub-default`) rather than a
+  fully-general OfficeTopology placement — multi-office placement wiring for
+  `hub-public` on a *different* state-owning office is not built; on such a
+  topology the store exists only where the placed service runs, but nothing
+  provisions it remotely yet
 - `HUB_INSTALL_REFUSED` and `HUB_REMOTE_INSTALL_REFUSED` are unmapped in
   `hub_api_error` and answer 500. The publish refusals were mapped to 400 when
   they were added; the install pair still reads as a server fault

@@ -399,7 +399,10 @@ served over HTTP. The service is placed: an OfficeTopology
 ([`kinds/office-topology/README.md`](./kinds/office-topology/README.md)) — and
 `services/hub-public/` exists only in the state-owning office's data root.
 Every consumer, other offices and the host's own projects alike, reaches it by
-its base URL and locks `hub.public`. The ONE publish target and the ONLY
+its base URL and locks `hub.public`; the state-owning office may read its own
+store in-process instead of looping back over HTTP — provenance is the store,
+transport is implementation, the lock says `hub.public` either way. The ONE
+publish target and the ONLY
 sharing mechanism, with the one ACL model: publisher / token / grant. Exposed
 by k8s/nginx → an internet hub like npm. Not exposed → reached by internal URL
 (localhost included), and privacy is network topology, not a second permission

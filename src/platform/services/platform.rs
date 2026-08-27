@@ -132,11 +132,8 @@ impl PlatformService {
 
         let library = Arc::new(LibraryService::from_embedded()?);
         let dependency_lock = Arc::new(
-            DependencyLockService::with_library_service(
-                config.data_root.join("users"),
-                library.clone(),
-            )
-            .with_project_configs(zebflow_cfg.clone()),
+            DependencyLockService::new(config.data_root.join("users"))
+                .with_project_configs(zebflow_cfg.clone()),
         );
         let users = Arc::new(UserService::new(data.clone()));
         let projects = Arc::new(ProjectService::new(
@@ -167,7 +164,7 @@ impl PlatformService {
             &config
                 .data_root
                 .join("services")
-                .join(crate::platform::services::hub::DEFAULT_HUB_SERVICE_INSTANCE_ID)
+                .join(crate::platform::services::hub::LOCAL_HUB_STORE_DIR)
                 .join("hub.db"),
         )?;
         let node_registry = Arc::new(NodeRegistryService::new(
@@ -177,6 +174,7 @@ impl PlatformService {
         let hub = Arc::new(HubService::new(
             data.clone(),
             hub_data,
+            config.data_adapter,
             projects.clone(),
             node_registry.clone(),
             dependency_lock.clone(),
@@ -253,12 +251,13 @@ impl PlatformService {
         if !svc.cluster_bootstrap.is_worker() {
             svc.bootstrap_defaults()?;
             // Seed the local hub with the blessed content this binary carries
-            // (`distribution.md` §1b: seeded on first boot, reserved `zebflow`
-            // publisher). The seed touches the store only — the outward hub
-            // service stays exactly as the operator left it. Idempotent —
-            // already-published coordinates are skipped — and never fatal: a
-            // refused package is reported and retried next boot rather than
-            // keeping the instance down.
+            // (`distribution.md` §1b: runs at every boot, check-first, as the
+            // reserved `zebflow` publisher — the seed is the shelf's only
+            // writer). The seed touches `services/hub-local/` only — the
+            // Public Hub service and its store stay exactly as the operator
+            // left them. Idempotent — already-published coordinates are
+            // skipped — and never fatal: a refused package is reported and
+            // retried next boot rather than keeping the instance down.
             match svc.hub.seed_blessed_catalog() {
                 Ok(report) => {
                     if !report.published.is_empty() {

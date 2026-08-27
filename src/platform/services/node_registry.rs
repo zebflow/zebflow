@@ -775,7 +775,10 @@ fn project_bundle_lock_from_multi_node(
     definitions.sort();
     definitions.dedup();
     let package_name = document.spec.package.clone();
-    let key = format!("project/{package_name}");
+    // The lock key is the canonical bundle identity. A project-source bundle
+    // has no publisher, so its declared package slug is the identity
+    // (`kinds/dependency-lock/README.md`).
+    let key = package_name.clone();
     Ok((
         key,
         DependencyLockNodeBundleSpec {

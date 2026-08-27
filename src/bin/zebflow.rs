@@ -35,7 +35,7 @@ use zebflow::platform::cli;
 use zebflow::platform::services::PlatformService;
 use zebflow::platform::services::project::webhook_triggers_from_source;
 use zebflow::platform::services::{
-    DependencyLockService, LibraryService, ProjectConfigurationService, ProjectService,
+    DependencyLockService, ProjectConfigurationService, ProjectService,
 };
 use zebflow::platform::web;
 use zebflow::platform::{FileAdapterKind, PlatformConfig, build_router};
@@ -303,9 +303,7 @@ fn project_maintenance(args: &[String]) -> Result<(), Box<dyn std::error::Error>
             Ok(())
         }
         "lock" => {
-            let library = Arc::new(LibraryService::from_embedded()?);
-            let service =
-                DependencyLockService::with_library_service(data_root.join("users"), library);
+            let service = DependencyLockService::new(data_root.join("users"));
             let result = service.migrate_legacy(&args[2], &args[3])?;
             println!("Dependency lock migrated ({})", result.source_format);
             println!("Canonical: {}", result.canonical_path.display());

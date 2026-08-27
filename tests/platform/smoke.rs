@@ -469,7 +469,7 @@ async fn public_hub_requires_service_and_hides_project_internals() {
         .clone()
         .oneshot(
             Request::builder()
-                .uri("/api/projects/superadmin/default/hub/assets/publish")
+                .uri("/api/projects/superadmin/default/hub/remote/assets/publish")
                 .method("POST")
                 .header(header::COOKIE, &cookie)
                 .header(header::CONTENT_TYPE, "application/json")
@@ -540,7 +540,7 @@ async fn public_hub_requires_service_and_hides_project_internals() {
         .clone()
         .oneshot(
             Request::builder()
-                .uri("/api/projects/superadmin/default/hub/assets/publish")
+                .uri("/api/projects/superadmin/default/hub/remote/assets/publish")
                 .method("POST")
                 .header(header::COOKIE, &cookie)
                 .header(header::CONTENT_TYPE, "application/json")
@@ -996,23 +996,41 @@ async fn public_hub_requires_service_and_hides_project_internals() {
     assert!(artifact_body.contains("\"artifact_size_bytes\""));
     assert!(artifact_body.contains("\"files\""));
     assert!(artifact_body.contains("pipelines/internal-calc.zf.json"));
+    // Token publishes land in the Public Hub store; the blessed shelf keeps
+    // its own catalog beside it and is never written by a publish.
     assert!(
         data_root
             .join("services")
-            .join("hub-default")
+            .join("hub-public")
             .join("hub.db")
             .is_file()
     );
     assert!(
         data_root
             .join("services")
-            .join("hub-default")
+            .join("hub-local")
+            .join("hub.db")
+            .is_file()
+    );
+    assert!(
+        data_root
+            .join("services")
+            .join("hub-public")
             .join("packages")
             .join("calc-studio.calc-tools")
             .join("versions")
             .join("1.0.0")
             .join("artifact.json")
             .is_file()
+    );
+    assert!(
+        !data_root
+            .join("services")
+            .join("hub-local")
+            .join("packages")
+            .join("calc-studio.calc-tools")
+            .exists(),
+        "a publisher token cannot land a release in the blessed shelf"
     );
     let delete_remote = app
         .clone()
@@ -1055,7 +1073,7 @@ async fn public_hub_requires_service_and_hides_project_internals() {
     assert!(
         !data_root
             .join("services")
-            .join("hub-default")
+            .join("hub-public")
             .join("packages")
             .join("calc-studio.calc-tools-remote")
             .join("versions")
@@ -1187,7 +1205,7 @@ async fn hub_scoped_tokens_split_prosumer_and_consumer_projects() {
         .clone()
         .oneshot(
             Request::builder()
-                .uri("/api/projects/superadmin/prosumer-app/hub/assets/publish")
+                .uri("/api/projects/superadmin/prosumer-app/hub/remote/assets/publish")
                 .method("POST")
                 .header(header::COOKIE, &cookie)
                 .header(header::CONTENT_TYPE, "application/json")
@@ -1218,7 +1236,7 @@ async fn hub_scoped_tokens_split_prosumer_and_consumer_projects() {
         .clone()
         .oneshot(
             Request::builder()
-                .uri("/api/projects/superadmin/consumer-app/hub/assets/publish")
+                .uri("/api/projects/superadmin/consumer-app/hub/remote/assets/publish")
                 .method("POST")
                 .header(header::COOKIE, &cookie)
                 .header(header::CONTENT_TYPE, "application/json")
@@ -3611,23 +3629,24 @@ async fn a_static_repository_installs_through_the_same_review_and_pins_its_relea
         .expect("listing response");
     let listing = response_json(listing).await;
     let sources = listing["sources"].as_array().expect("sources array");
-    // Priority ascending, then repository id: the two official sources at 10
-    // and 20, and this test's at 20 beside the second.
+    // Priority ascending, then repository id: the official static source at
+    // 10 first, then this test's static source and the official API hub at
+    // 20, id-ordered (`distribution.md` §2, decided 2026-08-27).
     assert_eq!(
         sources
             .iter()
             .map(|item| item["repository_id"].as_str().unwrap_or_default())
             .collect::<Vec<_>>(),
-        vec!["zebflow-com", "test-static", "zebflow-hub"],
+        vec!["zebflow-hub", "test-static", "zebflow-com"],
         "sources are returned in resolution order: {listing}"
     );
     assert_eq!(sources[1]["kind"], json!("static"), "{listing}");
     assert_eq!(sources[1]["ok"], json!(true), "{listing}");
     // A source that did not answer is named as such rather than dropped, which
     // is what lets one "not found" error tell the two cases apart.
-    assert_eq!(sources[0]["ok"], json!(false), "{listing}");
+    assert_eq!(sources[2]["ok"], json!(false), "{listing}");
     assert!(
-        !sources[0]["error"].as_str().unwrap_or_default().is_empty(),
+        !sources[2]["error"].as_str().unwrap_or_default().is_empty(),
         "an unreachable source says why: {listing}"
     );
     assert_eq!(

@@ -952,10 +952,6 @@ pub async fn router(platform: Arc<PlatformService>) -> Router {
             get(api_preview_hub_publish_source),
         )
         .route(
-            "/api/projects/{owner}/{project}/hub/assets/publish",
-            post(api_publish_hub_asset),
-        )
-        .route(
             "/api/projects/{owner}/{project}/hub/assets/publish-review",
             post(api_review_hub_publish_asset),
         )
@@ -1613,23 +1609,19 @@ fn externalize_rwe_scripts(
         None => None,
     };
 
-    // A project whose lock pins hub-installed RWE libraries must load them
-    // from its own installed copies at `data/hub/rwe-libraries/`, and only the
-    // project-scoped asset route can serve those. When a deployment asset base
-    // is set the existing `{base}/libraries/` rewrite already lands on that
-    // route, so this only applies without one.
+    // A project whose lock pins installed RWE libraries must load them from
+    // its own installed copies at `data/hub/rwe-libraries/` — every accepted
+    // lock source resolves there — and only the project-scoped asset route
+    // can serve those. When a deployment asset base is set the existing
+    // `{base}/libraries/` rewrite already lands on that route, so this only
+    // applies without one.
     let hub_library_base = match (project_scope, &deployment_asset_base) {
         (Some((owner, project)), None) => state
             .platform
             .dependency_lock
             .read(owner, project)
             .ok()
-            .filter(|lock| {
-                lock.rwe
-                    .libraries
-                    .values()
-                    .any(|entry| entry.source == crate::contracts::kinds::DependencyLockSource::Hub)
-            })
+            .filter(|lock| !lock.rwe.libraries.is_empty())
             .map(|_| format!("/assets/{owner}/{project}/libraries/")),
         _ => None,
     };
@@ -2051,29 +2043,51 @@ async fn project_scoped_library_asset(
     Path((owner, project, path)): Path<(String, String, String)>,
 ) -> Response {
     let normalized = path.trim_start_matches('/').replace('\\', "/");
-    // A library the project installed from the hub is served from its
-    // installed copy: `zeb/{name}/{rest}` maps onto
-    // `data/hub/rwe-libraries/{name}/{rest}`. Anything not installed falls
-    // back to the embedded bytes, so pre-existing embedded-locked projects
+    // A library the project installed is served from its installed copy: the
+    // request names the library (`zeb/{name}/{rest}`), the lock entry names
+    // where its package landed (`rwe-libraries/{package_id}/…`), and the rest
+    // of the path resolves inside that package directory. Anything not
+    // locked falls back to the embedded bytes, so the platform's own pages
     // keep working unchanged.
     if !normalized.split('/').any(|segment| segment == "..")
         && let Some(rest) = normalized.strip_prefix("zeb/")
+        && let Some((lib_slug, lib_rest)) = rest.split_once('/')
     {
-        let installed = state
+        let library_name = format!("zeb/{lib_slug}");
+        let install_root = state
             .platform
-            .config
-            .data_root
-            .join("users")
-            .join(crate::platform::model::slug_segment(&owner))
-            .join(crate::platform::model::slug_segment(&project))
-            .join("data")
-            .join("hub")
-            .join("rwe-libraries")
-            .join(rest);
-        if installed.is_file()
-            && let Ok(bytes) = fs::read(&installed)
-        {
-            return asset_response(content_type_for_path(FsPath::new(&normalized)), &bytes);
+            .dependency_lock
+            .read(&owner, &project)
+            .ok()
+            .and_then(|lock| lock.rwe.libraries.get(&library_name).cloned())
+            .and_then(|entry| {
+                // `rwe-libraries/{package_id}` — the first two segments of
+                // the locked entry path are the package's install root.
+                let mut segments = entry.entry.split('/');
+                match (segments.next(), segments.next()) {
+                    (Some(base @ "rwe-libraries"), Some(package_id)) => {
+                        Some(format!("{base}/{package_id}"))
+                    }
+                    _ => None,
+                }
+            });
+        if let Some(install_root) = install_root {
+            let installed = state
+                .platform
+                .config
+                .data_root
+                .join("users")
+                .join(crate::platform::model::slug_segment(&owner))
+                .join(crate::platform::model::slug_segment(&project))
+                .join("data")
+                .join("hub")
+                .join(&install_root)
+                .join(lib_rest);
+            if installed.is_file()
+                && let Ok(bytes) = fs::read(&installed)
+            {
+                return asset_response(content_type_for_path(FsPath::new(&normalized)), &bytes);
+            }
         }
     }
     match platform_library_asset(&normalized) {
@@ -6259,7 +6273,7 @@ async fn project_hub_tab_page(
                     "my_assets": format!("/api/projects/{owner}/{project}/hub/assets/mine"),
                     "publish_sources": format!("/api/projects/{owner}/{project}/hub/publish-sources"),
                     "publish_preview": format!("/api/projects/{owner}/{project}/hub/publish-preview"),
-                    "publish_asset": format!("/api/projects/{owner}/{project}/hub/assets/publish"),
+                    "publish_asset": format!("/api/projects/{owner}/{project}/hub/remote/assets/publish"),
                     "publish_review": format!("/api/projects/{owner}/{project}/hub/assets/publish-review"),
                     "upload": format!("/api/projects/{owner}/{project}/files/upload"),
                     "access": format!("/api/projects/{owner}/{project}/hub/access"),
@@ -7594,6 +7608,8 @@ fn hub_asset_rows(
     _project: &str,
     only_mine: bool,
 ) -> Result<Vec<Value>, PlatformError> {
+    // "Mine" is what this owner published, which lives in the Public Hub
+    // store; the plain listing is the blessed shelf a project installs from.
     let packages = match if only_mine {
         state.platform.hub.list_asset_packages_by_owner(owner)
     } else {
@@ -7608,12 +7624,17 @@ fn hub_asset_rows(
         if !only_mine && package.visibility == "private" && package.publisher_owner != owner {
             continue;
         }
-        let latest_version = latest_installable_hub_version(
+        let latest_version = latest_installable_hub_version(if only_mine {
             state
                 .platform
                 .hub
-                .list_asset_versions(&package.package_id)?,
-        );
+                .list_public_asset_versions(&package.package_id)?
+        } else {
+            state
+                .platform
+                .hub
+                .list_asset_versions(&package.package_id)?
+        });
         let (summary, gallery) = hub_package_gallery_projection(&package);
         rows.push(json!({
             "package_id": package.package_id,
@@ -7649,7 +7670,7 @@ fn public_hub_asset_item_json(
         state
             .platform
             .hub
-            .list_asset_versions(&package.package_id)
+            .list_public_asset_versions(&package.package_id)
             .unwrap_or_default(),
     );
     let (summary, gallery) = hub_package_gallery_projection(&package);
@@ -15811,6 +15832,53 @@ async fn api_repair_project_dependencies(
         Ok(value) => value,
         Err(err) => return internal_error(err),
     };
+    // A lock the canonical reader refuses — a dead source word included — is
+    // regenerated here from requested state: the invalid bytes move to
+    // `data/recovery/`, an empty lock takes their place, and each requested
+    // library reinstalls from the blessed shelf, which rewrites its entry
+    // with full provenance (`kinds/dependency-lock/README.md`).
+    let mut regenerated: Vec<String> = Vec::new();
+    if state
+        .platform
+        .dependency_lock
+        .read(&owner, &project)
+        .is_err()
+    {
+        match state
+            .platform
+            .dependency_lock
+            .quarantine_invalid(&owner, &project)
+        {
+            Ok(Some(recovery)) => {
+                regenerated.push(format!("invalid lock moved to {}", recovery.display()));
+                for name in requested.keys() {
+                    let Some(slug) = name.strip_prefix("zeb/").filter(|slug| !slug.is_empty())
+                    else {
+                        continue;
+                    };
+                    let package_id = format!("zebflow.{slug}");
+                    let version = match state.platform.hub.latest_live_asset_version(&package_id) {
+                        Ok(Some(version)) => version,
+                        _ => continue,
+                    };
+                    match state.platform.hub.install_asset(
+                        &owner,
+                        &project,
+                        &package_id,
+                        &version,
+                        "",
+                    ) {
+                        Ok(_) => regenerated.push(format!("reinstalled {package_id}@{version}")),
+                        Err(err) => {
+                            regenerated.push(format!("{package_id}: {}", err.message));
+                        }
+                    }
+                }
+            }
+            Ok(None) => {}
+            Err(err) => return internal_error(err),
+        }
+    }
     if let Err(err) = state
         .platform
         .dependency_lock
@@ -15830,7 +15898,9 @@ async fn api_repair_project_dependencies(
         .dependency_lock
         .status(&owner, &project, &requested)
     {
-        Ok(report) => Json(json!({"ok": true, "report": report})).into_response(),
+        Ok(report) => {
+            Json(json!({"ok": true, "report": report, "regenerated": regenerated})).into_response()
+        }
         Err(err) => internal_error(err),
     }
 }
@@ -15939,87 +16009,63 @@ async fn api_enable_rwe_library(
         )
             .into_response();
     }
-    // Enabling from the hub IS the local-hub install path: the package's
-    // bytes are copied to `data/hub/rwe-libraries/` and the lock records
-    // `source: hub` with the installed digest. The embedded path below stays
-    // for pre-existing projects and for the offline source.
-    if req.source.trim() == "hub" {
-        let name = req.name.trim();
-        let slug = name.strip_prefix("zeb/").unwrap_or(name);
-        let package_id = format!("zebflow.{slug}");
-        let version = match req.version.trim() {
-            "" => match state.platform.hub.latest_live_asset_version(&package_id) {
-                Ok(Some(version)) => version,
-                Ok(None) => {
-                    return (
-                        StatusCode::NOT_FOUND,
-                        Json(json!({
-                            "ok": false,
-                            "error": format!("the local hub has no live release of '{package_id}'")
-                        })),
-                    )
-                        .into_response();
-                }
-                Err(err) => return internal_error(err),
-            },
-            explicit => explicit.to_string(),
-        };
-        return match state
-            .platform
-            .hub
-            .install_asset(&owner, &project, &package_id, &version, "")
-        {
-            Ok(result) => {
-                let actor_user = session_owner(&state, &headers);
-                let _ = rwe_library_git_commit(
-                    &state,
-                    actor_user.as_deref(),
-                    &owner,
-                    &project,
-                    &format!("chore(rwe): install library {package_id}@{version} from hub"),
-                );
-                Json(json!({"ok": true, "install": result})).into_response()
-            }
-            Err(err) => internal_error(err),
-        };
-    }
-    // Verify library exists in embedded registry.
-    if state.platform.library.get(req.name.trim()).is_none() {
+    // Enabling a library IS the local-hub install path: the blessed shelf
+    // carries the seeded `zebflow.*` packages, the install copies the
+    // package's bytes to `data/hub/rwe-libraries/{package_id}/`, and the lock
+    // records `source: hub.local` with the installed digest. The binary's
+    // embedded tree is only the seed — never a source a lock can name
+    // (`distribution.md` §2) — so the retired embedded enable path is gone
+    // and every requested source resolves through the shelf.
+    let name = req.name.trim();
+    let Some(slug) = name.strip_prefix("zeb/").filter(|slug| !slug.is_empty()) else {
         return (
             StatusCode::NOT_FOUND,
-            Json(
-                json!({"ok": false, "error": format!("library '{}' is not registered", req.name)}),
-            ),
+            Json(json!({
+                "ok": false,
+                "error": format!(
+                    "library '{name}' is not a blessed zeb/* library; install its \
+                     rwe_library package from a hub instead"
+                )
+            })),
         )
             .into_response();
-    }
-    let lock_entry = match state.platform.library.resolve_lock_entry(
-        req.name.trim(),
-        req.version.trim(),
-        req.source.trim(),
-    ) {
-        Ok(entry) => entry,
-        Err(error) => return internal_error(error),
     };
-    if let Err(err) = state.platform.dependency_lock.enable_rwe_library(
-        state.platform.zebflow_cfg.as_ref(),
-        &owner,
-        &project,
-        req.name.trim(),
-        lock_entry,
-    ) {
-        return internal_error(err);
+    let package_id = format!("zebflow.{slug}");
+    let version = match req.version.trim() {
+        "" => match state.platform.hub.latest_live_asset_version(&package_id) {
+            Ok(Some(version)) => version,
+            Ok(None) => {
+                return (
+                    StatusCode::NOT_FOUND,
+                    Json(json!({
+                        "ok": false,
+                        "error": format!("the local hub has no live release of '{package_id}'")
+                    })),
+                )
+                    .into_response();
+            }
+            Err(err) => return internal_error(err),
+        },
+        explicit => explicit.to_string(),
+    };
+    match state
+        .platform
+        .hub
+        .install_asset(&owner, &project, &package_id, &version, "")
+    {
+        Ok(result) => {
+            let actor_user = session_owner(&state, &headers);
+            let _ = rwe_library_git_commit(
+                &state,
+                actor_user.as_deref(),
+                &owner,
+                &project,
+                &format!("chore(rwe): install library {package_id}@{version} from hub"),
+            );
+            Json(json!({"ok": true, "install": result})).into_response()
+        }
+        Err(err) => internal_error(err),
     }
-    // Git commit (best-effort).
-    let actor_user = session_owner(&state, &headers);
-    let _ = rwe_library_git_commit(
-        &state,
-        actor_user.as_deref(),
-        &owner,
-        &project,
-        &format!("chore(rwe): enable library {}", req.name.trim()),
-    );
-    Json(json!({"ok": true})).into_response()
 }
 
 /// Query params for `DELETE /api/projects/{owner}/{project}/rwe/libraries/disable`.
@@ -17482,7 +17528,7 @@ async fn api_list_remote_hub_assets(
     } else {
         None
     };
-    match state.platform.hub.list_asset_packages() {
+    match state.platform.hub.list_public_asset_packages() {
         Ok(packages) => {
             let mut items = Vec::new();
             for package in packages {
@@ -17494,7 +17540,7 @@ async fn api_list_remote_hub_assets(
                 let latest_version = state
                     .platform
                     .hub
-                    .list_asset_versions(&package.package_id)
+                    .list_public_asset_versions(&package.package_id)
                     .ok()
                     .and_then(|items| items.into_iter().next().map(|v| v.version))
                     .unwrap_or_default();
@@ -17568,7 +17614,7 @@ async fn api_get_remote_hub_asset(
     let Some(package) = state
         .platform
         .hub
-        .list_asset_packages()
+        .list_public_asset_packages()
         .ok()
         .and_then(|items| items.into_iter().find(|item| item.package_id == package_id))
     else {
@@ -17648,7 +17694,7 @@ async fn api_get_remote_hub_artifact(
     let Some(package) = state
         .platform
         .hub
-        .list_asset_packages()
+        .list_public_asset_packages()
         .ok()
         .and_then(|items| items.into_iter().find(|item| item.package_id == package_id))
     else {
@@ -17780,7 +17826,7 @@ fn hub_referenced_artifact_response(
     let Some(package) = state
         .platform
         .hub
-        .list_asset_packages()
+        .list_public_asset_packages()
         .ok()
         .and_then(|items| items.into_iter().find(|item| item.package_id == package_id))
     else {
@@ -17824,7 +17870,7 @@ async fn api_list_public_hub_assets(State(state): State<PlatformAppState>) -> Re
     if let Err(response) = require_hub_service_enabled(&state) {
         return response;
     }
-    match state.platform.hub.list_asset_packages() {
+    match state.platform.hub.list_public_asset_packages() {
         Ok(packages) => {
             let items = packages
                 .into_iter()
@@ -17847,7 +17893,7 @@ async fn api_get_public_hub_asset(
     let Some(package) = state
         .platform
         .hub
-        .list_asset_packages()
+        .list_public_asset_packages()
         .ok()
         .and_then(|items| items.into_iter().find(|item| item.package_id == package_id))
     else {
@@ -17931,7 +17977,7 @@ async fn api_get_public_hub_artifact(
     let Some(package) = state
         .platform
         .hub
-        .list_asset_packages()
+        .list_public_asset_packages()
         .ok()
         .and_then(|items| items.into_iter().find(|item| item.package_id == package_id))
     else {
@@ -18168,60 +18214,43 @@ async fn api_preview_hub_publish_source(
     }
 }
 
-async fn api_publish_hub_asset(
-    State(state): State<PlatformAppState>,
-    headers: HeaderMap,
-    Path((owner, project)): Path<(String, String)>,
-    uri: Uri,
-    Json(req): Json<PublishHubAssetRequest>,
+/// The project-source half of the ONE publish route: resolves a project
+/// source through the shared publish core, landing in the Public Hub store.
+fn publish_project_source_to_public_hub(
+    state: &PlatformAppState,
+    headers: &HeaderMap,
+    owner: &str,
+    project: &str,
+    req: PublishHubAssetRequest,
 ) -> Response {
     if let Err(response) = require_project_api_capability(
-        &state,
-        &headers,
-        &owner,
-        &project,
+        state,
+        headers,
+        owner,
+        project,
         ProjectCapability::PipelinesWrite,
     ) {
         return response;
     }
-    match maybe_forward_project_json_to_worker(
-        &state,
-        &uri,
-        &headers,
-        Method::POST,
-        &req,
-        &owner,
-        &project,
-    )
-    .await
-    {
-        Ok(Some(response)) => return response,
-        Ok(None) => {}
-        Err(err) => return internal_error(err),
-    }
     let token = match authenticate_project_hub_publish_token(
-        &state,
-        &headers,
-        &owner,
-        &project,
+        state,
+        headers,
+        owner,
+        project,
         &req.publisher_token,
     ) {
         Ok(token) => token,
         Err(response) => return response,
     };
     if req.source_type == "project_files" {
-        let requested = match state
-            .platform
-            .zebflow_cfg
-            .get_rwe_libraries(&owner, &project)
-        {
+        let requested = match state.platform.zebflow_cfg.get_rwe_libraries(owner, project) {
             Ok(value) => value,
             Err(err) => return internal_error(err),
         };
         let dependencies = match state
             .platform
             .dependency_lock
-            .status(&owner, &project, &requested)
+            .status(owner, project, &requested)
         {
             Ok(report) => report,
             Err(err) => return internal_error(err),
@@ -18242,15 +18271,15 @@ async fn api_publish_hub_asset(
         }
     }
     match state.platform.hub.publish_asset(
-        &owner,
-        &project,
+        owner,
+        project,
         &token.owner,
         &token.publisher_id,
         &token.publisher_display_name,
         &token.publisher_url,
         &token.publisher_email,
-        &owner,
-        &project,
+        owner,
+        project,
         &req.source_type,
         &req.source_ref,
         &req.package_id,
@@ -18493,19 +18522,27 @@ async fn api_review_hub_asset(
     }
 }
 
+/// `POST .../hub/remote/assets/publish` — the ONE publish route.
+///
+/// Publishing lands in the Public Hub store, whichever form the request
+/// takes (`distribution.md` §1b). A body carrying `artifact` is a pre-built
+/// release pushed over HTTP; a body naming a project source is resolved
+/// in-process through the same publish core. The retired local-write route
+/// (`POST .../hub/assets/publish`) is gone — no publisher token can reach
+/// the blessed shelf.
 async fn api_remote_publish_hub_asset(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
     Path((owner, project)): Path<(String, String)>,
     uri: Uri,
-    Json(req): Json<RemoteHubPublishRequest>,
+    Json(body): Json<Value>,
 ) -> Response {
     match maybe_forward_project_json_to_worker(
         &state,
         &uri,
         &headers,
         Method::POST,
-        &req,
+        &body,
         &owner,
         &project,
     )
@@ -18515,6 +18552,31 @@ async fn api_remote_publish_hub_asset(
         Ok(None) => {}
         Err(err) => return internal_error(err),
     }
+    if body.get("artifact").is_none() {
+        // Project-source form: the Studio publish flow. The publisher token
+        // rides in the body or the Authorization header.
+        let req: PublishHubAssetRequest = match serde_json::from_value(body) {
+            Ok(req) => req,
+            Err(err) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({"ok": false, "error": err.to_string()})),
+                )
+                    .into_response();
+            }
+        };
+        return publish_project_source_to_public_hub(&state, &headers, &owner, &project, req);
+    }
+    let req: RemoteHubPublishRequest = match serde_json::from_value(body) {
+        Ok(req) => req,
+        Err(err) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"ok": false, "error": err.to_string()})),
+            )
+                .into_response();
+        }
+    };
     let Some(token_value) = bearer_token_from_headers(&headers) else {
         return (
             StatusCode::UNAUTHORIZED,

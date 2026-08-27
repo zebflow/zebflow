@@ -9,20 +9,20 @@
       "libraries": {
         "zeb/deckgl": {
           "version": "full-9.x",
-          "source": "embedded",
-          "source_id": "zebflow/zeb/deckgl",
-          "entry": "0.1/runtime/deckgl.bundle.mjs",
+          "source": "hub.local",
+          "source_id": "zebflow.deckgl@0.1.1",
+          "entry": "rwe-libraries/zebflow.deckgl/0.1/runtime/deckgl.bundle.mjs",
           "integrity": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
         }
       }
     },
     "nodes": {
       "bundles": {
-        "zebflow/sim-des": {
+        "zebflow.sim-des": {
           "version": "1.0.0",
-          "source": "hub",
-          "source_id": "zebflow-official/sim-des",
-          "entry": "nodes/sim-des/definition.json",
+          "source": "hub.public",
+          "source_id": "zebflow.sim-des@1.0.0",
+          "entry": "nodes/zebflow.sim-des/definition.json",
           "integrity": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
           "definitions": [
             "n.x.sim.des"

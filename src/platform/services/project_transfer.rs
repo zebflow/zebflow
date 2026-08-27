@@ -339,11 +339,12 @@ mod tests {
     use super::*;
     use crate::contracts::decode_contract;
     use crate::contracts::kinds::{
-        DependencyLockNodeBundleSpec, DependencyLockSource, DependencyLockSpec, NodeBundleContract,
+        DependencyLockArtifactSpec, DependencyLockNodeBundleSpec, DependencyLockSource,
+        DependencyLockSpec, NodeBundleContract,
     };
     use crate::infra::io::durable::directory_tree_sha256;
     use crate::platform::adapters::file::{FileAdapter, FilesystemFileAdapter};
-    use crate::platform::services::{DependencyLockService, LibraryService};
+    use crate::platform::services::DependencyLockService;
 
     #[test]
     fn bundle_transfer_preserves_and_resolves_all_dependencies() {
@@ -362,20 +363,42 @@ mod tests {
         source_config
             .ensure_initialized(owner, project, "Portable Project")
             .unwrap();
-        let library = Arc::new(LibraryService::from_embedded().unwrap());
-        let source_lock = DependencyLockService::with_library_service(
-            source_root.join("users"),
-            Arc::clone(&library),
-        );
+        let source_lock = DependencyLockService::new(source_root.join("users"));
         source_config
-            .enable_rwe_library(owner, project, "zeb/deckgl", "full-9.x", "offline")
+            .enable_rwe_library(owner, project, "zeb/deckgl", "full-9.x", "hub")
             .unwrap();
         let requested_libraries = source_config.get_rwe_libraries(owner, project).unwrap();
+
+        let source_layout = source_file.ensure_project_layout(owner, project).unwrap();
+        // Materialize the installed copy a hub install would have produced:
+        // the bundle bytes under `data/hub/rwe-libraries/{package_id}/` and a
+        // lock entry pinning their digest.
+        let library_bundle = b"export const deck = 1;\n";
+        let library_dir = source_layout
+            .data_hub_dir()
+            .join("rwe-libraries/zebflow.deckgl/0.1/runtime");
+        std::fs::create_dir_all(&library_dir).unwrap();
+        std::fs::write(library_dir.join("deckgl.bundle.mjs"), library_bundle).unwrap();
+        source_lock
+            .add_rwe_entry(
+                owner,
+                project,
+                "zeb/deckgl",
+                DependencyLockArtifactSpec {
+                    version: "full-9.x".to_string(),
+                    source: DependencyLockSource::HubLocal,
+                    source_id: "zebflow.deckgl@0.1.1".to_string(),
+                    entry: "rwe-libraries/zebflow.deckgl/0.1/runtime/deckgl.bundle.mjs".to_string(),
+                    integrity: format!(
+                        "sha256:{:x}",
+                        <sha2::Sha256 as sha2::Digest>::digest(library_bundle)
+                    ),
+                },
+            )
+            .unwrap();
         source_lock
             .repair_rwe_libraries(owner, project, &requested_libraries)
             .unwrap();
-
-        let source_layout = source_file.ensure_project_layout(owner, project).unwrap();
         let package_dir = source_layout.data_hub_nodes_dir().join("openai-embedding");
         copy_dir_recursive(
             &PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -397,7 +420,7 @@ mod tests {
         definitions.sort();
         let mut lock = source_lock.read(owner, project).unwrap();
         lock.nodes.bundles.insert(
-            "project/openai-embedding".to_string(),
+            "openai-embedding".to_string(),
             DependencyLockNodeBundleSpec {
                 version: document.spec.version,
                 source: DependencyLockSource::Project,
@@ -456,8 +479,7 @@ mod tests {
             )
             .unwrap();
 
-        let target_lock =
-            DependencyLockService::with_library_service(target_root.join("users"), library);
+        let target_lock = DependencyLockService::new(target_root.join("users"));
         let target_requested = target_config.get_rwe_libraries(owner, project).unwrap();
         let report = target_lock
             .status(owner, project, &target_requested)

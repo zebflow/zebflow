@@ -22,7 +22,6 @@ use crate::infra::io::durable::directory_tree_sha256;
 use crate::pipeline::PipelineGraph;
 use crate::platform::error::PlatformError;
 use crate::platform::model::{ResolvedProjectLayout, ZebflowJsonRweLibraries, slug_segment};
-use crate::platform::services::library::LibraryService;
 use crate::platform::services::project_config::ProjectConfigurationService;
 
 /// Result of one successful legacy dependency-lock migration.
@@ -69,7 +68,6 @@ pub struct DependencyStatusReport {
 /// Reads and writes `{users_root}/{owner}/{project}/repo/zeb.lock`.
 pub struct DependencyLockService {
     users_root: PathBuf,
-    library: Option<Arc<LibraryService>>,
     /// Where a project's declared layout comes from, when one is attached.
     ///
     /// Absent only for the constructors that never scan a source tree, which
@@ -80,24 +78,13 @@ pub struct DependencyLockService {
 }
 
 impl DependencyLockService {
-    /// Creates a service without a library resolver.
+    /// Creates the lock service.
     ///
-    /// This is sufficient for empty locks and canonical reads. Legacy entries
-    /// with missing integrity require [`Self::with_library_service`].
+    /// Every accepted lock source resolves against the project's installed
+    /// copies under `data/hub/`, so no embedded-registry resolver is held.
     pub fn new(users_root: PathBuf) -> Self {
         Self {
             users_root,
-            library: None,
-            configs: None,
-            update_locks: Mutex::new(HashMap::new()),
-        }
-    }
-
-    /// Creates a service that can resolve and verify legacy library pins.
-    pub fn with_library_service(users_root: PathBuf, library: Arc<LibraryService>) -> Self {
-        Self {
-            users_root,
-            library: Some(library),
             configs: None,
             update_locks: Mutex::new(HashMap::new()),
         }
@@ -391,12 +378,21 @@ impl DependencyLockService {
         })
     }
 
-    /// Records Hub provenance for bundles written below one installation root.
-    pub fn record_hub_node_bundles(
+    /// Records installed-channel provenance for bundles written below one
+    /// installation root.
+    ///
+    /// `bundle_id` is the canonical bundle identity — the package coordinate
+    /// `publisher.package` — and becomes the lock key. `source` names the
+    /// channel the bytes arrived through (`hub.local`, `hub.public`,
+    /// `hub.static`, or `direct.file`), and `source_id` its coordinate.
+    #[allow(clippy::too_many_arguments)]
+    pub fn record_installed_node_bundles(
         &self,
         owner: &str,
         project: &str,
         install_root: &str,
+        bundle_id: &str,
+        source: DependencyLockSource,
         source_id: &str,
         version: &str,
     ) -> Result<(), PlatformError> {
@@ -429,12 +425,16 @@ impl DependencyLockService {
         let multiple = matching.len() > 1;
         for (index, (_, mut bundle)) in matching.into_iter().enumerate() {
             bundle.version = version.to_string();
-            bundle.source = DependencyLockSource::Hub;
+            bundle.source = source;
             bundle.source_id = source_id.to_string();
+            // The canonical key is the package coordinate. A package carrying
+            // more than one bundle manifest is keyed per manifest, which the
+            // contract does not model as one identity; the suffix keeps the
+            // entries distinct without inventing a namespace.
             let key = if multiple {
-                format!("hub/{source_id}/{}", index + 1)
+                format!("{bundle_id}-{}", index + 1)
             } else {
-                format!("hub/{source_id}")
+                bundle_id.to_string()
             };
             value.nodes.bundles.insert(key, bundle);
         }
@@ -464,105 +464,45 @@ impl DependencyLockService {
                 });
                 continue;
             };
-            // A hub-installed library resolves against its installed copy in
-            // `data/hub/`, not against the binary's embedded registry: the
-            // installed form is the artifact, and the lock's digest is checked
-            // against those bytes.
-            if requested.source == "hub" {
-                let (status, message) = if locked.source != DependencyLockSource::Hub
-                    || locked.version != requested.version
-                {
-                    (
-                        DependencyResolutionStatus::VersionMismatch,
-                        "requested library resolution differs from zeb.lock".to_string(),
-                    )
-                } else {
-                    let installed = self.node_root(owner, project).join(&locked.entry);
-                    match std::fs::read(&installed) {
-                        Ok(bytes) => {
-                            let digest = format!(
-                                "sha256:{:x}",
-                                <sha2::Sha256 as sha2::Digest>::digest(&bytes)
-                            );
-                            if digest == locked.integrity {
-                                (
-                                    DependencyResolutionStatus::Resolved,
-                                    "exact installed library is available".to_string(),
-                                )
-                            } else {
-                                (
-                                    DependencyResolutionStatus::IntegrityMismatch,
-                                    "installed library bytes do not match zeb.lock".to_string(),
-                                )
-                            }
-                        }
-                        Err(_) => (
-                            DependencyResolutionStatus::Missing,
-                            format!(
-                                "installed library bytes are missing at data/hub/{}",
-                                locked.entry
-                            ),
-                        ),
-                    }
-                };
-                items.push(DependencyStatusItem {
-                    family: "rwe_library",
-                    name: name.clone(),
-                    status,
-                    version: locked.version.clone(),
-                    source: locked.source.as_str().to_string(),
-                    message,
-                    definitions: Vec::new(),
-                });
-                continue;
-            }
-            let Some(library) = &self.library else {
-                items.push(DependencyStatusItem {
-                    family: "rwe_library",
-                    name: name.clone(),
-                    status: DependencyResolutionStatus::UnsupportedRuntime,
-                    version: locked.version.clone(),
-                    source: locked.source.as_str().to_string(),
-                    message: "this runtime has no RWE library resolver".to_string(),
-                    definitions: Vec::new(),
-                });
-                continue;
-            };
-            let expected =
-                match library.resolve_lock_entry(name, &requested.version, &requested.source) {
-                    Ok(value) => value,
-                    Err(error) => {
-                        items.push(DependencyStatusItem {
-                            family: "rwe_library",
-                            name: name.clone(),
-                            status: DependencyResolutionStatus::UnsupportedRuntime,
-                            version: locked.version.clone(),
-                            source: locked.source.as_str().to_string(),
-                            message: error.message,
-                            definitions: Vec::new(),
-                        });
-                        continue;
-                    }
-                };
-            let (status, message) = if locked.version != expected.version
-                || locked.source != expected.source
-                || locked.source_id != expected.source_id
-                || locked.entry != expected.entry
-            {
+            // Every accepted source resolves identically: against the
+            // installed copy at `data/hub/`, with the digest pinning identity
+            // (`kinds/dependency-lock/README.md`). `source` records
+            // provenance, not a resolution order, so the requested source is
+            // not compared against the locked one.
+            let (status, message) = if locked.version != requested.version {
                 (
                     DependencyResolutionStatus::VersionMismatch,
                     "requested library resolution differs from zeb.lock".to_string(),
                 )
-            } else if locked.integrity != expected.integrity {
-                (
-                    DependencyResolutionStatus::IntegrityMismatch,
-                    "resolved library bytes do not match zeb.lock".to_string(),
-                )
             } else {
-                (
-                    DependencyResolutionStatus::Resolved,
-                    "exact embedded library is available".to_string(),
-                )
+                let installed = self.node_root(owner, project).join(&locked.entry);
+                match std::fs::read(&installed) {
+                    Ok(bytes) => {
+                        let digest = format!(
+                            "sha256:{:x}",
+                            <sha2::Sha256 as sha2::Digest>::digest(&bytes)
+                        );
+                        if digest == locked.integrity {
+                            (
+                                DependencyResolutionStatus::Resolved,
+                                "exact installed library is available".to_string(),
+                            )
+                        } else {
+                            (
+                                DependencyResolutionStatus::IntegrityMismatch,
+                                "installed library bytes do not match zeb.lock".to_string(),
+                            )
+                        }
+                    }
+                    Err(_) => (
+                        DependencyResolutionStatus::Missing,
+                        format!(
+                            "installed library bytes are missing at data/hub/{}; \
+                             reinstall the library from the hub",
+                            locked.entry
+                        ),
+                    ),
+                }
             };
             items.push(DependencyStatusItem {
                 family: "rwe_library",
@@ -704,48 +644,95 @@ impl DependencyLockService {
         })
     }
 
-    /// Re-resolves all requested RWE libraries and replaces only that namespace.
+    /// Re-derives the RWE namespace from requested state and replaces it.
+    ///
+    /// An installed library's resolution is the installed copy the lock
+    /// already pins, so repair keeps that entry and drops entries nothing
+    /// requests any more. A requested library with no lock entry cannot be
+    /// invented here — reinstalling the package from a hub is the way to
+    /// resolve it, and that is what the error says.
     pub fn repair_rwe_libraries(
         &self,
         owner: &str,
         project: &str,
         requested_libraries: &ZebflowJsonRweLibraries,
     ) -> Result<(), PlatformError> {
-        let library = self.library.as_ref().ok_or_else(|| {
-            PlatformError::new(
-                "ZEB_LOCK_REPAIR_UNAVAILABLE",
-                "this runtime has no RWE library resolver",
-            )
-        })?;
         let current = self.read(owner, project)?;
         let mut resolved = std::collections::BTreeMap::new();
         let mut requested = requested_libraries.iter().collect::<Vec<_>>();
         requested.sort_by(|left, right| left.0.cmp(right.0));
-        for (name, entry) in requested {
-            // A hub-installed library cannot be re-resolved from the binary:
-            // its resolution is the installed copy the lock already pins, so
-            // repair keeps that entry rather than inventing one. Reinstalling
-            // the package is the way to re-resolve it.
-            if entry.source == "hub" {
-                let Some(existing) = current.rwe.libraries.get(name) else {
-                    return Err(PlatformError::new(
-                        "ZEB_LOCK_REPAIR_UNAVAILABLE",
-                        format!(
-                            "hub-installed library '{name}' has no lock entry to keep; reinstall it from the hub"
-                        ),
-                    ));
-                };
-                resolved.insert(name.clone(), existing.clone());
-                continue;
-            }
-            resolved.insert(
-                name.clone(),
-                library.resolve_lock_entry(name, &entry.version, &entry.source)?,
-            );
+        for (name, _entry) in requested {
+            let Some(existing) = current.rwe.libraries.get(name) else {
+                return Err(PlatformError::new(
+                    "ZEB_LOCK_REPAIR_UNAVAILABLE",
+                    format!(
+                        "requested library '{name}' has no lock entry to keep; \
+                         reinstall it from the hub"
+                    ),
+                ));
+            };
+            resolved.insert(name.clone(), existing.clone());
         }
         self.update(owner, project, |value| {
             value.rwe.libraries = resolved;
         })
+    }
+
+    /// Quarantines a `zeb.lock` the canonical reader refuses, so ordinary
+    /// resolution can regenerate it from requested state.
+    ///
+    /// A lock carrying a dead source word is an invalid lock
+    /// (`kinds/dependency-lock/README.md`): its bytes move to
+    /// `data/recovery/` and an empty canonical lock takes their place —
+    /// installed copies on disk are untouched, and reinstall/refresh re-pins
+    /// them. A legacy-shaped lock is refused here: the explicit migration
+    /// path owns those bytes. Returns the recovery path, or `None` when the
+    /// lock is absent or already canonical.
+    pub fn quarantine_invalid(
+        &self,
+        owner: &str,
+        project: &str,
+    ) -> Result<Option<PathBuf>, PlatformError> {
+        let path = self.lock_path(owner, project);
+        let lock = self.update_lock(&path);
+        let _guard = lock.lock().unwrap_or_else(|error| error.into_inner());
+        let bytes = match std::fs::read(&path) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => {
+                return Err(PlatformError::new(
+                    "ZEB_LOCK_READ",
+                    format!("failed reading '{}': {error}", path.display()),
+                ));
+            }
+        };
+        if decode_dependency_lock(&bytes).is_ok() {
+            return Ok(None);
+        }
+        if decode_pre_general_dependency_lock(&bytes).is_ok()
+            || decode_legacy_dependency_lock(&bytes).is_ok()
+        {
+            return Err(PlatformError::new(
+                "ZEB_LOCK_READ",
+                "lock uses a pre-release legacy shape; run `zebflow project lock migrate` \
+                 instead of regenerating",
+            ));
+        }
+        let recovery_path = self.recovery_path(owner, project).join(format!(
+            "{DEPENDENCY_LOCK_BACKUP_FILE}-invalid-{}.lock",
+            crate::platform::model::recovery_date_stamp()
+        ));
+        if let Some(parent) = recovery_path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        atomic_write(&recovery_path, &bytes).map_err(|error| {
+            PlatformError::new(
+                "ZEB_LOCK_READ",
+                format!("failed writing recovery copy: {error}"),
+            )
+        })?;
+        self.write_unlocked(&path, project, &DependencyLockSpec::default())?;
+        Ok(Some(recovery_path))
     }
 
     /// Validates requested RWE libraries before compiling an affected artifact.
@@ -894,18 +881,18 @@ impl DependencyLockService {
                 name.to_string(),
                 crate::platform::model::ZebflowJsonRweLibraryEntry {
                     version: entry.version.clone(),
+                    // Requested state records that the library is installed at
+                    // an exact version; the lock keeps the provenance. Every
+                    // accepted lock source resolves against the installed copy
+                    // at `data/hub/rwe-libraries/`, so they all request "hub".
                     source: match entry.source {
-                        DependencyLockSource::Embedded => "offline".to_string(),
-                        // Widened with the local hub's rwe_library packages:
-                        // an installed copy at `data/hub/rwe-libraries/` is a
-                        // durable source the configuration can request.
-                        DependencyLockSource::Hub => "hub".to_string(),
                         DependencyLockSource::Project => {
                             return Err(PlatformError::new(
                                 "ZEB_LOCK_RWE_SOURCE",
-                                "RWE configuration supports embedded and hub-installed libraries",
+                                "'project' is not an accepted RWE library source in zebflow.com/v1",
                             ));
                         }
+                        _ => "hub".to_string(),
                     },
                 },
             );
@@ -1024,61 +1011,23 @@ impl DependencyLockService {
                 }
             },
         };
-        let mut migrated = DependencyLockSpec::default();
-        for (name, entry) in libraries {
-            let resolved = match &self.library {
-                Some(library) => {
-                    let resolved = library.resolve_lock_entry(
-                        &name,
-                        entry.version.trim(),
-                        entry.source.trim(),
-                    )?;
-                    if resolved.entry != entry.entry {
-                        return Err(PlatformError::new(
-                            "ZEB_LOCK_MIGRATE",
-                            format!(
-                                "legacy entry '{name}' points to '{}', but its registered release points to '{}'",
-                                entry.entry, resolved.entry
-                            ),
-                        ));
-                    }
-                    if let Some(integrity) = entry.integrity.as_deref()
-                        && !integrity.is_empty()
-                        && integrity != resolved.integrity
-                    {
-                        return Err(PlatformError::new(
-                            "ZEB_LOCK_MIGRATE",
-                            format!("legacy entry '{name}' has a mismatched integrity digest"),
-                        ));
-                    }
-                    resolved
-                }
-                None => DependencyLockArtifactSpec {
-                    version: entry.version,
-                    source: match entry.source.as_str() {
-                        "offline" => DependencyLockSource::Embedded,
-                        other => {
-                            return Err(PlatformError::new(
-                                "ZEB_LOCK_MIGRATE",
-                                format!("legacy library source '{other}' cannot be resolved"),
-                            ));
-                        }
-                    },
-                    source_id: format!("zebflow/{name}"),
-                    entry: entry.entry,
-                    integrity: entry.integrity.filter(|value| !value.is_empty()).ok_or_else(
-                        || {
-                            PlatformError::new(
-                                "ZEB_LOCK_MIGRATE",
-                                format!(
-                                    "legacy entry '{name}' has no integrity digest and no library resolver is available"
-                                ),
-                            )
-                        },
-                    )?,
-                },
-            };
-            migrated.rwe.libraries.insert(name, resolved);
+        let migrated = DependencyLockSpec::default();
+        // A legacy entry named the binary's embedded registry, and `embedded`
+        // is no longer a lock source (`kinds/dependency-lock/README.md`,
+        // restructured 2026-08-27): the binary is only the seed, and a locked
+        // library is an installed copy at `data/hub/rwe-libraries/`. Nothing
+        // shipped, so a legacy entry is not converted — the lock regenerates
+        // through ordinary resolution once the library is reinstalled from a
+        // hub, and this migration refuses rather than writing a lock it knows
+        // to be unresolvable.
+        if let Some((name, _)) = libraries.into_iter().next() {
+            return Err(PlatformError::new(
+                "ZEB_LOCK_MIGRATE",
+                format!(
+                    "legacy entry '{name}' names the retired embedded source; \
+                     reinstall the library from the hub and the lock regenerates"
+                ),
+            ));
         }
 
         let canonical = encode_dependency_lock(ContractMetadata::named(project), migrated.clone())
@@ -1309,6 +1258,7 @@ struct LegacyDependencyLock {
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[allow(dead_code)] // decoded strictly so unknown shapes refuse; the values themselves are never converted
 struct LegacyDependencyLockEntry {
     version: String,
     source: String,
@@ -1370,9 +1320,9 @@ mod tests {
     fn entry(seed: char) -> DependencyLockArtifactSpec {
         DependencyLockArtifactSpec {
             version: "1.0.0".to_string(),
-            source: DependencyLockSource::Embedded,
-            source_id: "zebflow/zeb/example".to_string(),
-            entry: "dist/main.mjs".to_string(),
+            source: DependencyLockSource::HubLocal,
+            source_id: "zebflow.example@1.0.0".to_string(),
+            entry: "rwe-libraries/zebflow.example/dist/main.mjs".to_string(),
             integrity: format!("sha256:{}", seed.to_string().repeat(64)),
         }
     }
@@ -1472,8 +1422,11 @@ mod tests {
         );
     }
 
+    /// A legacy lock with entries names the retired embedded source, so the
+    /// migration refuses it untouched; an empty legacy lock still converts,
+    /// with its original bytes kept as the recovery copy.
     #[test]
-    fn legacy_migration_keeps_recovery_copy() {
+    fn legacy_migration_refuses_embedded_entries_and_converts_empty_locks() {
         let root = tempfile::tempdir().unwrap();
         let service = DependencyLockService::new(root.path().join("users"));
         let path = service.lock_path("owner", "project");
@@ -1484,29 +1437,30 @@ mod tests {
         );
         std::fs::write(&path, legacy.as_bytes()).unwrap();
 
+        let error = service.migrate_legacy("owner", "project").unwrap_err();
+        assert_eq!(error.code, "ZEB_LOCK_MIGRATE");
+        assert!(error.message.contains("reinstall the library from the hub"));
+        assert_eq!(std::fs::read(&path).unwrap(), legacy.as_bytes());
+
+        let empty = br#"{"version":1,"libraries":{}}"#;
+        std::fs::write(&path, empty).unwrap();
         let result = service.migrate_legacy("owner", "project").unwrap();
         assert_eq!(result.source_format, "legacy_1");
-        assert_eq!(
-            std::fs::read(result.recovery_path).unwrap(),
-            legacy.as_bytes()
-        );
-        assert_eq!(
+        assert_eq!(std::fs::read(result.recovery_path).unwrap(), empty);
+        assert!(
             service
                 .read("owner", "project")
                 .unwrap()
                 .rwe
                 .libraries
-                .len(),
-            1
+                .is_empty()
         );
     }
 
     #[test]
-    fn real_legacy_shape_resolves_missing_integrity_from_embedded_bytes() {
+    fn real_legacy_shape_with_entries_is_refused_toward_regeneration() {
         let root = tempfile::tempdir().unwrap();
-        let library = Arc::new(LibraryService::from_embedded().unwrap());
-        let service =
-            DependencyLockService::with_library_service(root.path().join("users"), library);
+        let service = DependencyLockService::new(root.path().join("users"));
         let path = service.lock_path("owner", "project");
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         let legacy = include_bytes!(
@@ -1514,19 +1468,16 @@ mod tests {
         );
         std::fs::write(&path, legacy).unwrap();
 
-        service.migrate_legacy("owner", "project").unwrap();
-        let migrated = service.read("owner", "project").unwrap();
-        let entry = &migrated.rwe.libraries["zeb/deckgl"];
-        assert!(entry.integrity.starts_with("sha256:"));
-        assert_eq!(entry.integrity.len(), 71);
+        let error = service.migrate_legacy("owner", "project").unwrap_err();
+        assert_eq!(error.code, "ZEB_LOCK_MIGRATE");
+        assert!(error.message.contains("reinstall"));
+        assert_eq!(std::fs::read(&path).unwrap(), legacy);
     }
 
     #[test]
-    fn explicit_migration_converts_the_previous_rwe_only_envelope() {
+    fn rwe_only_envelope_with_entries_is_refused_toward_regeneration() {
         let root = tempfile::tempdir().unwrap();
-        let library = Arc::new(LibraryService::from_embedded().unwrap());
-        let service =
-            DependencyLockService::with_library_service(root.path().join("users"), library);
+        let service = DependencyLockService::new(root.path().join("users"));
         let path = service.lock_path("owner", "project");
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         let previous = format!(
@@ -1537,25 +1488,77 @@ mod tests {
 
         let migration = service.migrate_legacy("owner", "project").unwrap_err();
         assert_eq!(migration.code, "ZEB_LOCK_MIGRATE");
-        assert!(migration.message.contains("mismatched integrity"));
+        assert!(migration.message.contains("reinstall"));
         assert_eq!(std::fs::read(&path).unwrap(), previous.as_bytes());
 
-        let resolved = service
-            .library
-            .as_ref()
-            .unwrap()
-            .resolve_lock_entry("zeb/deckgl", "full-9.x", "offline")
-            .unwrap();
-        let previous = format!(
-            r#"{{"apiVersion":"zebflow.com/v1","kind":"DependencyLock","metadata":{{"name":"project"}},"spec":{{"libraries":{{"zeb/deckgl":{{"version":"full-9.x","source":"offline","entry":"0.1/runtime/deckgl.bundle.mjs","integrity":"{}"}}}}}}}}"#,
-            resolved.integrity
-        );
-        std::fs::write(&path, previous.as_bytes()).unwrap();
+        let empty = br#"{"apiVersion":"zebflow.com/v1","kind":"DependencyLock","metadata":{"name":"project"},"spec":{"libraries":{}}}"#;
+        std::fs::write(&path, empty).unwrap();
         let migration = service.migrate_legacy("owner", "project").unwrap();
         assert_eq!(migration.source_format, "rwe_only_v1");
-        let migrated = service.read("owner", "project").unwrap();
-        assert_eq!(migrated.rwe.libraries["zeb/deckgl"], resolved);
-        assert!(migrated.nodes.bundles.is_empty());
+        assert!(
+            service
+                .read("owner", "project")
+                .unwrap()
+                .rwe
+                .libraries
+                .is_empty()
+        );
+    }
+
+    /// A canonical-shaped lock hand-edited to a dead source word refuses on
+    /// read, and the quarantine path moves it aside so ordinary resolution
+    /// can regenerate from requested state.
+    #[test]
+    fn a_lock_carrying_a_dead_source_word_is_refused_and_quarantined() {
+        let root = tempfile::tempdir().unwrap();
+        let service = DependencyLockService::new(root.path().join("users"));
+        let path = service.lock_path("owner", "project");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let dead = format!(
+            r#"{{"apiVersion":"zebflow.com/v1","kind":"DependencyLock","metadata":{{"name":"project"}},"spec":{{"rwe":{{"libraries":{{"zeb/example":{{"version":"1.0.0","source":"embedded","source_id":"zebflow.example@1.0.0","entry":"rwe-libraries/zebflow.example/dist/main.mjs","integrity":"sha256:{}"}}}}}},"nodes":{{"bundles":{{}}}}}}}}"#,
+            "a".repeat(64)
+        );
+        std::fs::write(&path, dead.as_bytes()).unwrap();
+
+        let error = service.read("owner", "project").unwrap_err();
+        assert_eq!(error.code, "ZEB_LOCK_READ");
+
+        let recovery = service
+            .quarantine_invalid("owner", "project")
+            .unwrap()
+            .expect("invalid lock is quarantined");
+        assert_eq!(std::fs::read(&recovery).unwrap(), dead.as_bytes());
+        assert!(
+            service
+                .read("owner", "project")
+                .unwrap()
+                .rwe
+                .libraries
+                .is_empty()
+        );
+        // Already-canonical locks are left alone.
+        assert!(
+            service
+                .quarantine_invalid("owner", "project")
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    /// The quarantine path never eats a legacy-shaped lock: those bytes
+    /// belong to the explicit migration command.
+    #[test]
+    fn quarantine_refuses_legacy_shapes() {
+        let root = tempfile::tempdir().unwrap();
+        let service = DependencyLockService::new(root.path().join("users"));
+        let path = service.lock_path("owner", "project");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let legacy = br#"{"version":1,"libraries":{}}"#;
+        std::fs::write(&path, legacy).unwrap();
+
+        let error = service.quarantine_invalid("owner", "project").unwrap_err();
+        assert_eq!(error.code, "ZEB_LOCK_READ");
+        assert_eq!(std::fs::read(&path).unwrap(), legacy);
     }
 
     #[test]
@@ -1694,30 +1697,54 @@ mod tests {
         );
     }
 
+    /// A locked library resolves against its installed copy at `data/hub/`,
+    /// whatever serving its provenance names, and repair keeps the entry.
     #[test]
-    fn status_resolves_exact_embedded_library() {
+    fn status_resolves_exact_installed_library() {
         let root = tempfile::tempdir().unwrap();
-        let library = Arc::new(LibraryService::from_embedded().unwrap());
-        let service = DependencyLockService::with_library_service(
-            root.path().join("users"),
-            Arc::clone(&library),
-        );
+        let users = root.path().join("users");
+        let service = DependencyLockService::new(users.clone());
         let mut requested = ZebflowJsonRweLibraries::new();
         requested.insert(
-            "zeb/deckgl".to_string(),
+            "zeb/example".to_string(),
             crate::platform::model::ZebflowJsonRweLibraryEntry {
-                version: "full-9.x".to_string(),
-                source: "offline".to_string(),
+                version: "1.0.0".to_string(),
+                source: "hub".to_string(),
             },
         );
+        let bundle = b"export default {};\n";
+        let installed = users.join("owner/project/data/hub/rwe-libraries/zebflow.example/dist");
+        std::fs::create_dir_all(&installed).unwrap();
+        std::fs::write(installed.join("main.mjs"), bundle).unwrap();
+        let mut locked = entry('a');
+        locked.integrity = format!(
+            "sha256:{:x}",
+            <sha2::Sha256 as sha2::Digest>::digest(bundle)
+        );
+        service
+            .add_rwe_entry("owner", "project", "zeb/example", locked)
+            .unwrap();
         service
             .repair_rwe_libraries("owner", "project", &requested)
             .unwrap();
 
         let report = service.status("owner", "project", &requested).unwrap();
-        assert!(report.ok);
+        assert!(report.ok, "{report:?}");
         assert_eq!(report.resolved, 1);
         assert_eq!(report.problems, 0);
+
+        // A requested library with no lock entry cannot be invented by repair.
+        requested.insert(
+            "zeb/absent".to_string(),
+            crate::platform::model::ZebflowJsonRweLibraryEntry {
+                version: "1.0.0".to_string(),
+                source: "hub".to_string(),
+            },
+        );
+        let error = service
+            .repair_rwe_libraries("owner", "project", &requested)
+            .unwrap_err();
+        assert_eq!(error.code, "ZEB_LOCK_REPAIR_UNAVAILABLE");
     }
 
     #[test]
@@ -1751,7 +1778,7 @@ mod tests {
         .unwrap();
         let mut lock = DependencyLockSpec::default();
         lock.nodes.bundles.insert(
-            "project/example".to_string(),
+            "example".to_string(),
             DependencyLockNodeBundleSpec {
                 version: "1.0.0".to_string(),
                 source: DependencyLockSource::Project,
@@ -1849,7 +1876,11 @@ mod tests {
         DependencyLockNodeBundleSpec {
             version: "1.0.0".to_string(),
             source,
-            source_id: "official/example".to_string(),
+            source_id: if source.is_hub() {
+                "official.example@1.0.0".to_string()
+            } else {
+                "project/example".to_string()
+            },
             entry: "nodes/example/definition.json".to_string(),
             integrity: format!("sha256:{}", digest.to_string().repeat(64)),
             definitions: vec!["n.x.example.thing".to_string()],
@@ -1864,8 +1895,8 @@ mod tests {
         let service = DependencyLockService::new(root.path().join("users"));
         let mut lock = DependencyLockSpec::default();
         lock.nodes.bundles.insert(
-            "hub/official/example".to_string(),
-            locked_bundle(DependencyLockSource::Hub, 'a'),
+            "official.example".to_string(),
+            locked_bundle(DependencyLockSource::HubPublic, 'a'),
         );
         service.write("owner", "project", &lock).unwrap();
 
@@ -1874,7 +1905,7 @@ mod tests {
                 "owner",
                 "project",
                 vec![(
-                    "project/example".to_string(),
+                    "example".to_string(),
                     locked_bundle(DependencyLockSource::Project, 'b'),
                 )],
             )
@@ -1884,7 +1915,7 @@ mod tests {
         let after = service.read("owner", "project").unwrap();
         assert_eq!(after.nodes.bundles.len(), 1);
         assert_eq!(
-            after.nodes.bundles["hub/official/example"].integrity,
+            after.nodes.bundles["official.example"].integrity,
             format!("sha256:{}", "a".repeat(64)),
             "a failed reconcile must preserve the previous lock"
         );
@@ -1899,7 +1930,7 @@ mod tests {
         let service = DependencyLockService::new(root.path().join("users"));
         let mut lock = DependencyLockSpec::default();
         lock.nodes.bundles.insert(
-            "project/example".to_string(),
+            "example".to_string(),
             locked_bundle(DependencyLockSource::Project, 'a'),
         );
         service.write("owner", "project", &lock).unwrap();
@@ -1909,7 +1940,7 @@ mod tests {
                 "owner",
                 "project",
                 vec![(
-                    "project/example".to_string(),
+                    "example".to_string(),
                     locked_bundle(DependencyLockSource::Project, 'b'),
                 )],
             )
@@ -1919,7 +1950,7 @@ mod tests {
         let after = service.read("owner", "project").unwrap();
         assert_eq!(after.nodes.bundles.len(), 1);
         assert_eq!(
-            after.nodes.bundles["project/example"].integrity,
+            after.nodes.bundles["example"].integrity,
             format!("sha256:{}", "a".repeat(64)),
             "the previous lock survives"
         );

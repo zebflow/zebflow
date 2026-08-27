@@ -2,10 +2,10 @@
 //!
 //! `blessed/` is the curated content the release itself carries: RWE library
 //! bundles (`blessed/rwe-libraries/`) and the UI template sets
-//! (`blessed/templates/`). On first boot the hub seeder publishes each of
-//! these into the local hub (`services/hub-default/`) as the reserved
-//! `zebflow` publisher, through the same publish gates every other package
-//! passes. This module only enumerates; it publishes nothing.
+//! (`blessed/templates/`). At every boot, check-first, the hub seeder
+//! publishes each of these into the local hub (`services/hub-local/`) as the
+//! reserved `zebflow` publisher, through the same publish gates every other
+//! package passes. This module only enumerates; it publishes nothing.
 //!
 //! `blessed/nodes/` and `blessed/pipelines/` are deliberately empty today:
 //! foundation composites in `src/pipeline/nodes/bundled/` are part of the

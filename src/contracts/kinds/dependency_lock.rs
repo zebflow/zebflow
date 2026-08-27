@@ -100,21 +100,49 @@ pub struct DependencyLockNodeBundleSpec {
 }
 
 /// Durable provenance of a resolved dependency artifact.
+///
+/// Restructured 2026-08-27 (pre-release): `embedded`, bare `hub`, and `file`
+/// are dead words. A lock still carrying one is invalid and regenerates
+/// through ordinary resolution — there is no migration path for documents
+/// that never shipped.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
 pub enum DependencyLockSource {
-    Embedded,
-    Hub,
+    /// The blessed shelf at `services/hub-local/`, release-seeded.
+    #[serde(rename = "hub.local")]
+    HubLocal,
+    /// A Public Hub service reached over HTTP.
+    #[serde(rename = "hub.public")]
+    HubPublic,
+    /// A static repository at an HTTPS location the user configured.
+    #[serde(rename = "hub.static")]
+    HubStatic,
+    /// A package converted from an npm coordinate, never served by a hub.
+    #[serde(rename = "direct.npm")]
+    DirectNpm,
+    /// A package supplied as a local file, never served by a hub.
+    #[serde(rename = "direct.file")]
+    DirectFile,
+    /// Project source itself provides the artifact (node bundles only).
+    #[serde(rename = "project")]
     Project,
 }
 
 impl DependencyLockSource {
     pub const fn as_str(self) -> &'static str {
         match self {
-            Self::Embedded => "embedded",
-            Self::Hub => "hub",
+            Self::HubLocal => "hub.local",
+            Self::HubPublic => "hub.public",
+            Self::HubStatic => "hub.static",
+            Self::DirectNpm => "direct.npm",
+            Self::DirectFile => "direct.file",
             Self::Project => "project",
         }
+    }
+
+    /// True for the three hub servings, whose `source_id` is a package
+    /// coordinate (`publisher.package@version`).
+    pub const fn is_hub(self) -> bool {
+        matches!(self, Self::HubLocal | Self::HubPublic | Self::HubStatic)
     }
 }
 
@@ -140,14 +168,16 @@ impl DependencyLockSpec {
         for (name, entry) in &self.rwe.libraries {
             let path = format!("spec.rwe.libraries[{name:?}]");
             validate_namespaced_name(&path, name)?;
-            // Widened deliberately when the local hub gained rwe_library
-            // packages: an installed library carries hub provenance and a real
-            // digest. `project` stays refused — no channel produces it for a
-            // library in zebflow.com/v1.
+            // `project` is reserved for RWE libraries: no channel produces it
+            // for a library in zebflow.com/v1 (the resolver behavior is not
+            // defined until a later contract version).
             if entry.source == DependencyLockSource::Project {
                 return Err(ContractError::violation(
                     "ZF_DEPENDENCY_LOCK_SOURCE",
-                    format!("{path}.source must be embedded or hub in zebflow.com/v1"),
+                    format!(
+                        "{path}.source must be hub.local, hub.public, hub.static, direct.npm, \
+                         or direct.file in zebflow.com/v1"
+                    ),
                 ));
             }
             validate_artifact_fields(
@@ -163,11 +193,17 @@ impl DependencyLockSpec {
         let mut providers = BTreeMap::<&str, &str>::new();
         for (name, entry) in &self.nodes.bundles {
             let path = format!("spec.nodes.bundles[{name:?}]");
-            validate_namespaced_name(&path, name)?;
-            if entry.source == DependencyLockSource::Embedded {
+            validate_bundle_identity(&path, name)?;
+            // A node bundle never arrives as a converted npm package in
+            // zebflow.com/v1; an embedded bundle is a runtime capability and
+            // is not a lock entry at all.
+            if entry.source == DependencyLockSource::DirectNpm {
                 return Err(ContractError::violation(
                     "ZF_DEPENDENCY_LOCK_SOURCE",
-                    format!("{path}.source must be hub or project in zebflow.com/v1"),
+                    format!(
+                        "{path}.source must be hub.local, hub.public, hub.static, direct.file, \
+                         or project in zebflow.com/v1"
+                    ),
                 ));
             }
             validate_artifact_fields(
@@ -244,15 +280,73 @@ pub fn encode_dependency_lock(
 fn validate_artifact_fields(
     path: &str,
     version: &str,
-    _source: DependencyLockSource,
+    source: DependencyLockSource,
     source_id: &str,
     entry: &str,
     integrity: &str,
 ) -> Result<(), ContractError> {
     validate_text(&format!("{path}.version"), version, 128)?;
-    validate_logical_name(&format!("{path}.source_id"), source_id, true)?;
+    validate_source_id(&format!("{path}.source_id"), source, source_id)?;
     validate_relative_path(&format!("{path}.entry"), entry)?;
     validate_sha256(&format!("{path}.integrity"), integrity)
+}
+
+/// Per-source `source_id` grammar.
+///
+/// `hub.*` names a package coordinate `publisher.package@version`;
+/// `direct.npm` names the converted npm coordinate `npm/{name}@{version}`;
+/// `direct.file` and `project` carry the supplied package's declared
+/// identity, bounded but otherwise free-form.
+fn validate_source_id(
+    path: &str,
+    source: DependencyLockSource,
+    value: &str,
+) -> Result<(), ContractError> {
+    validate_text(path, value, 256)?;
+    if value.contains(char::is_whitespace) {
+        return Err(ContractError::violation(
+            "ZF_DEPENDENCY_LOCK_NAME",
+            format!("{path} must not contain whitespace"),
+        ));
+    }
+    if source.is_hub() {
+        let Some((coordinate, version)) = value.split_once('@') else {
+            return Err(ContractError::violation(
+                "ZF_DEPENDENCY_LOCK_NAME",
+                format!("{path} must be a package coordinate 'publisher.package@version'"),
+            ));
+        };
+        if version.is_empty()
+            || !coordinate.contains('.')
+            || validate_bundle_identity(path, coordinate).is_err()
+        {
+            return Err(ContractError::violation(
+                "ZF_DEPENDENCY_LOCK_NAME",
+                format!("{path} must be a package coordinate 'publisher.package@version'"),
+            ));
+        }
+    }
+    if source == DependencyLockSource::DirectNpm
+        && !value.strip_prefix("npm/").is_some_and(|rest| {
+            rest.split_once('@')
+                .is_some_and(|(name, ver)| !name.is_empty() && !ver.is_empty())
+        })
+    {
+        return Err(ContractError::violation(
+            "ZF_DEPENDENCY_LOCK_NAME",
+            format!("{path} must be a converted npm coordinate 'npm/{{name}}@{{version}}'"),
+        ));
+    }
+    Ok(())
+}
+
+/// A node-bundle lock key: the canonical lowercase bundle identity.
+///
+/// For hub-served bundles this is the package coordinate
+/// `publisher.package` (dot form, e.g. `zebflow.sim-des`); a project-source
+/// bundle carries its declared package slug. Never a slash-namespaced name.
+fn validate_bundle_identity(path: &str, value: &str) -> Result<(), ContractError> {
+    validate_logical_name(path, value, false)
 }
 
 fn validate_namespaced_name(path: &str, value: &str) -> Result<(), ContractError> {
@@ -372,7 +466,7 @@ mod tests {
         assert!(decode_dependency_lock(&serde_json::to_vec(&value).unwrap()).is_err());
 
         let mut value: serde_json::Value = serde_json::from_slice(fixture()).unwrap();
-        value["spec"]["nodes"]["bundles"]["zebflow/sim-des"]["integrity"] =
+        value["spec"]["nodes"]["bundles"]["zebflow.sim-des"]["integrity"] =
             serde_json::json!("sha256:not-a-digest");
         assert!(decode_dependency_lock(&serde_json::to_vec(&value).unwrap()).is_err());
     }
@@ -384,33 +478,89 @@ mod tests {
         assert!(decode_dependency_lock(&serde_json::to_vec(&value).unwrap()).is_err());
 
         let mut value: serde_json::Value = serde_json::from_slice(fixture()).unwrap();
-        value["spec"]["nodes"]["bundles"]["zebflow/sim-des"]["definitions"] =
+        value["spec"]["nodes"]["bundles"]["zebflow.sim-des"]["definitions"] =
             serde_json::json!(["n.wasm.z", "n.wasm.a"]);
         assert!(decode_dependency_lock(&serde_json::to_vec(&value).unwrap()).is_err());
 
         let mut value: serde_json::Value = serde_json::from_slice(fixture()).unwrap();
-        let mut duplicate = value["spec"]["nodes"]["bundles"]["zebflow/sim-des"].clone();
-        duplicate["source_id"] = serde_json::json!("another/provider");
-        value["spec"]["nodes"]["bundles"]["zebflow/duplicate"] = duplicate;
+        let mut duplicate = value["spec"]["nodes"]["bundles"]["zebflow.sim-des"].clone();
+        duplicate["source_id"] = serde_json::json!("another.provider@1.0.0");
+        value["spec"]["nodes"]["bundles"]["zebflow.duplicate"] = duplicate;
         assert!(decode_dependency_lock(&serde_json::to_vec(&value).unwrap()).is_err());
+    }
+
+    /// Every dead source word refuses, on both namespaces: a lock carrying
+    /// one is invalid and regenerates through ordinary resolution.
+    #[test]
+    fn rejects_every_dead_source_word() {
+        for dead in ["embedded", "hub", "file", "offline", "direct", "hub.remote"] {
+            let mut value: serde_json::Value = serde_json::from_slice(fixture()).unwrap();
+            value["spec"]["rwe"]["libraries"]["zeb/deckgl"]["source"] = serde_json::json!(dead);
+            assert!(
+                decode_dependency_lock(&serde_json::to_vec(&value).unwrap()).is_err(),
+                "rwe library source '{dead}' must refuse"
+            );
+
+            let mut value: serde_json::Value = serde_json::from_slice(fixture()).unwrap();
+            value["spec"]["nodes"]["bundles"]["zebflow.sim-des"]["source"] =
+                serde_json::json!(dead);
+            assert!(
+                decode_dependency_lock(&serde_json::to_vec(&value).unwrap()).is_err(),
+                "node bundle source '{dead}' must refuse"
+            );
+        }
     }
 
     #[test]
     fn rejects_dependency_sources_without_v1_resolvers() {
-        // `hub` became a v1 resolver for libraries when the local hub gained
-        // rwe_library packages; `project` remains the source no channel
-        // produces for a library.
+        // Every hub serving and both direct forms are accepted for a library;
+        // `project` remains the source no channel produces for one.
+        for accepted in ["hub.local", "hub.public", "hub.static", "direct.file"] {
+            let mut value: serde_json::Value = serde_json::from_slice(fixture()).unwrap();
+            value["spec"]["rwe"]["libraries"]["zeb/deckgl"]["source"] = serde_json::json!(accepted);
+            assert!(
+                decode_dependency_lock(&serde_json::to_vec(&value).unwrap()).is_ok(),
+                "rwe library source '{accepted}' must be accepted"
+            );
+        }
         let mut value: serde_json::Value = serde_json::from_slice(fixture()).unwrap();
-        value["spec"]["rwe"]["libraries"]["zeb/deckgl"]["source"] = serde_json::json!("hub");
+        value["spec"]["rwe"]["libraries"]["zeb/deckgl"]["source"] = serde_json::json!("direct.npm");
+        value["spec"]["rwe"]["libraries"]["zeb/deckgl"]["source_id"] =
+            serde_json::json!("npm/deck.gl@9.1.0");
         assert!(decode_dependency_lock(&serde_json::to_vec(&value).unwrap()).is_ok());
 
         let mut value: serde_json::Value = serde_json::from_slice(fixture()).unwrap();
         value["spec"]["rwe"]["libraries"]["zeb/deckgl"]["source"] = serde_json::json!("project");
         assert!(decode_dependency_lock(&serde_json::to_vec(&value).unwrap()).is_err());
 
+        // A node bundle never locks as a converted npm package.
         let mut value: serde_json::Value = serde_json::from_slice(fixture()).unwrap();
-        value["spec"]["nodes"]["bundles"]["zebflow/sim-des"]["source"] =
-            serde_json::json!("embedded");
+        value["spec"]["nodes"]["bundles"]["zebflow.sim-des"]["source"] =
+            serde_json::json!("direct.npm");
+        value["spec"]["nodes"]["bundles"]["zebflow.sim-des"]["source_id"] =
+            serde_json::json!("npm/sim-des@1.0.0");
+        assert!(decode_dependency_lock(&serde_json::to_vec(&value).unwrap()).is_err());
+    }
+
+    #[test]
+    fn hub_source_ids_must_be_package_coordinates() {
+        for bad in ["zebflow/deckgl", "zebflow.deckgl", "deckgl@0.1.1", "@0.1.1"] {
+            let mut value: serde_json::Value = serde_json::from_slice(fixture()).unwrap();
+            value["spec"]["rwe"]["libraries"]["zeb/deckgl"]["source_id"] = serde_json::json!(bad);
+            assert!(
+                decode_dependency_lock(&serde_json::to_vec(&value).unwrap()).is_err(),
+                "hub source_id '{bad}' must refuse"
+            );
+        }
+    }
+
+    /// Bundle keys are the canonical package coordinate in dot form; the
+    /// slash form an earlier draft used is refused.
+    #[test]
+    fn rejects_slash_form_bundle_keys() {
+        let mut value: serde_json::Value = serde_json::from_slice(fixture()).unwrap();
+        let entry = value["spec"]["nodes"]["bundles"]["zebflow.sim-des"].clone();
+        value["spec"]["nodes"]["bundles"] = serde_json::json!({"zebflow/sim-des": entry});
         assert!(decode_dependency_lock(&serde_json::to_vec(&value).unwrap()).is_err());
     }
 
@@ -422,8 +572,8 @@ mod tests {
                 name.to_string(),
                 DependencyLockArtifactSpec {
                     version: "1".to_string(),
-                    source: DependencyLockSource::Embedded,
-                    source_id: format!("zebflow/{name}"),
+                    source: DependencyLockSource::HubLocal,
+                    source_id: format!("zebflow.{}@1", name.trim_start_matches("zeb/")),
                     entry: "dist/main.mjs".to_string(),
                     integrity: format!("sha256:{}", "a".repeat(64)),
                 },
