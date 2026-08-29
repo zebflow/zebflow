@@ -77,10 +77,29 @@ declaration mistake then costs display safety, never storage safety.
 | Rule | |
 | --- | --- |
 | Cipher | an AEAD — the ciphertext authenticates, so a wrong key fails loudly instead of yielding garbage |
+| Ciphertext | self-describing: it names the format that produced it and the key that made it. Never a bare blob whose algorithm is implied by the reader's version |
 | Key | generated at first boot into the data directory, mode 0600, overridable by environment |
 | Never | a default key compiled into the binary |
 | Never | the key stored in the database beside the ciphertext |
 | On a missing or wrong key | refuse to start. Never regenerate, never fall back to plaintext |
+
+The ciphertext being self-describing is what lets the cipher change later
+without stranding data: a reader that meets an older format tag knows what it
+is holding instead of guessing from its own version.
+
+For example, a format tag, the data key, and the AEAD output:
+
+```
+zfc1:3:base64( nonce ‖ ciphertext ‖ tag )
+```
+
+where `zfc1` pins both the envelope and the algorithm, so a later `zfc2` can
+change cipher while `zfc1` bytes stay readable. XChaCha20-Poly1305 is the
+recommended choice for `zfc1`: constant-time in pure software, so it does not
+depend on AES hardware a Raspberry Pi may not have, and its large nonce makes
+random nonces safe without keeping a counter. AES-256-GCM is a reasonable
+alternative where that hardware exists. The contract requires the shape; the
+named cipher is a recommendation.
 
 **Key versioning exists from the first release.** The instance key wraps
 versioned data keys, and every ciphertext names the key that made it. New
