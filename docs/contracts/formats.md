@@ -45,7 +45,7 @@ The review and freeze status for each kind is maintained in the
 | `ZebFsAcl` | Envelope | Project file access rules |
 | `DatabaseSchema` | Envelope | Portable project database schema |
 | `ProjectBundle` | Envelope | Manifest inside a project transfer archive |
-| `RuntimeBundle` | Envelope | Office-to-office runtime materialization request |
+| `ProjectPlacement` | Envelope | Office-to-office runtime materialization request |
 | `HubPackage` | Envelope | Published Hub package artifact |
 | `RweLibraryManifest` | Envelope | Offline or hub-distributed RWE library definition |
 | `MapPublishManifest` | Envelope | Project MapServer published-layer registry |

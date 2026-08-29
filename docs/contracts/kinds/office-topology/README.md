@@ -6,8 +6,8 @@ This contract defines where a Zebflow deployment may run work: which offices
 exist, what role each holds, where platform services are placed, and which
 runtime nodes are registered under each office.
 
-It is the declaration. [`RuntimeBundle`](../runtime-bundle/README.md) is the
-materialisation. Topology states *where things may run*; a runtime bundle
+It is the declaration. [`ProjectPlacement`](../project-placement/README.md) is the
+materialisation. Topology states *where things may run*; a project placement
 carries *what runs there*. Keeping them apart is the same split as a pipeline
 and its activated snapshot, or a dependency lock and an installed bundle.
 

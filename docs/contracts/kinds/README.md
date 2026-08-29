@@ -21,7 +21,7 @@ explicitly.
 | 7 | [`ZebFsAcl`](./zebfs-acl/README.md) | Envelope, persisted file | Pending |
 | 8 | [`DatabaseSchema`](./database-schema/README.md) | Directory convention, plain statement files (no envelope) | Review |
 | 9 | [`ProjectBundle`](./project-bundle/README.md) | Envelope, transfer archive | Review |
-| 10 | [`RuntimeBundle`](./runtime-bundle/README.md) | Envelope, runtime transfer | Pending |
+| 10 | [`ProjectPlacement`](./project-placement/README.md) | Envelope, runtime transfer | Pending |
 | 11 | [`HubPackage`](./hub-package/README.md) | Envelope, stored and transferred package | Candidate |
 | 12 | [`RweLibraryManifest`](./rwe-library-manifest/README.md) | Envelope, persisted library source | Review |
 | 13 | [`MapPublishManifest`](./map-publish-manifest/README.md) | Envelope, persisted file | Pending |
