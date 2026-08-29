@@ -205,7 +205,6 @@ impl PlatformService {
         let cluster_registry = Arc::new(ClusterRegistryService::new(data.clone()));
         let cluster_placement = Arc::new(ClusterPlacementService::new(data.clone()));
         let cluster_runtime_sync = Arc::new(ClusterRuntimeSyncService::new(
-            data.clone(),
             file.clone(),
             projects.clone(),
             zebflow_cfg.clone(),
@@ -247,27 +246,39 @@ impl PlatformService {
             dependency_lock,
         };
         svc.bootstrap_local_office()?;
-        if !svc.cluster_bootstrap.is_worker() {
-            svc.bootstrap_defaults()?;
-            // Seed the local hub with the blessed content this binary carries
-            // (`distribution.md` §1b: runs at every boot, check-first, as the
-            // reserved `zebflow` publisher — the seed is the shelf's only
-            // writer). The seed touches `services/hub-local/` only — the
-            // Public Hub service and its store stay exactly as the operator
-            // left them. Idempotent — already-published coordinates are
-            // skipped — and never fatal: a refused package is reported and
-            // retried next boot rather than keeping the instance down.
-            match svc.hub.seed_blessed_catalog() {
-                Ok(report) => {
-                    if !report.published.is_empty() {
-                        println!("hub: seeded {}", report.published.join(", "));
-                    }
-                    for error in &report.errors {
-                        eprintln!("⚠ hub seed: {error}");
-                    }
+        // Role does not change what an office is made of. `offices.md` §4 keeps
+        // institutions on both sides of a join — "every office seeds its own
+        // blessed shelf and data root, joined or not; identical bytes for the
+        // same release" — and §6 and §7 need the local account to exist even
+        // while the controller is the normal door: break-glass "re-enables
+        // local authority" on an account that is "disabled, not merely
+        // unknown", and a detached office "is a complete instance the moment it
+        // leaves". Neither is possible on an office that never created one.
+        //
+        // Owed, and recorded in `stability-matrix.md` row 14d: while joined the
+        // local account must be disabled for login (§4). That machinery — the
+        // disable, the break-glass re-enable, and the owner mapping — does not
+        // exist yet, so a joined office's local account is live exactly as a
+        // standalone office's is.
+        svc.bootstrap_defaults()?;
+        // Seed the local hub with the blessed content this binary carries
+        // (`distribution.md` §1b: runs at every boot, check-first, as the
+        // reserved `zebflow` publisher — the seed is the shelf's only
+        // writer). The seed touches `services/hub-local/` only — the
+        // Public Hub service and its store stay exactly as the operator
+        // left them. Idempotent — already-published coordinates are
+        // skipped — and never fatal: a refused package is reported and
+        // retried next boot rather than keeping the instance down.
+        match svc.hub.seed_blessed_catalog() {
+            Ok(report) => {
+                if !report.published.is_empty() {
+                    println!("hub: seeded {}", report.published.join(", "));
                 }
-                Err(error) => eprintln!("⚠ hub seed failed: {}", error.message),
+                for error in &report.errors {
+                    eprintln!("⚠ hub seed: {error}");
+                }
             }
+            Err(error) => eprintln!("⚠ hub seed failed: {}", error.message),
         }
         // Reload active pipelines for every project across all users.
         if let Ok(users) = svc.data.list_users() {

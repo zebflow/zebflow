@@ -51,8 +51,7 @@ use crate::platform::model::{
     DescribeProjectDbConnectionRequest, ExecutePipelineRequest, GitCommitRequest, LoginRequest,
     McpSessionCreateRequest, McpSessionToggleRequest, PipelineExecuteTrigger,
     PipelineInvocationEntry, PipelineLocateRequest, ProjectAccessSubject, ProjectCapability,
-    ProjectDocItem, ProjectDocMoveRequest, ProjectOperationKind,
-    ProjectRuntimeMaterializationRequest, ProjectTransferArtifactKind,
+    ProjectDocItem, ProjectDocMoveRequest, ProjectOperationKind, ProjectTransferArtifactKind,
     QueryProjectDbConnectionRequest, TemplateCompileRequest, TemplateCompileResponse,
     TemplateCreateRequest, TemplateDiagnostic, TemplateMoveRequest, TemplateSaveRequest,
     TestProjectDbConnectionRequest, UpdateSettingsSectionRequest, UpdateSimpleTableRequest,
@@ -518,10 +517,6 @@ pub async fn router(platform: Arc<PlatformService>) -> Router {
         .route(
             "/api/internal/cluster/workers/heartbeat",
             post(api_internal_cluster_worker_heartbeat),
-        )
-        .route(
-            "/api/internal/runtime/materialize",
-            post(api_internal_runtime_materialize_project),
         )
         .route(
             "/api/internal/runtime/execute/{owner}/{project}",
@@ -1121,10 +1116,6 @@ pub async fn router(platform: Arc<PlatformService>) -> Router {
         .route(
             "/api/projects/{owner}/{project}/runtime",
             get(api_project_runtime_status),
-        )
-        .route(
-            "/api/projects/{owner}/{project}/runtime/sync",
-            post(api_project_runtime_sync),
         )
         .route(
             "/api/projects/{owner}/{project}/transfer/operations",
@@ -3811,13 +3802,32 @@ fn require_cluster_internal_token(
         .into_response())
 }
 
+/// Finish creating or reconfiguring a project on **this** office.
+///
+/// Placement onto another office is refused rather than faked. It used to be
+/// implemented by the master-to-worker copier, which is retired
+/// (`stability-matrix.md` row 12): a project is created on the office that will
+/// run it, and moves between offices as a `ProjectBundle`. Remote placement
+/// itself is recorded as unbuilt in `offices.md` §9, so the code says so.
 async fn finalize_project_runtime_setup(
     state: &PlatformAppState,
     owner: &str,
     project: &str,
     selection: &crate::platform::model::ProjectRuntimeSelectionRequest,
 ) -> Result<crate::infra::execution::placement::ProjectRuntimePlacement, PlatformError> {
-    let previous_placement = state.platform.cluster_placement.get(owner, project)?;
+    if selection
+        .placement_worker_id
+        .as_deref()
+        .map(str::trim)
+        .is_some_and(|value| !value.is_empty() && value != "local")
+    {
+        return Err(PlatformError::new(
+            "CLUSTER_REMOTE_PLACEMENT_UNBUILT",
+            "placing a project on another office is not built: a project is created on the \
+             office that will run it, and moves between offices as a ProjectBundle export \
+             and import (offices.md section 9, stability-matrix.md row 12)",
+        ));
+    }
     if let Some(mode) = selection.runtime_mode {
         state.platform.zebflow_cfg.update(owner, project, |cfg| {
             cfg.configs.runtime.mode = mode;
@@ -3837,294 +3847,7 @@ async fn finalize_project_runtime_setup(
         &runtime_profile,
         selection,
     )?;
-    if placement.target == ProjectRuntimePlacementTarget::Worker {
-        let previous_worker_id = previous_placement
-            .as_ref()
-            .filter(|previous| previous.target == ProjectRuntimePlacementTarget::Worker)
-            .and_then(|previous| previous.worker_id.as_deref());
-        let next_worker_id = placement.worker_id.as_deref();
-        match (previous_worker_id, next_worker_id) {
-            (Some(previous_worker_id), Some(next_worker_id))
-                if previous_worker_id != next_worker_id =>
-            {
-                transfer_project_between_remote_workers(
-                    state,
-                    owner,
-                    project,
-                    previous_worker_id,
-                    next_worker_id,
-                )
-                .await?;
-            }
-            _ => sync_project_to_remote_worker(state, owner, project, &placement).await?,
-        }
-    }
     Ok(placement)
-}
-
-async fn transfer_project_between_remote_workers(
-    state: &PlatformAppState,
-    owner: &str,
-    project: &str,
-    from_worker_id: &str,
-    to_worker_id: &str,
-) -> Result<(), PlatformError> {
-    let from_worker = state
-        .platform
-        .cluster_registry
-        .get_worker(from_worker_id)?
-        .ok_or_else(|| {
-            PlatformError::new(
-                "CLUSTER_WORKER_UNKNOWN",
-                format!("source office '{}' is not registered", from_worker_id),
-            )
-        })?;
-    let to_worker = state
-        .platform
-        .cluster_registry
-        .get_worker(to_worker_id)?
-        .ok_or_else(|| {
-            PlatformError::new(
-                "CLUSTER_WORKER_UNKNOWN",
-                format!("target office '{}' is not registered", to_worker_id),
-            )
-        })?;
-    let kind = ProjectTransferArtifactKind::Bundle;
-    materialize_project_to_remote_worker(state, owner, project, to_worker_id).await?;
-    let token = cluster_internal_token_value(state)?;
-    let export_url = format!(
-        "{}/api/internal/project-transfer/{}/{}/export/{}",
-        from_worker.base_url.trim_end_matches('/'),
-        owner,
-        project,
-        kind.key()
-    );
-    let export_response = state
-        .http_client
-        .post(export_url)
-        .header(INTERNAL_CLUSTER_TOKEN_HEADER, token)
-        .send()
-        .await
-        .map_err(|err| {
-            PlatformError::new(
-                "PROJECT_TRANSFER_EXPORT",
-                format!(
-                    "failed exporting project from office '{}': {err}",
-                    from_worker_id
-                ),
-            )
-        })?;
-    if !export_response.status().is_success() {
-        let status = export_response.status();
-        let body = export_response.text().await.unwrap_or_default();
-        return Err(PlatformError::new(
-            "PROJECT_TRANSFER_EXPORT",
-            format!(
-                "office '{}' rejected project export with {status}: {body}",
-                from_worker_id
-            ),
-        ));
-    }
-    let archive = export_response
-        .bytes()
-        .await
-        .map_err(|err| PlatformError::new("PROJECT_TRANSFER_EXPORT", err.to_string()))?;
-    let import_url = format!(
-        "{}/api/internal/project-transfer/{}/{}/import/{}",
-        to_worker.base_url.trim_end_matches('/'),
-        owner,
-        project,
-        kind.key()
-    );
-    let import_response = state
-        .http_client
-        .post(import_url)
-        .header(INTERNAL_CLUSTER_TOKEN_HEADER, token)
-        .header(CONTENT_TYPE, "application/x-tar")
-        .body(archive)
-        .send()
-        .await
-        .map_err(|err| {
-            PlatformError::new(
-                "PROJECT_TRANSFER_IMPORT",
-                format!(
-                    "failed importing project into office '{}': {err}",
-                    to_worker_id
-                ),
-            )
-        })?;
-    if import_response.status().is_success() {
-        return Ok(());
-    }
-    let status = import_response.status();
-    let body = import_response.text().await.unwrap_or_default();
-    Err(PlatformError::new(
-        "PROJECT_TRANSFER_IMPORT",
-        format!(
-            "office '{}' rejected project import with {status}: {body}",
-            to_worker_id
-        ),
-    ))
-}
-
-async fn materialize_project_to_remote_worker(
-    state: &PlatformAppState,
-    owner: &str,
-    project: &str,
-    worker_id: &str,
-) -> Result<(), PlatformError> {
-    state
-        .platform
-        .cluster_runtime_sync
-        .refresh_local_repo_state(owner, project)?;
-    let worker = state
-        .platform
-        .cluster_registry
-        .get_worker(worker_id)?
-        .ok_or_else(|| {
-            PlatformError::new(
-                "CLUSTER_WORKER_UNKNOWN",
-                format!("office '{}' is not registered", worker_id),
-            )
-        })?;
-    if worker.base_url.trim().is_empty() {
-        return Err(PlatformError::new(
-            "CLUSTER_WORKER_UNREACHABLE",
-            format!("office '{}' has no advertised base URL", worker_id),
-        ));
-    }
-    let token = cluster_internal_token_value(state)?;
-    let request = state
-        .platform
-        .cluster_runtime_sync
-        .build_materialization_request(
-            owner,
-            project,
-            state
-                .platform
-                .data
-                .list_project_credentials(owner, project)?,
-            state
-                .platform
-                .data
-                .list_project_db_connections(owner, project)?,
-        )?;
-    let request = runtime_materialization_contract_value(request)?;
-    let url = format!(
-        "{}/api/internal/runtime/materialize",
-        worker.base_url.trim_end_matches('/')
-    );
-    let response = state
-        .http_client
-        .post(url)
-        .header(INTERNAL_CLUSTER_TOKEN_HEADER, token)
-        .json(&request)
-        .send()
-        .await
-        .map_err(|err| {
-            PlatformError::new(
-                "CLUSTER_WORKER_SYNC",
-                format!("failed syncing project to office '{}': {err}", worker_id),
-            )
-        })?;
-    if response.status().is_success() {
-        return Ok(());
-    }
-    let status = response.status();
-    let body = response
-        .text()
-        .await
-        .unwrap_or_else(|_| "office returned an unreadable error response".to_string());
-    Err(PlatformError::new(
-        "CLUSTER_WORKER_SYNC",
-        format!(
-            "office '{}' rejected runtime sync with {}: {}",
-            worker_id, status, body
-        ),
-    ))
-}
-
-async fn sync_project_to_remote_worker(
-    state: &PlatformAppState,
-    owner: &str,
-    project: &str,
-    placement: &crate::infra::execution::placement::ProjectRuntimePlacement,
-) -> Result<(), PlatformError> {
-    state
-        .platform
-        .cluster_runtime_sync
-        .refresh_local_repo_state(owner, project)?;
-    let worker_id = placement.worker_id.as_deref().ok_or_else(|| {
-        PlatformError::new(
-            "CLUSTER_WORKER_UNKNOWN",
-            "placement does not include an office id",
-        )
-    })?;
-    let worker = state
-        .platform
-        .cluster_registry
-        .get_worker(worker_id)?
-        .ok_or_else(|| {
-            PlatformError::new(
-                "CLUSTER_WORKER_UNKNOWN",
-                format!("office '{}' is not registered", worker_id),
-            )
-        })?;
-    if worker.base_url.trim().is_empty() {
-        return Err(PlatformError::new(
-            "CLUSTER_WORKER_UNREACHABLE",
-            format!("office '{}' has no advertised base URL", worker_id),
-        ));
-    }
-    let token = cluster_internal_token_value(state)?;
-    let request = state
-        .platform
-        .cluster_runtime_sync
-        .build_materialization_request(
-            owner,
-            project,
-            state
-                .platform
-                .data
-                .list_project_credentials(owner, project)?,
-            state
-                .platform
-                .data
-                .list_project_db_connections(owner, project)?,
-        )?;
-    let request = runtime_materialization_contract_value(request)?;
-    let url = format!(
-        "{}/api/internal/runtime/materialize",
-        worker.base_url.trim_end_matches('/')
-    );
-    let response = state
-        .http_client
-        .post(url)
-        .header(INTERNAL_CLUSTER_TOKEN_HEADER, token)
-        .json(&request)
-        .send()
-        .await
-        .map_err(|err| {
-            PlatformError::new(
-                "CLUSTER_WORKER_SYNC",
-                format!("failed syncing project to office '{}': {err}", worker_id),
-            )
-        })?;
-    if response.status().is_success() {
-        return Ok(());
-    }
-    let status = response.status();
-    let body = response
-        .text()
-        .await
-        .unwrap_or_else(|_| "office returned an unreadable error response".to_string());
-    Err(PlatformError::new(
-        "CLUSTER_WORKER_SYNC",
-        format!(
-            "office '{}' rejected runtime sync with {}: {}",
-            worker_id, status, body
-        ),
-    ))
 }
 
 fn cluster_runtime_summary(
@@ -9895,51 +9618,6 @@ async fn api_project_runtime_status(
     .into_response()
 }
 
-async fn api_project_runtime_sync(
-    State(state): State<PlatformAppState>,
-    headers: HeaderMap,
-    Path((owner, project)): Path<(String, String)>,
-) -> Response {
-    if let Err(response) = require_project_api_capability(
-        &state,
-        &headers,
-        &owner,
-        &project,
-        ProjectCapability::SettingsWrite,
-    ) {
-        return response;
-    }
-    let placement = match state.platform.cluster_placement.get(&owner, &project) {
-        Ok(Some(placement)) => placement,
-        Ok(None) => {
-            return Json(json!({
-                "ok": true,
-                "placement": null,
-                "message": "project is local; no remote sync required"
-            }))
-            .into_response();
-        }
-        Err(err) => return internal_error(err),
-    };
-    if placement.target != ProjectRuntimePlacementTarget::Worker {
-        return Json(json!({
-            "ok": true,
-            "placement": placement,
-            "message": "project is local; no remote sync required"
-        }))
-        .into_response();
-    }
-    match sync_project_to_remote_worker(&state, &owner, &project, &placement).await {
-        Ok(_) => Json(json!({
-            "ok": true,
-            "placement": placement,
-            "message": "runtime synced to remote office"
-        }))
-        .into_response(),
-        Err(err) => internal_error(err),
-    }
-}
-
 async fn api_internal_cluster_register_worker(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
@@ -9966,99 +9644,6 @@ async fn api_internal_cluster_worker_heartbeat(
         Ok(heartbeat) => Json(heartbeat).into_response(),
         Err(err) => internal_error(err),
     }
-}
-
-async fn api_internal_runtime_materialize_project(
-    State(state): State<PlatformAppState>,
-    headers: HeaderMap,
-    Json(value): Json<Value>,
-) -> Response {
-    if let Err(response) = require_cluster_internal_token(&state, &headers) {
-        return response;
-    }
-    let req = match crate::contracts::decode_contract_value::<
-        crate::contracts::kinds::RuntimeBundleContract,
-    >(value)
-    {
-        Ok(document) => document.spec,
-        Err(err) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(json!({
-                    "ok": false,
-                    "error": {
-                        "code": "RUNTIME_BUNDLE_CONTRACT",
-                        "message": format!("{} ({})", err, err.category())
-                    }
-                })),
-            )
-                .into_response();
-        }
-    };
-    match state
-        .platform
-        .cluster_runtime_sync
-        .apply_materialization_request(&req)
-    {
-        Ok(_) => {
-            let owner = &req.bundle.identity.owner;
-            let project = &req.bundle.identity.project;
-            if let Err(err) = state.platform.node_registry.refresh_project(owner, project) {
-                return internal_error(err);
-            }
-            let requested = match state.platform.zebflow_cfg.get_rwe_libraries(owner, project) {
-                Ok(value) => value,
-                Err(err) => return internal_error(err),
-            };
-            let dependencies = match state
-                .platform
-                .dependency_lock
-                .status(owner, project, &requested)
-            {
-                Ok(report) => report,
-                Err(err) => return internal_error(err),
-            };
-            if !dependencies.ok {
-                return (
-                    StatusCode::CONFLICT,
-                    Json(json!({
-                        "ok": false,
-                        "error": {
-                            "code": "RUNTIME_DEPENDENCIES_UNRESOLVED",
-                            "message": "runtime materialization contains unresolved dependencies"
-                        },
-                        "dependencies": dependencies
-                    })),
-                )
-                    .into_response();
-            }
-            Json(json!({
-                "ok": true,
-                "project": req.bundle.identity,
-                "dependencies": dependencies
-            }))
-            .into_response()
-        }
-        Err(err) => internal_error(err),
-    }
-}
-
-fn runtime_materialization_contract_value(
-    request: ProjectRuntimeMaterializationRequest,
-) -> Result<Value, PlatformError> {
-    let name = request.bundle.identity.project.clone();
-    let bytes =
-        crate::contracts::encode_contract::<crate::contracts::kinds::RuntimeBundleContract>(
-            crate::contracts::ContractMetadata::named(name),
-            request,
-        )
-        .map_err(|err| {
-            PlatformError::new(
-                "RUNTIME_BUNDLE_CONTRACT",
-                format!("{} ({})", err, err.category()),
-            )
-        })?;
-    serde_json::from_slice(&bytes).map_err(PlatformError::from)
 }
 
 async fn api_internal_runtime_execute_pipeline(

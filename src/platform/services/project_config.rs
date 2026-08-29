@@ -13,12 +13,11 @@ use crate::contracts::{
     ContractMetadata, decode_contract, read_optional_contract_yaml, write_contract_yaml,
 };
 use crate::infra::execution::placement::ProjectRuntimeProfile;
-use crate::infra::execution::sync::ProjectBootstrapPlan;
 use crate::infra::io::durable::atomic_write;
 use crate::platform::error::PlatformError;
 use crate::platform::model::{
-    ResolvedProjectLayout, ZebflowJson, ZebflowJsonAssistant, ZebflowJsonDistributionHub,
-    ZebflowJsonRweLibraries, ZebflowJsonRweLibraryEntry, slug_segment,
+    ProjectBootstrapPlan, ResolvedProjectLayout, ZebflowJson, ZebflowJsonAssistant,
+    ZebflowJsonDistributionHub, ZebflowJsonRweLibraries, ZebflowJsonRweLibraryEntry, slug_segment,
 };
 
 /// Modification time and size of `path`, or `None` when it does not exist.

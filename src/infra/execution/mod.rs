@@ -18,4 +18,3 @@ pub mod backend;
 pub mod handle;
 pub mod placement;
 pub mod runner;
-pub mod sync;

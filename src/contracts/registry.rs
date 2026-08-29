@@ -15,7 +15,6 @@ pub enum ContractKind {
     ZebFsAcl,
     DatabaseSchema,
     ProjectBundle,
-    RuntimeBundle,
     HubPackage,
     HubRepositoryIndex,
     RweLibraryManifest,
@@ -39,7 +38,6 @@ impl ContractKind {
             Self::ZebFsAcl => "ZebFsAcl",
             Self::DatabaseSchema => "DatabaseSchema",
             Self::ProjectBundle => "ProjectBundle",
-            Self::RuntimeBundle => "RuntimeBundle",
             Self::HubPackage => "HubPackage",
             Self::HubRepositoryIndex => "HubRepositoryIndex",
             Self::RweLibraryManifest => "RweLibraryManifest",
@@ -99,7 +97,6 @@ const ALL_CONTRACT_DESCRIPTORS: &[ContractDescriptor] = &[
     envelope(ContractKind::ZebFsAcl, "zebfs", "persisted"),
     envelope(ContractKind::DatabaseSchema, "platform", "persisted"),
     envelope(ContractKind::ProjectBundle, "platform", "transferred"),
-    envelope(ContractKind::RuntimeBundle, "execution", "transferred"),
     envelope(ContractKind::HubPackage, "platform", "transferred"),
     envelope(ContractKind::HubRepositoryIndex, "platform", "transferred"),
     envelope(ContractKind::RweLibraryManifest, "rwe", "persisted"),
@@ -185,6 +182,6 @@ mod tests {
             assert!(!descriptor.owner.is_empty());
             assert!(!descriptor.boundary.is_empty());
         }
-        assert_eq!(kinds.len(), 18);
+        assert_eq!(kinds.len(), 17);
     }
 }

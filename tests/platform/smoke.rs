@@ -163,7 +163,69 @@ async fn office_refuses_to_start_without_cluster_configuration_and_starts_with_i
     assert_eq!(health.status(), StatusCode::OK);
     assert_eq!(response_json(health).await["status"], json!("ok"));
 
+    // `offices.md` §4 keeps institutions on both sides of a join: "every office
+    // seeds its own blessed shelf and data root, joined or not; identical bytes
+    // for the same release". A standalone instance of the same binary is the
+    // yardstick — the office must hold exactly the same coordinates.
+    let standalone_root = temp_test_dir("standalone-beside-an-office");
+    let mut standalone = PlatformConfig::default();
+    standalone.data_root = standalone_root.clone();
+    let _standalone = build_router(standalone)
+        .await
+        .expect("standalone instance starts");
+
+    let office_shelf = blessed_shelf_coordinates(&configured_root);
+    assert_eq!(
+        office_shelf,
+        blessed_shelf_coordinates(&standalone_root),
+        "a joined office's blessed shelf must match a standalone instance's"
+    );
+    assert!(
+        !office_shelf.is_empty(),
+        "the release seeds a non-empty blessed shelf"
+    );
+
+    // §6 re-enables an account that is "disabled, not merely unknown", and §7
+    // makes a detached office "a complete instance the moment it leaves".
+    // Neither is possible on an office that never created a local account, so
+    // the first-boot defaults run for an office exactly as they do standalone.
+    assert!(
+        configured_root
+            .join("users")
+            .join(PlatformConfig::default().default_owner)
+            .join(PlatformConfig::default().default_project)
+            .is_dir(),
+        "an office creates its own default owner and project"
+    );
+
     let _ = fs::remove_dir_all(configured_root);
+    let _ = fs::remove_dir_all(standalone_root);
+}
+
+/// Every `{package}@{version}` coordinate on one instance's blessed shelf.
+fn blessed_shelf_coordinates(data_root: &Path) -> Vec<String> {
+    let packages_dir = data_root
+        .join("services")
+        .join("hub-local")
+        .join("packages");
+    let mut coordinates = Vec::new();
+    let Ok(packages) = fs::read_dir(&packages_dir) else {
+        return coordinates;
+    };
+    for package in packages.flatten() {
+        let package_id = package.file_name().to_string_lossy().to_string();
+        let Ok(versions) = fs::read_dir(package.path().join("versions")) else {
+            continue;
+        };
+        for version in versions.flatten() {
+            coordinates.push(format!(
+                "{package_id}@{}",
+                version.file_name().to_string_lossy()
+            ));
+        }
+    }
+    coordinates.sort();
+    coordinates
 }
 
 /// Multipart body with text fields plus one file field, for platform import.

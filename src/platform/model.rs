@@ -9,7 +9,6 @@ use crate::infra::cluster::config::ClusterSettings;
 use crate::infra::cluster::registry::WorkerHeartbeat;
 use crate::infra::execution::placement::ProjectRuntimeProfile;
 use crate::infra::execution::runner::RunnerCapabilities;
-use crate::infra::execution::sync::{ProjectBootstrapPlan, ProjectRuntimeBundle};
 
 /// Data adapter selection.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -2553,6 +2552,20 @@ pub struct ZebflowJsonMetadata {
     pub description: String,
 }
 
+/// Repo-owned activation/bootstrap intent: which pipelines `zebflow.yaml`
+/// asks the office to activate once the project's source is in place.
+///
+/// This is the project's own configuration, not a transfer format. It is read
+/// by [`ProjectConfigurationSpec`](crate::contracts::kinds::ProjectConfigurationSpec)
+/// and applied by the local repo refresh.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ProjectBootstrapPlan {
+    /// Pipeline glob patterns that should auto-activate after clone/import.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub activate: Vec<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 pub struct ZebflowJsonConfigs {
@@ -3205,20 +3218,6 @@ pub struct ProjectRuntimeSelectionRequest {
     /// Selected runtime host id, or `None`/`local` for the current office.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub placement_worker_id: Option<String>,
-}
-
-/// Internal control-plane payload used to materialize a project onto another office.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
-pub struct ProjectRuntimeMaterializationRequest {
-    /// Portable project runtime bundle.
-    #[serde(default)]
-    pub bundle: ProjectRuntimeBundle,
-    /// Runtime credentials to materialize locally on the destination office.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub credentials: Vec<ProjectCredential>,
-    /// Runtime DB connections to materialize locally on the destination office.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub db_connections: Vec<ProjectDbConnection>,
 }
 
 /// Internal office registration request.

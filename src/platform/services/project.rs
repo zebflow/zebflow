@@ -4197,7 +4197,7 @@ mod tests {
             .set_bootstrap(
                 "superadmin",
                 "default",
-                crate::infra::execution::sync::ProjectBootstrapPlan {
+                crate::platform::model::ProjectBootstrapPlan {
                     activate: vec!["pipelines/api/*.zf.json".to_string()],
                 },
             )

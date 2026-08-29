@@ -14,13 +14,13 @@ use crate::infra::execution::backend::ExecutionProfileKind;
 use crate::infra::execution::placement::{
     ProjectRuntimeMode, ProjectRuntimeProfile, ResourceProfile, RuntimeResourceSpec,
 };
-use crate::infra::execution::sync::ProjectBootstrapPlan;
 use crate::platform::model::{
-    DEFAULT_ALLOWED_FILE_EXTENSIONS, ZebflowJson, ZebflowJsonAssistant, ZebflowJsonConfigs,
-    ZebflowJsonData, ZebflowJsonDistribution, ZebflowJsonDistributionHub, ZebflowJsonFiles,
-    ZebflowJsonGit, ZebflowJsonGitRemote, ZebflowJsonInitialDataDir, ZebflowJsonLayout,
-    ZebflowJsonLocks, ZebflowJsonLogging, ZebflowJsonMetadata, ZebflowJsonPipelines,
-    ZebflowJsonRwe, ZebflowJsonRweLibraryEntry, ZebflowJsonUploads, slug_segment,
+    DEFAULT_ALLOWED_FILE_EXTENSIONS, ProjectBootstrapPlan, ZebflowJson, ZebflowJsonAssistant,
+    ZebflowJsonConfigs, ZebflowJsonData, ZebflowJsonDistribution, ZebflowJsonDistributionHub,
+    ZebflowJsonFiles, ZebflowJsonGit, ZebflowJsonGitRemote, ZebflowJsonInitialDataDir,
+    ZebflowJsonLayout, ZebflowJsonLocks, ZebflowJsonLogging, ZebflowJsonMetadata,
+    ZebflowJsonPipelines, ZebflowJsonRwe, ZebflowJsonRweLibraryEntry, ZebflowJsonUploads,
+    slug_segment,
 };
 
 /// Canonical repository filename for project configuration.

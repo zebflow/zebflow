@@ -9,7 +9,6 @@ mod node;
 mod pipeline;
 mod project_bundle;
 mod project_configuration;
-mod runtime_bundle;
 mod rwe_library_manifest;
 mod zebfs_acl;
 
@@ -63,6 +62,5 @@ pub use project_configuration::{
     PROJECT_CONFIGURATION_FILE, ProjectConfigurationContract, ProjectConfigurationSpec,
     ProjectInitialDataDirSpec, ProjectLayoutSpec, decode_legacy_project_configuration,
 };
-pub use runtime_bundle::RuntimeBundleContract;
 pub use rwe_library_manifest::RweLibraryManifestContract;
 pub use zebfs_acl::ZebFsAclContract;
