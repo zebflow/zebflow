@@ -70,24 +70,10 @@ migrations and typed adapters rather than being wrapped in a JSON envelope.
 ## FileRef
 
 FileRef stays inline because it is a hot-path node value, not a standalone
-document:
+document: it has no envelope, and `__zf_type` is its discriminator.
 
-```json
-{
-  "__zf_type": "file_ref",
-  "backend": "zebfs",
-  "ref": "uploads/roads.geojson",
-  "size": 24810,
-  "sha256": "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-  "mime": "application/geo+json",
-  "lifecycle": "durable"
-}
-```
-
-Required fields are `__zf_type`, `backend`, `ref`, `size`, `sha256`, `mime`, and
-`lifecycle`. The digest contains exactly 64 hexadecimal digits. A consumer checks
-the stored byte count and digest before returning bytes. Legacy path-shaped JSON
-is not guessed to be a FileRef.
+Its fields, rules, and rejections live in
+[`kinds/file-ref/README.md`](./kinds/file-ref/README.md).
 
 ## Change Rule
 

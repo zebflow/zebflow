@@ -17,7 +17,7 @@ explicitly.
 | 3 | [`DependencyLock`](./dependency-lock/README.md) | Envelope, persisted file | Frozen |
 | 4 | [`NodeDefinition`](./node-definition/README.md) | Envelope, normalized node interface | Frozen |
 | 5 | [`NodeBundle`](./node-bundle/README.md) | Envelope, package source and transfer | Frozen |
-| 6 | [`FileRef`](./file-ref/README.md) | Inline payload | Pending |
+| 6 | [`FileRef`](./file-ref/README.md) | Inline payload | Review |
 | 7 | [`ZebFsAcl`](./zebfs-acl/README.md) | Envelope, persisted file | Pending |
 | 8 | [`DatabaseSchema`](./database-schema/README.md) | Directory convention, plain statement files (no envelope) | Review |
 | 9 | [`ProjectBundle`](./project-bundle/README.md) | Envelope, transfer archive | Review |
