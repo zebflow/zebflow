@@ -27,7 +27,7 @@ explicitly.
 | 14 | [`InvocationRecord`](./invocation-record/README.md) | Database record | Review |
 | 15 | [`ProjectManifest`](./project-manifest/README.md) | Reserved | Pending decision |
 | 16 | [`RweSource`](./rwe-source/README.md) | Source file, persisted | Pending |
-| 17 | [`Credential`](./credential/README.md) | Database record | Pending |
+| 17 | [`Credential`](./credential/README.md) | Database record | Review |
 | 18 | [`OfficeTopology`](./office-topology/README.md) | Envelope, persisted | Pending |
 | 19 | [`HubRepositoryIndex`](./hub-repository-index/README.md) | Envelope, transferred index | Candidate |
 
