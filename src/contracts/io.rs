@@ -342,13 +342,13 @@ mod tests {
 
     impl PlatformContract for TestContract {
         type Spec = TestSpec;
-        const KIND: ContractKind = ContractKind::ProjectManifest;
+        const KIND: ContractKind = ContractKind::ProjectConfiguration;
     }
 
     fn valid_value() -> Value {
         serde_json::json!({
             "apiVersion": CONTRACT_API_VERSION,
-            "kind": "ProjectManifest",
+            "kind": "ProjectConfiguration",
             "metadata": {"name": "test"},
             "spec": {"value": "ok"}
         })
@@ -388,19 +388,19 @@ mod tests {
 
     #[test]
     fn strict_yaml_rejects_unsafe_or_ambiguous_features() {
-        let anchor = b"apiVersion: zebflow.com/v1\nkind: ProjectManifest\nmetadata:\n  name: test\nspec:\n  value: &shared ok\n";
+        let anchor = b"apiVersion: zebflow.com/v1\nkind: ProjectConfiguration\nmetadata:\n  name: test\nspec:\n  value: &shared ok\n";
         assert!(decode_contract_yaml::<TestContract>(anchor).is_err());
 
-        let tag = b"apiVersion: zebflow.com/v1\nkind: ProjectManifest\nmetadata:\n  name: test\nspec:\n  value: !secret ok\n";
+        let tag = b"apiVersion: zebflow.com/v1\nkind: ProjectConfiguration\nmetadata:\n  name: test\nspec:\n  value: !secret ok\n";
         assert!(decode_contract_yaml::<TestContract>(tag).is_err());
 
-        let multiple = b"apiVersion: zebflow.com/v1\nkind: ProjectManifest\nmetadata: {name: test}\nspec: {value: ok}\n---\n{}\n";
+        let multiple = b"apiVersion: zebflow.com/v1\nkind: ProjectConfiguration\nmetadata: {name: test}\nspec: {value: ok}\n---\n{}\n";
         assert!(decode_contract_yaml::<TestContract>(multiple).is_err());
 
-        let non_string_key = b"apiVersion: zebflow.com/v1\nkind: ProjectManifest\nmetadata: {name: test}\nspec:\n  1: ok\n";
+        let non_string_key = b"apiVersion: zebflow.com/v1\nkind: ProjectConfiguration\nmetadata: {name: test}\nspec:\n  1: ok\n";
         assert!(decode_contract_yaml::<TestContract>(non_string_key).is_err());
 
-        let duplicate = b"apiVersion: zebflow.com/v1\nkind: ProjectManifest\nmetadata: {name: test}\nspec:\n  value: first\n  value: second\n";
+        let duplicate = b"apiVersion: zebflow.com/v1\nkind: ProjectConfiguration\nmetadata: {name: test}\nspec:\n  value: first\n  value: second\n";
         assert!(decode_contract_yaml::<TestContract>(duplicate).is_err());
     }
 

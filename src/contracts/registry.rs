@@ -7,7 +7,6 @@ pub const CONTRACT_API_VERSION: &str = "zebflow.com/v1";
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum ContractKind {
     ProjectConfiguration,
-    ProjectManifest,
     Pipeline,
     DependencyLock,
     NodeDefinition,
@@ -32,7 +31,6 @@ impl ContractKind {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::ProjectConfiguration => "ProjectConfiguration",
-            Self::ProjectManifest => "ProjectManifest",
             Self::Pipeline => "Pipeline",
             Self::DependencyLock => "DependencyLock",
             Self::NodeDefinition => "NodeDefinition",
@@ -89,13 +87,10 @@ pub enum ContractRepresentation {
     /// Authored source file with no envelope, governed by convention rather
     /// than by serialization: imports, exports, and layout.
     SourceFile,
-    /// Name reserved for a future format; no reader may accept it yet.
-    Reserved,
 }
 
 const ALL_CONTRACT_DESCRIPTORS: &[ContractDescriptor] = &[
     envelope(ContractKind::ProjectConfiguration, "platform", "persisted"),
-    reserved(ContractKind::ProjectManifest, "platform", "persisted"),
     envelope(ContractKind::Pipeline, "pipeline", "persisted"),
     envelope(ContractKind::DependencyLock, "platform", "persisted"),
     envelope(ContractKind::NodeDefinition, "pipeline", "normalized"),
@@ -166,14 +161,6 @@ const fn source_file(
     descriptor(kind, owner, boundary, ContractRepresentation::SourceFile)
 }
 
-const fn reserved(
-    kind: ContractKind,
-    owner: &'static str,
-    boundary: &'static str,
-) -> ContractDescriptor {
-    descriptor(kind, owner, boundary, ContractRepresentation::Reserved)
-}
-
 /// Returns the one registered descriptor for a kind.
 pub fn contract_descriptor(kind: ContractKind) -> &'static ContractDescriptor {
     ALL_CONTRACT_DESCRIPTORS
@@ -198,13 +185,6 @@ mod tests {
             assert!(!descriptor.owner.is_empty());
             assert!(!descriptor.boundary.is_empty());
         }
-        assert_eq!(kinds.len(), 19);
-        assert_eq!(
-            ALL_CONTRACT_DESCRIPTORS
-                .iter()
-                .filter(|item| item.representation == ContractRepresentation::Reserved)
-                .count(),
-            1
-        );
+        assert_eq!(kinds.len(), 18);
     }
 }

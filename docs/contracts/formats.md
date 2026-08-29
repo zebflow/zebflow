@@ -36,7 +36,6 @@ The review and freeze status for each kind is maintained in the
 | Kind | Representation | Purpose |
 | --- | --- | --- |
 | `ProjectConfiguration` | Envelope | Project `zebflow.yaml` settings |
-| `ProjectManifest` | Reserved | Name held for a future project manifest; no reader accepts it yet |
 | `Pipeline` | Envelope | Saved and active pipeline graphs |
 | `DependencyLock` | Envelope | Exact RWE library and installed node-bundle pins in project `zeb.lock` |
 | `NodeDefinition` | Envelope | One normalized node interface shared by native, composite, and WASM nodes |
@@ -53,9 +52,6 @@ The review and freeze status for each kind is maintained in the
 | `Credential` | Database record | One stored credential value, never distributed |
 | `OfficeTopology` | Envelope | Where a deployment may run work: offices, roles, service placement, registered runtime nodes |
 | `HubRepositoryIndex` | Envelope | Static repository index `zebflow-repository.json`: offered packages, releases, document paths, digests |
-
-Reserved kinds are not usable formats. They keep a name from being assigned a
-different meaning before its contract is designed.
 
 ## Validation Time
 
