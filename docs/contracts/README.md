@@ -8,6 +8,7 @@ rely on them.
 - [Instance directory](./instance-directory.md)
 - [Format contract](./formats.md)
 - [Distribution contract](./distribution.md)
+- [Offices contract](./offices.md)
 - [Confinement contract](./confinement.md)
 - [Interface contract](./interface.md)
 - [Registered contract kinds](./kinds/README.md)

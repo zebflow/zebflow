@@ -19,7 +19,7 @@ explicitly.
 | 5 | [`NodeBundle`](./node-bundle/README.md) | Envelope, package source and transfer | Frozen |
 | 6 | [`FileRef`](./file-ref/README.md) | Inline payload | Pending |
 | 7 | [`ZebFsAcl`](./zebfs-acl/README.md) | Envelope, persisted file | Pending |
-| 8 | [`DatabaseSchema`](./database-schema/README.md) | Envelope, persisted file | Pending |
+| 8 | [`DatabaseSchema`](./database-schema/README.md) | Directory convention, plain statement files (no envelope) | Review |
 | 9 | [`ProjectBundle`](./project-bundle/README.md) | Envelope, transfer archive | Review |
 | 10 | [`RuntimeBundle`](./runtime-bundle/README.md) | Envelope, runtime transfer | Pending |
 | 11 | [`HubPackage`](./hub-package/README.md) | Envelope, stored and transferred package | Candidate |
