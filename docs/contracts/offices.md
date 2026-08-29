@@ -21,11 +21,13 @@ leaving the instance that owns it.**
 ## 2. What an office is
 
 An office is an instance that has accepted a coordinating authority — the
-**capital**. It remains a full instance: its own data root, its own blessed
+**controller** (`ClusterRole::Master`, surfaced as `controller`; an office is
+`ClusterRole::Worker`, and an unattached instance is `Standalone`). It remains
+a full instance: its own data root, its own blessed
 shelf seeded from its own binary, its own store, its own public surface. What
 it accepts is narrow, and named in §4.
 
-The capital has exactly three verbs:
+The controller has exactly three verbs:
 
 | Verb | Meaning |
 | --- | --- |
@@ -36,10 +38,10 @@ The capital has exactly three verbs:
 There is no fourth. No scheduling, no load balancing, no shared data, no
 proxying.
 
-## 3. The capital is never on the data path
+## 3. The controller is never on the data path
 
 Public traffic — webhooks, websockets, tiles, rendered pages, APIs — reaches
-the office that runs the project, at that office's own base URL. The capital
+the office that runs the project, at that office's own base URL. The controller
 carries none of it.
 
 ```
@@ -53,29 +55,28 @@ one address. Routes are unchanged by joining.
 
 Consequences, recorded rather than discovered later:
 
-- The capital's death costs logins, never execution. Every office keeps
+- The controller's death costs logins, never execution. Every office keeps
   serving.
 - A project's public address is its office's base URL, held in the office
   record.
 - Moving a project between offices changes its public address. The remedy is a
   DNS name or a proxy in front, which is the operator's, not the platform's.
-- The public cannot tell that two offices share a capital. Nothing about the
+- The public cannot tell that two offices share a controller. Nothing about the
   relationship appears in a request.
 
-## 4. The treaty
+## 4. What an office keeps and what it accepts
 
-What an office keeps, and what it accepts. These are separable clauses; the
-list is the whole agreement.
+These are separable terms; the list is the whole agreement.
 
-| Clause | Terms |
+| Term | Rule |
 | --- | --- |
 | Institutions | Kept. Every office seeds its own blessed shelf and data root, joined or not; identical bytes for the same release |
 | Projects | Kept. Authored, held, and executed locally; the office is their address |
 | Data | Kept. `data/store` and `files/` are the office's, always |
-| Execution | Kept. What runs here keeps running when the capital is unreachable |
+| Execution | Kept. What runs here keeps running when the controller is unreachable |
 | Version | Kept. Offices need not agree; skew shows up only when two of them exchange something |
-| Login | **Accepted.** Local accounts are disabled for login while joined; the capital's identity is the normal door |
-| Placement | **Accepted.** The capital may create a project here |
+| Login | **Accepted.** Local accounts are disabled for login while joined; the controller's identity is the normal door |
+| Placement | **Accepted.** The controller may create a project here |
 | Exit | Defined, in §7. Nothing is destroyed by joining |
 
 ## 5. Joining
@@ -86,12 +87,12 @@ disabled for login; they are not deleted.
 
 **An office that already holds projects** may join, on one condition:
 
-> Every local owner that owns anything must be explicitly mapped to a capital
+> Every local owner that owns anything must be explicitly mapped to a controller
 > identity. No mapping, no join.
 
 The mapping exists because one question has no machine answer: is office99's
 `joseph` the same person as office42's `joseph`? A human states it. Both may
-map to one capital identity, or to two. Nothing on disk moves: `users/{owner}/`
+map to one controller identity, or to two. Nothing on disk moves: `users/{owner}/`
 paths are untouched, and an unmapped owner is a refusal, never a guess.
 
 This is the one rule every surveyed system reached by a different road — none
@@ -106,11 +107,11 @@ Filesystem access is the protection, as it is for `pg_hba.conf`.
 
 - It re-enables local authority. Resetting a password is not enough: while
   joined the account is disabled, not merely unknown.
-- It requires no quorum and no capital. An office whose capital is gone is
+- It requires no quorum and no controller. An office whose controller is gone is
   never locked out of itself.
-- Its use is recorded locally and reported to the capital on reconnect.
+- Its use is recorded locally and reported to the controller on reconnect.
 
-Without this clause §4's login term recreates the failure every centralised
+Without this, §4's login term recreates the failure every centralised
 identity system eventually hit: the credential needed to repair the
 relationship is held by the party that is unreachable.
 
@@ -121,15 +122,15 @@ data, files, shelf, and public surface, and its local accounts become live
 again. It is a complete instance the moment it leaves, because it never stopped
 being one.
 
-This clause is why joining is safe to do at all.
+This is why joining is safe to do at all.
 
 ## 8. Security terms
 
 | Term | Rule |
 | --- | --- |
-| Token | Per-office, issued by the capital, revocable for one office alone. It carries the capital's CA digest so the office verifies the capital, and a secret so the capital verifies the office |
-| Data path | The capital carries no request. Not a preference — the rule §3 exists to protect |
-| Identity writes | Anything the capital pushes into an office's accounts is logged where the office's operator can read it |
+| Token | Per-office, issued by the controller, revocable for one office alone. It carries the controller's CA digest so the office verifies the controller, and a secret so the controller verifies the office |
+| Data path | The controller carries no request. Not a preference — the rule §3 exists to protect |
+| Identity writes | Anything the controller pushes into an office's accounts is logged where the office's operator can read it |
 | Owner mapping | Stated by a human at the door, never inferred |
 | Break-glass | Host access, §6; recorded when used |
 
@@ -138,14 +139,14 @@ with no way to revoke one office.
 
 ## 9. Open
 
-- **What the capital may write into an office's identity.** Accepted and logged
-  today. A co-signature requirement, so a capital alone cannot insert an
+- **What the controller may write into an office's identity.** Accepted and logged
+  today. A co-signature requirement, so a controller alone cannot insert an
   administrator, is the stronger form and is not built.
-- **Remote placement.** The capital creating a project on a *remote* office,
+- **Remote placement.** The controller creating a project on a *remote* office,
   rather than the office it runs on, is unbuilt; so is remote rollback and
   remote provisioning of a public hub store (`stability-matrix.md` row 14).
-- **Version skew between capital and office.** Undefined. Offices need not
-  agree with each other; whether an office may be newer than its capital has no
+- **Version skew between controller and office.** Undefined. Offices need not
+  agree with each other; whether an office may be newer than its controller has no
   rule yet.
-- **Directory freshness.** What the capital shows when an office has not
+- **Directory freshness.** What the controller shows when an office has not
   reported recently, and whether stale entries are shown or hidden.
