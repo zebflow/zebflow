@@ -24,7 +24,7 @@ explicitly.
 | 11 | [`HubPackage`](./hub-package/README.md) | Envelope, stored and transferred package | Candidate |
 | 12 | [`RweLibraryManifest`](./rwe-library-manifest/README.md) | Envelope, persisted library source | Review |
 | 13 | [`MapPublishManifest`](./map-publish-manifest/README.md) | Envelope, persisted file | Review |
-| 14 | [`InvocationRecord`](./invocation-record/README.md) | Database record | Pending |
+| 14 | [`InvocationRecord`](./invocation-record/README.md) | Database record | Review |
 | 15 | [`ProjectManifest`](./project-manifest/README.md) | Reserved | Pending decision |
 | 16 | [`RweSource`](./rwe-source/README.md) | Source file, persisted | Pending |
 | 17 | [`Credential`](./credential/README.md) | Database record | Pending |

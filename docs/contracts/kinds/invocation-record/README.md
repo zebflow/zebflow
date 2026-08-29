@@ -1,7 +1,104 @@
 # InvocationRecord
 
-Status: pending review
+Status: **review** — spec settled 2026-08-29, code catch-up owed.
 
-This database record defines bounded project invocation history. Its review
-will cover trace granularity, payload limits, redaction, retention, database
-migrations, deletion, and high-throughput behavior.
+One row per pipeline run: when it ran, how long it took, whether it worked, and
+what each node received and returned. This is a project's run history.
+
+## Identity
+
+| | |
+| --- | --- |
+| Representation | database record, not a document on disk — no envelope |
+| Written by | the pipeline engine, once per execution |
+| Read by | the pipeline's run history in Project Studio |
+| Adapter | `PipelineInvocationEntry` and `NodeTraceEntry` |
+
+## Shape
+
+```json
+{
+  "run_id": "run-8f2c1a",
+  "at": 1787175600,
+  "duration_ms": 412,
+  "status": "ok",
+  "trigger": "webhook",
+  "trace": [
+    {
+      "node_id": "save-photo",
+      "node_kind": "n.fs.save",
+      "config": { "folder": "uploads", "access": "private" },
+      "duration_ms": 180,
+      "input": { "photo": { "__zf_type": "file_ref", "…": "…" } },
+      "output": { "saved": { "path": "uploads/9f2c.jpg" } }
+    }
+  ]
+}
+```
+
+| Field | Rule |
+| --- | --- |
+| `run_id` | stable identifier for one execution |
+| `at` | unix seconds when the run started |
+| `duration_ms` | wall clock for the whole run |
+| `status` | `ok` or `error` |
+| `trigger` | what started it: `webhook`, `manual`, `schedule` |
+| `error` | present only when `status` is `error` |
+| `trace` | one entry per node, in execution order |
+
+A trace entry carries `node_id`, `node_kind`, the effective `config` after
+expressions resolved, `duration_ms`, `input`, `output` (null on error), and
+`error`.
+
+## What must never appear
+
+A trace is written to disk and shown in the UI, so it is a place secrets leak
+into. Three rules, in order of authority:
+
+1. **The node declares its own secret fields.** A field marked secret in
+   [`NodeDefinition`](../node-definition/README.md) is always `••••••` in the
+   trace, whatever it is called. Fields are not secret by default — most
+   config is a folder name or an image width, and hiding all of it would make
+   the history useless — so a node author ticks the ones that are.
+2. **Name matching remains as a safety net.** `password`, `secret`, `api_key`,
+   `access_token`, `authorization`, `private_key` and the rest stay redacted
+   even when no node declared them, so a node author who forgets loses nothing
+   that works today.
+3. **Payload values are redacted where a node marks them**
+   (`__zf_private_redact`), then summarised so one large run cannot fill the
+   disk.
+
+Rule 1 exists because rule 2 alone leaks. Name matching catches `api_key` and
+misses `pwd`, `token`, `x-api-key`, and `db_url` — and a connection URL carries
+its password inside it (`postgres://joseph:hunter2@db:5432/app`). That string is
+written to the run history in full today, and anyone who can open the pipeline's
+history reads it.
+
+## Retention
+
+History is bounded, never infinite.
+
+| Bound | Where it is set | Default |
+| --- | --- | --- |
+| Newest N runs kept | project configuration, or per pipeline in its graph metadata | 20 |
+| Maximum age | per pipeline in its graph metadata | none |
+
+The per-pipeline setting wins over the project setting when both are present.
+
+## Rejections
+
+An empty `run_id`. A `status` other than `ok` or `error`. An `error` present on
+a successful run, or absent from a failed one.
+
+## Open
+
+- **Trace size.** Entries are summarised, but no maximum byte size per entry or
+  per run is stated. `PipelineInvocationLogPipelineStats` already measures
+  `trace_bytes` and `largest_trace_bytes`, so the measurement exists and the
+  limit does not.
+- **Deletion.** Whether a person may delete one run, or clear a pipeline's
+  history, and whether that is recorded.
+- **Who may read it.** A trace can contain personal data from a form
+  submission. Nothing states which project roles may open the history.
+- **High throughput.** A pipeline running hundreds of times a minute writes a
+  row each time; whether writes are batched or sampled is undefined.

@@ -221,6 +221,16 @@ formats.
 There is no normal compatibility reader for legacy `node.json`. Zebflow is
 pre-release, and `definition.json` is the one canonical install source.
 
+### Before first release
+
+Zebflow has not published a v1 release, so `zebflow.com/v1` may be amended in
+place, each amendment dated here. After first release this section closes and
+the rules above apply literally.
+
+| Date | Change | Why it was safe |
+| --- | --- | --- |
+| 2026-08-29 | A config field may declare itself secret. A declared field is always redacted in an [`InvocationRecord`](../invocation-record/README.md) trace, whatever it is named. Absent, a field is not secret | Pre-release, nothing shipped; the field is optional, so every existing definition stays valid and unchanged, and the name-matching fallback keeps working for definitions that declare nothing |
+
 ## Test Evidence
 
 The implementation tests prove:
