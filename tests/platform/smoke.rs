@@ -10,7 +10,7 @@ use serde_json::{Value, json};
 use tower::ServiceExt;
 
 use zebflow::infra::cluster::config::ClusterRole;
-use zebflow::infra::cluster::security::{JoinToken, registration_proof};
+use zebflow::infra::cluster::security::{JoinToken, OfficeVouch, registration_proof};
 use zebflow::platform::model::{
     CollectionAttribute, CreateHubTokenRequest, CreateSimpleTableRequest, TemplateSaveRequest,
     ZebflowJsonDistributionHub,
@@ -412,6 +412,505 @@ async fn a_join_token_is_per_office_revocable_and_proves_both_directions() {
     );
 
     let _ = fs::remove_dir_all(controller_root);
+}
+
+/// `offices.md` §2's third verb, §4's login term, and §8's identity-write rule
+/// in one pass: an operator authenticated on the controller reaches an office
+/// without knowing any password there, exactly once per vouch, and the office's
+/// own operator can read what was written into its accounts.
+///
+/// The boundary this loop deliberately does *not* cross is asserted too. §4
+/// says a joined office's local accounts are disabled for login, and building
+/// that before this door existed would have made a joined office unreachable by
+/// anybody. Local login on the office is therefore proven still live, so the
+/// next loop's change is visible as a change.
+#[tokio::test]
+async fn a_controller_vouch_opens_an_office_once_and_is_logged_there() {
+    let controller_root = temp_test_dir("controller-vouch");
+    let office_a_root = temp_test_dir("office-a-vouch");
+    let office_b_root = temp_test_dir("office-b-vouch");
+
+    let mut controller = PlatformConfig::default();
+    controller.data_root = controller_root.clone();
+    controller.cluster.role = ClusterRole::Master;
+    controller.default_password = "test-pass".to_string();
+    let controller_app = build_router(controller).await.expect("controller starts");
+    let controller_cookie = login_cookie(controller_app.clone(), "superadmin", "test-pass").await;
+
+    let token_a = mint_join_token_at(
+        &controller_app,
+        &controller_cookie,
+        "office-a",
+        "http://office-a.example:10610",
+    )
+    .await;
+    let token_b = mint_join_token_at(
+        &controller_app,
+        &controller_cookie,
+        "office-b",
+        "http://office-b.example:10610",
+    )
+    .await;
+
+    let office_a = build_office(&office_a_root, &token_a).await;
+    let office_b = build_office(&office_b_root, &token_b).await;
+
+    // (h) The boundary, before anything else: local login on the office works
+    // exactly as it does standalone. This loop must not have touched it.
+    let local_cookie_before = login_cookie(office_a.clone(), "superadmin", "test-pass").await;
+    assert!(local_cookie_before.contains("zebflow_session="));
+
+    // --- (a) a controller session reaches an office with no password there --
+    let (status, minted) = mint_vouch(&controller_app, &controller_cookie, "office-a").await;
+    assert_eq!(status, StatusCode::OK);
+    let vouch = minted["vouch"]["vouch"]
+        .as_str()
+        .expect("vouch")
+        .to_string();
+    assert!(
+        vouch.starts_with("zfjoin1v:office-a:superadmin:"),
+        "{vouch}"
+    );
+    assert_eq!(minted["vouch"]["ttl_seconds"], json!(120));
+    // The controller hands over a place to go, not only a credential.
+    assert!(
+        minted["vouch"]["redeem_url"]
+            .as_str()
+            .expect("redeem url")
+            .starts_with("http://office-a.example:10610/office/vouch?v="),
+        "{minted}"
+    );
+
+    let redeemed = redeem_vouch(&office_a, &vouch).await;
+    assert_eq!(redeemed.0, StatusCode::OK, "{:?}", redeemed.1);
+    assert_eq!(redeemed.1["owner"], json!("superadmin"));
+    // The office already holds this owner, so nothing is created and its role
+    // is left exactly as the office set it.
+    assert_eq!(redeemed.1["action"], json!("linked"));
+    let office_session = redeemed.2.expect("the office issues its own session");
+
+    // The session is an *ordinary* one: an unmodified downstream handler
+    // accepts it, which is the whole reason a vouch ends in a session rather
+    // than in a parallel authentication path.
+    let profile = office_a
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/profile")
+                .header(header::COOKIE, &office_session)
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("profile response");
+    assert_eq!(profile.status(), StatusCode::OK);
+    assert_eq!(
+        response_json(profile).await["user"]["owner"],
+        json!("superadmin")
+    );
+
+    // --- (b) the same vouch a second time is refused ----------------------
+    let replayed = redeem_vouch(&office_a, &vouch).await;
+    assert_eq!(replayed.0, StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        replayed.1["error"]["code"],
+        json!("CLUSTER_VOUCH_ALREADY_REDEEMED")
+    );
+    assert!(replayed.2.is_none(), "a refused vouch issues no session");
+
+    // --- a vouch may name an identity this office has never held ----------
+    // §5's owner-mapping rule governs *joining* a non-empty office. This is a
+    // different moment, and §8 presumes the write by requiring it be logged.
+    create_user(&controller_app, &controller_cookie, "remote-admin").await;
+    let remote_cookie = login_cookie(controller_app.clone(), "remote-admin", "remote-pass").await;
+    let (status, minted) = mint_vouch(&controller_app, &remote_cookie, "office-a").await;
+    assert_eq!(status, StatusCode::OK);
+    // The vouch names the session owner, never a value the caller supplied.
+    assert_eq!(minted["vouch"]["identity"], json!("remote-admin"));
+    let created = redeem_vouch(&office_a, minted["vouch"]["vouch"].as_str().expect("vouch")).await;
+    assert_eq!(created.0, StatusCode::OK, "{:?}", created.1);
+    assert_eq!(created.1["action"], json!("created"));
+    assert_eq!(created.1["identity_write"]["role"], json!("superadmin"));
+
+    // The created account is reachable by vouch and by nothing else: no
+    // password was chosen for it, so it must not be a local back door.
+    let refused_login = office_a
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/login")
+                .method("POST")
+                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                .body(Body::from("identifier=remote-admin&password=remote-pass"))
+                .expect("request"),
+        )
+        .await
+        .expect("login response");
+    assert_eq!(
+        refused_login.status(),
+        StatusCode::UNAUTHORIZED,
+        "a vouch-created account must carry no guessable credential"
+    );
+
+    // --- (c) an expired vouch is refused -----------------------------------
+    // Minted straight from the office's own secret, because the route will
+    // never mint a stale one and the property under test is the office's
+    // refusal, not the controller's arithmetic.
+    let digest_a = JoinToken::parse(&token_a).expect("parse").secret_digest();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("clock")
+        .as_secs() as i64;
+    let expired = OfficeVouch::mint(
+        &digest_a,
+        "office-a",
+        "superadmin",
+        now - 1,
+        "expired-nonce",
+    )
+    .render();
+    let refused = redeem_vouch(&office_a, &expired).await;
+    assert_eq!(refused.0, StatusCode::UNAUTHORIZED);
+    assert_eq!(refused.1["error"]["code"], json!("CLUSTER_VOUCH_EXPIRED"));
+
+    // --- (d) a vouch for office A presented to office B is refused ---------
+    let (_, for_a) = mint_vouch(&controller_app, &controller_cookie, "office-a").await;
+    let for_a = for_a["vouch"]["vouch"].as_str().expect("vouch").to_string();
+    let crossed = redeem_vouch(&office_b, &for_a).await;
+    assert_eq!(crossed.0, StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        crossed.1["error"]["code"],
+        json!("CLUSTER_VOUCH_OFFICE_MISMATCH")
+    );
+    // Office A still accepts it, so the refusal was about the office and not
+    // about the vouch having been spoiled.
+    assert_eq!(redeem_vouch(&office_a, &for_a).await.0, StatusCode::OK);
+    let _ = token_b;
+
+    // --- (e) a tampered proof is refused -----------------------------------
+    let (_, honest) = mint_vouch(&controller_app, &controller_cookie, "office-a").await;
+    let honest = honest["vouch"]["vouch"]
+        .as_str()
+        .expect("vouch")
+        .to_string();
+    let tampered = flip_last_hex_digit(&honest);
+    assert_ne!(tampered, honest);
+    let forged = redeem_vouch(&office_a, &tampered).await;
+    assert_eq!(forged.0, StatusCode::UNAUTHORIZED);
+    assert_eq!(forged.1["error"]["code"], json!("CLUSTER_VOUCH_INVALID"));
+    // Editing the identity is the same forgery: every field is signed.
+    let renamed = honest.replace(":superadmin:", ":root:");
+    assert_eq!(
+        redeem_vouch(&office_a, &renamed).await.1["error"]["code"],
+        json!("CLUSTER_VOUCH_INVALID")
+    );
+
+    // --- (g) the identity write is readable by the office's own operator ---
+    // Read with the office's *local* superadmin session, with the controller
+    // uninvolved. §8's term is about who can read it, not that it exists.
+    let log = response_json(
+        office_a
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/office/identity-writes")
+                    .header(header::COOKIE, &local_cookie_before)
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("identity write log"),
+    )
+    .await;
+    let writes = log["writes"].as_array().expect("writes").clone();
+    let created_row = writes
+        .iter()
+        .find(|row| row["owner"] == json!("remote-admin"))
+        .expect("the created account is in the office's own log");
+    assert_eq!(created_row["action"], json!("created"));
+    assert_eq!(created_row["office_id"], json!("office-a"));
+    assert_eq!(created_row["source"], json!("controller-vouch"));
+    assert!(
+        created_row["detail"]
+            .as_str()
+            .expect("detail")
+            .contains("never by local login"),
+        "the log must read as prose an operator can act on: {created_row}"
+    );
+    assert!(
+        writes
+            .iter()
+            .any(|row| row["owner"] == json!("superadmin") && row["action"] == json!("linked")),
+        "an arrival that created nothing is still an arrival"
+    );
+    // A refused vouch reaches no account, so it writes no row.
+    assert!(
+        !writes.iter().any(|row| row["owner"] == json!("root")),
+        "a forged vouch must not appear in the accounts log"
+    );
+
+    // --- (f) revoking the office's token ends vouching for it --------------
+    // Nothing separate had to be built: minting a vouch reads the same record
+    // and refuses the same status that stops a heartbeat.
+    let revoked = controller_app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/cluster/join-tokens/office-a/revoke")
+                .method("POST")
+                .header(header::COOKIE, &controller_cookie)
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("revoke response");
+    assert_eq!(revoked.status(), StatusCode::OK);
+
+    let after_revoke = mint_vouch(&controller_app, &controller_cookie, "office-a").await;
+    assert_eq!(after_revoke.0, StatusCode::FORBIDDEN);
+    assert_eq!(
+        after_revoke.1["error"]["code"],
+        json!("CLUSTER_JOIN_TOKEN_REVOKED")
+    );
+
+    // Rotation goes further: the office's stored secret no longer derives the
+    // digest the controller holds, so a vouch minted after a rotation is
+    // refused by an office still running on the old token.
+    let rotated = mint_join_token(&controller_app, &controller_cookie, "office-a", true).await;
+    assert_eq!(rotated.0, StatusCode::CREATED);
+    let (_, after_rotation) = mint_vouch(&controller_app, &controller_cookie, "office-a").await;
+    let after_rotation = after_rotation["vouch"]["vouch"]
+        .as_str()
+        .expect("vouch")
+        .to_string();
+    assert_eq!(
+        redeem_vouch(&office_a, &after_rotation).await.1["error"]["code"],
+        json!("CLUSTER_VOUCH_INVALID"),
+        "a rotated token invalidates vouching cryptographically, not by policy"
+    );
+
+    // --- (h) the boundary again, at the end --------------------------------
+    // Everything above happened and local login on the office is untouched.
+    // §4's disable is the next loop's work and it now has its prerequisite.
+    let local_cookie_after = login_cookie(office_a.clone(), "superadmin", "test-pass").await;
+    assert!(local_cookie_after.contains("zebflow_session="));
+    assert_ne!(
+        local_cookie_after, local_cookie_before,
+        "a fresh login is a fresh session"
+    );
+
+    // --- the door must open on a *fresh* office, §5's ordinary case --------
+    // An office whose local account is still on its generated password would
+    // otherwise land a vouched operator on the change-password screen, asking
+    // for a credential they have no way to know. The forced-change gate exists
+    // to stop a generated credential being *used*; a vouch uses none.
+    let office_c_root = temp_test_dir("office-c-vouch");
+    let token_c = mint_join_token_at(
+        &controller_app,
+        &controller_cookie,
+        "office-c",
+        "http://office-c.example:10610",
+    )
+    .await;
+    let mut office_c_config = PlatformConfig::default();
+    office_c_config.data_root = office_c_root.clone();
+    office_c_config.cluster.role = ClusterRole::Worker;
+    office_c_config.cluster.advertise_url = Some("http://office-c.example:10610".to_string());
+    office_c_config.cluster.master_url = Some("http://127.0.0.1:1".to_string());
+    office_c_config.cluster.join_token = Some(token_c);
+    // No default password: this office generated one and nobody has chosen one.
+    let office_c = build_router(office_c_config)
+        .await
+        .expect("fresh office starts");
+    assert!(
+        office_c_root
+            .join(".bootstrap/superadmin-password")
+            .exists(),
+        "the fresh office's credential really is a generated one"
+    );
+
+    let (_, fresh) = mint_vouch(&controller_app, &controller_cookie, "office-c").await;
+    let fresh_vouch = fresh["vouch"]["vouch"].as_str().expect("vouch").to_string();
+    let landed = office_c
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!(
+                    "/office/vouch?v={}",
+                    fresh_vouch.replace(':', "%3A")
+                ))
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("browser redemption");
+    assert_eq!(landed.status(), StatusCode::SEE_OTHER);
+    assert_eq!(
+        landed
+            .headers()
+            .get(header::LOCATION)
+            .and_then(|value| value.to_str().ok()),
+        Some("/home"),
+        "a vouched operator lands in the office, not on a password screen"
+    );
+    let fresh_session = landed
+        .headers()
+        .get(header::SET_COOKIE)
+        .and_then(|value| value.to_str().ok())
+        .expect("session cookie")
+        .to_string();
+    let home = office_c
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/home")
+                .header(header::COOKIE, &fresh_session)
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("home response");
+    assert_eq!(
+        home.status(),
+        StatusCode::OK,
+        "the change-password gate must not bounce a session that used no password"
+    );
+
+    // A standalone instance has no controller, so nobody vouches there.
+    let standalone_root = temp_test_dir("standalone-vouch");
+    let mut standalone = PlatformConfig::default();
+    standalone.data_root = standalone_root.clone();
+    standalone.default_password = "test-pass".to_string();
+    let standalone_app = build_router(standalone).await.expect("standalone starts");
+    let nowhere = redeem_vouch(&standalone_app, &vouch).await;
+    assert_eq!(nowhere.0, StatusCode::NOT_IMPLEMENTED);
+    assert_eq!(
+        nowhere.1["error"]["code"],
+        json!("CLUSTER_VOUCH_NOT_AN_OFFICE")
+    );
+
+    let _ = fs::remove_dir_all(controller_root);
+    let _ = fs::remove_dir_all(office_a_root);
+    let _ = fs::remove_dir_all(office_b_root);
+    let _ = fs::remove_dir_all(office_c_root);
+    let _ = fs::remove_dir_all(standalone_root);
+}
+
+async fn build_office(data_root: &Path, token: &str) -> axum::Router {
+    let mut config = PlatformConfig::default();
+    config.data_root = data_root.to_path_buf();
+    config.cluster.role = ClusterRole::Worker;
+    config.cluster.advertise_url = Some("http://office.example:10610".to_string());
+    // Unreachable on purpose. A vouch is self-authenticating, so redemption
+    // must work with the controller gone — §3's "the controller's death costs
+    // logins, never execution" would be false if the door needed it alive.
+    config.cluster.master_url = Some("http://127.0.0.1:1".to_string());
+    config.cluster.join_token = Some(token.to_string());
+    config.default_password = "test-pass".to_string();
+    build_router(config).await.expect("office starts")
+}
+
+async fn mint_join_token_at(
+    app: &axum::Router,
+    cookie: &str,
+    office_id: &str,
+    base_url: &str,
+) -> String {
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/cluster/join-tokens")
+                .method("POST")
+                .header(header::COOKIE, cookie)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({ "office_id": office_id, "base_url": base_url }).to_string(),
+                ))
+                .expect("request"),
+        )
+        .await
+        .expect("mint response");
+    assert_eq!(response.status(), StatusCode::CREATED);
+    response_json(response).await["token"]
+        .as_str()
+        .expect("token")
+        .to_string()
+}
+
+async fn mint_vouch(app: &axum::Router, cookie: &str, office_id: &str) -> (StatusCode, Value) {
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/cluster/offices/{office_id}/vouch"))
+                .method("POST")
+                .header(header::COOKIE, cookie)
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("vouch response");
+    let status = response.status();
+    (status, response_json(response).await)
+}
+
+/// Redeem one vouch, returning the refusal or the session the office issued.
+async fn redeem_vouch(app: &axum::Router, vouch: &str) -> (StatusCode, Value, Option<String>) {
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/office/vouch")
+                .method("POST")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(json!({ "vouch": vouch }).to_string()))
+                .expect("request"),
+        )
+        .await
+        .expect("redeem response");
+    let status = response.status();
+    let cookie = response
+        .headers()
+        .get(header::SET_COOKIE)
+        .and_then(|value| value.to_str().ok())
+        .map(ToString::to_string);
+    (status, response_json(response).await, cookie)
+}
+
+async fn create_user(app: &axum::Router, cookie: &str, owner: &str) {
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/users")
+                .method("POST")
+                .header(header::COOKIE, cookie)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({
+                        "owner": owner,
+                        "password": "remote-pass",
+                        "role": "superadmin",
+                    })
+                    .to_string(),
+                ))
+                .expect("request"),
+        )
+        .await
+        .expect("create user response");
+    assert!(
+        response.status().is_success(),
+        "creating the controller-side operator: {}",
+        response.status()
+    );
+}
+
+fn flip_last_hex_digit(vouch: &str) -> String {
+    let mut chars: Vec<char> = vouch.chars().collect();
+    let last = chars.len() - 1;
+    chars[last] = if chars[last] == '0' { '1' } else { '0' };
+    chars.into_iter().collect()
 }
 
 async fn mint_join_token(

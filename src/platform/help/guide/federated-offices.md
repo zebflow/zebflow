@@ -98,3 +98,103 @@ running on the revoked office is killed — an office keeps executing its own
 projects whether or not it has a controller — it simply stops being a member,
 and stops appearing fresh in the directory. The record is kept rather than
 deleted, because it is the record of who held what.
+
+## Reaching an office: the vouch
+
+An operator authenticated on the controller reaches any of its offices without
+knowing a password there. This is the controller's third verb — it vouches for
+one identity, and the office accepts it.
+
+From the controller's home page, an office card carries an **Open office**
+button. That is the whole flow: click it and you land on that office, signed in.
+
+Behind the button, the controller mints a vouch and redirects to it:
+
+```text
+zfjoin1v:<office_id>:<identity>:<expires_at>:<nonce>:<proof>
+```
+
+`proof` is an HMAC over the other four fields, keyed by that office's own secret
+digest — the same key the join token already uses in both directions, under a
+third scheme word so nothing captured in one direction replays in another.
+Every field is signed, so the office id, the identity, and the expiry cannot be
+edited.
+
+### Mint one by hand
+
+```bash
+curl -H "Cookie: zebflow_session=superadmin" \
+  -X POST http://controller:10610/api/cluster/offices/office-a/vouch
+```
+
+The response carries the vouch and a `redeem_url` on that office. The vouch
+names **your** session's identity; there is no field for naming somebody else.
+
+### Redeem it
+
+```bash
+curl -i -X POST http://office-a:10610/api/office/vouch \
+  -H "Content-Type: application/json" \
+  -d '{"vouch":"zfjoin1v:office-a:…"}'
+```
+
+The office answers with an ordinary session cookie — the same one `POST /login`
+issues there — so everything downstream is unchanged. The browser path is
+`GET /office/vouch?v=…`, which is what the redirect uses.
+
+### What the office checks, and what it does not
+
+The office verifies the vouch entirely with the secret it already holds. **It
+does not contact the controller**, and a vouch works with the controller down.
+That is deliberate: an office is never locked out of itself by the unavailability
+of the party that would repair the relationship.
+
+It refuses a vouch that:
+
+- names a different office (`CLUSTER_VOUCH_OFFICE_MISMATCH`)
+- does not verify under its own secret (`CLUSTER_VOUCH_INVALID`)
+- has expired (`CLUSTER_VOUCH_EXPIRED`) — a vouch lives **120 seconds**,
+  because it is a hand-off and not a session
+- has already been spent (`CLUSTER_VOUCH_ALREADY_REDEEMED`)
+
+A vouch opens exactly one session. The spent nonce is recorded in the office's
+own catalog and pruned once it passes its own expiry, so the record cannot grow
+without bound.
+
+### Revoking an office also stops vouching for it
+
+```bash
+curl -H "Cookie: zebflow_session=superadmin" \
+  -X POST http://controller:10610/api/cluster/join-tokens/office-a/revoke
+```
+
+The next mint for that office is refused with `CLUSTER_JOIN_TOKEN_REVOKED` —
+the same record and the same status check that stops a heartbeat. Note that a
+vouch minted *just before* the revoke stays redeemable at that office until it
+expires, at most 120 seconds later, because the office learns nothing new until
+it talks to the controller. Re-minting with `"rotate": true` closes it
+immediately and cryptographically: the office's stored secret no longer derives
+the digest the controller holds, so nothing minted under the new token verifies
+under the old one, and nothing minted under the old one verifies at all once the
+office is re-issued.
+
+### What was written into this office's accounts
+
+If the vouched identity has no local account, the office creates one. That is an
+identity write, and every one of them is logged where **this office's** operator
+can read it, with the controller uninvolved:
+
+```bash
+curl -H "Cookie: zebflow_session=superadmin" \
+  http://office-a:10610/api/office/identity-writes
+```
+
+Each row records the owner, whether it was `created` or `linked` to an account
+that already existed, the role it holds, and the reason. Two rules the log makes
+visible:
+
+- an account created by a vouch gets **no usable password**. It is reachable by
+  vouch and by nothing else, so it never becomes a local back door.
+- an account that already existed keeps the role this office gave it. The
+  controller vouches for *who* somebody is; what they may do here stays the
+  office's own statement.

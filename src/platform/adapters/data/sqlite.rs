@@ -20,12 +20,13 @@ use crate::platform::model::{
     CREDENTIAL_STATE_CHOSEN, HubAccessGrant, HubAssetPackage, HubAssetVersion, HubAuthority,
     HubPublisher, HubToken, McpSession, PipelineInvocationEntry,
     PipelineInvocationLogPipelineStats, PipelineInvocationLogStats, PipelineMeta,
-    PlatformHubRepository, PlatformOffice, PlatformOfficeJoinToken, PlatformOfficeNode,
-    PlatformProject, PlatformServiceInstance, PlatformUser, PlatformUserLocalAuth,
-    ProjectAccessRolePreset, ProjectCapability, ProjectCredential, ProjectDbConnection,
-    ProjectHubRepository, ProjectInvite, ProjectInviteStatus, ProjectMember, ProjectOperationKind,
-    ProjectOperationRecord, ProjectOperationStatus, ProjectPolicy, ProjectPolicyBinding,
-    ProjectSubjectKind, StoredUser, now_ts, slug_segment,
+    PlatformHubRepository, PlatformOffice, PlatformOfficeIdentityWrite, PlatformOfficeJoinToken,
+    PlatformOfficeNode, PlatformOfficeVouchRedemption, PlatformProject, PlatformServiceInstance,
+    PlatformUser, PlatformUserLocalAuth, ProjectAccessRolePreset, ProjectCapability,
+    ProjectCredential, ProjectDbConnection, ProjectHubRepository, ProjectInvite,
+    ProjectInviteStatus, ProjectMember, ProjectOperationKind, ProjectOperationRecord,
+    ProjectOperationStatus, ProjectPolicy, ProjectPolicyBinding, ProjectSubjectKind, StoredUser,
+    now_ts, slug_segment,
 };
 
 const SCHEMA_SQL: &str = "
@@ -673,7 +674,7 @@ impl SqliteDataAdapter {
         Ok(exists)
     }
 
-    fn migrations() -> [MigrationDef; 17] {
+    fn migrations() -> [MigrationDef; 18] {
         [
             MigrationDef {
                 version: 1,
@@ -759,6 +760,11 @@ impl SqliteDataAdapter {
                 version: 17,
                 name: "office_join_tokens",
                 apply: Self::apply_migration_0017_office_join_tokens,
+            },
+            MigrationDef {
+                version: 18,
+                name: "office_vouch_redemptions_and_identity_writes",
+                apply: Self::apply_migration_0018_office_vouches_and_identity_writes,
             },
         ]
     }
@@ -2622,6 +2628,48 @@ CREATE INDEX IF NOT EXISTS idx_platform_service_instances_host
                     ON UPDATE CASCADE
                     ON DELETE CASCADE
             );",
+        )
+        .map_err(|e| PlatformError::new("PLATFORM_SQLITE_SCHEMA", e.to_string()))
+    }
+
+    fn apply_migration_0018_office_vouches_and_identity_writes(
+        tx: &Transaction<'_>,
+    ) -> Result<(), PlatformError> {
+        // Two tables on the *office* side of a join, both in the catalog
+        // `instance-directory.md` puts in the STORE tier.
+        //
+        // `office_vouch_redemptions` is what makes a vouch spendable once. The
+        // nonce is the primary key, so the second redemption is refused by the
+        // store rather than by a check that could race with itself. There is
+        // no foreign key to `offices`: an office does not hold a row about
+        // itself, and the office id here is a label on the record, not a
+        // reference into a table this instance owns.
+        //
+        // `office_identity_writes` is `offices.md` §8's log. It is append-only
+        // by construction — nothing in the codebase updates or deletes a row —
+        // because a log the writer can edit answers no question worth asking.
+        tx.execute_batch(
+            "CREATE TABLE IF NOT EXISTS office_vouch_redemptions (
+                nonce       TEXT PRIMARY KEY,
+                office_id   TEXT NOT NULL DEFAULT '',
+                identity    TEXT NOT NULL DEFAULT '',
+                expires_at  INTEGER NOT NULL DEFAULT 0,
+                redeemed_at INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE INDEX IF NOT EXISTS idx_office_vouch_redemptions_expires_at
+                ON office_vouch_redemptions (expires_at);
+            CREATE TABLE IF NOT EXISTS office_identity_writes (
+                write_id   TEXT PRIMARY KEY,
+                office_id  TEXT NOT NULL DEFAULT '',
+                owner      TEXT NOT NULL DEFAULT '',
+                action     TEXT NOT NULL DEFAULT '',
+                role       TEXT NOT NULL DEFAULT '',
+                source     TEXT NOT NULL DEFAULT '',
+                detail     TEXT NOT NULL DEFAULT '',
+                written_at INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE INDEX IF NOT EXISTS idx_office_identity_writes_written_at
+                ON office_identity_writes (written_at);",
         )
         .map_err(|e| PlatformError::new("PLATFORM_SQLITE_SCHEMA", e.to_string()))
     }
@@ -5513,6 +5561,94 @@ impl DataAdapter for SqliteDataAdapter {
             records.push(row.map_err(Self::qe)?);
         }
         Ok(records)
+    }
+
+    fn claim_office_vouch_nonce(
+        &self,
+        redemption: &PlatformOfficeVouchRedemption,
+    ) -> Result<bool, PlatformError> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        // Pruned first, in the same lock: a row whose vouch has already
+        // expired can never refuse anything the expiry check would have let
+        // through, so keeping it would only grow the table.
+        conn.execute(
+            "DELETE FROM office_vouch_redemptions WHERE expires_at <= ?1",
+            params![redemption.redeemed_at],
+        )
+        .map_err(Self::qe)?;
+        let inserted = conn
+            .execute(
+                "INSERT OR IGNORE INTO office_vouch_redemptions
+                 (nonce, office_id, identity, expires_at, redeemed_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![
+                    &redemption.nonce,
+                    &redemption.office_id,
+                    &redemption.identity,
+                    redemption.expires_at,
+                    redemption.redeemed_at,
+                ],
+            )
+            .map_err(Self::qe)?;
+        Ok(inserted == 1)
+    }
+
+    fn put_office_identity_write(
+        &self,
+        entry: &PlatformOfficeIdentityWrite,
+    ) -> Result<(), PlatformError> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        conn.execute(
+            "INSERT INTO office_identity_writes
+             (write_id, office_id, owner, action, role, source, detail, written_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![
+                &entry.write_id,
+                &entry.office_id,
+                &entry.owner,
+                &entry.action,
+                &entry.role,
+                &entry.source,
+                &entry.detail,
+                entry.written_at,
+            ],
+        )
+        .map_err(Self::qe)?;
+        Ok(())
+    }
+
+    fn list_office_identity_writes(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<PlatformOfficeIdentityWrite>, PlatformError> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let mut stmt = conn
+            .prepare(
+                "SELECT write_id, office_id, owner, action, role, source, detail, written_at
+                 FROM office_identity_writes
+                 ORDER BY written_at DESC, rowid DESC
+                 LIMIT ?1",
+            )
+            .map_err(Self::qe)?;
+        let rows = stmt
+            .query_map(params![limit as i64], |row| {
+                Ok(PlatformOfficeIdentityWrite {
+                    write_id: row.get(0)?,
+                    office_id: row.get(1)?,
+                    owner: row.get(2)?,
+                    action: row.get(3)?,
+                    role: row.get(4)?,
+                    source: row.get(5)?,
+                    detail: row.get(6)?,
+                    written_at: row.get(7)?,
+                })
+            })
+            .map_err(Self::qe)?;
+        let mut entries = Vec::new();
+        for row in rows {
+            entries.push(row.map_err(Self::qe)?);
+        }
+        Ok(entries)
     }
 
     fn list_platform_offices(&self) -> Result<Vec<PlatformOffice>, PlatformError> {

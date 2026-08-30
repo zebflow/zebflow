@@ -50,16 +50,17 @@ use crate::platform::model::{
     ClusterWorkerRegisterRequest, ClusterWorkerRegisterResponse, CreateHubTokenRequest,
     CreateProjectDocFolderRequest, CreateProjectRequest, CreateSimpleTableRequest,
     CreateUserRequest, DeletePipelineRequest, DescribeProjectDbConnectionRequest,
-    ExecutePipelineRequest, GitCommitRequest, LoginRequest, McpSessionCreateRequest,
-    McpSessionToggleRequest, PipelineExecuteTrigger, PipelineInvocationEntry,
-    PipelineLocateRequest, ProjectAccessSubject, ProjectCapability, ProjectDocItem,
+    ExecutePipelineRequest, GitCommitRequest, IDENTITY_WRITE_ACTION_CREATED,
+    IDENTITY_WRITE_ACTION_LINKED, LoginRequest, McpSessionCreateRequest, McpSessionToggleRequest,
+    PipelineExecuteTrigger, PipelineInvocationEntry, PipelineLocateRequest,
+    PlatformOfficeIdentityWrite, ProjectAccessSubject, ProjectCapability, ProjectDocItem,
     ProjectDocMoveRequest, ProjectOperationKind, ProjectTransferArtifactKind,
     QueryProjectDbConnectionRequest, TemplateCompileRequest, TemplateCompileResponse,
     TemplateCreateRequest, TemplateDiagnostic, TemplateMoveRequest, TemplateSaveRequest,
     TestProjectDbConnectionRequest, UpdateSettingsSectionRequest, UpdateSimpleTableRequest,
     UpdateUserSettingsRequest, UpsertPipelineDefinitionRequest,
     UpsertProjectAssistantConfigRequest, UpsertProjectCredentialRequest,
-    UpsertProjectDbConnectionRequest, UpsertProjectDocRequest, slug_segment,
+    UpsertProjectDbConnectionRequest, UpsertProjectDocRequest, now_ts, slug_segment,
 };
 use crate::platform::sekejap;
 use crate::platform::services::PlatformService;
@@ -253,6 +254,15 @@ struct PlatformFrontend {
 struct PlatformWebSession {
     owner: String,
     expires_at: i64,
+    /// Whether this session began with a controller vouch rather than a password.
+    ///
+    /// The forced change-password screen exists to stop a *generated* credential
+    /// being used before a person replaces it. A vouched session used no
+    /// credential at all, and bouncing it there would dead-end the door on
+    /// exactly `offices.md` §5's ordinary case — a fresh office, whose local
+    /// account is still on its generated password and whose operator has no way
+    /// to type it from another host.
+    vouched: bool,
 }
 
 /// Shared app state used by platform routes.
@@ -519,6 +529,23 @@ pub async fn router(platform: Arc<PlatformService>) -> Router {
         .route(
             "/api/cluster/join-tokens/{office_id}/revoke",
             post(api_cluster_revoke_join_token),
+        )
+        // `offices.md` §2's third verb. The controller mints; the office
+        // spends. The two halves are registered on one router because one
+        // binary is both roles, and each half refuses in the role it is not.
+        .route(
+            "/api/cluster/offices/{office_id}/vouch",
+            post(api_cluster_mint_office_vouch),
+        )
+        .route(
+            "/cluster/offices/{office_id}/open",
+            get(cluster_open_office_redirect),
+        )
+        .route("/office/vouch", get(office_vouch_redeem))
+        .route("/api/office/vouch", post(api_office_vouch_redeem))
+        .route(
+            "/api/office/identity-writes",
+            get(api_office_identity_writes),
         )
         .route(
             "/api/internal/cluster/workers/register",
@@ -2815,6 +2842,13 @@ async fn home_page(State(state): State<PlatformAppState>, headers: HeaderMap) ->
                 .iter()
                 .map(|worker| worker.node_id.clone())
                 .collect::<std::collections::BTreeSet<_>>();
+            // `offices.md` §2's vouch verb, made one action. The link is
+            // emitted only for a controller and only for an operator who could
+            // mint anyway, so the card never offers a door the viewer cannot
+            // open. The local office is excluded because the viewer is already
+            // standing in it.
+            let can_vouch =
+                state.platform.cluster_bootstrap.is_master() && is_superadmin_owner(&state, &owner);
             for worker in known_workers {
                 let worker_id = worker.node_id.clone();
                 let worker_label = worker.label.clone();
@@ -2881,6 +2915,11 @@ async fn home_page(State(state): State<PlatformAppState>, headers: HeaderMap) ->
                     "hosted_project_count": hosted_projects.get(&worker_id).map(|items| items.len()).unwrap_or(0usize),
                     "hosted_projects": hosted_projects.get(&worker_id).cloned().unwrap_or_default(),
                     "capabilities": capabilities,
+                    "open_url": if can_vouch {
+                        Some(format!("/cluster/offices/{worker_id}/open"))
+                    } else {
+                        None
+                    },
                 }));
             }
             for (office_id, projects) in &hosted_projects {
@@ -9857,6 +9896,276 @@ fn cluster_join_token_error(err: PlatformError) -> Response {
         "CLUSTER_JOIN_TOKEN_OFFICE_INVALID" | "CLUSTER_JOIN_TOKEN_MALFORMED" => {
             StatusCode::BAD_REQUEST
         }
+        _ => StatusCode::INTERNAL_SERVER_ERROR,
+    };
+    (
+        status,
+        Json(json!({
+            "ok": false,
+            "error": { "code": err.code, "message": err.message }
+        })),
+    )
+        .into_response()
+}
+
+/// `POST /api/cluster/offices/{office_id}/vouch` — mint one (controller).
+///
+/// The vouch names the *session owner*, never a value from the request. An
+/// operator minting a vouch for an arbitrary identity would be impersonation
+/// with a signature on it, and `offices.md` §2 asks for "one identity the
+/// offices accept", not for a way to name any of them.
+async fn api_cluster_mint_office_vouch(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path(office_id): Path<String>,
+) -> Response {
+    let Some(owner) = session_owner(&state, &headers) else {
+        return StatusCode::UNAUTHORIZED.into_response();
+    };
+    if !is_superadmin_owner(&state, &owner) {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+    match state
+        .platform
+        .cluster_join_tokens
+        .mint_vouch(&office_id, &owner, now_ts())
+    {
+        Ok(vouch) => Json(json!({ "ok": true, "vouch": vouch })).into_response(),
+        Err(err) => cluster_vouch_error(err),
+    }
+}
+
+/// `GET /cluster/offices/{office_id}/open` — the operator's one action.
+///
+/// Mint and redirect, so reaching an office from the controller's directory is
+/// a link rather than a copy-paste of a credential. A `GET` that mints is fine
+/// here because minting writes nothing: it is a read of the controller's own
+/// record plus an HMAC, and the worst a forged navigation achieves is landing
+/// the operator on an office they already administer.
+///
+/// The vouch does travel in the URL. Short life and single use are what bound
+/// that, which is why both exist rather than either alone.
+async fn cluster_open_office_redirect(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path(office_id): Path<String>,
+) -> Response {
+    let Some(owner) = session_owner(&state, &headers) else {
+        return Redirect::to(LOGIN_PATH).into_response();
+    };
+    if !is_superadmin_owner(&state, &owner) {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+    match state
+        .platform
+        .cluster_join_tokens
+        .mint_vouch(&office_id, &owner, now_ts())
+    {
+        Ok(vouch) if !vouch.redeem_url.is_empty() => {
+            Redirect::to(&vouch.redeem_url).into_response()
+        }
+        Ok(vouch) => cluster_vouch_error(PlatformError::new(
+            "CLUSTER_OFFICE_ADDRESS_UNKNOWN",
+            format!(
+                "office '{}' has no base URL recorded, so there is nowhere to send you. \
+                 An office's base URL is where the public reaches its projects; set it when \
+                 minting its join token, or let the office advertise one by registering.",
+                vouch.office_id
+            ),
+        )),
+        Err(err) => cluster_vouch_error(err),
+    }
+}
+
+/// One vouch spent, an account resolved, and the write logged.
+///
+/// The order matters. The vouch is verified and *spent* before any account is
+/// touched, so a replay cannot reach the identity write at all. The write is
+/// logged before the session is issued, so an operator reading the office's own
+/// log sees every arrival, including one whose response never reached the
+/// browser.
+fn redeem_vouch_into_local_principal(
+    state: &PlatformAppState,
+    raw: &str,
+) -> Result<(String, PlatformOfficeIdentityWrite), PlatformError> {
+    let accepted = state
+        .platform
+        .cluster_join_tokens
+        .redeem_vouch(raw, now_ts())?;
+    let owner = slug_segment(&accepted.identity);
+    if owner.is_empty() {
+        return Err(PlatformError::new(
+            "CLUSTER_VOUCH_IDENTITY_INVALID",
+            "the vouch names an identity that is not a usable owner slug",
+        ));
+    }
+
+    // `offices.md` §5's owner-mapping rule is about *joining* an office that
+    // already holds projects — the moment when two account databases would
+    // otherwise be merged by guess. This is a different moment: the office has
+    // already accepted this controller as its authority, and nothing is being
+    // merged. §4 makes the controller's identity "the normal door", and a door
+    // that opens only for people already inside is not a door — the ordinary
+    // case in §5 is a *fresh* office, which by definition holds nobody. §8 then
+    // presumes the write outright: "Anything the controller pushes into an
+    // office's accounts is logged", which only parses if it can push. §9 says
+    // so in as many words — inserting an administrator is "accepted and logged
+    // today", with the co-signature that would prevent it named as unbuilt.
+    if let Some(existing) = state.platform.users.get_user(&owner)? {
+        // An existing local account keeps the role the office gave it. The
+        // controller vouches for *who* somebody is; what they may do here is
+        // this office's own statement, and silently promoting a local member
+        // because a vouch arrived would be the escalation §9 worries about.
+        let write = state.platform.cluster_join_tokens.record_identity_write(
+            &owner,
+            IDENTITY_WRITE_ACTION_LINKED,
+            &existing.role,
+            "controller-vouch",
+            &format!(
+                "a controller vouch opened a session as the existing local account '{owner}'; \
+                 its role '{}' was left unchanged",
+                existing.role
+            ),
+        )?;
+        return Ok((owner, write));
+    }
+
+    // The created account gets no usable password. A 32-byte random one is
+    // hashed and discarded unread, so the account cannot be reached by local
+    // login even after §6's break-glass re-enables local authority — a
+    // controller-created principal must not also be a local backdoor with a
+    // credential somebody could guess was default.
+    let mut throwaway = [0u8; 32];
+    rand::rng().fill(&mut throwaway);
+    state.platform.users.create_user(&CreateUserRequest {
+        owner: owner.clone(),
+        password: hex::encode(throwaway),
+        // §2's vouch verb is "one identity the offices accept **for
+        // administration**", so an identity that exists only because the
+        // controller vouched for it is created able to administer. §9 records
+        // this as today's accepted behaviour and names the co-signature that
+        // would constrain it as not built.
+        role: "superadmin".to_string(),
+        git_name: owner.clone(),
+        git_email: String::new(),
+    })?;
+    let write = state.platform.cluster_join_tokens.record_identity_write(
+        &owner,
+        IDENTITY_WRITE_ACTION_CREATED,
+        "superadmin",
+        "controller-vouch",
+        &format!(
+            "a controller vouch created the local account '{owner}' with role 'superadmin'. \
+             It has no usable password: the account is reachable by vouch only, never by \
+             local login."
+        ),
+    )?;
+    Ok((owner, write))
+}
+
+/// `GET /office/vouch?v=…` — spend a vouch and land in this office.
+///
+/// Deliberately reachable without a session: it *is* the way a session begins
+/// here. On success the office issues its own ordinary session cookie — the
+/// same one `POST /login` issues — so every downstream handler is unchanged and
+/// none of them needs to know a vouch happened.
+async fn office_vouch_redeem(
+    State(state): State<PlatformAppState>,
+    Query(params): Query<OfficeVouchRedeemQuery>,
+) -> Response {
+    match redeem_vouch_into_local_principal(&state, &params.v) {
+        Ok((owner, _write)) => {
+            let mut resp = Redirect::to(HOME_PATH).into_response();
+            let token = issue_vouched_session(&state, &owner);
+            if let Ok(value) =
+                HeaderValue::from_str(&session_cookie_header(&token, SESSION_TTL_SECS))
+            {
+                resp.headers_mut().insert(SET_COOKIE, value);
+            }
+            resp
+        }
+        Err(err) => cluster_vouch_error(err),
+    }
+}
+
+/// `POST /api/office/vouch` — the same redemption for a non-browser client.
+async fn api_office_vouch_redeem(
+    State(state): State<PlatformAppState>,
+    Json(req): Json<OfficeVouchRedeemRequest>,
+) -> Response {
+    match redeem_vouch_into_local_principal(&state, &req.vouch) {
+        Ok((owner, write)) => {
+            let mut resp = Json(json!({
+                "ok": true,
+                "owner": owner,
+                "action": write.action,
+                "identity_write": write,
+            }))
+            .into_response();
+            let token = issue_vouched_session(&state, &owner);
+            if let Ok(value) =
+                HeaderValue::from_str(&session_cookie_header(&token, SESSION_TTL_SECS))
+            {
+                resp.headers_mut().insert(SET_COOKIE, value);
+            }
+            resp
+        }
+        Err(err) => cluster_vouch_error(err),
+    }
+}
+
+/// `GET /api/office/identity-writes` — `offices.md` §8's log, read locally.
+///
+/// Gated on this office's *own* superadmin session, not on a controller
+/// header. That is the term's whole point: the record of what the controller
+/// put into these accounts has to be readable by the office's operator with the
+/// controller absent, or the controller is auditing itself.
+async fn api_office_identity_writes(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+) -> Response {
+    if let Err(response) = require_superadmin(&state, &headers) {
+        return response;
+    }
+    match state.platform.cluster_join_tokens.list_identity_writes(200) {
+        Ok(writes) => Json(json!({ "ok": true, "writes": writes })).into_response(),
+        Err(err) => internal_error(err),
+    }
+}
+
+/// `?v=` — the vouch as it arrives in a redirect from the controller.
+#[derive(Debug, Clone, Deserialize)]
+struct OfficeVouchRedeemQuery {
+    /// The rendered vouch.
+    #[serde(default)]
+    v: String,
+}
+
+/// The same value posted as JSON by a client that is not a browser.
+#[derive(Debug, Clone, Deserialize)]
+struct OfficeVouchRedeemRequest {
+    /// The rendered vouch.
+    #[serde(default)]
+    vouch: String,
+}
+
+fn cluster_vouch_error(err: PlatformError) -> Response {
+    let status = match err.code {
+        // Spent, stale, forged, or addressed elsewhere are all "this vouch does
+        // not open this door", which is a 401 and not a 400: the caller may
+        // retry with a fresh one.
+        "CLUSTER_VOUCH_INVALID"
+        | "CLUSTER_VOUCH_EXPIRED"
+        | "CLUSTER_VOUCH_ALREADY_REDEEMED"
+        | "CLUSTER_VOUCH_OFFICE_MISMATCH" => StatusCode::UNAUTHORIZED,
+        "CLUSTER_VOUCH_MALFORMED"
+        | "CLUSTER_VOUCH_IDENTITY_INVALID"
+        | "CLUSTER_JOIN_TOKEN_OFFICE_INVALID" => StatusCode::BAD_REQUEST,
+        "CLUSTER_VOUCH_NOT_AN_OFFICE" | "CLUSTER_VOUCH_NOT_A_CONTROLLER" => {
+            StatusCode::NOT_IMPLEMENTED
+        }
+        "CLUSTER_JOIN_TOKEN_UNKNOWN" | "CLUSTER_OFFICE_ADDRESS_UNKNOWN" => StatusCode::NOT_FOUND,
+        "CLUSTER_JOIN_TOKEN_REVOKED" => StatusCode::FORBIDDEN,
         _ => StatusCode::INTERNAL_SERVER_ERROR,
     };
     (
@@ -24050,6 +24359,7 @@ async fn credential_change_gate(
 ) -> Response {
     if request.method() == Method::GET
         && forced_change_applies_to(request.uri().path())
+        && !session_is_vouched(&state, request.headers())
         && let Some(owner) = session_owner(&state, request.headers())
         && state
             .platform
@@ -24062,6 +24372,19 @@ async fn credential_change_gate(
     next.run(request).await
 }
 
+/// Whether the presented session began with a vouch.
+fn session_is_vouched(state: &PlatformAppState, headers: &HeaderMap) -> bool {
+    let Some(token) = session_token(headers) else {
+        return false;
+    };
+    state
+        .sessions
+        .lock()
+        .ok()
+        .and_then(|sessions| sessions.get(&token).map(|session| session.vouched))
+        .unwrap_or(false)
+}
+
 fn random_session_token() -> String {
     let mut bytes = [0u8; 32];
     rand::rng().fill(&mut bytes);
@@ -24069,6 +24392,15 @@ fn random_session_token() -> String {
 }
 
 fn issue_session(state: &PlatformAppState, owner: &str) -> String {
+    issue_session_inner(state, owner, false)
+}
+
+/// A session that began with a vouch (`offices.md` §2) rather than a password.
+fn issue_vouched_session(state: &PlatformAppState, owner: &str) -> String {
+    issue_session_inner(state, owner, true)
+}
+
+fn issue_session_inner(state: &PlatformAppState, owner: &str, vouched: bool) -> String {
     let token = random_session_token();
     let expires_at = crate::platform::model::now_ts() + SESSION_TTL_SECS;
     if let Ok(mut sessions) = state.sessions.lock() {
@@ -24077,6 +24409,7 @@ fn issue_session(state: &PlatformAppState, owner: &str) -> String {
             PlatformWebSession {
                 owner: owner.to_string(),
                 expires_at,
+                vouched,
             },
         );
     }

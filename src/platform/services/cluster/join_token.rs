@@ -15,6 +15,16 @@
 //!    status locks out exactly one office, by construction.
 //! 4. **The office verifies the controller.** It sends a nonce and refuses a
 //!    response whose HMAC proof does not verify.
+//! 5. **The same key carries the vouch.** §2's third verb needs the office to
+//!    accept an identity it may never have heard of, without the controller
+//!    knowing any password there. The stored digest already proves the
+//!    controller to the office, so the vouch is one more message under it —
+//!    no second credential, no key exchange, and nothing new to revoke.
+//!    Revocation therefore reaches vouching for free: minting one loads the
+//!    same record and refuses the same non-`active` status that stops a
+//!    heartbeat.
+
+use rand::RngExt as _;
 
 use std::fs::{self, OpenOptions};
 use std::io::{ErrorKind, Write};
@@ -23,14 +33,17 @@ use std::sync::Arc;
 
 use crate::infra::cluster::config::ClusterRole;
 use crate::infra::cluster::security::join_token::{
-    self, JoinToken, JoinTokenError, controller_call_header, digests_match,
-    parse_controller_call_header, registration_proof, secret_digest,
+    self, JoinToken, JoinTokenError, OfficeVouch, OfficeVouchError, VOUCH_TTL_SECS,
+    controller_call_header, digests_match, parse_controller_call_header, registration_proof,
+    secret_digest, vouch_nonce,
 };
 use crate::platform::adapters::data::DataAdapter;
 use crate::platform::error::PlatformError;
 use crate::platform::model::{
-    ClusterJoinTokenMintRequest, ClusterMintedJoinToken, JOIN_TOKEN_STATUS_ACTIVE,
-    JOIN_TOKEN_STATUS_REVOKED, PlatformOffice, PlatformOfficeJoinToken, now_ts, slug_segment,
+    AcceptedOfficeVouch, ClusterJoinTokenMintRequest, ClusterMintedJoinToken, ClusterOfficeVouch,
+    JOIN_TOKEN_STATUS_ACTIVE, JOIN_TOKEN_STATUS_REVOKED, PlatformOffice,
+    PlatformOfficeIdentityWrite, PlatformOfficeJoinToken, PlatformOfficeVouchRedemption, now_ts,
+    slug_segment,
 };
 
 /// Where an office keeps the token it was issued.
@@ -43,6 +56,9 @@ use crate::platform::model::{
 /// the catalog and must outlive any membership change, while this token is
 /// rewritten whenever the office is re-issued one. One file, one lifecycle.
 const OFFICE_TOKEN_REL: &str = "platform/office-join-token";
+
+/// Path on an office that spends a vouch.
+pub const OFFICE_VOUCH_REDEEM_PATH: &str = "/office/vouch";
 
 /// What an office holds after it has been issued a token.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -290,6 +306,182 @@ impl ClusterJoinTokenService {
         Ok(controller_call_header(&record.secret_digest, &office_id))
     }
 
+    /// Mint a vouch for one identity at one office (`offices.md` §2, "vouch").
+    ///
+    /// Nothing is written. A vouch is an HMAC over four values under a digest
+    /// this controller already holds, so minting is a read plus a hash — which
+    /// is also why it survives a read-only controller and why re-minting after
+    /// a lost redirect costs nothing.
+    ///
+    /// Revocation reaches this for free, and that is the design rather than a
+    /// coincidence: the same record and the same `is_active` check that stop a
+    /// heartbeat stop a mint. There is no second list to remember to update.
+    /// Rotation goes further and kills vouching *cryptographically* — the
+    /// office's stored secret no longer derives the digest this controller
+    /// holds, so nothing minted here verifies there. Plain revocation is the
+    /// controller declining to use a key it still has, so a vouch minted
+    /// moments before a revoke stays redeemable at that office until it
+    /// expires. That window is the TTL and no longer, and it is the reason the
+    /// TTL is two minutes rather than an hour.
+    pub fn mint_vouch(
+        &self,
+        office_id: &str,
+        identity: &str,
+        now: i64,
+    ) -> Result<ClusterOfficeVouch, PlatformError> {
+        if self.role != ClusterRole::Master {
+            return Err(PlatformError::new(
+                "CLUSTER_VOUCH_NOT_A_CONTROLLER",
+                "only a controller vouches for an identity at an office                  (`offices.md` §2 gives the three verbs to the controller alone)",
+            ));
+        }
+        let office_id = normalize_office_id(office_id)?;
+        let identity = slug_segment(identity);
+        if identity.is_empty() {
+            return Err(PlatformError::new(
+                "CLUSTER_VOUCH_IDENTITY_INVALID",
+                "a vouch must name the identity it vouches for",
+            ));
+        }
+        let record = self.data.get_office_join_token(&office_id)?.ok_or_else(|| {
+            PlatformError::new(
+                "CLUSTER_JOIN_TOKEN_UNKNOWN",
+                format!(
+                    "no join token has been minted for office '{office_id}', so this controller \
+                     holds nothing that office would accept a vouch under. Mint one \
+                     (POST /api/cluster/join-tokens)."
+                ),
+            )
+        })?;
+        if !record.is_active() {
+            return Err(PlatformError::new(
+                "CLUSTER_JOIN_TOKEN_REVOKED",
+                format!(
+                    "the join token for office '{office_id}' is revoked, so this controller no \
+                     longer vouches for anybody there. Re-mint with \"rotate\": true to restore \
+                     membership, which also invalidates every vouch issued under the old token."
+                ),
+            ));
+        }
+        let expires_at = now + VOUCH_TTL_SECS;
+        let vouch = OfficeVouch::mint(
+            &record.secret_digest,
+            &office_id,
+            &identity,
+            expires_at,
+            &vouch_nonce(),
+        )
+        .render();
+        let base_url = self
+            .data
+            .get_platform_office(&office_id)?
+            .map(|office| office.base_url.trim_end_matches('/').to_string())
+            .unwrap_or_default();
+        let redeem_url = if base_url.is_empty() {
+            String::new()
+        } else {
+            format!(
+                "{base_url}{OFFICE_VOUCH_REDEEM_PATH}?v={}",
+                query_encode(&vouch)
+            )
+        };
+        Ok(ClusterOfficeVouch {
+            office_id,
+            identity,
+            expires_at,
+            ttl_seconds: VOUCH_TTL_SECS,
+            vouch,
+            redeem_url,
+        })
+    }
+
+    /// Verify and spend one vouch presented to this office.
+    ///
+    /// The controller is not contacted, and could not usefully be: everything
+    /// checked here is checked with the secret this office already stores.
+    /// That is required rather than convenient. §3 records that "the
+    /// controller's death costs logins, never execution", and §6 exists so the
+    /// credential that repairs a relationship is never held by the unreachable
+    /// party — a redemption that phoned home would reintroduce exactly that
+    /// dependency at exactly the moment it hurts.
+    ///
+    /// Spending is the last step and it is atomic, so two redemptions of one
+    /// vouch arriving together produce one session and one refusal rather than
+    /// two sessions.
+    pub fn redeem_vouch(&self, raw: &str, now: i64) -> Result<AcceptedOfficeVouch, PlatformError> {
+        let Some(identity) = self.identity.as_ref() else {
+            return Err(PlatformError::new(
+                "CLUSTER_VOUCH_NOT_AN_OFFICE",
+                "this instance has joined no controller, so nobody vouches for anybody here. \
+                 A vouch is redeemable only on an office that holds a join token \
+                 (`offices.md` §4).",
+            ));
+        };
+        let vouch = OfficeVouch::parse(raw).map_err(vouch_error)?;
+        vouch
+            .verify(&identity.secret_digest, &identity.office_id, now)
+            .map_err(vouch_error)?;
+
+        let claimed = self
+            .data
+            .claim_office_vouch_nonce(&PlatformOfficeVouchRedemption {
+                nonce: vouch.nonce.clone(),
+                office_id: vouch.office_id.clone(),
+                identity: vouch.identity.clone(),
+                expires_at: vouch.expires_at,
+                redeemed_at: now,
+            })?;
+        if !claimed {
+            return Err(PlatformError::new(
+                "CLUSTER_VOUCH_ALREADY_REDEEMED",
+                "this vouch has already been spent. A vouch is a hand-off and opens one \
+                 session; ask the controller for a fresh one.",
+            ));
+        }
+        Ok(AcceptedOfficeVouch {
+            office_id: vouch.office_id,
+            identity: vouch.identity,
+            expires_at: vouch.expires_at,
+        })
+    }
+
+    /// Append one row to this office's identity-write log (`offices.md` §8).
+    pub fn record_identity_write(
+        &self,
+        owner: &str,
+        action: &str,
+        role: &str,
+        source: &str,
+        detail: &str,
+    ) -> Result<PlatformOfficeIdentityWrite, PlatformError> {
+        let mut bytes = [0u8; 16];
+        rand::rng().fill(&mut bytes);
+        let entry = PlatformOfficeIdentityWrite {
+            write_id: hex::encode(bytes),
+            office_id: self
+                .identity
+                .as_ref()
+                .map(|identity| identity.office_id.clone())
+                .unwrap_or_default(),
+            owner: owner.to_string(),
+            action: action.to_string(),
+            role: role.to_string(),
+            source: source.to_string(),
+            detail: detail.to_string(),
+            written_at: now_ts(),
+        };
+        self.data.put_office_identity_write(&entry)?;
+        Ok(entry)
+    }
+
+    /// Read this office's identity-write log, newest first.
+    pub fn list_identity_writes(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<PlatformOfficeIdentityWrite>, PlatformError> {
+        self.data.list_office_identity_writes(limit.clamp(1, 500))
+    }
+
     /// Whether a presented internal-cluster header authenticates a peer.
     ///
     /// The two roles check different things, because the two directions carry
@@ -305,6 +497,40 @@ impl ClusterJoinTokenService {
             ClusterRole::Standalone => false,
         }
     }
+}
+
+/// Map a refusal from the vouch scheme onto a platform error code.
+///
+/// One code per reason and never a merged one: an operator at the wrong office
+/// and an operator holding a stale vouch need different next actions, and a
+/// single `CLUSTER_VOUCH_INVALID` would hide which they are.
+fn vouch_error(err: OfficeVouchError) -> PlatformError {
+    let code = match err {
+        OfficeVouchError::OfficeMismatch { .. } => "CLUSTER_VOUCH_OFFICE_MISMATCH",
+        OfficeVouchError::ProofInvalid => "CLUSTER_VOUCH_INVALID",
+        OfficeVouchError::Expired { .. } => "CLUSTER_VOUCH_EXPIRED",
+        _ => "CLUSTER_VOUCH_MALFORMED",
+    };
+    PlatformError::new(code, err.to_string())
+}
+
+/// Percent-encode one query-string value.
+///
+/// A rendered vouch is slugs, digits, hex, and `:` separators today, so this is
+/// mostly a no-op — which is the point of doing it anyway. A later scheme word
+/// carrying anything else must not silently produce a URL that truncates at the
+/// first reserved character.
+fn query_encode(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for byte in value.as_bytes() {
+        match *byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(*byte as char);
+            }
+            byte => out.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    out
 }
 
 fn normalize_office_id(raw: &str) -> Result<String, PlatformError> {

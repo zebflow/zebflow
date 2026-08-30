@@ -156,6 +156,13 @@ function OfficeCard({ office, index }) {
             </DetailRow>
           ) : null}
         </div>
+        {office?.open_url ? (
+          <div className="mt-4">
+            <Button as="a" href={office.open_url} variant="outline" size="sm">
+              Open office
+            </Button>
+          </div>
+        ) : null}
       </CardContent>
     </Card>
   );

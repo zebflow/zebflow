@@ -13,10 +13,10 @@ use crate::platform::error::PlatformError;
 use crate::platform::model::{
     DataAdapterKind, HubAccessGrant, HubAssetPackage, HubAssetVersion, HubAuthority, HubPublisher,
     HubToken, McpSession, PipelineInvocationEntry, PipelineInvocationLogStats, PipelineMeta,
-    PlatformHubRepository, PlatformOffice, PlatformOfficeJoinToken, PlatformOfficeNode,
-    PlatformProject, PlatformServiceInstance, PlatformUser, ProjectCredential, ProjectDbConnection,
-    ProjectHubRepository, ProjectInvite, ProjectMember, ProjectOperationRecord, ProjectPolicy,
-    ProjectPolicyBinding, StoredUser,
+    PlatformHubRepository, PlatformOffice, PlatformOfficeIdentityWrite, PlatformOfficeJoinToken,
+    PlatformOfficeNode, PlatformOfficeVouchRedemption, PlatformProject, PlatformServiceInstance,
+    PlatformUser, ProjectCredential, ProjectDbConnection, ProjectHubRepository, ProjectInvite,
+    ProjectMember, ProjectOperationRecord, ProjectPolicy, ProjectPolicyBinding, StoredUser,
 };
 
 /// Metadata adapter contract used by platform services.
@@ -455,6 +455,45 @@ pub trait DataAdapter: Send + Sync {
     }
     /// List every issued join-token record.
     fn list_office_join_tokens(&self) -> Result<Vec<PlatformOfficeJoinToken>, PlatformError> {
+        Ok(vec![])
+    }
+    /// Claim one vouch nonce, returning whether this call was the first.
+    ///
+    /// The whole single-use rule rests on this returning `false` the second
+    /// time, so it must be one atomic statement in the store rather than a
+    /// read followed by a write: two redemptions of one vouch arriving
+    /// together would otherwise both see nothing and both proceed.
+    ///
+    /// Implementations prune rows past `expires_at` in the same call. That is
+    /// what keeps the table bounded, and it loses nothing: a vouch past its
+    /// expiry is refused by the expiry check whether or not a row remembers it.
+    fn claim_office_vouch_nonce(
+        &self,
+        redemption: &PlatformOfficeVouchRedemption,
+    ) -> Result<bool, PlatformError> {
+        let _ = redemption;
+        Err(PlatformError::new(
+            "PLATFORM_ADAPTER_UNAVAILABLE",
+            "office vouch redemption is not supported by this adapter",
+        ))
+    }
+    /// Append one identity-write record to this office's own log.
+    fn put_office_identity_write(
+        &self,
+        entry: &PlatformOfficeIdentityWrite,
+    ) -> Result<(), PlatformError> {
+        let _ = entry;
+        Err(PlatformError::new(
+            "PLATFORM_ADAPTER_UNAVAILABLE",
+            "office identity writes are not supported by this adapter",
+        ))
+    }
+    /// Read this office's identity-write log, newest first.
+    fn list_office_identity_writes(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<PlatformOfficeIdentityWrite>, PlatformError> {
+        let _ = limit;
         Ok(vec![])
     }
     /// Get one platform service instance.

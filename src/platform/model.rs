@@ -543,6 +543,110 @@ impl PlatformOfficeJoinToken {
     }
 }
 
+/// One vouch this office has already redeemed.
+///
+/// `offices.md` §2's vouch verb is a hand-off, and a hand-off happens once. The
+/// row exists so a second presentation of the same vouch is refused — without
+/// it, a value that leaks from a URL bar, a proxy log, or a `Referer` header is
+/// a reusable key for as long as it lives.
+///
+/// It lives in the *office's* own catalog, because the office is the party that
+/// must refuse, and §3's whole point is that it can do so without the
+/// controller. `instance-directory.md` puts `platform/catalog.db` in the STORE
+/// tier beside sessions, which is the same lifetime and the same durability
+/// requirement: a record kept only in memory would let a restart reopen every
+/// unspent vouch.
+///
+/// It is bounded by its own subject. A vouch past `expires_at` is refused by
+/// the expiry check whatever this table says, so the row can be deleted the
+/// moment it outlives the vouch it records, and it is
+/// ([`crate::platform::services::ClusterJoinTokenService::redeem_vouch`] prunes
+/// on every redemption). The table's ceiling is therefore the number of
+/// vouches redeemed inside one TTL window, not the number ever redeemed.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PlatformOfficeVouchRedemption {
+    /// The vouch's nonce. One row per vouch, and the reason it is spendable once.
+    pub nonce: String,
+    /// Office the vouch named.
+    pub office_id: String,
+    /// Identity the vouch carried.
+    pub identity: String,
+    /// The vouch's own expiry; the row is prunable once it passes.
+    pub expires_at: i64,
+    /// Unix timestamp seconds the vouch was spent.
+    pub redeemed_at: i64,
+}
+
+/// A vouch resolved to a local account that already existed.
+pub const IDENTITY_WRITE_ACTION_LINKED: &str = "linked";
+/// A vouch created a local account that did not exist.
+pub const IDENTITY_WRITE_ACTION_CREATED: &str = "created";
+
+/// One thing the controller put into this office's accounts.
+///
+/// `offices.md` §8: "Anything the controller pushes into an office's accounts
+/// is logged where the office's operator can read it." *Where the office's
+/// operator can read it* is the load-bearing half — a record only the
+/// controller can read would be the controller auditing itself.
+///
+/// So it is a row in the office's own `platform/catalog.db`, read over the
+/// office's own API by the office's own superadmin, with the controller
+/// unreachable and uninvolved. On the tier question `instance-directory.md`
+/// leaves one answer: STORE, "machine-written, cannot be regenerated, back it
+/// up". Not CACHE, which may be deleted with no loss. Not BOUNDED, which is
+/// "disposable after a retention window" — the record of who was inserted into
+/// your accounts is the last thing that should quietly expire. And not a
+/// project's `data/logs/`, which is BOUNDED, 30-day, and scoped to a project an
+/// identity write does not belong to.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PlatformOfficeIdentityWrite {
+    /// Stable row id.
+    pub write_id: String,
+    /// Office whose accounts were written.
+    pub office_id: String,
+    /// Local owner slug that was created or resolved.
+    pub owner: String,
+    /// [`IDENTITY_WRITE_ACTION_CREATED`] or [`IDENTITY_WRITE_ACTION_LINKED`].
+    pub action: String,
+    /// Role the local account holds after the write.
+    pub role: String,
+    /// What caused the write, e.g. `controller-vouch`.
+    pub source: String,
+    /// Human-readable detail an operator reads without a decoder.
+    pub detail: String,
+    /// Unix timestamp seconds.
+    pub written_at: i64,
+}
+
+/// One minted vouch, as the controller hands it over.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ClusterOfficeVouch {
+    /// Office the vouch opens, and no other.
+    pub office_id: String,
+    /// Identity the controller vouched for.
+    pub identity: String,
+    /// Unix timestamp seconds after which the office refuses it.
+    pub expires_at: i64,
+    /// Seconds the vouch lives, so a caller need not subtract clocks.
+    pub ttl_seconds: i64,
+    /// The vouch itself.
+    pub vouch: String,
+    /// Where to redeem it, when the office record advertises a base URL.
+    #[serde(default)]
+    pub redeem_url: String,
+}
+
+/// One accepted vouch, after the office verified and spent it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AcceptedOfficeVouch {
+    /// Office that accepted it.
+    pub office_id: String,
+    /// Identity the controller vouched for.
+    pub identity: String,
+    /// The vouch's expiry, kept for the redemption record.
+    pub expires_at: i64,
+}
+
 /// One platform-level service instance hosted by an office.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PlatformServiceInstance {
