@@ -10201,9 +10201,11 @@ async fn office_vouch_redeem(
         Ok((owner, _write)) => {
             let mut resp = Redirect::to(HOME_PATH).into_response();
             let token = issue_vouched_session(&state, &owner);
-            if let Ok(value) =
-                HeaderValue::from_str(&session_cookie_header(&token, SESSION_TTL_SECS))
-            {
+            if let Ok(value) = HeaderValue::from_str(&session_cookie_header_same_site(
+                &token,
+                SESSION_TTL_SECS,
+                "Lax",
+            )) {
                 resp.headers_mut().insert(SET_COOKIE, value);
             }
             resp
@@ -24644,6 +24646,19 @@ fn issue_session_inner(state: &PlatformAppState, owner: &str, vouched: bool) -> 
 }
 
 fn session_cookie_header(token: &str, max_age: i64) -> String {
+    session_cookie_header_same_site(token, max_age, "Strict")
+}
+
+/// `SameSite` is a parameter for exactly one caller: the browser vouch landing.
+///
+/// `offices.md` §3 makes the office a different host from its controller, so
+/// the "Open office" hand-off is cross-site *by construction*. Under
+/// `SameSite=Strict` the browser sets the cookie and then withholds it from the
+/// redirect that follows, and the operator lands on the office's login page
+/// holding a session it will not send. `Lax` is the narrowest attribute that
+/// survives a top-level GET hand-off, and it is what every SSO callback uses
+/// for the same reason. A locally-authenticated session stays `Strict`.
+fn session_cookie_header_same_site(token: &str, max_age: i64, same_site: &str) -> String {
     let secure = match std::env::var("ZEBFLOW_COOKIE_SECURE") {
         Ok(value) => matches!(
             value.trim().to_ascii_lowercase().as_str(),
@@ -24658,7 +24673,7 @@ fn session_cookie_header(token: &str, max_age: i64) -> String {
     };
     let secure_attr = if secure { "; Secure" } else { "" };
     format!(
-        "{SESSION_COOKIE_NAME}={token}; Path=/; HttpOnly; SameSite=Strict; Max-Age={max_age}{secure_attr}",
+        "{SESSION_COOKIE_NAME}={token}; Path=/; HttpOnly; SameSite={same_site}; Max-Age={max_age}{secure_attr}",
     )
 }
 
