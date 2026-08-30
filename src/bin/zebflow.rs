@@ -142,6 +142,8 @@ Usage:
   {zeb} project lock migrate <owner> <project>
   {zeb} project pipelines migrate <owner> <project>
   {zeb} admin reset-password <owner>
+  {zeb} admin break-glass [<owner>]
+  {zeb} admin detach
   {zeb} controller
   {zeb} office
   {zeb} k8s cluster <command> ...
@@ -175,6 +177,22 @@ because they are what you run when the server will not start):
                a server answers on this machine's configured address; a server
                listening on an unusual port is not detected, so make sure none
                holds the data root before running this.
+  {zeb} admin break-glass [<owner>]
+               Re-enable local password login on an office that has joined a
+               controller. Needs no controller and no quorum: host access is
+               the protection, so stop the server and run this on the office
+               itself. With an owner, that account's password is rotated in the
+               same act and printed once. The office stays joined -- this
+               changes who may open the door, not who the office belongs to.
+               The use is recorded locally, readable at
+               GET /api/office/local-authority, and reported to the controller
+               on the next successful registration.
+  {zeb} admin detach
+               Leave the controller. The office keeps its projects, data,
+               files, blessed shelf, and public surface, and its local accounts
+               go live again -- they were disabled while joined, never deleted.
+               Unset ZEBFLOW_CLUSTER_JOIN_TOKEN afterwards or the variable
+               joins the instance straight back on its next start.
 
 Kubernetes:
   {zeb} k8s cluster init <path>

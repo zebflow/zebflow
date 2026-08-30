@@ -22,12 +22,14 @@
 
 pub mod bootstrap;
 pub mod join_token;
+pub mod local_authority;
 pub mod placement;
 pub mod registry;
 pub mod runtime_sync;
 
 pub use bootstrap::ClusterBootstrapService;
 pub use join_token::{ClusterJoinTokenService, OfficeJoinIdentity};
+pub use local_authority::{OfficeJoinFile, OfficeLocalAuthorityService};
 pub use placement::ClusterPlacementService;
 pub use registry::ClusterRegistryService;
 pub use runtime_sync::ClusterRuntimeSyncService;

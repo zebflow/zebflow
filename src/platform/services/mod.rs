@@ -47,7 +47,8 @@ pub use auth::AuthService;
 pub use authorization::AuthorizationService;
 pub use cluster::{
     ClusterBootstrapService, ClusterJoinTokenService, ClusterPlacementService,
-    ClusterRegistryService, ClusterRuntimeSyncService, OfficeJoinIdentity,
+    ClusterRegistryService, ClusterRuntimeSyncService, OfficeJoinFile, OfficeJoinIdentity,
+    OfficeLocalAuthorityService,
 };
 pub use credential::CredentialService;
 pub use db_connection::DbConnectionService;

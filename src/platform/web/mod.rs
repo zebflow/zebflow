@@ -53,17 +53,18 @@ use crate::platform::model::{
     ExecutePipelineRequest, GitCommitRequest, IDENTITY_WRITE_ACTION_CREATED,
     IDENTITY_WRITE_ACTION_LINKED, LoginRequest, McpSessionCreateRequest, McpSessionToggleRequest,
     PipelineExecuteTrigger, PipelineInvocationEntry, PipelineLocateRequest,
-    PlatformOfficeIdentityWrite, ProjectAccessSubject, ProjectCapability, ProjectDocItem,
-    ProjectDocMoveRequest, ProjectOperationKind, ProjectTransferArtifactKind,
-    QueryProjectDbConnectionRequest, TemplateCompileRequest, TemplateCompileResponse,
-    TemplateCreateRequest, TemplateDiagnostic, TemplateMoveRequest, TemplateSaveRequest,
-    TestProjectDbConnectionRequest, UpdateSettingsSectionRequest, UpdateSimpleTableRequest,
-    UpdateUserSettingsRequest, UpsertPipelineDefinitionRequest,
+    PlatformOfficeIdentityWrite, PlatformOfficeLocalAuthorityEvent, ProjectAccessSubject,
+    ProjectCapability, ProjectDocItem, ProjectDocMoveRequest, ProjectOperationKind,
+    ProjectTransferArtifactKind, QueryProjectDbConnectionRequest, TemplateCompileRequest,
+    TemplateCompileResponse, TemplateCreateRequest, TemplateDiagnostic, TemplateMoveRequest,
+    TemplateSaveRequest, TestProjectDbConnectionRequest, UpdateSettingsSectionRequest,
+    UpdateSimpleTableRequest, UpdateUserSettingsRequest, UpsertPipelineDefinitionRequest,
     UpsertProjectAssistantConfigRequest, UpsertProjectCredentialRequest,
     UpsertProjectDbConnectionRequest, UpsertProjectDocRequest, now_ts, slug_segment,
 };
 use crate::platform::sekejap;
 use crate::platform::services::PlatformService;
+use crate::platform::services::cluster::local_authority::LOCAL_LOGIN_DISABLED_CODE;
 use crate::platform::services::hub::{HubProjectBundlePublishOptions, RemoteHubPublishRequest};
 use crate::platform::services::node_registry::NodeRegistryService;
 use crate::rwe::{
@@ -546,6 +547,23 @@ pub async fn router(platform: Arc<PlatformService>) -> Router {
         .route(
             "/api/office/identity-writes",
             get(api_office_identity_writes),
+        )
+        // `offices.md` §6's record, read by the office's own operator, and the
+        // controller's copy of what its offices reported. Two routes rather
+        // than one because they answer two different questions on two
+        // different instances: "what happened here" and "what did my offices
+        // tell me".
+        .route(
+            "/api/office/local-authority",
+            get(api_office_local_authority),
+        )
+        .route(
+            "/api/cluster/office-break-glass",
+            get(api_cluster_office_break_glass),
+        )
+        .route(
+            "/api/internal/cluster/offices/break-glass",
+            post(api_internal_cluster_report_break_glass),
         )
         .route(
             "/api/internal/cluster/workers/register",
@@ -2736,6 +2754,18 @@ async fn login_submit(
                 Err(err) => internal_error(err),
             }
         }
+        // `offices.md` §4: while joined, this door is closed and the
+        // controller's is open. The refusal is shown in full on the login page
+        // rather than reduced to a status code, because the operator standing
+        // in front of it needs three facts and a next action, and it carries
+        // nothing about the identifier or the password — the gate ran before
+        // either was read.
+        Err(err) if err.code == LOCAL_LOGIN_DISABLED_CODE => {
+            match render_login_page(&state, Some(&err.message), StatusCode::FORBIDDEN) {
+                Ok(resp) => resp,
+                Err(err) => internal_error(err),
+            }
+        }
         Err(err) => internal_error(err),
     }
 }
@@ -4552,6 +4582,82 @@ async fn read_project_doc_for_page(
         .to_string())
 }
 
+/// Send this office's unreported break-glass records to its controller.
+///
+/// Best effort by construction. The local record is the authority and is
+/// already durable; this only adds an acknowledgement timestamp to it. A
+/// controller that is down, slow, or older than this office costs one silent
+/// retry fifteen seconds later and never a lost row.
+async fn report_break_glass_to_controller(
+    state: &PlatformAppState,
+    master_url: &str,
+    token: &str,
+    node_id: &str,
+) {
+    let pending = match state.platform.local_authority.unreported_break_glass() {
+        Ok(pending) if !pending.is_empty() => pending,
+        Ok(_) => return,
+        Err(err) => {
+            eprintln!(
+                "Zebflow office: cannot read the local-authority log: {}",
+                err.message
+            );
+            return;
+        }
+    };
+    let url = format!(
+        "{}/api/internal/cluster/offices/break-glass",
+        master_url.trim_end_matches('/')
+    );
+    let body = json!({ "office_id": node_id, "events": pending });
+    let response = state
+        .http_client
+        .post(&url)
+        .header(INTERNAL_CLUSTER_TOKEN_HEADER, token)
+        .json(&body)
+        .send()
+        .await;
+    let accepted = match response {
+        Ok(response) if response.status().is_success() => response
+            .json::<Value>()
+            .await
+            .ok()
+            .and_then(|value| {
+                value
+                    .get("accepted")
+                    .and_then(Value::as_array)
+                    .map(|items| {
+                        items
+                            .iter()
+                            .filter_map(Value::as_str)
+                            .map(str::to_string)
+                            .collect::<Vec<_>>()
+                    })
+            })
+            .unwrap_or_default(),
+        Ok(response) => {
+            eprintln!(
+                "Zebflow office: controller refused a break-glass report with {}",
+                response.status()
+            );
+            return;
+        }
+        Err(err) => {
+            eprintln!("Zebflow office: break-glass report failed: {err}");
+            return;
+        }
+    };
+    let now = now_ts();
+    for event_id in accepted {
+        if let Err(err) = state.platform.local_authority.mark_reported(&event_id, now) {
+            eprintln!(
+                "Zebflow office: break-glass {event_id} was reported but not marked: {}",
+                err.message
+            );
+        }
+    }
+}
+
 async fn cluster_worker_registration_loop(state: PlatformAppState) {
     let bootstrap = state.platform.cluster_bootstrap.clone();
     let identity = state
@@ -4650,6 +4756,19 @@ async fn cluster_worker_registration_loop(state: PlatformAppState) {
             tokio::time::sleep(Duration::from_secs(10)).await;
             continue;
         }
+        // `offices.md` §6: "Its use is recorded locally and reported to the
+        // controller on reconnect." This is the reconnect, and it is here
+        // rather than before the proof check on purpose — a break-glass record
+        // says who let themselves into this office, and it is not handed to a
+        // host that has not yet proved it is this office's controller.
+        //
+        // It is a re-send of everything still unacknowledged rather than a
+        // queue drained once, so an office offline for a month reports on its
+        // first successful registration and an office that never comes back
+        // keeps the record locally and says so. Nothing is deleted after
+        // reporting; only a timestamp is added.
+        report_break_glass_to_controller(&state, &master_url, &token, &node_id).await;
+
         let heartbeat_request = ClusterWorkerHeartbeatRequest {
             node_id: node_id.clone(),
             status: "online".to_string(),
@@ -10035,6 +10154,11 @@ fn redeem_vouch_into_local_principal(
     // login even after §6's break-glass re-enables local authority — a
     // controller-created principal must not also be a local backdoor with a
     // credential somebody could guess was default.
+    //
+    // `zeb admin break-glass` now carries the second half of that promise: it
+    // refuses to name an account this log records as `created`, so the one
+    // command that reopens local authority cannot also hand that account a
+    // password in the same keystroke.
     let mut throwaway = [0u8; 32];
     rand::rng().fill(&mut throwaway);
     state.platform.users.create_user(&CreateUserRequest {
@@ -10131,6 +10255,109 @@ async fn api_office_identity_writes(
         Ok(writes) => Json(json!({ "ok": true, "writes": writes })).into_response(),
         Err(err) => internal_error(err),
     }
+}
+
+/// `GET /api/office/local-authority` — `offices.md` §6's record, read locally.
+///
+/// Gated on this office's *own* superadmin, exactly like the identity-write
+/// log beside it, and for a stronger version of the same reason: the record of
+/// somebody letting themselves in with host access is worth nothing if the only
+/// party who can read it is the one the record was supposed to reach. §6 says
+/// the use is "recorded locally *and* reported to the controller", in that
+/// order, and this route is the first half.
+///
+/// It also answers the state question, not only the history one: `joined`,
+/// `local_login_allowed`, and which recorded act is currently in force.
+async fn api_office_local_authority(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+) -> Response {
+    if let Err(response) = require_superadmin(&state, &headers) {
+        return response;
+    }
+    let authority = &state.platform.local_authority;
+    let join = authority.join_file();
+    let in_force = match authority.break_glass_in_force() {
+        Ok(value) => value,
+        Err(err) => return internal_error(err),
+    };
+    let allowed = match authority.local_login_allowed() {
+        Ok(value) => value,
+        Err(err) => return internal_error(err),
+    };
+    match authority.list(200) {
+        Ok(events) => Json(json!({
+            "ok": true,
+            "joined": join.is_joined(),
+            "office_id": join.office_id(),
+            "local_login_allowed": allowed,
+            "break_glass_in_force": in_force,
+            "events": events,
+        }))
+        .into_response(),
+        Err(err) => internal_error(err),
+    }
+}
+
+/// `GET /api/cluster/office-break-glass` — what this controller has been told.
+///
+/// The controller's copy is deliberately read-only and deliberately partial: it
+/// holds what offices managed to report, which is not the same set as what
+/// happened. An office that broke the glass and never came back is invisible
+/// here and fully visible on itself, and that asymmetry is the honest one —
+/// §6 requires the office to be repairable without the controller, so the
+/// controller cannot also be the authority on whether it was.
+async fn api_cluster_office_break_glass(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+) -> Response {
+    if let Err(response) = require_superadmin(&state, &headers) {
+        return response;
+    }
+    match state.platform.local_authority.list(500) {
+        Ok(events) => Json(json!({ "ok": true, "events": events })).into_response(),
+        Err(err) => internal_error(err),
+    }
+}
+
+/// `POST /api/internal/cluster/offices/break-glass` — §6's report, arriving.
+///
+/// Authenticated by the same join token a registration carries, and by the same
+/// check: the office id is taken from the *token*, never from the body, so one
+/// office cannot file a break-glass against another's name.
+async fn api_internal_cluster_report_break_glass(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Json(req): Json<OfficeBreakGlassReportRequest>,
+) -> Response {
+    let office_id = match require_registering_office(&state, &headers, &req.office_id) {
+        Ok(office_id) => office_id,
+        Err(response) => return response,
+    };
+    let received_at = now_ts();
+    let mut accepted = Vec::new();
+    for event in &req.events {
+        match state
+            .platform
+            .local_authority
+            .accept_report(event, &office_id, received_at)
+        {
+            Ok(stored) => accepted.push(stored.event_id),
+            Err(err) => return internal_error(err),
+        }
+    }
+    Json(json!({ "ok": true, "office_id": office_id, "accepted": accepted })).into_response()
+}
+
+/// One office's unreported break-glass acts, on their way to the controller.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct OfficeBreakGlassReportRequest {
+    /// Office filing the report. Checked against the token, never trusted.
+    #[serde(default)]
+    office_id: String,
+    /// The rows, exactly as the office recorded them.
+    #[serde(default)]
+    events: Vec<PlatformOfficeLocalAuthorityEvent>,
 }
 
 /// `?v=` — the vouch as it arrives in a redirect from the controller.

@@ -455,10 +455,14 @@ async fn a_controller_vouch_opens_an_office_once_and_is_logged_there() {
     let office_a = build_office(&office_a_root, &token_a).await;
     let office_b = build_office(&office_b_root, &token_b).await;
 
-    // (h) The boundary, before anything else: local login on the office works
-    // exactly as it does standalone. This loop must not have touched it.
-    let local_cookie_before = login_cookie(office_a.clone(), "superadmin", "test-pass").await;
-    assert!(local_cookie_before.contains("zebflow_session="));
+    // (h) The boundary, before anything else: this office is joined, so §4's
+    // login term has closed its local door. Asserted here rather than assumed,
+    // because everything below is about the door that replaces it — a vouch
+    // that worked only on an office you could also log into locally would
+    // prove nothing about the term.
+    let closed = attempt_login(&office_a, "superadmin", "test-pass").await;
+    assert_eq!(closed.0, StatusCode::FORBIDDEN);
+    assert!(closed.1.contains("zeb admin break-glass"), "{}", closed.1);
 
     // --- (a) a controller session reaches an office with no password there --
     let (status, minted) = mint_vouch(&controller_app, &controller_cookie, "office-a").await;
@@ -487,6 +491,10 @@ async fn a_controller_vouch_opens_an_office_once_and_is_logged_there() {
     // The office already holds this owner, so nothing is created and its role
     // is left exactly as the office set it.
     assert_eq!(redeemed.1["action"], json!("linked"));
+    // The session this office issued for its own `superadmin`. It is the
+    // office's own session — the same cookie `POST /login` issued before §4
+    // closed that door — and from here on it is what reads the office's own
+    // logs, with the controller uninvolved.
     let office_session = redeemed.2.expect("the office issues its own session");
 
     // The session is an *ordinary* one: an unmodified downstream handler
@@ -533,24 +541,13 @@ async fn a_controller_vouch_opens_an_office_once_and_is_logged_there() {
     assert_eq!(created.1["identity_write"]["role"], json!("superadmin"));
 
     // The created account is reachable by vouch and by nothing else: no
-    // password was chosen for it, so it must not be a local back door.
-    let refused_login = office_a
-        .clone()
-        .oneshot(
-            Request::builder()
-                .uri("/login")
-                .method("POST")
-                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
-                .body(Body::from("identifier=remote-admin&password=remote-pass"))
-                .expect("request"),
-        )
-        .await
-        .expect("login response");
-    assert_eq!(
-        refused_login.status(),
-        StatusCode::UNAUTHORIZED,
-        "a vouch-created account must carry no guessable credential"
-    );
+    // password was chosen for it, so it must not be a local back door. On a
+    // joined office the local door is shut for everybody, so the interesting
+    // half of this — that it stays shut for *this* account once §6 reopens the
+    // door for the rest — is proven in
+    // `detach_keeps_everything_and_a_vouched_account_never_becomes_a_local_door`.
+    let refused_login = attempt_login(&office_a, "remote-admin", "remote-pass").await;
+    assert_eq!(refused_login.0, StatusCode::FORBIDDEN);
 
     // --- (c) an expired vouch is refused -----------------------------------
     // Minted straight from the office's own secret, because the route will
@@ -614,7 +611,7 @@ async fn a_controller_vouch_opens_an_office_once_and_is_logged_there() {
             .oneshot(
                 Request::builder()
                     .uri("/api/office/identity-writes")
-                    .header(header::COOKIE, &local_cookie_before)
+                    .header(header::COOKIE, &office_session)
                     .body(Body::empty())
                     .expect("request"),
             )
@@ -690,14 +687,11 @@ async fn a_controller_vouch_opens_an_office_once_and_is_logged_there() {
     );
 
     // --- (h) the boundary again, at the end --------------------------------
-    // Everything above happened and local login on the office is untouched.
-    // §4's disable is the next loop's work and it now has its prerequisite.
-    let local_cookie_after = login_cookie(office_a.clone(), "superadmin", "test-pass").await;
-    assert!(local_cookie_after.contains("zebflow_session="));
-    assert_ne!(
-        local_cookie_after, local_cookie_before,
-        "a fresh login is a fresh session"
-    );
+    // Everything above happened — vouches minted, spent, forged, refused, and
+    // a token revoked and rotated — and none of it opened the local door. Only
+    // §6's host command does that, which its own tests prove.
+    let still_closed = attempt_login(&office_a, "superadmin", "test-pass").await;
+    assert_eq!(still_closed.0, StatusCode::FORBIDDEN);
 
     // --- the door must open on a *fresh* office, §5's ordinary case --------
     // An office whose local account is still on its generated password would
@@ -4894,4 +4888,449 @@ fn sha256_hex(bytes: &[u8]) -> String {
         .iter()
         .map(|byte| format!("{byte:02x}"))
         .collect()
+}
+
+// ---------------------------------------------------------------------------
+// `offices.md` §4 login, §6 break-glass, §7 leaving.
+// ---------------------------------------------------------------------------
+
+/// Attempt a local password login and report what came back.
+async fn attempt_login(
+    app: &axum::Router,
+    identifier: &str,
+    password: &str,
+) -> (StatusCode, String) {
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/login")
+                .method("POST")
+                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                .body(Body::from(format!(
+                    "identifier={identifier}&password={password}"
+                )))
+                .expect("request"),
+        )
+        .await
+        .expect("login response");
+    let status = response.status();
+    (status, response_text(response).await)
+}
+
+/// The office's own local-authority service, opened against a stopped instance.
+///
+/// This is exactly what `zeb admin break-glass` and `zeb admin detach` do once
+/// their probe has established that nothing is serving the data root: open the
+/// catalog directly and act. Doing it this way in a test rather than shelling
+/// out keeps the assertion on the behaviour instead of on argv handling, and it
+/// is the same code path.
+fn host_authority(data_root: &Path) -> zebflow::platform::services::OfficeLocalAuthorityService {
+    let data = zebflow::platform::adapters::data::build_data_adapter(
+        zebflow::platform::model::DataAdapterKind::Sqlite,
+        data_root,
+    )
+    .expect("catalog adapter");
+    zebflow::platform::services::OfficeLocalAuthorityService::new(data, data_root.to_path_buf())
+}
+
+async fn get_json(app: &axum::Router, uri: &str, cookie: &str) -> (StatusCode, Value) {
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(uri)
+                .header(header::COOKIE, cookie)
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    let status = response.status();
+    (status, response_json(response).await)
+}
+
+/// `offices.md` §4: "Local accounts are disabled for login while joined; the
+/// controller's identity is the normal door."
+///
+/// Both halves of that sentence are one test, because either alone is a bug:
+/// a closed local door with no controller door is an office nobody can reach,
+/// and an open local door is the term unimplemented. A standalone instance is
+/// built beside them as the control — nothing here may leak onto an instance
+/// that joined nobody.
+#[tokio::test]
+async fn a_joined_office_refuses_local_login_and_opens_for_its_controller() {
+    let controller_root = temp_test_dir("login-term-controller");
+    let mut controller = PlatformConfig::default();
+    controller.data_root = controller_root.clone();
+    controller.cluster.role = ClusterRole::Master;
+    controller.default_password = "test-pass".to_string();
+    let controller_app = build_router(controller).await.expect("controller starts");
+    let controller_cookie = login_cookie(controller_app.clone(), "superadmin", "test-pass").await;
+
+    let office_root = temp_test_dir("login-term-office");
+    let token = mint_join_token_at(
+        &controller_app,
+        &controller_cookie,
+        "office-a",
+        "http://office-a.example:10610",
+    )
+    .await;
+    let office_app = build_office(&office_root, &token).await;
+
+    // --- (h) the control: a standalone instance is untouched ---------------
+    let standalone_root = temp_test_dir("login-term-standalone");
+    let mut standalone = PlatformConfig::default();
+    standalone.data_root = standalone_root.clone();
+    standalone.default_password = "test-pass".to_string();
+    let standalone_app = build_router(standalone).await.expect("standalone starts");
+    assert_eq!(
+        attempt_login(&standalone_app, "superadmin", "test-pass")
+            .await
+            .0,
+        StatusCode::SEE_OTHER,
+        "an instance that joined nobody logs in exactly as before"
+    );
+
+    // --- (a) the joined office refuses, actionably --------------------------
+    let (status, body) = attempt_login(&office_app, "superadmin", "test-pass").await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    for expected in [
+        "joined a controller",
+        "office-a",
+        "vouch",
+        "zeb admin break-glass",
+        "zeb admin detach",
+    ] {
+        assert!(
+            body.contains(expected),
+            "the refusal must say '{expected}': {body}"
+        );
+    }
+
+    // The refusal is the same for a good password, a bad one, and a name this
+    // office has never held. Nothing about the credential leaks through a door
+    // that is closed for a different reason.
+    let good = attempt_login(&office_app, "superadmin", "test-pass").await;
+    let bad = attempt_login(&office_app, "superadmin", "wrong-pass").await;
+    let unknown = attempt_login(&office_app, "nobody-here", "wrong-pass").await;
+    assert_eq!(good, bad);
+    assert_eq!(good, unknown);
+    assert!(
+        !body.contains("invalid credentials"),
+        "a refused mechanism must not be dressed as a refused credential: {body}"
+    );
+
+    // --- (b) the controller's door still opens the same office --------------
+    let (status, vouch) = mint_vouch(&controller_app, &controller_cookie, "office-a").await;
+    assert_eq!(status, StatusCode::OK);
+    let vouch = vouch["vouch"]["vouch"].as_str().expect("vouch").to_string();
+    let (status, _body, cookie) = redeem_vouch(&office_app, &vouch).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "the operator must not be locked out of a joined office"
+    );
+    let cookie = cookie.expect("the office issues its own session");
+
+    // And that session is a real one: it reads the office's own state.
+    let (status, state) = get_json(&office_app, "/api/office/local-authority", &cookie).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(state["joined"], json!(true));
+    assert_eq!(state["office_id"], json!("office-a"));
+    assert_eq!(state["local_login_allowed"], json!(false));
+
+    let _ = fs::remove_dir_all(controller_root);
+    let _ = fs::remove_dir_all(office_root);
+    let _ = fs::remove_dir_all(standalone_root);
+}
+
+/// `offices.md` §6: break-glass re-enables local authority, needs no quorum and
+/// no controller, and its use is recorded locally and reported on reconnect.
+///
+/// The controller in this test is a *different* router from the one the office
+/// was configured to reach: the office's `master_url` is `127.0.0.1:1`, which
+/// answers nothing. Everything up to the report therefore happens with the
+/// controller genuinely unreachable, which is the property §6 exists for.
+#[tokio::test]
+async fn break_glass_re_enables_local_login_without_a_controller_and_is_reported_later() {
+    let controller_root = temp_test_dir("break-glass-controller");
+    let mut controller = PlatformConfig::default();
+    controller.data_root = controller_root.clone();
+    controller.cluster.role = ClusterRole::Master;
+    controller.default_password = "test-pass".to_string();
+    let controller_app = build_router(controller).await.expect("controller starts");
+    let controller_cookie = login_cookie(controller_app.clone(), "superadmin", "test-pass").await;
+    let token = mint_join_token_at(
+        &controller_app,
+        &controller_cookie,
+        "office-a",
+        "http://office-a.example:10610",
+    )
+    .await;
+
+    let office_root = temp_test_dir("break-glass-office");
+    let office_app = build_office(&office_root, &token).await;
+    assert_eq!(
+        attempt_login(&office_app, "superadmin", "test-pass")
+            .await
+            .0,
+        StatusCode::FORBIDDEN
+    );
+    drop(office_app);
+
+    // --- (c) the act, on the host, with nothing to talk to ------------------
+    let authority = host_authority(&office_root);
+    let event = authority
+        .break_glass("superadmin", "local authority re-enabled from the host")
+        .expect("break-glass needs no controller and no quorum");
+    assert_eq!(event.office_id, "office-a");
+    assert_eq!(event.reported_at, 0);
+    // §6 re-enables local authority. §7 is what leaves. The office is still an
+    // office.
+    assert!(
+        office_root.join("platform/office-join-token").is_file(),
+        "break-glass must not detach"
+    );
+
+    let office_app = build_office(&office_root, &token).await;
+    let (status, _body) = attempt_login(&office_app, "superadmin", "test-pass").await;
+    assert_eq!(
+        status,
+        StatusCode::SEE_OTHER,
+        "the operator gets in after breaking the glass"
+    );
+    // A wrong password is a wrong password again, not a closed mechanism.
+    assert_eq!(
+        attempt_login(&office_app, "superadmin", "wrong-pass")
+            .await
+            .0,
+        StatusCode::UNAUTHORIZED
+    );
+
+    // --- (d) recorded locally, read by this office's own operator -----------
+    let office_cookie = login_cookie(office_app.clone(), "superadmin", "test-pass").await;
+    let (status, state) =
+        get_json(&office_app, "/api/office/local-authority", &office_cookie).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(state["joined"], json!(true));
+    assert_eq!(state["local_login_allowed"], json!(true));
+    assert_eq!(
+        state["break_glass_in_force"]["event_id"],
+        json!(event.event_id)
+    );
+    assert_eq!(state["events"][0]["event"], json!("break-glass"));
+    assert_eq!(state["events"][0]["reported_at"], json!(0));
+
+    // --- (e) reported to the controller when it comes back ------------------
+    let pending = authority.unreported_break_glass().expect("pending");
+    assert_eq!(pending.len(), 1);
+    let response = controller_app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/internal/cluster/offices/break-glass")
+                .method("POST")
+                .header("x-zebflow-cluster-token", &token)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({ "office_id": "office-a", "events": pending }).to_string(),
+                ))
+                .expect("request"),
+        )
+        .await
+        .expect("report response");
+    assert_eq!(response.status(), StatusCode::OK);
+    let accepted = response_json(response).await;
+    assert_eq!(accepted["accepted"][0], json!(event.event_id));
+
+    let (status, seen) = get_json(
+        &controller_app,
+        "/api/cluster/office-break-glass",
+        &controller_cookie,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(seen["events"][0]["event_id"], json!(event.event_id));
+    assert_eq!(seen["events"][0]["office_id"], json!("office-a"));
+    assert!(
+        seen["events"][0]["reported_at"].as_i64().unwrap_or(0) > 0,
+        "the controller stamps arrival: {seen}"
+    );
+
+    // One office cannot file a break-glass under another office's name.
+    let other = mint_join_token_at(
+        &controller_app,
+        &controller_cookie,
+        "office-b",
+        "http://office-b.example:10610",
+    )
+    .await;
+    let response = controller_app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/internal/cluster/offices/break-glass")
+                .method("POST")
+                .header("x-zebflow-cluster-token", &other)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({ "office_id": "office-a", "events": pending }).to_string(),
+                ))
+                .expect("request"),
+        )
+        .await
+        .expect("crossed report response");
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+
+    let _ = fs::remove_dir_all(controller_root);
+    let _ = fs::remove_dir_all(office_root);
+}
+
+/// `offices.md` §7: on detach the office keeps everything and its local
+/// accounts become live again — and §8's vouch-created account stays reachable
+/// by vouch and by nothing else, through both acts.
+#[tokio::test]
+async fn detach_keeps_everything_and_a_vouched_account_never_becomes_a_local_door() {
+    let controller_root = temp_test_dir("detach-controller");
+    let mut controller = PlatformConfig::default();
+    controller.data_root = controller_root.clone();
+    controller.cluster.role = ClusterRole::Master;
+    controller.default_password = "test-pass".to_string();
+    let controller_app = build_router(controller).await.expect("controller starts");
+    let controller_cookie = login_cookie(controller_app.clone(), "superadmin", "test-pass").await;
+    // The controller operator is somebody the office has never held.
+    create_user(&controller_app, &controller_cookie, "remote-admin").await;
+    let remote_cookie = login_cookie(controller_app.clone(), "remote-admin", "remote-pass").await;
+    let token = mint_join_token_at(
+        &controller_app,
+        &controller_cookie,
+        "office-a",
+        "http://office-a.example:10610",
+    )
+    .await;
+
+    let office_root = temp_test_dir("detach-office");
+    let office_app = build_office(&office_root, &token).await;
+
+    // A vouch creates `remote-admin` on the office, with no usable password.
+    let (_, vouch) = mint_vouch(&controller_app, &remote_cookie, "office-a").await;
+    let vouch = vouch["vouch"]["vouch"].as_str().expect("vouch").to_string();
+    let (status, redeemed, _) = redeem_vouch(&office_app, &vouch).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(redeemed["owner"], json!("remote-admin"));
+    assert_eq!(redeemed["action"], json!("created"));
+
+    // What the office holds before anything is broken or left.
+    let before = office_inventory(&office_root);
+    assert!(
+        !before.is_empty(),
+        "an office seeds its own shelf and default project"
+    );
+    drop(office_app);
+
+    // --- (g) break-glass, and the vouched account is still unreachable ------
+    let authority = host_authority(&office_root);
+    authority
+        .break_glass("superadmin", "test")
+        .expect("break-glass");
+    let office_app = build_office(&office_root, &token).await;
+    assert_eq!(
+        attempt_login(&office_app, "superadmin", "test-pass")
+            .await
+            .0,
+        StatusCode::SEE_OTHER
+    );
+    for guess in ["remote-pass", "test-pass", "", "remote-admin"] {
+        assert_eq!(
+            attempt_login(&office_app, "remote-admin", guess).await.0,
+            StatusCode::UNAUTHORIZED,
+            "a controller-created account must not become a local door"
+        );
+    }
+    drop(office_app);
+
+    // --- (f) detach ---------------------------------------------------------
+    let event = authority.detach("test").expect("detach");
+    assert_eq!(event.event, "detach");
+    assert!(
+        !office_root.join("platform/office-join-token").is_file(),
+        "leaving removes the membership and nothing else"
+    );
+    assert_eq!(
+        office_inventory(&office_root),
+        before,
+        "projects, data, files, and the blessed shelf survive a detach unchanged"
+    );
+
+    // Detached, it is a complete instance: no cluster configuration at all.
+    let mut detached = PlatformConfig::default();
+    detached.data_root = office_root.clone();
+    detached.default_password = "unused-after-first-boot".to_string();
+    let detached_app = build_router(detached)
+        .await
+        .expect("detached instance starts");
+    assert_eq!(
+        attempt_login(&detached_app, "superadmin", "test-pass")
+            .await
+            .0,
+        StatusCode::SEE_OTHER,
+        "local accounts were disabled, never deleted"
+    );
+    // Still true after leaving.
+    for guess in ["remote-pass", "test-pass", ""] {
+        assert_eq!(
+            attempt_login(&detached_app, "remote-admin", guess).await.0,
+            StatusCode::UNAUTHORIZED
+        );
+    }
+
+    // The record of both acts survives, and the detach is not queued for a
+    // report it can no longer authenticate.
+    let cookie = login_cookie(detached_app.clone(), "superadmin", "test-pass").await;
+    let (status, state) = get_json(&detached_app, "/api/office/local-authority", &cookie).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(state["joined"], json!(false));
+    assert_eq!(state["local_login_allowed"], json!(true));
+    assert_eq!(state["events"].as_array().expect("events").len(), 2);
+    // The break-glass is still unreported and now unreportable — this office
+    // gave up the credential that would authenticate the report. The detach is
+    // not queued at all, because §6 is the sentence that asks for a report and
+    // §7 is not.
+    let pending = authority.unreported_break_glass().expect("pending");
+    assert_eq!(pending.len(), 1);
+    assert!(pending.iter().all(|entry| entry.is_break_glass()));
+
+    let _ = fs::remove_dir_all(controller_root);
+    let _ = fs::remove_dir_all(office_root);
+}
+
+/// Every project path and blessed-shelf coordinate an instance holds.
+///
+/// Deliberately a whole-tree listing rather than a count: §7 says the office
+/// keeps its projects, data, files, and shelf, and a count would pass while a
+/// file moved.
+fn office_inventory(data_root: &Path) -> Vec<String> {
+    let mut items = blessed_shelf_coordinates(data_root);
+    let users_dir = data_root.join("users");
+    let mut walk = vec![users_dir.clone()];
+    while let Some(dir) = walk.pop() {
+        let Ok(entries) = fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let rel = path
+                .strip_prefix(data_root)
+                .unwrap_or(&path)
+                .to_string_lossy()
+                .to_string();
+            items.push(rel);
+            if path.is_dir() {
+                walk.push(path);
+            }
+        }
+    }
+    items.sort();
+    items
 }

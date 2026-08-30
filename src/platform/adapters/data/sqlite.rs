@@ -21,12 +21,12 @@ use crate::platform::model::{
     HubPublisher, HubToken, McpSession, PipelineInvocationEntry,
     PipelineInvocationLogPipelineStats, PipelineInvocationLogStats, PipelineMeta,
     PlatformHubRepository, PlatformOffice, PlatformOfficeIdentityWrite, PlatformOfficeJoinToken,
-    PlatformOfficeNode, PlatformOfficeVouchRedemption, PlatformProject, PlatformServiceInstance,
-    PlatformUser, PlatformUserLocalAuth, ProjectAccessRolePreset, ProjectCapability,
-    ProjectCredential, ProjectDbConnection, ProjectHubRepository, ProjectInvite,
-    ProjectInviteStatus, ProjectMember, ProjectOperationKind, ProjectOperationRecord,
-    ProjectOperationStatus, ProjectPolicy, ProjectPolicyBinding, ProjectSubjectKind, StoredUser,
-    now_ts, slug_segment,
+    PlatformOfficeLocalAuthorityEvent, PlatformOfficeNode, PlatformOfficeVouchRedemption,
+    PlatformProject, PlatformServiceInstance, PlatformUser, PlatformUserLocalAuth,
+    ProjectAccessRolePreset, ProjectCapability, ProjectCredential, ProjectDbConnection,
+    ProjectHubRepository, ProjectInvite, ProjectInviteStatus, ProjectMember, ProjectOperationKind,
+    ProjectOperationRecord, ProjectOperationStatus, ProjectPolicy, ProjectPolicyBinding,
+    ProjectSubjectKind, StoredUser, now_ts, slug_segment,
 };
 
 const SCHEMA_SQL: &str = "
@@ -674,7 +674,7 @@ impl SqliteDataAdapter {
         Ok(exists)
     }
 
-    fn migrations() -> [MigrationDef; 18] {
+    fn migrations() -> [MigrationDef; 19] {
         [
             MigrationDef {
                 version: 1,
@@ -765,6 +765,11 @@ impl SqliteDataAdapter {
                 version: 18,
                 name: "office_vouch_redemptions_and_identity_writes",
                 apply: Self::apply_migration_0018_office_vouches_and_identity_writes,
+            },
+            MigrationDef {
+                version: 19,
+                name: "office_local_authority",
+                apply: Self::apply_migration_0019_office_local_authority,
             },
         ]
     }
@@ -2670,6 +2675,38 @@ CREATE INDEX IF NOT EXISTS idx_platform_service_instances_host
             );
             CREATE INDEX IF NOT EXISTS idx_office_identity_writes_written_at
                 ON office_identity_writes (written_at);",
+        )
+        .map_err(|e| PlatformError::new("PLATFORM_SQLITE_SCHEMA", e.to_string()))
+    }
+
+    /// `offices.md` §6's break-glass record and §7's detach record.
+    ///
+    /// One table, because they are two acts of the same kind: performed on the
+    /// host, changing whether local login works, and read back by the office's
+    /// own operator. It also *is* the state — the rule "local login is disabled
+    /// while joined" is derived from these rows rather than from a second flag
+    /// that could disagree with them.
+    ///
+    /// No foreign key to `offices`. On an office, `office_id` is the label the
+    /// office wears for its controller, not a row this instance owns; on a
+    /// controller, the reported copy arrives before nothing and after nothing
+    /// that guarantees an office row exists.
+    fn apply_migration_0019_office_local_authority(
+        tx: &Transaction<'_>,
+    ) -> Result<(), PlatformError> {
+        tx.execute_batch(
+            "CREATE TABLE IF NOT EXISTS office_local_authority (
+                event_id         TEXT PRIMARY KEY,
+                office_id        TEXT NOT NULL DEFAULT '',
+                event            TEXT NOT NULL DEFAULT '',
+                join_fingerprint TEXT NOT NULL DEFAULT '',
+                owner            TEXT NOT NULL DEFAULT '',
+                detail           TEXT NOT NULL DEFAULT '',
+                acted_at         INTEGER NOT NULL DEFAULT 0,
+                reported_at      INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE INDEX IF NOT EXISTS idx_office_local_authority_acted_at
+                ON office_local_authority (acted_at);",
         )
         .map_err(|e| PlatformError::new("PLATFORM_SQLITE_SCHEMA", e.to_string()))
     }
@@ -5649,6 +5686,86 @@ impl DataAdapter for SqliteDataAdapter {
             entries.push(row.map_err(Self::qe)?);
         }
         Ok(entries)
+    }
+
+    fn put_office_local_authority_event(
+        &self,
+        entry: &PlatformOfficeLocalAuthorityEvent,
+    ) -> Result<(), PlatformError> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        // `OR REPLACE` on the id, not a plain insert: the controller stores a
+        // copy of a row the office already holds, and the office re-sends
+        // anything unacknowledged, so the same event id arriving twice is the
+        // expected case rather than a conflict.
+        conn.execute(
+            "INSERT OR REPLACE INTO office_local_authority
+             (event_id, office_id, event, join_fingerprint, owner, detail, acted_at, reported_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![
+                &entry.event_id,
+                &entry.office_id,
+                &entry.event,
+                &entry.join_fingerprint,
+                &entry.owner,
+                &entry.detail,
+                entry.acted_at,
+                entry.reported_at,
+            ],
+        )
+        .map_err(Self::qe)?;
+        Ok(())
+    }
+
+    fn list_office_local_authority_events(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<PlatformOfficeLocalAuthorityEvent>, PlatformError> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let mut stmt = conn
+            .prepare(
+                "SELECT event_id, office_id, event, join_fingerprint, owner, detail, acted_at,
+                        reported_at
+                 FROM office_local_authority
+                 ORDER BY acted_at DESC, rowid DESC
+                 LIMIT ?1",
+            )
+            .map_err(Self::qe)?;
+        let rows = stmt
+            .query_map(params![limit as i64], |row| {
+                Ok(PlatformOfficeLocalAuthorityEvent {
+                    event_id: row.get(0)?,
+                    office_id: row.get(1)?,
+                    event: row.get(2)?,
+                    join_fingerprint: row.get(3)?,
+                    owner: row.get(4)?,
+                    detail: row.get(5)?,
+                    acted_at: row.get(6)?,
+                    reported_at: row.get(7)?,
+                })
+            })
+            .map_err(Self::qe)?;
+        let mut entries = Vec::new();
+        for row in rows {
+            entries.push(row.map_err(Self::qe)?);
+        }
+        Ok(entries)
+    }
+
+    fn mark_office_local_authority_reported(
+        &self,
+        event_id: &str,
+        reported_at: i64,
+    ) -> Result<(), PlatformError> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        // `reported_at` is the one mutable column, and it is delivery
+        // bookkeeping rather than a change to what happened: the act, its time,
+        // its office, and its fingerprint are written once and never rewritten.
+        conn.execute(
+            "UPDATE office_local_authority SET reported_at = ?2 WHERE event_id = ?1",
+            params![event_id, reported_at],
+        )
+        .map_err(Self::qe)?;
+        Ok(())
     }
 
     fn list_platform_offices(&self) -> Result<Vec<PlatformOffice>, PlatformError> {

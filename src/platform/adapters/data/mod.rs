@@ -14,9 +14,10 @@ use crate::platform::model::{
     DataAdapterKind, HubAccessGrant, HubAssetPackage, HubAssetVersion, HubAuthority, HubPublisher,
     HubToken, McpSession, PipelineInvocationEntry, PipelineInvocationLogStats, PipelineMeta,
     PlatformHubRepository, PlatformOffice, PlatformOfficeIdentityWrite, PlatformOfficeJoinToken,
-    PlatformOfficeNode, PlatformOfficeVouchRedemption, PlatformProject, PlatformServiceInstance,
-    PlatformUser, ProjectCredential, ProjectDbConnection, ProjectHubRepository, ProjectInvite,
-    ProjectMember, ProjectOperationRecord, ProjectPolicy, ProjectPolicyBinding, StoredUser,
+    PlatformOfficeLocalAuthorityEvent, PlatformOfficeNode, PlatformOfficeVouchRedemption,
+    PlatformProject, PlatformServiceInstance, PlatformUser, ProjectCredential, ProjectDbConnection,
+    ProjectHubRepository, ProjectInvite, ProjectMember, ProjectOperationRecord, ProjectPolicy,
+    ProjectPolicyBinding, StoredUser,
 };
 
 /// Metadata adapter contract used by platform services.
@@ -495,6 +496,41 @@ pub trait DataAdapter: Send + Sync {
     ) -> Result<Vec<PlatformOfficeIdentityWrite>, PlatformError> {
         let _ = limit;
         Ok(vec![])
+    }
+    /// Append one act on this office's local authority (`offices.md` §6, §7).
+    fn put_office_local_authority_event(
+        &self,
+        entry: &PlatformOfficeLocalAuthorityEvent,
+    ) -> Result<(), PlatformError> {
+        let _ = entry;
+        Err(PlatformError::new(
+            "PLATFORM_ADAPTER_UNAVAILABLE",
+            "office local authority events are not supported by this adapter",
+        ))
+    }
+    /// Read this office's local-authority log, newest first.
+    fn list_office_local_authority_events(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<PlatformOfficeLocalAuthorityEvent>, PlatformError> {
+        let _ = limit;
+        Ok(vec![])
+    }
+    /// Mark one recorded act as acknowledged by the controller.
+    ///
+    /// Idempotent by design: the office re-sends anything still unreported on
+    /// every registration cycle, so a lost acknowledgement costs one repeat
+    /// and never a lost record.
+    fn mark_office_local_authority_reported(
+        &self,
+        event_id: &str,
+        reported_at: i64,
+    ) -> Result<(), PlatformError> {
+        let _ = (event_id, reported_at);
+        Err(PlatformError::new(
+            "PLATFORM_ADAPTER_UNAVAILABLE",
+            "office local authority events are not supported by this adapter",
+        ))
     }
     /// Get one platform service instance.
     fn get_platform_service_instance(

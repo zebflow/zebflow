@@ -618,6 +618,76 @@ pub struct PlatformOfficeIdentityWrite {
     pub written_at: i64,
 }
 
+/// A host command re-enabled this office's local authority (`offices.md` §6).
+pub const LOCAL_AUTHORITY_EVENT_BREAK_GLASS: &str = "break-glass";
+/// A host command detached this office from its controller (`offices.md` §7).
+pub const LOCAL_AUTHORITY_EVENT_DETACH: &str = "detach";
+
+/// One act on this office's own local authority.
+///
+/// `offices.md` §6 asks for two things at once: break-glass "re-enables local
+/// authority", and "its use is recorded locally and reported to the controller
+/// on reconnect". §7 then makes detaching a *separate* act. Both are acts by
+/// somebody with host access on the office, both change whether local login
+/// works, and both are things the office's operator must be able to read back
+/// later — so they are one append-only log rather than two.
+///
+/// The log is also the **state**. Nothing else records whether local authority
+/// has been re-enabled, and that is deliberate: a flag stored beside the log
+/// could disagree with it, and after a restore or a copy one of the two would
+/// be wrong with no way to tell which. The rule is stated once, in
+/// [`crate::platform::services::OfficeLocalAuthorityService`], and derived from
+/// these rows every time it is asked.
+///
+/// It lives in the office's own `platform/catalog.db`, STORE tier, for exactly
+/// the reason [`PlatformOfficeIdentityWrite`] does: the record of who opened
+/// this instance's front door is the last thing that should quietly expire, and
+/// it must be readable by the office's operator with the controller absent or
+/// gone for good.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PlatformOfficeLocalAuthorityEvent {
+    /// Stable row id.
+    pub event_id: String,
+    /// Office this act was performed on.
+    pub office_id: String,
+    /// [`LOCAL_AUTHORITY_EVENT_BREAK_GLASS`] or [`LOCAL_AUTHORITY_EVENT_DETACH`].
+    pub event: String,
+    /// Fingerprint of the join token held when the act happened.
+    ///
+    /// `sha256(sha256(secret))` — one hash further than the digest the mutual
+    /// proof is keyed by, so a row that identifies *which* membership was
+    /// broken out of still carries nothing that could be used as that key.
+    ///
+    /// This is what stops a break-glass silently outliving the join it was
+    /// performed against. A re-issued token has a different fingerprint, so the
+    /// old row no longer matches and local login is disabled again on the new
+    /// join, with nobody having to remember to clear anything.
+    #[serde(default)]
+    pub join_fingerprint: String,
+    /// Local account whose password was rotated in the same act, or empty.
+    #[serde(default)]
+    pub owner: String,
+    /// Human-readable detail an operator reads without a decoder.
+    #[serde(default)]
+    pub detail: String,
+    /// Unix timestamp seconds the act was performed.
+    pub acted_at: i64,
+    /// Unix timestamp seconds the controller acknowledged it, or `0`.
+    ///
+    /// Only a break-glass is ever reported. A detach gives up the credential
+    /// that would authenticate the report, so a detach row stays `0` for good
+    /// and says so rather than pretending a delivery is pending.
+    #[serde(default)]
+    pub reported_at: i64,
+}
+
+impl PlatformOfficeLocalAuthorityEvent {
+    /// Whether this row is a break-glass rather than a detach.
+    pub fn is_break_glass(&self) -> bool {
+        self.event.trim() == LOCAL_AUTHORITY_EVENT_BREAK_GLASS
+    }
+}
+
 /// One minted vouch, as the controller hands it over.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ClusterOfficeVouch {

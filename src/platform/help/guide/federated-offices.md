@@ -99,6 +99,118 @@ projects whether or not it has a controller — it simply stops being a member,
 and stops appearing fresh in the directory. The record is kept rather than
 deleted, because it is the record of who held what.
 
+## While joined, the local door is closed
+
+An office that holds a join token refuses local password login. That is the one
+thing joining costs, and it is the whole of it:
+
+```
+$ curl -i -X POST http://office-a:10610/login -d 'identifier=superadmin&password=…'
+HTTP/1.1 403 Forbidden
+
+local password login is disabled on this instance. It has joined a controller
+as office 'office-a', and while it is joined the controller's identity is the
+way in: open this office from the controller's directory, or ask it for a
+vouch. Local authority can be re-enabled from this host, with no controller and
+no quorum, by stopping this server and running `zeb admin break-glass`;
+`zeb admin detach` leaves the controller for good and keeps every project, its
+data, its files, and its shelf.
+```
+
+The accounts are **disabled, not deleted**. Nothing is removed by joining and
+nothing has to be recreated by leaving.
+
+The refusal is the same words for a correct password, a wrong one, and a name
+this office has never held, because the check runs before the credential is
+read. A caller who cannot get in learns nothing about who is here.
+
+**The state is on disk, not in the command line.** "Joined" means
+`<data-root>/platform/office-join-token` exists — the same file membership
+itself reads — so restarting a joined office as plain `zeb` does not reopen the
+local door. Starting in a different mode is not leaving, and leaving has its own
+command.
+
+## Break-glass: getting back in from the host
+
+```bash
+# on the office's host, with the office stopped
+zeb admin break-glass                # re-enable local authority
+zeb admin break-glass superadmin     # and rotate that account's password
+```
+
+It needs no controller and no quorum. Filesystem access is the protection, the
+way it is for `pg_hba.conf`, which is why this is a command on the host and not
+a route: a route would be reachable by exactly the population the closed door
+excludes, and would need the credential that is missing.
+
+Two rules worth knowing before you need it:
+
+- **It does not detach.** The office stays joined: the controller may still
+  place projects here and still vouches for identities here. Break-glass changes
+  who may open the door, not who the office belongs to. `zeb admin detach` is
+  what leaves.
+- **It does not resurrect controller-created accounts.** An account that exists
+  only because a vouch created it has no usable password by construction, and
+  re-enabling local authority does not give it one. Naming such an account as
+  the argument is refused; break the glass on one of this office's own accounts.
+
+A break-glass is recorded in the office's own catalog and never expires there:
+
+```bash
+curl -H "Cookie: zebflow_session=superadmin" \
+  http://office-a:10610/api/office/local-authority
+```
+
+which also answers the state question — `joined`, `local_login_allowed`, and
+which recorded act is currently in force.
+
+On the next successful registration the office reports it to the controller,
+where it lands at:
+
+```bash
+curl -H "Cookie: zebflow_session=superadmin" \
+  http://controller:10610/api/cluster/office-break-glass
+```
+
+The office re-sends anything still unacknowledged on every registration cycle,
+so an office offline for a month reports on the first reconnect. An office that
+never reconnects keeps the record locally and says so — `reported_at` stays `0`.
+The local record is the authority; the controller's copy is what it was told.
+
+A break-glass is scoped to the membership it was performed against. Re-issuing
+that office's token (`"rotate": true`) gives it a new secret, and the old record
+no longer matches, so the new join has its local door closed again with nobody
+having to remember to clear anything.
+
+## Leaving: detach
+
+```bash
+# on the office's host, with the office stopped
+zeb admin detach
+```
+
+The office keeps its projects, `data/`, `files/`, its blessed shelf, and its
+public surface, and its local accounts go live again. It is a complete instance
+the moment it leaves, because it never stopped being one — removing the join
+token is the entire act.
+
+Detach is an **office-side** command, and only that. The controller has three
+verbs — place, see, vouch — and there is no fourth; and an office whose
+controller has been destroyed must still be able to leave, which a controller
+verb could not do. What the controller has is revocation, which stops membership
+without touching the office's own accounts.
+
+Two things to do after detaching:
+
+- unset `ZEBFLOW_CLUSTER_JOIN_TOKEN`, or the variable joins the instance
+  straight back on its next start
+- revoke that office's token on the controller, since detaching is the office's
+  act and the controller still holds its half of the record
+
+A detach is recorded locally and is never reported: reporting it would need the
+credential that detaching gives up. The controller learns the same fact from the
+office ceasing to heartbeat.
+
 ## Reaching an office: the vouch
 
 An operator authenticated on the controller reaches any of its offices without

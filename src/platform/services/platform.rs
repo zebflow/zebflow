@@ -22,9 +22,9 @@ use crate::platform::services::{
     ClusterJoinTokenService, ClusterPlacementService, ClusterRegistryService,
     ClusterRuntimeSyncService, CredentialService, DbConnectionService, DbRuntimeService,
     DependencyLockService, GitIdentityService, HubService, LibraryService, McpSessionService,
-    NodeRegistryService, PipelineHitsService, PipelineRuntimeService, ProjectConfigurationService,
-    ProjectInviteService, ProjectMembershipService, ProjectOperationService, ProjectService,
-    ProjectTransferService, UserService,
+    NodeRegistryService, OfficeLocalAuthorityService, PipelineHitsService, PipelineRuntimeService,
+    ProjectConfigurationService, ProjectInviteService, ProjectMembershipService,
+    ProjectOperationService, ProjectService, ProjectTransferService, UserService,
 };
 
 /// Main platform service graph, created once per process.
@@ -54,6 +54,9 @@ pub struct PlatformService {
     pub cluster_bootstrap: Arc<ClusterBootstrapService>,
     /// Per-office join token minting, verification, and this office's identity.
     pub cluster_join_tokens: Arc<ClusterJoinTokenService>,
+    /// Whether this office's own accounts may open its front door
+    /// (`offices.md` §4 login term, §6 break-glass, §7 detach).
+    pub local_authority: Arc<OfficeLocalAuthorityService>,
     /// Worker registry service.
     pub cluster_registry: Arc<ClusterRegistryService>,
     /// Project placement service.
@@ -146,7 +149,15 @@ impl PlatformService {
             zebflow_cfg.clone(),
             dependency_lock.clone(),
         ));
-        let auth = Arc::new(AuthService::new(users.clone()));
+        // Built before `auth`, because `auth` is gated on it. Read from disk
+        // on every attempt rather than captured here, so a break-glass or a
+        // detach performed against this data root takes effect without anything
+        // in this graph having to be told.
+        let local_authority = Arc::new(OfficeLocalAuthorityService::new(
+            data.clone(),
+            config.data_root.clone(),
+        ));
+        let auth = Arc::new(AuthService::new(users.clone(), local_authority.clone()));
         let git_identity = Arc::new(GitIdentityService::new(users.clone()));
         let authz = Arc::new(AuthorizationService::new(data.clone()));
         let project_members = Arc::new(ProjectMembershipService::new(data.clone(), authz.clone()));
@@ -262,6 +273,7 @@ impl PlatformService {
             project_invites,
             cluster_bootstrap,
             cluster_join_tokens,
+            local_authority,
             cluster_registry,
             cluster_placement,
             cluster_runtime_sync,
