@@ -516,13 +516,22 @@ pub const JOIN_TOKEN_STATUS_REVOKED: &str = "revoked";
 /// One join token the controller issued to one office.
 ///
 /// The secret itself is never held here: only `secret_digest`, which is what
-/// the controller compares a presented token against and the key of the mutual
-/// proof it returns (`offices.md` §8).
+/// the controller compares a presented token against (`offices.md` §8).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PlatformOfficeJoinToken {
     /// Office the token was issued to. One row per office.
     pub office_id: String,
-    /// `sha256(secret)`, hex. Never the secret.
+    /// `sha256(secret)`, hex. Never the secret, and never serialised.
+    ///
+    /// `skip_serializing` because this struct is both the stored row and the
+    /// shape returned by `GET /api/cluster/join-tokens` and by the mint
+    /// response. The digest used to travel in both, which put an office's
+    /// stored material into HTTP responses, browser memory, and every proxy log
+    /// on the way. It no longer keys anything a forger could use — the
+    /// controller signs with a private key it never publishes — but a value
+    /// that identifies one office's membership still has no business leaving
+    /// the controller's storage, and the API never needed it.
+    #[serde(skip_serializing, default)]
     pub secret_digest: String,
     /// `active` or `revoked`. Revoking one row locks out exactly one office.
     pub status: String,

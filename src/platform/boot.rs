@@ -116,6 +116,18 @@ pub fn local_instance_url() -> String {
     default_advertise_url(&configured_host(), configured_port())
 }
 
+/// Whether this data root already holds an office join token.
+///
+/// The membership file itself, not a copy of the fact: the same path
+/// `resolve_office_identity` reads on every start, so the startup check and the
+/// thing it is checking for can never disagree.
+fn stored_office_token(data_root: &std::path::Path) -> bool {
+    crate::platform::services::cluster::join_token::office_token_path(data_root)
+        .metadata()
+        .map(|meta| meta.len() > 0)
+        .unwrap_or(false)
+}
+
 /// Loads the platform configuration for one runtime role from the environment.
 pub fn load_platform_config(role: ClusterRole) -> Result<PlatformConfig, io::Error> {
     let mut config = PlatformConfig::default();
@@ -144,14 +156,20 @@ pub fn load_platform_config(role: ClusterRole) -> Result<PlatformConfig, io::Err
     config.cluster = ClusterSettings::from_env(role, &default_advertise_url(&host, port));
     // Refused here as well as in `PlatformService::from_config`, so `zeb office`
     // names every missing variable before it opens the data root.
+    //
+    // The stored token counts as supplied: `interface.md` §5 says the variable
+    // is for a first join only, so an office that already holds one restarts
+    // unattended. Reading the file is not opening the data root — it is one
+    // existence check on a path — and it has to happen here for the refusal
+    // above to be right.
     config
         .cluster
-        .validate()
+        .validate(stored_office_token(&config.data_root))
         .map_err(|err| io::Error::other(err.to_string()))?;
     // Shape-checked here for the same reason: an unusable token should refuse
     // before the data root is opened, not after. There is no migration from
     // the old shared secret (`offices.md` §8) — a value that is not
-    // `zfjoin1:` shaped names the mint command in its refusal.
+    // `zfjoin2:` shaped names the mint command in its refusal.
     if let Some(token) = config.cluster.join_token.as_deref() {
         crate::infra::cluster::security::JoinToken::parse(token)
             .map_err(|err| io::Error::other(format!("{ENV_JOIN_TOKEN}: {err}")))?;

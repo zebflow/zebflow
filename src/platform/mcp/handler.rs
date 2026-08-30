@@ -1692,7 +1692,7 @@ fn mcp_session_from_request(platform: &PlatformService, headers: &HeaderMap) -> 
         return Some(session);
     }
 
-    if !has_valid_cluster_token(platform, headers) {
+    if !is_controller_call(platform, headers) {
         return None;
     }
     let encoded = headers
@@ -1705,7 +1705,13 @@ fn mcp_session_from_request(platform: &PlatformService, headers: &HeaderMap) -> 
     if session.enabled { Some(session) } else { None }
 }
 
-fn has_valid_cluster_token(platform: &PlatformService, headers: &HeaderMap) -> bool {
+/// Whether this request is **this office's controller** proxying an MCP call.
+///
+/// The header below carries a whole session, so what authenticates it decides
+/// who that session may be. It used to accept any active office's join token on
+/// a controller, which let one office hand a controller any session it liked.
+/// One direction only now: an office accepting its controller's proxied call.
+fn is_controller_call(platform: &PlatformService, headers: &HeaderMap) -> bool {
     let Some(presented) = headers
         .get(INTERNAL_CLUSTER_TOKEN_HEADER)
         .and_then(|value| value.to_str().ok())
@@ -1714,7 +1720,7 @@ fn has_valid_cluster_token(platform: &PlatformService, headers: &HeaderMap) -> b
     };
     platform
         .cluster_join_tokens
-        .header_authenticates_peer(presented)
+        .controller_call_authenticates(presented)
 }
 
 fn mcp_remote_project_worker_id(

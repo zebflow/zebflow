@@ -51,9 +51,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use rand::RngExt as _;
-use sha2::{Digest, Sha256};
 
-use crate::infra::cluster::security::JoinToken;
+use crate::infra::cluster::security::{JoinToken, token_fingerprint};
 use crate::platform::adapters::data::DataAdapter;
 use crate::platform::error::PlatformError;
 use crate::platform::model::{
@@ -65,9 +64,6 @@ use super::join_token::office_token_path;
 
 /// Error code a refused local login carries.
 pub const LOCAL_LOGIN_DISABLED_CODE: &str = "OFFICE_LOCAL_LOGIN_DISABLED";
-
-/// How many rows a log read returns by default.
-const LOG_READ_LIMIT: usize = 200;
 
 /// What this data root's join-token file says about membership.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -152,11 +148,14 @@ impl OfficeLocalAuthorityService {
             // fail-closed half stated once, here.
             return Ok(None);
         }
-        Ok(self
-            .data
-            .list_office_local_authority_events(LOG_READ_LIMIT)?
-            .into_iter()
-            .find(|entry| entry.is_break_glass() && entry.join_fingerprint == fingerprint))
+        // Asked as a question, never as a scan of a window. It used to read the
+        // newest 200 rows and look for a match, so an office past
+        // that many local-authority events silently re-locked its own front
+        // door: the break-glass row scrolled out of the window, nothing had
+        // been rotated, nobody had acted, and §6's "never locked out of itself"
+        // stopped being true. The paginated read below is still the display
+        // API; it is only the *decision* that must not be windowed.
+        self.data.find_office_break_glass(fingerprint)
     }
 
     /// Whether a local password may open a session on this instance.
@@ -330,11 +329,12 @@ impl OfficeLocalAuthorityService {
     pub fn unreported_break_glass(
         &self,
     ) -> Result<Vec<PlatformOfficeLocalAuthorityEvent>, PlatformError> {
-        Ok(self
-            .list(LOG_READ_LIMIT)?
-            .into_iter()
-            .filter(|entry| entry.is_break_glass() && entry.reported_at == 0)
-            .collect())
+        // Same rule as `break_glass_in_force`: what to report is a decision, so
+        // it is a query. Windowed, an office with a long local-authority
+        // history would have dropped its oldest unreported acts on the floor —
+        // and §6 says the record is reported "on reconnect", with no clause
+        // about how much else happened in between.
+        self.data.list_unreported_office_break_glass()
     }
 
     /// Record that the controller acknowledged one break-glass.
@@ -379,14 +379,14 @@ impl OfficeLocalAuthorityService {
     }
 }
 
-/// `sha256(secret_digest)` — one hash past the key of the mutual proof.
+/// `sha256(secret_digest)` — which membership a row is about.
 ///
-/// Identifies which token was in force without carrying anything that could be
-/// used as that token's proof key.
+/// The same value every controller proof is bound to
+/// ([`crate::infra::cluster::security::token_fingerprint`]), stated once there
+/// and re-exported here so the login gate and the proof scheme can never drift
+/// into two different notions of "which token".
 pub fn join_fingerprint(secret_digest: &str) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(secret_digest.as_bytes());
-    hex::encode(hasher.finalize())
+    token_fingerprint(secret_digest)
 }
 
 /// Read this data root's join-token file without failing open.
@@ -446,6 +446,16 @@ mod tests {
         OfficeLocalAuthorityService::new(data, root.to_path_buf())
     }
 
+    /// A token as a controller would mint it, with a real verification key.
+    ///
+    /// The key is not used here — this module never verifies a controller —
+    /// but a token without one is not a token, so the fixture mints one.
+    fn minted_token(office_id: &str) -> JoinToken {
+        let (_, key) =
+            crate::infra::cluster::security::ControllerSigningKey::generate().expect("key");
+        JoinToken::mint(office_id, key.verify_key())
+    }
+
     fn write_token(root: &Path, token: &JoinToken) {
         let path = office_token_path(root);
         std::fs::create_dir_all(path.parent().expect("parent")).expect("parent");
@@ -470,7 +480,7 @@ mod tests {
     #[test]
     fn a_joined_office_refuses_local_login_until_break_glass_and_the_refusal_is_actionable() {
         let root = temp_root("joined");
-        let token = JoinToken::mint("office-a");
+        let token = minted_token("office-a");
         write_token(&root, &token);
         let svc = service(&root);
 
@@ -504,7 +514,7 @@ mod tests {
     #[test]
     fn break_glass_does_not_detach_and_detach_is_a_separate_act() {
         let root = temp_root("break-glass-keeps-membership");
-        let token = JoinToken::mint("office-a");
+        let token = minted_token("office-a");
         write_token(&root, &token);
         let svc = service(&root);
 
@@ -524,14 +534,14 @@ mod tests {
     #[test]
     fn a_break_glass_does_not_survive_into_a_later_join() {
         let root = temp_root("refingerprint");
-        write_token(&root, &JoinToken::mint("office-a"));
+        write_token(&root, &minted_token("office-a"));
         let svc = service(&root);
         svc.break_glass("", "first").expect("break glass");
         assert!(svc.local_login_allowed().expect("allowed"));
 
         // Re-issued: same office, new secret. The old row is history and does
         // not authorise the new membership.
-        write_token(&root, &JoinToken::mint("office-a"));
+        write_token(&root, &minted_token("office-a"));
         assert!(
             !svc.local_login_allowed().expect("disabled again"),
             "a re-issued token must not inherit an earlier break-glass"
@@ -539,6 +549,88 @@ mod tests {
         assert!(svc.break_glass_in_force().expect("query").is_none());
         // The record of the earlier act is still there. Nothing is erased.
         assert_eq!(svc.list(50).expect("log").len(), 1);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// FIX 2's regression. The gate used to read the newest 200
+    /// local-authority rows and scan them for a matching fingerprint, so an
+    /// office that accumulated more than that after breaking the glass locked
+    /// its own front door again — no rotation, no act by anybody, and no way
+    /// in but to break the glass a second time. §6 says an office "is never
+    /// locked out of itself".
+    #[test]
+    fn a_break_glass_stays_in_force_however_long_the_log_grows() {
+        let root = temp_root("deep-log");
+        let token = minted_token("office-a");
+        write_token(&root, &token);
+        let svc = service(&root);
+
+        svc.break_glass("", "the act that opened the door")
+            .expect("break glass");
+        assert!(svc.local_login_allowed().expect("open"));
+
+        // Everything that happens afterwards, at more than double the window
+        // the old scan could see. Detach rows against other fingerprints are
+        // ordinary history — an office may be re-issued and re-joined many
+        // times over its life.
+        let data = svc.data.clone();
+        for index in 0..500 {
+            data.put_office_local_authority_event(&PlatformOfficeLocalAuthorityEvent {
+                event_id: format!("later-{index}"),
+                office_id: "office-a".to_string(),
+                event: LOCAL_AUTHORITY_EVENT_DETACH.to_string(),
+                join_fingerprint: format!("other-fingerprint-{index}"),
+                owner: String::new(),
+                detail: "history".to_string(),
+                acted_at: now_ts() + 1 + index,
+                reported_at: 0,
+            })
+            .expect("later row");
+        }
+
+        assert!(
+            svc.break_glass_in_force().expect("query").is_some(),
+            "the row that opened the door must not scroll out of a window"
+        );
+        assert!(
+            svc.local_login_allowed().expect("still open"),
+            "an office must not re-lock itself because its log got long"
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// The same rule for the other decision this module makes: what to report.
+    #[test]
+    fn an_unreported_break_glass_survives_a_long_log() {
+        let root = temp_root("deep-log-reporting");
+        write_token(&root, &minted_token("office-a"));
+        let svc = service(&root);
+        let event = svc
+            .break_glass("", "the act to report")
+            .expect("break glass");
+
+        let data = svc.data.clone();
+        for index in 0..500 {
+            data.put_office_local_authority_event(&PlatformOfficeLocalAuthorityEvent {
+                event_id: format!("later-{index}"),
+                office_id: "office-a".to_string(),
+                event: LOCAL_AUTHORITY_EVENT_DETACH.to_string(),
+                join_fingerprint: format!("other-fingerprint-{index}"),
+                owner: String::new(),
+                detail: "history".to_string(),
+                acted_at: now_ts() + 1 + index,
+                reported_at: 0,
+            })
+            .expect("later row");
+        }
+
+        let unreported = svc.unreported_break_glass().expect("unreported");
+        assert_eq!(
+            unreported.len(),
+            1,
+            "an office offline for a long time still reports on its first reconnect"
+        );
+        assert_eq!(unreported[0].event_id, event.event_id);
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -561,7 +653,7 @@ mod tests {
     #[test]
     fn only_a_break_glass_is_ever_reported() {
         let root = temp_root("reporting");
-        write_token(&root, &JoinToken::mint("office-a"));
+        write_token(&root, &minted_token("office-a"));
         let svc = service(&root);
         let event = svc.break_glass("", "test").expect("break glass");
         assert_eq!(svc.unreported_break_glass().expect("unreported").len(), 1);

@@ -108,9 +108,17 @@ impl PlatformService {
         // creates a data root or binds a port. An office that cannot join a
         // controller would otherwise serve traffic and report itself healthy
         // while belonging to no cluster.
+        // A joined office restarts on what it stored: `interface.md` §5 says
+        // the variable is for a first join only, so its absence is not a
+        // missing credential when the credential is already on disk.
+        let stored_office_token =
+            crate::platform::services::cluster::join_token::office_token_path(&config.data_root)
+                .metadata()
+                .map(|meta| meta.len() > 0)
+                .unwrap_or(false);
         config
             .cluster
-            .validate()
+            .validate(stored_office_token)
             .map_err(|err| PlatformError::new("CLUSTER_CONFIG_INCOMPLETE", err.to_string()))?;
         std::fs::create_dir_all(&config.data_root)?;
         // The layout version gate runs before any adapter opens anything in
@@ -246,10 +254,25 @@ impl PlatformService {
             config.cluster.node_id = Some(identity.office_id.clone());
         }
         let cluster_bootstrap = Arc::new(ClusterBootstrapService::new(config.cluster.clone()));
+        // The controller's private signing key: generated on its first start,
+        // read on every later one, and never held by an office. Every office
+        // was issued its public half inside a join token, so this file is the
+        // one thing on a controller whose loss costs a re-mint everywhere —
+        // hence load-or-create, never regenerate-on-error.
+        let controller_signing_key = if cluster_bootstrap.role() == ClusterRole::Worker {
+            None
+        } else {
+            Some(Arc::new(
+                crate::platform::services::cluster::join_token::resolve_controller_signing_key(
+                    &config.data_root,
+                )?,
+            ))
+        };
         let cluster_join_tokens = Arc::new(ClusterJoinTokenService::new(
             data.clone(),
             cluster_bootstrap.role(),
             office_identity,
+            controller_signing_key,
         ));
         let cluster_registry = Arc::new(ClusterRegistryService::new(data.clone()));
         let cluster_placement = Arc::new(ClusterPlacementService::new(data.clone()));

@@ -3,26 +3,31 @@
 //!
 //! `offices.md` §8 states the whole agreement: the token is "per-office, issued
 //! by the controller, revocable for one office alone", and it carries proof in
-//! both directions. Four things follow, and this module owns all four.
+//! both directions. Five things follow, and this module owns all five.
 //!
 //! 1. **Minting creates the office record first.** An operator mints for a
 //!    *planned* office, so the controller knows who holds what before anything
 //!    is presented. That is GitLab's modern runner flow, and it is what turns
 //!    possession into a record rather than into membership.
-//! 2. **The secret is stored hashed.** The controller keeps `sha256(secret)`
-//!    and never the secret.
-//! 3. **Verification is constant-time and per-office.** Flipping one record's
-//!    status locks out exactly one office, by construction.
-//! 4. **The office verifies the controller.** It sends a nonce and refuses a
-//!    response whose HMAC proof does not verify.
+//! 2. **The secret is stored hashed, and never leaves storage.** The controller
+//!    keeps `sha256(secret)`, never the secret, and never serialises the digest
+//!    into an API response either — see [`PlatformOfficeJoinToken`].
+//! 3. **Verification is constant-time, per-office, and atomic.** Flipping one
+//!    record's status locks out exactly one office, by construction, and the
+//!    use is recorded by a conditional `UPDATE` rather than by a full-row
+//!    rewrite, so a revoke landing mid-verification is never undone.
+//! 4. **The office verifies the controller with a public key.** It sends a
+//!    nonce and refuses a response whose Ed25519 signature does not verify
+//!    under the verification key its token carried. What the office stores
+//!    verifies and forges nothing; what the controller stores about the office
+//!    forges nothing either.
 //! 5. **The same key carries the vouch.** §2's third verb needs the office to
 //!    accept an identity it may never have heard of, without the controller
-//!    knowing any password there. The stored digest already proves the
-//!    controller to the office, so the vouch is one more message under it —
-//!    no second credential, no key exchange, and nothing new to revoke.
-//!    Revocation therefore reaches vouching for free: minting one loads the
-//!    same record and refuses the same non-`active` status that stops a
-//!    heartbeat.
+//!    knowing any password there. The controller's signature already proves the
+//!    controller to the office, so the vouch is one more signed message — no
+//!    second credential and no key exchange. Every signed message names the
+//!    office's current token fingerprint, so rotating one office's token stops
+//!    every proof to that office and to no other.
 
 use rand::RngExt as _;
 
@@ -32,10 +37,11 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use crate::infra::cluster::config::ClusterRole;
+use crate::infra::cluster::security::controller_key::ControllerSigningKey;
 use crate::infra::cluster::security::join_token::{
     self, JoinToken, JoinTokenError, OfficeVouch, OfficeVouchError, VOUCH_TTL_SECS,
-    controller_call_header, digests_match, parse_controller_call_header, registration_proof,
-    secret_digest, vouch_nonce,
+    controller_call_header, digests_match, registration_proof, secret_digest, token_fingerprint,
+    verify_controller_call_header, verify_registration_proof, vouch_nonce,
 };
 use crate::platform::adapters::data::DataAdapter;
 use crate::platform::error::PlatformError;
@@ -60,6 +66,15 @@ const OFFICE_TOKEN_REL: &str = "platform/office-join-token";
 /// Path on an office that spends a vouch.
 pub const OFFICE_VOUCH_REDEEM_PATH: &str = "/office/vouch";
 
+/// Where a controller keeps the private key it signs with.
+///
+/// `platform/` for the same reason the office's token is there: STORE tier,
+/// instance-local, read on every start for the life of the controller. It is
+/// the one file on a controller whose loss is not recoverable by re-reading
+/// anything else — every office was issued its public half inside a join token,
+/// so replacing it means re-minting every office's token.
+const CONTROLLER_KEY_REL: &str = "platform/cluster-signing-key";
+
 /// What an office holds after it has been issued a token.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OfficeJoinIdentity {
@@ -67,35 +82,49 @@ pub struct OfficeJoinIdentity {
     pub office_id: String,
     /// The token as presented to the controller.
     pub token: String,
-    /// `sha256(secret)` — the key of every proof exchanged with the controller.
+    /// `sha256(secret)` — what the controller stores, derived here from the
+    /// secret this office holds. Used only to derive [`Self::fingerprint`].
     pub secret_digest: String,
+    /// The controller's Ed25519 verification key, as the token delivered it.
+    ///
+    /// Everything this office believes about its controller, it believes
+    /// because of this value. It verifies and forges nothing.
+    pub controller_verify_key: String,
+    /// `sha256(secret_digest)` — which membership a controller proof is about.
+    pub fingerprint: String,
 }
 
 impl OfficeJoinIdentity {
     fn from_token(token: JoinToken) -> Self {
+        let secret_digest = token.secret_digest();
         Self {
             office_id: token.office_id.clone(),
-            secret_digest: token.secret_digest(),
+            fingerprint: token_fingerprint(&secret_digest),
+            secret_digest,
+            controller_verify_key: token.controller_verify_key.clone(),
             token: token.render(),
         }
     }
 
-    /// Whether `proof` proves the responder holds this office's secret.
+    /// Whether `proof` proves the responder is this office's controller.
     pub fn verify_registration_proof(&self, nonce: &str, proof: &str) -> bool {
-        let expected = registration_proof(&self.secret_digest, &self.office_id, nonce);
-        digests_match(&expected, proof)
+        verify_registration_proof(
+            &self.controller_verify_key,
+            &self.office_id,
+            &self.fingerprint,
+            nonce,
+            proof,
+        )
     }
 
     /// Whether a presented controller-call header is really from the controller.
     pub fn verify_controller_header(&self, raw: &str) -> bool {
-        let Some((office_id, _)) = parse_controller_call_header(raw) else {
-            return false;
-        };
-        if office_id != self.office_id {
-            return false;
-        }
-        let expected = controller_call_header(&self.secret_digest, &self.office_id);
-        digests_match(&expected, raw)
+        verify_controller_call_header(
+            &self.controller_verify_key,
+            &self.office_id,
+            &self.fingerprint,
+            raw,
+        )
     }
 }
 
@@ -114,6 +143,9 @@ pub struct ClusterJoinTokenService {
     data: Arc<dyn DataAdapter>,
     role: ClusterRole,
     identity: Option<OfficeJoinIdentity>,
+    /// The controller's private signing key. `None` on an office, always: an
+    /// office that held one could sign for its own controller.
+    signing: Option<Arc<ControllerSigningKey>>,
 }
 
 impl ClusterJoinTokenService {
@@ -122,17 +154,46 @@ impl ClusterJoinTokenService {
         data: Arc<dyn DataAdapter>,
         role: ClusterRole,
         identity: Option<OfficeJoinIdentity>,
+        signing: Option<Arc<ControllerSigningKey>>,
     ) -> Self {
         Self {
             data,
             role,
             identity,
+            // An office never signs. Enforced here rather than trusted to
+            // every caller, because the one thing that must never be true is
+            // an office holding a key its own controller's offices verify.
+            signing: if role == ClusterRole::Worker {
+                None
+            } else {
+                signing
+            },
         }
     }
 
     /// This office's own issued token, when it has one.
     pub fn office_identity(&self) -> Option<&OfficeJoinIdentity> {
         self.identity.as_ref()
+    }
+
+    /// The controller's public verification key, as offices are issued it.
+    pub fn controller_verify_key(&self) -> Option<&str> {
+        self.signing
+            .as_deref()
+            .map(ControllerSigningKey::verify_key)
+    }
+
+    fn signing_key(&self) -> Result<&ControllerSigningKey, PlatformError> {
+        self.signing.as_deref().ok_or_else(|| {
+            PlatformError::new(
+                "CLUSTER_CONTROLLER_KEY_MISSING",
+                format!(
+                    "this instance holds no cluster signing key, so it cannot prove itself to \
+                     any office. The key lives at '{CONTROLLER_KEY_REL}' in the data root and \
+                     is created on the first start of a controller; an office never has one."
+                ),
+            )
+        })
     }
 
     /// Mint a token for one office, creating the office record if needed.
@@ -190,7 +251,9 @@ impl ClusterJoinTokenService {
         };
         self.data.put_platform_office(&office)?;
 
-        let token = JoinToken::mint(office_id.clone());
+        // The token carries the controller's public key, because an office
+        // handed a key later would have to trust it on first use.
+        let token = JoinToken::mint(office_id.clone(), self.signing_key()?.verify_key());
         let record = PlatformOfficeJoinToken {
             office_id: office_id.clone(),
             secret_digest: token.secret_digest(),
@@ -234,7 +297,31 @@ impl ClusterJoinTokenService {
     }
 
     /// Verify a token an office presented, and record the use.
+    ///
+    /// **Direction.** Only a controller accepts this. An office holds no
+    /// `office_join_tokens` rows, so the lookup would fail anyway, but the role
+    /// is checked first and by name: the two halves of §8 are different
+    /// credentials for different directions, and an instance that accepted the
+    /// wrong half would be treating one direction's value as the other's.
+    ///
+    /// **Recording the use is a conditional `UPDATE`, never a row rewrite.**
+    /// Offices heartbeat every ten seconds, so a read-modify-write of the whole
+    /// row loses any revoke or rotate that commits in between — silently
+    /// putting `status` back to `active`, or restoring the digest of a token
+    /// that was just replaced. The write is therefore
+    /// `SET last_used_at WHERE office_id AND status = 'active' AND
+    /// secret_digest = ?`, and zero affected rows is a *verification failure*
+    /// rather than a bookkeeping miss: the record the checks above ran against
+    /// no longer exists.
     pub fn verify_office_token(&self, raw: &str) -> Result<VerifiedOffice, PlatformError> {
+        if self.role != ClusterRole::Master {
+            return Err(PlatformError::new(
+                "CLUSTER_JOIN_TOKEN_NOT_A_CONTROLLER",
+                "only a controller verifies an office's join token; this instance is not one. \
+                 An office proves a peer with the controller's signature, never with a token \
+                 it was issued (`offices.md` §8).",
+            ));
+        }
         let presented = JoinToken::parse(raw).map_err(join_token_error)?;
         let office_id = presented.office_id.clone();
         let mut record = self
@@ -249,7 +336,8 @@ impl ClusterJoinTokenService {
                     ),
                 )
             })?;
-        if !digests_match(&record.secret_digest, &presented.secret_digest()) {
+        let presented_digest = presented.secret_digest();
+        if !digests_match(&record.secret_digest, &presented_digest) {
             return Err(PlatformError::new(
                 "CLUSTER_JOIN_TOKEN_INVALID",
                 format!(
@@ -271,18 +359,41 @@ impl ClusterJoinTokenService {
                 ),
             ));
         }
-        record.last_used_at = now_ts();
-        self.data.put_office_join_token(&record)?;
+        let used_at = now_ts();
+        if !self
+            .data
+            .touch_office_join_token(&office_id, &presented_digest, used_at)?
+        {
+            return Err(PlatformError::new(
+                "CLUSTER_JOIN_TOKEN_STALE",
+                format!(
+                    "the join token for office '{office_id}' was revoked or rotated while this \
+                     request was being verified, so it is not the token in force. Present the \
+                     current token, or mint a replacement on the controller \
+                     (POST /api/cluster/join-tokens with \"rotate\": true)."
+                ),
+            ));
+        }
+        record.last_used_at = used_at;
         Ok(VerifiedOffice { office_id, record })
     }
 
-    /// The controller's proof that it holds this office's secret.
+    /// The controller's proof that it is this office's controller.
+    ///
+    /// A signature, not a value derived from the record: a host that read every
+    /// byte the controller stores about this office still cannot answer the
+    /// office's nonce.
     pub fn registration_proof_for(&self, office_id: &str, nonce: &str) -> Option<String> {
         if nonce.trim().is_empty() {
             return None;
         }
         let record = self.data.get_office_join_token(office_id).ok().flatten()?;
-        Some(registration_proof(&record.secret_digest, office_id, nonce))
+        Some(registration_proof(
+            self.signing.as_deref()?,
+            office_id,
+            &token_fingerprint(&record.secret_digest),
+            nonce,
+        ))
     }
 
     /// The header value this controller presents when calling one of its offices.
@@ -303,26 +414,33 @@ impl ClusterJoinTokenService {
                 format!("the join token for office '{office_id}' is revoked"),
             ));
         }
-        Ok(controller_call_header(&record.secret_digest, &office_id))
+        Ok(controller_call_header(
+            self.signing_key()?,
+            &office_id,
+            &token_fingerprint(&record.secret_digest),
+        ))
     }
 
     /// Mint a vouch for one identity at one office (`offices.md` §2, "vouch").
     ///
-    /// Nothing is written. A vouch is an HMAC over four values under a digest
-    /// this controller already holds, so minting is a read plus a hash — which
-    /// is also why it survives a read-only controller and why re-minting after
-    /// a lost redirect costs nothing.
+    /// Nothing is written. A vouch is one signature over four values plus the
+    /// office's current token fingerprint, so minting is a read plus a sign —
+    /// which is also why it survives a read-only controller and why re-minting
+    /// after a lost redirect costs nothing.
     ///
     /// Revocation reaches this for free, and that is the design rather than a
     /// coincidence: the same record and the same `is_active` check that stop a
     /// heartbeat stop a mint. There is no second list to remember to update.
     /// Rotation goes further and kills vouching *cryptographically* — the
-    /// office's stored secret no longer derives the digest this controller
-    /// holds, so nothing minted here verifies there. Plain revocation is the
-    /// controller declining to use a key it still has, so a vouch minted
+    /// office's token fingerprint is inside the signed message, so an office
+    /// running a rotated token computes a different one and nothing minted
+    /// under the old membership verifies there. Plain revocation is the
+    /// controller declining to sign with a key it still has, so a vouch minted
     /// moments before a revoke stays redeemable at that office until it
     /// expires. That window is the TTL and no longer, and it is the reason the
-    /// TTL is two minutes rather than an hour.
+    /// TTL is two minutes rather than an hour; an operator who needs an office
+    /// shut out *now*, with no network to that office, rotates rather than
+    /// revokes, and the office enforces that itself.
     pub fn mint_vouch(
         &self,
         office_id: &str,
@@ -365,11 +483,12 @@ impl ClusterJoinTokenService {
         }
         let expires_at = now + VOUCH_TTL_SECS;
         let vouch = OfficeVouch::mint(
-            &record.secret_digest,
+            self.signing_key()?,
             &office_id,
             &identity,
             expires_at,
             &vouch_nonce(),
+            &token_fingerprint(&record.secret_digest),
         )
         .render();
         let base_url = self
@@ -419,7 +538,12 @@ impl ClusterJoinTokenService {
         };
         let vouch = OfficeVouch::parse(raw).map_err(vouch_error)?;
         vouch
-            .verify(&identity.secret_digest, &identity.office_id, now)
+            .verify(
+                &identity.controller_verify_key,
+                &identity.office_id,
+                &identity.fingerprint,
+                now,
+            )
             .map_err(vouch_error)?;
 
         let claimed = self
@@ -482,20 +606,25 @@ impl ClusterJoinTokenService {
         self.data.list_office_identity_writes(limit.clamp(1, 500))
     }
 
-    /// Whether a presented internal-cluster header authenticates a peer.
+    /// Whether a presented header is **this office's controller** calling it.
     ///
-    /// The two roles check different things, because the two directions carry
-    /// different halves of the credential. A standalone instance has no peer,
-    /// so nothing authenticates by this route at all.
-    pub fn header_authenticates_peer(&self, raw: &str) -> bool {
-        match self.role {
-            ClusterRole::Master => self.verify_office_token(raw).is_ok(),
-            ClusterRole::Worker => self
-                .identity
-                .as_ref()
-                .is_some_and(|identity| identity.verify_controller_header(raw)),
-            ClusterRole::Standalone => false,
+    /// One direction and one only. It used to be a role-switching predicate
+    /// that, on a controller, returned true for any office's join token — and
+    /// every project-capability check short-circuited on it, so one office's
+    /// token authorised acting as any owner on the controller. The two halves
+    /// of §8 are different credentials for different directions and are no
+    /// longer reachable through one name.
+    ///
+    /// A controller answers `false` here always: nothing calls *into* a
+    /// controller with a controller-call header, and a controller that accepted
+    /// one would be accepting a value it mints itself.
+    pub fn controller_call_authenticates(&self, raw: &str) -> bool {
+        if self.role != ClusterRole::Worker {
+            return false;
         }
+        self.identity
+            .as_ref()
+            .is_some_and(|identity| identity.verify_controller_header(raw))
     }
 }
 
@@ -631,10 +760,21 @@ fn read_stored_token(path: &Path) -> Result<Option<String>, PlatformError> {
 }
 
 fn write_stored_token(path: &Path, value: &str) -> Result<(), PlatformError> {
+    let mut bytes = value.as_bytes().to_vec();
+    bytes.push(b'\n');
+    write_private_file(path, &bytes, "CLUSTER_JOIN_TOKEN_STORE_WRITE")
+}
+
+/// Write one file only this instance's user may read.
+///
+/// Shared by the office's token and the controller's signing key because both
+/// are STORE-tier private material in the same directory, and two copies of a
+/// 0600 dance is how one of them ends up 0644.
+fn write_private_file(path: &Path, bytes: &[u8], code: &'static str) -> Result<(), PlatformError> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|err| {
             PlatformError::new(
-                "CLUSTER_JOIN_TOKEN_STORE_WRITE",
+                code,
                 format!("failed creating '{}': {err}", parent.display()),
             )
         })?;
@@ -647,19 +787,12 @@ fn write_stored_token(path: &Path, value: &str) -> Result<(), PlatformError> {
         options.mode(0o600);
     }
     let mut file = options.open(path).map_err(|err| {
-        PlatformError::new(
-            "CLUSTER_JOIN_TOKEN_STORE_WRITE",
-            format!("failed creating '{}': {err}", path.display()),
-        )
+        PlatformError::new(code, format!("failed creating '{}': {err}", path.display()))
     })?;
-    file.write_all(value.as_bytes())
-        .and_then(|()| file.write_all(b"\n"))
+    file.write_all(bytes)
         .and_then(|()| file.sync_all())
         .map_err(|err| {
-            PlatformError::new(
-                "CLUSTER_JOIN_TOKEN_STORE_WRITE",
-                format!("failed writing '{}': {err}", path.display()),
-            )
+            PlatformError::new(code, format!("failed writing '{}': {err}", path.display()))
         })?;
     // An existing file keeps its old mode through `create`, so tighten after
     // the fact as well as at open time.
@@ -667,13 +800,49 @@ fn write_stored_token(path: &Path, value: &str) -> Result<(), PlatformError> {
     {
         use std::os::unix::fs::PermissionsExt;
         fs::set_permissions(path, fs::Permissions::from_mode(0o600)).map_err(|err| {
-            PlatformError::new(
-                "CLUSTER_JOIN_TOKEN_STORE_WRITE",
-                format!("failed securing '{}': {err}", path.display()),
-            )
+            PlatformError::new(code, format!("failed securing '{}': {err}", path.display()))
         })?;
     }
     Ok(())
+}
+
+/// Where this instance keeps the private key it signs office proofs with.
+pub fn controller_signing_key_path(data_root: &Path) -> PathBuf {
+    data_root.join(CONTROLLER_KEY_REL)
+}
+
+/// Load this controller's signing key, generating one on its first start.
+///
+/// Generated rather than configured, and never regenerated on a read failure: a
+/// key that quietly replaced itself would invalidate every token this
+/// controller ever issued, because the public half travelled inside each one.
+/// A damaged file is a refusal that says exactly that.
+///
+/// An office calls this for nothing. Enforced by the caller — an office is not
+/// built with one, and [`ClusterJoinTokenService::new`] drops one if handed it.
+pub fn resolve_controller_signing_key(
+    data_root: &Path,
+) -> Result<ControllerSigningKey, PlatformError> {
+    let path = controller_signing_key_path(data_root);
+    match fs::read(&path) {
+        Ok(document) => ControllerSigningKey::from_pkcs8(&document).map_err(|err| {
+            PlatformError::new(
+                "CLUSTER_CONTROLLER_KEY_UNUSABLE",
+                format!("'{}': {err}", path.display()),
+            )
+        }),
+        Err(err) if err.kind() == ErrorKind::NotFound => {
+            let (document, key) = ControllerSigningKey::generate().map_err(|err| {
+                PlatformError::new("CLUSTER_CONTROLLER_KEY_UNUSABLE", err.to_string())
+            })?;
+            write_private_file(&path, &document, "CLUSTER_CONTROLLER_KEY_WRITE")?;
+            Ok(key)
+        }
+        Err(err) => Err(PlatformError::new(
+            "CLUSTER_CONTROLLER_KEY_UNUSABLE",
+            format!("failed reading '{}': {err}", path.display()),
+        )),
+    }
 }
 
 /// Digest of a secret, re-exported for callers that hold only the secret half.
@@ -690,6 +859,14 @@ pub fn nonce() -> String {
 mod tests {
     use super::*;
 
+    use crate::infra::cluster::registry::WorkerRegistryRecord;
+    use crate::infra::execution::placement::ProjectRuntimePlacement;
+    use crate::platform::model::{
+        McpSession, PipelineMeta, PlatformProject, PlatformUser, ProjectCredential,
+        ProjectDbConnection, ProjectInvite, ProjectMember, ProjectPolicy, ProjectPolicyBinding,
+        StoredUser,
+    };
+
     fn temp_root(name: &str) -> PathBuf {
         let root = std::env::temp_dir().join(format!(
             "zebflow-join-token-{name}-{}-{}",
@@ -701,15 +878,26 @@ mod tests {
         root
     }
 
+    fn controller() -> ControllerSigningKey {
+        ControllerSigningKey::generate().expect("generate").1
+    }
+
+    fn mint_for(office_id: &str, key: &ControllerSigningKey) -> JoinToken {
+        JoinToken::mint(office_id, key.verify_key())
+    }
+
     #[test]
     fn a_first_join_stores_the_supplied_token_privately() {
         let root = temp_root("first-join");
-        let minted = JoinToken::mint("office-a");
+        let key = controller();
+        let minted = mint_for("office-a", &key);
         let identity = resolve_office_identity(&root, Some(&minted.render()))
             .expect("first join")
             .expect("identity");
         assert_eq!(identity.office_id, "office-a");
         assert_eq!(identity.secret_digest, minted.secret_digest());
+        assert_eq!(identity.controller_verify_key, key.verify_key());
+        assert_eq!(identity.fingerprint, minted.fingerprint());
 
         let path = office_token_path(&root);
         assert_eq!(
@@ -734,10 +922,11 @@ mod tests {
     #[test]
     fn a_disagreeing_environment_variable_refuses_to_start() {
         let root = temp_root("mismatch");
-        let stored = JoinToken::mint("office-a");
+        let key = controller();
+        let stored = mint_for("office-a", &key);
         resolve_office_identity(&root, Some(&stored.render())).expect("first join");
 
-        let other = JoinToken::mint("office-b");
+        let other = mint_for("office-b", &key);
         let err = resolve_office_identity(&root, Some(&other.render()))
             .expect_err("mismatch must refuse");
         assert_eq!(err.code, "CLUSTER_JOIN_TOKEN_MISMATCH");
@@ -756,7 +945,8 @@ mod tests {
     #[test]
     fn the_same_token_supplied_again_is_not_a_mismatch() {
         let root = temp_root("same-token");
-        let stored = JoinToken::mint("office-a");
+        let key = controller();
+        let stored = mint_for("office-a", &key);
         resolve_office_identity(&root, Some(&stored.render())).expect("first join");
         let again = resolve_office_identity(&root, Some(&stored.render()))
             .expect("same token")
@@ -767,45 +957,59 @@ mod tests {
 
     #[test]
     fn an_office_refuses_a_response_that_does_not_prove_the_controller() {
-        let issued = JoinToken::mint("office-a");
+        let key = controller();
+        let issued = mint_for("office-a", &key);
         let identity = OfficeJoinIdentity::from_token(issued.clone());
         let sent = nonce();
 
-        let honest = registration_proof(&issued.secret_digest(), "office-a", &sent);
+        let honest = registration_proof(&key, "office-a", &issued.fingerprint(), &sent);
         assert!(identity.verify_registration_proof(&sent, &honest));
 
-        // Anything that does not hold this office's secret.
-        let impostor = JoinToken::mint("office-a");
+        // Anything that is not this controller's key.
+        let impostor = controller();
         assert!(!identity.verify_registration_proof(
             &sent,
-            &registration_proof(&impostor.secret_digest(), "office-a", &sent)
+            &registration_proof(&impostor, "office-a", &issued.fingerprint(), &sent)
         ));
         assert!(!identity.verify_registration_proof(&sent, ""));
         assert!(!identity.verify_registration_proof(&sent, "not-a-proof"));
         // A proof for a different nonce is a replay, not an answer.
         assert!(!identity.verify_registration_proof(
             &sent,
-            &registration_proof(&issued.secret_digest(), "office-a", &nonce())
+            &registration_proof(&key, "office-a", &issued.fingerprint(), &nonce())
         ));
+        // And the material the controller stores about this office answers
+        // nothing: the digest is not the key any more.
+        assert!(!identity.verify_registration_proof(&sent, &issued.secret_digest()));
     }
 
     #[test]
     fn an_office_accepts_only_its_own_controller_call_header() {
-        let issued = JoinToken::mint("office-a");
+        let key = controller();
+        let issued = mint_for("office-a", &key);
         let identity = OfficeJoinIdentity::from_token(issued.clone());
 
         assert!(identity.verify_controller_header(&controller_call_header(
-            &issued.secret_digest(),
-            "office-a"
+            &key,
+            "office-a",
+            &issued.fingerprint()
         )));
-        // A header for another office, or under another secret, is not ours.
+        // A header for another office, or under another controller's key, or
+        // for a rotated membership, is not ours.
         assert!(!identity.verify_controller_header(&controller_call_header(
-            &issued.secret_digest(),
-            "office-b"
+            &key,
+            "office-b",
+            &issued.fingerprint()
         )));
         assert!(!identity.verify_controller_header(&controller_call_header(
-            &JoinToken::mint("office-a").secret_digest(),
-            "office-a"
+            &controller(),
+            "office-a",
+            &issued.fingerprint()
+        )));
+        assert!(!identity.verify_controller_header(&controller_call_header(
+            &key,
+            "office-a",
+            &mint_for("office-a", &key).fingerprint()
         )));
         // The office's own token is not a controller header: the two
         // directions do not share a scheme word, so neither replays as the
@@ -829,6 +1033,555 @@ mod tests {
             !office_token_path(&root).exists(),
             "a refused token must not be stored"
         );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_controller_key_is_created_once_and_reused_for_the_life_of_the_instance() {
+        let root = temp_root("controller-key");
+        let first = resolve_controller_signing_key(&root).expect("first start");
+        let path = controller_signing_key_path(&root);
+        assert!(path.is_file());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = fs::metadata(&path).expect("meta").permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600, "the signing key is not a world-readable file");
+        }
+        let second = resolve_controller_signing_key(&root).expect("second start");
+        assert_eq!(
+            first.verify_key(),
+            second.verify_key(),
+            "regenerating would invalidate every token this controller ever issued"
+        );
+
+        // A damaged key refuses rather than silently minting a new identity.
+        fs::write(&path, b"not a key").expect("damage");
+        let err = resolve_controller_signing_key(&root).expect_err("damaged key");
+        assert_eq!(err.code, "CLUSTER_CONTROLLER_KEY_UNUSABLE");
+        assert!(
+            err.message.contains("re-mint every office's token"),
+            "{err:?}"
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// A data adapter that lets a test commit something *between* another
+    /// caller's read and its write.
+    ///
+    /// The window `verify_office_token` used to leave open is exactly one
+    /// instruction wide in wall-clock terms and permanently open in logical
+    /// terms, because offices heartbeat every ten seconds. Racing threads would
+    /// reproduce it most of the time; firing the interleave from inside the
+    /// read reproduces it every time, which is what a regression test owes.
+    struct InterleavingAdapter {
+        inner: Arc<dyn DataAdapter>,
+        /// Run once, on the way out of the first `get_office_join_token`.
+        on_first_read: Box<dyn Fn(&dyn DataAdapter) + Send + Sync>,
+        fired: std::sync::atomic::AtomicBool,
+    }
+
+    impl DataAdapter for InterleavingAdapter {
+        fn get_office_join_token(
+            &self,
+            office_id: &str,
+        ) -> Result<Option<PlatformOfficeJoinToken>, PlatformError> {
+            let record = self.inner.get_office_join_token(office_id)?;
+            if record.is_some() && !self.fired.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                (self.on_first_read)(self.inner.as_ref());
+            }
+            Ok(record)
+        }
+
+        // The office methods this decorator has to carry: they have default
+        // trait bodies that refuse, so delegating them is not optional.
+        fn put_office_join_token(
+            &self,
+            token: &PlatformOfficeJoinToken,
+        ) -> Result<(), PlatformError> {
+            self.inner.put_office_join_token(token)
+        }
+        fn touch_office_join_token(
+            &self,
+            office_id: &str,
+            secret_digest: &str,
+            last_used_at: i64,
+        ) -> Result<bool, PlatformError> {
+            self.inner
+                .touch_office_join_token(office_id, secret_digest, last_used_at)
+        }
+        fn list_office_join_tokens(&self) -> Result<Vec<PlatformOfficeJoinToken>, PlatformError> {
+            self.inner.list_office_join_tokens()
+        }
+        fn get_platform_office(
+            &self,
+            office_id: &str,
+        ) -> Result<Option<PlatformOffice>, PlatformError> {
+            self.inner.get_platform_office(office_id)
+        }
+        fn put_platform_office(&self, office: &PlatformOffice) -> Result<(), PlatformError> {
+            self.inner.put_platform_office(office)
+        }
+
+        fn id(&self) -> &'static str {
+            self.inner.id()
+        }
+        fn get_user_auth(&self, owner: &str) -> Result<Option<StoredUser>, PlatformError> {
+            self.inner.get_user_auth(owner)
+        }
+        fn put_user(&self, user: &StoredUser) -> Result<(), PlatformError> {
+            self.inner.put_user(user)
+        }
+        fn list_users(&self) -> Result<Vec<PlatformUser>, PlatformError> {
+            self.inner.list_users()
+        }
+        fn get_project(
+            &self,
+            owner: &str,
+            project: &str,
+        ) -> Result<Option<PlatformProject>, PlatformError> {
+            self.inner.get_project(owner, project)
+        }
+        fn put_project(&self, project: &PlatformProject) -> Result<(), PlatformError> {
+            self.inner.put_project(project)
+        }
+        fn list_projects(&self, owner: &str) -> Result<Vec<PlatformProject>, PlatformError> {
+            self.inner.list_projects(owner)
+        }
+        fn delete_project(&self, owner: &str, project: &str) -> Result<(), PlatformError> {
+            self.inner.delete_project(owner, project)
+        }
+        fn get_project_credential(
+            &self,
+            owner: &str,
+            project: &str,
+            credential_id: &str,
+        ) -> Result<Option<ProjectCredential>, PlatformError> {
+            self.inner
+                .get_project_credential(owner, project, credential_id)
+        }
+        fn put_project_credential(
+            &self,
+            credential: &ProjectCredential,
+        ) -> Result<(), PlatformError> {
+            self.inner.put_project_credential(credential)
+        }
+        fn list_project_credentials(
+            &self,
+            owner: &str,
+            project: &str,
+        ) -> Result<Vec<ProjectCredential>, PlatformError> {
+            self.inner.list_project_credentials(owner, project)
+        }
+        fn delete_project_credential(
+            &self,
+            owner: &str,
+            project: &str,
+            credential_id: &str,
+        ) -> Result<(), PlatformError> {
+            self.inner
+                .delete_project_credential(owner, project, credential_id)
+        }
+        fn get_project_db_connection(
+            &self,
+            owner: &str,
+            project: &str,
+            connection_slug: &str,
+        ) -> Result<Option<ProjectDbConnection>, PlatformError> {
+            self.inner
+                .get_project_db_connection(owner, project, connection_slug)
+        }
+        fn put_project_db_connection(
+            &self,
+            connection: &ProjectDbConnection,
+        ) -> Result<(), PlatformError> {
+            self.inner.put_project_db_connection(connection)
+        }
+        fn list_project_db_connections(
+            &self,
+            owner: &str,
+            project: &str,
+        ) -> Result<Vec<ProjectDbConnection>, PlatformError> {
+            self.inner.list_project_db_connections(owner, project)
+        }
+        fn delete_project_db_connection(
+            &self,
+            owner: &str,
+            project: &str,
+            connection_slug: &str,
+        ) -> Result<(), PlatformError> {
+            self.inner
+                .delete_project_db_connection(owner, project, connection_slug)
+        }
+        fn put_pipeline_meta(&self, meta: &PipelineMeta) -> Result<(), PlatformError> {
+            self.inner.put_pipeline_meta(meta)
+        }
+        fn delete_pipeline_meta(
+            &self,
+            owner: &str,
+            project: &str,
+            file_rel_path: &str,
+        ) -> Result<(), PlatformError> {
+            self.inner
+                .delete_pipeline_meta(owner, project, file_rel_path)
+        }
+        fn list_pipeline_meta(
+            &self,
+            owner: &str,
+            project: &str,
+        ) -> Result<Vec<PipelineMeta>, PlatformError> {
+            self.inner.list_pipeline_meta(owner, project)
+        }
+        fn put_project_policy(&self, policy: &ProjectPolicy) -> Result<(), PlatformError> {
+            self.inner.put_project_policy(policy)
+        }
+        fn list_project_policies(
+            &self,
+            owner: &str,
+            project: &str,
+        ) -> Result<Vec<ProjectPolicy>, PlatformError> {
+            self.inner.list_project_policies(owner, project)
+        }
+        fn put_project_policy_binding(
+            &self,
+            binding: &ProjectPolicyBinding,
+        ) -> Result<(), PlatformError> {
+            self.inner.put_project_policy_binding(binding)
+        }
+        fn list_project_policy_bindings(
+            &self,
+            owner: &str,
+            project: &str,
+        ) -> Result<Vec<ProjectPolicyBinding>, PlatformError> {
+            self.inner.list_project_policy_bindings(owner, project)
+        }
+        fn delete_project_policy(
+            &self,
+            owner: &str,
+            project: &str,
+            policy_id: &str,
+        ) -> Result<(), PlatformError> {
+            self.inner.delete_project_policy(owner, project, policy_id)
+        }
+        fn delete_project_policy_binding(
+            &self,
+            owner: &str,
+            project: &str,
+            subject_id: &str,
+        ) -> Result<(), PlatformError> {
+            self.inner
+                .delete_project_policy_binding(owner, project, subject_id)
+        }
+        fn get_project_member(
+            &self,
+            owner: &str,
+            project: &str,
+            user_id: &str,
+        ) -> Result<Option<ProjectMember>, PlatformError> {
+            self.inner.get_project_member(owner, project, user_id)
+        }
+        fn put_project_member(&self, member: &ProjectMember) -> Result<(), PlatformError> {
+            self.inner.put_project_member(member)
+        }
+        fn list_project_members(
+            &self,
+            owner: &str,
+            project: &str,
+        ) -> Result<Vec<ProjectMember>, PlatformError> {
+            self.inner.list_project_members(owner, project)
+        }
+        fn delete_project_member(
+            &self,
+            owner: &str,
+            project: &str,
+            user_id: &str,
+        ) -> Result<(), PlatformError> {
+            self.inner.delete_project_member(owner, project, user_id)
+        }
+        fn get_project_invite(
+            &self,
+            owner: &str,
+            project: &str,
+            invite_id: &str,
+        ) -> Result<Option<ProjectInvite>, PlatformError> {
+            self.inner.get_project_invite(owner, project, invite_id)
+        }
+        fn put_project_invite(&self, invite: &ProjectInvite) -> Result<(), PlatformError> {
+            self.inner.put_project_invite(invite)
+        }
+        fn list_project_invites(
+            &self,
+            owner: &str,
+            project: &str,
+        ) -> Result<Vec<ProjectInvite>, PlatformError> {
+            self.inner.list_project_invites(owner, project)
+        }
+        fn delete_project_invite(
+            &self,
+            owner: &str,
+            project: &str,
+            invite_id: &str,
+        ) -> Result<(), PlatformError> {
+            self.inner.delete_project_invite(owner, project, invite_id)
+        }
+        fn get_worker_registry_record(
+            &self,
+            node_id: &str,
+        ) -> Result<Option<WorkerRegistryRecord>, PlatformError> {
+            self.inner.get_worker_registry_record(node_id)
+        }
+        fn put_worker_registry_record(
+            &self,
+            record: &WorkerRegistryRecord,
+        ) -> Result<(), PlatformError> {
+            self.inner.put_worker_registry_record(record)
+        }
+        fn list_worker_registry_records(&self) -> Result<Vec<WorkerRegistryRecord>, PlatformError> {
+            self.inner.list_worker_registry_records()
+        }
+        fn delete_worker_registry_record(&self, node_id: &str) -> Result<(), PlatformError> {
+            self.inner.delete_worker_registry_record(node_id)
+        }
+        fn get_project_runtime_placement(
+            &self,
+            owner: &str,
+            project: &str,
+        ) -> Result<Option<ProjectRuntimePlacement>, PlatformError> {
+            self.inner.get_project_runtime_placement(owner, project)
+        }
+        fn put_project_runtime_placement(
+            &self,
+            placement: &ProjectRuntimePlacement,
+        ) -> Result<(), PlatformError> {
+            self.inner.put_project_runtime_placement(placement)
+        }
+        fn list_project_runtime_placements(
+            &self,
+        ) -> Result<Vec<ProjectRuntimePlacement>, PlatformError> {
+            self.inner.list_project_runtime_placements()
+        }
+        fn delete_project_runtime_placement(
+            &self,
+            owner: &str,
+            project: &str,
+        ) -> Result<(), PlatformError> {
+            self.inner.delete_project_runtime_placement(owner, project)
+        }
+        fn list_all_mcp_sessions(&self) -> Result<Vec<McpSession>, PlatformError> {
+            self.inner.list_all_mcp_sessions()
+        }
+        fn put_mcp_session(&self, session: &McpSession) -> Result<(), PlatformError> {
+            self.inner.put_mcp_session(session)
+        }
+        fn delete_mcp_session(&self, token: &str) -> Result<(), PlatformError> {
+            self.inner.delete_mcp_session(token)
+        }
+    }
+
+    fn interleaved(
+        inner: Arc<dyn DataAdapter>,
+        on_first_read: impl Fn(&dyn DataAdapter) + Send + Sync + 'static,
+    ) -> Arc<dyn DataAdapter> {
+        Arc::new(InterleavingAdapter {
+            inner,
+            on_first_read: Box::new(on_first_read),
+            fired: std::sync::atomic::AtomicBool::new(false),
+        })
+    }
+
+    fn seed_token(data: &dyn DataAdapter, token: &JoinToken) {
+        // The office row first: `office_join_tokens` has a foreign key to it,
+        // which is minting's rule ("the office record comes first") expressed
+        // in the schema.
+        let now = now_ts();
+        data.put_platform_office(&PlatformOffice {
+            office_id: token.office_id.clone(),
+            office_slug: token.office_id.clone(),
+            label: token.office_id.clone(),
+            office_kind: "office".to_string(),
+            base_url: String::new(),
+            status: "planned".to_string(),
+            created_at: now,
+            updated_at: now,
+        })
+        .expect("seed office");
+        data.put_office_join_token(&PlatformOfficeJoinToken {
+            office_id: token.office_id.clone(),
+            secret_digest: token.secret_digest(),
+            status: JOIN_TOKEN_STATUS_ACTIVE.to_string(),
+            note: String::new(),
+            created_at: now_ts(),
+            last_used_at: 0,
+        })
+        .expect("seed");
+    }
+
+    fn sqlite_at(root: &Path) -> Arc<dyn DataAdapter> {
+        crate::platform::adapters::data::build_data_adapter(
+            crate::platform::model::DataAdapterKind::Sqlite,
+            root,
+        )
+        .expect("adapter")
+    }
+
+    /// FIX 1's regression: a revoke that commits between the read and the write
+    /// of `verify_office_token` used to be silently undone, un-revoking the
+    /// office on the next heartbeat ten seconds later.
+    #[test]
+    fn a_revoke_landing_mid_verification_is_not_undone_by_the_use_record() {
+        let root = temp_root("lost-update-revoke");
+        let inner = sqlite_at(&root);
+        let token = mint_for("office-a", &controller());
+        seed_token(inner.as_ref(), &token);
+
+        let office_id = token.office_id.clone();
+        let data = interleaved(inner.clone(), move |db| {
+            // The operator's revoke, committing while a heartbeat is in flight.
+            let mut record = db
+                .get_office_join_token(&office_id)
+                .expect("read")
+                .expect("row");
+            record.status = JOIN_TOKEN_STATUS_REVOKED.to_string();
+            db.put_office_join_token(&record).expect("revoke");
+        });
+        let service = ClusterJoinTokenService::new(
+            data,
+            ClusterRole::Master,
+            None,
+            Some(Arc::new(controller())),
+        );
+
+        let err = service
+            .verify_office_token(&token.render())
+            .expect_err("a token revoked mid-verification must not verify");
+        assert_eq!(err.code, "CLUSTER_JOIN_TOKEN_STALE");
+        assert_eq!(
+            inner
+                .get_office_join_token("office-a")
+                .expect("read")
+                .expect("row")
+                .status,
+            JOIN_TOKEN_STATUS_REVOKED,
+            "recording a use must never write `status` back"
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// The same window, for the rotate half: the superseded digest must not be
+    /// restored, which would invalidate the token just issued to that office.
+    #[test]
+    fn a_rotation_landing_mid_verification_is_not_undone_by_the_use_record() {
+        let root = temp_root("lost-update-rotate");
+        let inner = sqlite_at(&root);
+        let key = controller();
+        let old = mint_for("office-a", &key);
+        let fresh = mint_for("office-a", &key);
+        seed_token(inner.as_ref(), &old);
+
+        let replacement = fresh.secret_digest();
+        let office_id = old.office_id.clone();
+        let data = interleaved(inner.clone(), move |db| {
+            let mut record = db
+                .get_office_join_token(&office_id)
+                .expect("read")
+                .expect("row");
+            record.secret_digest = replacement.clone();
+            db.put_office_join_token(&record).expect("rotate");
+        });
+        let service =
+            ClusterJoinTokenService::new(data, ClusterRole::Master, None, Some(Arc::new(key)));
+
+        let err = service
+            .verify_office_token(&old.render())
+            .expect_err("the superseded token must not verify");
+        assert_eq!(err.code, "CLUSTER_JOIN_TOKEN_STALE");
+        assert_eq!(
+            inner
+                .get_office_join_token("office-a")
+                .expect("read")
+                .expect("row")
+                .secret_digest,
+            fresh.secret_digest(),
+            "recording a use must never write `secret_digest` back"
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// The ordinary path still records the use, so the fix is not "stop
+    /// writing".
+    #[test]
+    fn an_uncontested_verification_records_the_use() {
+        let root = temp_root("touch");
+        let data = sqlite_at(&root);
+        let key = controller();
+        let token = mint_for("office-a", &key);
+        seed_token(data.as_ref(), &token);
+        let service = ClusterJoinTokenService::new(
+            data.clone(),
+            ClusterRole::Master,
+            None,
+            Some(Arc::new(key)),
+        );
+
+        let verified = service
+            .verify_office_token(&token.render())
+            .expect("verify");
+        assert!(verified.record.last_used_at > 0);
+        assert_eq!(
+            data.get_office_join_token("office-a")
+                .expect("read")
+                .expect("row")
+                .last_used_at,
+            verified.record.last_used_at
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// FIX 3's direction rule, at the layer that owns it.
+    #[test]
+    fn each_half_of_the_credential_authenticates_one_direction_only() {
+        let root = temp_root("directions");
+        let key = Arc::new(controller());
+        let data = sqlite_at(&root);
+        let token = mint_for("office-a", &key);
+        seed_token(data.as_ref(), &token);
+
+        let controller_side = ClusterJoinTokenService::new(
+            data.clone(),
+            ClusterRole::Master,
+            None,
+            Some(key.clone()),
+        );
+        let office_side = ClusterJoinTokenService::new(
+            data.clone(),
+            ClusterRole::Worker,
+            Some(OfficeJoinIdentity::from_token(token.clone())),
+            // Handed one on purpose: an office must drop it.
+            Some(key.clone()),
+        );
+        assert!(
+            office_side.controller_verify_key().is_none(),
+            "an office must not hold a signing key even if one is handed to it"
+        );
+
+        let call_header = controller_side
+            .controller_call_header_for("office-a")
+            .expect("header");
+
+        // The office accepts its controller's call and refuses a join token.
+        assert!(office_side.controller_call_authenticates(&call_header));
+        assert!(!office_side.controller_call_authenticates(&token.render()));
+        // The controller accepts a join token and refuses its own call header
+        // — this is the short-circuit that used to make any office's token a
+        // project-owner credential on the controller.
+        assert!(!controller_side.controller_call_authenticates(&call_header));
+        assert!(!controller_side.controller_call_authenticates(&token.render()));
+        assert!(controller_side.verify_office_token(&token.render()).is_ok());
+        // And an office never verifies a join token at all.
+        let err = office_side
+            .verify_office_token(&token.render())
+            .expect_err("an office is not a controller");
+        assert_eq!(err.code, "CLUSTER_JOIN_TOKEN_NOT_A_CONTROLLER");
         let _ = fs::remove_dir_all(&root);
     }
 }

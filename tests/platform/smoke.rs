@@ -10,7 +10,9 @@ use serde_json::{Value, json};
 use tower::ServiceExt;
 
 use zebflow::infra::cluster::config::ClusterRole;
-use zebflow::infra::cluster::security::{JoinToken, OfficeVouch, registration_proof};
+use zebflow::infra::cluster::security::{
+    ControllerSigningKey, JoinToken, OfficeVouch, verify_registration_proof,
+};
 use zebflow::platform::model::{
     CollectionAttribute, CreateHubTokenRequest, CreateSimpleTableRequest, TemplateSaveRequest,
     ZebflowJsonDistributionHub,
@@ -150,7 +152,7 @@ async fn office_refuses_to_start_without_cluster_configuration_and_starts_with_i
     // A real minted token, because `offices.md` §8's token is per-office and
     // self-describing; the shared environment secret this replaced would now
     // refuse to parse.
-    configured.cluster.join_token = Some(JoinToken::mint("office-a").render());
+    configured.cluster.join_token = Some(unissued_token("office-a"));
 
     let app = build_router(configured)
         .await
@@ -227,20 +229,29 @@ async fn a_join_token_is_per_office_revocable_and_proves_both_directions() {
     let minted = mint_join_token(&app, &cookie, "office-a", false).await;
     assert_eq!(minted.0, StatusCode::CREATED);
     let token_a = minted.1["token"].as_str().expect("token").to_string();
-    assert!(token_a.starts_with("zfjoin1:office-a:"), "{token_a}");
+    assert!(token_a.starts_with("zfjoin2:office-a:"), "{token_a}");
     assert_eq!(minted.1["office"]["office_id"], json!("office-a"));
     assert_eq!(minted.1["office"]["status"], json!("planned"));
     assert_eq!(minted.1["record"]["status"], json!("active"));
-    let digest_a = minted.1["record"]["secret_digest"]
-        .as_str()
-        .expect("digest")
-        .to_string();
+    // The digest the controller stores never travels. It used to come back in
+    // this very response and in the listing below, which put an office's stored
+    // material into browser memory and every proxy log on the way.
+    assert!(
+        minted.1["record"].get("secret_digest").is_none(),
+        "the mint response must not carry the stored digest: {}",
+        minted.1["record"]
+    );
+    // The token carries the controller's *public* key, which is what lets the
+    // office verify a controller it has never met.
+    let parsed_a = JoinToken::parse(&token_a).expect("parse");
+    assert!(!parsed_a.controller_verify_key.is_empty());
+    let digest_a = parsed_a.secret_digest();
     assert!(
         !token_a.contains(&digest_a),
         "the stored record must be the digest, not the token"
     );
 
-    // The listing never carries a secret.
+    // The listing never carries a secret, and no longer carries the digest.
     let listed = response_json(
         app.clone()
             .oneshot(
@@ -255,7 +266,14 @@ async fn a_join_token_is_per_office_revocable_and_proves_both_directions() {
     )
     .await;
     let listed = serde_json::to_string(&listed["tokens"]).expect("tokens json");
-    assert!(listed.contains(&digest_a));
+    assert!(
+        listed.contains("office-a"),
+        "the listing still names the office"
+    );
+    assert!(
+        !listed.contains(&digest_a),
+        "a listing must not carry the digest either: {listed}"
+    );
     assert!(
         !listed.contains(token_a.rsplit(':').next().expect("secret")),
         "a listing must never carry the secret"
@@ -278,22 +296,48 @@ async fn a_join_token_is_per_office_revocable_and_proves_both_directions() {
     assert_eq!(registered.1["ok"], json!(true));
     let proof = registered.1["proof"].as_str().expect("proof").to_string();
 
-    // The office half of the mutual proof: the office derives the same digest
-    // from the secret it holds, and an impostor that does not hold it cannot
-    // produce this value.
+    // The controller half of the mutual proof, verified exactly as the office
+    // verifies it: with the public key its token carried, and nothing else.
     let identity_a = JoinToken::parse(&token_a).expect("parse");
-    assert_eq!(
-        proof,
-        registration_proof(&identity_a.secret_digest(), "office-a", nonce)
-    );
-    assert_ne!(
-        proof,
-        registration_proof(
-            &JoinToken::mint("office-a").secret_digest(),
+    assert!(
+        verify_registration_proof(
+            &identity_a.controller_verify_key,
             "office-a",
-            nonce
+            &identity_a.fingerprint(),
+            nonce,
+            &proof
         ),
-        "a controller that does not hold the secret cannot answer"
+        "the office must accept its own controller's answer"
+    );
+    // A host that read every byte the controller stores about this office —
+    // the digest, and therefore the fingerprint — still cannot answer. Before
+    // this release the digest *was* the key, so this is the whole change.
+    for stolen in [
+        identity_a.secret_digest(),
+        identity_a.fingerprint(),
+        String::new(),
+    ] {
+        assert!(
+            !verify_registration_proof(
+                &identity_a.controller_verify_key,
+                "office-a",
+                &identity_a.fingerprint(),
+                nonce,
+                &stolen
+            ),
+            "stored material must not answer a nonce"
+        );
+    }
+    let (_, impostor) = ControllerSigningKey::generate().expect("key");
+    assert!(
+        !verify_registration_proof(
+            impostor.verify_key(),
+            "office-a",
+            &identity_a.fingerprint(),
+            nonce,
+            &proof
+        ),
+        "one controller's answer must not verify under another's key"
     );
 
     assert_eq!(
@@ -338,7 +382,7 @@ async fn a_join_token_is_per_office_revocable_and_proves_both_directions() {
         "refusal must name the fix: {message}"
     );
 
-    let forged = JoinToken::mint("office-a").render();
+    let forged = unissued_token("office-a");
     let forged = register_office(&app, &forged, "office-a", nonce).await;
     assert_eq!(forged.0, StatusCode::UNAUTHORIZED);
     assert_eq!(
@@ -346,7 +390,7 @@ async fn a_join_token_is_per_office_revocable_and_proves_both_directions() {
         json!("CLUSTER_JOIN_TOKEN_INVALID")
     );
 
-    let unknown = JoinToken::mint("office-z").render();
+    let unknown = unissued_token("office-z");
     let unknown = register_office(&app, &unknown, "office-z", nonce).await;
     assert_eq!(unknown.0, StatusCode::UNAUTHORIZED);
     assert_eq!(
@@ -472,7 +516,7 @@ async fn a_controller_vouch_opens_an_office_once_and_is_logged_there() {
         .expect("vouch")
         .to_string();
     assert!(
-        vouch.starts_with("zfjoin1v:office-a:superadmin:"),
+        vouch.starts_with("zfjoin2v:office-a:superadmin:"),
         "{vouch}"
     );
     assert_eq!(minted["vouch"]["ttl_seconds"], json!(120));
@@ -550,20 +594,23 @@ async fn a_controller_vouch_opens_an_office_once_and_is_logged_there() {
     assert_eq!(refused_login.0, StatusCode::FORBIDDEN);
 
     // --- (c) an expired vouch is refused -----------------------------------
-    // Minted straight from the office's own secret, because the route will
-    // never mint a stale one and the property under test is the office's
-    // refusal, not the controller's arithmetic.
-    let digest_a = JoinToken::parse(&token_a).expect("parse").secret_digest();
+    // Minted with the controller's own signing key, read from its data root,
+    // because the route will never mint a stale one and the property under test
+    // is the office's refusal, not the controller's arithmetic. Nothing short
+    // of the private key would do: that is the release.
+    let signing = controller_signing_key(&controller_root);
+    let fingerprint_a = JoinToken::parse(&token_a).expect("parse").fingerprint();
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .expect("clock")
         .as_secs() as i64;
     let expired = OfficeVouch::mint(
-        &digest_a,
+        &signing,
         "office-a",
         "superadmin",
         now - 1,
         "expired-nonce",
+        &fingerprint_a,
     )
     .render();
     let refused = redeem_vouch(&office_a, &expired).await;
@@ -788,6 +835,27 @@ async fn a_controller_vouch_opens_an_office_once_and_is_logged_there() {
     let _ = fs::remove_dir_all(office_b_root);
     let _ = fs::remove_dir_all(office_c_root);
     let _ = fs::remove_dir_all(standalone_root);
+}
+
+/// A well-formed token that no controller ever issued.
+///
+/// Shaped correctly, under a key generated here and held by nobody, so it
+/// exercises the *record* check rather than the parser.
+fn unissued_token(office_id: &str) -> String {
+    let (_, key) = ControllerSigningKey::generate().expect("key");
+    JoinToken::mint(office_id, key.verify_key()).render()
+}
+
+/// The private key one controller keeps in its own data root.
+///
+/// Read from disk rather than reconstructed, because the point of the release
+/// is that it *cannot* be reconstructed from anything the controller publishes.
+/// A test that wants to mint what the route will not mint has to be the
+/// controller.
+fn controller_signing_key(data_root: &Path) -> ControllerSigningKey {
+    let document = fs::read(data_root.join("platform").join("cluster-signing-key"))
+        .expect("the controller's signing key");
+    ControllerSigningKey::from_pkcs8(&document).expect("signing key")
 }
 
 async fn build_office(data_root: &Path, token: &str) -> axum::Router {
@@ -5333,4 +5401,329 @@ fn office_inventory(data_root: &Path) -> Vec<String> {
     }
     items.sort();
     items
+}
+
+/// One office's join token is **not** a project credential on its controller.
+///
+/// `offices.md` §8 makes a token "revocable for one office alone" and §2 gives
+/// the controller exactly three verbs. Before this, every project-capability
+/// check short-circuited on "is this any active office's token?", with the owner
+/// taken from the URL — so any office could export or overwrite any user's
+/// project on the controller, through `/api/internal/project-transfer/...` or
+/// through any project route at all. That made §8's term false and §2's three
+/// verbs a fiction, and it is what this test refuses.
+///
+/// The same token is proven to still work for the three things an office
+/// legitimately calls its controller about, so the fix is a narrowing and not a
+/// removal.
+#[tokio::test]
+async fn an_office_join_token_is_not_a_project_credential_on_its_controller() {
+    let controller_root = temp_test_dir("controller-token-is-not-a-credential");
+    let mut controller = PlatformConfig::default();
+    controller.data_root = controller_root.clone();
+    controller.cluster.role = ClusterRole::Master;
+    controller.default_password = "test-pass".to_string();
+    let app = build_router(controller).await.expect("controller starts");
+    let cookie = login_cookie(app.clone(), "superadmin", "test-pass").await;
+
+    let token = mint_join_token(&app, &cookie, "office-a", false).await.1["token"]
+        .as_str()
+        .expect("token")
+        .to_string();
+
+    // The office is a real, registered, heartbeating member. Nothing about the
+    // refusals below is "this token was never valid".
+    let nonce = "fedcba9876543210";
+    assert_eq!(
+        register_office(&app, &token, "office-a", nonce).await.0,
+        StatusCode::OK
+    );
+    assert_eq!(
+        heartbeat_office(&app, &token, "office-a").await.0,
+        StatusCode::OK
+    );
+
+    // Every route the exploit reached, with the token and no session cookie.
+    // `superadmin/default` is the controller's own first-boot project, so each
+    // of these is one instance's operator acting as another's.
+    let attempts: Vec<(&str, &str, String)> = vec![
+        // The reviewer's route: read every byte of somebody else's project.
+        (
+            "POST",
+            "/api/internal/project-transfer/superadmin/default/export/full",
+            "{}".to_string(),
+        ),
+        // And the other direction: overwrite it.
+        (
+            "POST",
+            "/api/internal/project-transfer/superadmin/default/import/full",
+            "{}".to_string(),
+        ),
+        // Run somebody else's pipelines on their instance. The body is
+        // well-formed on purpose, so the refusal is the auth gate and not a
+        // deserialisation failure standing in for one.
+        (
+            "POST",
+            "/api/internal/runtime/execute/superadmin/default",
+            json!({
+                "file_rel_path": "pipelines/anything.zf.json",
+                "trigger": "manual",
+            })
+            .to_string(),
+        ),
+        // And the ordinary project surface, which the capability check gates.
+        (
+            "GET",
+            "/api/projects/superadmin/default/pipelines",
+            String::new(),
+        ),
+        (
+            "GET",
+            "/api/projects/superadmin/default/templates/workspace",
+            String::new(),
+        ),
+        (
+            "GET",
+            "/api/projects/superadmin/default/settings/rwe",
+            String::new(),
+        ),
+    ];
+    for (method, uri, body) in attempts {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(uri)
+                    .method(method)
+                    .header("x-zebflow-cluster-token", &token)
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(body))
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(
+            response.status(),
+            StatusCode::UNAUTHORIZED,
+            "an office's token must not authorise {method} {uri} on its controller"
+        );
+    }
+
+    // The narrowing did not break the three things an office really does call
+    // its controller about: it is still registering, still heartbeating, and
+    // still able to file a break-glass report.
+    let reported = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/internal/cluster/offices/break-glass")
+                .method("POST")
+                .header("x-zebflow-cluster-token", &token)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({ "office_id": "office-a", "events": [] }).to_string(),
+                ))
+                .expect("request"),
+        )
+        .await
+        .expect("report response");
+    assert_eq!(reported.status(), StatusCode::OK);
+    assert_eq!(
+        heartbeat_office(&app, &token, "office-a").await.0,
+        StatusCode::OK,
+        "an office must still be an office"
+    );
+
+    let _ = fs::remove_dir_all(&controller_root);
+}
+
+/// What a controller stores about an office forges nothing at that office.
+///
+/// The original exploit: every controller-to-office proof was an `HMAC` keyed by
+/// `sha256(secret)` — exactly the value the controller stores, and exactly the
+/// value that used to come back from `GET /api/cluster/join-tokens` and from the
+/// mint response. Verifier equalled forger. A reviewer minted a vouch for an
+/// identity the office had never held and got a `superadmin` account created,
+/// then forged the controller-call header and walked past the office's project
+/// auth with no cookie.
+///
+/// This test *is* that attacker: it holds the digest, and it tries both.
+#[tokio::test]
+async fn the_material_a_controller_stores_forges_nothing_at_its_office() {
+    use hmac::{Hmac, Mac};
+    use sha2::Sha256;
+
+    fn hmac_hex(key: &str, message: &str) -> String {
+        let mut mac = <Hmac<Sha256>>::new_from_slice(key.as_bytes()).expect("any key length");
+        mac.update(message.as_bytes());
+        mac.finalize()
+            .into_bytes()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect()
+    }
+
+    let controller_root = temp_test_dir("controller-forgery");
+    let office_root = temp_test_dir("office-forgery");
+    let mut controller = PlatformConfig::default();
+    controller.data_root = controller_root.clone();
+    controller.cluster.role = ClusterRole::Master;
+    controller.default_password = "test-pass".to_string();
+    let controller_app = build_router(controller).await.expect("controller starts");
+    let controller_cookie = login_cookie(controller_app.clone(), "superadmin", "test-pass").await;
+
+    let token = mint_join_token_at(
+        &controller_app,
+        &controller_cookie,
+        "office-a",
+        "http://office-a.example:10610",
+    )
+    .await;
+    let office = build_office(&office_root, &token).await;
+
+    // The attacker's whole holding: the digest the controller stores. Standing
+    // in for a database read, a leaked backup, or the API response that used to
+    // hand it over.
+    let parsed = JoinToken::parse(&token).expect("parse");
+    let stolen_digest = parsed.secret_digest();
+
+    // --- the forged vouch --------------------------------------------------
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("clock")
+        .as_secs() as i64;
+    let expires_at = now + 60;
+    // Exactly the construction the old release used, and the new scheme word
+    // as well, so the refusal is not merely "we renamed the prefix".
+    for (scheme, message, expected) in [
+        // The construction the exploit actually used. Refused at the scheme,
+        // because a `zfjoin1v` value is not a vouch this release accepts at all.
+        (
+            "zfjoin1v",
+            format!("zfjoin1/vouch:office-a:attacker-implanted:{expires_at}:n1"),
+            "CLUSTER_VOUCH_MALFORMED",
+        ),
+        // The same construction wearing this release's scheme word, so the
+        // refusal cannot be dismissed as a rename.
+        (
+            "zfjoin2v",
+            format!("zfjoin2/vouch:office-a:attacker-implanted:{expires_at}:n1"),
+            "CLUSTER_VOUCH_INVALID",
+        ),
+        // And with this release's exact signed message, fingerprint included:
+        // the attacker knows the construction and still cannot key it.
+        (
+            "zfjoin2v",
+            format!(
+                "zfjoin2/vouch:office-a:attacker-implanted:{expires_at}:n1:{}",
+                parsed.fingerprint()
+            ),
+            "CLUSTER_VOUCH_INVALID",
+        ),
+    ] {
+        let forged = format!(
+            "{scheme}:office-a:attacker-implanted:{expires_at}:n1:{}",
+            hmac_hex(&stolen_digest, &message)
+        );
+        let refused = redeem_vouch(&office, &forged).await;
+        assert!(
+            refused.0.is_client_error(),
+            "a vouch forged from stored material must not open an office: {refused:?}"
+        );
+        assert_eq!(refused.1["error"]["code"], json!(expected), "{refused:?}");
+        assert!(refused.2.is_none(), "a refused vouch issues no session");
+    }
+
+    // Nothing was implanted. The office's own accounts log is the place §8
+    // makes that checkable, and it has no row for the name that was attempted.
+    let office_cookie = {
+        // §6, run on the host: the only way to read this office's own log while
+        // it is joined. Exactly what `zeb admin break-glass` does.
+        let authority = host_authority(&office_root);
+        authority
+            .break_glass("", "reading this office's own log")
+            .expect("break glass");
+        login_cookie(office.clone(), "superadmin", "test-pass").await
+    };
+    let writes = response_json(
+        office
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/office/identity-writes")
+                    .header(header::COOKIE, &office_cookie)
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("identity writes"),
+    )
+    .await;
+    assert!(
+        !serde_json::to_string(&writes["writes"])
+            .expect("json")
+            .contains("attacker-implanted"),
+        "a forged vouch must reach no account: {writes}"
+    );
+
+    // --- the forged controller-call header ---------------------------------
+    // The second half of the exploit: with the header accepted, the office's
+    // project-capability check short-circuits and every project route opens
+    // with no cookie at all.
+    for (scheme, message) in [
+        ("zfjoin1c", "zfjoin1/controller-call:office-a".to_string()),
+        ("zfjoin2c", "zfjoin2/controller-call:office-a".to_string()),
+        (
+            "zfjoin2c",
+            format!("zfjoin2/controller-call:office-a:{}", parsed.fingerprint()),
+        ),
+    ] {
+        let forged = format!("{scheme}:office-a:{}", hmac_hex(&stolen_digest, &message));
+        let response = office
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/projects/superadmin/default/pipelines")
+                    .header("x-zebflow-cluster-token", &forged)
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(
+            response.status(),
+            StatusCode::UNAUTHORIZED,
+            "a header forged from stored material must not pass an office's project auth"
+        );
+    }
+
+    // And the honest header, derived from the controller's private key, is
+    // still accepted — so this is a narrowing and not a removal.
+    let signing = controller_signing_key(&controller_root);
+    let honest = format!(
+        "zfjoin2c:office-a:{}",
+        signing.sign(&format!(
+            "zfjoin2/controller-call:office-a:{}",
+            parsed.fingerprint()
+        ))
+    );
+    let response = office
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/projects/superadmin/default/pipelines")
+                .header("x-zebflow-cluster-token", &honest)
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    assert_eq!(
+        response.status(),
+        StatusCode::OK,
+        "the office must still accept its own controller"
+    );
+
+    let _ = fs::remove_dir_all(&controller_root);
+    let _ = fs::remove_dir_all(&office_root);
 }

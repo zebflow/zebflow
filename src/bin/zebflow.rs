@@ -234,11 +234,15 @@ Environment - first-boot bootstrap (server state created on first start; not CLI
                                      (disposable local development only)
 
 Environment - cluster membership (controller and office):
-  ZEBFLOW_CLUSTER_JOIN_TOKEN         This office's own join token, zfjoin1:<office_id>:<secret>,
-                                     minted on the controller (POST /api/cluster/join-tokens);
-                                     required by office for its first join only. It is then
-                                     stored at <data-dir>/platform/office-join-token (0600) and
-                                     read from there. A controller needs no token of its own.
+  ZEBFLOW_CLUSTER_JOIN_TOKEN         This office's own join token, shaped
+                                     zfjoin2:<office_id>:<controller_verify_key>:<secret>, minted
+                                     on the controller (POST /api/cluster/join-tokens); required
+                                     by office for its first join only. It is then stored at
+                                     <data-dir>/platform/office-join-token (0600) and read from
+                                     there, so a joined office restarts with this unset. A
+                                     controller needs no token of its own; it keeps the private
+                                     half of the verification key at
+                                     <data-dir>/platform/cluster-signing-key (0600).
   ZEBFLOW_CLUSTER_MASTER_URL         Controller base URL an office registers with; required
                                      by office
   ZEBFLOW_CLUSTER_ADVERTISE_URL      Base URL this node advertises to the control plane

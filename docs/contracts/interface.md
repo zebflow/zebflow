@@ -208,7 +208,7 @@ resolved (2026-08-27) and distribution now states the client-context rule. No
 
 | Variable | Decides | Required by |
 | --- | --- | --- |
-| `ZEBFLOW_CLUSTER_JOIN_TOKEN` | the office's own join token, `zfjoin1:<office_id>:<secret>`, minted on the controller | office, for its **first** join only |
+| `ZEBFLOW_CLUSTER_JOIN_TOKEN` | the office's own join token, `zfjoin2:<office_id>:<controller_verify_key>:<secret>`, minted on the controller | office, for its **first** join only |
 | `ZEBFLOW_CLUSTER_MASTER_URL` | controller base URL an office registers with | office |
 | `ZEBFLOW_CLUSTER_ADVERTISE_URL` | base URL this node advertises | optional; defaults to this process's listen URL |
 | `ZEBFLOW_CLUSTER_NODE_ID` | stable node id | optional; defaults to the role name |
@@ -221,13 +221,21 @@ advertise URL used to disable office registration without saying so.
 **The controller holds no cluster variable of its own.** It mints one token per
 office (`POST /api/cluster/join-tokens`, superadmin) and verifies each against
 the record that mint created, which is what makes one office revocable on its
-own (`offices.md` §8). A value that is not `zfjoin1:` shaped is refused before
-the data root is opened, with a message naming the mint. There is no migration
-from the shared secret that preceded this, and none is owed pre-release.
+own (`offices.md` §8). The token also carries the controller's Ed25519
+verification key, which is the office's whole basis for believing a
+registration answer, an internal call, or a vouch; the controller keeps the
+private half in `<data-root>/platform/cluster-signing-key`, mode 0600, and
+holds it for the life of the instance because every issued token carries its
+public half. A value that is not `zfjoin2:` shaped is refused before the data
+root is opened, with a message naming the mint — a `zfjoin1:` value is refused
+by name, since it carried no verification key. There is no migration from
+either, and none is owed pre-release.
 
 **A token supplied by variable is stored, once.** An office writes its token to
 `<data-root>/platform/office-join-token`, mode 0600, and reads it on every later
-start. If the variable and the stored file disagree, the office refuses to start
+start; a joined office therefore starts with the variable unset, which is what
+"first join only" above means and what lets an office restart unattended. If the
+variable and the stored file disagree, the office refuses to start
 and names both offices — it never overwrites one with the other, the same rule
 the Credential contract states for encryption keys.
 

@@ -2505,7 +2505,7 @@ async fn project_fs_serve(
         return (StatusCode::BAD_REQUEST, "invalid project scope").into_response();
     }
 
-    let public_proxy_request = has_valid_cluster_token(&state, &headers)
+    let public_proxy_request = is_controller_call(&state, &headers)
         && headers
             .get(PUBLIC_FS_PROXY_HEADER)
             .and_then(|value| value.to_str().ok())
@@ -3863,7 +3863,27 @@ fn worker_office_id(worker: &WorkerRegistryRecord) -> &str {
     }
 }
 
-fn has_valid_cluster_token(state: &PlatformAppState, headers: &HeaderMap) -> bool {
+/// Whether this request is **this office's controller** calling it.
+///
+/// One direction, named after the direction. It replaces a role-switching
+/// `has_valid_cluster_token`, which on a controller returned true for *any*
+/// active office's join token — and every project-capability check
+/// short-circuited on it, so one office's token authorised acting as any owner
+/// on the controller, including exporting and overwriting other users'
+/// projects. `offices.md` §8 makes a token "revocable for one office alone" and
+/// §2 gives the controller three verbs; a token that was a universal
+/// project-owner credential was neither.
+///
+/// The office→controller half — registration, heartbeat, break-glass reporting
+/// — is [`require_registering_office`], which checks the token *and* that it
+/// names the office the request claims to be. The two halves are different
+/// credentials for different directions and are no longer reachable through
+/// one name.
+///
+/// On a controller or a standalone instance this is always `false`: nothing
+/// calls *into* a controller with a controller-call header, and a controller
+/// that accepted one would be accepting a value it mints itself.
+fn is_controller_call(state: &PlatformAppState, headers: &HeaderMap) -> bool {
     let Some(presented) = headers
         .get(INTERNAL_CLUSTER_TOKEN_HEADER)
         .and_then(|value| value.to_str().ok())
@@ -3873,14 +3893,12 @@ fn has_valid_cluster_token(state: &PlatformAppState, headers: &HeaderMap) -> boo
     state
         .platform
         .cluster_join_tokens
-        .header_authenticates_peer(presented)
+        .controller_call_authenticates(presented)
 }
 
-fn require_cluster_internal_token(
-    state: &PlatformAppState,
-    headers: &HeaderMap,
-) -> Result<(), Response> {
-    if has_valid_cluster_token(state, headers) {
+/// Gate a route that only this office's controller may call.
+fn require_controller_call(state: &PlatformAppState, headers: &HeaderMap) -> Result<(), Response> {
+    if is_controller_call(state, headers) {
         return Ok(());
     }
     Err((
@@ -3889,7 +3907,9 @@ fn require_cluster_internal_token(
             "ok": false,
             "error": {
                 "code": "CLUSTER_TOKEN_INVALID",
-                "message": "cluster internal token missing or invalid"
+                "message": "this route is reachable only by this office's controller, \
+                            proving itself with the header it derives from this office's \
+                            join token (`offices.md` §8)"
             }
         })),
     )
@@ -4675,7 +4695,7 @@ async fn cluster_worker_registration_loop(state: PlatformAppState) {
         // an embedder can build this router with settings no CLI check saw.
         eprintln!(
             "Zebflow office: registration loop disabled; missing {}",
-            bootstrap.settings().missing_required_env().join(", ")
+            bootstrap.settings().missing_required_env(false).join(", ")
         );
         return;
     };
@@ -10413,7 +10433,7 @@ async fn api_internal_runtime_execute_pipeline(
     Path((owner, project)): Path<(String, String)>,
     Json(req): Json<ExecutePipelineRequest>,
 ) -> Response {
-    if let Err(response) = require_cluster_internal_token(&state, &headers) {
+    if let Err(response) = require_controller_call(&state, &headers) {
         return response;
     }
     execute_pipeline_local(&state, &owner, &project, &req).await
@@ -10427,7 +10447,7 @@ async fn api_internal_runtime_webhook(
     uri: Uri,
     body: Bytes,
 ) -> Response {
-    if let Err(response) = require_cluster_internal_token(&state, &headers) {
+    if let Err(response) = require_controller_call(&state, &headers) {
         return response;
     }
     public_webhook_ingress(
@@ -10449,7 +10469,7 @@ async fn api_internal_runtime_webhook_root(
     uri: Uri,
     body: Bytes,
 ) -> Response {
-    if let Err(response) = require_cluster_internal_token(&state, &headers) {
+    if let Err(response) = require_controller_call(&state, &headers) {
         return response;
     }
     public_webhook_ingress_root(
@@ -10511,7 +10531,7 @@ async fn api_internal_project_transfer_export(
     headers: HeaderMap,
     Path((owner, project, raw_kind)): Path<(String, String, String)>,
 ) -> Response {
-    if let Err(response) = require_cluster_internal_token(&state, &headers) {
+    if let Err(response) = require_controller_call(&state, &headers) {
         return response;
     }
     let kind = match parse_project_transfer_kind(&raw_kind) {
@@ -10561,7 +10581,7 @@ async fn api_internal_project_transfer_import(
     Path((owner, project, raw_kind)): Path<(String, String, String)>,
     body: Bytes,
 ) -> Response {
-    if let Err(response) = require_cluster_internal_token(&state, &headers) {
+    if let Err(response) = require_controller_call(&state, &headers) {
         return response;
     }
     let kind = match parse_project_transfer_kind(&raw_kind) {
@@ -19667,7 +19687,7 @@ async fn api_set_hub_producer_mode(
     uri: Uri,
     Json(req): Json<SetHubProducerRequest>,
 ) -> Response {
-    let internal_cluster_call = has_valid_cluster_token(&state, &headers);
+    let internal_cluster_call = is_controller_call(&state, &headers);
     let Some(session_owner) = session_owner(&state, &headers).or_else(|| {
         if internal_cluster_call {
             Some(owner.clone())
@@ -22196,7 +22216,7 @@ async fn public_webhook_ingress(
     };
     let retention = resolve_invocation_retention(&project_cfg, Some(&selected.compiled.graph));
     // Verify trigger-level auth before executing the pipeline.
-    let auth_claims = if has_valid_cluster_token(&state, &headers) {
+    let auth_claims = if is_controller_call(&state, &headers) {
         Ok(None)
     } else {
         verify_webhook_auth(
@@ -24715,6 +24735,9 @@ fn session_owner(state: &PlatformAppState, headers: &HeaderMap) -> Option<String
     Some(owner)
 }
 
+/// Page-capability gate. See [`require_project_api_capability`] for the rule
+/// the cluster branch follows; the only difference here is that a refusal is a
+/// redirect to the login page rather than a status code.
 fn require_project_page_capability(
     state: &PlatformAppState,
     headers: &HeaderMap,
@@ -24722,7 +24745,7 @@ fn require_project_page_capability(
     project: &str,
     capability: ProjectCapability,
 ) -> Result<ProjectAccessSubject, Response> {
-    if has_valid_cluster_token(state, headers) {
+    if is_controller_call(state, headers) {
         return Ok(ProjectAccessSubject::user(owner));
     }
     let Some(session_owner) = session_owner(state, headers) else {
@@ -24745,6 +24768,23 @@ fn require_project_page_capability(
     }
 }
 
+/// API-capability gate for one project route.
+///
+/// The first branch is a **one-directional** trust and nothing wider. It fires
+/// only on an office, only for a header that office's own controller signed
+/// against that office's current token — so it means "the controller I joined
+/// is forwarding a request it already authorised", which is exactly the
+/// arrangement `offices.md` §4 describes when it makes the controller's
+/// identity "the normal door" of a joined office. The owner comes from the URL
+/// because the controller has already decided who is acting; the office has no
+/// session of its own to consult, by §4's own login term.
+///
+/// It used to fire on a controller too, for any active office's join token, and
+/// that was the hole: an office could export or overwrite any user's project on
+/// its own controller through `/api/internal/project-transfer/...` or any
+/// project route, which made §8's "revocable for one office alone" false and
+/// §2's three verbs a fiction. [`is_controller_call`] answers `false` on a
+/// controller now, always.
 fn require_project_api_capability(
     state: &PlatformAppState,
     headers: &HeaderMap,
@@ -24752,7 +24792,7 @@ fn require_project_api_capability(
     project: &str,
     capability: ProjectCapability,
 ) -> Result<ProjectAccessSubject, Response> {
-    if has_valid_cluster_token(state, headers) {
+    if is_controller_call(state, headers) {
         return Ok(ProjectAccessSubject::user(owner));
     }
     let Some(session_owner) = session_owner(state, headers) else {
@@ -25482,7 +25522,7 @@ async fn ws_dispatch_event(
         let auth_claims = if m.auth_type.is_empty() || m.auth_type == "none" {
             // No auth configured — open trigger.
             Ok(None)
-        } else if has_valid_cluster_token(state, connection_headers) {
+        } else if is_controller_call(state, connection_headers) {
             // Cluster-internal traffic bypasses project-level auth.
             Ok(None)
         } else {
@@ -26663,7 +26703,7 @@ async fn api_preview_toggle(
     uri: Uri,
     Json(body): Json<PreviewToggleBody>,
 ) -> Response {
-    let internal_cluster_call = has_valid_cluster_token(&state, &headers);
+    let internal_cluster_call = is_controller_call(&state, &headers);
     if !internal_cluster_call && session_owner(&state, &headers).is_none() {
         return (StatusCode::UNAUTHORIZED, Json(json!({"ok": false}))).into_response();
     }
@@ -26715,7 +26755,7 @@ async fn api_preview_status(
     uri: Uri,
     Query(q): Query<PreviewQuery>,
 ) -> Response {
-    let internal_cluster_call = has_valid_cluster_token(&state, &headers);
+    let internal_cluster_call = is_controller_call(&state, &headers);
     if !internal_cluster_call && session_owner(&state, &headers).is_none() {
         return (StatusCode::UNAUTHORIZED, Json(json!({"active": false}))).into_response();
     }
@@ -26759,7 +26799,7 @@ async fn preview_page(
     uri: Uri,
     Query(q): Query<PreviewQuery>,
 ) -> Response {
-    let internal_cluster_call = has_valid_cluster_token(&state, &headers);
+    let internal_cluster_call = is_controller_call(&state, &headers);
     if !internal_cluster_call && session_owner(&state, &headers).is_none() {
         return Redirect::to(LOGIN_PATH).into_response();
     }
@@ -26952,7 +26992,7 @@ async fn ws_preview_handler(
     ws: WebSocketUpgrade,
     uri: Uri,
 ) -> Response {
-    let internal_cluster_call = has_valid_cluster_token(&state, &headers);
+    let internal_cluster_call = is_controller_call(&state, &headers);
     if !internal_cluster_call && session_owner(&state, &headers).is_none() {
         return (StatusCode::UNAUTHORIZED, "unauthorized").into_response();
     }

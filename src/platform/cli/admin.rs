@@ -273,11 +273,14 @@ async fn run_detach(args: &[String]) -> Result<(), io::Error> {
 /// backdoor is not something a refusal should hand over directions to.
 fn refuse_controller_created(data: &dyn DataAdapter, owner: &str) -> Result<(), io::Error> {
     let owner = slug_segment(owner);
+    // Asked of the whole log, not of its newest 500 rows. This is a refusal,
+    // and a refusal that only sees a window stops refusing on the row after it:
+    // an office with a busy identity log would have handed a local password to
+    // a controller-created account, quietly, in the same keystroke as an
+    // unrelated repair. The paginated read stays for display.
     let created_by_controller = data
-        .list_office_identity_writes(500)
-        .map_err(to_io)?
-        .into_iter()
-        .any(|entry| entry.owner == owner && entry.action == IDENTITY_WRITE_ACTION_CREATED);
+        .office_identity_write_exists(&owner, IDENTITY_WRITE_ACTION_CREATED)
+        .map_err(to_io)?;
     if created_by_controller {
         return Err(io::Error::other(format!(
             "'{owner}' exists on this office only because its controller vouched for it. That \
@@ -346,4 +349,79 @@ fn reset_against(data_root: &Path, owner: &str) -> Result<String, io::Error> {
     UserService::new(data)
         .reset_password_generated(owner)
         .map_err(to_io)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::platform::model::{DataAdapterKind, PlatformOfficeIdentityWrite, now_ts};
+
+    fn temp_root(name: &str) -> std::path::PathBuf {
+        let root = std::env::temp_dir().join(format!(
+            "zebflow-admin-{name}-{}-{}",
+            std::process::id(),
+            now_ts()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("temp root");
+        root
+    }
+
+    fn write(data: &dyn DataAdapter, id: &str, owner: &str, action: &str, at: i64) {
+        data.put_office_identity_write(&PlatformOfficeIdentityWrite {
+            write_id: id.to_string(),
+            office_id: "office-a".to_string(),
+            owner: owner.to_string(),
+            action: action.to_string(),
+            role: "superadmin".to_string(),
+            source: "controller-vouch".to_string(),
+            detail: String::new(),
+            written_at: at,
+        })
+        .expect("identity write");
+    }
+
+    /// FIX 2's regression for the guard half.
+    ///
+    /// The refusal used to page the newest 500 identity writes and scan them.
+    /// Past that many, a controller-created account stopped being recognised as
+    /// one — and `break-glass <owner>` would hand it a local password, turning a
+    /// controller-asserted identity into a local one in the same keystroke as an
+    /// unrelated repair. A decision must not be windowed.
+    #[test]
+    fn a_controller_created_account_is_refused_however_long_the_log_grows() {
+        let root = temp_root("deep-identity-log");
+        let data = build_data_adapter(DataAdapterKind::Sqlite, &root).expect("adapter");
+        let now = now_ts();
+        write(
+            data.as_ref(),
+            "created",
+            "remote-admin",
+            IDENTITY_WRITE_ACTION_CREATED,
+            now,
+        );
+
+        // A local account, for contrast: it must stay eligible throughout.
+        refuse_controller_created(data.as_ref(), "local-admin").expect("a local account is fine");
+        let err = refuse_controller_created(data.as_ref(), "remote-admin")
+            .expect_err("a controller-created account is refused");
+        assert!(err.to_string().contains("reachable by vouch"), "{err}");
+
+        for index in 0..1_500 {
+            write(
+                data.as_ref(),
+                &format!("later-{index}"),
+                "someone-else",
+                "linked",
+                now + 1 + index,
+            );
+        }
+
+        let err = refuse_controller_created(data.as_ref(), "remote-admin")
+            .expect_err("still refused past any window");
+        assert!(err.to_string().contains("reachable by vouch"), "{err}");
+        refuse_controller_created(data.as_ref(), "local-admin")
+            .expect("a local account is still eligible");
+        let _ = std::fs::remove_dir_all(root);
+    }
 }

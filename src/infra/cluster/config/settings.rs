@@ -43,10 +43,10 @@ pub struct ClusterSettings {
     pub advertise_url: Option<String>,
     /// Per-office join token supplied to an office for its first join.
     ///
-    /// Shaped `zfjoin1:<office_id>:<secret>`, minted by the controller. After
-    /// the first join the office reads what it stored in its own data root;
-    /// this variable and that file disagreeing is a refusal, never a silent
-    /// overwrite.
+    /// Shaped `zfjoin2:<office_id>:<controller_verify_key>:<secret>`, minted by
+    /// the controller. After the first join the office reads what it stored in
+    /// its own data root and this variable may be unset; supplying one that
+    /// disagrees with the stored token is a refusal, never a silent overwrite.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub join_token: Option<String>,
 }
@@ -140,7 +140,18 @@ impl ClusterSettings {
     ///
     /// Returned all at once, in the order an operator would fill them in, because
     /// learning one missing name per restart turns a single edit into three deploys.
-    pub fn missing_required_env(&self) -> Vec<&'static str> {
+    ///
+    /// `stored_join_token` is whether this data root already holds
+    /// `platform/office-join-token`. It is a parameter and not a field because
+    /// it is a fact about the disk rather than about the configuration, and it
+    /// is consulted because both `zeb help` and `interface.md` §5 promise
+    /// `ZEBFLOW_CLUSTER_JOIN_TOKEN` is needed "for its **first** join only". A
+    /// joined office that could not restart after a reboot without an operator
+    /// re-supplying the variable would make that sentence false and would make
+    /// every unattended restart a manual one. Disagreement between the variable
+    /// and the stored token is still a refusal, naming both — that check lives
+    /// where the two values are, in `resolve_office_identity`.
+    pub fn missing_required_env(&self, stored_join_token: bool) -> Vec<&'static str> {
         let present =
             |value: &Option<String>| value.as_deref().is_some_and(|item| !item.trim().is_empty());
         let mut missing = Vec::new();
@@ -154,7 +165,7 @@ impl ClusterSettings {
                 if !present(&self.master_url) {
                     missing.push(ENV_MASTER_URL);
                 }
-                if !present(&self.join_token) {
+                if !present(&self.join_token) && !stored_join_token {
                     missing.push(ENV_JOIN_TOKEN);
                 }
                 if !present(&self.advertise_url) {
@@ -166,8 +177,8 @@ impl ClusterSettings {
     }
 
     /// Refuse a role this process is not configured to perform.
-    pub fn validate(&self) -> Result<(), ClusterConfigError> {
-        let missing = self.missing_required_env();
+    pub fn validate(&self, stored_join_token: bool) -> Result<(), ClusterConfigError> {
+        let missing = self.missing_required_env(stored_join_token);
         if missing.is_empty() {
             return Ok(());
         }
@@ -202,14 +213,14 @@ mod tests {
             "http://127.0.0.1:10610",
             lookup_from(&[]),
         );
-        assert!(settings.validate().is_ok());
+        assert!(settings.validate(false).is_ok());
     }
 
     #[test]
     fn office_without_cluster_configuration_refuses_and_names_every_missing_variable() {
         let settings = ClusterSettings::from_lookup(ClusterRole::Worker, "", lookup_from(&[]));
         let err = settings
-            .validate()
+            .validate(false)
             .expect_err("office must refuse to start");
         assert_eq!(
             err.missing,
@@ -231,7 +242,7 @@ mod tests {
             "http://127.0.0.1:10610",
             lookup_from(&[
                 (ENV_MASTER_URL, "http://controller:10610"),
-                (ENV_JOIN_TOKEN, "zfjoin1:office-a:secret"),
+                (ENV_JOIN_TOKEN, "zfjoin2:office-a:key:secret"),
             ]),
         );
         // advertise_url is not set, so the listen URL passed in stands in for it.
@@ -239,7 +250,38 @@ mod tests {
             settings.advertise_url.as_deref(),
             Some("http://127.0.0.1:10610")
         );
-        assert!(settings.validate().is_ok());
+        assert!(settings.validate(false).is_ok());
+    }
+
+    /// `interface.md` §5 and `zeb help` both say the variable is for a first
+    /// join only. Without this the promise was false: a joined office that
+    /// rebooted refused to start until somebody re-supplied a credential it
+    /// already held on disk, so no office could restart unattended.
+    #[test]
+    fn a_stored_token_satisfies_startup_with_the_variable_gone() {
+        let settings = ClusterSettings::from_lookup(
+            ClusterRole::Worker,
+            "http://127.0.0.1:10610",
+            lookup_from(&[(ENV_MASTER_URL, "http://controller:10610")]),
+        );
+        assert_eq!(
+            settings.missing_required_env(false),
+            vec![ENV_JOIN_TOKEN],
+            "a first join still needs the variable"
+        );
+        assert!(
+            settings.missing_required_env(true).is_empty(),
+            "a joined office restarts on what it stored"
+        );
+        assert!(settings.validate(true).is_ok());
+
+        // The stored token answers only for the token. Everything else the
+        // role needs is still named.
+        let bare = ClusterSettings::from_lookup(ClusterRole::Worker, "", lookup_from(&[]));
+        assert_eq!(
+            bare.missing_required_env(true),
+            vec![ENV_MASTER_URL, ENV_ADVERTISE_URL]
+        );
     }
 
     #[test]
@@ -249,7 +291,7 @@ mod tests {
             "http://127.0.0.1:10610",
             lookup_from(&[
                 (ENV_MASTER_URL, "   "),
-                (ENV_JOIN_TOKEN, "zfjoin1:office-a:secret"),
+                (ENV_JOIN_TOKEN, "zfjoin2:office-a:key:secret"),
                 (ENV_ADVERTISE_URL, ""),
             ]),
         );
@@ -259,7 +301,10 @@ mod tests {
             Some("http://127.0.0.1:10610")
         );
         assert_eq!(
-            settings.validate().expect_err("blank master url").missing,
+            settings
+                .validate(false)
+                .expect_err("blank master url")
+                .missing,
             vec![ENV_MASTER_URL]
         );
     }
@@ -275,8 +320,8 @@ mod tests {
             "http://127.0.0.1:10610",
             lookup_from(&[]),
         );
-        assert!(settings.missing_required_env().is_empty());
-        assert!(settings.validate().is_ok());
+        assert!(settings.missing_required_env(false).is_empty());
+        assert!(settings.validate(false).is_ok());
     }
 
     #[test]
@@ -286,13 +331,13 @@ mod tests {
             "http://127.0.0.1:10610",
             lookup_from(&[
                 (ENV_MASTER_URL, "http://controller:10610"),
-                (ENV_JOIN_TOKEN, "zfjoin1:office-a:secret"),
+                (ENV_JOIN_TOKEN, "zfjoin2:office-a:key:secret"),
                 (ENV_NODE_ID, "office-a"),
                 (ENV_NODE_LABEL, "Office A"),
             ]),
         );
         assert_eq!(settings.node_id.as_deref(), Some("office-a"));
         assert_eq!(settings.node_label.as_deref(), Some("Office A"));
-        assert!(settings.validate().is_ok());
+        assert!(settings.validate(false).is_ok());
     }
 }

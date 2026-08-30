@@ -26,11 +26,19 @@ revoking one office rotates all of them.
 A token is shaped so it says what it is:
 
 ```
-zfjoin1:<office_id>:<secret>
+zfjoin2:<office_id>:<controller_verify_key>:<secret>
 ```
 
-`zfjoin1` names the format, `office_id` names the holder, and `secret` is 32
-random bytes. Anything else is refused, with a message naming the mint.
+`zfjoin2` names the format, `office_id` names the holder, `controller_verify_key`
+is the controller's Ed25519 public key, and `secret` is 32 random bytes.
+Anything else is refused, with a message naming the mint.
+
+The verification key is in the token because the office has to be able to tell a
+real controller from anything that answers the controller's URL, and it has to
+be able to do that offline. The controller keeps the private half at
+`<data-root>/platform/cluster-signing-key` (mode 0600) and never publishes it:
+what an office stores verifies a controller and forges nothing, and what a
+controller stores about an office forges nothing either.
 
 ### Mint one (controller, superadmin)
 
@@ -44,11 +52,13 @@ curl -H "Cookie: zebflow_session=superadmin" \
 Minting creates the office record first, then the token, so the controller
 knows who holds what before anything is presented. The plaintext token is in
 the response **once** — the controller stores only its SHA-256 digest and can
-never show it again. Re-minting for an office that already has one refuses
+never show it again. That digest never leaves storage either: it is not in the
+mint response and not in the listing. Re-minting for an office that already has one refuses
 unless you pass `"rotate": true`, which invalidates the token that office is
 using now.
 
-List what has been issued (digests and status, never secrets):
+List what has been issued (office, status, and timestamps — never a secret and
+never the stored digest):
 
 ```bash
 curl -H "Cookie: zebflow_session=superadmin" \
@@ -60,13 +70,14 @@ curl -H "Cookie: zebflow_session=superadmin" \
 ```bash
 ZEBFLOW_CLUSTER_MASTER_URL=http://controller:10610 \
 ZEBFLOW_CLUSTER_ADVERTISE_URL=http://office-a:10610 \
-ZEBFLOW_CLUSTER_JOIN_TOKEN=zfjoin1:office-a:… \
+ZEBFLOW_CLUSTER_JOIN_TOKEN=zfjoin2:office-a:… \
   zeb office
 ```
 
 The office writes the token to `<data-root>/platform/office-join-token`
 (mode 0600) and reads it from there on every later start. The variable is only
-needed for the first join. If the variable and the stored file disagree, the
+needed for the first join — a joined office restarts with it unset, so a reboot
+needs no operator. If the variable and the stored file disagree, the
 office **refuses to start** and names both offices rather than overwriting
 either — two different tokens on one office means somebody is wrong about which
 office this is.
@@ -78,12 +89,25 @@ what the office id inside the token exists to catch.
 
 ### Both sides verify
 
-The office sends a fresh random nonce with each registration, and the
-controller answers with an HMAC over it keyed by that office's own secret
-digest. A host that does not hold the token cannot produce it, so an office
+The two directions carry different halves of the credential, deliberately.
+
+The office proves itself by presenting its token; the controller compares
+`sha256(secret)` against what it stored, so reading the controller's database
+yields a value that cannot be presented back as a secret.
+
+The controller proves itself by **signing**. The office sends a fresh random
+nonce with each registration, and the controller answers with an Ed25519
+signature over it — over the office id, the office's current token fingerprint,
+and the nonce — which the office checks with the public key its token carried. A
+host that does not hold the controller's private key cannot produce it, *even if
+it has read every byte the controller stores about that office*, so an office
 refuses a registration response that does not verify and does not begin
 heartbeating. The controller proves itself the same way on every internal call
 it makes to an office.
+
+That asymmetry is the point. If the controller proved itself with something it
+also stored, anyone who read `office_join_tokens` — or a mint response, or a
+proxy log — could mint a vouch naming any identity at any office.
 
 ### Revoke one office
 
@@ -223,14 +247,21 @@ button. That is the whole flow: click it and you land on that office, signed in.
 Behind the button, the controller mints a vouch and redirects to it:
 
 ```text
-zfjoin1v:<office_id>:<identity>:<expires_at>:<nonce>:<proof>
+zfjoin2v:<office_id>:<identity>:<expires_at>:<nonce>:<proof>
 ```
 
-`proof` is an HMAC over the other four fields, keyed by that office's own secret
-digest — the same key the join token already uses in both directions, under a
-third scheme word so nothing captured in one direction replays in another.
-Every field is signed, so the office id, the identity, and the expiry cannot be
-edited.
+`proof` is the controller's Ed25519 signature over the other four fields **and**
+over that office's current token fingerprint, under a third scheme word so
+nothing captured in one direction replays in another. Every field is signed, so
+the office id, the identity, and the expiry cannot be edited. The office
+verifies it with the public key its join token carried and calls nobody, which
+is why a vouch still works when the controller is gone.
+
+Because the fingerprint is in the signature, **rotating** an office's token
+invalidates every vouch minted under the old one, at that office,
+cryptographically. Revoking without rotating stops the controller minting new
+ones but leaves an already-minted vouch redeemable for the rest of its 120
+seconds; if you need an office shut out now and cannot reach it, rotate.
 
 ### Mint one by hand
 
@@ -247,7 +278,7 @@ names **your** session's identity; there is no field for naming somebody else.
 ```bash
 curl -i -X POST http://office-a:10610/api/office/vouch \
   -H "Content-Type: application/json" \
-  -d '{"vouch":"zfjoin1v:office-a:…"}'
+  -d '{"vouch":"zfjoin2v:office-a:…"}'
 ```
 
 The office answers with an ordinary session cookie — the same one `POST /login`
@@ -285,10 +316,12 @@ the same record and the same status check that stops a heartbeat. Note that a
 vouch minted *just before* the revoke stays redeemable at that office until it
 expires, at most 120 seconds later, because the office learns nothing new until
 it talks to the controller. Re-minting with `"rotate": true` closes it
-immediately and cryptographically: the office's stored secret no longer derives
-the digest the controller holds, so nothing minted under the new token verifies
-under the old one, and nothing minted under the old one verifies at all once the
-office is re-issued.
+immediately and cryptographically: every controller proof is signed over that
+office's *current* token fingerprint, so an office running the old token
+computes a different one and nothing minted under the new membership verifies
+there, and nothing minted under the old one verifies once the office is
+re-issued. **If you need an office shut out now and cannot reach it, rotate
+rather than revoke.**
 
 ### What was written into this office's accounts
 

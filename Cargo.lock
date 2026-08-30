@@ -8874,6 +8874,7 @@ dependencies = [
  "pulldown-cmark",
  "rand 0.10.0",
  "reqwest",
+ "ring",
  "rmcp",
  "rusqlite",
  "saphyr-parser",

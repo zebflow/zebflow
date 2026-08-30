@@ -18,7 +18,7 @@ use crate::platform::adapters::data::DataAdapter;
 use crate::platform::error::PlatformError;
 use crate::platform::model::{
     CREDENTIAL_STATE_CHOSEN, HubAccessGrant, HubAssetPackage, HubAssetVersion, HubAuthority,
-    HubPublisher, HubToken, McpSession, PipelineInvocationEntry,
+    HubPublisher, HubToken, LOCAL_AUTHORITY_EVENT_BREAK_GLASS, McpSession, PipelineInvocationEntry,
     PipelineInvocationLogPipelineStats, PipelineInvocationLogStats, PipelineMeta,
     PlatformHubRepository, PlatformOffice, PlatformOfficeIdentityWrite, PlatformOfficeJoinToken,
     PlatformOfficeLocalAuthorityEvent, PlatformOfficeNode, PlatformOfficeVouchRedemption,
@@ -5572,6 +5572,28 @@ impl DataAdapter for SqliteDataAdapter {
         Ok(())
     }
 
+    fn touch_office_join_token(
+        &self,
+        office_id: &str,
+        secret_digest: &str,
+        last_used_at: i64,
+    ) -> Result<bool, PlatformError> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        // One statement, one column. `status` and `secret_digest` appear in the
+        // `WHERE` and never in the `SET`: a use record must never be able to
+        // put back a status somebody just changed or a digest somebody just
+        // replaced.
+        let updated = conn
+            .execute(
+                "UPDATE office_join_tokens
+                 SET last_used_at = ?3
+                 WHERE office_id = ?1 AND status = 'active' AND secret_digest = ?2",
+                params![office_id, secret_digest, last_used_at],
+            )
+            .map_err(Self::qe)?;
+        Ok(updated == 1)
+    }
+
     fn list_office_join_tokens(&self) -> Result<Vec<PlatformOfficeJoinToken>, PlatformError> {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let mut stmt = conn
@@ -5688,6 +5710,25 @@ impl DataAdapter for SqliteDataAdapter {
         Ok(entries)
     }
 
+    fn office_identity_write_exists(
+        &self,
+        owner: &str,
+        action: &str,
+    ) -> Result<bool, PlatformError> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let found: Option<i64> = conn
+            .query_row(
+                "SELECT 1 FROM office_identity_writes
+                 WHERE owner = ?1 AND action = ?2
+                 LIMIT 1",
+                params![owner, action],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(Self::qe)?;
+        Ok(found.is_some())
+    }
+
     fn put_office_local_authority_event(
         &self,
         entry: &PlatformOfficeLocalAuthorityEvent,
@@ -5732,6 +5773,73 @@ impl DataAdapter for SqliteDataAdapter {
             .map_err(Self::qe)?;
         let rows = stmt
             .query_map(params![limit as i64], |row| {
+                Ok(PlatformOfficeLocalAuthorityEvent {
+                    event_id: row.get(0)?,
+                    office_id: row.get(1)?,
+                    event: row.get(2)?,
+                    join_fingerprint: row.get(3)?,
+                    owner: row.get(4)?,
+                    detail: row.get(5)?,
+                    acted_at: row.get(6)?,
+                    reported_at: row.get(7)?,
+                })
+            })
+            .map_err(Self::qe)?;
+        let mut entries = Vec::new();
+        for row in rows {
+            entries.push(row.map_err(Self::qe)?);
+        }
+        Ok(entries)
+    }
+
+    fn find_office_break_glass(
+        &self,
+        join_fingerprint: &str,
+    ) -> Result<Option<PlatformOfficeLocalAuthorityEvent>, PlatformError> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let result = conn.query_row(
+            "SELECT event_id, office_id, event, join_fingerprint, owner, detail, acted_at,
+                    reported_at
+             FROM office_local_authority
+             WHERE join_fingerprint = ?1 AND event = ?2
+             ORDER BY acted_at DESC, rowid DESC
+             LIMIT 1",
+            params![join_fingerprint, LOCAL_AUTHORITY_EVENT_BREAK_GLASS],
+            |row| {
+                Ok(PlatformOfficeLocalAuthorityEvent {
+                    event_id: row.get(0)?,
+                    office_id: row.get(1)?,
+                    event: row.get(2)?,
+                    join_fingerprint: row.get(3)?,
+                    owner: row.get(4)?,
+                    detail: row.get(5)?,
+                    acted_at: row.get(6)?,
+                    reported_at: row.get(7)?,
+                })
+            },
+        );
+        match result {
+            Ok(entry) => Ok(Some(entry)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(err) => Err(Self::qe(err)),
+        }
+    }
+
+    fn list_unreported_office_break_glass(
+        &self,
+    ) -> Result<Vec<PlatformOfficeLocalAuthorityEvent>, PlatformError> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let mut stmt = conn
+            .prepare(
+                "SELECT event_id, office_id, event, join_fingerprint, owner, detail, acted_at,
+                        reported_at
+                 FROM office_local_authority
+                 WHERE event = ?1 AND reported_at = 0
+                 ORDER BY acted_at ASC, rowid ASC",
+            )
+            .map_err(Self::qe)?;
+        let rows = stmt
+            .query_map(params![LOCAL_AUTHORITY_EVENT_BREAK_GLASS], |row| {
                 Ok(PlatformOfficeLocalAuthorityEvent {
                     event_id: row.get(0)?,
                     office_id: row.get(1)?,

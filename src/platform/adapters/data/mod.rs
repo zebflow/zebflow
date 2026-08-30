@@ -458,6 +458,32 @@ pub trait DataAdapter: Send + Sync {
     fn list_office_join_tokens(&self) -> Result<Vec<PlatformOfficeJoinToken>, PlatformError> {
         Ok(vec![])
     }
+    /// Record one successful verification against the row that authorised it.
+    ///
+    /// Deliberately **not** a full-row upsert. Recording a use is a
+    /// read-modify-write in every naive shape, and offices heartbeat every ten
+    /// seconds, so a revoke or a rotate committing between the read and the
+    /// write was silently overwritten — the office came back `active`, or the
+    /// superseded digest was restored and the freshly issued token invalidated.
+    /// One conditional statement removes the window: it matches on `office_id`,
+    /// on `status = 'active'`, and on the digest the caller actually verified,
+    /// and writes only `last_used_at`.
+    ///
+    /// `false` means no row matched, which is a verification failure and not a
+    /// bookkeeping miss: the record the caller's checks ran against is no
+    /// longer the record in force.
+    fn touch_office_join_token(
+        &self,
+        office_id: &str,
+        secret_digest: &str,
+        last_used_at: i64,
+    ) -> Result<bool, PlatformError> {
+        let _ = (office_id, secret_digest, last_used_at);
+        Err(PlatformError::new(
+            "PLATFORM_ADAPTER_UNAVAILABLE",
+            "office join tokens are not supported by this adapter",
+        ))
+    }
     /// Claim one vouch nonce, returning whether this call was the first.
     ///
     /// The whole single-use rule rests on this returning `false` the second
@@ -490,12 +516,30 @@ pub trait DataAdapter: Send + Sync {
         ))
     }
     /// Read this office's identity-write log, newest first.
+    ///
+    /// A **display** read. Every decision that used to scan this window now has
+    /// its own query, because a windowed read is a correct answer about the
+    /// newest N rows and a wrong answer about the question being asked.
     fn list_office_identity_writes(
         &self,
         limit: usize,
     ) -> Result<Vec<PlatformOfficeIdentityWrite>, PlatformError> {
         let _ = limit;
         Ok(vec![])
+    }
+    /// Whether this office's log holds any `action` for `owner`.
+    ///
+    /// Asked instead of paging the log and scanning it: the guard that refuses
+    /// to hand a local password to a controller-created account is a decision,
+    /// and a decision that only sees the newest 500 writes stops being true on
+    /// the 501st.
+    fn office_identity_write_exists(
+        &self,
+        owner: &str,
+        action: &str,
+    ) -> Result<bool, PlatformError> {
+        let _ = (owner, action);
+        Ok(false)
     }
     /// Append one act on this office's local authority (`offices.md` §6, §7).
     fn put_office_local_authority_event(
@@ -509,11 +553,37 @@ pub trait DataAdapter: Send + Sync {
         ))
     }
     /// Read this office's local-authority log, newest first.
+    ///
+    /// A **display** read, like [`Self::list_office_identity_writes`]. Whether
+    /// local login is open is decided by
+    /// [`Self::find_office_break_glass`], not by scanning this.
     fn list_office_local_authority_events(
         &self,
         limit: usize,
     ) -> Result<Vec<PlatformOfficeLocalAuthorityEvent>, PlatformError> {
         let _ = limit;
+        Ok(vec![])
+    }
+    /// The newest break-glass recorded against one token fingerprint.
+    ///
+    /// This is the query the login gate asks. It used to be "fetch the newest
+    /// 200 rows and look for one", which meant an office past 200
+    /// local-authority events silently re-locked its own front door with no
+    /// rotation and no act by anybody — the exact lockout §6 exists to prevent.
+    fn find_office_break_glass(
+        &self,
+        join_fingerprint: &str,
+    ) -> Result<Option<PlatformOfficeLocalAuthorityEvent>, PlatformError> {
+        let _ = join_fingerprint;
+        Ok(None)
+    }
+    /// Every break-glass this office has not had acknowledged, oldest first.
+    ///
+    /// Also a decision — what to send the controller on reconnect — so also a
+    /// query rather than a scan of a window.
+    fn list_unreported_office_break_glass(
+        &self,
+    ) -> Result<Vec<PlatformOfficeLocalAuthorityEvent>, PlatformError> {
         Ok(vec![])
     }
     /// Mark one recorded act as acknowledged by the controller.
