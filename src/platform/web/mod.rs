@@ -34,6 +34,7 @@ use serde_json::{Value, json};
 
 use crate::automaton::infra::assistant_config::load_project_assistant_llm;
 use crate::contracts::kinds::decode_pipeline_graph;
+use crate::infra::cluster::registry::WorkerRegistryRecord;
 use crate::infra::execution::placement::{ProjectRuntimeMode, ProjectRuntimePlacementTarget};
 use crate::infra::mem::subscriber::KvSubscriber;
 use crate::infra::scheduler::PipelineScheduler;
@@ -45,13 +46,14 @@ use crate::platform::error::PlatformError;
 use crate::platform::model::NodePackageManifest;
 use crate::platform::model::ResolvedProjectLayout;
 use crate::platform::model::{
-    ChangePasswordRequest, ClusterWorkerHeartbeatRequest, ClusterWorkerRegisterRequest,
-    CreateHubTokenRequest, CreateProjectDocFolderRequest, CreateProjectRequest,
-    CreateSimpleTableRequest, CreateUserRequest, DeletePipelineRequest,
-    DescribeProjectDbConnectionRequest, ExecutePipelineRequest, GitCommitRequest, LoginRequest,
-    McpSessionCreateRequest, McpSessionToggleRequest, PipelineExecuteTrigger,
-    PipelineInvocationEntry, PipelineLocateRequest, ProjectAccessSubject, ProjectCapability,
-    ProjectDocItem, ProjectDocMoveRequest, ProjectOperationKind, ProjectTransferArtifactKind,
+    ChangePasswordRequest, ClusterJoinTokenMintRequest, ClusterWorkerHeartbeatRequest,
+    ClusterWorkerRegisterRequest, ClusterWorkerRegisterResponse, CreateHubTokenRequest,
+    CreateProjectDocFolderRequest, CreateProjectRequest, CreateSimpleTableRequest,
+    CreateUserRequest, DeletePipelineRequest, DescribeProjectDbConnectionRequest,
+    ExecutePipelineRequest, GitCommitRequest, LoginRequest, McpSessionCreateRequest,
+    McpSessionToggleRequest, PipelineExecuteTrigger, PipelineInvocationEntry,
+    PipelineLocateRequest, ProjectAccessSubject, ProjectCapability, ProjectDocItem,
+    ProjectDocMoveRequest, ProjectOperationKind, ProjectTransferArtifactKind,
     QueryProjectDbConnectionRequest, TemplateCompileRequest, TemplateCompileResponse,
     TemplateCreateRequest, TemplateDiagnostic, TemplateMoveRequest, TemplateSaveRequest,
     TestProjectDbConnectionRequest, UpdateSettingsSectionRequest, UpdateSimpleTableRequest,
@@ -510,6 +512,14 @@ pub async fn router(platform: Arc<PlatformService>) -> Router {
         .route("/api/profile", get(api_get_profile).put(api_update_profile))
         .route("/api/profile/password", post(api_change_password))
         .route("/api/cluster/workers", get(api_cluster_workers))
+        .route(
+            "/api/cluster/join-tokens",
+            get(api_cluster_join_tokens).post(api_cluster_mint_join_token),
+        )
+        .route(
+            "/api/cluster/join-tokens/{office_id}/revoke",
+            post(api_cluster_revoke_join_token),
+        )
         .route(
             "/api/internal/cluster/workers/register",
             post(api_internal_cluster_register_worker),
@@ -3758,28 +3768,43 @@ fn scrub_token_from_str(s: &str, token: &str) -> String {
     s.replace(token, "***")
 }
 
-fn cluster_internal_token_value(state: &PlatformAppState) -> Result<&str, PlatformError> {
+/// The header a controller presents when it calls one of *its* offices.
+///
+/// Derived per office from that office's own token digest, so it is scoped to
+/// one office and to one direction (`offices.md` §8). There is no
+/// process-wide value any more: the shared environment secret was the defect —
+/// one secret for every office meant revoking one office meant rotating all of
+/// them.
+fn cluster_call_header_for_office(
+    state: &PlatformAppState,
+    office_id: &str,
+) -> Result<String, PlatformError> {
     state
         .platform
-        .cluster_bootstrap
-        .join_token()
-        .ok_or_else(|| {
-            PlatformError::new(
-                "CLUSTER_TOKEN_MISSING",
-                "cluster join token is not configured for this process",
-            )
-        })
+        .cluster_join_tokens
+        .controller_call_header_for(office_id)
+}
+
+/// The office a registry record belongs to, falling back to its node id.
+fn worker_office_id(worker: &WorkerRegistryRecord) -> &str {
+    if worker.office_id.trim().is_empty() {
+        worker.node_id.as_str()
+    } else {
+        worker.office_id.as_str()
+    }
 }
 
 fn has_valid_cluster_token(state: &PlatformAppState, headers: &HeaderMap) -> bool {
-    let Some(expected) = state.platform.cluster_bootstrap.join_token() else {
-        return false;
-    };
-    headers
+    let Some(presented) = headers
         .get(INTERNAL_CLUSTER_TOKEN_HEADER)
         .and_then(|value| value.to_str().ok())
-        .map(|value| value == expected)
-        .unwrap_or(false)
+    else {
+        return false;
+    };
+    state
+        .platform
+        .cluster_join_tokens
+        .header_authenticates_peer(presented)
 }
 
 fn require_cluster_internal_token(
@@ -3902,7 +3927,7 @@ async fn forward_runtime_execute_to_worker(
                 format!("office '{}' not found", worker_id),
             )
         })?;
-    let token = cluster_internal_token_value(state)?;
+    let token = cluster_call_header_for_office(state, worker_office_id(&worker))?;
     let url = format!(
         "{}/api/internal/runtime/execute/{}/{}",
         worker.base_url.trim_end_matches('/'),
@@ -3941,7 +3966,7 @@ async fn forward_runtime_webhook_to_worker(
                 format!("office '{}' not found", worker_id),
             )
         })?;
-    let token = cluster_internal_token_value(state)?;
+    let token = cluster_call_header_for_office(state, worker_office_id(&worker))?;
     let mut url = format!(
         "{}/api/internal/runtime/webhook/{}/{}",
         worker.base_url.trim_end_matches('/'),
@@ -4040,7 +4065,7 @@ async fn forward_project_api_request_to_worker(
                 format!("office '{}' not found", worker_id),
             )
         })?;
-    let token = cluster_internal_token_value(state)?;
+    let token = cluster_call_header_for_office(state, worker_office_id(&worker))?;
     let mut url = format!("{}{}", worker.base_url.trim_end_matches('/'), uri.path());
     if let Some(query) = uri.query() {
         url.push('?');
@@ -4305,7 +4330,7 @@ async fn forward_project_page_request_to_worker(
                 format!("office '{}' not found", worker_id),
             )
         })?;
-    let token = cluster_internal_token_value(state)?;
+    let token = cluster_call_header_for_office(state, worker_office_id(&worker))?;
     let mut url = format!("{}{}", worker.base_url.trim_end_matches('/'), uri.path());
     if let Some(query) = uri.query() {
         url.push('?');
@@ -4385,7 +4410,7 @@ async fn list_project_docs_for_page(
                 format!("office '{}' not found", worker_id),
             )
         })?;
-    let token = cluster_internal_token_value(state)?;
+    let token = cluster_call_header_for_office(state, worker_office_id(&worker))?;
     let url = format!(
         "{}/api/projects/{}/{}/docs",
         worker.base_url.trim_end_matches('/'),
@@ -4447,7 +4472,7 @@ async fn read_project_doc_for_page(
                 format!("office '{}' not found", worker_id),
             )
         })?;
-    let token = cluster_internal_token_value(state)?;
+    let token = cluster_call_header_for_office(state, worker_office_id(&worker))?;
     let url = format!(
         "{}/api/projects/{}/{}/docs/file",
         worker.base_url.trim_end_matches('/'),
@@ -4490,9 +4515,14 @@ async fn read_project_doc_for_page(
 
 async fn cluster_worker_registration_loop(state: PlatformAppState) {
     let bootstrap = state.platform.cluster_bootstrap.clone();
-    let (Some(master_url), Some(token), Some(base_url)) = (
+    let identity = state
+        .platform
+        .cluster_join_tokens
+        .office_identity()
+        .cloned();
+    let (Some(master_url), Some(identity), Some(base_url)) = (
         bootstrap.master_url().map(str::to_string),
-        bootstrap.join_token().map(str::to_string),
+        identity,
         bootstrap.advertise_url().map(str::to_string),
     ) else {
         // Unreachable through `zebflow office`, which refuses to start in this
@@ -4504,6 +4534,11 @@ async fn cluster_worker_registration_loop(state: PlatformAppState) {
         );
         return;
     };
+    let token = identity.token.clone();
+    // The id this process claims to be, which is the token's office unless the
+    // operator named a different one. The controller refuses the mismatch
+    // rather than resolving it: a token minted for one office presented by
+    // another is exactly what the office id inside the token exists to catch.
     let node_id = bootstrap.node_id();
     let label = bootstrap.node_label();
     let register_url = format!(
@@ -4520,21 +4555,59 @@ async fn cluster_worker_registration_loop(state: PlatformAppState) {
         ..Default::default()
     };
     loop {
+        let nonce = crate::platform::services::cluster::join_token::nonce();
         let register_request = ClusterWorkerRegisterRequest {
             node_id: node_id.clone(),
             label: label.clone(),
             base_url: base_url.clone(),
             capabilities: capabilities.clone(),
+            nonce: nonce.clone(),
         };
-        if let Err(err) = state
+        let registered = state
             .http_client
             .post(&register_url)
             .header(INTERNAL_CLUSTER_TOKEN_HEADER, &token)
             .json(&register_request)
             .send()
-            .await
-        {
-            eprintln!("Zebflow office register failed: {err}");
+            .await;
+        let response = match registered {
+            Ok(response) => response,
+            Err(err) => {
+                eprintln!("Zebflow office register failed: {err}");
+                tokio::time::sleep(Duration::from_secs(10)).await;
+                continue;
+            }
+        };
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        if !status.is_success() {
+            // A revoked or wrong token lands here. The office keeps serving
+            // its own projects — `offices.md` §4 keeps execution local — but
+            // it never proceeds to heartbeat as a member it is not.
+            eprintln!(
+                "Zebflow office register refused with {status}: {}",
+                body.trim()
+            );
+            tokio::time::sleep(Duration::from_secs(10)).await;
+            continue;
+        }
+        let proof = serde_json::from_str::<Value>(&body)
+            .ok()
+            .and_then(|value| {
+                value
+                    .get("proof")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+            })
+            .unwrap_or_default();
+        if !identity.verify_registration_proof(&nonce, &proof) {
+            // The other half of §8: the office verifies the controller. A host
+            // that answers this base URL without holding this office's secret
+            // cannot produce the proof, and is not treated as the controller.
+            eprintln!(
+                "Zebflow office: refusing '{master_url}' — its registration response did not \
+                 prove it holds this office's join token. Not registering."
+            );
             tokio::time::sleep(Duration::from_secs(10)).await;
             continue;
         }
@@ -4544,7 +4617,7 @@ async fn cluster_worker_registration_loop(state: PlatformAppState) {
             base_url: base_url.clone(),
             capabilities: capabilities.clone(),
         };
-        if let Err(err) = state
+        match state
             .http_client
             .post(&heartbeat_url)
             .header(INTERNAL_CLUSTER_TOKEN_HEADER, &token)
@@ -4552,7 +4625,19 @@ async fn cluster_worker_registration_loop(state: PlatformAppState) {
             .send()
             .await
         {
-            eprintln!("Zebflow office heartbeat failed: {err}");
+            Ok(response) if !response.status().is_success() => {
+                let status = response.status();
+                let body = response.text().await.unwrap_or_default();
+                // Revocation mid-session arrives here. Nothing already running
+                // is killed (§4 keeps execution); the office simply stops being
+                // a member and the controller stops hearing from it.
+                eprintln!(
+                    "Zebflow office heartbeat refused with {status}: {}",
+                    body.trim()
+                );
+            }
+            Ok(_) => {}
+            Err(err) => eprintln!("Zebflow office heartbeat failed: {err}"),
         }
         tokio::time::sleep(Duration::from_secs(15)).await;
     }
@@ -9618,16 +9703,81 @@ async fn api_project_runtime_status(
     .into_response()
 }
 
+/// Verify the join token an office presented, and that it named *this* office.
+///
+/// Two checks, not one. The token says which office is presenting; the request
+/// says which office it claims to be. A token minted for office A presented by
+/// office B passes the first and fails the second, which is the whole point of
+/// putting the office id inside the token (`offices.md` §8).
+fn require_registering_office(
+    state: &PlatformAppState,
+    headers: &HeaderMap,
+    node_id: &str,
+) -> Result<String, Response> {
+    let presented = headers
+        .get(INTERNAL_CLUSTER_TOKEN_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default();
+    let verified = state
+        .platform
+        .cluster_join_tokens
+        .verify_office_token(presented)
+        .map_err(|err| {
+            (
+                StatusCode::UNAUTHORIZED,
+                Json(json!({
+                    "ok": false,
+                    "error": { "code": err.code, "message": err.message }
+                })),
+            )
+                .into_response()
+        })?;
+    let claimed = slug_segment(node_id);
+    if claimed != verified.office_id {
+        return Err((
+            StatusCode::FORBIDDEN,
+            Json(json!({
+                "ok": false,
+                "error": {
+                    "code": "CLUSTER_JOIN_TOKEN_OFFICE_MISMATCH",
+                    "message": format!(
+                        "this join token was issued to office '{}', but the request registers \
+                         office '{}'. Mint a token for '{}' on the controller \
+                         (POST /api/cluster/join-tokens).",
+                        verified.office_id, claimed, claimed
+                    )
+                }
+            })),
+        )
+            .into_response());
+    }
+    Ok(verified.office_id)
+}
+
 async fn api_internal_cluster_register_worker(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
     Json(req): Json<ClusterWorkerRegisterRequest>,
 ) -> Response {
-    if let Err(response) = require_cluster_internal_token(&state, &headers) {
-        return response;
-    }
+    let office_id = match require_registering_office(&state, &headers, &req.node_id) {
+        Ok(office_id) => office_id,
+        Err(response) => return response,
+    };
     match state.platform.cluster_registry.register_worker(&req) {
-        Ok(worker) => Json(json!({"ok": true, "worker": worker})).into_response(),
+        Ok(worker) => Json(ClusterWorkerRegisterResponse {
+            ok: true,
+            worker,
+            // The office's half of the mutual proof: an HMAC over the nonce it
+            // sent, keyed by this office's stored secret digest. A host that
+            // never held the token cannot produce it, which is how the office
+            // tells a real controller from anything that answers the URL.
+            proof: state
+                .platform
+                .cluster_join_tokens
+                .registration_proof_for(&office_id, &req.nonce)
+                .unwrap_or_default(),
+        })
+        .into_response(),
         Err(err) => internal_error(err),
     }
 }
@@ -9637,13 +9787,86 @@ async fn api_internal_cluster_worker_heartbeat(
     headers: HeaderMap,
     Json(req): Json<ClusterWorkerHeartbeatRequest>,
 ) -> Response {
-    if let Err(response) = require_cluster_internal_token(&state, &headers) {
+    // Checked on every heartbeat, not only at registration: revoking one
+    // office's token has to stop that office, and an already-registered office
+    // that kept beating on a revoked token would make revocation cosmetic.
+    if let Err(response) = require_registering_office(&state, &headers, &req.node_id) {
         return response;
     }
     match state.platform.cluster_registry.heartbeat(&req) {
         Ok(heartbeat) => Json(heartbeat).into_response(),
         Err(err) => internal_error(err),
     }
+}
+
+async fn api_cluster_join_tokens(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+) -> Response {
+    if let Err(response) = require_superadmin(&state, &headers) {
+        return response;
+    }
+    match state.platform.cluster_join_tokens.list() {
+        Ok(tokens) => Json(json!({ "ok": true, "tokens": tokens })).into_response(),
+        Err(err) => internal_error(err),
+    }
+}
+
+async fn api_cluster_mint_join_token(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Json(req): Json<ClusterJoinTokenMintRequest>,
+) -> Response {
+    if let Err(response) = require_superadmin(&state, &headers) {
+        return response;
+    }
+    match state.platform.cluster_join_tokens.mint(&req) {
+        Ok(minted) => (
+            StatusCode::CREATED,
+            Json(json!({
+                "ok": true,
+                "office": minted.office,
+                "record": minted.record,
+                "token": minted.token,
+                "note": "This token is shown once. The controller stores only its digest."
+            })),
+        )
+            .into_response(),
+        Err(err) => cluster_join_token_error(err),
+    }
+}
+
+async fn api_cluster_revoke_join_token(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path(office_id): Path<String>,
+) -> Response {
+    if let Err(response) = require_superadmin(&state, &headers) {
+        return response;
+    }
+    match state.platform.cluster_join_tokens.revoke(&office_id) {
+        Ok(record) => Json(json!({ "ok": true, "record": record })).into_response(),
+        Err(err) => cluster_join_token_error(err),
+    }
+}
+
+fn cluster_join_token_error(err: PlatformError) -> Response {
+    let status = match err.code {
+        "CLUSTER_JOIN_TOKEN_UNKNOWN" => StatusCode::NOT_FOUND,
+        "CLUSTER_JOIN_TOKEN_EXISTS" => StatusCode::CONFLICT,
+        "CLUSTER_JOIN_TOKEN_OFFICE_INVALID" | "CLUSTER_JOIN_TOKEN_MALFORMED" => {
+            StatusCode::BAD_REQUEST
+        }
+        _ => StatusCode::INTERNAL_SERVER_ERROR,
+    };
+    (
+        status,
+        Json(json!({
+            "ok": false,
+            "error": { "code": err.code, "message": err.message }
+        })),
+    )
+        .into_response()
 }
 
 async fn api_internal_runtime_execute_pipeline(
@@ -9922,7 +10145,7 @@ async fn api_project_transfer_export(
             }
             Err(err) => return internal_error(err),
         };
-        let token = match cluster_internal_token_value(&state) {
+        let token = match cluster_call_header_for_office(&state, worker_office_id(&worker)) {
             Ok(token) => token,
             Err(err) => return internal_error(err),
         };
@@ -10138,7 +10361,7 @@ async fn api_project_transfer_import(
             }
             Err(err) => return internal_error(err),
         };
-        let token = match cluster_internal_token_value(&state) {
+        let token = match cluster_call_header_for_office(&state, worker_office_id(&worker)) {
             Ok(token) => token,
             Err(err) => return internal_error(err),
         };
@@ -13838,7 +14061,7 @@ async fn api_files_upload(
             }
             Err(err) => return internal_error(err),
         };
-        let token = match cluster_internal_token_value(&state) {
+        let token = match cluster_call_header_for_office(&state, worker_office_id(&worker)) {
             Ok(token) => token,
             Err(err) => return internal_error(err),
         };
@@ -25616,7 +25839,7 @@ async fn api_upload_asset(
             }
             Err(err) => return internal_error(err),
         };
-        let token = match cluster_internal_token_value(&state) {
+        let token = match cluster_call_header_for_office(&state, worker_office_id(&worker)) {
             Ok(token) => token,
             Err(err) => return internal_error(err),
         };
@@ -26173,8 +26396,9 @@ async fn ws_preview_handler(
                     }
                     Err(err) => return internal_error(err),
                 };
-                let token = match cluster_internal_token_value(&state) {
-                    Ok(token) => token.to_string(),
+                let token = match cluster_call_header_for_office(&state, worker_office_id(&worker))
+                {
+                    Ok(token) => token,
                     Err(err) => return internal_error(err),
                 };
                 let worker_url = worker_websocket_url(&worker.base_url, &uri);

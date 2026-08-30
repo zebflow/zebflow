@@ -31,6 +31,7 @@
 use std::io;
 use std::path::PathBuf;
 
+use crate::infra::cluster::config::settings::ENV_JOIN_TOKEN;
 use crate::infra::cluster::config::{ClusterRole, ClusterSettings};
 use crate::platform::model::{DataAdapterKind, FileAdapterKind, PlatformConfig};
 
@@ -147,6 +148,14 @@ pub fn load_platform_config(role: ClusterRole) -> Result<PlatformConfig, io::Err
         .cluster
         .validate()
         .map_err(|err| io::Error::other(err.to_string()))?;
+    // Shape-checked here for the same reason: an unusable token should refuse
+    // before the data root is opened, not after. There is no migration from
+    // the old shared secret (`offices.md` §8) — a value that is not
+    // `zfjoin1:` shaped names the mint command in its refusal.
+    if let Some(token) = config.cluster.join_token.as_deref() {
+        crate::infra::cluster::security::JoinToken::parse(token)
+            .map_err(|err| io::Error::other(format!("{ENV_JOIN_TOKEN}: {err}")))?;
+    }
 
     config.data_adapter = DataAdapterKind::Sqlite;
     config.file_adapter = FileAdapterKind::Filesystem;

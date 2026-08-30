@@ -8885,6 +8885,7 @@ dependencies = [
  "sha1",
  "sha2",
  "sqlx",
+ "subtle",
  "swc_common",
  "swc_ecma_ast",
  "swc_ecma_parser",

@@ -2,6 +2,7 @@
 
 use std::sync::Arc;
 
+use crate::infra::cluster::config::ClusterRole;
 use crate::infra::execution::runner::RunnerCapabilities;
 use crate::infra::io::state::{DynStateBus, MemStateBus};
 use crate::infra::mem::MemHub;
@@ -18,12 +19,12 @@ use crate::platform::model::{
 use crate::platform::services::bootstrap::resolve_superadmin_password;
 use crate::platform::services::{
     AssistantConfigService, AuthService, AuthorizationService, ClusterBootstrapService,
-    ClusterPlacementService, ClusterRegistryService, ClusterRuntimeSyncService, CredentialService,
-    DbConnectionService, DbRuntimeService, DependencyLockService, GitIdentityService, HubService,
-    LibraryService, McpSessionService, NodeRegistryService, PipelineHitsService,
-    PipelineRuntimeService, ProjectConfigurationService, ProjectInviteService,
-    ProjectMembershipService, ProjectOperationService, ProjectService, ProjectTransferService,
-    UserService,
+    ClusterJoinTokenService, ClusterPlacementService, ClusterRegistryService,
+    ClusterRuntimeSyncService, CredentialService, DbConnectionService, DbRuntimeService,
+    DependencyLockService, GitIdentityService, HubService, LibraryService, McpSessionService,
+    NodeRegistryService, PipelineHitsService, PipelineRuntimeService, ProjectConfigurationService,
+    ProjectInviteService, ProjectMembershipService, ProjectOperationService, ProjectService,
+    ProjectTransferService, UserService,
 };
 
 /// Main platform service graph, created once per process.
@@ -51,6 +52,8 @@ pub struct PlatformService {
     pub project_invites: Arc<ProjectInviteService>,
     /// Cluster role/bootstrap service.
     pub cluster_bootstrap: Arc<ClusterBootstrapService>,
+    /// Per-office join token minting, verification, and this office's identity.
+    pub cluster_join_tokens: Arc<ClusterJoinTokenService>,
     /// Worker registry service.
     pub cluster_registry: Arc<ClusterRegistryService>,
     /// Project placement service.
@@ -97,7 +100,7 @@ pub struct PlatformService {
 
 impl PlatformService {
     /// Builds platform from config and runs bootstrap initialization.
-    pub fn from_config(config: PlatformConfig) -> Result<Self, PlatformError> {
+    pub fn from_config(mut config: PlatformConfig) -> Result<Self, PlatformError> {
         // A process asked for a role it cannot perform refuses here, before it
         // creates a data root or binds a port. An office that cannot join a
         // controller would otherwise serve traffic and report itself healthy
@@ -201,7 +204,42 @@ impl PlatformService {
             (*mem_hub).clone(),
             config.data_root.clone(),
         ));
+        // Reconciled before anything serves: a token supplied by environment
+        // and a token already stored that disagree is a refusal to start
+        // (`offices.md` §8; the Credential contract states the same rule for
+        // encryption keys), never a silent overwrite of one by the other.
+        let office_identity = if config.cluster.role == ClusterRole::Worker {
+            crate::platform::services::cluster::join_token::resolve_office_identity(
+                &config.data_root,
+                config
+                    .cluster
+                    .join_token
+                    .as_deref()
+                    .filter(|value| !value.trim().is_empty()),
+            )?
+        } else {
+            None
+        };
+        // The token names the office, so an office that was not told a node id
+        // takes the one it was issued rather than the generic role word. An
+        // explicitly configured id is left alone and checked at the door: the
+        // controller refuses a registration whose claimed office is not the
+        // one inside the token.
+        if let Some(identity) = office_identity.as_ref()
+            && config
+                .cluster
+                .node_id
+                .as_deref()
+                .is_none_or(|value| value.trim().is_empty())
+        {
+            config.cluster.node_id = Some(identity.office_id.clone());
+        }
         let cluster_bootstrap = Arc::new(ClusterBootstrapService::new(config.cluster.clone()));
+        let cluster_join_tokens = Arc::new(ClusterJoinTokenService::new(
+            data.clone(),
+            cluster_bootstrap.role(),
+            office_identity,
+        ));
         let cluster_registry = Arc::new(ClusterRegistryService::new(data.clone()));
         let cluster_placement = Arc::new(ClusterPlacementService::new(data.clone()));
         let cluster_runtime_sync = Arc::new(ClusterRuntimeSyncService::new(
@@ -223,6 +261,7 @@ impl PlatformService {
             project_members,
             project_invites,
             cluster_bootstrap,
+            cluster_join_tokens,
             cluster_registry,
             cluster_placement,
             cluster_runtime_sync,

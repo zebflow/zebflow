@@ -508,6 +508,41 @@ pub struct PlatformOffice {
     pub updated_at: i64,
 }
 
+/// Status word of one issued join token.
+pub const JOIN_TOKEN_STATUS_ACTIVE: &str = "active";
+/// Status word of one revoked join token.
+pub const JOIN_TOKEN_STATUS_REVOKED: &str = "revoked";
+
+/// One join token the controller issued to one office.
+///
+/// The secret itself is never held here: only `secret_digest`, which is what
+/// the controller compares a presented token against and the key of the mutual
+/// proof it returns (`offices.md` §8).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PlatformOfficeJoinToken {
+    /// Office the token was issued to. One row per office.
+    pub office_id: String,
+    /// `sha256(secret)`, hex. Never the secret.
+    pub secret_digest: String,
+    /// `active` or `revoked`. Revoking one row locks out exactly one office.
+    pub status: String,
+    /// Operator note recorded at mint time.
+    #[serde(default)]
+    pub note: String,
+    /// Unix timestamp seconds when the token was minted.
+    pub created_at: i64,
+    /// Unix timestamp seconds of the last accepted presentation, or `0`.
+    #[serde(default)]
+    pub last_used_at: i64,
+}
+
+impl PlatformOfficeJoinToken {
+    /// Whether this token may still be presented.
+    pub fn is_active(&self) -> bool {
+        self.status.trim() == JOIN_TOKEN_STATUS_ACTIVE
+    }
+}
+
 /// One platform-level service instance hosted by an office.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PlatformServiceInstance {
@@ -3234,6 +3269,13 @@ pub struct ClusterWorkerRegisterRequest {
     /// Declared runtime capabilities.
     #[serde(default)]
     pub capabilities: RunnerCapabilities,
+    /// Fresh random nonce the controller must answer with a proof.
+    ///
+    /// `offices.md` §8 wants proof in both directions. The office sends this,
+    /// and refuses a response whose `proof` does not verify, so it can tell a
+    /// real controller from any host that answers its base URL.
+    #[serde(default)]
+    pub nonce: String,
 }
 
 /// Internal office heartbeat request.
@@ -3252,6 +3294,18 @@ pub struct ClusterWorkerHeartbeatRequest {
     pub capabilities: RunnerCapabilities,
 }
 
+/// Internal office registration response returned by the controller.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ClusterWorkerRegisterResponse {
+    /// Whether the registration was accepted.
+    pub ok: bool,
+    /// Normalized registry record.
+    pub worker: crate::infra::cluster::registry::WorkerRegistryRecord,
+    /// HMAC over the office's nonce, keyed by this office's own secret digest.
+    #[serde(default)]
+    pub proof: String,
+}
+
 /// Internal office heartbeat response returned by the controller.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ClusterWorkerHeartbeatResponse {
@@ -3259,6 +3313,37 @@ pub struct ClusterWorkerHeartbeatResponse {
     pub ok: bool,
     /// Normalized heartbeat snapshot.
     pub heartbeat: WorkerHeartbeat,
+}
+
+/// Operator request to mint one office join token.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct ClusterJoinTokenMintRequest {
+    /// Office the token is issued to. Minting creates the office record when
+    /// it does not exist yet, so the holder is recorded before the token is.
+    pub office_id: String,
+    /// Display label for a newly created office record.
+    #[serde(default)]
+    pub label: String,
+    /// Base URL of the planned office, when the operator already knows it.
+    #[serde(default)]
+    pub base_url: String,
+    /// Operator note recorded beside the token.
+    #[serde(default)]
+    pub note: String,
+    /// Replace an existing token for this office rather than refusing.
+    #[serde(default)]
+    pub rotate: bool,
+}
+
+/// One minted token, returned once and never readable again.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ClusterMintedJoinToken {
+    /// The record the controller keeps.
+    pub record: PlatformOfficeJoinToken,
+    /// The office record minting created or reused.
+    pub office: PlatformOffice,
+    /// Plaintext token, shown once. The controller stores only its digest.
+    pub token: String,
 }
 
 /// One runtime target option shown in project create/clone UI.

@@ -65,16 +65,27 @@ impl ClusterRegistryService {
                 .unwrap_or(now),
             last_heartbeat_at: now,
         };
+        // The office row may predate this registration: minting a join token
+        // creates it, planned and unreachable, so the controller knows who
+        // holds the token before anything presents it (`offices.md` §8).
+        // Registering fills it in rather than replacing it, so the minted
+        // record's own creation time survives first contact.
+        let minted_office = self.data.get_platform_office(&office_id)?;
         self.data.put_platform_office(&PlatformOffice {
             office_id: office_id.clone(),
-            office_slug: office_id.clone(),
+            office_slug: minted_office
+                .as_ref()
+                .map(|value| value.office_slug.clone())
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or_else(|| office_id.clone()),
             label: record.label.clone(),
             office_kind: "office".to_string(),
             base_url: record.base_url.clone(),
             status: record.status.clone(),
-            created_at: existing
+            created_at: minted_office
                 .as_ref()
-                .map(|value| value.registered_at)
+                .map(|value| value.created_at)
+                .or_else(|| existing.as_ref().map(|value| value.registered_at))
                 .unwrap_or(now),
             updated_at: now,
         })?;

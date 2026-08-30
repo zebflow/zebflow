@@ -10,6 +10,7 @@ use serde_json::{Value, json};
 use tower::ServiceExt;
 
 use zebflow::infra::cluster::config::ClusterRole;
+use zebflow::infra::cluster::security::{JoinToken, registration_proof};
 use zebflow::platform::model::{
     CollectionAttribute, CreateHubTokenRequest, CreateSimpleTableRequest, TemplateSaveRequest,
     ZebflowJsonDistributionHub,
@@ -146,7 +147,10 @@ async fn office_refuses_to_start_without_cluster_configuration_and_starts_with_i
     // Unreachable on purpose: registration retries in the background and must not
     // stop the office from serving.
     configured.cluster.master_url = Some("http://127.0.0.1:1".to_string());
-    configured.cluster.join_token = Some("join-token".to_string());
+    // A real minted token, because `offices.md` §8's token is per-office and
+    // self-describing; the shared environment secret this replaced would now
+    // refuse to parse.
+    configured.cluster.join_token = Some(JoinToken::mint("office-a").render());
 
     let app = build_router(configured)
         .await
@@ -200,6 +204,290 @@ async fn office_refuses_to_start_without_cluster_configuration_and_starts_with_i
 
     let _ = fs::remove_dir_all(configured_root);
     let _ = fs::remove_dir_all(standalone_root);
+}
+
+/// `offices.md` §8: the token is per-office, issued by the controller, and
+/// revocable for one office alone, with proof in both directions.
+///
+/// The property the whole mechanism exists for is the revocation one — one
+/// office stops, every other office keeps working — so it is proven explicitly
+/// rather than inferred from a refusal count.
+#[tokio::test]
+async fn a_join_token_is_per_office_revocable_and_proves_both_directions() {
+    let controller_root = temp_test_dir("controller-join-tokens");
+    let mut controller = PlatformConfig::default();
+    controller.data_root = controller_root.clone();
+    controller.cluster.role = ClusterRole::Master;
+    controller.default_password = "test-pass".to_string();
+    // A controller holds no token of its own; it mints one per office.
+    let app = build_router(controller).await.expect("controller starts");
+    let cookie = login_cookie(app.clone(), "superadmin", "test-pass").await;
+
+    // --- minting records the holder before it records the secret -----------
+    let minted = mint_join_token(&app, &cookie, "office-a", false).await;
+    assert_eq!(minted.0, StatusCode::CREATED);
+    let token_a = minted.1["token"].as_str().expect("token").to_string();
+    assert!(token_a.starts_with("zfjoin1:office-a:"), "{token_a}");
+    assert_eq!(minted.1["office"]["office_id"], json!("office-a"));
+    assert_eq!(minted.1["office"]["status"], json!("planned"));
+    assert_eq!(minted.1["record"]["status"], json!("active"));
+    let digest_a = minted.1["record"]["secret_digest"]
+        .as_str()
+        .expect("digest")
+        .to_string();
+    assert!(
+        !token_a.contains(&digest_a),
+        "the stored record must be the digest, not the token"
+    );
+
+    // The listing never carries a secret.
+    let listed = response_json(
+        app.clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/cluster/join-tokens")
+                    .header(header::COOKIE, &cookie)
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("list response"),
+    )
+    .await;
+    let listed = serde_json::to_string(&listed["tokens"]).expect("tokens json");
+    assert!(listed.contains(&digest_a));
+    assert!(
+        !listed.contains(token_a.rsplit(':').next().expect("secret")),
+        "a listing must never carry the secret"
+    );
+
+    // Minting again for the same office refuses rather than silently rotating.
+    let again = mint_join_token(&app, &cookie, "office-a", false).await;
+    assert_eq!(again.0, StatusCode::CONFLICT);
+    assert_eq!(again.1["error"]["code"], json!("CLUSTER_JOIN_TOKEN_EXISTS"));
+
+    let token_b = mint_join_token(&app, &cookie, "office-b", false).await.1["token"]
+        .as_str()
+        .expect("token")
+        .to_string();
+
+    // --- an office with its own token registers and heartbeats -------------
+    let nonce = "0123456789abcdef";
+    let registered = register_office(&app, &token_a, "office-a", nonce).await;
+    assert_eq!(registered.0, StatusCode::OK);
+    assert_eq!(registered.1["ok"], json!(true));
+    let proof = registered.1["proof"].as_str().expect("proof").to_string();
+
+    // The office half of the mutual proof: the office derives the same digest
+    // from the secret it holds, and an impostor that does not hold it cannot
+    // produce this value.
+    let identity_a = JoinToken::parse(&token_a).expect("parse");
+    assert_eq!(
+        proof,
+        registration_proof(&identity_a.secret_digest(), "office-a", nonce)
+    );
+    assert_ne!(
+        proof,
+        registration_proof(
+            &JoinToken::mint("office-a").secret_digest(),
+            "office-a",
+            nonce
+        ),
+        "a controller that does not hold the secret cannot answer"
+    );
+
+    assert_eq!(
+        heartbeat_office(&app, &token_a, "office-a").await.0,
+        StatusCode::OK
+    );
+    // A valid token that has not registered yet passes the door and is turned
+    // away by the registry, not by the token check.
+    let unregistered = heartbeat_office(&app, &token_b, "office-b").await;
+    assert_ne!(unregistered.0, StatusCode::OK);
+    assert_eq!(
+        unregistered.1["error"]["code"],
+        json!("CLUSTER_WORKER_UNKNOWN")
+    );
+    assert_eq!(
+        register_office(&app, &token_b, "office-b", nonce).await.0,
+        StatusCode::OK
+    );
+    assert_eq!(
+        heartbeat_office(&app, &token_b, "office-b").await.0,
+        StatusCode::OK
+    );
+
+    // --- office A's token presented by office B is refused -----------------
+    let crossed = register_office(&app, &token_a, "office-b", nonce).await;
+    assert_eq!(crossed.0, StatusCode::FORBIDDEN);
+    assert_eq!(
+        crossed.1["error"]["code"],
+        json!("CLUSTER_JOIN_TOKEN_OFFICE_MISMATCH")
+    );
+
+    // --- a wrong or malformed token is refused, actionably -----------------
+    let legacy = register_office(&app, "join-token", "office-a", nonce).await;
+    assert_eq!(legacy.0, StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        legacy.1["error"]["code"],
+        json!("CLUSTER_JOIN_TOKEN_MALFORMED")
+    );
+    let message = legacy.1["error"]["message"].as_str().expect("message");
+    assert!(
+        message.contains("Mint one on the controller") && message.contains("join-tokens"),
+        "refusal must name the fix: {message}"
+    );
+
+    let forged = JoinToken::mint("office-a").render();
+    let forged = register_office(&app, &forged, "office-a", nonce).await;
+    assert_eq!(forged.0, StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        forged.1["error"]["code"],
+        json!("CLUSTER_JOIN_TOKEN_INVALID")
+    );
+
+    let unknown = JoinToken::mint("office-z").render();
+    let unknown = register_office(&app, &unknown, "office-z", nonce).await;
+    assert_eq!(unknown.0, StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        unknown.1["error"]["code"],
+        json!("CLUSTER_JOIN_TOKEN_UNKNOWN")
+    );
+
+    // --- revoking one office stops that office and no other ----------------
+    let revoked = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/cluster/join-tokens/office-a/revoke")
+                .method("POST")
+                .header(header::COOKIE, &cookie)
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("revoke response");
+    assert_eq!(revoked.status(), StatusCode::OK);
+    assert_eq!(
+        response_json(revoked).await["record"]["status"],
+        json!("revoked")
+    );
+
+    let stopped = heartbeat_office(&app, &token_a, "office-a").await;
+    assert_eq!(stopped.0, StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        stopped.1["error"]["code"],
+        json!("CLUSTER_JOIN_TOKEN_REVOKED")
+    );
+    // An already-registered office must not re-register its way back in.
+    let rejoin = register_office(&app, &token_a, "office-a", nonce).await;
+    assert_eq!(rejoin.0, StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        rejoin.1["error"]["code"],
+        json!("CLUSTER_JOIN_TOKEN_REVOKED")
+    );
+
+    // This is the whole point of the step: office B is untouched.
+    assert_eq!(
+        heartbeat_office(&app, &token_b, "office-b").await.0,
+        StatusCode::OK,
+        "revoking one office must not disturb another"
+    );
+
+    // Rotation re-issues for the revoked office alone.
+    let rotated = mint_join_token(&app, &cookie, "office-a", true).await;
+    assert_eq!(rotated.0, StatusCode::CREATED);
+    let rotated_token = rotated.1["token"].as_str().expect("token").to_string();
+    assert_ne!(rotated_token, token_a);
+    assert_eq!(
+        register_office(&app, &rotated_token, "office-a", nonce)
+            .await
+            .0,
+        StatusCode::OK
+    );
+    assert_eq!(
+        register_office(&app, &token_a, "office-a", nonce).await.0,
+        StatusCode::UNAUTHORIZED,
+        "the rotated-away token must not work"
+    );
+
+    let _ = fs::remove_dir_all(controller_root);
+}
+
+async fn mint_join_token(
+    app: &axum::Router,
+    cookie: &str,
+    office_id: &str,
+    rotate: bool,
+) -> (StatusCode, Value) {
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/cluster/join-tokens")
+                .method("POST")
+                .header(header::COOKIE, cookie)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({ "office_id": office_id, "rotate": rotate }).to_string(),
+                ))
+                .expect("request"),
+        )
+        .await
+        .expect("mint response");
+    let status = response.status();
+    (status, response_json(response).await)
+}
+
+async fn register_office(
+    app: &axum::Router,
+    token: &str,
+    node_id: &str,
+    nonce: &str,
+) -> (StatusCode, Value) {
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/internal/cluster/workers/register")
+                .method("POST")
+                .header("x-zebflow-cluster-token", token)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({
+                        "node_id": node_id,
+                        "label": node_id,
+                        "base_url": format!("http://{node_id}:10610"),
+                        "nonce": nonce,
+                    })
+                    .to_string(),
+                ))
+                .expect("request"),
+        )
+        .await
+        .expect("register response");
+    let status = response.status();
+    (status, response_json(response).await)
+}
+
+async fn heartbeat_office(app: &axum::Router, token: &str, node_id: &str) -> (StatusCode, Value) {
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/internal/cluster/workers/heartbeat")
+                .method("POST")
+                .header("x-zebflow-cluster-token", token)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({ "node_id": node_id, "status": "online" }).to_string(),
+                ))
+                .expect("request"),
+        )
+        .await
+        .expect("heartbeat response");
+    let status = response.status();
+    (status, response_json(response).await)
 }
 
 /// Every `{package}@{version}` coordinate on one instance's blessed shelf.

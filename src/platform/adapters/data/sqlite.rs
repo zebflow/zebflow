@@ -20,12 +20,12 @@ use crate::platform::model::{
     CREDENTIAL_STATE_CHOSEN, HubAccessGrant, HubAssetPackage, HubAssetVersion, HubAuthority,
     HubPublisher, HubToken, McpSession, PipelineInvocationEntry,
     PipelineInvocationLogPipelineStats, PipelineInvocationLogStats, PipelineMeta,
-    PlatformHubRepository, PlatformOffice, PlatformOfficeNode, PlatformProject,
-    PlatformServiceInstance, PlatformUser, PlatformUserLocalAuth, ProjectAccessRolePreset,
-    ProjectCapability, ProjectCredential, ProjectDbConnection, ProjectHubRepository, ProjectInvite,
-    ProjectInviteStatus, ProjectMember, ProjectOperationKind, ProjectOperationRecord,
-    ProjectOperationStatus, ProjectPolicy, ProjectPolicyBinding, ProjectSubjectKind, StoredUser,
-    now_ts, slug_segment,
+    PlatformHubRepository, PlatformOffice, PlatformOfficeJoinToken, PlatformOfficeNode,
+    PlatformProject, PlatformServiceInstance, PlatformUser, PlatformUserLocalAuth,
+    ProjectAccessRolePreset, ProjectCapability, ProjectCredential, ProjectDbConnection,
+    ProjectHubRepository, ProjectInvite, ProjectInviteStatus, ProjectMember, ProjectOperationKind,
+    ProjectOperationRecord, ProjectOperationStatus, ProjectPolicy, ProjectPolicyBinding,
+    ProjectSubjectKind, StoredUser, now_ts, slug_segment,
 };
 
 const SCHEMA_SQL: &str = "
@@ -355,6 +355,17 @@ CREATE TABLE IF NOT EXISTS offices (
     created_at    INTEGER NOT NULL DEFAULT 0,
     updated_at    INTEGER NOT NULL DEFAULT 0
 );
+CREATE TABLE IF NOT EXISTS office_join_tokens (
+    office_id     TEXT PRIMARY KEY,
+    secret_digest TEXT NOT NULL DEFAULT '',
+    status        TEXT NOT NULL DEFAULT 'active',
+    note          TEXT NOT NULL DEFAULT '',
+    created_at    INTEGER NOT NULL DEFAULT 0,
+    last_used_at  INTEGER NOT NULL DEFAULT 0,
+    FOREIGN KEY (office_id) REFERENCES offices(office_id)
+        ON UPDATE CASCADE
+        ON DELETE CASCADE
+);
 CREATE TABLE IF NOT EXISTS platform_service_instances (
     service_instance_id TEXT PRIMARY KEY,
     service_kind        TEXT NOT NULL DEFAULT '',
@@ -662,7 +673,7 @@ impl SqliteDataAdapter {
         Ok(exists)
     }
 
-    fn migrations() -> [MigrationDef; 16] {
+    fn migrations() -> [MigrationDef; 17] {
         [
             MigrationDef {
                 version: 1,
@@ -743,6 +754,11 @@ impl SqliteDataAdapter {
                 version: 16,
                 name: "user_credential_state",
                 apply: Self::apply_migration_0016_user_credential_state,
+            },
+            MigrationDef {
+                version: 17,
+                name: "office_join_tokens",
+                apply: Self::apply_migration_0017_office_join_tokens,
             },
         ]
     }
@@ -2581,6 +2597,33 @@ CREATE INDEX IF NOT EXISTS idx_platform_service_instances_host
             "credential_state",
             "TEXT NOT NULL DEFAULT 'chosen'",
         )
+    }
+
+    /// Per-office join tokens (`offices.md` §8).
+    ///
+    /// The record belongs in the platform catalog beside `offices` because it
+    /// is one office's membership state, and because the foreign key is the
+    /// traceability the contract asks for: a token cannot exist without the
+    /// office record that says who holds it, and deleting an office takes its
+    /// token with it.
+    ///
+    /// Pre-release: nothing migrates. The shared environment secret was never
+    /// a row, so there is nothing to carry forward.
+    fn apply_migration_0017_office_join_tokens(tx: &Transaction<'_>) -> Result<(), PlatformError> {
+        tx.execute_batch(
+            "CREATE TABLE IF NOT EXISTS office_join_tokens (
+                office_id     TEXT PRIMARY KEY,
+                secret_digest TEXT NOT NULL DEFAULT '',
+                status        TEXT NOT NULL DEFAULT 'active',
+                note          TEXT NOT NULL DEFAULT '',
+                created_at    INTEGER NOT NULL DEFAULT 0,
+                last_used_at  INTEGER NOT NULL DEFAULT 0,
+                FOREIGN KEY (office_id) REFERENCES offices(office_id)
+                    ON UPDATE CASCADE
+                    ON DELETE CASCADE
+            );",
+        )
+        .map_err(|e| PlatformError::new("PLATFORM_SQLITE_SCHEMA", e.to_string()))
     }
 
     fn ensure_table_column<C>(
@@ -5389,6 +5432,87 @@ impl DataAdapter for SqliteDataAdapter {
         )
         .map_err(Self::qe)?;
         Ok(())
+    }
+
+    fn get_office_join_token(
+        &self,
+        office_id: &str,
+    ) -> Result<Option<PlatformOfficeJoinToken>, PlatformError> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let result = conn.query_row(
+            "SELECT office_id, secret_digest, status, note, created_at, last_used_at
+             FROM office_join_tokens
+             WHERE office_id = ?1",
+            params![office_id],
+            |row| {
+                Ok(PlatformOfficeJoinToken {
+                    office_id: row.get(0)?,
+                    secret_digest: row.get(1)?,
+                    status: row.get(2)?,
+                    note: row.get(3)?,
+                    created_at: row.get(4)?,
+                    last_used_at: row.get(5)?,
+                })
+            },
+        );
+        match result {
+            Ok(record) => Ok(Some(record)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(err) => Err(Self::qe(err)),
+        }
+    }
+
+    fn put_office_join_token(&self, token: &PlatformOfficeJoinToken) -> Result<(), PlatformError> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        conn.execute(
+            "INSERT INTO office_join_tokens
+             (office_id, secret_digest, status, note, created_at, last_used_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+             ON CONFLICT(office_id) DO UPDATE SET
+                 secret_digest = excluded.secret_digest,
+                 status = excluded.status,
+                 note = excluded.note,
+                 created_at = excluded.created_at,
+                 last_used_at = excluded.last_used_at",
+            params![
+                &token.office_id,
+                &token.secret_digest,
+                &token.status,
+                &token.note,
+                token.created_at,
+                token.last_used_at,
+            ],
+        )
+        .map_err(Self::qe)?;
+        Ok(())
+    }
+
+    fn list_office_join_tokens(&self) -> Result<Vec<PlatformOfficeJoinToken>, PlatformError> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let mut stmt = conn
+            .prepare(
+                "SELECT office_id, secret_digest, status, note, created_at, last_used_at
+                 FROM office_join_tokens
+                 ORDER BY office_id ASC",
+            )
+            .map_err(Self::qe)?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok(PlatformOfficeJoinToken {
+                    office_id: row.get(0)?,
+                    secret_digest: row.get(1)?,
+                    status: row.get(2)?,
+                    note: row.get(3)?,
+                    created_at: row.get(4)?,
+                    last_used_at: row.get(5)?,
+                })
+            })
+            .map_err(Self::qe)?;
+        let mut records = Vec::new();
+        for row in rows {
+            records.push(row.map_err(Self::qe)?);
+        }
+        Ok(records)
     }
 
     fn list_platform_offices(&self) -> Result<Vec<PlatformOffice>, PlatformError> {

@@ -21,11 +21,13 @@
 //! Those lower-level mechanics live under `crate::infra::cluster` and `crate::infra::io`.
 
 pub mod bootstrap;
+pub mod join_token;
 pub mod placement;
 pub mod registry;
 pub mod runtime_sync;
 
 pub use bootstrap::ClusterBootstrapService;
+pub use join_token::{ClusterJoinTokenService, OfficeJoinIdentity};
 pub use placement::ClusterPlacementService;
 pub use registry::ClusterRegistryService;
 pub use runtime_sync::ClusterRuntimeSyncService;

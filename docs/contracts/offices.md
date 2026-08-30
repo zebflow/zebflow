@@ -135,7 +135,10 @@ This is why joining is safe to do at all.
 | Break-glass | Host access, §6; recorded when used |
 
 A shared environment secret is not a token: possession would be membership,
-with no way to revoke one office.
+with no way to revoke one office. The token is self-describing — it names its
+own format and the office it was issued to before its secret — so the controller
+identifies the holder without searching by secret, and a later format can change
+scheme while old tokens stay parseable rather than merely invalid.
 
 ## 9. Open
 

@@ -2,7 +2,7 @@
 //!
 //! The target order of operations is:
 //!
-//! 1. one-time join token bootstrap
+//! 1. per-office join token bootstrap (`join_token`, live)
 //! 2. cluster CA trust establishment
 //! 3. node certificate issue/rotation
 //! 4. mTLS-secured control transport
@@ -13,4 +13,8 @@ pub mod join_token;
 
 pub use ca::ClusterCaPaths;
 pub use cert::IssuedNodeCertificate;
-pub use join_token::JoinToken;
+pub use join_token::{
+    CONTROLLER_CALL_SCHEME, JOIN_TOKEN_SCHEME, JoinToken, JoinTokenError, controller_call_header,
+    digests_match, parse_controller_call_header, registration_nonce, registration_proof,
+    secret_digest,
+};

@@ -46,8 +46,8 @@ pub use assistant_tools::AssistantPlatformTools;
 pub use auth::AuthService;
 pub use authorization::AuthorizationService;
 pub use cluster::{
-    ClusterBootstrapService, ClusterPlacementService, ClusterRegistryService,
-    ClusterRuntimeSyncService,
+    ClusterBootstrapService, ClusterJoinTokenService, ClusterPlacementService,
+    ClusterRegistryService, ClusterRuntimeSyncService, OfficeJoinIdentity,
 };
 pub use credential::CredentialService;
 pub use db_connection::DbConnectionService;

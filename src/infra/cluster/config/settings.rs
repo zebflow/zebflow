@@ -18,6 +18,10 @@ pub const ENV_MASTER_URL: &str = "ZEBFLOW_CLUSTER_MASTER_URL";
 /// Environment variable for [`ClusterSettings::advertise_url`].
 pub const ENV_ADVERTISE_URL: &str = "ZEBFLOW_CLUSTER_ADVERTISE_URL";
 /// Environment variable for [`ClusterSettings::join_token`].
+///
+/// An office only. The controller issues tokens and verifies them against its
+/// own records, so it holds no token of its own (`offices.md` §8: a shared
+/// environment secret is not a token).
 pub const ENV_JOIN_TOKEN: &str = "ZEBFLOW_CLUSTER_JOIN_TOKEN";
 
 /// Cluster bootstrap and runtime settings.
@@ -37,7 +41,12 @@ pub struct ClusterSettings {
     /// Public/internal base URL this node advertises to the control plane.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub advertise_url: Option<String>,
-    /// One-time join token supplied to a worker during bootstrap.
+    /// Per-office join token supplied to an office for its first join.
+    ///
+    /// Shaped `zfjoin1:<office_id>:<secret>`, minted by the controller. After
+    /// the first join the office reads what it stored in its own data root;
+    /// this variable and that file disagreeing is a refusal, never a silent
+    /// overwrite.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub join_token: Option<String>,
 }
@@ -86,8 +95,8 @@ fn incomplete_consequence(role: ClusterRole) -> &'static str {
     match role {
         ClusterRole::Standalone => "A standalone process needs no cluster configuration.",
         ClusterRole::Master => {
-            "A controller without a join token rejects every office that tries to register, \
-             so the cluster never forms."
+            "A controller mints and verifies per-office tokens from its own catalog, so it \
+             needs no cluster variables of its own."
         }
         ClusterRole::Worker => {
             "An office that cannot reach a controller would serve traffic while belonging to \
@@ -137,11 +146,10 @@ impl ClusterSettings {
         let mut missing = Vec::new();
         match self.role {
             ClusterRole::Standalone => {}
-            ClusterRole::Master => {
-                if !present(&self.join_token) {
-                    missing.push(ENV_JOIN_TOKEN);
-                }
-            }
+            // A controller needs nothing. It mints a token per office and
+            // verifies each against the record it created, which is what makes
+            // one office revocable on its own (`offices.md` §8).
+            ClusterRole::Master => {}
             ClusterRole::Worker => {
                 if !present(&self.master_url) {
                     missing.push(ENV_MASTER_URL);
@@ -223,7 +231,7 @@ mod tests {
             "http://127.0.0.1:10610",
             lookup_from(&[
                 (ENV_MASTER_URL, "http://controller:10610"),
-                (ENV_JOIN_TOKEN, "join-token"),
+                (ENV_JOIN_TOKEN, "zfjoin1:office-a:secret"),
             ]),
         );
         // advertise_url is not set, so the listen URL passed in stands in for it.
@@ -241,7 +249,7 @@ mod tests {
             "http://127.0.0.1:10610",
             lookup_from(&[
                 (ENV_MASTER_URL, "   "),
-                (ENV_JOIN_TOKEN, "join-token"),
+                (ENV_JOIN_TOKEN, "zfjoin1:office-a:secret"),
                 (ENV_ADVERTISE_URL, ""),
             ]),
         );
@@ -257,26 +265,18 @@ mod tests {
     }
 
     #[test]
-    fn controller_without_a_join_token_refuses_to_start() {
+    fn a_controller_holds_no_token_of_its_own() {
+        // The shared environment secret was the defect `offices.md` §8 names:
+        // possession was membership, with no way to revoke one office. A
+        // controller now issues per-office tokens and verifies them against
+        // its own records, so it requires no cluster variable at all.
         let settings = ClusterSettings::from_lookup(
             ClusterRole::Master,
             "http://127.0.0.1:10610",
             lookup_from(&[]),
         );
-        assert_eq!(
-            settings
-                .validate()
-                .expect_err("controller must refuse to start")
-                .missing,
-            vec![ENV_JOIN_TOKEN]
-        );
-
-        let configured = ClusterSettings::from_lookup(
-            ClusterRole::Master,
-            "http://127.0.0.1:10610",
-            lookup_from(&[(ENV_JOIN_TOKEN, "join-token")]),
-        );
-        assert!(configured.validate().is_ok());
+        assert!(settings.missing_required_env().is_empty());
+        assert!(settings.validate().is_ok());
     }
 
     #[test]
@@ -286,7 +286,7 @@ mod tests {
             "http://127.0.0.1:10610",
             lookup_from(&[
                 (ENV_MASTER_URL, "http://controller:10610"),
-                (ENV_JOIN_TOKEN, "join-token"),
+                (ENV_JOIN_TOKEN, "zfjoin1:office-a:secret"),
                 (ENV_NODE_ID, "office-a"),
                 (ENV_NODE_LABEL, "Office A"),
             ]),

@@ -74,7 +74,10 @@ service instance whose host office does not exist.
   because versioned placement was felt before it was written, but what happens
   to work in flight when a service moves is undefined.
 - **Status.** `status` is a free-text summary with no stated vocabulary and no
-  rule for how stale an entry may be before it stops being shown.
+  rule for how stale an entry may be before it stops being shown. Minting a
+  join token (`offices.md` §8) now creates the office record before anything
+  registers and writes `planned` — the first word meaning "exists, has never
+  been reached", and the case a vocabulary would most need to name.
 - **`management.yaml`.** Written and read by the provisioning commands, with no
   stated schema and no version field.
 - **Correction, 2026-08-30.** An earlier draft named `.zebflow.cluster.lock` as

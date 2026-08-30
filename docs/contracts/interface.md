@@ -208,7 +208,7 @@ resolved (2026-08-27) and distribution now states the client-context rule. No
 
 | Variable | Decides | Required by |
 | --- | --- | --- |
-| `ZEBFLOW_CLUSTER_JOIN_TOKEN` | shared internal cluster token | controller **and** office |
+| `ZEBFLOW_CLUSTER_JOIN_TOKEN` | the office's own join token, `zfjoin1:<office_id>:<secret>`, minted on the controller | office, for its **first** join only |
 | `ZEBFLOW_CLUSTER_MASTER_URL` | controller base URL an office registers with | office |
 | `ZEBFLOW_CLUSTER_ADVERTISE_URL` | base URL this node advertises | optional; defaults to this process's listen URL |
 | `ZEBFLOW_CLUSTER_NODE_ID` | stable node id | optional; defaults to the role name |
@@ -217,6 +217,19 @@ resolved (2026-08-27) and distribution now states the client-context rule. No
 A required variable that is unset **or blank** is missing. An exported-but-empty
 variable is a misconfiguration, and treating it as a value is how a blank
 advertise URL used to disable office registration without saying so.
+
+**The controller holds no cluster variable of its own.** It mints one token per
+office (`POST /api/cluster/join-tokens`, superadmin) and verifies each against
+the record that mint created, which is what makes one office revocable on its
+own (`offices.md` §8). A value that is not `zfjoin1:` shaped is refused before
+the data root is opened, with a message naming the mint. There is no migration
+from the shared secret that preceded this, and none is owed pre-release.
+
+**A token supplied by variable is stored, once.** An office writes its token to
+`<data-root>/platform/office-join-token`, mode 0600, and reads it on every later
+start. If the variable and the stored file disagree, the office refuses to start
+and names both offices — it never overwrites one with the other, the same rule
+the Credential contract states for encryption keys.
 
 **Sessions and tokens.**
 
@@ -655,10 +668,16 @@ create, move, entry delete; agent docs list, read, write.
 **`git` — 8 uncovered.** Status, health, repair, commit, remote read, remote
 set, branch list, branch checkout.
 
-**`instance` — 7 uncovered.** `GET /api/meta`, `GET /api/system/info`, the four
-admin database routes (collection list, query, node read, node delete), and
-`GET /api/cluster/workers`. `zeb status` reports the client's stored context
-and reads `/health`; it reports nothing an instance knows about itself.
+**`instance` — 10 uncovered.** `GET /api/meta`, `GET /api/system/info`, the four
+admin database routes (collection list, query, node read, node delete),
+`GET /api/cluster/workers`, and the three office join-token routes added
+2026-08-30 — list, mint, revoke (`offices.md` §8). `zeb status` reports the
+client's stored context and reads `/health`; it reports nothing an instance
+knows about itself. The join-token three are deliberately API-only: Group 1 is
+server modes and Group 2's only materialising verb is `install`, so a
+`zeb office token mint` would be a fourth noun group this document has not
+blessed. The handler counts in §8.1 and §8.3 were taken before those three
+landed and are three low.
 
 **`credential` — 6 uncovered.** Type list, list, upsert, read, delete, and
 OAuth authorize. `distribution.md` §1 rules that credential *values* are never

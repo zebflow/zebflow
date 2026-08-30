@@ -1706,14 +1706,15 @@ fn mcp_session_from_request(platform: &PlatformService, headers: &HeaderMap) -> 
 }
 
 fn has_valid_cluster_token(platform: &PlatformService, headers: &HeaderMap) -> bool {
-    let Some(expected) = platform.cluster_bootstrap.join_token() else {
-        return false;
-    };
-    headers
+    let Some(presented) = headers
         .get(INTERNAL_CLUSTER_TOKEN_HEADER)
         .and_then(|value| value.to_str().ok())
-        .map(|value| value == expected)
-        .unwrap_or(false)
+    else {
+        return false;
+    };
+    platform
+        .cluster_join_tokens
+        .header_authenticates_peer(presented)
 }
 
 fn mcp_remote_project_worker_id(
@@ -1765,13 +1766,23 @@ async fn forward_mcp_request_to_worker(
             )
                 .into_response()
         })?;
-    let token = platform.cluster_bootstrap.join_token().ok_or_else(|| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "cluster join token is not configured".to_string(),
-        )
-            .into_response()
-    })?;
+    // Derived per office from that office's own token digest, so this
+    // controller proves itself to exactly one office (`offices.md` §8).
+    let office_id = if worker.office_id.trim().is_empty() {
+        worker.node_id.as_str()
+    } else {
+        worker.office_id.as_str()
+    };
+    let token = platform
+        .cluster_join_tokens
+        .controller_call_header_for(office_id)
+        .map_err(|err| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("{}: {}", err.code, err.message),
+            )
+                .into_response()
+        })?;
 
     let (parts, body) = req.into_parts();
     let body = to_bytes(body, MCP_PROXY_BODY_LIMIT).await.map_err(|err| {

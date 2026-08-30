@@ -13,8 +13,8 @@ use crate::platform::error::PlatformError;
 use crate::platform::model::{
     DataAdapterKind, HubAccessGrant, HubAssetPackage, HubAssetVersion, HubAuthority, HubPublisher,
     HubToken, McpSession, PipelineInvocationEntry, PipelineInvocationLogStats, PipelineMeta,
-    PlatformHubRepository, PlatformOffice, PlatformOfficeNode, PlatformProject,
-    PlatformServiceInstance, PlatformUser, ProjectCredential, ProjectDbConnection,
+    PlatformHubRepository, PlatformOffice, PlatformOfficeJoinToken, PlatformOfficeNode,
+    PlatformProject, PlatformServiceInstance, PlatformUser, ProjectCredential, ProjectDbConnection,
     ProjectHubRepository, ProjectInvite, ProjectMember, ProjectOperationRecord, ProjectPolicy,
     ProjectPolicyBinding, StoredUser,
 };
@@ -435,6 +435,26 @@ pub trait DataAdapter: Send + Sync {
     }
     /// List offices.
     fn list_platform_offices(&self) -> Result<Vec<PlatformOffice>, PlatformError> {
+        Ok(vec![])
+    }
+    /// Get one office's join-token record.
+    fn get_office_join_token(
+        &self,
+        office_id: &str,
+    ) -> Result<Option<PlatformOfficeJoinToken>, PlatformError> {
+        let _ = office_id;
+        Ok(None)
+    }
+    /// Upsert one office's join-token record.
+    fn put_office_join_token(&self, token: &PlatformOfficeJoinToken) -> Result<(), PlatformError> {
+        let _ = token;
+        Err(PlatformError::new(
+            "PLATFORM_ADAPTER_UNAVAILABLE",
+            "office join tokens are not supported by this adapter",
+        ))
+    }
+    /// List every issued join-token record.
+    fn list_office_join_tokens(&self) -> Result<Vec<PlatformOfficeJoinToken>, PlatformError> {
         Ok(vec![])
     }
     /// Get one platform service instance.
