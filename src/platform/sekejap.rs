@@ -13,7 +13,7 @@ use crate::platform::error::PlatformError;
 use crate::platform::model::{
     CollectionAttribute, CreateSimpleTableRequest, DbObjectNode, DbQueryColumn,
     ProjectDbConnectionQueryResult, QueryProjectDbConnectionRequest, ResolvedProjectLayout,
-    SCHEMA_DOCUMENT_FILE, SimpleTableDefinition, UpdateSimpleTableRequest, now_ts, slug_segment,
+    SCHEMA_DOCUMENT_FILE, SimpleTableDefinition, UpdateSimpleTableRequest, slug_segment,
 };
 
 // ── CoreDB connection pool ───────────────────────────────────────────────────
@@ -219,7 +219,6 @@ pub const DB_KIND: &str = "sekejap";
 #[serde(deny_unknown_fields)]
 pub struct SekejapTableSchemaExport {
     pub table: String,
-    pub title: String,
     pub collection: String,
     #[serde(default)]
     pub attributes: Vec<CollectionAttribute>,
@@ -310,10 +309,6 @@ pub fn project_dir(data_root: &Path, owner: &str, project: &str) -> PathBuf {
         .join("sekejap")
 }
 
-fn catalog_path(data_root: &Path, owner: &str, project: &str) -> PathBuf {
-    project_dir(data_root, owner, project).join("tables.json")
-}
-
 fn repo_dir(data_root: &Path, owner: &str, project: &str) -> PathBuf {
     data_root
         .join("users")
@@ -345,6 +340,15 @@ fn ensure_project_dir(
     let dir = project_dir(data_root, owner, project);
     migrate_legacy_sekejap_dir(data_root, owner, project, &dir)?;
     std::fs::create_dir_all(&dir)?;
+    // `tables.json` was a hand-kept mirror of the table list from before
+    // sekejap could be asked directly. `live_tables` reads the database now, so
+    // the file is only stale weight; drop it the first time a project is
+    // touched.
+    match std::fs::remove_file(dir.join("tables.json")) {
+        Ok(()) => {}
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+        Err(err) => return Err(err.into()),
+    }
     Ok(dir)
 }
 
@@ -373,48 +377,9 @@ fn migrate_legacy_sekejap_dir(
         .map_err(|err| PlatformError::new("PLATFORM_DATA_TIER_MIGRATE", err.to_string()))
 }
 
-fn load_catalog(
-    data_root: &Path,
-    owner: &str,
-    project: &str,
-) -> Result<Vec<SimpleTableDefinition>, PlatformError> {
-    let path = catalog_path(data_root, owner, project);
-    if !path.exists() {
-        return Ok(Vec::new());
-    }
-    let raw = std::fs::read_to_string(&path)?;
-    serde_json::from_str::<Vec<SimpleTableDefinition>>(&raw).map_err(|err| {
-        PlatformError::new(
-            "PLATFORM_SEKEJAP_CATALOG_READ",
-            format!("failed to parse sekejap table catalog: {err}"),
-        )
-    })
-}
-
-fn save_catalog(
-    data_root: &Path,
-    owner: &str,
-    project: &str,
-    defs: &[SimpleTableDefinition],
-) -> Result<(), PlatformError> {
-    let path = catalog_path(data_root, owner, project);
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let encoded = serde_json::to_string_pretty(defs).map_err(|err| {
-        PlatformError::new(
-            "PLATFORM_SEKEJAP_CATALOG_WRITE",
-            format!("failed to encode sekejap table catalog: {err}"),
-        )
-    })?;
-    std::fs::write(path, encoded)?;
-    Ok(())
-}
-
 fn map_declared_kind(kind: &str) -> &'static str {
     match kind {
         "number" | "real" | "integer" => "number",
-        "text" => "text",
         "boolean" => "boolean",
         "json" => "json",
         "vector" => "vector",
@@ -426,8 +391,7 @@ fn map_declared_kind(kind: &str) -> &'static str {
 fn map_field_type(kind: &str) -> &'static str {
     match kind {
         "number" | "real" => "REAL",
-        "text" => "TEXT",
-        "boolean" => "JSON",
+        "boolean" => "BOOLEAN",
         "json" => "JSON",
         "vector" => "VECTOR",
         "geo" => "GEO",
@@ -486,17 +450,10 @@ fn normalize_definition(
             }
             index_types.push(key);
         }
-        let default_value = attr
-            .default_value
-            .as_deref()
-            .map(str::trim)
-            .filter(|v| !v.is_empty())
-            .map(ToString::to_string);
         attrs.push(CollectionAttribute {
             name,
             kind,
             index_types,
-            default_value,
         });
     }
     if !has_user_key {
@@ -506,7 +463,6 @@ fn normalize_definition(
                 name: "_key".to_string(),
                 kind: "string".to_string(),
                 index_types: Vec::new(),
-                default_value: Some("UUIDV4()".to_string()),
             },
         );
     }
@@ -516,17 +472,9 @@ fn normalize_definition(
     let fulltext_fields = collect_index_fields(&attrs, &[], "fulltext");
     let vector_fields = collect_index_fields(&attrs, &[], "vector");
     let spatial_fields = collect_index_fields(&attrs, &[], "spatial");
-    let now = now_ts();
 
     Ok(SimpleTableDefinition {
         table: table.clone(),
-        title: req
-            .title
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .unwrap_or(&table)
-            .to_string(),
         collection: table,
         attributes: attrs,
         hash_indexed_fields,
@@ -535,23 +483,25 @@ fn normalize_definition(
         vector_fields,
         spatial_fields,
         row_count: 0,
-        created_at: now,
-        updated_at: now,
     })
 }
 
 fn build_create_table_sql(def: &SimpleTableDefinition) -> String {
     let mut columns = Vec::new();
     for attr in &def.attributes {
-        let mut col = if attr.name == "_key" {
-            format!("_key {} PRIMARY KEY", map_field_type(&attr.kind))
+        // `_key` is the primary key and auto-fills with a UUID when an INSERT
+        // omits it. `UUIDV4()` and `UUIDV5(..)` are the only DEFAULT forms
+        // sekejap's parser honours — see `sql.rs::parse_field_default`, which
+        // silently discards every other expression — so no other column
+        // carries one.
+        if attr.name == "_key" {
+            columns.push(format!(
+                "_key {} PRIMARY KEY DEFAULT UUIDV4()",
+                map_field_type(&attr.kind)
+            ));
         } else {
-            format!("{} {}", attr.name, map_field_type(&attr.kind))
-        };
-        if let Some(ref dv) = attr.default_value {
-            col.push_str(&format!(" DEFAULT {dv}"));
+            columns.push(format!("{} {}", attr.name, map_field_type(&attr.kind)));
         }
-        columns.push(col);
     }
     format!("CREATE TABLE {} ({})", def.collection, columns.join(", "))
 }
@@ -610,7 +560,6 @@ fn backfill_from_sample(db: &sekejap::CoreDB, collection: &str) -> Vec<Collectio
             name: k.clone(),
             kind: infer_kind_from_value(&payload[k]).to_string(),
             index_types: Vec::new(),
-            default_value: None,
         })
         .collect()
 }
@@ -667,7 +616,6 @@ fn backfill_from_schema(
                 name: f.name.clone(),
                 kind,
                 index_types,
-                default_value: None,
             }
         })
         .collect();
@@ -689,55 +637,55 @@ fn backfill_from_schema(
     (attrs, hash, range, fulltext, vector, spatial)
 }
 
-fn merge_catalog_with_live(
-    db: &sekejap::CoreDB,
-    mut defs: Vec<SimpleTableDefinition>,
-) -> Vec<SimpleTableDefinition> {
+/// Every table in the project, read from the live database.
+///
+/// `SHOW TABLES` is the listing: sekejap answers it by unioning the
+/// collections that hold rows with the schemas that `CREATE TABLE` declared,
+/// so a table that has never been written to is still reported. This is the
+/// reason it is the listing and `collection_names()` is not — that one walks
+/// stored rows, so an empty table is invisible to it.
+///
+/// Each name is then filled in by `table_schema()`, which reports the fields
+/// with their types and index kinds, and `collection().count()`.
+///
+/// Nothing is cached alongside this. A structure fact the database cannot
+/// answer is a fact Zebflow does not keep.
+fn live_tables(db: &sekejap::CoreDB) -> Vec<SimpleTableDefinition> {
+    let Ok(hits) = db.show("SHOW TABLES") else {
+        return Vec::new();
+    };
     let mut by_table = BTreeMap::new();
-    for mut def in defs.drain(..) {
-        def.row_count = row_count_for_collection(db, &def.collection);
-        if def.attributes.is_empty() {
-            let (attrs, hash, range, fulltext, vector, spatial) =
-                backfill_from_schema(db, &def.collection);
-            def.attributes = attrs;
-            def.hash_indexed_fields = hash;
-            def.range_indexed_fields = range;
-            def.fulltext_fields = fulltext;
-            def.vector_fields = vector;
-            def.spatial_fields = spatial;
-        }
-        for attr in &mut def.attributes {
-            attr.kind = map_declared_kind(&attr.kind).to_string();
-        }
-        by_table.insert(def.table.clone(), def);
-    }
-
-    for collection in db.collection_names() {
+    for hit in hits {
+        let Some(collection) = hit
+            .payload
+            .as_ref()
+            .and_then(|row| row.get("name"))
+            .and_then(Value::as_str)
+            .map(str::to_string)
+        else {
+            continue;
+        };
         let table = slug_segment(&collection);
         if table.is_empty() || by_table.contains_key(&table) {
             continue;
         }
-        let collection_name = collection.clone();
-        let (attrs, hash, range, fulltext, vector, spatial) = backfill_from_schema(db, &collection);
+        let (attributes, hash, range, fulltext, vector, spatial) =
+            backfill_from_schema(db, &collection);
         by_table.insert(
             table.clone(),
             SimpleTableDefinition {
-                table: table.clone(),
-                title: table.clone(),
-                collection,
-                attributes: attrs,
+                table,
+                attributes,
                 hash_indexed_fields: hash,
                 range_indexed_fields: range,
                 fulltext_fields: fulltext,
                 vector_fields: vector,
                 spatial_fields: spatial,
-                row_count: row_count_for_collection(db, &collection_name),
-                created_at: 0,
-                updated_at: 0,
+                row_count: row_count_for_collection(db, &collection),
+                collection: collection.clone(),
             },
         );
     }
-
     by_table.into_values().collect()
 }
 
@@ -755,7 +703,6 @@ fn export_table_schema(def: SimpleTableDefinition) -> SekejapTableSchemaExport {
     }
     SekejapTableSchemaExport {
         table: def.table,
-        title: def.title,
         collection: def.collection,
         attributes,
         hash_indexed_fields: stable_list(def.hash_indexed_fields),
@@ -812,15 +759,8 @@ fn imported_table_definition(table: &SekejapTableSchemaExport) -> Option<SimpleT
     } else {
         collection_slug
     };
-    let title = table.title.trim();
-    let now = now_ts();
     Some(SimpleTableDefinition {
         table: table_slug.clone(),
-        title: if title.is_empty() {
-            table_slug.clone()
-        } else {
-            title.to_string()
-        },
         collection,
         attributes: table.attributes.clone(),
         hash_indexed_fields: stable_list(table.hash_indexed_fields.clone()),
@@ -829,8 +769,6 @@ fn imported_table_definition(table: &SekejapTableSchemaExport) -> Option<SimpleT
         vector_fields: stable_list(table.vector_fields.clone()),
         spatial_fields: stable_list(table.spatial_fields.clone()),
         row_count: 0,
-        created_at: now,
-        updated_at: now,
     })
 }
 
@@ -841,15 +779,14 @@ pub fn apply_schema_export(
     export: &SekejapSchemaExport,
 ) -> Result<SekejapSchemaApplyReport, PlatformError> {
     encode_schema_export(export.clone())?;
-    let mut existing = load_catalog(data_root, owner, project)?;
-    let mut existing_tables = existing
-        .iter()
-        .map(|def| def.table.clone())
-        .collect::<BTreeSet<_>>();
     let mut tables_created = Vec::new();
     let mut tables_skipped = Vec::new();
     let db_arc = get_db(data_root, owner, project)?;
     let mut db = db_arc.write().unwrap();
+    let mut existing_tables = live_tables(&db)
+        .into_iter()
+        .map(|def| def.table)
+        .collect::<BTreeSet<_>>();
 
     for table in &export.tables {
         let Some(def) = imported_table_definition(table) else {
@@ -897,12 +834,9 @@ pub fn apply_schema_export(
         }
 
         existing_tables.insert(def.table.clone());
-        tables_created.push(def.table.clone());
-        existing.push(def);
+        tables_created.push(def.table);
     }
 
-    existing.sort_by(|a, b| a.table.cmp(&b.table));
-    save_catalog(data_root, owner, project, &existing)?;
     drop(db);
     sync_schema_to_repo(data_root, owner, project)?;
 
@@ -932,40 +866,6 @@ pub fn apply_schema_from_repo(
     apply_schema_export(data_root, owner, project, &document.spec).map(Some)
 }
 
-fn sync_catalog_with_live(
-    data_root: &Path,
-    owner: &str,
-    project: &str,
-) -> Result<Vec<SimpleTableDefinition>, PlatformError> {
-    let db_arc = get_db(data_root, owner, project)?;
-    let db = db_arc.read().unwrap();
-    let defs = load_catalog(data_root, owner, project)?;
-    let merged = merge_catalog_with_live(&db, defs);
-    drop(db);
-    save_catalog(data_root, owner, project, &merged)?;
-    Ok(merged)
-}
-
-fn write_json_if_changed(path: &Path, value: &Value) -> Result<bool, PlatformError> {
-    let encoded = serde_json::to_string_pretty(value).map_err(|err| {
-        PlatformError::new(
-            "PLATFORM_SEKEJAP_SCHEMA_EXPORT",
-            format!("failed to encode schema JSON: {err}"),
-        )
-    })? + "\n";
-    if path.exists() {
-        let existing = std::fs::read_to_string(path)?;
-        if existing == encoded {
-            return Ok(false);
-        }
-    }
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    atomic_write(path, encoded.as_bytes())?;
-    Ok(true)
-}
-
 fn write_bytes_if_changed(path: &Path, bytes: &[u8]) -> Result<bool, PlatformError> {
     if path.exists() && std::fs::read(path)? == bytes {
         return Ok(false);
@@ -979,7 +879,10 @@ pub fn sync_schema_to_repo(
     owner: &str,
     project: &str,
 ) -> Result<SekejapSchemaSyncReport, PlatformError> {
-    let defs = sync_catalog_with_live(data_root, owner, project)?;
+    let db_arc = get_db(data_root, owner, project)?;
+    let db = db_arc.read().unwrap();
+    let defs = live_tables(&db);
+    drop(db);
     let export = SekejapSchemaExport {
         database: DB_KIND.to_string(),
         connection_slug: BUILTIN_CONNECTION_SLUG.to_string(),
@@ -987,11 +890,9 @@ pub fn sync_schema_to_repo(
     };
     let layout = repo_layout();
     let schema_root = repo_schema_dir(data_root, owner, project);
-    let tables_dir = schema_root.join("tables");
-    std::fs::create_dir_all(&tables_dir)?;
+    std::fs::create_dir_all(&schema_root)?;
 
     let mut changed = false;
-    let mut files_written = Vec::new();
     let mut files_removed = Vec::new();
 
     let schema_path = schema_root.join(SCHEMA_DOCUMENT_FILE);
@@ -999,41 +900,24 @@ pub fn sync_schema_to_repo(
     if write_bytes_if_changed(&schema_path, &schema_bytes)? {
         changed = true;
     }
-    files_written.push(layout.schema_document_rel());
+    let files_written = vec![layout.schema_document_rel()];
 
-    let mut expected = BTreeSet::new();
-    for table in &export.tables {
-        let file_name = format!("{}.json", slug_segment(&table.table));
-        expected.insert(file_name.clone());
-        let table_path = tables_dir.join(&file_name);
-        let table_value = serde_json::to_value(table).map_err(|err| {
-            PlatformError::new(
-                "PLATFORM_SEKEJAP_SCHEMA_EXPORT",
-                format!("failed to serialise table schema: {err}"),
-            )
-        })?;
-        if write_json_if_changed(&table_path, &table_value)? {
-            changed = true;
-        }
-        files_written.push(format!("{}/tables/{file_name}", layout.schema));
-    }
-
-    if tables_dir.exists() {
+    // A `tables/` directory beside the schema document is the residue of an
+    // earlier writer. It duplicated what the schema document already carries,
+    // no reader in the tree ever opened it, and no contract names it. Clear it
+    // out of repositories that still hold one.
+    let tables_dir = schema_root.join("tables");
+    if tables_dir.is_dir() {
         for entry in std::fs::read_dir(&tables_dir)? {
-            let entry = entry?;
-            let path = entry.path();
-            if !path.is_file() || path.extension().and_then(|v| v.to_str()) != Some("json") {
-                continue;
-            }
-            let Some(name) = path.file_name().and_then(|v| v.to_str()) else {
-                continue;
-            };
-            if !expected.contains(name) {
-                std::fs::remove_file(&path)?;
-                changed = true;
-                files_removed.push(format!("{}/tables/{name}", layout.schema));
+            let path = entry?.path();
+            if path.is_file() && path.extension().and_then(|v| v.to_str()) == Some("json") {
+                if let Some(name) = path.file_name().and_then(|v| v.to_str()) {
+                    files_removed.push(format!("{}/tables/{name}", layout.schema));
+                }
             }
         }
+        std::fs::remove_dir_all(&tables_dir)?;
+        changed = true;
     }
 
     Ok(SekejapSchemaSyncReport {
@@ -1052,8 +936,7 @@ pub fn list_tables(
 ) -> Result<Vec<SimpleTableDefinition>, PlatformError> {
     let db_arc = get_db(data_root, owner, project)?;
     let db = db_arc.read().unwrap();
-    let defs = load_catalog(data_root, owner, project)?;
-    Ok(merge_catalog_with_live(&db, defs))
+    Ok(live_tables(&db))
 }
 
 pub fn create_table(
@@ -1100,11 +983,6 @@ pub fn create_table(
             .map_err(|err| PlatformError::new("PLATFORM_SEKEJAP_INDEX_CREATE", err.to_string()))?;
     }
 
-    let mut defs = load_catalog(data_root, owner, project)?;
-    defs.push(def.clone());
-    defs.sort_by(|a, b| a.table.cmp(&b.table));
-    save_catalog(data_root, owner, project, &defs)?;
-
     let mut created = def;
     created.row_count = row_count_for_collection(&db, &created.collection);
     drop(db);
@@ -1128,16 +1006,11 @@ pub fn delete_table(
 
     let db_arc = get_db(data_root, owner, project)?;
     let mut db = db_arc.write().unwrap();
-    let mut defs = merge_catalog_with_live(&db, load_catalog(data_root, owner, project)?);
-    let pos = defs.iter().position(|d| d.table == table_slug);
-    let def = match pos {
-        Some(i) => defs.remove(i),
-        None => {
-            return Err(PlatformError::new(
-                "PLATFORM_SEKEJAP_TABLE_NOT_FOUND",
-                format!("table '{}' not found", table_slug),
-            ));
-        }
+    let Some(def) = live_tables(&db).into_iter().find(|d| d.table == table_slug) else {
+        return Err(PlatformError::new(
+            "PLATFORM_SEKEJAP_TABLE_NOT_FOUND",
+            format!("table '{}' not found", table_slug),
+        ));
     };
 
     db.execute(&format!("DROP TABLE IF EXISTS {}", def.collection))
@@ -1154,7 +1027,6 @@ pub fn delete_table(
     }
     drop(db);
 
-    save_catalog(data_root, owner, project, &defs)?;
     sync_schema_to_repo(data_root, owner, project)?;
     Ok(())
 }
@@ -1174,19 +1046,14 @@ pub fn update_table(
         ));
     }
 
-    let mut defs = load_catalog(data_root, owner, project)?;
-    let pos = defs.iter().position(|d| d.table == table_slug);
-    let idx = match pos {
-        Some(i) => i,
-        None => {
-            return Err(PlatformError::new(
-                "PLATFORM_SEKEJAP_TABLE_NOT_FOUND",
-                format!("table '{}' not found", table_slug),
-            ));
-        }
+    let db_arc = get_db(data_root, owner, project)?;
+    let mut db = db_arc.write().unwrap();
+    let Some(existing) = live_tables(&db).into_iter().find(|d| d.table == table_slug) else {
+        return Err(PlatformError::new(
+            "PLATFORM_SEKEJAP_TABLE_NOT_FOUND",
+            format!("table '{}' not found", table_slug),
+        ));
     };
-
-    let existing = &defs[idx];
 
     let mut attrs = Vec::new();
     let mut seen = BTreeSet::new();
@@ -1204,17 +1071,10 @@ pub fn update_table(
             }
             index_types.push(key);
         }
-        let default_value = attr
-            .default_value
-            .as_deref()
-            .map(str::trim)
-            .filter(|v| !v.is_empty())
-            .map(ToString::to_string);
         attrs.push(CollectionAttribute {
             name,
             kind,
             index_types,
-            default_value,
         });
     }
 
@@ -1223,17 +1083,6 @@ pub fn update_table(
     let fulltext_fields = collect_index_fields(&attrs, &[], "fulltext");
     let vector_fields = collect_index_fields(&attrs, &[], "vector");
     let spatial_fields = collect_index_fields(&attrs, &[], "spatial");
-
-    let title = req
-        .title
-        .as_deref()
-        .map(str::trim)
-        .filter(|v| !v.is_empty())
-        .unwrap_or(&existing.title)
-        .to_string();
-
-    let db_arc = get_db(data_root, owner, project)?;
-    let mut db = db_arc.write().unwrap();
 
     // Add new columns that don't exist yet.
     let old_names: BTreeSet<String> = existing.attributes.iter().map(|a| a.name.clone()).collect();
@@ -1305,7 +1154,6 @@ pub fn update_table(
 
     let updated = SimpleTableDefinition {
         table: existing.table.clone(),
-        title,
         collection: existing.collection.clone(),
         attributes: attrs,
         hash_indexed_fields,
@@ -1314,12 +1162,8 @@ pub fn update_table(
         vector_fields,
         spatial_fields,
         row_count,
-        created_at: existing.created_at,
-        updated_at: now_ts(),
     };
 
-    defs[idx] = updated.clone();
-    save_catalog(data_root, owner, project, &defs)?;
     sync_schema_to_repo(data_root, owner, project)?;
 
     Ok(updated)
@@ -1340,8 +1184,6 @@ fn table_to_node(def: &SimpleTableDefinition) -> DbObjectNode {
             "fulltext_fields": def.fulltext_fields,
             "vector_fields": def.vector_fields,
             "spatial_fields": def.spatial_fields,
-            "created_at": def.created_at,
-            "updated_at": def.updated_at,
         }),
     }
 }
@@ -1497,113 +1339,6 @@ pub fn statement_changes_schema(sql: &str) -> bool {
     )
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum SchemaStatementKind {
-    CreateOrAlter,
-    Drop,
-}
-
-fn schema_statement_table(sql: &str) -> Option<(SchemaStatementKind, String)> {
-    let normalized = sql.trim_start().trim_end_matches(';');
-    let parts = normalized.split_whitespace().collect::<Vec<_>>();
-    if parts.len() < 3 {
-        return None;
-    }
-    let first = parts[0].to_ascii_uppercase();
-    let second = parts[1].to_ascii_uppercase();
-    let (kind, mut idx) = match (first.as_str(), second.as_str()) {
-        ("CREATE", "TABLE") | ("CREATE", "COLLECTION") => (SchemaStatementKind::CreateOrAlter, 2),
-        ("ALTER", "TABLE") | ("ALTER", "COLLECTION") => (SchemaStatementKind::CreateOrAlter, 2),
-        ("DROP", "TABLE") | ("DROP", "COLLECTION") => (SchemaStatementKind::Drop, 2),
-        _ => return None,
-    };
-    if matches!(kind, SchemaStatementKind::CreateOrAlter)
-        && parts
-            .get(idx)
-            .is_some_and(|part| part.eq_ignore_ascii_case("IF"))
-    {
-        idx += 3;
-    }
-    if matches!(kind, SchemaStatementKind::Drop)
-        && parts
-            .get(idx)
-            .is_some_and(|part| part.eq_ignore_ascii_case("IF"))
-    {
-        idx += 2;
-    }
-    let raw = parts.get(idx)?;
-    let name = raw
-        .trim_matches(['`', '"', '\''])
-        .trim_end_matches('(')
-        .trim_end_matches(';');
-    let table = slug_segment(name.rsplit('.').next().unwrap_or(name));
-    if table.is_empty() {
-        None
-    } else {
-        Some((kind, table))
-    }
-}
-
-fn refresh_catalog_table_from_live(
-    data_root: &Path,
-    owner: &str,
-    project: &str,
-    db: &sekejap::CoreDB,
-    table: &str,
-) -> Result<(), PlatformError> {
-    let table = slug_segment(table);
-    if table.is_empty() {
-        return Ok(());
-    }
-    let mut defs = load_catalog(data_root, owner, project)?;
-    let existing = defs.iter().find(|def| def.table == table).cloned();
-    defs.retain(|def| def.table != table);
-    let collection = existing
-        .as_ref()
-        .map(|def| def.collection.clone())
-        .unwrap_or_else(|| table.clone());
-    let (attrs, hash, range, fulltext, vector, spatial) = backfill_from_schema(db, &collection);
-    let now = now_ts();
-    defs.push(SimpleTableDefinition {
-        table: table.clone(),
-        title: existing
-            .as_ref()
-            .map(|def| def.title.clone())
-            .unwrap_or_else(|| table.clone()),
-        collection: collection.clone(),
-        attributes: attrs,
-        hash_indexed_fields: hash,
-        range_indexed_fields: range,
-        fulltext_fields: fulltext,
-        vector_fields: vector,
-        spatial_fields: spatial,
-        row_count: row_count_for_collection(db, &collection),
-        created_at: existing.as_ref().map(|def| def.created_at).unwrap_or(now),
-        updated_at: now,
-    });
-    defs.sort_by(|a, b| a.table.cmp(&b.table));
-    save_catalog(data_root, owner, project, &defs)
-}
-
-fn remove_catalog_table(
-    data_root: &Path,
-    owner: &str,
-    project: &str,
-    table: &str,
-) -> Result<(), PlatformError> {
-    let table = slug_segment(table);
-    if table.is_empty() {
-        return Ok(());
-    }
-    let mut defs = load_catalog(data_root, owner, project)?;
-    let before = defs.len();
-    defs.retain(|def| def.table != table);
-    if defs.len() != before {
-        save_catalog(data_root, owner, project, &defs)?;
-    }
-    Ok(())
-}
-
 fn statement_is_show(sql: &str) -> bool {
     let first = sql
         .trim_start()
@@ -1707,16 +1442,6 @@ pub fn execute_sql(
         }
         .map_err(|err| PlatformError::new("PLATFORM_SEKEJAP_QUERY_FAILED", err.to_string()))?;
         let should_sync_schema = statement_changes_schema(trimmed);
-        if let Some((kind, table)) = schema_statement_table(trimmed) {
-            match kind {
-                SchemaStatementKind::CreateOrAlter => {
-                    refresh_catalog_table_from_live(data_root, owner, project, &db, &table)?;
-                }
-                SchemaStatementKind::Drop => {
-                    remove_catalog_table(data_root, owner, project, &table)?;
-                }
-            }
-        }
         drop(db);
         if should_sync_schema {
             sync_schema_to_repo(data_root, owner, project)?;
@@ -1909,12 +1634,10 @@ mod tests {
         let tmp = tmp_root();
         let req = CreateSimpleTableRequest {
             table: "posts".to_string(),
-            title: Some("Posts".to_string()),
             attributes: vec![CollectionAttribute {
                 name: "title".to_string(),
                 kind: "string".to_string(),
                 index_types: vec!["hash".to_string()],
-                default_value: None,
             }],
             hash_indexed_fields: Vec::new(),
             range_indexed_fields: Vec::new(),
@@ -1938,12 +1661,10 @@ mod tests {
             "demo",
             &CreateSimpleTableRequest {
                 table: "posts".to_string(),
-                title: Some("Posts".to_string()),
                 attributes: vec![CollectionAttribute {
                     name: "title".to_string(),
                     kind: "string".to_string(),
                     index_types: vec!["hash".to_string()],
-                    default_value: None,
                 }],
                 hash_indexed_fields: Vec::new(),
                 range_indexed_fields: Vec::new(),
@@ -1954,11 +1675,14 @@ mod tests {
         let schema_path = tmp
             .path()
             .join("users/alice/demo/repo/schemas/sekejap/schema.json");
-        let table_path = tmp
-            .path()
-            .join("users/alice/demo/repo/schemas/sekejap/tables/posts.json");
         assert!(schema_path.is_file());
-        assert!(table_path.is_file());
+        // The schema document is the whole of it. No per-table sidecar is
+        // written beside it.
+        assert!(
+            !tmp.path()
+                .join("users/alice/demo/repo/schemas/sekejap/tables")
+                .exists()
+        );
 
         let schema: Value =
             serde_json::from_str(&std::fs::read_to_string(schema_path).expect("schema file"))
@@ -1980,25 +1704,21 @@ mod tests {
             "source",
             &CreateSimpleTableRequest {
                 table: "places".to_string(),
-                title: Some("Places".to_string()),
                 attributes: vec![
                     CollectionAttribute {
                         name: "name".to_string(),
                         kind: "string".to_string(),
                         index_types: vec!["hash".to_string(), "fulltext".to_string()],
-                        default_value: None,
                     },
                     CollectionAttribute {
                         name: "geometry".to_string(),
                         kind: "geo".to_string(),
                         index_types: vec!["spatial".to_string()],
-                        default_value: None,
                     },
                     CollectionAttribute {
                         name: "embedding".to_string(),
                         kind: "vector".to_string(),
                         index_types: vec!["vector".to_string()],
-                        default_value: None,
                     },
                 ],
                 hash_indexed_fields: Vec::new(),
@@ -2052,8 +1772,10 @@ mod tests {
         assert!(err.message.contains("schema_version"));
     }
 
+    /// A repository written by the earlier schema writer still carries a
+    /// `tables/` directory. Syncing clears it out, because nothing reads it.
     #[test]
-    fn sync_schema_removes_stale_table_files() {
+    fn sync_schema_clears_the_legacy_tables_directory() {
         let tmp = tmp_root();
         create_table(
             tmp.path(),
@@ -2061,21 +1783,22 @@ mod tests {
             "demo",
             &CreateSimpleTableRequest {
                 table: "posts".to_string(),
-                title: None,
                 attributes: Vec::new(),
                 hash_indexed_fields: Vec::new(),
                 range_indexed_fields: Vec::new(),
             },
         )
         .expect("create table");
-        let stale_path = tmp
+        let tables_dir = tmp
             .path()
-            .join("users/alice/demo/repo/schemas/sekejap/tables/stale.json");
+            .join("users/alice/demo/repo/schemas/sekejap/tables");
+        std::fs::create_dir_all(&tables_dir).expect("create legacy dir");
+        let stale_path = tables_dir.join("stale.json");
         std::fs::write(&stale_path, "{}").expect("stale file");
 
         let report = sync_schema_to_repo(tmp.path(), "alice", "demo").expect("sync schema");
         assert!(report.changed);
-        assert!(!stale_path.exists());
+        assert!(!tables_dir.exists());
         assert!(
             report
                 .files_removed
@@ -2097,11 +1820,6 @@ mod tests {
         }
 
         assert!(
-            load_catalog(tmp.path(), "alice", "demo")
-                .expect("catalog")
-                .is_empty()
-        );
-        assert!(
             list_tables(tmp.path(), "alice", "demo")
                 .expect("list before delete")
                 .iter()
@@ -2113,12 +1831,6 @@ mod tests {
         assert!(
             !list_tables(tmp.path(), "alice", "demo")
                 .expect("list after delete")
-                .iter()
-                .any(|item| item.table == "live_only")
-        );
-        assert!(
-            !load_catalog(tmp.path(), "alice", "demo")
-                .expect("catalog after delete")
                 .iter()
                 .any(|item| item.table == "live_only")
         );
@@ -2167,12 +1879,10 @@ mod tests {
             "demo",
             &CreateSimpleTableRequest {
                 table: "posts".to_string(),
-                title: None,
                 attributes: vec![CollectionAttribute {
                     name: "title".to_string(),
                     kind: "string".to_string(),
                     index_types: Vec::new(),
-                    default_value: None,
                 }],
                 hash_indexed_fields: Vec::new(),
                 range_indexed_fields: Vec::new(),
@@ -2215,12 +1925,10 @@ mod tests {
             "demo",
             &CreateSimpleTableRequest {
                 table: "posts".to_string(),
-                title: None,
                 attributes: vec![CollectionAttribute {
                     name: "title".to_string(),
                     kind: "string".to_string(),
                     index_types: Vec::new(),
-                    default_value: None,
                 }],
                 hash_indexed_fields: Vec::new(),
                 range_indexed_fields: Vec::new(),
@@ -2245,19 +1953,16 @@ mod tests {
             "demo",
             &CreateSimpleTableRequest {
                 table: "posts".to_string(),
-                title: None,
                 attributes: vec![
                     CollectionAttribute {
                         name: "title".to_string(),
                         kind: "string".to_string(),
                         index_types: Vec::new(),
-                        default_value: None,
                     },
                     CollectionAttribute {
                         name: "views".to_string(),
                         kind: "number".to_string(),
                         index_types: Vec::new(),
-                        default_value: None,
                     },
                 ],
                 hash_indexed_fields: Vec::new(),
@@ -2286,12 +1991,10 @@ mod tests {
             "demo",
             &CreateSimpleTableRequest {
                 table: "people".to_string(),
-                title: None,
                 attributes: vec![CollectionAttribute {
                     name: "name".to_string(),
                     kind: "string".to_string(),
                     index_types: Vec::new(),
-                    default_value: None,
                 }],
                 hash_indexed_fields: Vec::new(),
                 range_indexed_fields: Vec::new(),
@@ -2334,12 +2037,10 @@ mod tests {
             "demo",
             &CreateSimpleTableRequest {
                 table: "people".to_string(),
-                title: None,
                 attributes: vec![CollectionAttribute {
                     name: "name".to_string(),
                     kind: "string".to_string(),
                     index_types: Vec::new(),
-                    default_value: None,
                 }],
                 hash_indexed_fields: Vec::new(),
                 range_indexed_fields: Vec::new(),
@@ -2382,12 +2083,10 @@ mod tests {
             "demo",
             &CreateSimpleTableRequest {
                 table: "posts".to_string(),
-                title: None,
                 attributes: vec![CollectionAttribute {
                     name: "title".to_string(),
                     kind: "string".to_string(),
                     index_types: Vec::new(),
-                    default_value: None,
                 }],
                 hash_indexed_fields: Vec::new(),
                 range_indexed_fields: Vec::new(),

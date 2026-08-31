@@ -1893,9 +1893,6 @@ pub struct CollectionAttribute {
     /// Active index types: `hash` | `range` | `fulltext` | `vector` | `spatial`.
     #[serde(default)]
     pub index_types: Vec<String>,
-    /// SQL DEFAULT expression (e.g. `UUIDV4()`, `NOW()`, a literal value).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub default_value: Option<String>,
 }
 
 /// One managed Simple Table definition stored inside the project runtime DB.
@@ -1903,8 +1900,6 @@ pub struct CollectionAttribute {
 pub struct SimpleTableDefinition {
     /// Stable table slug.
     pub table: String,
-    /// Display title.
-    pub title: String,
     /// Backing collection name.
     pub collection: String,
     /// Attribute schema definitions.
@@ -1927,10 +1922,6 @@ pub struct SimpleTableDefinition {
     pub spatial_fields: Vec<String>,
     /// Live row count.
     pub row_count: usize,
-    /// Unix timestamp seconds.
-    pub created_at: i64,
-    /// Unix timestamp seconds.
-    pub updated_at: i64,
 }
 
 /// One generation of the credential encryption keyring.
@@ -2163,8 +2154,6 @@ pub struct ProjectDbConnectionTestResult {
 pub struct CreateSimpleTableRequest {
     /// Stable table slug.
     pub table: String,
-    /// Optional display title.
-    pub title: Option<String>,
     /// Attribute schema definitions.
     #[serde(default)]
     pub attributes: Vec<CollectionAttribute>,
@@ -2179,8 +2168,6 @@ pub struct CreateSimpleTableRequest {
 /// Update payload for an existing sekejap table (attributes + indexes).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct UpdateSimpleTableRequest {
-    /// Optional new display title.
-    pub title: Option<String>,
     /// New attribute schema definitions (replaces existing).
     #[serde(default)]
     pub attributes: Vec<CollectionAttribute>,

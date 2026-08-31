@@ -2274,31 +2274,26 @@ async fn project_bundle_installs_spatial_blog_with_sekejap_schema_across_two_ins
         "spatial-blogging-source",
         &CreateSimpleTableRequest {
             table: "posts".to_string(),
-            title: Some("Spatial Posts".to_string()),
             attributes: vec![
                 CollectionAttribute {
                     name: "title".to_string(),
                     kind: "string".to_string(),
                     index_types: vec!["hash".to_string(), "fulltext".to_string()],
-                    default_value: None,
                 },
                 CollectionAttribute {
                     name: "body".to_string(),
                     kind: "text".to_string(),
                     index_types: vec!["fulltext".to_string()],
-                    default_value: None,
                 },
                 CollectionAttribute {
                     name: "geometry".to_string(),
                     kind: "geo".to_string(),
                     index_types: vec!["spatial".to_string()],
-                    default_value: None,
                 },
                 CollectionAttribute {
                     name: "embedding".to_string(),
                     kind: "vector".to_string(),
                     index_types: vec!["vector".to_string()],
-                    default_value: None,
                 },
             ],
             hash_indexed_fields: Vec::new(),

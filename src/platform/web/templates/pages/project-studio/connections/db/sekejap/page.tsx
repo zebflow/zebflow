@@ -52,7 +52,6 @@ const INDEX_OPTIONS_BY_KIND = {
     { id: "range", label: "Range" },
   ],
   boolean: [{ id: "hash", label: "Exact" }],
-  text: [{ id: "fulltext", label: "Fulltext" }],
   json: [],
   vector: [{ id: "vector", label: "Index" }],
   geo: [{ id: "spatial", label: "Index" }],
@@ -62,7 +61,6 @@ const DEFAULT_ATTRIBUTE = {
   name: "",
   kind: "string",
   index_types: [],
-  default_value: "",
 };
 
 function requestJson(url, options = {}) {
@@ -974,7 +972,7 @@ function AttributeEditorRow({ item, onChange, onRemove }) {
 
   return (
     <div className="flex min-w-0 flex-col gap-3 rounded-lg border border-ui-border/80 bg-ui-bg-muted/40 p-3">
-      <div className="grid min-w-0 gap-3 md:grid-cols-[minmax(0,1fr)_11rem_minmax(0,1fr)]">
+      <div className="grid min-w-0 gap-3 md:grid-cols-[minmax(0,1fr)_11rem]">
         <Input
           className="min-w-0"
           value={item?.name || ""}
@@ -986,12 +984,6 @@ function AttributeEditorRow({ item, onChange, onRemove }) {
             <SelectOption key={kind} value={kind} label={kind} />
           ))}
         </Select>
-        <Input
-          className="min-w-0"
-          value={item?.default_value || ""}
-          onInput={(event) => onChange({ ...item, default_value: event?.target?.value || "" })}
-          placeholder="e.g. UUIDV4()"
-        />
       </div>
       <div className="flex min-w-0 flex-wrap items-center justify-between gap-3">
         <div className="flex min-h-9 min-w-0 flex-1 flex-wrap items-center gap-3 rounded-md border border-dashed border-ui-border px-3 py-2">
@@ -1034,8 +1026,6 @@ function CreateTableDialog({
   onOpenChange,
   tableSlug,
   setTableSlug,
-  title,
-  setTitle,
   attributes,
   setAttributes,
   status,
@@ -1067,25 +1057,15 @@ function CreateTableDialog({
           onSubmit={onSubmit}
           className="flex flex-col gap-4 px-6 py-4"
         >
-          <div className="grid gap-3 md:grid-cols-2">
-            <Field label="Table Slug">
-              <Input
-                value={tableSlug}
-                onInput={(event) => setTableSlug(event?.target?.value || "")}
-                placeholder="posts"
-                required
-                disabled={busy}
-              />
-            </Field>
-            <Field label="Title (Optional)">
-              <Input
-                value={title}
-                onInput={(event) => setTitle(event?.target?.value || "")}
-                placeholder="Blog Posts"
-                disabled={busy}
-              />
-            </Field>
-          </div>
+          <Field label="Table Slug">
+            <Input
+              value={tableSlug}
+              onInput={(event) => setTableSlug(event?.target?.value || "")}
+              placeholder="posts"
+              required
+              disabled={busy}
+            />
+          </Field>
 
           <Field label="Attributes">
             <div className="flex flex-col gap-3">
@@ -1501,7 +1481,6 @@ export default function Page(input) {
   const [createBusy, setCreateBusy] = useState(false);
   const [createStatus, setCreateStatus] = useState("Define the table and save it into the project-local sekejap store.");
   const [createTableSlug, setCreateTableSlug] = useState("");
-  const [createTitle, setCreateTitle] = useState("");
   const [createAttributes, setCreateAttributes] = useState([{ ...DEFAULT_ATTRIBUTE }]);
   const [reloadToken, setReloadToken] = useState(0);
   const [selectedPreviewRowKey, setSelectedPreviewRowKey] = useState("");
@@ -1525,7 +1504,6 @@ export default function Page(input) {
   const [validationNotice, setValidationNotice] = useState(null);
   const [pendingRelationDelete, setPendingRelationDelete] = useState(null);
   const [contentTab, setContentTab] = useState("data");
-  const [propsTitle, setPropsTitle] = useState("");
   const [propsAttributes, setPropsAttributes] = useState([]);
   const [propsBusy, setPropsBusy] = useState(false);
   const [propsStatus, setPropsStatus] = useState("");
@@ -1886,7 +1864,6 @@ export default function Page(input) {
     if (open) {
       setCreateStatus("Define the table and save it into the project-local sekejap store.");
       setCreateTableSlug("");
-      setCreateTitle("");
       setCreateAttributes([{ ...DEFAULT_ATTRIBUTE }]);
     }
   }
@@ -1894,13 +1871,11 @@ export default function Page(input) {
   async function handleCreateTable(event) {
     event?.preventDefault?.();
     const table = String(createTableSlug || "").trim();
-    const title = String(createTitle || "").trim();
     const attributes = (createAttributes || [])
       .map((item) => ({
         name: String(item?.name || "").trim(),
         kind: String(item?.kind || "string"),
         index_types: Array.isArray(item?.index_types) ? item.index_types : [],
-        default_value: String(item?.default_value || "").trim() || null,
       }))
       .filter((item) => item.name);
 
@@ -1916,7 +1891,6 @@ export default function Page(input) {
         method: "POST",
         body: JSON.stringify({
           table,
-          title: title || null,
           attributes,
         }),
       });
@@ -2025,13 +1999,11 @@ export default function Page(input) {
   // Sync properties form when active table changes
   useEffect(() => {
     if (!activeTable) return;
-    setPropsTitle(activeTable.title || activeTable.table || "");
     setPropsAttributes(
       (activeTable.attributes || []).map((a) => ({
         name: a.name || "",
         kind: a.kind || "string",
         index_types: Array.isArray(a.index_types) ? [...a.index_types] : [],
-        default_value: a.default_value || "",
       }))
     );
     setPropsStatus("");
@@ -2044,13 +2016,9 @@ export default function Page(input) {
         name: String(item?.name || "").trim(),
         kind: String(item?.kind || "string"),
         index_types: Array.isArray(item?.index_types) ? item.index_types : [],
-        default_value: String(item?.default_value || "").trim() || null,
       }))
       .filter((item) => item.name);
-    return {
-      title: String(propsTitle || "").trim() || null,
-      attributes: attrs,
-    };
+    return { attributes: attrs };
   }
 
   async function saveActiveTableProperties(status = "Saving…") {
@@ -2635,15 +2603,6 @@ export default function Page(input) {
                             ) : contentTab === "properties" && activeTable ? (
                               <div className="flex min-h-0 flex-1 flex-col overflow-y-auto px-4 py-4">
                                 <form onSubmit={handleUpdateTable} className="flex flex-col gap-5">
-                                  <Field>
-                                    <label className="text-xs font-medium uppercase tracking-[0.14em] text-ui-text-soft">Title</label>
-                                    <Input
-                                      value={propsTitle}
-                                      onInput={(e) => setPropsTitle(e.currentTarget.value)}
-                                      placeholder={activeTable.table}
-                                    />
-                                  </Field>
-
                                   <div className="flex flex-col gap-3">
                                     <div className="flex items-center justify-between">
                                       <p className="text-xs font-medium uppercase tracking-[0.14em] text-ui-text-soft">Attributes</p>
@@ -3127,8 +3086,6 @@ export default function Page(input) {
           onOpenChange={setCreateOpen}
           tableSlug={createTableSlug}
           setTableSlug={setCreateTableSlug}
-          title={createTitle}
-          setTitle={setCreateTitle}
           attributes={createAttributes}
           setAttributes={setCreateAttributes}
           status={createStatus}

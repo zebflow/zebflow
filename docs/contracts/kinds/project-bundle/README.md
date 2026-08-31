@@ -34,8 +34,10 @@ Fixed rules, riding on sealed ground elsewhere:
 
 ### Schema and initial data
 
-Schema and initial-data files are authored state in `repo/` (the layout's
-`initial_data` directories) — no class of their own.
+Schema and initial-data files ride inside `repo/` — no class of their own.
+The initial-data files (the layout's `initial_data` directories) are authored
+state; the structure documents under the layout's `schema` and `sqlite_schema`
+directories are written by the platform from the live store.
 
 | Bundle carries | On import, the database is |
 | --- | --- |
