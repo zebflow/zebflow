@@ -59,14 +59,21 @@ function LayerDetail({ layer, api, onBack }) {
     ? `${api.base_public}${layer.path.startsWith("/") ? "" : "/"}${layer.path}`
     : null;
 
+  // The public /stats endpoint reports only the columns this layer exposes.
+  // Choosing what to expose needs the whole source, so the operator view is
+  // read from the project API instead.
+  const layerStatsUrl = layer?.layer_id
+    ? `${api.layers}/${encodeURIComponent(layer.layer_id)}/stats`
+    : null;
+
   useEffect(() => {
-    if (!layerPublicUrl) return;
+    if (!layerStatsUrl) return;
     setLoading(true);
     setError(null);
-    requestJson(`${layerPublicUrl}/stats`)
+    requestJson(layerStatsUrl)
       .then((data) => { setStats(data); setLoading(false); })
       .catch((err) => { setError(String(err?.message || err)); setLoading(false); });
-  }, [layerPublicUrl]);
+  }, [layerStatsUrl]);
 
   useEffect(() => {
     if (!layerPublicUrl) return;
@@ -80,6 +87,8 @@ function LayerDetail({ layer, api, onBack }) {
   const columns = stats?.columns ?? [];
   const geoCol = columns.find((c) => c.data_type === "geometry" || c.name === "geometry" || c.name === "geom");
   const attrColumns = columns.filter((c) => c !== geoCol);
+  const exposed = stats?.allowed_properties ?? layer?.allowed_properties ?? [];
+  const isExposed = (name) => exposed.some((p) => p === name);
 
   const mapLayers = [];
   if (previewData?.features?.length) {
@@ -196,6 +205,18 @@ function LayerDetail({ layer, api, onBack }) {
               <p className="text-ui-text-muted text-[11px] uppercase tracking-wider">Source</p>
               <p className="text-ui-text font-medium truncate">{layer.source_path || "—"}</p>
             </div>
+            <div className="rounded border border-ui-border/60 px-3 py-2 col-span-3">
+              <p className="text-ui-text-muted text-[11px] uppercase tracking-wider">Public properties</p>
+              {exposed.length ? (
+                <div className="flex flex-wrap gap-1 mt-1">
+                  {exposed.map((name) => (
+                    <Badge key={`exposed-${name}`} variant="secondary" label={name} />
+                  ))}
+                </div>
+              ) : (
+                <p className="text-ui-text font-medium">Geometry only — no properties are served</p>
+              )}
+            </div>
           </div>
         )}
       </div>
@@ -210,6 +231,7 @@ function LayerDetail({ layer, api, onBack }) {
               <StudioThead>
                 <tr>
                   <StudioTh>Field</StudioTh>
+                  <StudioTh>Public</StudioTh>
                   <StudioTh>Type</StudioTh>
                   <StudioTh>Cardinality</StudioTh>
                   <StudioTh>Min</StudioTh>
@@ -223,6 +245,12 @@ function LayerDetail({ layer, api, onBack }) {
                   <tr key={`col-${col.name}-${i}`}>
                     <StudioTd>
                       <span className="font-mono text-xs">{col.name}</span>
+                    </StudioTd>
+                    <StudioTd>
+                      <Badge
+                        variant={isExposed(col.name) ? "default" : "secondary"}
+                        label={isExposed(col.name) ? "Public" : "Hidden"}
+                      />
                     </StudioTd>
                     <StudioTd>
                       <Badge variant="secondary" label={col.data_type || "unknown"} />

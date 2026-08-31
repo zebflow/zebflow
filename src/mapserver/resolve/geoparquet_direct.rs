@@ -1210,21 +1210,10 @@ pub fn render_mvt_direct(
         })
         .unwrap_or_default();
 
-    // Find parquet leaf indices for property columns
-    let prop_pq_indices: Vec<usize> = if allowed_properties.is_empty() {
-        // Include all non-geometry, non-bbox columns
-        let ps = builder.parquet_schema();
-        let skip_names: &[&str] = &[
-            "xmin", "ymin", "xmax", "ymax", "min_x", "min_y", "max_x", "max_y",
-        ];
-        (0..ps.num_columns())
-            .filter(|&i| {
-                let col_desc = ps.column(i);
-                let name = col_desc.name();
-                !GEOM_NAMES.contains(&name) && !skip_names.contains(&name)
-            })
-            .collect()
-    } else {
+    // Find parquet leaf indices for property columns. `allowed_properties` is
+    // closed by default (contract `MapPublishManifest`): an empty list projects
+    // no property column at all, so a tile carries geometry alone.
+    let prop_pq_indices: Vec<usize> = {
         let ps = builder.parquet_schema();
         allowed_properties
             .iter()
@@ -1370,10 +1359,7 @@ fn mvt_encode_batches(
                 {
                     return false;
                 }
-                if !allowed_properties.is_empty() {
-                    return allowed_properties.iter().any(|p| p == name);
-                }
-                true
+                super::property_is_public(allowed_properties, name)
             })
             .map(|(idx, field)| (field.name().clone(), idx))
             .collect();
@@ -1475,6 +1461,120 @@ fn arrow_value_to_mvt(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Build an optimized GeoParquet (bbox columns, so `render_mvt_direct`
+    /// takes its fast path) from a two-column GeoJSON source.
+    fn optimized_layer(dir: &std::path::Path) -> std::path::PathBuf {
+        let source = dir.join("roads.geojson");
+        std::fs::write(
+            &source,
+            r#"{
+            "type": "FeatureCollection",
+            "features": [
+                {
+                    "type": "Feature",
+                    "properties": {"name": "Jalan Sudirman", "owner_phone": "+62811000000"},
+                    "geometry": {"type": "Point", "coordinates": [106.8, -6.2]}
+                }
+            ]
+        }"#,
+        )
+        .expect("source geojson");
+        let raw = dir.join("roads.raw.parquet");
+        let optimized = dir.join("roads.spatial.parquet");
+        super::super::geoparquet_optimize::convert_geojson_to_geoparquet(&source, &raw)
+            .expect("convert");
+        super::super::geoparquet_optimize::optimize_geoparquet(&raw, &optimized).expect("optimize");
+        optimized
+    }
+
+    fn mvt_text(gz: &[u8]) -> String {
+        use std::io::Read;
+        let mut decoder = flate2::read::GzDecoder::new(gz);
+        let mut out = Vec::new();
+        decoder.read_to_end(&mut out).expect("gunzip");
+        String::from_utf8_lossy(&out).into_owned()
+    }
+
+    #[test]
+    fn direct_geoparquet_tiles_carry_only_the_chosen_properties() {
+        let tmp = tempfile::tempdir().expect("tmp");
+        let optimized = optimized_layer(tmp.path());
+        let bbox = [106.0, -7.0, 107.0, -6.0];
+
+        let named = render_mvt_direct(
+            &optimized,
+            bbox,
+            "roads",
+            Some(12),
+            None,
+            &["name".to_string()],
+            100,
+        )
+        .expect("named tile");
+        let named = mvt_text(&named);
+        assert!(named.contains("name"));
+        assert!(!named.contains("owner_phone"));
+        assert!(!named.contains("+62811000000"));
+
+        // Contract `MapPublishManifest`: an empty list is geometry only, not a
+        // wildcard. Before the closed default, this tile carried every column.
+        let closed =
+            render_mvt_direct(&optimized, bbox, "roads", Some(12), None, &[], 100).expect("tile");
+        let closed = mvt_text(&closed);
+        assert!(!closed.contains("owner_phone"));
+        assert!(!closed.contains("+62811000000"));
+        assert!(!closed.contains("Jalan Sudirman"));
+    }
+
+    // `resolve_from_geoparquet` drives DataFusion with `block_in_place`, which
+    // needs a multi-thread runtime.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn datafusion_geoparquet_features_carry_only_the_chosen_properties() {
+        use crate::mapserver::publish::manifest::{PublishedLayerManifest, SourceKind};
+
+        let tmp = tempfile::tempdir().expect("tmp");
+        let optimized = optimized_layer(tmp.path());
+        let manifest = PublishedLayerManifest {
+            layer_id: "roads".to_string(),
+            path: "roads".to_string(),
+            source_kind: SourceKind::GeoParquet,
+            source_ref: optimized.display().to_string(),
+            mode: "features".to_string(),
+            min_zoom: None,
+            max_zoom: None,
+            bbox_required: false,
+            max_features: 100,
+            allowed_properties: Vec::new(),
+            style: None,
+            filter: None,
+            function_slug: None,
+            cache_ttl_secs: None,
+        };
+        let request = super::super::ResolveRequest {
+            layer_id: "roads".to_string(),
+            bbox: None,
+            zoom: None,
+            limit: Some(100),
+            filter: None,
+        };
+
+        let closed = super::super::geoparquet::resolve_from_geoparquet(&manifest, &request)
+            .expect("closed resolve");
+        assert_eq!(closed.count, 1);
+        assert_eq!(closed.features[0]["properties"], serde_json::json!({}));
+
+        let named = PublishedLayerManifest {
+            allowed_properties: vec!["name".to_string()],
+            ..manifest
+        };
+        let named = super::super::geoparquet::resolve_from_geoparquet(&named, &request)
+            .expect("named resolve");
+        assert_eq!(
+            named.features[0]["properties"],
+            serde_json::json!({ "name": "Jalan Sudirman" })
+        );
+    }
 
     #[test]
     fn bbox_overlaps_intersecting() {

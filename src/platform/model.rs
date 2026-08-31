@@ -1932,6 +1932,56 @@ pub struct SimpleTableDefinition {
     pub updated_at: i64,
 }
 
+/// One generation of the credential encryption keyring.
+///
+/// Never carries key material — only which generations exist and which one new
+/// writes use. The instance key is not in the catalog and is not in any API.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CredentialKeyGeneration {
+    /// The number every `zfc1:<key_id>:…` envelope written under it names.
+    pub key_id: u32,
+    /// When this generation was minted.
+    pub created_at: i64,
+    /// Whether new writes use it.
+    pub current: bool,
+}
+
+/// The state of this instance's credential encryption keyring.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CredentialKeyringReport {
+    /// `file` or `environment` — where the instance key came from.
+    pub source: String,
+    /// Where the instance key file is, whether or not it is the source in use.
+    pub key_file: String,
+    /// The generation new writes use.
+    pub current_key_id: u32,
+    /// Every generation, oldest first.
+    pub generations: Vec<CredentialKeyGeneration>,
+}
+
+/// What a re-encryption sweep did.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CredentialSweepReport {
+    /// Generation everything now sits under.
+    pub key_id: u32,
+    /// Credentials looked at.
+    pub examined: usize,
+    /// Credentials rewritten under [`Self::key_id`].
+    pub rewritten: usize,
+    /// Of those, ones that had been stored as plaintext before this release.
+    pub migrated_from_plaintext: usize,
+    /// Whether the catalog file was rebuilt afterwards.
+    ///
+    /// Re-encrypting a row overwrites the *row*; SQLite keeps the page the old
+    /// bytes were on until it reuses it, and a WAL frame keeps them longer
+    /// still. That is invisible to every query and perfectly visible to
+    /// `strings catalog.db`, which is the exact reader this feature exists to
+    /// defeat — so the sweep checkpoints and `VACUUM`s. Best effort: a rebuild
+    /// that could not take the lock leaves the re-encryption done and says so
+    /// here rather than failing the operation.
+    pub compacted: bool,
+}
+
 /// Create payload for one project credential.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct UpsertProjectCredentialRequest {

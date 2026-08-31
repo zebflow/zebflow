@@ -18,6 +18,9 @@ use serde_json::{Value, json};
 
 use super::file_ref::file_ref_to_rel_path_or_string;
 use super::util::metadata_scope;
+use crate::contracts::kinds::MapserverLayerRecord as LayerRecord;
+use crate::mapserver::publish::registry;
+use crate::mapserver::publish::registry::DEFAULT_INSTANCE;
 use crate::pipeline::model::NodeCapability;
 use crate::pipeline::{
     NodeDefinition, NodeFieldDataSource, PipelineError,
@@ -33,41 +36,26 @@ pub const LIST_KIND: &str = "n.ms.list";
 
 const INPUT_PIN_IN: &str = "in";
 const OUTPUT_PIN_OUT: &str = "out";
-const DEFAULT_INSTANCE: &str = "default-mapserver";
 
-// ── Layer record (mirrors web/mod.rs MapserverLayerRecord, kept in sync) ─────
+// ── Layer record ────────────────────────────────────────────────────────────
+//
+// There is one definition, the contract's. A hand-mirrored copy lived here and
+// had already drifted, which is how two writers ended up disagreeing about the
+// same file.
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct LayerRecord {
-    pub layer_id: String,
-    pub path: String,
-    pub source_path: String,
-    #[serde(default)]
-    pub source_kind: String,
-    #[serde(default)]
-    pub artifact_manifest_path: Option<String>,
-    pub mode: String,
-    #[serde(default)]
-    pub min_zoom: Option<u8>,
-    #[serde(default)]
-    pub max_zoom: Option<u8>,
-    pub bbox_required: bool,
-    pub max_features: usize,
-    pub allowed_properties: Vec<String>,
-    #[serde(default)]
-    pub feature_count: Option<usize>,
-    #[serde(default)]
-    pub chunk_count: Option<usize>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub style: Option<Value>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub filter: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub column_stats_path: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub function_slug: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub cache_ttl_secs: Option<u64>,
+fn layers_path(
+    platform: &PlatformService,
+    owner: &str,
+    project: &str,
+) -> Result<std::path::PathBuf, PipelineError> {
+    let layout = platform
+        .file
+        .ensure_project_layout(owner, project)
+        .map_err(|e| PipelineError::new("FW_NODE_MS", e.to_string()))?;
+    Ok(registry::layers_manifest_path(
+        &layout.files_dir,
+        DEFAULT_INSTANCE,
+    ))
 }
 
 fn read_layers(
@@ -75,21 +63,8 @@ fn read_layers(
     owner: &str,
     project: &str,
 ) -> Result<Vec<LayerRecord>, PipelineError> {
-    let layout = platform
-        .file
-        .ensure_project_layout(owner, project)
-        .map_err(|e| PipelineError::new("FW_NODE_MS", e.to_string()))?;
-    let path = layout
-        .files_dir
-        .join("mapserver")
-        .join(format!("{DEFAULT_INSTANCE}.layers.json"));
-    if !path.exists() {
-        return Ok(Vec::new());
-    }
-    let raw = std::fs::read_to_string(&path)
-        .map_err(|e| PipelineError::new("FW_NODE_MS_READ", e.to_string()))?;
-    serde_json::from_str::<Vec<LayerRecord>>(&raw)
-        .map_err(|e| PipelineError::new("FW_NODE_MS_PARSE", e.to_string()))
+    let path = layers_path(platform, owner, project)?;
+    registry::read_layers(&path).map_err(|e| PipelineError::new("FW_NODE_MS_PARSE", e.to_string()))
 }
 
 fn write_layers(
@@ -98,21 +73,13 @@ fn write_layers(
     project: &str,
     items: &[LayerRecord],
 ) -> Result<(), PipelineError> {
-    let layout = platform
-        .file
-        .ensure_project_layout(owner, project)
-        .map_err(|e| PipelineError::new("FW_NODE_MS", e.to_string()))?;
-    let path = layout
-        .files_dir
-        .join("mapserver")
-        .join(format!("{DEFAULT_INSTANCE}.layers.json"));
+    let path = layers_path(platform, owner, project)?;
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
             .map_err(|e| PipelineError::new("FW_NODE_MS_WRITE", e.to_string()))?;
     }
-    let raw = serde_json::to_string_pretty(items)
-        .map_err(|e| PipelineError::new("FW_NODE_MS_WRITE", e.to_string()))?;
-    std::fs::write(path, raw).map_err(|e| PipelineError::new("FW_NODE_MS_WRITE", e.to_string()))
+    registry::write_layers(&path, DEFAULT_INSTANCE, items)
+        .map_err(|e| PipelineError::new("FW_NODE_MS_WRITE", e.to_string()))
 }
 
 fn layer_to_json(owner: &str, project: &str, record: &LayerRecord) -> Value {
@@ -136,7 +103,6 @@ fn layer_to_json(owner: &str, project: &str, record: &LayerRecord) -> Value {
         "chunk_count": record.chunk_count,
         "style": record.style,
         "filter": record.filter,
-        "column_stats_path": record.column_stats_path,
         "function_slug": record.function_slug,
         "cache_ttl_secs": record.cache_ttl_secs,
     })
@@ -319,7 +285,7 @@ pub fn publish_definition() -> NodeDefinition {
             scalar_flag(
                 "--allowed-properties",
                 "allowed_properties",
-                "Comma-separated property whitelist.",
+                "Comma-separated list of source properties the public may see. Empty means geometry only.",
             ),
             scalar_flag("--min-zoom", "min_zoom", "Minimum zoom visibility."),
             scalar_flag("--max-zoom", "max_zoom", "Maximum zoom visibility."),
@@ -405,7 +371,7 @@ pub fn publish_definition() -> NodeDefinition {
             text_field(
                 "allowed_properties",
                 "Allowed Properties",
-                "Comma-separated property whitelist. Empty = all.",
+                "Comma-separated list of source properties the public may see. Empty means geometry only — no properties are served.",
             ),
             NodeFieldDef {
                 name: "min_zoom".to_string(),
@@ -747,7 +713,6 @@ impl Node {
         let mut feature_count: Option<usize> = None;
         let mut chunk_count: Option<usize> = None;
         let mut optimization_info: Option<Value> = None;
-        let mut column_stats_path: Option<String> = None;
 
         // ── Auto-detect format and optimize ──────────────────────────────
         let source_abs = layout.files_dir.join(source_path.trim_start_matches('/'));
@@ -820,7 +785,6 @@ impl Node {
 
                     source_path = optimized_rel;
                     feature_count = Some(report.rows);
-                    column_stats_path = Some(stats_rel.clone());
                     optimization_info = Some(json!({
                         "applied": true,
                         "source_format": "parquet",
@@ -899,7 +863,6 @@ impl Node {
 
                 feature_count = Some(convert_report.feature_count);
                 source_path = optimized_rel;
-                column_stats_path = Some(stats_rel.clone());
                 optimization_info = Some(json!({
                     "applied": true,
                     "source_format": "geojson",
@@ -1029,7 +992,7 @@ impl Node {
         // Upsert into registry
         let record = LayerRecord {
             layer_id: name.to_string(),
-            path: normalize_layer_path(path),
+            path: registry::normalize_layer_path(path).to_string(),
             source_path: source_path.clone(),
             source_kind: effective_kind,
             artifact_manifest_path,
@@ -1043,7 +1006,6 @@ impl Node {
             chunk_count,
             style,
             filter,
-            column_stats_path,
             function_slug: if is_function_mode {
                 self.config.function.clone()
             } else {
@@ -1188,13 +1150,6 @@ fn require_non_empty<'a>(
         return Err(PipelineError::new(code, format!("{flag} is required")));
     }
     Ok(trimmed)
-}
-
-fn normalize_layer_path(path: &str) -> String {
-    path.trim()
-        .trim_start_matches('/')
-        .trim_end_matches('/')
-        .to_string()
 }
 
 fn source_path_from_payload(payload: &Value) -> Option<String> {

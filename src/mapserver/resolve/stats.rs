@@ -12,8 +12,27 @@ use serde_json::{Value, json};
 use crate::mapserver::publish::manifest::{PublishedLayerManifest, SourceKind};
 use crate::mapserver::resolve::geoparquet_optimize::ColumnStats;
 
+/// Who is asking for a layer's column statistics.
+///
+/// Column names, min/max, and sampled top values are source data. Contract
+/// `MapPublishManifest` puts them behind `allowed_properties` exactly as it
+/// puts feature properties there, so the public endpoint reports only the
+/// columns the operator chose to expose. The operator view is what the publish
+/// UI needs to make that choice, and it is reached through an authenticated
+/// project route.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StatsAudience {
+    /// `/ms/{owner}/{project}/{layer}/stats` — pruned to `allowed_properties`.
+    Public,
+    /// The project's own publish UI — every column in the source.
+    Operator,
+}
+
 /// Compute layer statistics and capabilities from a published manifest.
-pub fn compute_layer_stats(manifest: &PublishedLayerManifest) -> Result<Value, String> {
+pub fn compute_layer_stats(
+    manifest: &PublishedLayerManifest,
+    audience: StatsAudience,
+) -> Result<Value, String> {
     let (row_count, columns) = match manifest.source_kind {
         SourceKind::GeoParquet => stats_from_geoparquet(Path::new(&manifest.source_ref))?,
         SourceKind::GeoJsonFile => stats_from_geojson_file(Path::new(&manifest.source_ref))?,
@@ -25,6 +44,19 @@ pub fn compute_layer_stats(manifest: &PublishedLayerManifest) -> Result<Value, S
             // Function-backed layers have no static source — return empty stats
             (0, Vec::new())
         }
+    };
+
+    let columns: Vec<ColumnStats> = match audience {
+        StatsAudience::Operator => columns,
+        StatsAudience::Public => columns
+            .into_iter()
+            .filter(|column| {
+                crate::mapserver::resolve::property_is_public(
+                    &manifest.allowed_properties,
+                    &column.name,
+                )
+            })
+            .collect(),
     };
 
     let columns_json: Vec<Value> = columns
@@ -56,7 +88,7 @@ pub fn compute_layer_stats(manifest: &PublishedLayerManifest) -> Result<Value, S
         SourceKind::GeoJsonFunction => "geojson_function",
     };
 
-    Ok(json!({
+    let mut out = json!({
         "layer_id": manifest.layer_id,
         "source_kind": source_kind_str,
         "row_count": row_count,
@@ -68,7 +100,13 @@ pub fn compute_layer_stats(manifest: &PublishedLayerManifest) -> Result<Value, S
             "zxy_tiles": true,
             "point_query": true
         }
-    }))
+    });
+    if audience == StatsAudience::Operator {
+        // The operator must be able to see which columns are exposed today
+        // before ticking another one.
+        out["allowed_properties"] = json!(manifest.allowed_properties);
+    }
+    Ok(out)
 }
 
 /// Read statistics from parquet footer metadata — zero data scan.
@@ -343,4 +381,90 @@ fn stats_from_geojson_file(source_path: &Path) -> Result<(usize, Vec<ColumnStats
         .collect();
 
     Ok((row_count, columns))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+
+    use super::*;
+
+    fn geojson_layer(dir: &Path, allowed: Vec<String>) -> PublishedLayerManifest {
+        let source = dir.join("layer.geojson");
+        fs::write(
+            &source,
+            serde_json::to_string(&json!({
+                "type": "FeatureCollection",
+                "features": [
+                    {
+                        "type": "Feature",
+                        "properties": { "name": "A", "owner_phone": "+61400000000" },
+                        "geometry": { "type": "Point", "coordinates": [106.0, -6.0] }
+                    },
+                    {
+                        "type": "Feature",
+                        "properties": { "name": "B", "owner_phone": "+61400000001" },
+                        "geometry": { "type": "Point", "coordinates": [107.0, -6.1] }
+                    }
+                ]
+            }))
+            .expect("source json"),
+        )
+        .expect("write source");
+        PublishedLayerManifest {
+            layer_id: "adm1".to_string(),
+            path: "adm1".to_string(),
+            source_kind: SourceKind::GeoJsonFile,
+            source_ref: source.display().to_string(),
+            mode: "features".to_string(),
+            min_zoom: None,
+            max_zoom: None,
+            bbox_required: false,
+            max_features: 100,
+            allowed_properties: allowed,
+            style: None,
+            filter: None,
+            function_slug: None,
+            cache_ttl_secs: None,
+        }
+    }
+
+    fn column_names(stats: &Value) -> Vec<String> {
+        stats["columns"]
+            .as_array()
+            .expect("columns array")
+            .iter()
+            .map(|column| column["name"].as_str().unwrap_or_default().to_string())
+            .collect()
+    }
+
+    #[test]
+    fn public_stats_report_only_the_columns_the_layer_exposes() {
+        // Column names, min/max, and sampled top values are source data, so
+        // contract `MapPublishManifest` puts them behind `allowed_properties`
+        // exactly as it puts feature properties there.
+        let tmp = tempfile::tempdir().expect("tmp");
+
+        let named = geojson_layer(tmp.path(), vec!["name".to_string()]);
+        let public = compute_layer_stats(&named, StatsAudience::Public).expect("public stats");
+        assert_eq!(column_names(&public), vec!["name".to_string()]);
+        assert!(public.get("allowed_properties").is_none());
+
+        let operator =
+            compute_layer_stats(&named, StatsAudience::Operator).expect("operator stats");
+        let mut operator_columns = column_names(&operator);
+        operator_columns.sort();
+        assert_eq!(
+            operator_columns,
+            vec!["name".to_string(), "owner_phone".to_string()]
+        );
+        assert_eq!(operator["allowed_properties"], json!(["name"]));
+
+        // An unconfigured layer exposes nothing, the same closed default the
+        // feature paths use.
+        let closed = geojson_layer(tmp.path(), Vec::new());
+        let public = compute_layer_stats(&closed, StatsAudience::Public).expect("public stats");
+        assert!(column_names(&public).is_empty());
+        assert_eq!(public["row_count"], json!(2));
+    }
 }

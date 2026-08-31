@@ -420,7 +420,7 @@ fn encode_geojson_feature(
     let mut tag_pairs = Vec::new();
     if let Some(props) = feature.get("properties").and_then(|p| p.as_object()) {
         for (key, val) in props {
-            if !allowed_properties.is_empty() && !allowed_properties.iter().any(|p| p == key) {
+            if !super::property_is_public(allowed_properties, key) {
                 continue;
             }
             let mvt_val = json_value_to_mvt(val)?;
@@ -969,13 +969,25 @@ mod tests {
         })];
         let bbox = [0.0, 0.0, 1.0, 1.0];
 
-        // With allowed_properties filter
-        let mvt_filtered = features_to_mvt("filtered", &features, &bbox, &["name".to_string()]);
-        // Without filter (all properties)
-        let mvt_all = features_to_mvt("all", &features, &bbox, &[]);
+        fn contains(haystack: &[u8], needle: &str) -> bool {
+            haystack
+                .windows(needle.len())
+                .any(|window| window == needle.as_bytes())
+        }
 
-        // Filtered should be smaller (fewer properties encoded)
-        assert!(mvt_filtered.len() < mvt_all.len());
+        // A named list encodes exactly the named keys.
+        let named = features_to_mvt("filtered", &features, &bbox, &["name".to_string()]);
+        assert!(contains(&named, "name"));
+        assert!(!contains(&named, "secret"));
+        assert!(!contains(&named, "value"));
+
+        // Contract `MapPublishManifest`: an empty list is geometry only, not
+        // a wildcard. A tile from an unconfigured layer carries no key at all.
+        let empty = features_to_mvt("all", &features, &bbox, &[]);
+        assert!(!contains(&empty, "name"));
+        assert!(!contains(&empty, "secret"));
+        assert!(!contains(&empty, "value"));
+        assert!(empty.len() < named.len());
     }
 
     #[test]

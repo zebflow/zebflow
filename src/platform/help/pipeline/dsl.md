@@ -813,7 +813,7 @@ Dynamic map layer management for the project layer registry. Layers published vi
 - `--source-kind <kind>` — `geojson_file` (default), `geojson_artifact`, `geoparquet`
 - `--bbox-required` — enforce bbox in queries (default: true)
 - `--max-features <n>` — hard feature cap per query (default: 1000)
-- `--allowed-properties <csv>` — property whitelist (empty = all)
+- `--allowed-properties <csv>` — the source properties the public may see. Empty means **geometry only, no properties**; there is no wildcard, so a column added by a later re-upload stays hidden until it is named here
 - `--min-zoom <n>` / `--max-zoom <n>` — zoom visibility range
 - `--build-artifact` — auto-build chunked artifact for large GeoJSON files
 

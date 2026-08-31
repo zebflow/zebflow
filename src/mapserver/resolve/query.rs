@@ -4,7 +4,7 @@ use crate::mapserver::infra::bbox::{feature_intersects_bbox, normalize_bbox};
 use crate::mapserver::infra::source::SourceAdapter;
 use crate::mapserver::publish::manifest::PublishedLayerManifest;
 
-use super::{ResolveRequest, ResolveResponse};
+use super::{ResolveRequest, ResolveResponse, prune_feature_properties};
 
 pub fn resolve_feature_collection_from_geojson_file(
     manifest: &PublishedLayerManifest,
@@ -75,23 +75,6 @@ pub fn resolve_feature_collection_from_value(
     })
 }
 
-fn prune_feature_properties(mut feature: Value, allowed: &[String]) -> Value {
-    if allowed.is_empty() {
-        return feature;
-    }
-    let Some(feature_obj) = feature.as_object_mut() else {
-        return feature;
-    };
-    let Some(props) = feature_obj
-        .get_mut("properties")
-        .and_then(Value::as_object_mut)
-    else {
-        return feature;
-    };
-    props.retain(|key, _| allowed.iter().any(|candidate| candidate == key));
-    feature
-}
-
 #[cfg(test)]
 mod tests {
     use serde_json::json;
@@ -154,7 +137,7 @@ mod tests {
                 }
             ]
         });
-        let out = resolve_feature_collection_from_value(&manifest, &req, source).unwrap();
+        let out = resolve_feature_collection_from_value(&manifest, &req, source.clone()).unwrap();
         assert_eq!(out.layer, "adm1");
         assert_eq!(out.count, 1);
         assert!(out.truncated);
@@ -169,5 +152,24 @@ mod tests {
                 }
             })
         );
+
+        // Contract `MapPublishManifest`: an empty `allowed_properties` serves
+        // geometry only. Nothing about the source may leak through the absence
+        // of a choice.
+        let closed = PublishedLayerManifest {
+            allowed_properties: Vec::new(),
+            max_features: 10,
+            ..manifest.clone()
+        };
+        let closed_req = ResolveRequest {
+            limit: Some(10),
+            ..req.clone()
+        };
+        let out = resolve_feature_collection_from_value(&closed, &closed_req, source).unwrap();
+        assert_eq!(out.count, 2);
+        for feature in &out.features {
+            assert_eq!(feature["properties"], json!({}));
+            assert!(feature["geometry"].is_object());
+        }
     }
 }

@@ -8,7 +8,7 @@ use serde_json::Value;
 use crate::mapserver::infra::bbox::normalize_bbox;
 use crate::mapserver::publish::manifest::{GeoJsonArtifactManifest, PublishedLayerManifest};
 
-use super::{ResolveRequest, ResolveResponse};
+use super::{ResolveRequest, ResolveResponse, prune_feature_properties};
 
 #[derive(Debug, Deserialize)]
 struct ChunkItemRecord {
@@ -100,23 +100,6 @@ fn read_artifact_manifest(path: &Path) -> Result<GeoJsonArtifactManifest, String
 
 fn intersects_bbox(a: [f64; 4], b: [f64; 4]) -> bool {
     !(a[2] < b[0] || a[0] > b[2] || a[3] < b[1] || a[1] > b[3])
-}
-
-fn prune_feature_properties(mut feature: Value, allowed: &[String]) -> Value {
-    if allowed.is_empty() {
-        return feature;
-    }
-    let Some(feature_obj) = feature.as_object_mut() else {
-        return feature;
-    };
-    let Some(props) = feature_obj
-        .get_mut("properties")
-        .and_then(Value::as_object_mut)
-    else {
-        return feature;
-    };
-    props.retain(|key, _| allowed.iter().any(|candidate| candidate == key));
-    feature
 }
 
 #[cfg(test)]
@@ -220,6 +203,26 @@ mod tests {
         assert_eq!(out.count, 1);
         assert!(out.truncated);
         assert_eq!(out.features[0]["properties"], json!({"name": "A"}));
+
+        // Contract `MapPublishManifest`: an empty `allowed_properties` serves
+        // geometry only. A layer published without a choice must not hand out
+        // every column of its source.
+        let closed = PublishedLayerManifest {
+            allowed_properties: Vec::new(),
+            max_features: 10,
+            ..manifest.clone()
+        };
+        let closed_req = ResolveRequest {
+            limit: Some(10),
+            ..req.clone()
+        };
+        let out = resolve_from_artifact(&closed, &closed_req, &tmp.path().join("manifest.json"))
+            .expect("resolve");
+        assert_eq!(out.count, 2);
+        for feature in &out.features {
+            assert_eq!(feature["properties"], json!({}));
+            assert!(feature["geometry"].is_object());
+        }
     }
 
     #[test]

@@ -151,10 +151,9 @@ async fn resolve_async(
         None => manifest.max_features,
     };
 
-    // Build property selection
-    let select_cols = if manifest.allowed_properties.is_empty() {
-        "*".to_string()
-    } else {
+    // Build property selection. `allowed_properties` is closed by default
+    // (contract `MapPublishManifest`): an empty list selects geometry alone.
+    let select_cols = {
         let mut cols: Vec<String> = manifest
             .allowed_properties
             .iter()

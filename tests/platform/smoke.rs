@@ -5727,3 +5727,331 @@ async fn the_material_a_controller_stores_forges_nothing_at_its_office() {
     let _ = fs::remove_dir_all(&controller_root);
     let _ = fs::remove_dir_all(&office_root);
 }
+
+/// Being logged out must never grant more than being logged in without the
+/// capability. The pipeline upsert route carried an early-development
+/// convenience that skipped its capability check whenever no session cookie was
+/// present, so anyone who could reach the port could create or overwrite an
+/// executable pipeline and hang a webhook trigger on it.
+#[tokio::test]
+async fn registering_a_pipeline_always_requires_the_write_capability() {
+    let mut config = PlatformConfig::default();
+    config.data_root = temp_test_dir("pipeline-upsert-authz");
+    config.default_password = "test-pass".to_string();
+    let data_root = config.data_root.clone();
+
+    let app = build_router(config).await.expect("platform router");
+
+    let definition = |file_rel_path: &str| {
+        json!({
+            "file_rel_path": file_rel_path,
+            "title": "Backdoor",
+            "description": "",
+            "trigger_kind": "webhook",
+            "source": r#"{"apiVersion":"zebflow.com/v1","kind":"Pipeline","metadata":{"name":"backdoor"},"spec":{"id":"backdoor","entry_nodes":["wh"],"nodes":[{"id":"wh","kind":"n.trigger.webhook","output_pins":["out"],"input_pins":[],"config":{"path":"/backdoor","method":"POST"}}],"edges":[]}}"#
+        })
+        .to_string()
+    };
+
+    let anonymous = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/projects/superadmin/default/pipelines/definition")
+                .method("POST")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(definition("anon/backdoor")))
+                .expect("request"),
+        )
+        .await
+        .expect("anonymous upsert response");
+    assert_eq!(
+        anonymous.status(),
+        StatusCode::UNAUTHORIZED,
+        "an unauthenticated caller must not be able to register a pipeline"
+    );
+
+    let repo_dir = data_root
+        .join("users")
+        .join("superadmin")
+        .join("default")
+        .join("repo");
+    assert!(
+        !repo_dir.join("pipelines/anon/backdoor.zf.json").exists(),
+        "the refused request must not have written a pipeline"
+    );
+
+    // A forged cookie is not a session either.
+    let forged = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/projects/superadmin/default/pipelines/definition")
+                .method("POST")
+                .header(header::COOKIE, "zebflow_session=superadmin")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(definition("forged/backdoor")))
+                .expect("request"),
+        )
+        .await
+        .expect("forged upsert response");
+    assert_eq!(forged.status(), StatusCode::UNAUTHORIZED);
+
+    let superadmin_cookie = login_cookie(app.clone(), "superadmin", "test-pass").await;
+    let create_user = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/users")
+                .method("POST")
+                .header(header::COOKIE, &superadmin_cookie)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({"owner": "mallory", "password": "mallory-pass", "role": "member"})
+                        .to_string(),
+                ))
+                .expect("request"),
+        )
+        .await
+        .expect("create user response");
+    assert_eq!(create_user.status(), StatusCode::OK);
+
+    let mallory_cookie = login_cookie(app.clone(), "mallory", "mallory-pass").await;
+    let other_user = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/projects/superadmin/default/pipelines/definition")
+                .method("POST")
+                .header(header::COOKIE, mallory_cookie)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(definition("mallory/backdoor")))
+                .expect("request"),
+        )
+        .await
+        .expect("other user upsert response");
+    assert_eq!(other_user.status(), StatusCode::FORBIDDEN);
+
+    // The owner still registers normally — the route is closed, not broken.
+    let owner = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/projects/superadmin/default/pipelines/definition")
+                .method("POST")
+                .header(header::COOKIE, &superadmin_cookie)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(definition("owned/feed")))
+                .expect("request"),
+        )
+        .await
+        .expect("owner upsert response");
+    assert_eq!(owner.status(), StatusCode::OK);
+
+    let _ = fs::remove_dir_all(&data_root);
+}
+
+/// A published map layer must serve at the path the contract says it is stored
+/// at, and must hand out only the properties the operator named. Both halves
+/// were broken at once: the web publisher stored `path` with a leading slash
+/// that the serving lookup could never match, and the resolver treated an empty
+/// `allowed_properties` as "everything" instead of "geometry only".
+#[tokio::test]
+async fn a_web_published_layer_serves_and_shows_only_the_chosen_properties() {
+    let mut config = PlatformConfig::default();
+    config.data_root = temp_test_dir("mapserver-publish-serving");
+    config.default_password = "test-pass".to_string();
+    let data_root = config.data_root.clone();
+
+    let app = build_router(config).await.expect("platform router");
+    let cookie = login_cookie(app.clone(), "superadmin", "test-pass").await;
+
+    let files_dir = data_root
+        .join("users")
+        .join("superadmin")
+        .join("default")
+        .join("files");
+    fs::create_dir_all(files_dir.join("mapserver")).expect("mapserver dir");
+    fs::write(
+        files_dir.join("mapserver").join("roads.geojson"),
+        json!({
+            "type": "FeatureCollection",
+            "features": [{
+                "type": "Feature",
+                "properties": { "name": "Jalan Sudirman", "owner_phone": "+62811000000" },
+                "geometry": { "type": "Point", "coordinates": [106.8, -6.2] }
+            }]
+        })
+        .to_string(),
+    )
+    .expect("source geojson");
+
+    let publish = |allowed: Value| {
+        json!({
+            "layer_id": "roads",
+            "path": "/roads",
+            "source_path": "mapserver/roads.geojson",
+            "bbox_required": false,
+            "allowed_properties": allowed
+        })
+        .to_string()
+    };
+
+    let published = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/projects/superadmin/default/mapserver/default-mapserver/layers")
+                .method("POST")
+                .header(header::COOKIE, &cookie)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(publish(json!([]))))
+                .expect("request"),
+        )
+        .await
+        .expect("publish response");
+    assert_eq!(published.status(), StatusCode::OK);
+    let published = response_json(published).await;
+    assert_eq!(
+        published["item"]["path"],
+        json!("roads"),
+        "the contract stores `path` without a leading slash"
+    );
+    assert_eq!(
+        published["public_url"],
+        json!("/ms/superadmin/default/roads")
+    );
+
+    let registry_raw = fs::read_to_string(
+        files_dir
+            .join("mapserver")
+            .join("default-mapserver.layers.json"),
+    )
+    .expect("registry file");
+    assert!(
+        !registry_raw.contains("\"/roads\""),
+        "the stored path must not carry a leading slash: {registry_raw}"
+    );
+
+    let served = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/ms/superadmin/default/roads?limit=10")
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("serve response");
+    assert_eq!(
+        served.status(),
+        StatusCode::OK,
+        "a layer published through the web UI must serve"
+    );
+    let served = response_json(served).await;
+    assert_eq!(served["count"], json!(1));
+    assert_eq!(
+        served["features"][0]["properties"],
+        json!({}),
+        "an empty allowed_properties is geometry only, not a wildcard"
+    );
+    assert!(served["features"][0]["geometry"].is_object());
+
+    // The public stats endpoint never reports a hidden column. (An
+    // artifact-backed layer has no single file to scan, so it reports none at
+    // all here; `mapserver::resolve::stats` covers the pruning itself.)
+    let public_stats = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/ms/superadmin/default/roads/stats")
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("public stats response");
+    assert_eq!(public_stats.status(), StatusCode::OK);
+    let public_stats = response_json(public_stats).await;
+    assert_eq!(public_stats["columns"], json!([]));
+
+    // Naming a property exposes exactly that one.
+    let republish = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/projects/superadmin/default/mapserver/default-mapserver/layers")
+                .method("POST")
+                .header(header::COOKIE, &cookie)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(publish(json!(["name"]))))
+                .expect("request"),
+        )
+        .await
+        .expect("republish response");
+    assert_eq!(republish.status(), StatusCode::OK);
+
+    let served = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/ms/superadmin/default/roads?limit=10")
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("serve response");
+    assert_eq!(served.status(), StatusCode::OK);
+    let served = response_json(served).await;
+    assert_eq!(
+        served["features"][0]["properties"],
+        json!({ "name": "Jalan Sudirman" }),
+        "only the named property leaves the server"
+    );
+
+    // The operator view is authenticated and shows both the whole source and
+    // what is exposed today, so the choice can be made without the public
+    // endpoint ever carrying the hidden columns.
+    let operator_stats = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/projects/superadmin/default/mapserver/default-mapserver/layers/roads/stats")
+                .header(header::COOKIE, &cookie)
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("operator stats response");
+    assert_eq!(operator_stats.status(), StatusCode::OK);
+    let operator_stats = response_json(operator_stats).await;
+    assert_eq!(operator_stats["allowed_properties"], json!(["name"]));
+    let mut operator_columns: Vec<String> = operator_stats["columns"]
+        .as_array()
+        .expect("columns")
+        .iter()
+        .map(|column| column["name"].as_str().unwrap_or_default().to_string())
+        .collect();
+    operator_columns.sort();
+    assert_eq!(
+        operator_columns,
+        vec!["name".to_string(), "owner_phone".to_string()]
+    );
+
+    let anonymous_operator_stats = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/projects/superadmin/default/mapserver/default-mapserver/layers/roads/stats")
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("anonymous operator stats response");
+    assert_eq!(
+        anonymous_operator_stats.status(),
+        StatusCode::UNAUTHORIZED,
+        "the whole-source view is not public"
+    );
+
+    let _ = fs::remove_dir_all(&data_root);
+}

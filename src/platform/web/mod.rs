@@ -496,6 +496,22 @@ pub async fn router(platform: Arc<PlatformService>) -> Router {
             get(api_admin_db_get_node).delete(api_admin_db_delete_node),
         )
         .route(
+            "/api/admin/credentials/keyring",
+            get(api_admin_credential_keyring),
+        )
+        .route(
+            "/api/admin/credentials/rotate",
+            post(api_admin_credential_rotate),
+        )
+        .route(
+            "/api/admin/credentials/rekey",
+            post(api_admin_credential_rekey),
+        )
+        .route(
+            "/api/admin/credentials/reencrypt",
+            post(api_admin_credential_reencrypt),
+        )
+        .route(
             "/api/projects/{owner}/{project}/nodes",
             get(api_list_node_definitions),
         )
@@ -1120,6 +1136,10 @@ pub async fn router(platform: Arc<PlatformService>) -> Router {
         .route(
             "/api/projects/{owner}/{project}/mapserver/{instance}/layers/{layer_id}",
             delete(api_mapserver_layers_delete),
+        )
+        .route(
+            "/api/projects/{owner}/{project}/mapserver/{instance}/layers/{layer_id}/stats",
+            get(api_mapserver_layer_stats),
         )
         .route(
             "/api/projects/{owner}/{project}/install/catalog/ui",
@@ -8847,6 +8867,88 @@ async fn api_admin_db_list_collections(
     }
 }
 
+// ── Credential encryption keyring ───────────────────────────────────────────
+//
+// `rotate` and `rekey` are HTTP and not CLI, and the Credential contract is
+// what decides it: both are "two operations, **both online**". `interface.md`
+// §3a freezes the CLI at server modes, project install, and the `admin` noun,
+// and §3's Group 3 says what that noun is for — "offline maintenance run when
+// the server will not start". An operation that requires a running instance is
+// not that, and minting a cluster join token reached the same conclusion for
+// the same reason.
+//
+// Superadmin, instance-wide: these act on the keyring every project's
+// credentials sit under, so no project scopes them.
+
+async fn api_admin_credential_keyring(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+) -> Response {
+    if let Err(r) = require_superadmin(&state, &headers) {
+        return r;
+    }
+    match state.platform.data.credential_keyring_report() {
+        Ok(report) => Json(json!({"ok": true, "keyring": report})).into_response(),
+        Err(err) => internal_error(err),
+    }
+}
+
+async fn api_admin_credential_rotate(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+) -> Response {
+    if let Err(r) = require_superadmin(&state, &headers) {
+        return r;
+    }
+    match state.platform.data.rotate_credential_key() {
+        Ok(report) => Json(json!({
+            "ok": true,
+            "keyring": report,
+            "note": concat!(
+                "New writes use the new generation. Nothing was re-encrypted; earlier ",
+                "generations stay for reads. POST /api/admin/credentials/reencrypt when you ",
+                "want an older one to stop being needed."
+            )
+        }))
+        .into_response(),
+        Err(err) => internal_error(err),
+    }
+}
+
+async fn api_admin_credential_rekey(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+) -> Response {
+    if let Err(r) = require_superadmin(&state, &headers) {
+        return r;
+    }
+    match state.platform.data.rekey_credential_keyring() {
+        Ok(report) => Json(json!({
+            "ok": true,
+            "keyring": report,
+            "note": concat!(
+                "The instance key file was replaced. No credential changed. Back up the new ",
+                "key file: the old one no longer opens anything."
+            )
+        }))
+        .into_response(),
+        Err(err) => internal_error(err),
+    }
+}
+
+async fn api_admin_credential_reencrypt(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+) -> Response {
+    if let Err(r) = require_superadmin(&state, &headers) {
+        return r;
+    }
+    match state.platform.data.reencrypt_project_credentials() {
+        Ok(report) => Json(json!({"ok": true, "sweep": report})).into_response(),
+        Err(err) => internal_error(err),
+    }
+}
+
 #[derive(serde::Deserialize)]
 struct AdminDbQueryRequest {
     pipeline: serde_json::Value,
@@ -11919,16 +12021,13 @@ async fn api_upsert_pipeline_definition(
     uri: Uri,
     Json(req): Json<UpsertPipelineDefinitionRequest>,
 ) -> Response {
-    // Milestone 1: allow direct pipeline creation even without authenticated session.
-    if session_owner(&state, &headers).is_some()
-        && let Err(response) = require_project_api_capability(
-            &state,
-            &headers,
-            &owner,
-            &project,
-            ProjectCapability::PipelinesWrite,
-        )
-    {
+    if let Err(response) = require_project_api_capability(
+        &state,
+        &headers,
+        &owner,
+        &project,
+        ProjectCapability::PipelinesWrite,
+    ) {
         return response;
     }
     if let Ok(Some(worker_id)) = remote_project_worker_id(&state, &owner, &project) {
@@ -15089,6 +15188,94 @@ async fn api_mapserver_layers_list(
     }
 }
 
+/// Operator view of a layer's column statistics.
+///
+/// The public `/ms/.../stats` endpoint reports only the columns named in
+/// `allowed_properties` (contract `MapPublishManifest`). Choosing which columns
+/// to expose needs the full list, so the publish UI reads it here, behind the
+/// project's own read capability.
+async fn api_mapserver_layer_stats(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((owner, project, instance, layer_id)): Path<(String, String, String, String)>,
+    uri: Uri,
+) -> Response {
+    if let Err(r) = require_project_api_capability(
+        &state,
+        &headers,
+        &owner,
+        &project,
+        ProjectCapability::FilesRead,
+    ) {
+        return r;
+    }
+    if let Ok(Some(worker_id)) = remote_project_worker_id(&state, &owner, &project) {
+        return match forward_project_api_request_to_worker(
+            &state,
+            &uri,
+            &Method::GET,
+            &headers,
+            Bytes::new(),
+            &worker_id,
+        )
+        .await
+        {
+            Ok(response) => response,
+            Err(err) => internal_error(err),
+        };
+    }
+    let items = match read_mapserver_layers(&state, &owner, &project, &instance) {
+        Ok(items) => items,
+        Err(err) => return internal_error(err),
+    };
+    let Some(item) = items.into_iter().find(|item| item.layer_id == layer_id) else {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(json!({"ok": false, "error": "map layer not found"})),
+        )
+            .into_response();
+    };
+    let source_path = item.source_path.clone();
+    let manifest = match mapserver_record_to_manifest(&state, &owner, &project, item) {
+        Ok(manifest) => manifest,
+        Err(err) => return internal_error(err),
+    };
+    // An artifact-backed layer has no single file to scan — its `source_ref` is
+    // the generated chunk manifest. The columns the operator is choosing from
+    // are the ones in the GeoJSON it was built from, so read them there. The
+    // public endpoint deliberately does not do this: that scan is bounded work
+    // an unauthenticated caller must not be able to ask for.
+    let manifest = if manifest.source_kind
+        == crate::mapserver::publish::manifest::SourceKind::GeoJsonArtifact
+    {
+        match state.platform.file.ensure_project_layout(&owner, &project) {
+            Ok(layout) => crate::mapserver::publish::manifest::PublishedLayerManifest {
+                source_kind: crate::mapserver::publish::manifest::SourceKind::GeoJsonFile,
+                source_ref: layout
+                    .files_dir
+                    .join(source_path.trim_start_matches('/'))
+                    .display()
+                    .to_string(),
+                ..manifest
+            },
+            Err(err) => return internal_error(err),
+        }
+    } else {
+        manifest
+    };
+    match crate::mapserver::resolve::stats::compute_layer_stats(
+        &manifest,
+        crate::mapserver::resolve::stats::StatsAudience::Operator,
+    ) {
+        Ok(stats) => Json(stats).into_response(),
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"ok": false, "error": format!("stats computation failed: {err}")})),
+        )
+            .into_response(),
+    }
+}
+
 async fn api_mapserver_layers_publish(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
@@ -15230,11 +15417,9 @@ async fn api_mapserver_layers_publish(
     };
     let record = MapserverLayerRecord {
         layer_id: layer_id.to_string(),
-        path: if path.starts_with('/') {
-            path.to_string()
-        } else {
-            format!("/{}", path)
-        },
+        // Contract `MapPublishManifest`: stored without a leading slash, the
+        // same shape `n.ms.publish` writes.
+        path: crate::mapserver::publish::registry::normalize_layer_path(path).to_string(),
         source_path,
         source_kind: "geojson_artifact".to_string(),
         artifact_manifest_path: Some(build.manifest_rel_path.clone()),
@@ -15267,7 +15452,7 @@ async fn api_mapserver_layers_publish(
     Json(json!({
         "ok": true,
         "item": record,
-        "public_url": format!("/ms/{owner}/{project}{}", items.iter().find(|i| i.layer_id == layer_id).map(|i| i.path.clone()).unwrap_or_default())
+        "public_url": format!("/ms/{owner}/{project}/{}", record.path)
     }))
     .into_response()
 }
@@ -22956,7 +23141,10 @@ async fn public_mapserver_ingress(
     };
     // ── Stats endpoint: early return ─────────────────────────────────
     if is_stats_request {
-        match crate::mapserver::resolve::stats::compute_layer_stats(&manifest) {
+        match crate::mapserver::resolve::stats::compute_layer_stats(
+            &manifest,
+            crate::mapserver::resolve::stats::StatsAudience::Public,
+        ) {
             Ok(stats_json) => {
                 let mut resp = (StatusCode::OK, Json(stats_json)).into_response();
                 resp.headers_mut().insert(
@@ -23247,6 +23435,7 @@ async fn public_mapserver_ingress(
             None,
             effective_filter.as_deref(),
             "mvt",
+            &manifest.allowed_properties,
         );
         if let Some(cached_mvt) = crate::mapserver::resolve::tile_cache::get_tile(&mvt_key) {
             let mut resp = (StatusCode::OK, cached_mvt).into_response();
@@ -23436,6 +23625,27 @@ async fn public_mapserver_ingress(
                 .ok()
             });
 
+        // A raster tile is pixels: no column of the source leaves the server on
+        // this branch, so `allowed_properties` has nothing to prune here. Data
+        // driven styling still has to read the column it colours by, and making
+        // that column public first would force the operator to leak it to get a
+        // choropleth. The render path therefore resolves with exactly that one
+        // field added and nothing else.
+        let render_manifest = {
+            let mut render_manifest = manifest.clone();
+            if let Some(field) = resolved_style
+                .as_ref()
+                .and_then(crate::mapserver::resolve::style_dsl::ResolvedStyle::field_name)
+                && !crate::mapserver::resolve::property_is_public(
+                    &render_manifest.allowed_properties,
+                    field,
+                )
+            {
+                render_manifest.allowed_properties.push(field.to_string());
+            }
+            render_manifest
+        };
+
         // If resolved style is Uniform, override the base LayerStyle
         let style =
             if let Some(crate::mapserver::resolve::style_dsl::ResolvedStyle::Uniform(ref fs)) =
@@ -23463,6 +23673,7 @@ async fn public_mapserver_ingress(
             style_dsl_str.as_deref(),
             effective_filter.as_deref(),
             "png",
+            &manifest.allowed_properties,
         );
         if let Some(cached_png) = crate::mapserver::resolve::tile_cache::get_tile(&tile_key) {
             let mut resp = (StatusCode::OK, cached_png).into_response();
@@ -23557,7 +23768,7 @@ async fn public_mapserver_ingress(
 
             // No cached pixmap — spawn background metatile render (non-blocking)
             if crate::mapserver::resolve::tile_cache::try_claim_metatile(&meta_key) {
-                let bg_manifest = manifest.clone();
+                let bg_manifest = render_manifest.clone();
                 let bg_style = style.clone();
                 let bg_resolved_style = resolved_style.clone();
                 let bg_meta_key = meta_key.clone();
@@ -23613,7 +23824,7 @@ async fn public_mapserver_ingress(
 
         // ── Individual tile rendering ──────────────────────────────────────
         let resolved = match crate::mapserver::resolve::resolve_features(
-            &manifest,
+            &render_manifest,
             &tile_request,
             preloaded_features.as_ref(),
         ) {
@@ -23813,10 +24024,10 @@ fn mapserver_layers_manifest_path(
     instance: &str,
 ) -> Result<std::path::PathBuf, PlatformError> {
     let layout = state.platform.file.ensure_project_layout(owner, project)?;
-    Ok(layout
-        .files_dir
-        .join("mapserver")
-        .join(format!("{instance}.layers.json")))
+    Ok(crate::mapserver::publish::registry::layers_manifest_path(
+        &layout.files_dir,
+        instance,
+    ))
 }
 
 /// Resolves the per-instance artifact root at its `cache`-tier home,
@@ -23842,11 +24053,9 @@ fn read_mapserver_layers(
     instance: &str,
 ) -> Result<Vec<MapserverLayerRecord>, PlatformError> {
     let path = mapserver_layers_manifest_path(state, owner, project, instance)?;
-    crate::contracts::read_optional_contract::<crate::contracts::kinds::MapPublishManifestContract>(
-        &path,
-    )
-    .map(|document| document.map(|value| value.spec).unwrap_or_default())
-    .map_err(|err| PlatformError::new("MAPSERVER_PARSE", format!("{} ({})", err, err.category())))
+    crate::mapserver::publish::registry::read_layers(&path).map_err(|err| {
+        PlatformError::new("MAPSERVER_PARSE", format!("{} ({})", err, err.category()))
+    })
 }
 
 fn write_mapserver_layers(
@@ -23857,12 +24066,9 @@ fn write_mapserver_layers(
     items: &[MapserverLayerRecord],
 ) -> Result<(), PlatformError> {
     let path = mapserver_layers_manifest_path(state, owner, project, instance)?;
-    crate::contracts::write_contract::<crate::contracts::kinds::MapPublishManifestContract>(
-        &path,
-        crate::contracts::ContractMetadata::named(instance),
-        items.to_vec(),
-    )
-    .map_err(|err| PlatformError::new("MAPSERVER_WRITE", format!("{} ({})", err, err.category())))
+    crate::mapserver::publish::registry::write_layers(&path, instance, items).map_err(|err| {
+        PlatformError::new("MAPSERVER_WRITE", format!("{} ({})", err, err.category()))
+    })
 }
 
 fn list_mapserver_source_files(
@@ -23913,11 +24119,30 @@ fn resolve_mapserver_manifest_for_path(
     project: &str,
     path: &str,
 ) -> Result<Option<crate::mapserver::publish::manifest::PublishedLayerManifest>, PlatformError> {
-    let layers = read_mapserver_layers(state, owner, project, "default-mapserver")?;
-    let normalized = path.trim_start_matches('/').trim_end_matches('/');
-    let layer = layers.into_iter().find(|item| item.path == normalized);
+    let layers = read_mapserver_layers(
+        state,
+        owner,
+        project,
+        crate::mapserver::publish::registry::DEFAULT_INSTANCE,
+    )?;
+    let normalized = crate::mapserver::publish::registry::normalize_layer_path(path);
+    let layer = layers.into_iter().find(|item| {
+        crate::mapserver::publish::registry::normalize_layer_path(&item.path) == normalized
+    });
+    let Some(layer) = layer else {
+        return Ok(None);
+    };
+    mapserver_record_to_manifest(state, owner, project, layer).map(Some)
+}
+
+fn mapserver_record_to_manifest(
+    state: &PlatformAppState,
+    owner: &str,
+    project: &str,
+    item: MapserverLayerRecord,
+) -> Result<crate::mapserver::publish::manifest::PublishedLayerManifest, PlatformError> {
     let layout = state.platform.file.ensure_project_layout(owner, project)?;
-    Ok(layer.map(|item| {
+    Ok({
         let (source_kind, source_ref) = if let Some(artifact_rel) =
             item.artifact_manifest_path.clone()
         {
@@ -23977,7 +24202,7 @@ fn resolve_mapserver_manifest_for_path(
             item.function_slug,
             item.cache_ttl_secs,
         )
-    }))
+    })
 }
 
 /// Extract a safe subset of request headers for the trigger snapshot.

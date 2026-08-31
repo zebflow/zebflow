@@ -14,10 +14,14 @@ use crate::infra::cluster::registry::WorkerRegistryRecord;
 use crate::infra::execution::placement::{
     ProjectRuntimeMode, ProjectRuntimePlacement, ProjectRuntimePlacementTarget,
 };
+use crate::infra::secrets::keyring::{
+    CREDENTIAL_KEY_REL, CREDENTIAL_KEY_VAR, CredentialKeyring, WrappedDataKey,
+};
 use crate::platform::adapters::data::DataAdapter;
 use crate::platform::error::PlatformError;
 use crate::platform::model::{
-    CREDENTIAL_STATE_CHOSEN, HubAccessGrant, HubAssetPackage, HubAssetVersion, HubAuthority,
+    CREDENTIAL_STATE_CHOSEN, CredentialKeyGeneration, CredentialKeyringReport,
+    CredentialSweepReport, HubAccessGrant, HubAssetPackage, HubAssetVersion, HubAuthority,
     HubPublisher, HubToken, LOCAL_AUTHORITY_EVENT_BREAK_GLASS, McpSession, PipelineInvocationEntry,
     PipelineInvocationLogPipelineStats, PipelineInvocationLogStats, PipelineMeta,
     PlatformHubRepository, PlatformOffice, PlatformOfficeIdentityWrite, PlatformOfficeJoinToken,
@@ -505,6 +509,15 @@ struct MigrationDef {
 pub struct SqliteDataAdapter {
     conn: Arc<Mutex<Connection>>,
     data_root: Option<PathBuf>,
+    /// This instance's credential encryption keyring.
+    ///
+    /// `Some` for every adapter that owns a data root, which is every adapter a
+    /// server mode or an offline command builds. `None` only for
+    /// [`Self::new_at_db_path`], the office-hosted hub store, which holds no
+    /// credentials and refuses the operations that would need one — the
+    /// contract's "reading a credential when the key is absent" rejection,
+    /// enforced by the storage boundary rather than by a caller remembering.
+    keyring: Option<Arc<CredentialKeyring>>,
 }
 
 fn hub_access_grant_from_row(row: &Row<'_>) -> rusqlite::Result<HubAccessGrant> {
@@ -523,6 +536,23 @@ fn hub_access_grant_from_row(row: &Row<'_>) -> rusqlite::Result<HubAccessGrant> 
         created_at: row.get(11)?,
         updated_at: row.get(12)?,
     })
+}
+
+/// The platform error code for one keyring failure.
+///
+/// Distinct codes rather than one, because an operator's next move differs:
+/// a missing key is "find the file", a wrong key is "you have the wrong file",
+/// and a mismatch is "decide which of the two you meant".
+fn credential_key_error_code(err: &crate::infra::secrets::CredentialKeyError) -> &'static str {
+    use crate::infra::secrets::CredentialKeyError as E;
+    match err {
+        E::Missing { .. } => "PLATFORM_CREDENTIAL_KEY_MISSING",
+        E::Unusable { .. } | E::NoRandomness => "PLATFORM_CREDENTIAL_KEY_UNUSABLE",
+        E::Mismatch { .. } => "PLATFORM_CREDENTIAL_KEY_MISMATCH",
+        E::Io { .. } => "PLATFORM_CREDENTIAL_KEY_IO",
+        E::UnknownGeneration { .. } => "PLATFORM_CREDENTIAL_KEY_UNKNOWN_GENERATION",
+        E::RekeyNotOwned => "PLATFORM_CREDENTIAL_KEY_NOT_OWNED",
+    }
 }
 
 impl SqliteDataAdapter {
@@ -560,10 +590,126 @@ impl SqliteDataAdapter {
         Self::run_migrations(&mut conn)?;
         conn.execute_batch(&format!("PRAGMA foreign_keys={foreign_keys_pragma};"))
             .map_err(|e| PlatformError::new("PLATFORM_SQLITE_PRAGMA", e.to_string()))?;
-        Ok(Self {
+        let mut adapter = Self {
             conn: Arc::new(Mutex::new(conn)),
             data_root,
+            keyring: None,
+        };
+        adapter.open_credential_keyring()?;
+        Ok(adapter)
+    }
+
+    /// Resolve this instance's credential keyring, or refuse to exist.
+    ///
+    /// This runs inside the constructor deliberately. "Refuse to start on a
+    /// missing or wrong key" is a rule about the storage, so it belongs where
+    /// the storage is opened: every server mode (`zeb`, `zeb controller`,
+    /// `zeb office`, `zeb run`) and every offline command (`zeb project …`,
+    /// `zeb admin …`) reaches a data root through this one function, and none
+    /// of them can be given a working catalog and a broken keyring.
+    fn open_credential_keyring(&mut self) -> Result<(), PlatformError> {
+        let Some(data_root) = self.data_root.clone() else {
+            return Ok(());
+        };
+        let stored = self.load_credential_keys()?;
+        // Blank is unset, the rule `interface.md` §3a applies to every other
+        // variable: an exported-but-empty value is a misconfiguration, not a
+        // request to fall back to the file.
+        let supplied = std::env::var(CREDENTIAL_KEY_VAR)
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty());
+        let boot = CredentialKeyring::open(
+            &data_root.join(CREDENTIAL_KEY_REL),
+            supplied.as_deref(),
+            &stored,
+            now_ts(),
+        )
+        .map_err(|err| PlatformError::new(credential_key_error_code(&err), err.to_string()))?;
+        if let Some(row) = boot.insert {
+            self.insert_credential_key(&row)?;
+        }
+        self.keyring = Some(Arc::new(boot.keyring));
+        Ok(())
+    }
+
+    /// The keyring, or the rejection the contract names for its absence.
+    fn keyring(&self) -> Result<&CredentialKeyring, PlatformError> {
+        self.keyring.as_deref().ok_or_else(|| {
+            PlatformError::new(
+                "PLATFORM_CREDENTIAL_KEY_MISSING",
+                "this catalog was opened without a data root, so it has no credential encryption \
+                 keyring and will not read or write a credential",
+            )
         })
+    }
+
+    fn load_credential_keys(&self) -> Result<Vec<WrappedDataKey>, PlatformError> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let mut stmt = conn
+            .prepare(
+                "SELECT key_id, wrapped_key, created_at FROM credential_keys ORDER BY key_id ASC",
+            )
+            .map_err(Self::qe)?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok(WrappedDataKey {
+                    key_id: row.get::<_, i64>(0)? as u32,
+                    wrapped: row.get::<_, String>(1)?,
+                    created_at: row.get::<_, i64>(2)?,
+                })
+            })
+            .map_err(Self::qe)?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(Self::qe)?;
+        Ok(rows)
+    }
+
+    fn insert_credential_key(&self, row: &WrappedDataKey) -> Result<(), PlatformError> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        conn.execute(
+            "INSERT INTO credential_keys (key_id, wrapped_key, created_at) VALUES (?1, ?2, ?3)",
+            params![row.key_id as i64, &row.wrapped, row.created_at],
+        )
+        .map_err(Self::qe)?;
+        Ok(())
+    }
+
+    /// The secret half as it goes into `secret_json`: always a `zfc1` envelope.
+    ///
+    /// The whole secret half, whatever a credential type declared about any
+    /// field inside it — "a declaration mistake then costs display safety,
+    /// never storage safety".
+    fn seal_secret_json(&self, secret: &Value) -> Result<String, PlatformError> {
+        let plaintext = serde_json::to_string(secret)?;
+        let envelope = self
+            .keyring()?
+            .seal(&plaintext)
+            .map_err(|err| PlatformError::new(credential_key_error_code(&err), err.to_string()))?;
+        Ok(serde_json::to_string(&Value::String(envelope))?)
+    }
+
+    /// The secret half as it comes out of `secret_json`.
+    ///
+    /// A value that is not an envelope is a row written before this feature
+    /// existed. It is accepted and returned as it is, the way `ZebFsAcl`
+    /// accepts its own older shape: a credential cannot be regenerated, so
+    /// refusing one would destroy something the operator cannot replace. Every
+    /// write re-emits it as ciphertext, and
+    /// `POST /api/admin/credentials/reencrypt` converts the rest in one call.
+    fn open_secret_json(&self, stored: &str) -> Result<Value, PlatformError> {
+        let parsed = serde_json::from_str::<Value>(stored).unwrap_or(Value::Null);
+        let Some(text) = parsed.as_str() else {
+            return Ok(parsed);
+        };
+        if !crate::infra::secrets::is_secret_envelope(text) {
+            return Ok(parsed);
+        }
+        let plaintext = self
+            .keyring()?
+            .open_envelope(text)
+            .map_err(|err| PlatformError::new(credential_key_error_code(&err), err.to_string()))?;
+        Ok(serde_json::from_str::<Value>(&plaintext).unwrap_or(Value::Null))
     }
 
     fn qe(e: rusqlite::Error) -> PlatformError {
@@ -674,7 +820,7 @@ impl SqliteDataAdapter {
         Ok(exists)
     }
 
-    fn migrations() -> [MigrationDef; 19] {
+    fn migrations() -> [MigrationDef; 20] {
         [
             MigrationDef {
                 version: 1,
@@ -770,6 +916,11 @@ impl SqliteDataAdapter {
                 version: 19,
                 name: "office_local_authority",
                 apply: Self::apply_migration_0019_office_local_authority,
+            },
+            MigrationDef {
+                version: 20,
+                name: "credential_keys",
+                apply: Self::apply_migration_0020_credential_keys,
             },
         ]
     }
@@ -2711,6 +2862,23 @@ CREATE INDEX IF NOT EXISTS idx_platform_service_instances_host
         .map_err(|e| PlatformError::new("PLATFORM_SQLITE_SCHEMA", e.to_string()))
     }
 
+    /// The keyring: one row per data key generation, wrapped under the
+    /// instance key that never lives here.
+    ///
+    /// `key_id` is the number every `zfc1:` envelope names, and the largest is
+    /// the one new writes use. Rows are never deleted by rotation — "older keys
+    /// stay for reads" is the whole reason the column exists.
+    fn apply_migration_0020_credential_keys(tx: &Transaction<'_>) -> Result<(), PlatformError> {
+        tx.execute_batch(
+            "CREATE TABLE IF NOT EXISTS credential_keys (
+                key_id      INTEGER PRIMARY KEY,
+                wrapped_key TEXT NOT NULL,
+                created_at  INTEGER NOT NULL DEFAULT 0
+            );",
+        )
+        .map_err(|e| PlatformError::new("PLATFORM_SQLITE_SCHEMA", e.to_string()))
+    }
+
     fn ensure_table_column<C>(
         conn: &C,
         table: &str,
@@ -3452,7 +3620,7 @@ impl DataAdapter for SqliteDataAdapter {
                 created_at,
                 updated_at,
             )) => {
-                let secret = serde_json::from_str::<Value>(&secret_json).unwrap_or(Value::Null);
+                let secret = self.open_secret_json(&secret_json)?;
                 Ok(Some(ProjectCredential {
                     owner,
                     project,
@@ -3471,7 +3639,7 @@ impl DataAdapter for SqliteDataAdapter {
     }
 
     fn put_project_credential(&self, cred: &ProjectCredential) -> Result<(), PlatformError> {
-        let secret_json = serde_json::to_string(&cred.secret)?;
+        let secret_json = self.seal_secret_json(&cred.secret)?;
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         conn.execute(
             "INSERT OR REPLACE INTO project_credentials
@@ -3534,21 +3702,20 @@ impl DataAdapter for SqliteDataAdapter {
                     created_at,
                     updated_at,
                 )| {
-                    let secret = serde_json::from_str::<Value>(&secret_json).unwrap_or(Value::Null);
-                    ProjectCredential {
+                    Ok(ProjectCredential {
                         owner,
                         project,
                         credential_id,
                         title,
                         kind,
-                        secret,
+                        secret: self.open_secret_json(&secret_json)?,
                         notes,
                         created_at,
                         updated_at,
-                    }
+                    })
                 },
             )
-            .collect();
+            .collect::<Result<Vec<_>, PlatformError>>()?;
         Ok(items)
     }
 
@@ -3565,6 +3732,149 @@ impl DataAdapter for SqliteDataAdapter {
         )
         .map_err(Self::qe)?;
         Ok(())
+    }
+
+    // ──────────────────── Credential encryption keyring ────────────────────
+
+    fn credential_keyring_report(&self) -> Result<CredentialKeyringReport, PlatformError> {
+        let keyring = self.keyring()?;
+        let created = self
+            .load_credential_keys()?
+            .into_iter()
+            .map(|row| (row.key_id, row.created_at))
+            .collect::<std::collections::HashMap<_, _>>();
+        let current_key_id = keyring.current_key_id();
+        Ok(CredentialKeyringReport {
+            source: match keyring.source() {
+                crate::infra::secrets::KeySource::File => "file".to_string(),
+                crate::infra::secrets::KeySource::Environment => "environment".to_string(),
+            },
+            key_file: self
+                .data_root
+                .as_ref()
+                .map(|root| root.join(CREDENTIAL_KEY_REL).display().to_string())
+                .unwrap_or_default(),
+            current_key_id,
+            generations: keyring
+                .key_ids()
+                .into_iter()
+                .map(|key_id| CredentialKeyGeneration {
+                    key_id,
+                    created_at: created.get(&key_id).copied().unwrap_or_default(),
+                    current: key_id == current_key_id,
+                })
+                .collect(),
+        })
+    }
+
+    /// The row is written before the key is used, never after.
+    ///
+    /// A data key held in memory and missing from the catalog would seal
+    /// credentials that nothing could ever open again — the one ordering
+    /// mistake in this feature that is not recoverable.
+    fn rotate_credential_key(&self) -> Result<CredentialKeyringReport, PlatformError> {
+        let keyring = self.keyring()?;
+        let (row, key) = keyring
+            .prepare_rotation(now_ts())
+            .map_err(|err| PlatformError::new(credential_key_error_code(&err), err.to_string()))?;
+        self.insert_credential_key(&row)?;
+        keyring.adopt(row.key_id, key);
+        self.credential_keyring_report()
+    }
+
+    /// Three steps, in the order that survives being interrupted between any
+    /// two of them: the file gains the new key beside the old, the rows move
+    /// to the new key in one transaction, the file drops the old key.
+    fn rekey_credential_keyring(&self) -> Result<CredentialKeyringReport, PlatformError> {
+        let keyring = self.keyring()?;
+        let rewrapped = keyring
+            .begin_rekey()
+            .map_err(|err| PlatformError::new(credential_key_error_code(&err), err.to_string()))?;
+        {
+            let mut conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+            let tx = conn
+                .transaction_with_behavior(TransactionBehavior::Exclusive)
+                .map_err(Self::qe)?;
+            for row in &rewrapped {
+                tx.execute(
+                    "UPDATE credential_keys SET wrapped_key = ?1 WHERE key_id = ?2",
+                    params![&row.wrapped, row.key_id as i64],
+                )
+                .map_err(Self::qe)?;
+            }
+            tx.commit().map_err(Self::qe)?;
+        }
+        keyring
+            .finish_rekey()
+            .map_err(|err| PlatformError::new(credential_key_error_code(&err), err.to_string()))?;
+        self.credential_keyring_report()
+    }
+
+    fn reencrypt_project_credentials(&self) -> Result<CredentialSweepReport, PlatformError> {
+        let key_id = self.keyring()?.current_key_id();
+        let stored: Vec<(String, String, String, String)> = {
+            let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+            let mut stmt = conn
+                .prepare(
+                    "SELECT owner, project, credential_id, secret_json FROM project_credentials",
+                )
+                .map_err(Self::qe)?;
+            let rows = stmt
+                .query_map([], |row| {
+                    Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+                })
+                .map_err(Self::qe)?
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .map_err(Self::qe)?;
+            rows
+        };
+
+        let mut report = CredentialSweepReport {
+            key_id,
+            examined: stored.len(),
+            rewritten: 0,
+            migrated_from_plaintext: 0,
+            compacted: false,
+        };
+        for (owner, project, credential_id, secret_json) in stored {
+            // Which generation, if any, this row is already sealed under.
+            let generation = serde_json::from_str::<Value>(&secret_json)
+                .ok()
+                .and_then(|value| value.as_str().map(ToString::to_string))
+                .and_then(|text| {
+                    crate::infra::secrets::parse_secret_envelope(&text).map(|(id, _)| id)
+                });
+            if generation == Some(key_id) {
+                continue;
+            }
+            let was_plaintext = generation.is_none();
+            let secret = self.open_secret_json(&secret_json)?;
+            let sealed = self.seal_secret_json(&secret)?;
+            let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+            conn.execute(
+                "UPDATE project_credentials SET secret_json = ?1
+                 WHERE owner = ?2 AND project = ?3 AND credential_id = ?4",
+                params![&sealed, &owner, &project, &credential_id],
+            )
+            .map_err(Self::qe)?;
+            report.rewritten += 1;
+            if was_plaintext {
+                report.migrated_from_plaintext += 1;
+            }
+        }
+
+        // The superseded bytes are still in the file until the pages holding
+        // them are reused, and a plaintext row migrated by this sweep is
+        // exactly the case where that matters. Checkpoint the WAL back into the
+        // database, then rebuild it. Best effort — a rebuild that cannot take
+        // the lock does not undo work that already committed.
+        if report.rewritten > 0 {
+            let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+            report.compacted = conn
+                .execute_batch("PRAGMA wal_checkpoint(TRUNCATE); VACUUM;")
+                .is_ok();
+        }
+        Ok(report)
     }
 
     // ──────────────────────── DB Connections ────────────────────────
@@ -7085,6 +7395,325 @@ mod tests {
     use super::*;
     use crate::pipeline::model::NodeTraceEntry;
     use crate::platform::adapters::data::DataAdapter;
+
+    fn seed_project(adapter: &SqliteDataAdapter, owner: &str, project: &str) {
+        adapter
+            .put_user(&StoredUser {
+                profile: PlatformUser {
+                    user_id: String::new(),
+                    owner: owner.to_string(),
+                    role: "superadmin".to_string(),
+                    git_name: String::new(),
+                    git_email: String::new(),
+                    created_at: 1,
+                    updated_at: 1,
+                },
+                auth: PlatformUserLocalAuth {
+                    user_id: String::new(),
+                    password_hash: "x".to_string(),
+                    password_alg: "test".to_string(),
+                    password_updated_at: 1,
+                    credential_state: CREDENTIAL_STATE_CHOSEN.to_string(),
+                },
+            })
+            .expect("put user");
+        adapter
+            .put_project(&PlatformProject {
+                project_id: String::new(),
+                owner: owner.to_string(),
+                project: project.to_string(),
+                title: project.to_string(),
+                owner_user_id: String::new(),
+                created_at: 1,
+                updated_at: 1,
+            })
+            .expect("put project");
+    }
+
+    fn credential(owner: &str, project: &str, id: &str, secret: Value) -> ProjectCredential {
+        ProjectCredential {
+            owner: owner.to_string(),
+            project: project.to_string(),
+            credential_id: id.to_string(),
+            title: id.to_string(),
+            kind: "postgres".to_string(),
+            secret,
+            notes: String::new(),
+            created_at: 1,
+            updated_at: 1,
+        }
+    }
+
+    fn raw_secret_json(adapter: &SqliteDataAdapter, credential_id: &str) -> String {
+        let conn = adapter.conn.lock().unwrap_or_else(|e| e.into_inner());
+        conn.query_row(
+            "SELECT secret_json FROM project_credentials WHERE credential_id = ?1",
+            params![credential_id],
+            |row| row.get::<_, String>(0),
+        )
+        .expect("stored row")
+    }
+
+    /// The rule the whole feature exists for, stated against the column.
+    #[test]
+    fn a_stored_credential_is_ciphertext_in_the_column_and_plaintext_through_the_adapter() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let adapter = SqliteDataAdapter::new(tmp.path()).expect("adapter");
+        seed_project(&adapter, "superadmin", "default");
+        adapter
+            .put_project_credential(&credential(
+                "superadmin",
+                "default",
+                "db",
+                json!({"host": "db.example", "password": "correct-horse-battery-staple"}),
+            ))
+            .expect("put");
+
+        let stored = raw_secret_json(&adapter, "db");
+        assert!(
+            !stored.contains("correct-horse-battery-staple"),
+            "the secret is readable in the column: {stored}"
+        );
+        assert!(
+            !stored.contains("db.example"),
+            "the whole secret half is encrypted regardless of what a type declared: {stored}"
+        );
+        assert!(stored.starts_with("\"zfc1:1:"), "{stored}");
+
+        let read = adapter
+            .get_project_credential("superadmin", "default", "db")
+            .expect("get")
+            .expect("present");
+        assert_eq!(
+            read.secret,
+            json!({"host": "db.example", "password": "correct-horse-battery-staple"})
+        );
+        let listed = adapter
+            .list_project_credentials("superadmin", "default")
+            .expect("list");
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].secret, read.secret);
+    }
+
+    /// A row written before this release is plaintext. It is accepted on read
+    /// and re-emitted as ciphertext on the next write — `ZebFsAcl`'s rule,
+    /// because a credential cannot be regenerated either.
+    #[test]
+    fn a_pre_encryption_row_is_read_as_it_is_and_rewritten_as_ciphertext() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let adapter = SqliteDataAdapter::new(tmp.path()).expect("adapter");
+        seed_project(&adapter, "superadmin", "default");
+        {
+            let conn = adapter.conn.lock().unwrap_or_else(|e| e.into_inner());
+            conn.execute(
+                "INSERT INTO project_credentials
+                 (owner, project, credential_id, title, kind, secret_json, notes, created_at, updated_at)
+                 VALUES ('superadmin', 'default', 'legacy', 'Legacy', 'postgres', ?1, '', 1, 1)",
+                params![r#"{"password":"from-before-encryption"}"#],
+            )
+            .expect("legacy insert");
+        }
+
+        let read = adapter
+            .get_project_credential("superadmin", "default", "legacy")
+            .expect("get")
+            .expect("present");
+        assert_eq!(read.secret, json!({"password": "from-before-encryption"}));
+
+        adapter.put_project_credential(&read).expect("rewrite");
+        let stored = raw_secret_json(&adapter, "legacy");
+        assert!(stored.starts_with("\"zfc1:"), "{stored}");
+        assert!(!stored.contains("from-before-encryption"), "{stored}");
+
+        // And the sweep converts one that is never written again.
+        {
+            let conn = adapter.conn.lock().unwrap_or_else(|e| e.into_inner());
+            conn.execute(
+                "INSERT INTO project_credentials
+                 (owner, project, credential_id, title, kind, secret_json, notes, created_at, updated_at)
+                 VALUES ('superadmin', 'default', 'untouched', 'L', 'postgres', ?1, '', 1, 1)",
+                params![r#"{"token":"never-rewritten"}"#],
+            )
+            .expect("legacy insert");
+        }
+        let sweep = adapter.reencrypt_project_credentials().expect("sweep");
+        assert_eq!(sweep.examined, 2);
+        assert_eq!(sweep.rewritten, 1);
+        assert_eq!(sweep.migrated_from_plaintext, 1);
+        assert!(sweep.compacted, "a migrating sweep rebuilds the catalog");
+        assert!(!raw_secret_json(&adapter, "untouched").contains("never-rewritten"));
+        // The plaintext is gone from the file, not merely from the row: a
+        // migrated credential whose old bytes sit in a freed page is a
+        // migration that did not happen for the reader this defends against.
+        let catalog = std::fs::read(tmp.path().join("platform/catalog.db")).expect("catalog");
+        assert!(
+            !catalog
+                .windows("never-rewritten".len())
+                .any(|w| w == b"never-rewritten"),
+            "the migrated plaintext is still in the database file"
+        );
+    }
+
+    /// Rotation is online, instant, and re-encrypts nothing.
+    #[test]
+    fn rotation_seals_new_writes_under_the_new_key_and_leaves_old_ones_readable() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let adapter = SqliteDataAdapter::new(tmp.path()).expect("adapter");
+        seed_project(&adapter, "superadmin", "default");
+        adapter
+            .put_project_credential(&credential(
+                "superadmin",
+                "default",
+                "before",
+                json!({"key": "sealed-under-one"}),
+            ))
+            .expect("put");
+        assert!(raw_secret_json(&adapter, "before").starts_with("\"zfc1:1:"));
+
+        let report = adapter.rotate_credential_key().expect("rotate");
+        assert_eq!(report.current_key_id, 2);
+        assert_eq!(report.generations.len(), 2);
+        assert!(
+            report
+                .generations
+                .iter()
+                .any(|g| g.key_id == 1 && !g.current)
+        );
+        assert!(
+            report
+                .generations
+                .iter()
+                .any(|g| g.key_id == 2 && g.current)
+        );
+
+        adapter
+            .put_project_credential(&credential(
+                "superadmin",
+                "default",
+                "after",
+                json!({"key": "sealed-under-two"}),
+            ))
+            .expect("put");
+        assert!(raw_secret_json(&adapter, "after").starts_with("\"zfc1:2:"));
+        // The older generation stayed for reads. This is the assertion that
+        // fails on every design that rotates by re-encrypting in place.
+        assert!(raw_secret_json(&adapter, "before").starts_with("\"zfc1:1:"));
+        assert_eq!(
+            adapter
+                .get_project_credential("superadmin", "default", "before")
+                .expect("get")
+                .expect("present")
+                .secret,
+            json!({"key": "sealed-under-one"})
+        );
+
+        // The sweep is what makes generation 1 stop being needed.
+        let sweep = adapter.reencrypt_project_credentials().expect("sweep");
+        assert_eq!(sweep.key_id, 2);
+        assert_eq!(sweep.rewritten, 1);
+        assert_eq!(sweep.migrated_from_plaintext, 0);
+        assert!(raw_secret_json(&adapter, "before").starts_with("\"zfc1:2:"));
+    }
+
+    /// Rekey replaces the file and touches no ciphertext.
+    #[test]
+    fn a_rekey_replaces_the_instance_key_and_changes_no_credential() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let adapter = SqliteDataAdapter::new(tmp.path()).expect("adapter");
+        seed_project(&adapter, "superadmin", "default");
+        adapter
+            .put_project_credential(&credential(
+                "superadmin",
+                "default",
+                "db",
+                json!({"password": "unchanged-by-a-rekey"}),
+            ))
+            .expect("put");
+        let ciphertext = raw_secret_json(&adapter, "db");
+        let key_path = tmp.path().join(CREDENTIAL_KEY_REL);
+        let before = std::fs::read_to_string(&key_path).expect("key file");
+
+        adapter.rekey_credential_keyring().expect("rekey");
+        let after = std::fs::read_to_string(&key_path).expect("key file");
+        assert_ne!(before, after, "the instance key must actually change");
+        assert_eq!(after.lines().filter(|l| !l.is_empty()).count(), 1);
+        assert_eq!(
+            raw_secret_json(&adapter, "db"),
+            ciphertext,
+            "a rekey re-wraps data keys and never rewrites a credential"
+        );
+
+        // A restart under the new file reads everything.
+        drop(adapter);
+        let reopened = SqliteDataAdapter::new(tmp.path()).expect("reopen");
+        assert_eq!(
+            reopened
+                .get_project_credential("superadmin", "default", "db")
+                .expect("get")
+                .expect("present")
+                .secret,
+            json!({"password": "unchanged-by-a-rekey"})
+        );
+    }
+
+    /// The refusal, at the boundary an operator meets it.
+    #[test]
+    fn an_instance_whose_key_is_gone_refuses_to_open_its_catalog() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let adapter = SqliteDataAdapter::new(tmp.path()).expect("adapter");
+        seed_project(&adapter, "superadmin", "default");
+        adapter
+            .put_project_credential(&credential(
+                "superadmin",
+                "default",
+                "db",
+                json!({"password": "irreplaceable"}),
+            ))
+            .expect("put");
+        drop(adapter);
+
+        let key_path = tmp.path().join(CREDENTIAL_KEY_REL);
+        std::fs::remove_file(&key_path).expect("remove key");
+        let err = SqliteDataAdapter::new(tmp.path())
+            .err()
+            .expect("must refuse");
+        assert_eq!(err.code, "PLATFORM_CREDENTIAL_KEY_MISSING");
+        assert!(err.message.contains("cannot be regenerated"), "{err:?}");
+        assert!(!key_path.exists(), "a refusal must not write a new key");
+
+        // A different key is a different refusal, and just as loud.
+        std::fs::write(
+            &key_path,
+            crate::infra::secrets::SecretKey::generate()
+                .expect("generate")
+                .render(),
+        )
+        .expect("write");
+        let err = SqliteDataAdapter::new(tmp.path())
+            .err()
+            .expect("must refuse");
+        assert_eq!(err.code, "PLATFORM_CREDENTIAL_KEY_UNUSABLE");
+    }
+
+    /// A catalog opened without a data root holds no keyring and says so
+    /// rather than writing a credential in the clear.
+    #[test]
+    fn a_rootless_catalog_refuses_credentials_instead_of_storing_them_plainly() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let adapter =
+            SqliteDataAdapter::new_at_db_path(&tmp.path().join("hub.db")).expect("adapter");
+        let err = adapter
+            .put_project_credential(&credential("superadmin", "default", "db", json!({"a": 1})))
+            .expect_err("must refuse");
+        assert_eq!(err.code, "PLATFORM_CREDENTIAL_KEY_MISSING");
+        assert_eq!(
+            adapter
+                .rotate_credential_key()
+                .expect_err("no keyring")
+                .code,
+            "PLATFORM_CREDENTIAL_KEY_MISSING"
+        );
+    }
 
     /// A project with the rows a real project has must actually delete.
     ///

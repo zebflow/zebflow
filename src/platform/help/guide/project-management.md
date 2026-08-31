@@ -19,6 +19,10 @@ After you understand the app model, the next layer is operating the project itse
 - settings and credentials shape how the project can run
 - Studio gives a unified surface for building, reviewing, and operating the project
 
+Credentials are encrypted at rest under an instance key kept outside the
+database. Where that key lives, what happens when it is lost, and how to rotate
+it: `help("guide/credential-encryption")`.
+
 For deeper operational guidance, see:
 
 - `help("platform/operations")`

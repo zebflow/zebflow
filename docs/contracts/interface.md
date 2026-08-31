@@ -245,6 +245,19 @@ the Credential contract states for encryption keys.
 | --- | --- | --- |
 | `ZEBFLOW_COOKIE_SECURE` | `Secure` attribute on session cookies | on unless the listen host is loopback |
 | `ZEBFLOW_SECRET_ROTATION_EPOCH` | unix timestamp invalidating older platform-issued tokens | `0` |
+| `ZEBFLOW_CREDENTIAL_KEY` | the instance key every stored credential is encrypted under | `<data-root>/platform/credential-key`, mode 0600, generated on first boot |
+
+`ZEBFLOW_CREDENTIAL_KEY` is the Credential contract's environment override, for
+deployments that inject secrets rather than mount files. The rule the join token
+borrowed from that contract applies to it in its own right: a variable and a
+stored file that name different keys is a **refusal to start** that overwrites
+neither, because one of them opens this instance's credentials and the other
+does not. A key that is absent while the catalog records key generations is also
+a refusal, and never a regeneration — a credential cannot be regenerated, so a
+new key over the old one would make every one of them permanently unreadable.
+Rotating and re-keying are `POST /api/admin/credentials/{rotate,rekey}` and not
+CLI commands, because the contract makes both operations online and §3's Group 3
+and the `admin` noun are for the offline case.
 
 **Hub.**
 

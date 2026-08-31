@@ -299,6 +299,12 @@ impl PlatformOps {
                 doc("guide/federated-offices"),
                 vec![],
             ),
+            section(
+                "credential-encryption",
+                "Credential Encryption",
+                doc("guide/credential-encryption"),
+                vec![],
+            ),
         ]
     }
 

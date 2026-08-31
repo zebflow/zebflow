@@ -11,9 +11,10 @@ use crate::infra::cluster::registry::WorkerRegistryRecord;
 use crate::infra::execution::placement::ProjectRuntimePlacement;
 use crate::platform::error::PlatformError;
 use crate::platform::model::{
-    DataAdapterKind, HubAccessGrant, HubAssetPackage, HubAssetVersion, HubAuthority, HubPublisher,
-    HubToken, McpSession, PipelineInvocationEntry, PipelineInvocationLogStats, PipelineMeta,
-    PlatformHubRepository, PlatformOffice, PlatformOfficeIdentityWrite, PlatformOfficeJoinToken,
+    CredentialKeyringReport, CredentialSweepReport, DataAdapterKind, HubAccessGrant,
+    HubAssetPackage, HubAssetVersion, HubAuthority, HubPublisher, HubToken, McpSession,
+    PipelineInvocationEntry, PipelineInvocationLogStats, PipelineMeta, PlatformHubRepository,
+    PlatformOffice, PlatformOfficeIdentityWrite, PlatformOfficeJoinToken,
     PlatformOfficeLocalAuthorityEvent, PlatformOfficeNode, PlatformOfficeVouchRedemption,
     PlatformProject, PlatformServiceInstance, PlatformUser, ProjectCredential, ProjectDbConnection,
     ProjectHubRepository, ProjectInvite, ProjectMember, ProjectOperationRecord, ProjectPolicy,
@@ -64,6 +65,47 @@ pub trait DataAdapter: Send + Sync {
         project: &str,
         credential_id: &str,
     ) -> Result<(), PlatformError>;
+
+    // ── Credential encryption keyring ───────────────────────────────────────
+    //
+    // The Credential contract puts key versioning in the first release and
+    // says why: rotation "is the one feature nobody has been able to add
+    // afterwards". These four sit on the storage adapter because that is where
+    // the keyring is — the same boundary that seals a secret on its way down
+    // and opens it on the way up.
+
+    /// Which key generations exist and which one new writes use.
+    ///
+    /// Never returns key material.
+    fn credential_keyring_report(&self) -> Result<CredentialKeyringReport, PlatformError> {
+        Err(unsupported_keyring())
+    }
+
+    /// Install a new data key generation. Re-encrypts nothing.
+    ///
+    /// New writes use it immediately; every older generation stays for reads,
+    /// which is what makes the operation online and instant.
+    fn rotate_credential_key(&self) -> Result<CredentialKeyringReport, PlatformError> {
+        Err(unsupported_keyring())
+    }
+
+    /// Re-wrap every data key under a new instance key.
+    ///
+    /// Touches no credential: the data keys do not change, only the key that
+    /// wraps them, so the file on disk is replaced and the ciphertext is not.
+    fn rekey_credential_keyring(&self) -> Result<CredentialKeyringReport, PlatformError> {
+        Err(unsupported_keyring())
+    }
+
+    /// Re-encrypt every stored credential under the current generation.
+    ///
+    /// The separate sweep the contract names — "rotation alone never does
+    /// that" — and the thing that retires an old generation, since after it
+    /// nothing names one. It is also what converts rows written before this
+    /// release, which are plaintext.
+    fn reencrypt_project_credentials(&self) -> Result<CredentialSweepReport, PlatformError> {
+        Err(unsupported_keyring())
+    }
     /// Load one project DB connection.
     fn get_project_db_connection(
         &self,
@@ -817,6 +859,13 @@ pub trait DataAdapter: Send + Sync {
 }
 
 /// Builds selected metadata adapter.
+fn unsupported_keyring() -> PlatformError {
+    PlatformError::new(
+        "PLATFORM_CREDENTIAL_KEY_UNSUPPORTED",
+        "this adapter holds no credential encryption keyring",
+    )
+}
+
 pub fn build_data_adapter(
     kind: DataAdapterKind,
     data_root: &Path,

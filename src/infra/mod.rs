@@ -14,6 +14,7 @@
 //! | [`mem`] | Current in-process KV/pubsub implementation used as the first `StateBus` backend (`n.kv.*` nodes) |
 //! | [`transport`] | Real-time transport primitives, currently WebSocket rooms |
 //! | [`scheduler`] | Background cron scheduling for active pipelines |
+//! | [`secrets`] | Encryption of stored secrets: the AEAD envelopes and the instance keyring |
 //! | [`storage`] | Older storage placeholder area; retained until the new `io/` split fully absorbs it |
 //!
 //! # Design principles
@@ -44,6 +45,7 @@ pub mod health;
 pub mod io;
 pub mod mem;
 pub mod scheduler;
+pub mod secrets;
 pub mod storage;
 pub mod transport;
 pub mod ws_client;

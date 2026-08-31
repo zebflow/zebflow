@@ -40,6 +40,7 @@ fn tile_cache() -> &'static Mutex<TileCacheState> {
 }
 
 /// Build a cache key for a tile request.
+#[allow(clippy::too_many_arguments)]
 pub fn tile_cache_key(
     layer_id: &str,
     bbox: &[f64; 4],
@@ -50,6 +51,7 @@ pub fn tile_cache_key(
     style_dsl: Option<&str>,
     filter: Option<&str>,
     format: &str,
+    allowed_properties: &[String],
 ) -> String {
     let sv = source_version(source_ref);
     let z = zoom
@@ -61,6 +63,10 @@ pub fn tile_cache_key(
         "tile:{layer_id}:{:.6},{:.6},{:.6},{:.6}:{width}x{height}:z={z}:src={sv}:fmt={format}",
         bbox[0], bbox[1], bbox[2], bbox[3]
     );
+    // A vector tile carries whatever `allowed_properties` allowed when it was
+    // built. Narrowing the list must not leave the old tile answering: the list
+    // is part of the tile's identity, not of its freshness.
+    let _ = write!(key, ":props={}", allowed_properties.join(","));
     if let Some(dsl) = style_dsl {
         let hash = super::style_dsl::style_hash(dsl);
         let _ = write!(key, ":sty={hash:016x}");
@@ -311,21 +317,30 @@ mod tests {
 
     #[test]
     fn tile_cache_key_format() {
-        let key = tile_cache_key(
-            "lga",
-            &[144.0, -38.0, 145.0, -37.0],
-            256,
-            256,
-            Some(10),
-            "/tmp/test.parquet",
-            None,
-            None,
-            "png",
-        );
-        assert!(key.starts_with("tile:lga:"));
-        assert!(key.contains("256x256"));
-        assert!(key.contains("z=10"));
-        assert!(key.contains("fmt=png"));
+        let key = |allowed: &[String]| {
+            tile_cache_key(
+                "lga",
+                &[144.0, -38.0, 145.0, -37.0],
+                256,
+                256,
+                Some(10),
+                "/tmp/test.parquet",
+                None,
+                None,
+                "png",
+                allowed,
+            )
+        };
+        let open = key(&["name".to_string(), "owner_phone".to_string()]);
+        assert!(open.starts_with("tile:lga:"));
+        assert!(open.contains("256x256"));
+        assert!(open.contains("z=10"));
+        assert!(open.contains("fmt=png"));
+
+        // Narrowing what the public may see must not be answerable from the
+        // tile built before the narrowing.
+        assert_ne!(open, key(&["name".to_string()]));
+        assert_ne!(open, key(&[]));
     }
 
     #[test]
