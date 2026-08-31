@@ -51,7 +51,6 @@ use crate::pipeline::nodes::{NodeExecutionInput, NodeExecutionOutput, NodeHandle
 use crate::platform::services::CredentialService;
 use crate::platform::services::PlatformService;
 use crate::rwe::{ReactiveWebEngine, TemplateSource, resolve_engine_or_default};
-use crate::zebfs::LocalZebFs;
 
 /// A single entry in the template compile cache.
 /// Pairs the compiled page artifact with the set of component files it depends on,
@@ -822,7 +821,7 @@ fn materialize_node_output_files(
         .file
         .ensure_project_layout(&ctx.owner, &ctx.project)
         .map_err(|err| PipelineError::new("FW_NODE_OUTPUT_FILE", err.to_string()))?;
-    let zebfs = LocalZebFs::new(layout.files_dir);
+    let zebfs = layout.open_files();
     let request_id = sanitize_path_part(&ctx.request_id);
     let kind_part = sanitize_path_part(node_kind);
     let mut refs = Map::new();
@@ -3075,7 +3074,6 @@ mod tests {
     use crate::platform::model::PlatformConfig;
     use crate::platform::services::PlatformService;
     use crate::platform::shell::parser::build_pipeline_graph;
-    use crate::zebfs::LocalZebFs;
 
     /// A curated bundle ships in the binary, so a declaration it cannot run
     /// under is a startup-shaped bug rather than a user's problem.
@@ -3786,7 +3784,7 @@ mod tests {
             .file
             .ensure_project_layout(owner, project)
             .expect("project layout");
-        let zebfs = LocalZebFs::new(layout.files_dir);
+        let zebfs = layout.open_files();
         let moved = zebfs.get("qa/fs/moved.txt").expect("moved object");
         assert_eq!(String::from_utf8(moved.bytes).expect("utf8"), "hello fs");
         assert!(zebfs.head("qa/fs/prefix").is_ok());
@@ -3862,7 +3860,7 @@ mod tests {
             .file
             .ensure_project_layout(owner, project)
             .expect("project layout");
-        let zebfs = LocalZebFs::new(layout.files_dir);
+        let zebfs = layout.open_files();
         let object = zebfs.get(rel_path).expect("materialized object");
         let stored: serde_json::Value = serde_json::from_slice(&object.bytes).expect("json file");
         assert_eq!(stored, json!({ "frames": [1, 2, 3] }));
@@ -3927,7 +3925,8 @@ mod tests {
             .file
             .ensure_project_layout(owner, project)
             .expect("project layout");
-        let object = LocalZebFs::new(layout.files_dir)
+        let object = layout
+            .open_files()
             .get("datasets/posts.parquet")
             .expect("parquet object");
         assert!(!object.bytes.is_empty());
@@ -3951,7 +3950,7 @@ mod tests {
             .file
             .ensure_project_layout(owner, project)
             .expect("project layout");
-        let zebfs = LocalZebFs::new(layout.files_dir);
+        let zebfs = layout.open_files();
         zebfs
             .put(
                 "datasets/posts.csv",
@@ -4014,7 +4013,7 @@ mod tests {
             .file
             .ensure_project_layout(owner, project)
             .expect("project layout");
-        let zebfs = LocalZebFs::new(layout.files_dir);
+        let zebfs = layout.open_files();
 
         let posts = vec![
             json!({ "id": 1, "author_id": 10, "title": "First", "score": 7.5 }),
@@ -4092,7 +4091,8 @@ mod tests {
             .file
             .ensure_project_layout(owner, project)
             .expect("project layout");
-        LocalZebFs::new(layout.files_dir)
+        layout
+            .open_files()
             .put("datasets/posts.csv", b"id,title\n1,First\n2,Second\n")
             .expect("posts csv");
 

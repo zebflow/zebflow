@@ -55,6 +55,7 @@ spec:
     - pages/system
   data: {}
   files:
+    backend: zebfs
     uploads:
       max_asset_size_mb: 50
       webhook_body_max_mb: 512

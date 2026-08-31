@@ -362,7 +362,7 @@ impl NodeHandler for Node {
             .file
             .ensure_project_layout(owner, project)
             .map_err(|err| PipelineError::new("FW_NODE_TABLE_CONVERT", err.to_string()))?;
-        let zebfs = LocalZebFs::new(layout.files_dir);
+        let zebfs = layout.open_files();
 
         if non_empty(self.config.to_path.as_deref()).is_none() && !self.config.to_json {
             return Err(PipelineError::new(

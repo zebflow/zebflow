@@ -526,6 +526,11 @@ File-like bytes should travel through pipelines as FileRef metadata, not inline 
 FileRefs use `backend: "zebfs"` and may be `lifecycle: "temporary"` for ingress/intermediate files
 or `lifecycle: "durable"` for promoted/generated artifacts.
 
+`backend` names the project's *native* store — the one declared in `spec.files.backend` in
+`repo/zebflow.yaml`, `zebfs` (local disk) unless a project says otherwise. It is not where the bytes
+were fetched from: a node that downloads from an outside bucket still writes into the native store,
+so the FileRef it emits still carries the native backend word.
+
 ```json
 {
   "__zf_type": "file_ref",

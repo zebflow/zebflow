@@ -1,7 +1,8 @@
 # ProjectConfiguration
 
 Status: **Frozen** on 2026-08-15. Amended 2026-08-20 to add optional
-`spec.layout` and, later the same day, `spec.layout.allowed_extensions`; see
+`spec.layout` and, later the same day, `spec.layout.allowed_extensions`, and on
+2026-09-01 to add optional `spec.files.backend`; see
 [Version Rules](#version-rules).
 
 `ProjectConfiguration` is the portable, non-secret project configuration stored
@@ -73,6 +74,7 @@ spec:
   locks: {}
   data: {}
   files:
+    backend: zebfs
     uploads:
       max_asset_size_mb: 50
       webhook_body_max_mb: 512
@@ -98,7 +100,7 @@ The full canonical example is the golden fixture linked above.
 | `spec.assistant` | Credential references and bounded behavior | API keys or chat history |
 | `spec.locks` | Project-relative protected template paths | Access-control policy or file contents |
 | `spec.data` | Reserved future data policy | Records, schema, or connection secrets |
-| `spec.files` | Upload size policy | Uploaded bytes or object metadata |
+| `spec.files` | The native store this project's files live in, and upload size policy | Uploaded bytes, object metadata, or an endpoint, bucket, or credential |
 | `spec.distribution` | Hub publishing intent | Hub access tokens or published package content |
 
 Credential and connection IDs are references. Their secret values remain in the
@@ -167,6 +169,36 @@ root; they are read through the same rule, and
 `zebflow project pipelines migrate` rewrites the stored bytes once. See
 [layout.md](./layout.md) for the survey these rules came from.
 
+### spec.files
+
+`backend` names the **native** store: where this project's own `files/` live,
+what a `/fs/` read serves from, and the word every FileRef written here carries
+in its `backend` field. The two must agree, because they name the same thing;
+[file-ref](../file-ref/README.md) is the format half of the same decision.
+
+It is not a pipeline's connection to somebody else's bucket. An external S3,
+MinIO, or SeaweedFS a pipeline reads and writes is a *connection* with a
+credential, the same shape as a Postgres connection and chosen per pipeline. A
+node that reads from one produces bytes that land in the native store, so the
+FileRef it emits carries the **native** backend word -- never `s3` on account of
+where the bytes came from. Otherwise `ref` would stop meaning one thing:
+sometimes a key in the store Zebflow owns, sometimes a key in a bucket it does
+not. Both questions can be answered "S3" and still be different questions.
+
+`zebfs` is the only accepted value in this build. It is the word the FileRef
+field already carries for locally-stored bytes, so one constant spells it in
+both places (`src/zebfs/backend.rs`). An unknown value is refused by name with
+the accepted list rather than resolved to the default, because a project whose
+bytes went to a store it did not declare is worse than a project that will not
+start. A second backend is one more accepted value plus the connection that
+holds its endpoint and credential; nothing about this section reshapes.
+
+Declaring it is per project, because `files/` is per project and a store is what
+a project's own objects are addressed in. An instance-wide bucket with
+per-project prefixes is not excluded by that: it would be declared here as the
+same word by every project on the instance, with the endpoint and prefix rule
+living on the connection rather than repeated in each `zebflow.yaml`.
+
 ## Integration Map
 
 Every v1 section has one writer path and one runtime owner. Settings controls
@@ -185,7 +217,7 @@ file operations.
 | `spec.assistant` | Settings > Automatons | Project assistant credentials and execution bounds |
 | `spec.locks` | Template editor lock control | REST, MCP, and assistant template access checks |
 | `spec.data` | Reserved; no writer in v1 | No runtime effect in v1 |
-| `spec.files` | Settings > General Runtime Defaults | Asset, file, and webhook upload limits |
+| `spec.files` | Settings > General Runtime Defaults writes the upload limits; `backend` has no writer and is hand-authored in `repo/zebflow.yaml`, with Settings > Files showing which store is active | Asset, file, and webhook upload limits; `FilesystemFileAdapter::ensure_project_layout` reads `backend` into `ProjectFileLayout`, whose `open_files` is the one call that turns it into an implementation through `zebfs::backend::open` |
 | `spec.distribution` | Settings > General presentation and Hub producer control | Dashboard app entry and Hub producer availability |
 
 The complete `spec.runtime` section is preserved in project runtime bundles.
@@ -230,6 +262,7 @@ Omitted fields use these v1 meanings:
 | `spec.runtime.execution` | `resident` |
 | `spec.runtime.resource_profile` | `small` |
 | `spec.runtime.min_replicas` | `1` |
+| `spec.files.backend` | `zebfs` -- the native store on local disk |
 | `spec.files.uploads.max_asset_size_mb` | Runtime default of 10 MiB |
 | `spec.files.uploads.webhook_body_max_mb` | Runtime default of 100 MiB |
 | `spec.files.uploads.max_file_size_mb` | Runtime default of 1024 MiB |
@@ -256,6 +289,7 @@ The reader rejects:
   because a declaration is matched, not normalized
 - repeated initial-data prefixes, and initial-data engines other than `sekejap`
   and `sqlite`
+- a `files.backend` other than `zebfs`, refused by name with the accepted list
 - URLs with embedded credentials
 - upload, timeout, logging, assistant, replica, or resource values outside their
   documented limits
@@ -314,6 +348,7 @@ schema stops being a draft and starts being a promise.
 | 2026-08-20 | Added `spec.layout` | Optional at every level; omission reproduces the previous hardcoded directories exactly; no existing field changed meaning; absent stays absent on rewrite, so an existing file is not modified on its next save; the golden fixture still round-trips byte for byte. |
 | 2026-08-20 | Added `spec.layout.sqlite_schema` | The SQLite export directory was the one repository directory with no entry, so `schemas/sqlite/` stayed a literal in two places that could drift from each other. Optional, defaults to the literal it replaces, and absent stays absent on rewrite. |
 | 2026-08-20 | Added `spec.layout.allowed_extensions` | Optional; an absent entry resolves to the platform set, which is derived from what a repository in this codebase actually holds plus the media types the asset route serves, so no existing content becomes uninstallable and absent stays absent on rewrite. It can only narrow, so no document can weaken the gate built on it. No existing field changed meaning and the golden fixture still round-trips byte for byte. |
+| 2026-09-01 | Added `spec.files.backend` | Optional; an absent entry resolves to `zebfs`, the store every project already used, and absent stays absent on rewrite, so no existing file is modified on its next save. No existing field changed meaning and both golden fixtures still round-trip byte for byte. The only accepted value is the one a stored FileRef already carries, so nothing written before the entry existed becomes unreadable. |
 | 2026-08-20 | `spec.layout.assets` now defaults inside the resolved `source` | For an undeclared `source` the default is the same string it always was, `pipelines/assets`, so no existing document changes meaning. It only differs for a project that declares a different `source` -- a case that could not arise before the declaration was read, and where the previous literal would have scaffolded an asset directory in the tree the project moved out of. |
 
 ## Freeze Evidence
@@ -331,6 +366,11 @@ schema stops being a draft and starts being a promise.
   `zeb.lock`, `.gitkeep` -- installs unchanged.
 - An undeclared layout resolves to the directories the platform hardcodes,
   including the installer's own initial-data prefix table.
+- An undeclared `files.backend` resolves to the local store, is not written on
+  rewrite, and stores and serves a file exactly as before; a project declaring
+  `zebfs` explicitly round-trips byte for byte and resolves to the same store;
+  an unknown backend is refused by name with the accepted list rather than
+  falling back; and the declaration survives an unrelated settings write.
 - A declared layout survives the runtime model conversion and an unrelated
   configuration update, so no settings write can erase it.
 - A project that declares no layout is not rewritten to carry an empty section.

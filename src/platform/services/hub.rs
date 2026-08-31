@@ -54,7 +54,7 @@ use crate::platform::services::project::{
 use crate::platform::services::tsx_outline::extract_import_sources;
 use crate::platform::services::{DependencyLockService, NodeRegistryService, ProjectService};
 use crate::platform::sqlite_schema;
-use crate::zebfs::{LocalZebFs, normalize_object_path};
+use crate::zebfs::normalize_object_path;
 
 pub struct HubService {
     control_data: Arc<dyn DataAdapter>,
@@ -5540,7 +5540,7 @@ fn hub_cover_webp_from_path(
     }
     let rel = normalize_object_path(image_file_path)
         .map_err(|err| PlatformError::new("HUB_MEDIA_INVALID", err.to_string()))?;
-    let zebfs = LocalZebFs::new(layout.files_dir.clone());
+    let zebfs = layout.open_files();
     let object = zebfs
         .get(&rel)
         .map_err(|err| PlatformError::new("HUB_MEDIA_MISSING", err.to_string()))?;

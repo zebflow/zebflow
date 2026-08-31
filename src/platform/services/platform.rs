@@ -434,6 +434,28 @@ impl PlatformService {
         }
     }
 
+    /// Opens the native file storage backend this project declared.
+    ///
+    /// This is the seam. `spec.files.backend` in `repo/zebflow.yaml` names the
+    /// store that owns the project's bytes, and this is the one place that
+    /// declaration becomes an implementation, so a second backend is added by
+    /// changing `zebfs::backend::open` rather than by finding every caller that
+    /// once constructed `LocalZebFs` directly.
+    ///
+    /// It answers only "where does this project keep its files". An outside
+    /// bucket a pipeline reads from is a connection with a credential, chosen
+    /// per pipeline, and its bytes still land in the store returned here.
+    pub fn project_zebfs(
+        &self,
+        owner: &str,
+        project: &str,
+    ) -> Result<crate::zebfs::LocalZebFs, PlatformError> {
+        Ok(self
+            .file
+            .ensure_project_layout(owner, project)?
+            .open_files())
+    }
+
     /// Execute an active function pipeline by slug and return its output value.
     ///
     /// Called from `n.function.call` nodes during pipeline execution.

@@ -2459,7 +2459,7 @@ async fn project_legacy_file_serve(
         Ok(layout) => layout,
         Err(err) => return internal_error(err),
     };
-    let zebfs = crate::zebfs::LocalZebFs::new(layout.files_dir.clone());
+    let zebfs = layout.open_files();
     let (_, abs_path) = match zebfs.resolve_object_path(&normalized) {
         Ok(resolved) => resolved,
         Err(err) if err.code == "ZEBFS_INVALID_PATH" => {
@@ -2573,7 +2573,7 @@ async fn project_fs_serve(
         Ok(layout) => layout,
         Err(err) => return internal_error(err),
     };
-    let zebfs = crate::zebfs::LocalZebFs::new(layout.files_dir);
+    let zebfs = layout.open_files();
     let is_public = match crate::platform::services::zebfs_acl::is_public_read(&zebfs, &path) {
         Ok(value) => value,
         Err(err) if err.code == "ZEBFS_INVALID_PATH" || err.code == "ZEBFS_RESERVED_PATH" => {
@@ -6813,7 +6813,7 @@ async fn render_files_page(
                 match state.platform.file.ensure_project_layout(&owner, &project) {
                     Ok(layout) => {
                         let rel = browse_path.trim().trim_start_matches('/').to_string();
-                        let zebfs = crate::zebfs::LocalZebFs::new(layout.files_dir);
+                        let zebfs = layout.open_files();
                         let mut fds: Vec<serde_json::Value> = Vec::new();
                         let mut fls: Vec<serde_json::Value> = Vec::new();
                         let rel_path = match zebfs.list(&rel) {
@@ -7128,6 +7128,12 @@ async fn render_settings_tab_page(
                 .platform
                 .zebflow_cfg
                 .canonical_exists(&owner, &project);
+            // The declaration is already validated by the reader above, so an
+            // unknown word never reaches the page.
+            let file_backend = match zebflow_cfg.configs.files.effective_backend() {
+                Ok(backend) => backend,
+                Err(err) => return internal_error(PlatformError::new(err.code, err.message)),
+            };
 
             let input = json!({
                 "seo": {
@@ -7211,6 +7217,16 @@ async fn render_settings_tab_page(
                         "pipeline_node_timeout_secs": zebflow_cfg.configs.pipelines.effective_node_timeout_secs()
                     }
                 },
+                "files": {
+                    // The native store this project's files live in. The panel
+                    // shows which one is active; it is not a writer, because
+                    // there is one backend to choose from today.
+                    "backend": file_backend.as_str(),
+                    "backend_label": file_backend.label(),
+                    "declared": zebflow_cfg.configs.files.backend.is_some(),
+                    "field": "spec.files.backend",
+                    "accepted": crate::zebfs::FILE_BACKENDS,
+                },
                 "reindex_api": format!("/api/projects/{owner}/{project}/reindex"),
                 "transfer": {
                     "api": {
@@ -7279,7 +7295,7 @@ fn settings_tab_subtitle(tab: &str) -> &'static str {
         "libraries" => "Installed web libraries and runtime package contracts.",
         "dependencies" => "Exact RWE library and node bundle resolutions stored in zeb.lock.",
         "nodes" => "Live node contracts and script/tool availability.",
-        "files" => "External file storage backends — S3, R2, and compatible object stores.",
+        "files" => "The store this project keeps its own files in, and where it could move.",
         "logs" => "Project-owned invocation history, storage size, retention, and cleanup.",
         _ => "Core project defaults and shared runtime switches.",
     }
@@ -14585,7 +14601,7 @@ async fn api_files_list(
         .map(|s| s.trim().trim_start_matches('/'))
         .unwrap_or("")
         .to_string();
-    let zebfs = crate::zebfs::LocalZebFs::new(layout.files_dir);
+    let zebfs = layout.open_files();
 
     let mut folders: Vec<serde_json::Value> = Vec::new();
     let mut files: Vec<serde_json::Value> = Vec::new();
@@ -14697,7 +14713,7 @@ async fn api_files_mkdir(
             .into_response();
     }
 
-    let zebfs = crate::zebfs::LocalZebFs::new(layout.files_dir);
+    let zebfs = layout.open_files();
     match zebfs.create_prefix(&path_str) {
         Ok(_) => Json(json!({ "ok": true, "path": path_str })).into_response(),
         Err(e) => (
@@ -14880,7 +14896,7 @@ async fn api_files_upload(
             .into_response();
     }
     let entry_rel = format!("{rel}/{filename}");
-    let zebfs = crate::zebfs::LocalZebFs::new(layout.files_dir);
+    let zebfs = layout.open_files();
     if let Err(err) = zebfs.put(&entry_rel, bytes.as_ref()) {
         return internal_error(PlatformError::new("FILES_UPLOAD_WRITE", err.to_string()));
     }
@@ -14969,7 +14985,7 @@ async fn api_files_rm(
             .into_response();
     }
 
-    let zebfs = crate::zebfs::LocalZebFs::new(layout.files_dir);
+    let zebfs = layout.open_files();
     match zebfs.delete(&path_str) {
         Ok(_) => Json(json!({ "ok": true })).into_response(),
         Err(e) => (
@@ -15044,7 +15060,7 @@ fn set_project_file_access(
         .file
         .ensure_project_layout(owner, project)
         .map_err(internal_error)?;
-    let zebfs = crate::zebfs::LocalZebFs::new(layout.files_dir);
+    let zebfs = layout.open_files();
     let path = crate::platform::services::zebfs_acl::set_access(&zebfs, &req.path, access, scope)
         .map_err(|err| {
         if err.code == "ZEBFS_INVALID_PATH" || err.code == "ZEBFS_RESERVED_PATH" {

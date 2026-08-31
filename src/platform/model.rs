@@ -9,6 +9,7 @@ use crate::infra::cluster::config::ClusterSettings;
 use crate::infra::cluster::registry::WorkerHeartbeat;
 use crate::infra::execution::placement::ProjectRuntimeProfile;
 use crate::infra::execution::runner::RunnerCapabilities;
+use crate::zebfs::{FileBackend, LocalZebFs, ZebFsError};
 
 /// Data adapter selection.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -2257,9 +2258,25 @@ pub struct ProjectFileLayout {
     /// beside it, so an absolute path and the repository-relative rule that
     /// names it cannot disagree.
     pub repo_layout: ResolvedProjectLayout,
+    /// The native store that owns this project's files, as declared in
+    /// `spec.files.backend`.
+    ///
+    /// Defaulted on read so a layout serialized before this field existed still
+    /// resolves to the store it was written against.
+    #[serde(default)]
+    pub file_backend: FileBackend,
 }
 
 impl ProjectFileLayout {
+    /// Opens the native store that owns this project's files.
+    ///
+    /// Every caller that needs a project's bytes goes through here rather than
+    /// naming an implementation, so a second backend is added in
+    /// [`crate::zebfs::backend::open`] and nowhere else.
+    pub fn open_files(&self) -> LocalZebFs {
+        crate::zebfs::backend::open(self.file_backend, self.files_dir.clone())
+    }
+
     /// `.../repo/{source}` — unified source root: *.zf.json pipelines + *.tsx
     /// templates + *.ts scripts. Also the `@/` root for the RWE compiler.
     pub fn repo_source_dir(&self) -> PathBuf {
@@ -3195,8 +3212,24 @@ pub struct ZebflowJsonData {}
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 pub struct ZebflowJsonFiles {
+    /// The native store this project's `files/` live in.
+    ///
+    /// Absent means the platform default, so a project written before this
+    /// entry existed keeps the store it already used. It is not the place a
+    /// pipeline reads an outside bucket from — that is a connection, not a
+    /// backend.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backend: Option<String>,
     #[serde(default)]
     pub uploads: ZebflowJsonUploads,
+}
+
+impl ZebflowJsonFiles {
+    /// The declared backend, or the default a project inherits by declaring
+    /// nothing. An unknown word is refused rather than defaulted.
+    pub fn effective_backend(&self) -> Result<FileBackend, ZebFsError> {
+        FileBackend::resolve(self.backend.as_deref())
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

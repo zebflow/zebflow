@@ -22,6 +22,7 @@ use crate::platform::model::{
     ZebflowJsonPipelines, ZebflowJsonRwe, ZebflowJsonRweLibraryEntry, ZebflowJsonUploads,
     slug_segment,
 };
+use crate::zebfs::FileBackend;
 
 /// Canonical repository filename for project configuration.
 pub const PROJECT_CONFIGURATION_FILE: &str = "zebflow.yaml";
@@ -153,6 +154,12 @@ impl ProjectConfigurationSpec {
             return Err(ContractError::invalid(
                 "spec.pipelines.node_timeout_secs must be between 5 and 3600",
             ));
+        }
+
+        if let Some(backend) = self.files.backend.as_deref() {
+            FileBackend::parse(backend).map_err(|err| {
+                ContractError::invalid(format!("spec.files.backend {}", err.message))
+            })?;
         }
 
         validate_optional_mb(
@@ -968,6 +975,19 @@ pub struct ProjectDataSpec {}
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct ProjectFilesSpec {
+    /// The native store this project's files live in.
+    ///
+    /// This answers "where does this project keep its files", and it is the
+    /// same word a FileRef carries in `backend`. It does not answer "which
+    /// outside bucket may a pipeline read" -- an external S3 or MinIO bucket a
+    /// pipeline talks to is a connection with a credential, chosen per
+    /// pipeline, and bytes fetched from one still land in the native store.
+    ///
+    /// Optional. An absent entry resolves to [`FileBackend::default`], so a
+    /// project that declares nothing keeps the store it always used and is not
+    /// rewritten to carry a section it did not author.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backend: Option<String>,
     #[serde(default, skip_serializing_if = "is_default")]
     pub uploads: ProjectUploadSpec,
 }
@@ -1078,6 +1098,7 @@ impl From<ZebflowJson> for ProjectConfigurationSpec {
             },
             data: ProjectDataSpec {},
             files: ProjectFilesSpec {
+                backend: value.configs.files.backend,
                 uploads: ProjectUploadSpec {
                     max_asset_size_mb: (value.configs.files.uploads.max_asset_size_mb
                         != default_uploads.max_asset_size_mb)
@@ -1176,6 +1197,7 @@ impl From<ProjectConfigurationSpec> for ZebflowJson {
                 },
                 data: ZebflowJsonData {},
                 files: ZebflowJsonFiles {
+                    backend: value.files.backend,
                     uploads: ZebflowJsonUploads {
                         max_asset_size_mb: value
                             .files
@@ -1513,6 +1535,81 @@ mod tests {
                 .map(|value| (*value).to_string())
                 .collect::<Vec<_>>()
         );
+    }
+
+    /// A project that declares nothing keeps the store it always used, and is
+    /// not rewritten to carry an entry it did not author.
+    #[test]
+    fn an_undeclared_backend_resolves_to_the_local_store() {
+        let spec = ProjectConfigurationSpec::default();
+        assert_eq!(spec.files.backend, None);
+
+        let runtime = ZebflowJson::from(spec);
+        assert_eq!(runtime.configs.files.backend, None);
+        assert_eq!(
+            runtime.configs.files.effective_backend().unwrap(),
+            FileBackend::Zebfs
+        );
+
+        let encoded = encode_contract_yaml::<ProjectConfigurationContract>(
+            ContractMetadata::named("project"),
+            ProjectConfigurationSpec::from(runtime),
+        )
+        .unwrap();
+        assert!(
+            !String::from_utf8(encoded).unwrap().contains("backend"),
+            "an absent declaration must stay absent on rewrite"
+        );
+    }
+
+    /// The declaration and the FileRef field name the same store, so the same
+    /// word has to be accepted here that a stored FileRef already carries.
+    #[test]
+    fn a_declared_backend_survives_the_runtime_model_roundtrip() {
+        let expected = ProjectConfigurationSpec {
+            files: ProjectFilesSpec {
+                backend: Some(crate::pipeline::nodes::basic::file_ref::BACKEND_ZEBFS.to_string()),
+                ..ProjectFilesSpec::default()
+            },
+            ..ProjectConfigurationSpec::default()
+        };
+        let runtime: ZebflowJson = expected.clone().into();
+        assert_eq!(
+            runtime.configs.files.effective_backend().unwrap(),
+            FileBackend::Zebfs
+        );
+        assert_eq!(ProjectConfigurationSpec::from(runtime), expected);
+    }
+
+    /// An unknown backend is refused by name with the accepted list, rather
+    /// than defaulted -- a project whose bytes went to a store it did not
+    /// declare is worse than a project that will not start.
+    #[test]
+    fn an_unknown_backend_is_refused_by_name() {
+        let with = |backend: &str| ProjectConfigurationSpec {
+            files: ProjectFilesSpec {
+                backend: Some(backend.to_string()),
+                ..ProjectFilesSpec::default()
+            },
+            ..ProjectConfigurationSpec::default()
+        };
+        encode_contract::<ProjectConfigurationContract>(
+            ContractMetadata::named("project"),
+            with("zebfs"),
+        )
+        .expect("the local backend is accepted by its declared name");
+
+        for refused in ["s3", "local", "ZebFS", "", "minio"] {
+            let error = encode_contract::<ProjectConfigurationContract>(
+                ContractMetadata::named("project"),
+                with(refused),
+            )
+            .expect_err("only a backend this build can open is accepted");
+            let message = error.to_string();
+            assert!(message.contains("spec.files.backend"), "{message}");
+            assert!(message.contains(&format!("'{refused}'")), "{message}");
+            assert!(message.contains("accepted: zebfs"), "{message}");
+        }
     }
 
     #[test]

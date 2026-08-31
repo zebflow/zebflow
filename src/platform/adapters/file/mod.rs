@@ -96,6 +96,11 @@ impl FileAdapter for FilesystemFileAdapter {
         // the defaults, because guessing here would silently relocate a
         // project's entire source tree.
         let repo_layout = self.configs.project_layout(owner, project)?;
+        // Same rule as the layout above: a backend this build cannot open is
+        // refused here rather than silently resolved to the default, because a
+        // project whose bytes went to a store it did not declare is worse than
+        // a project that will not start.
+        let file_backend = self.configs.project_file_backend(owner, project)?;
 
         let resolved = ProjectFileLayout {
             root,
@@ -105,6 +110,7 @@ impl FileAdapter for FilesystemFileAdapter {
             repo_git_dir,
             project_config_file,
             repo_layout,
+            file_backend,
         };
 
         // A pre-tier project has its whole runtime cache sitting at the old

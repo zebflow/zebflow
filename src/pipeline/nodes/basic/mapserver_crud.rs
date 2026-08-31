@@ -684,7 +684,7 @@ impl Node {
 
         if !is_function_mode {
             // Validate source file exists in ZebFS
-            let zebfs = crate::zebfs::LocalZebFs::new(layout.files_dir.clone());
+            let zebfs = layout.open_files();
             zebfs.head(&source_path).map_err(|e| {
                 PipelineError::new(
                     "FW_NODE_MS_PUBLISH",

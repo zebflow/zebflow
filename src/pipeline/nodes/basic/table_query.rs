@@ -439,7 +439,7 @@ impl NodeHandler for Node {
             .file
             .ensure_project_layout(owner, project)
             .map_err(|err| PipelineError::new("FW_NODE_TABLE_QUERY", err.to_string()))?;
-        let zebfs = LocalZebFs::new(layout.files_dir.clone());
+        let zebfs = layout.open_files();
         let QueryRows {
             rows,
             source_labels,

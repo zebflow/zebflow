@@ -6184,3 +6184,142 @@ async fn a_web_published_layer_serves_and_shows_only_the_chosen_properties() {
 
     let _ = fs::remove_dir_all(&data_root);
 }
+
+/// The file storage backend is a declaration, not an implicit hardcode.
+///
+/// Three things have to hold together for that to be true: a project that
+/// declares nothing keeps the store it always had, a project that names the
+/// local store explicitly behaves identically, and a project that names a store
+/// this build cannot open is refused rather than quietly falling back to disk.
+#[test]
+fn the_file_storage_backend_is_declared_and_an_unknown_one_is_refused() {
+    let mut config = PlatformConfig::default();
+    config.data_root = temp_test_dir("files-backend-declaration");
+    config.default_password = "test-pass".to_string();
+    let data_root = config.data_root.clone();
+    let platform = PlatformService::from_config(config).expect("platform service");
+
+    for project in ["undeclared", "declared"] {
+        platform
+            .projects
+            .create_or_update_project(
+                "superadmin",
+                &CreateProjectRequest {
+                    project: project.to_string(),
+                    title: Some(project.to_string()),
+                    local_branch: None,
+                    runtime: Default::default(),
+                },
+            )
+            .expect("project");
+    }
+
+    // A project that declares nothing stores and serves exactly as before.
+    let undeclared = platform
+        .project_zebfs("superadmin", "undeclared")
+        .expect("undeclared project storage");
+    undeclared.put("notes/hello.txt", b"hello").expect("put");
+    assert_eq!(
+        undeclared.get("notes/hello.txt").expect("get").bytes,
+        b"hello"
+    );
+    assert_eq!(
+        undeclared.root(),
+        data_root
+            .join("users")
+            .join("superadmin")
+            .join("undeclared")
+            .join("files")
+    );
+    let undeclared_yaml = fs::read_to_string(
+        data_root
+            .join("users")
+            .join("superadmin")
+            .join("undeclared")
+            .join("repo")
+            .join("zebflow.yaml"),
+    )
+    .expect("undeclared configuration");
+    assert!(
+        !undeclared_yaml.contains("backend"),
+        "an absent declaration must stay absent: {undeclared_yaml}"
+    );
+
+    // The same project declaring the local store explicitly behaves the same.
+    platform
+        .zebflow_cfg
+        .update("superadmin", "declared", |cfg| {
+            cfg.configs.files.backend = Some("zebfs".to_string());
+        })
+        .expect("declare the local backend");
+    let declared = platform
+        .project_zebfs("superadmin", "declared")
+        .expect("declared project storage");
+    declared.put("notes/hello.txt", b"hello").expect("put");
+    assert_eq!(
+        declared.get("notes/hello.txt").expect("get").bytes,
+        b"hello"
+    );
+    assert_eq!(
+        declared.root(),
+        data_root
+            .join("users")
+            .join("superadmin")
+            .join("declared")
+            .join("files")
+    );
+    let declared_yaml = fs::read_to_string(
+        data_root
+            .join("users")
+            .join("superadmin")
+            .join("declared")
+            .join("repo")
+            .join("zebflow.yaml"),
+    )
+    .expect("declared configuration");
+    assert!(
+        declared_yaml.contains("backend: zebfs"),
+        "the declaration must be written: {declared_yaml}"
+    );
+
+    // An unrelated settings write does not erase the declaration.
+    platform
+        .zebflow_cfg
+        .set_project_title("superadmin", "declared", "Renamed")
+        .expect("unrelated update");
+    assert_eq!(
+        platform
+            .zebflow_cfg
+            .read_or_default("superadmin", "declared")
+            .expect("reread")
+            .configs
+            .files
+            .backend
+            .as_deref(),
+        Some("zebfs")
+    );
+
+    // A backend this build cannot open is refused by name, listing what is
+    // accepted, rather than silently resolving to the local store.
+    let config_path = data_root
+        .join("users")
+        .join("superadmin")
+        .join("declared")
+        .join("repo")
+        .join("zebflow.yaml");
+    fs::write(
+        &config_path,
+        declared_yaml.replace("backend: zebfs", "backend: s3"),
+    )
+    .expect("declare an unknown backend");
+    let refused = platform
+        .project_zebfs("superadmin", "declared")
+        .expect_err("an unknown backend is refused");
+    assert!(
+        refused.message.contains("'s3'") && refused.message.contains("accepted: zebfs"),
+        "{}",
+        refused.message
+    );
+
+    let _ = fs::remove_dir_all(&data_root);
+}

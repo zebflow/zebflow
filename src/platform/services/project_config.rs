@@ -19,6 +19,7 @@ use crate::platform::model::{
     ProjectBootstrapPlan, ResolvedProjectLayout, ZebflowJson, ZebflowJsonAssistant,
     ZebflowJsonDistributionHub, ZebflowJsonRweLibraries, ZebflowJsonRweLibraryEntry, slug_segment,
 };
+use crate::zebfs::FileBackend;
 
 /// Modification time and size of `path`, or `None` when it does not exist.
 fn file_stamp(path: &Path) -> Option<(std::time::SystemTime, u64)> {
@@ -33,18 +34,24 @@ pub fn is_template_path_locked(locked: &[String], rel_path: &str) -> bool {
     })
 }
 
-/// One cached layout and the file identity it was read from.
-struct LayoutCacheEntry {
+/// One cached read of a project's declarations, and the file identity it was
+/// read from.
+///
+/// Layout and file backend are cached together because they come from the same
+/// parse of the same file: reading twice would double the cost of the hot path
+/// and open a window where the two answers came from different bytes.
+struct ConfigCacheEntry {
     /// `None` when the configuration file was absent at the time of the read.
     stamp: Option<(std::time::SystemTime, u64)>,
     layout: ResolvedProjectLayout,
+    backend: FileBackend,
 }
 
 /// Reads and writes `{data_root}/users/{owner}/{project}/repo/zebflow.yaml`.
 pub struct ProjectConfigurationService {
     users_root: PathBuf,
     update_locks: Mutex<HashMap<PathBuf, Arc<Mutex<()>>>>,
-    layouts: Mutex<HashMap<PathBuf, LayoutCacheEntry>>,
+    declarations: Mutex<HashMap<PathBuf, ConfigCacheEntry>>,
 }
 
 impl ProjectConfigurationService {
@@ -53,7 +60,7 @@ impl ProjectConfigurationService {
         Self {
             users_root,
             update_locks: Mutex::new(HashMap::new()),
-            layouts: Mutex::new(HashMap::new()),
+            declarations: Mutex::new(HashMap::new()),
         }
     }
 
@@ -126,32 +133,70 @@ impl ProjectConfigurationService {
         owner: &str,
         project: &str,
     ) -> Result<ResolvedProjectLayout, PlatformError> {
+        self.declarations(owner, project).map(|(layout, _)| layout)
+    }
+
+    /// Effective native file storage backend for one project.
+    ///
+    /// This is the declaration `src/zebfs/backend.rs` turns into an
+    /// implementation. A project that declares nothing resolves to the platform
+    /// default; a project that declares a word this build cannot open is
+    /// refused here rather than quietly writing its bytes to the default store.
+    pub fn project_file_backend(
+        &self,
+        owner: &str,
+        project: &str,
+    ) -> Result<FileBackend, PlatformError> {
+        self.declarations(owner, project)
+            .map(|(_, backend)| backend)
+    }
+
+    /// Reads the cached declarations for one project, refreshing on a changed
+    /// configuration file.
+    fn declarations(
+        &self,
+        owner: &str,
+        project: &str,
+    ) -> Result<(ResolvedProjectLayout, FileBackend), PlatformError> {
         let path = self.config_path(owner, project);
         let stamp = file_stamp(&path);
         {
-            let cache = self.layouts.lock().unwrap_or_else(|err| err.into_inner());
+            let cache = self
+                .declarations
+                .lock()
+                .unwrap_or_else(|err| err.into_inner());
             if let Some(entry) = cache.get(&path)
                 && entry.stamp == stamp
             {
-                return Ok(entry.layout.clone());
+                return Ok((entry.layout.clone(), entry.backend));
             }
         }
-        let layout = self
-            .read_path_or_default(&path, &self.legacy_path(owner, project), project)?
-            .layout();
-        let mut cache = self.layouts.lock().unwrap_or_else(|err| err.into_inner());
+        let config =
+            self.read_path_or_default(&path, &self.legacy_path(owner, project), project)?;
+        let backend = config.configs.files.effective_backend().map_err(|err| {
+            PlatformError::new(
+                "PROJECT_CONFIG_READ",
+                format!("spec.files.backend {}", err.message),
+            )
+        })?;
+        let layout = config.layout();
+        let mut cache = self
+            .declarations
+            .lock()
+            .unwrap_or_else(|err| err.into_inner());
         cache.insert(
             path,
-            LayoutCacheEntry {
+            ConfigCacheEntry {
                 stamp,
                 layout: layout.clone(),
+                backend,
             },
         );
-        Ok(layout)
+        Ok((layout, backend))
     }
 
     fn forget_layout(&self, path: &Path) {
-        self.layouts
+        self.declarations
             .lock()
             .unwrap_or_else(|err| err.into_inner())
             .remove(path);

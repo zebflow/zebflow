@@ -25,10 +25,7 @@ use crate::pipeline::{
     nodes::{NodeExecutionInput, NodeExecutionOutput, NodeHandler},
 };
 use crate::platform::services::PlatformService;
-use crate::zebfs::{
-    LocalZebFs,
-    model::{ZebFsEntry, ZebFsEntryKind, ZebFsStat},
-};
+use crate::zebfs::model::{ZebFsEntry, ZebFsEntryKind, ZebFsStat};
 
 pub const LIST_NODE_KIND: &str = "n.fs.list";
 pub const HEAD_NODE_KIND: &str = "n.fs.head";
@@ -420,7 +417,7 @@ impl NodeHandler for Node {
             .file
             .ensure_project_layout(owner, project)
             .map_err(|err| PipelineError::new("FW_NODE_FS_OBJECT", err.to_string()))?;
-        let zebfs = LocalZebFs::new(layout.files_dir);
+        let zebfs = layout.open_files();
         let op = self.operation;
         let payload = match op {
             Operation::List => {

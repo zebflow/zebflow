@@ -12,7 +12,11 @@
 //!
 //! Current implementation:
 //!
-//! - `backend: "zebfs"` is implemented.
+//! - `backend: "zebfs"` is implemented. The value is the *native* backend the
+//!   project declares in `spec.files.backend` (see `src/zebfs/backend.rs`), not
+//!   the place bytes were fetched from: a node that downloads from an external
+//!   bucket still writes into the native store and still emits the native
+//!   backend word.
 //! - `lifecycle: "temporary"` is used for webhook and HTTP ingress/intermediate
 //!   bytes under `tmp/runs/{request_id}/files/...`.
 //! - `lifecycle: "durable"` is used when a node writes a final project FS object,
@@ -29,10 +33,13 @@ use uuid::Uuid;
 
 use crate::pipeline::PipelineError;
 use crate::platform::services::PlatformService;
-use crate::zebfs::LocalZebFs;
 
 pub const FILE_REF_TYPE: &str = "file_ref";
-pub const BACKEND_ZEBFS: &str = "zebfs";
+/// The native backend that owns locally-stored bytes.
+///
+/// Re-exported rather than redefined: the word a FileRef carries and the word
+/// `spec.files.backend` declares name the same thing, so there is one constant.
+pub use crate::zebfs::backend::BACKEND_ZEBFS;
 pub const LIFECYCLE_TEMPORARY: &str = "temporary";
 pub const LIFECYCLE_DURABLE: &str = "durable";
 
@@ -101,7 +108,7 @@ pub fn write_tmp_file_ref(
         .file
         .ensure_project_layout(input.owner, input.project)
         .map_err(|err| PipelineError::new("FW_FILE_REF", err.to_string()))?;
-    let zebfs = LocalZebFs::new(layout.files_dir);
+    let zebfs = layout.open_files();
     let clean_name = sanitize_filename(input.filename.unwrap_or("content.bin"));
     let extension = extension_for(&clean_name, input.mime);
     let object_name = if extension.is_empty() {
@@ -157,7 +164,7 @@ pub fn read_file_ref_bytes(
         .file
         .ensure_project_layout(owner, project)
         .map_err(|err| PipelineError::new("FW_FILE_REF_READ", err.to_string()))?;
-    let zebfs = LocalZebFs::new(layout.files_dir);
+    let zebfs = layout.open_files();
     let object = zebfs
         .get(path)
         .map_err(|err| PipelineError::new("FW_FILE_REF_READ", err.to_string()))?;

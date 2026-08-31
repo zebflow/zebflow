@@ -37,7 +37,7 @@ All eleven fields are required.
 | Field | Rule |
 | --- | --- |
 | `__zf_type` | exactly `file_ref`. Path-shaped JSON is never guessed to be one |
-| `backend` | who owns the bytes. `zebfs` today; `s3` and other stores add a backend, not a format |
+| `backend` | who owns the bytes: the project's **native** store, declared in [`spec.files.backend`](../project-configuration/README.md#specfiles) and spelled by the same constant. `zebfs` today; `s3` and other stores add a backend, not a format. Never the place bytes were fetched *from* |
 | `ref` | **opaque.** Only the named backend may interpret it — no node parses it, joins it to a path, or assumes a local file |
 | `filename` | the uploader's own name, for display and for what a save writes |
 | `mime` | content type |
@@ -77,6 +77,18 @@ the credential are configured once on the connection, never repeated per file �
 so moving a bucket, changing an endpoint, or swapping MinIO for R2 changes one
 setting and no stored FileRef.
 
+**The native store and an outside bucket are different questions.** Which store
+this project keeps its files in is declared once per project in
+`spec.files.backend`; that declaration is what this field names, and
+`src/zebfs/backend.rs` is the one place it becomes an implementation. A bucket a
+pipeline explicitly reads and writes -- someone else's S3, MinIO, or SeaweedFS
+-- is a connection with a credential, chosen per pipeline, and no such node
+exists yet. A node that reads from one produces bytes that land in the native
+store, so the FileRef it emits carries the **native** backend value. It never
+carries `s3` on account of where the bytes came from: if it did, `ref` would
+stop meaning one thing, sometimes a key in the store Zebflow owns and sometimes
+a key in a bucket it does not.
+
 That is why there is no `url`. A URL is assembled when a caller needs one, from
 the connection plus `ref`, and presigned if the object is private. Stored
 instead, it would be either a link that expires while the FileRef sits in run
@@ -109,6 +121,10 @@ backend.
   `/fs/{owner}/{project}/{ref}` path, S3 a presigned link — nor the choice
   between proxying bytes through Zebflow, which keeps the ACL authoritative,
   and presigning, which does not.
-- **The backend seam is not cut.** `LocalZebFs` is a concrete struct every
-  caller names directly; there is no trait for a second backend to implement.
-  The format is ready for one, the code is not.
+- **The backend seam is cut but not widened.** Which backend a project uses is
+  now declared in `spec.files.backend` and resolved in one place
+  (`zebfs::backend::open`, reached through `ProjectFileLayout::open_files`), so
+  no caller constructs an implementation by name. What is still missing is the
+  implementation behind it: `LocalZebFs` is a concrete struct and there is no
+  trait for a second backend to implement. The format is ready for one, the
+  declaration is ready for one, the storage code is not.

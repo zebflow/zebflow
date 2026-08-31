@@ -30,7 +30,6 @@ use crate::pipeline::{
     nodes::{NodeExecutionInput, NodeExecutionOutput, NodeHandler},
 };
 use crate::platform::services::PlatformService;
-use crate::zebfs::LocalZebFs;
 
 pub const NODE_KIND: &str = "n.fs.save";
 const INPUT_PIN_IN: &str = "in";
@@ -683,7 +682,7 @@ impl NodeHandler for Node {
             .ensure_project_layout(owner, project)
             .map_err(|err| PipelineError::new("FW_NODE_FILE_SAVE", err.to_string()))?;
 
-        let zebfs = LocalZebFs::new(layout.files_dir);
+        let zebfs = layout.open_files();
         zebfs
             .put(&rel_path, &bytes)
             .map_err(|err| PipelineError::new("FW_NODE_FILE_SAVE", err.to_string()))?;
