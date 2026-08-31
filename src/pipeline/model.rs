@@ -659,6 +659,44 @@ pub struct PipelineGraph {
     pub edges: Vec<PipelineEdge>,
 }
 
+impl PipelineGraph {
+    /// The nodes a run starts from.
+    ///
+    /// `kinds/pipeline/README.md` freezes the default for an omitted
+    /// `spec.entry_nodes`: "Runtime derives roots from graph connectivity."
+    /// A root is a node no edge points at, and **every** root starts — a graph
+    /// with two independent triggers is two roots, not one.
+    ///
+    /// The fallback is for a graph that is entirely cyclic: cycles are valid
+    /// here, so a graph where every node has an incoming edge has no root by
+    /// connectivity and would otherwise never start. Source order picks the
+    /// first node in that one case, and only in that case.
+    pub fn entry_node_ids(&self) -> Vec<&str> {
+        if !self.entry_nodes.is_empty() {
+            return self.entry_nodes.iter().map(String::as_str).collect();
+        }
+        let targets: std::collections::HashSet<&str> = self
+            .edges
+            .iter()
+            .map(|edge| edge.to_node.as_str())
+            .collect();
+        let roots: Vec<&str> = self
+            .nodes
+            .iter()
+            .map(|node| node.id.as_str())
+            .filter(|id| !targets.contains(id))
+            .collect();
+        if roots.is_empty() {
+            return self
+                .nodes
+                .first()
+                .map(|node| vec![node.id.as_str()])
+                .unwrap_or_default();
+        }
+        roots
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 pub struct PipelineGraphMetadata {

@@ -289,8 +289,13 @@ FileRef metadata:
       "backend": "zebfs",
       "ref": "tmp/runs/<request_id>/files/<uuid>.jpg",
       "filename": "photo.jpg",
-      "content_type": "image/jpeg",
-      "size": 12345
+      "mime": "image/jpeg",
+      "kind": "image",
+      "size": 12345,
+      "sha256": "sha256:<64 hex>",
+      "lifecycle": "temporary",
+      "origin": "webhook",
+      "trust": "untrusted"
     }
   }
 }

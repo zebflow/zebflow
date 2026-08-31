@@ -24,7 +24,7 @@ use serde_json::json;
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
-use super::file_ref::{BACKEND_ZEBFS, FILE_REF_TYPE, LIFECYCLE_DURABLE, file_ref_to_rel_path};
+use super::file_ref::{BACKEND_ZEBFS, FILE_REF_TYPE, LIFECYCLE_DURABLE, zebfs_rel_path_or_string};
 use super::util::{metadata_scope, resolve_path};
 use crate::pipeline::model::NodeCapability;
 use crate::pipeline::{
@@ -152,9 +152,9 @@ pub fn definition() -> NodeDefinition {
             "properties": {
                 "thumbnail": {
                     "type": "object",
+                    "description": "A FileRef (kinds/file-ref/README.md) plus the image dimensions. The object path is `ref`; there is no `path` or `url` field.",
                     "properties": {
-                        "path":   { "type": "string" },
-                        "url":    { "type": "string" },
+                        "ref":    { "type": "string" },
                         "width":  { "type": "integer" },
                         "height": { "type": "integer" },
                         "format": { "type": "string" },
@@ -378,14 +378,12 @@ impl NodeHandler for Node {
                 ),
             )
         })?;
-        let rel_path = file_ref_to_rel_path(source_value)
-            .or_else(|| source_value.as_str().map(ToString::to_string))
-            .ok_or_else(|| {
-                PipelineError::new(
-                    "IMG_THUMBNAIL",
-                    format!("payload key '{source_key}' must be a FileRef or string path"),
-                )
-            })?;
+        let rel_path = zebfs_rel_path_or_string(source_value)?.ok_or_else(|| {
+            PipelineError::new(
+                "IMG_THUMBNAIL",
+                format!("payload key '{source_key}' must be a FileRef or string path"),
+            )
+        })?;
 
         // ── Resolve absolute path ─────────────────────────────────────────
         let layout = self
@@ -491,15 +489,11 @@ impl NodeHandler for Node {
             "__zf_type": FILE_REF_TYPE,
             "backend": BACKEND_ZEBFS,
             "ref": thumb_rel,
-            "path": thumb_rel,
-            "url": format!("/fs/{owner}/{project}/{thumb_rel}"),
             "filename": storage_name,
-            "name": storage_name,
             "mime": thumb_mime,
-            "content_type": thumb_mime,
+            "kind": "image",
             "size": thumb_size,
             "sha256": format!("sha256:{:x}", Sha256::digest(&encoded)),
-            "kind": "image",
             "lifecycle": LIFECYCLE_DURABLE,
             "origin": "fs.thumbnail",
             "trust": "sanitized",

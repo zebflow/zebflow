@@ -13,7 +13,7 @@ use pdfwrangler::{ExportOptions, export_document};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use super::file_ref::file_ref_to_rel_path_or_string;
+use super::file_ref::zebfs_rel_path_or_string;
 use super::util::{metadata_scope, resolve_path};
 use crate::pipeline::model::NodeCapability;
 use crate::pipeline::{
@@ -288,7 +288,9 @@ impl NodeHandler for Node {
         };
 
         let rel_path = resolve_path(&input.payload, source_key)
-            .and_then(file_ref_to_rel_path_or_string)
+            .map(zebfs_rel_path_or_string)
+            .transpose()?
+            .flatten()
             .ok_or_else(|| {
                 PipelineError::new(
                     "FW_NODE_PDF_CONVERT",

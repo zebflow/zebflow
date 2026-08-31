@@ -203,6 +203,12 @@ impl ClusterJoinTokenService {
     ) -> Result<ClusterMintedJoinToken, PlatformError> {
         let office_id = normalize_office_id(&request.office_id)?;
         let now = now_ts();
+        // "An office without a `base_url` — an office nothing can reach is not
+        // an office" (`kinds/office-topology/README.md`, Rejections). Minting
+        // is where the record is created, so it is where the refusal belongs:
+        // a planned office with no address is a row nothing can ever place
+        // work on, and no later call is obliged to supply one.
+        let base_url = super::normalize_office_base_url(&request.base_url)?;
 
         if let Some(existing) = self.data.get_office_join_token(&office_id)?
             && !request.rotate
@@ -225,9 +231,7 @@ impl ClusterJoinTokenService {
                 if !request.label.trim().is_empty() {
                     existing.label = request.label.trim().to_string();
                 }
-                if !request.base_url.trim().is_empty() {
-                    existing.base_url = request.base_url.trim_end_matches('/').to_string();
-                }
+                existing.base_url = base_url.clone();
                 existing.updated_at = now;
                 existing
             }
@@ -240,7 +244,7 @@ impl ClusterJoinTokenService {
                     request.label.trim().to_string()
                 },
                 office_kind: "office".to_string(),
-                base_url: request.base_url.trim_end_matches('/').to_string(),
+                base_url: base_url.clone(),
                 // Planned, not online: nothing has registered yet, and saying
                 // "online" here would put an unreachable office in the
                 // directory as a healthy one.
@@ -1504,6 +1508,53 @@ mod tests {
             fresh.secret_digest(),
             "recording a use must never write `secret_digest` back"
         );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// `kinds/office-topology/README.md`, Rejections: "An office without a
+    /// `base_url` — an office nothing can reach is not an office."
+    #[test]
+    fn minting_refuses_an_office_with_no_base_url() {
+        let root = temp_root("mint-no-base-url");
+        let data = sqlite_at(&root);
+        let service = ClusterJoinTokenService::new(
+            data.clone(),
+            ClusterRole::Master,
+            None,
+            Some(Arc::new(controller())),
+        );
+
+        for base_url in ["", "   ", "///"] {
+            let err = service
+                .mint(&ClusterJoinTokenMintRequest {
+                    office_id: "office-a".to_string(),
+                    base_url: base_url.to_string(),
+                    ..Default::default()
+                })
+                .expect_err("an unreachable office must not be minted");
+            assert_eq!(err.code, "CLUSTER_OFFICE_BASE_URL_REQUIRED");
+        }
+        // And nothing was created on the way to the refusal.
+        assert!(
+            data.get_platform_office("office-a")
+                .expect("read")
+                .is_none()
+        );
+        assert!(
+            data.get_office_join_token("office-a")
+                .expect("read")
+                .is_none()
+        );
+
+        // With an address, minting works and the address is recorded.
+        let minted = service
+            .mint(&ClusterJoinTokenMintRequest {
+                office_id: "office-a".to_string(),
+                base_url: "https://office-a.example.com/".to_string(),
+                ..Default::default()
+            })
+            .expect("mint");
+        assert_eq!(minted.office.base_url, "https://office-a.example.com");
         let _ = fs::remove_dir_all(&root);
     }
 

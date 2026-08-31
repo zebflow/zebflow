@@ -75,7 +75,27 @@ pub struct DependencyLockService {
     /// failing: a project that declares nothing resolves to them anyway.
     configs: Option<Arc<ProjectConfigurationService>>,
     update_locks: Mutex<HashMap<PathBuf, Arc<Mutex<()>>>>,
+    /// Entry files whose digest has already been checked, keyed by absolute
+    /// path. See [`DependencyLockService::verified_rwe_library_root`] for what
+    /// invalidates a record.
+    verified_library_entries: Mutex<HashMap<PathBuf, VerifiedLibraryEntry>>,
 }
+
+/// One remembered integrity check of an installed RWE library entry file.
+#[derive(Debug, Clone)]
+struct VerifiedLibraryEntry {
+    /// The digest the lock recorded when this was verified.
+    integrity: String,
+    /// The file's length when it was verified.
+    len: u64,
+    /// The file's modification time when it was verified.
+    modified: Option<std::time::SystemTime>,
+}
+
+/// Upper bound on remembered verifications, so a project churning libraries
+/// cannot grow the map without limit. Passing it clears the map; the next
+/// request re-hashes, which is correct, just slower.
+const MAX_VERIFIED_LIBRARY_ENTRIES: usize = 512;
 
 impl DependencyLockService {
     /// Creates the lock service.
@@ -87,6 +107,7 @@ impl DependencyLockService {
             users_root,
             configs: None,
             update_locks: Mutex::new(HashMap::new()),
+            verified_library_entries: Mutex::new(HashMap::new()),
         }
     }
 
@@ -442,6 +463,128 @@ impl DependencyLockService {
     }
 
     /// Resolves the current lock against requested libraries and project files.
+    /// Where one locked RWE library's bytes may be served from, after its
+    /// integrity has been checked.
+    ///
+    /// `kinds/dependency-lock/README.md`: "Integrity validation happens before
+    /// an artifact becomes available to RWE or the node registry." The node
+    /// registry half re-hashes before it hands a bundle over; this is the RWE
+    /// half. The lock digests the library's **entry** bundle, so that is what
+    /// is re-hashed, and a package whose entry fails verification serves
+    /// nothing at all — the lock pins the package as one artifact, so it
+    /// verifies as one.
+    ///
+    /// Returns `Ok(None)` when the project has not locked this library; the
+    /// caller falls back to the platform's embedded copy, which is what
+    /// happens today for every page that never installed anything.
+    ///
+    /// ## The cache, and what invalidates it
+    ///
+    /// Re-hashing a megabyte bundle on every asset request is not affordable
+    /// on a page-load path, so a passing check is remembered per entry file.
+    /// A remembered check is used only when all three still hold:
+    ///
+    /// 1. the digest the lock records is the one that was verified — so any
+    ///    install, upgrade, repair, or hand-edit of `zeb.lock` invalidates it
+    ///    immediately, without anything having to call a clear;
+    /// 2. the file's length is unchanged;
+    /// 3. the file's modification time is unchanged.
+    ///
+    /// Two and three are one `stat` per request. A restart clears everything.
+    /// The residual gap is a rewrite that preserves both length and mtime,
+    /// which needs the same filesystem write access that could edit `zeb.lock`
+    /// itself; the check exists against partial installs and drifted copies,
+    /// not against an attacker who already owns the data root.
+    pub fn verified_rwe_library_root(
+        &self,
+        owner: &str,
+        project: &str,
+        library: &str,
+    ) -> Result<Option<PathBuf>, PlatformError> {
+        let lock = self.read(owner, project)?;
+        let Some(entry) = lock.rwe.libraries.get(library) else {
+            return Ok(None);
+        };
+        let node_root = self.node_root(owner, project);
+        let entry_path = node_root.join(&entry.entry);
+        // The lock is a repo file a person can edit; a traversing `entry`
+        // must not reach outside the installed tree.
+        if !entry_path.starts_with(&node_root) {
+            return Err(PlatformError::new(
+                "PLATFORM_DEPENDENCY_INTEGRITY",
+                format!("locked entry for '{library}' escapes the installed tree"),
+            ));
+        }
+        let metadata = std::fs::metadata(&entry_path).map_err(|error| {
+            PlatformError::new(
+                "PLATFORM_DEPENDENCY_MISSING",
+                format!(
+                    "installed library '{library}' is missing at data/hub/{}: {error}",
+                    entry.entry
+                ),
+            )
+        })?;
+        let len = metadata.len();
+        let modified = metadata.modified().ok();
+
+        let cached = {
+            let map = self
+                .verified_library_entries
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            map.get(&entry_path).cloned()
+        };
+        let fresh = cached.is_some_and(|record| {
+            record.integrity == entry.integrity && record.len == len && record.modified == modified
+        });
+        if !fresh {
+            let bytes = std::fs::read(&entry_path).map_err(|error| {
+                PlatformError::new(
+                    "PLATFORM_DEPENDENCY_MISSING",
+                    format!("failed reading installed library '{library}': {error}"),
+                )
+            })?;
+            let digest = format!(
+                "sha256:{:x}",
+                <sha2::Sha256 as sha2::Digest>::digest(&bytes)
+            );
+            if digest != entry.integrity {
+                return Err(PlatformError::new(
+                    "PLATFORM_DEPENDENCY_INTEGRITY",
+                    format!(
+                        "installed library '{library}' does not match the digest \
+                         recorded in zeb.lock; reinstall it from the hub"
+                    ),
+                ));
+            }
+            let mut map = self
+                .verified_library_entries
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            if map.len() >= MAX_VERIFIED_LIBRARY_ENTRIES {
+                map.clear();
+            }
+            map.insert(
+                entry_path.clone(),
+                VerifiedLibraryEntry {
+                    integrity: entry.integrity.clone(),
+                    len,
+                    modified,
+                },
+            );
+        }
+
+        // `rwe-libraries/{package_id}` — the first two segments of the locked
+        // entry path are the package's install root.
+        let mut segments = entry.entry.split('/');
+        match (segments.next(), segments.next()) {
+            (Some(base @ "rwe-libraries"), Some(package_id)) => {
+                Ok(Some(node_root.join(base).join(package_id)))
+            }
+            _ => Ok(None),
+        }
+    }
+
     pub fn status(
         &self,
         owner: &str,
@@ -1610,6 +1753,87 @@ mod tests {
 
     /// The quarantine path never eats a legacy-shaped lock: those bytes
     /// belong to the explicit migration command.
+    /// `kinds/dependency-lock/README.md`: "Integrity validation happens before
+    /// an artifact becomes available to RWE or the node registry."
+    #[test]
+    fn rwe_serving_root_verifies_the_locked_entry_digest_first() {
+        let root = tempfile::tempdir().unwrap();
+        let users = root.path().join("users");
+        let service = DependencyLockService::new(users.clone());
+        let package = users
+            .join("owner")
+            .join("project")
+            .join("data")
+            .join("hub")
+            .join("rwe-libraries")
+            .join("zebflow.example");
+        std::fs::create_dir_all(package.join("dist")).unwrap();
+        let bundle = package.join("dist").join("main.mjs");
+        std::fs::write(&bundle, b"export const ok = 1;\n").unwrap();
+        let digest = format!(
+            "sha256:{:x}",
+            <sha2::Sha256 as sha2::Digest>::digest(b"export const ok = 1;\n")
+        );
+
+        service
+            .write(
+                "owner",
+                "project",
+                &DependencyLockSpec {
+                    rwe: crate::contracts::kinds::DependencyLockRweSpec {
+                        libraries: std::collections::BTreeMap::from([(
+                            "zeb/example".to_string(),
+                            DependencyLockArtifactSpec {
+                                version: "1.0.0".to_string(),
+                                source: DependencyLockSource::HubLocal,
+                                source_id: "zebflow.example@1.0.0".to_string(),
+                                entry: "rwe-libraries/zebflow.example/dist/main.mjs".to_string(),
+                                integrity: digest,
+                            },
+                        )]),
+                    },
+                    nodes: Default::default(),
+                },
+            )
+            .unwrap();
+
+        // Matching bytes: the install root is served.
+        assert_eq!(
+            service
+                .verified_rwe_library_root("owner", "project", "zeb/example")
+                .unwrap(),
+            Some(package.clone())
+        );
+        // A library the project never locked falls back to embedded bytes.
+        assert_eq!(
+            service
+                .verified_rwe_library_root("owner", "project", "zeb/other")
+                .unwrap(),
+            None
+        );
+
+        // Drifted bytes refuse — nothing under the package is served, not
+        // just the entry, because the lock pins the package as one artifact.
+        std::fs::write(&bundle, b"export const evil = 1;\n").unwrap();
+        // Defeat the mtime/len cache the way a real replacement would not:
+        // both change here, so the re-hash is what catches it.
+        let error = service
+            .verified_rwe_library_root("owner", "project", "zeb/example")
+            .unwrap_err();
+        assert_eq!(error.code, "PLATFORM_DEPENDENCY_INTEGRITY");
+
+        // A missing entry is not an integrity failure; it is a missing
+        // install, and the embedded copy still answers.
+        std::fs::remove_file(&bundle).unwrap();
+        assert_eq!(
+            service
+                .verified_rwe_library_root("owner", "project", "zeb/example")
+                .unwrap_err()
+                .code,
+            "PLATFORM_DEPENDENCY_MISSING"
+        );
+    }
+
     #[test]
     fn quarantine_refuses_legacy_shapes() {
         let root = tempfile::tempdir().unwrap();

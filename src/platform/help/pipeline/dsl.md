@@ -531,13 +531,23 @@ or `lifecycle: "durable"` for promoted/generated artifacts.
   "__zf_type": "file_ref",
   "backend": "zebfs",
   "ref": "tmp/runs/webhook-123/files/input.geojson",
-  "lifecycle": "temporary",
   "filename": "input.geojson",
   "mime": "application/geo+json",
+  "kind": "geojson",
   "size": 123456,
-  "sha256": "sha256:..."
+  "sha256": "sha256:<64 hex>",
+  "lifecycle": "temporary",
+  "origin": "webhook",
+  "trust": "untrusted"
 }
 ```
+
+All eleven fields are always present. `kind` is one of `geojson`, `json`, `csv`, `image`, `pdf`,
+`archive`, `parquet`, `binary` — branch on it rather than on the mime string.
+
+`ref` is **opaque**: only the named backend may interpret it. Read the bytes through a node that
+takes a FileRef; never split, join, or prefix `ref` yourself. There is no `path`, `name`,
+`content_type`, or `url` field — `ref`, `filename`, and `mime` replace them.
 
 The `backend` field is reserved for future storage implementations such as S3/R2/MinIO. Today only
 `zebfs` is implemented.
@@ -681,7 +691,8 @@ protection is built in — images over 16000×16000 or 128 MB decoded are reject
 | `--delete-source` | _(off)_ | Delete the original source file after successful thumbnail write |
 | `--filename` | _(UUID)_ | Custom filename without extension. If set, overwrites existing thumbnail with same name. Sanitized to alphanumeric, dash, underscore only. |
 
-**Output:** replaces the payload with `{ thumbnail: FileRef + { path, url, width, height, format, size } }`.
+**Output:** replaces the payload with `{ thumbnail: FileRef + { width, height, format } }`. The stored
+object is `thumbnail.ref`; a FileRef carries no `url`.
 
 **Examples:**
 
@@ -691,7 +702,7 @@ register upload-avatar -- \
   | trigger.webhook --path /upload/avatar --method POST \
   | fs.thumbnail --source-key files.photo --width 200 --height 200 --fit cover --format jpg --quality 80 \
                   --folder avatars --delete-source \
-  | sekejap.query --params-expr "[$input.thumbnail.url, $trigger.auth.sub]" --read-only false -- "UPDATE users SET avatar_url = $1 WHERE id = $2" \
+  | sekejap.query --params-expr "[$input.thumbnail.ref, $trigger.auth.sub]" --read-only false -- "UPDATE users SET avatar_ref = $1 WHERE id = $2" \
   | web.response
 
 # Thumbnail existing file in files/

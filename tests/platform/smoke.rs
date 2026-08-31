@@ -990,7 +990,14 @@ async fn mint_join_token(
                 .header(header::COOKIE, cookie)
                 .header(header::CONTENT_TYPE, "application/json")
                 .body(Body::from(
-                    json!({ "office_id": office_id, "rotate": rotate }).to_string(),
+                    json!({
+                        "office_id": office_id,
+                        // An office needs an address to be minted at all
+                        // (`kinds/office-topology/README.md`, Rejections).
+                        "base_url": format!("https://{office_id}.example.test"),
+                        "rotate": rotate,
+                    })
+                    .to_string(),
                 ))
                 .expect("request"),
         )
@@ -3903,6 +3910,128 @@ async fn platform_template_api_supports_create_save_move_delete_and_git_status()
         .await
         .expect("response");
     assert_eq!(delete.status(), axum::http::StatusCode::NO_CONTENT);
+}
+
+/// `kinds/project-bundle/README.md`: "Import verifies function targets
+/// resolve in the carried repo and reports misses through the dependency
+/// report as its fifth family — report, not refuse."
+#[tokio::test]
+async fn import_reports_unresolved_function_targets_without_refusing() {
+    let mut config = PlatformConfig::default();
+    config.data_root = temp_test_dir("import-function-report");
+    config.default_password = "test-pass".to_string();
+    let data_root = config.data_root.clone();
+
+    let app = build_router(config).await.expect("platform router");
+    let cookie = login_cookie(app.clone(), "superadmin", "test-pass").await;
+
+    // A pipeline that calls a function pipeline which is not in the project.
+    // Registering it through the pipelines API is the only way a pipeline is
+    // created; nothing writes into repo/ behind the service's back.
+    let register = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/projects/superadmin/default/pipelines/definition")
+                .method("POST")
+                .header(header::COOKIE, &cookie)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({
+                        "file_rel_path": "pipelines/caller.zf.json",
+                        "trigger_kind": "webhook",
+                        "source": json!({
+                            "apiVersion": "zebflow.com/v1",
+                            "kind": "Pipeline",
+                            "metadata": {"name": "caller"},
+                            "spec": {
+                                "id": "caller",
+                                "entry_nodes": ["t"],
+                                "nodes": [
+                                    {"id": "t", "kind": "n.trigger.webhook",
+                                     "output_pins": ["out"]},
+                                    {"id": "a", "kind": "n.function.call",
+                                     "input_pins": ["in"], "output_pins": ["out", "error"],
+                                     "config": {"function": "absent-fn"}}
+                                ],
+                                "edges": [
+                                    {"from_node": "t", "from_pin": "out",
+                                     "to_node": "a", "to_pin": "in"}
+                                ]
+                            }
+                        })
+                        .to_string(),
+                    })
+                    .to_string(),
+                ))
+                .expect("request"),
+        )
+        .await
+        .expect("register response");
+    if register.status() != StatusCode::OK {
+        let status = register.status();
+        let body = response_text(register).await;
+        panic!("pipeline registration failed with {status}: {body}");
+    }
+
+    let export = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/projects/superadmin/default/transfer/export/bundle")
+                .method("POST")
+                .header(header::COOKIE, &cookie)
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("export response");
+    assert_eq!(export.status(), StatusCode::OK);
+    let export = response_json(export).await;
+    let op = export["operation"]["operation_id"]
+        .as_str()
+        .expect("operation id");
+    let archive = data_root
+        .join("platform")
+        .join("project-operations")
+        .join(op)
+        .join("project.bundle.tar");
+    let bytes = fs::read(&archive).expect("archive bytes");
+
+    let (boundary, body) = multipart_body("archive", "project.bundle.tar", &bytes);
+    let import = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/projects/superadmin/default/transfer/import/bundle")
+                .method("POST")
+                .header(header::COOKIE, &cookie)
+                .header(
+                    header::CONTENT_TYPE,
+                    format!("multipart/form-data; boundary={boundary}"),
+                )
+                .body(Body::from(body))
+                .expect("request"),
+        )
+        .await
+        .expect("import response");
+    // Report, never refuse.
+    assert_eq!(import.status(), StatusCode::OK);
+    let import = response_json(import).await;
+    assert_eq!(import["ok"], true);
+
+    let items = import["dependencies"]["items"]
+        .as_array()
+        .unwrap_or_else(|| panic!("import must carry a dependency report: {import}"));
+    let misses = items
+        .iter()
+        .filter(|item| item["family"] == "function_pipeline")
+        .map(|item| item["name"].as_str().unwrap_or_default())
+        .collect::<Vec<_>>();
+    assert_eq!(misses, vec!["absent-fn"], "{import}");
+    assert_eq!(import["dependencies"]["ok"], false, "{import}");
+
+    let _ = fs::remove_dir_all(&data_root);
 }
 
 #[tokio::test]

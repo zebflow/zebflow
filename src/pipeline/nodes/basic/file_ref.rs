@@ -36,6 +36,16 @@ pub const BACKEND_ZEBFS: &str = "zebfs";
 pub const LIFECYCLE_TEMPORARY: &str = "temporary";
 pub const LIFECYCLE_DURABLE: &str = "durable";
 
+/// The frozen `kind` vocabulary (`kinds/file-ref/README.md`).
+///
+/// "A shorthand pipeline authors branch on, so the eight values are the
+/// promise." A writer that emits a ninth breaks every author who matched the
+/// eight exhaustively, so every producer here derives through [`infer_kind`]
+/// and nothing else.
+pub const FILE_REF_KINDS: [&str; 8] = [
+    "geojson", "json", "csv", "image", "pdf", "archive", "parquet", "binary",
+];
+
 #[derive(Debug, Clone)]
 pub struct FileRefInput<'a> {
     pub owner: &'a str,
@@ -115,15 +125,11 @@ pub fn write_tmp_file_ref(
         "__zf_type": FILE_REF_TYPE,
         "backend": BACKEND_ZEBFS,
         "ref": stat.path,
-        "path": stat.path,
-        "url": format!("/fs/{}/{}/{}", input.owner, input.project, stat.path),
         "filename": clean_name,
-        "name": clean_name,
         "mime": mime,
-        "content_type": mime,
+        "kind": kind,
         "size": input.bytes.len(),
         "sha256": sha256,
-        "kind": kind,
         "lifecycle": LIFECYCLE_TEMPORARY,
         "origin": input.origin,
         "trust": input.trust,
@@ -190,8 +196,24 @@ pub fn validate_file_ref(value: &Value) -> Result<(), PipelineError> {
     }
     required_non_empty_string(value, "backend")?;
     required_non_empty_string(value, "ref")?;
-    required_non_empty_string(value, "sha256")?;
+    required_non_empty_string(value, "filename")?;
     required_non_empty_string(value, "mime")?;
+    required_non_empty_string(value, "sha256")?;
+    // `origin` and `trust` are required and open: the contract's Rejections
+    // close only `kind` and `lifecycle`, and a writer naming a new ingress is
+    // adding a word, not breaking the shape.
+    required_non_empty_string(value, "origin")?;
+    required_non_empty_string(value, "trust")?;
+    let kind = required_non_empty_string(value, "kind")?;
+    if !FILE_REF_KINDS.contains(&kind) {
+        return Err(PipelineError::new(
+            "FW_FILE_REF_INVALID",
+            format!(
+                "FileRef kind '{kind}' is not one of {}",
+                FILE_REF_KINDS.join(", ")
+            ),
+        ));
+    }
     let lifecycle = required_non_empty_string(value, "lifecycle")?;
     if !matches!(lifecycle, LIFECYCLE_TEMPORARY | LIFECYCLE_DURABLE) {
         return Err(PipelineError::new(
@@ -235,18 +257,47 @@ fn required_non_empty_string<'a>(value: &'a Value, field: &str) -> Result<&'a st
         })
 }
 
-pub fn file_ref_to_rel_path(value: &Value) -> Option<String> {
-    file_ref_path(value).map(ToString::to_string)
+/// The one door from a FileRef to a path in the project's local ZebFS.
+///
+/// `ref` is opaque: "no node parses it, joins it to a path, or assumes a local
+/// file" (`kinds/file-ref/README.md`). Every node that needs a local relative
+/// path comes through here, so the assertion — this handle names bytes the
+/// local store owns — is made once instead of once per node. The day a second
+/// backend lands, this is the only function that has to learn about it, and
+/// nothing silently joins a remote handle to the project's files directory.
+///
+/// `Ok(None)` means the value is not a FileRef at all; the caller decides
+/// whether that is an error. A FileRef on another backend is always an error.
+pub fn zebfs_rel_path(value: &Value) -> Result<Option<String>, PipelineError> {
+    if !is_file_ref(value) {
+        return Ok(None);
+    }
+    let backend = file_ref_backend(value);
+    if backend != BACKEND_ZEBFS {
+        return Err(PipelineError::new(
+            "FW_FILE_REF_BACKEND",
+            format!(
+                "FileRef backend '{backend}' owns these bytes; its ref is opaque                  to this node and cannot be read as a local path"
+            ),
+        ));
+    }
+    Ok(file_ref_path(value).map(ToString::to_string))
 }
 
-pub fn file_ref_to_rel_path_or_string(value: &Value) -> Option<String> {
-    file_ref_to_rel_path(value).or_else(|| {
-        value
-            .as_str()
-            .map(str::trim)
-            .filter(|path| !path.is_empty())
-            .map(ToString::to_string)
-    })
+/// [`zebfs_rel_path`] for the nodes that also accept a bare object path string.
+///
+/// A FileRef is resolved through the backend check; anything else is taken as
+/// a literal path only when it is a plain string, never by reading a `path`
+/// field off an object that merely looks file-shaped.
+pub fn zebfs_rel_path_or_string(value: &Value) -> Result<Option<String>, PipelineError> {
+    if is_file_ref(value) {
+        return zebfs_rel_path(value);
+    }
+    Ok(value
+        .as_str()
+        .map(str::trim)
+        .filter(|path| !path.is_empty())
+        .map(ToString::to_string))
 }
 
 fn sanitize_filename(raw: &str) -> String {
@@ -304,7 +355,13 @@ fn extension_for(filename: &str, mime: Option<&str>) -> String {
     .to_string()
 }
 
-fn infer_kind(mime: &str, filename: &str) -> &'static str {
+/// Derives the contract's `kind` from `mime` and the object name.
+///
+/// The only producer of the field, so every writer lands inside
+/// [`FILE_REF_KINDS`]. Anything unrecognised is `binary`: `mime` already
+/// carries the exact type, and widening the frozen vocabulary is a contract
+/// change, not a writer's decision.
+pub fn infer_kind(mime: &str, filename: &str) -> &'static str {
     let mime = mime.split(';').next().unwrap_or("").trim();
     let ext = filename
         .rsplit_once('.')
@@ -326,23 +383,90 @@ fn infer_kind(mime: &str, filename: &str) -> &'static str {
 mod tests {
     use serde_json::json;
 
-    use super::{file_ref_path, file_ref_to_rel_path_or_string, is_file_ref, validate_file_ref};
+    use super::{
+        FILE_REF_KINDS, file_ref_path, is_file_ref, validate_file_ref, zebfs_rel_path,
+        zebfs_rel_path_or_string,
+    };
+
+    fn contract_file_ref() -> serde_json::Value {
+        json!({
+            "__zf_type": "file_ref",
+            "backend": "zebfs",
+            "ref": "tmp/runs/abc123/files/9f2c8d.jpg",
+            "filename": "photo.jpg",
+            "mime": "image/jpeg",
+            "kind": "image",
+            "size": 51234,
+            "sha256": "sha256:e3b0c44298fc1c14a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718",
+            "lifecycle": "temporary",
+            "origin": "webhook",
+            "trust": "untrusted"
+        })
+    }
 
     #[test]
     fn detects_file_ref_shape() {
-        let value = json!({
-            "__zf_type": "file_ref",
-            "backend": "zebfs",
-            "ref": "tmp/runs/r/files/a.bin",
-            "lifecycle": "temporary",
-            "sha256": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-            "mime": "application/octet-stream",
-            "size": 1
-        });
-
+        let value = contract_file_ref();
         assert!(is_file_ref(&value));
         validate_file_ref(&value).unwrap();
-        assert_eq!(file_ref_path(&value), Some("tmp/runs/r/files/a.bin"));
+        assert_eq!(
+            file_ref_path(&value),
+            Some("tmp/runs/abc123/files/9f2c8d.jpg")
+        );
+    }
+
+    /// `kinds/file-ref/README.md`: "All eleven fields are required."
+    #[test]
+    fn every_one_of_the_eleven_fields_is_required() {
+        for field in [
+            "__zf_type",
+            "backend",
+            "ref",
+            "filename",
+            "mime",
+            "kind",
+            "size",
+            "sha256",
+            "lifecycle",
+            "origin",
+            "trust",
+        ] {
+            let mut value = contract_file_ref();
+            value.as_object_mut().unwrap().remove(field);
+            assert!(
+                validate_file_ref(&value).is_err(),
+                "FileRef without '{field}' must be refused"
+            );
+        }
+        validate_file_ref(&contract_file_ref()).unwrap();
+    }
+
+    /// "the eight values are the promise".
+    #[test]
+    fn kind_is_one_of_the_eight_contract_values() {
+        for kind in FILE_REF_KINDS {
+            let mut value = contract_file_ref();
+            value["kind"] = json!(kind);
+            validate_file_ref(&value).unwrap();
+        }
+        for kind in ["text", "object", "video", ""] {
+            let mut value = contract_file_ref();
+            value["kind"] = json!(kind);
+            assert!(
+                validate_file_ref(&value).is_err(),
+                "FileRef kind '{kind}' is outside the contract's eight"
+            );
+        }
+    }
+
+    /// The four dropped fields are gone from every producer, so a consumer
+    /// that still reads them fails loudly instead of drifting.
+    #[test]
+    fn producers_do_not_emit_the_dropped_legacy_fields() {
+        let value = contract_file_ref();
+        for field in ["path", "name", "content_type", "url"] {
+            assert!(value.get(field).is_none());
+        }
     }
 
     #[test]
@@ -372,26 +496,38 @@ mod tests {
 
     #[test]
     fn resolves_file_ref_or_plain_path_for_path_only_nodes() {
-        let file_ref = json!({
-            "__zf_type": "file_ref",
-            "backend": "zebfs",
-            "ref": "tmp/runs/r/files/a.csv",
-            "sha256": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-            "mime": "text/csv",
-            "size": 1,
-            "lifecycle": "temporary"
-        });
+        let file_ref = contract_file_ref();
         assert_eq!(
-            file_ref_to_rel_path_or_string(&file_ref),
-            Some("tmp/runs/r/files/a.csv".to_string())
+            zebfs_rel_path_or_string(&file_ref).unwrap(),
+            Some("tmp/runs/abc123/files/9f2c8d.jpg".to_string())
         );
         assert_eq!(
-            file_ref_to_rel_path_or_string(&json!("uploads/a.csv")),
+            zebfs_rel_path_or_string(&json!("uploads/a.csv")).unwrap(),
             Some("uploads/a.csv".to_string())
         );
         assert_eq!(
-            file_ref_to_rel_path_or_string(&json!({ "path": "x" })),
+            zebfs_rel_path_or_string(&json!({ "path": "x" })).unwrap(),
             None
         );
+    }
+
+    /// "`ref` … **opaque.** Only the named backend may interpret it — no node
+    /// parses it, joins it to a path, or assumes a local file."
+    #[test]
+    fn a_foreign_backend_ref_is_never_resolved_to_a_local_path() {
+        let mut value = contract_file_ref();
+        value["backend"] = json!("s3");
+        value["ref"] = json!("s3://bucket/key.jpg");
+
+        assert_eq!(
+            zebfs_rel_path(&value).unwrap_err().code,
+            "FW_FILE_REF_BACKEND"
+        );
+        assert_eq!(
+            zebfs_rel_path_or_string(&value).unwrap_err().code,
+            "FW_FILE_REF_BACKEND"
+        );
+        // And it is emphatically not silently read as a bare string path.
+        assert!(value.as_str().is_none());
     }
 }

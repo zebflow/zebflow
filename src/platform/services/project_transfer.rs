@@ -179,6 +179,18 @@ impl ProjectTransferService {
         let staging_guard = self.staging_dir("export")?;
         let staging = staging_guard.path().to_path_buf();
 
+        // A live SQLite database keeps recent commits in its `-wal` sidecar
+        // until a checkpoint folds them back into the main file. Copying the
+        // three files off a running server captures them at three different
+        // instants, so the bundle's `local.db` could be older than its
+        // `local.db-wal` and the pair could disagree -- exactly what
+        // `instance-directory.md` rule 5 says an export must not be. So the
+        // store's databases are checkpointed first, and what gets copied is a
+        // file that already contains everything committed.
+        if classes.contains(&ProjectBundleClass::Store) {
+            checkpoint_store_databases(&layout.data_store_dir())?;
+        }
+
         let mut class_digests = BTreeMap::new();
         let mut counts = ProjectBundleCounts::default();
         for class in &classes {
@@ -537,6 +549,73 @@ impl ProjectTransferService {
     }
 }
 
+/// Folds every SQLite write-ahead log under `store_dir` back into its database
+/// file, so the copy an export takes is complete on its own.
+///
+/// `TRUNCATE` is asked for first because it leaves an empty `-wal`, which makes
+/// the copied triple unambiguous. A database another connection is actively
+/// reading will refuse that; `FULL` still moves every committed frame into the
+/// main file, which is what completeness needs, so it is accepted as the
+/// fallback. Only a failure of both is an error, because past that point the
+/// export would be shipping a database missing its most recent commits while
+/// claiming to be a restore image.
+fn checkpoint_store_databases(store_dir: &Path) -> Result<(), PlatformError> {
+    if !store_dir.is_dir() {
+        return Ok(());
+    }
+    for entry in fs::read_dir(store_dir)? {
+        let path = entry?.path();
+        if !is_sqlite_database(&path) {
+            continue;
+        }
+        let connection = rusqlite::Connection::open(&path).map_err(|error| {
+            PlatformError::new(
+                "PROJECT_TRANSFER_CHECKPOINT",
+                format!("cannot open '{}' to checkpoint it: {error}", path.display()),
+            )
+        })?;
+        if connection
+            .execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")
+            .is_ok()
+        {
+            continue;
+        }
+        connection
+            .execute_batch("PRAGMA wal_checkpoint(FULL);")
+            .map_err(|error| {
+                PlatformError::new(
+                    "PROJECT_TRANSFER_CHECKPOINT",
+                    format!(
+                        "cannot checkpoint '{}', so its export would not be a \
+                         restorable copy: {error}",
+                        path.display()
+                    ),
+                )
+            })?;
+    }
+    Ok(())
+}
+
+/// True when `path` is a regular file beginning with SQLite's format header.
+///
+/// Read from the bytes rather than from the extension: `data/store/` is a place
+/// projects keep their own files too, and a `.db` that is not a database must
+/// be copied untouched instead of failing the export.
+fn is_sqlite_database(path: &Path) -> bool {
+    const HEADER: &[u8] = b"SQLite format 3\0";
+    if !path.is_file() {
+        return false;
+    }
+    let Ok(mut file) = fs::File::open(path) else {
+        return false;
+    };
+    let mut magic = [0u8; HEADER.len()];
+    match file.read_exact(&mut magic) {
+        Ok(()) => magic == HEADER,
+        Err(_) => false,
+    }
+}
+
 /// The on-disk directory one class covers. The store class is `data/store/`
 /// specifically — `data/cache/` never travels and `data/hub/` never travels
 /// raw (`kinds/project-bundle/README.md`).
@@ -876,7 +955,7 @@ fn move_directory(source: &Path, target: &Path) -> Result<(), PlatformError> {
 /// Every archive entry must descend from the extract root: no absolute path,
 /// no `..` segment, no backslash. Refused from the listing, before any byte
 /// is extracted.
-fn validate_archive_entry_names(archive_path: &Path) -> Result<(), PlatformError> {
+pub(crate) fn validate_archive_entry_names(archive_path: &Path) -> Result<(), PlatformError> {
     let output = Command::new("tar").arg("-tf").arg(archive_path).output()?;
     if !output.status.success() {
         return Err(PlatformError::new(
@@ -906,7 +985,7 @@ fn validate_archive_entry_names(archive_path: &Path) -> Result<(), PlatformError
 
 /// Class digests refuse symlinks, and no export produces one, so an archive
 /// containing any symlink was not produced by export and is refused whole.
-fn refuse_symlinks(root: &Path) -> Result<(), PlatformError> {
+pub(crate) fn refuse_symlinks(root: &Path) -> Result<(), PlatformError> {
     for entry in fs::read_dir(root)? {
         let entry = entry?;
         let file_type = entry.file_type()?;
@@ -1044,6 +1123,80 @@ mod tests {
 
     fn finish_tar(bytes: &mut Vec<u8>) {
         bytes.extend(std::iter::repeat_n(0_u8, 1024));
+    }
+
+    /// S7 regression. A live SQLite database keeps recent commits in `-wal`
+    /// until a checkpoint folds them in. The export walked `data/store/` with
+    /// `copy_dir_recursive` and copied `local.db`, `local.db-wal`, and
+    /// `local.db-shm` at three different instants off a running server, so the
+    /// bundle was not the restorable copy `instance-directory.md` rule 5 says
+    /// it is. Here the copy is opened *without* its sidecars, which is what a
+    /// restore into a fresh instance effectively does with a stale or
+    /// mismatched WAL: remove the `checkpoint_store_databases` call and the row
+    /// written just before the export is not in it.
+    #[test]
+    fn an_export_checkpoints_the_store_so_the_copy_is_complete_on_its_own() {
+        let root = tempfile::tempdir().unwrap();
+        let instance = instance(root.path());
+        let owner = "owner";
+        let project = "live-store";
+        instance
+            .config
+            .ensure_initialized(owner, project, "Live Store")
+            .unwrap();
+        let layout = instance.file.ensure_project_layout(owner, project).unwrap();
+        fs::create_dir_all(layout.data_store_dir()).unwrap();
+
+        // A running server's database: WAL mode, a committed row, and the
+        // connection still open — exactly the state an export finds.
+        let live = rusqlite::Connection::open(layout.data_store_local_db_file()).unwrap();
+        live.execute_batch(
+            "PRAGMA journal_mode=WAL;
+             CREATE TABLE orders (id INTEGER PRIMARY KEY, note TEXT);
+             INSERT INTO orders (note) VALUES ('placed just before the export');",
+        )
+        .unwrap();
+        let wal = layout.data_store_dir().join("local.db-wal");
+        assert!(
+            wal.is_file(),
+            "the fixture must actually be running in WAL mode"
+        );
+
+        // A file in the store that is not a database must survive untouched.
+        fs::write(layout.data_store_dir().join("notes.db"), b"not a database").unwrap();
+
+        let archive = root.path().join("live-store.tar");
+        instance
+            .transfer
+            .export_project(
+                owner,
+                project,
+                &[ProjectBundleClass::Repo, ProjectBundleClass::Store],
+                None,
+                &archive,
+            )
+            .unwrap();
+
+        let staged = instance.transfer.stage_archive(&archive).unwrap();
+        let copied = staged.dir.join("store").join("local.db");
+        assert!(copied.is_file(), "the export carried no local.db");
+
+        // Lifted away from its sidecars, which is what a restore has to survive:
+        // the `-wal` is a different file captured at a different instant, and
+        // SQLite discards one whose header does not match the database it finds.
+        let alone = root.path().join("alone.db");
+        fs::copy(&copied, &alone).unwrap();
+        let restored = rusqlite::Connection::open(&alone).unwrap();
+        let note: String = restored
+            .query_row("SELECT note FROM orders", [], |row| row.get(0))
+            .expect("the committed row is inside the copied database file");
+        assert_eq!(note, "placed just before the export");
+
+        assert_eq!(
+            fs::read(staged.dir.join("store").join("notes.db")).unwrap(),
+            b"not a database",
+            "a non-database file in the store was altered"
+        );
     }
 
     #[test]

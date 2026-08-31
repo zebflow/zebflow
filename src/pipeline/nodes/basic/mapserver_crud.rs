@@ -16,7 +16,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use super::file_ref::file_ref_to_rel_path_or_string;
+use super::file_ref::zebfs_rel_path_or_string;
 use super::util::metadata_scope;
 use crate::contracts::kinds::MapserverLayerRecord as LayerRecord;
 use crate::mapserver::publish::registry;
@@ -665,7 +665,7 @@ impl Node {
         } else if !self.config.source_path.trim().is_empty() {
             self.config.source_path.trim().to_string()
         } else {
-            source_path_from_payload(&input.payload)
+            source_path_from_payload(&input.payload)?
                 .map(|s| s.trim().to_string())
                 .filter(|s| !s.is_empty())
                 .ok_or_else(|| {
@@ -1152,10 +1152,12 @@ fn require_non_empty<'a>(
     Ok(trimmed)
 }
 
-fn source_path_from_payload(payload: &Value) -> Option<String> {
+fn source_path_from_payload(payload: &Value) -> Result<Option<String>, PipelineError> {
     payload
         .get("source_path")
-        .and_then(file_ref_to_rel_path_or_string)
+        .map(zebfs_rel_path_or_string)
+        .transpose()
+        .map(Option::flatten)
 }
 
 #[cfg(test)]
@@ -1179,8 +1181,35 @@ mod tests {
         });
 
         assert_eq!(
-            source_path_from_payload(&payload),
+            source_path_from_payload(&payload).unwrap(),
             Some("mapserver/sources/roads.geojson".to_string())
+        );
+    }
+
+    /// `ref` is opaque to every node but its own backend
+    /// (`kinds/file-ref/README.md`): a remote handle is never joined to a
+    /// local path.
+    #[test]
+    fn publish_source_path_refuses_a_foreign_backend_ref() {
+        let payload = json!({
+            "source_path": {
+                "__zf_type": "file_ref",
+                "backend": "s3",
+                "ref": "s3://bucket/roads.geojson",
+                "filename": "roads.geojson",
+                "mime": "application/geo+json",
+                "kind": "geojson",
+                "size": 1,
+                "sha256": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "lifecycle": "durable",
+                "origin": "webhook",
+                "trust": "untrusted"
+            }
+        });
+
+        assert_eq!(
+            source_path_from_payload(&payload).unwrap_err().code,
+            "FW_FILE_REF_BACKEND"
         );
     }
 }

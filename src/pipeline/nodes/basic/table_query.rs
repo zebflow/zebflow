@@ -24,7 +24,7 @@ use crate::pipeline::{
 use crate::platform::services::PlatformService;
 use crate::zebfs::{LocalZebFs, normalize_object_path};
 
-use super::file_ref::file_ref_to_rel_path;
+use super::file_ref::zebfs_rel_path;
 use super::table_convert::{
     TableFormat, collect_columns, encode_rows, parse_format, record_batch_to_rows,
 };
@@ -644,7 +644,7 @@ async fn register_source(
 ) -> Result<(), PipelineError> {
     if binding.source.trim_start().starts_with('$') {
         let value = eval_deno_expr(language, &binding.source, &input.payload, &input.metadata)?;
-        if let Some(path) = file_ref_to_rel_path(&value) {
+        if let Some(path) = zebfs_rel_path(&value)? {
             register_table_path(ctx, zebfs, binding.alias.as_str(), &path).await?;
             return Ok(());
         }

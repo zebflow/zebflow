@@ -17,6 +17,7 @@
 //! | [`state`] | Shared KV/pubsub/lease semantics |
 //! | [`cache`] | Generic cache contracts and implementations |
 //! | [`durable`] | Strict versioned JSON and crash-safe local file replacement |
+//! | [`path`] | Containment for caller-supplied relative paths |
 //!
 //! # Boundary rule
 //!
@@ -27,5 +28,6 @@ pub mod cache;
 pub mod catalog;
 pub mod durable;
 pub mod object;
+pub mod path;
 pub mod runtime_data;
 pub mod state;

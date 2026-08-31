@@ -10,7 +10,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use super::file_ref::file_ref_to_rel_path_or_string;
+use super::file_ref::zebfs_rel_path_or_string;
 use super::util::{metadata_scope, resolve_path};
 use crate::pipeline::model::NodeCapability;
 use crate::pipeline::{
@@ -363,7 +363,9 @@ fn resolve_input_path(
     }
     if !config.input_expr.trim().is_empty() {
         let val = resolve_path(payload, config.input_expr.trim())
-            .and_then(file_ref_to_rel_path_or_string)
+            .map(zebfs_rel_path_or_string)
+            .transpose()?
+            .flatten()
             .ok_or_else(|| {
                 PipelineError::new(
                     "FW_NODE_GEO_CONVERT",

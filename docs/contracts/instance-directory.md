@@ -14,20 +14,46 @@ records what is on disk today.
 
 ```
 <data-root>/
+├── .bootstrap/                        BOOTSTRAP SECRET (rule 9) — 0700
+│   └── superadmin-password            0600; deleted by the first successful
+│                                      password change. Never backed up
+│
 ├── platform/
 │   ├── layout.json                    STORE — { "version": N }; migrations key off this
 │   ├── catalog.db (+ -wal, -shm)      STORE — users, projects, sessions, offices,
 │   │                                          credentials, members, policies, placements
+│   ├── credential-key                 STORE — 0600. The instance key that unwraps
+│   │                                          every credential in catalog.db. Losing
+│   │                                          it loses every stored credential; it
+│   │                                          cannot be regenerated. Back it up,
+│   │                                          separately from catalog.db
+│   ├── cluster-signing-key            STORE — 0600. Controller identity; offices
+│   │                                          that joined trust its public half
+│   ├── office-join-token              STORE — 0600. This office's own issued token
+│   │                                          (present on a joined office, not on
+│   │                                          a controller)
 │   ├── operations/                    BOUNDED (terminal + 7d) — finished transfer
 │   │                                          artifacts (staging is in tmp/)
-│   └── cache/                         CACHE — rwe script blobs, content-addressed
+│   ├── rwe-script-cache/              CACHE — compiled RWE script blobs,
+│   │   └── {hash}.blob                        content-addressed
+│   └── cache/
+│       └── hub-artifacts/             CACHE — remotely fetched hub artifacts,
+│                                              content-addressed and digest-verified
+│                                              on fetch; neither hub store may be
+│                                              written by a fetch
 │
 ├── services/
 │   ├── hub-local/                     LOCAL HUB — blessed shelf, release-seeded
 │   │   │                              (zebflow.*, every boot, check-first:
 │   │   │                              absent coordinates only, existing ones
 │   │   │                              never rewritten or deleted), immutable;
-│   │   │                              no write path, no tokens
+│   │   │                              no write path, no tokens.
+│   │   │                              Not CACHE, though it is re-seeded: seeding
+│   │   │                              only adds coordinates this release knows
+│   │   │                              about, so a package published here by an
+│   │   │                              older binary or installed from a local
+│   │   │                              document is never restored by deleting the
+│   │   │                              shelf. Back it up
 │   │   ├── hub.db (+ sidecars)        STORE
 │   │   ├── packages/
 │   │   │   └── {id}/versions/{ver}/artifact.json      STORE
@@ -39,7 +65,9 @@ records what is on disk today.
 │                                      (publisher/token/grant ACL); same
 │                                      internal layout as hub-local
 │
-├── run/                               EPHEMERAL — wiped on startup: locks, pids, sockets
+├── run/                               EPHEMERAL — created and wiped on startup.
+│                                      No writer today; drawn because the wipe is
+│                                      what makes it safe for the first one
 ├── tmp/                               EPHEMERAL — staging, upload chunks, scratch
 │
 └── users/
@@ -61,7 +89,7 @@ records what is on disk today.
             │   │
             │   ├── cache/             CACHE — regenerates
             │   │   ├── pipelines/
-            │   │   ├── web-assets/
+            │   │   ├── agent_docs/    AGENTS.md, SOUL.md (see Open)
             │   │   └── mapserver-artifacts/   {instance}/{layer}/
             │   │
             │   ├── hub/               INSTALLED — from any hub or local file
@@ -76,6 +104,15 @@ records what is on disk today.
             │
             └── files/                 OBJECT — user bytes, flat namespace
                 ├── .zebfs/acl.json    STORE (reserved prefix re-grades)
+                ├── tmp/runs/{request_id}/files/
+                │                      EPHEMERAL by intent, OBJECT by location —
+                │                      `lifecycle: temporary` FileRef bytes
+                │                      (`kinds/file-ref/README.md`). Drawn 2026-08-31
+                │                      because it is written and an operator backing
+                │                      up `files/` copies it. Two things are owed:
+                │                      the deletion the lifecycle promises, and a
+                │                      home outside the OBJECT tier. Not reserved —
+                │                      a project may legitimately own `files/tmp/`
                 └── mapserver/
                     ├── *.geojson      OBJECT — uploaded sources
                     └── *.layers.json  STORE — machine-written intent
@@ -155,21 +192,28 @@ them.
 ├── platform/
 │   ├── layout.json                    STORE — { "version": N }; migrations key off this
 │   ├── catalog.db                     STORE — users, projects, sessions, offices
+│   ├── credential-key                 STORE — 0600, instance credential key
+│   ├── cluster-signing-key            STORE — 0600, controller identity (controller only)
+│   ├── office-join-token              STORE — 0600, this office's token (joined office only)
 │   ├── project-operations/            BOUNDED — finished transfer artifacts
 │   │   └── op-{kind}-{ts}/            one operation: archive (manifest.json embedded)
+│   ├── cache/
+│   │   └── hub-artifacts/             CACHE — remotely fetched hub artifacts
 │   └── rwe-script-cache/              CACHE — compiled RWE, content-addressed
 │       └── {hash}.blob
 │
 ├── run/                               EPHEMERAL — wiped on startup (contents, never
-│                                      the directory); locks, pids, sockets
+│                                      the directory). No writer today
 ├── tmp/                               EPHEMERAL — wiped on startup
 │   └── transfer/                      in-flight export/import staging; crash
 │                                      residue dies at the next boot
 │
 ├── services/
-│   └── hub-default/                   this instance's own hub (renamed
-│       │                              hub-local in the contract; code
-│       │                              catch-up owed)
+│   └── hub-local/                     this instance's own hub (the rename from
+│       │                              hub-default shipped; `LOCAL_HUB_STORE_DIR`
+│       │                              in `hub.rs`. `hub-default` survives only as
+│       │                              the hub *service instance id*, a catalog
+│       │                              row, not a directory)
 │       ├── hub.db                     STORE — packages, versions, publishers, tokens
 │       ├── packages/                  STORE — release documents
 │       │   └── {package_id}/versions/{version}/artifact.json
@@ -197,9 +241,8 @@ them.
             │   │
             │   ├── cache/             CACHE — regenerates from repo/
             │   │   ├── pipelines/     activated pipeline snapshots (*.zf.json)
-            │   │   ├── agent_docs/    AGENTS.md, SOUL.md (MEMORY.md moved to
-            │   │   │                  store/assistant/{owner}/memory.md on first touch)
-            │   │   └── web-assets/    compiled web assets
+            │   │   └── agent_docs/    AGENTS.md, SOUL.md (MEMORY.md moved to
+            │   │                      store/assistant/{owner}/memory.md on first touch)
             │   │
             │   ├── hub/               INSTALLED — unpacked hub content
             │   │   ├── nodes/         node bundles (migrated from data/nodes/ on first touch)
@@ -217,6 +260,8 @@ them.
                 │                      visibility per path via ACL
                 ├── .zebfs/
                 │   └── acl.json       path → {Private|PublicRead} × {Object|Prefix}
+                ├── tmp/runs/          `lifecycle: temporary` FileRef bytes; no
+                │   └── {request_id}/files/    writer removes them today
                 ├── mapserver/         map feature area
                 │   ├── {source}.geojson            uploaded sources
                 │   ├── {instance}.layers.json      layer registry, machine-written
@@ -248,6 +293,13 @@ orphan rows for deleted projects keep the file alive until hand-drained.
 ### Superseded open items
 
 - `data/logs/` and `project-operations/` retention windows: unset.
+- `services/hub-default/` → `services/hub-local/`: shipped —
+  `LOCAL_HUB_STORE_DIR` in `hub.rs` is `hub-local`. The appendix line saying
+  the code catch-up was owed was stale and is corrected (2026-08-31).
+- `data/cache/web-assets/`: removed from both trees (rule 10) — a reader with
+  no writer. `GET /assets/{owner}/{project}/…` looks there first and falls
+  through to `repo/{assets}/`, which is where every asset comes from today.
+  It returns the day a compiler writes it.
 - `.bootstrap/superadmin-password` lifecycle: shipped — the first successful
   password change deletes it (rule 9), and `zeb admin reset-password` rotates
   the credential offline without recreating the file.
@@ -266,6 +318,19 @@ orphan rows for deleted projects keep the file alive until hand-drained.
   entries.
 
 ### Evidence
+
+Live-verified 2026-08-31 on a scratch instance (`ZEBFLOW_PLATFORM_DATA_DIR`,
+fresh root, one project through create → pipeline → upload → library →
+publish → export/import → mint): every path in the appendix tree that the run
+could reach was present, and the three additions above were observed as
+written — `.bootstrap/superadmin-password` (0600), `platform/credential-key`
+(0600), `platform/cluster-signing-key` (0600), `platform/rwe-script-cache/`,
+`data/cache/agent_docs/`, and `files/tmp/runs/{request_id}/files/`.
+`platform/cache/hub-artifacts/` was not reached (it needs a remote hub fetch)
+and is drawn from its writer in `hub.rs`. `run/` was created and empty;
+`data/cache/web-assets/` was never created, which is what a reader with no
+writer looks like. `platform/office-join-token` is not written on a controller
+— it is the office side's file — and is drawn from `join_token.rs`.
 
 Live-verified 2026-08-24/25: all tiers scaffolded on fresh projects; old-shape
 projects migrate with content proven intact (values queried, not file-hashed);

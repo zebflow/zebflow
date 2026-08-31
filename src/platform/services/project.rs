@@ -14,6 +14,7 @@ use crate::contracts::kinds::{
     decode_pipeline_graph, encode_pipeline_graph, validate_pipeline_activation,
 };
 use crate::infra::io::durable::{atomic_write, durable_remove_file};
+use crate::infra::io::path::contained_rel_path;
 use crate::pipeline::PipelineGraph;
 use crate::platform::adapters::data::DataAdapter;
 use crate::platform::adapters::file::FileAdapter;
@@ -86,18 +87,7 @@ pub fn canonical_webhook_path(raw: Option<&str>) -> String {
 
 pub fn derive_trigger_kind_from_source(source: &str) -> Option<String> {
     let graph = decode_pipeline_graph(source.as_bytes()).ok()?.spec;
-    let entry_ids: std::collections::HashSet<&str> = if !graph.entry_nodes.is_empty() {
-        graph.entry_nodes.iter().map(|s| s.as_str()).collect()
-    } else {
-        let targets: std::collections::HashSet<&str> =
-            graph.edges.iter().map(|e| e.to_node.as_str()).collect();
-        graph
-            .nodes
-            .iter()
-            .filter(|n| !targets.contains(n.id.as_str()))
-            .map(|n| n.id.as_str())
-            .collect()
-    };
+    let entry_ids: std::collections::HashSet<&str> = graph.entry_node_ids().into_iter().collect();
     graph
         .nodes
         .iter()
@@ -2168,6 +2158,23 @@ impl ProjectService {
         layout: &ProjectFileLayout,
         file_rel_path: &str,
     ) -> Result<PathBuf, PlatformError> {
+        Ok(self.resolve_pipeline_paths(layout, file_rel_path)?.1)
+    }
+
+    /// Resolves one caller-supplied pipeline identity into the two paths every
+    /// caller needs: repository-relative (what git is told) and absolute (what
+    /// the filesystem is told).
+    ///
+    /// This is the only place either is derived. It exists because the lock
+    /// toggle handler used to build both itself, out of the request body,
+    /// without going through the identity rule — so a body naming
+    /// `../../victim/project/repo/src/...` read and rewrote a pipeline in
+    /// another owner's project while being authorised against the caller's own.
+    pub fn resolve_pipeline_paths(
+        &self,
+        layout: &ProjectFileLayout,
+        file_rel_path: &str,
+    ) -> Result<(String, PathBuf), PlatformError> {
         // Identity is resolved here, so a caller may hand in a stored row that
         // still carries the source root and still reach the same file.
         let identity = normalize_pipeline_file_rel_path(&layout.repo_layout, file_rel_path);
@@ -2179,7 +2186,7 @@ impl ProjectService {
                 "resolved path escaped repo root",
             ));
         }
-        Ok(abs)
+        Ok((layout.repo_layout.source_rel(&identity), abs))
     }
 
     /// Returns the runtime snapshot path for an active pipeline.
@@ -3157,8 +3164,13 @@ fn adopt_pipeline_meta(layout: &ResolvedProjectLayout, mut meta: PipelineMeta) -
 /// working without being migrated first, and is why the DSL, MCP, and API can
 /// all keep spelling a pipeline `pipelines/api/foo` on a default layout.
 pub fn normalize_pipeline_file_rel_path(layout: &ResolvedProjectLayout, raw: &str) -> String {
-    let cleaned = raw.trim().replace('\\', "/");
-    let rooted = cleaned.trim_start_matches('/');
+    // Containment first. Identity is joined onto the project's source root to
+    // reach a file, so a `..` left in it reaches another owner's project: the
+    // caller is authorised against the project named in the *route*, while the
+    // path travelled came from the request body. `starts_with` downstream
+    // cannot catch that, because it compares components without resolving them.
+    let cleaned = contained_rel_path(raw);
+    let rooted = cleaned.as_str();
     let rel = layout.strip_source(rooted).unwrap_or(rooted);
     if rel.ends_with(PIPELINE_DEFINITION_EXTENSION) {
         return rel.to_string();
@@ -3176,8 +3188,8 @@ pub fn normalize_pipeline_file_rel_path(layout: &ResolvedProjectLayout, raw: &st
 /// the same tolerance identity has applies here: a pattern that still names
 /// the source root selects the same pipelines as one that does not.
 pub fn normalize_pipeline_glob(layout: &ResolvedProjectLayout, pattern: &str) -> String {
-    let cleaned = pattern.trim().replace('\\', "/");
-    let rooted = cleaned.trim_start_matches('/');
+    let cleaned = contained_rel_path(pattern);
+    let rooted = cleaned.as_str();
     layout.strip_source(rooted).unwrap_or(rooted).to_string()
 }
 
@@ -3282,6 +3294,94 @@ mod tests {
             },
         )
         .expect("create project");
+    }
+
+    /// S2 regression. `file_rel_path` comes from the request body while the
+    /// caller is authorised against the project named in the *route*. The
+    /// identity normalizer stripped a leading `/` and nothing else, and
+    /// `pipeline_abs_path`'s `starts_with` guard compares components without
+    /// resolving `..` -- so a body naming `../../victim/...` wrote an
+    /// executable pipeline into another owner's project. Revert
+    /// `normalize_pipeline_file_rel_path` and this test finds the file on the
+    /// victim's disk.
+    #[test]
+    fn a_pipeline_path_full_of_traversal_cannot_reach_another_project() {
+        let root = tempfile::tempdir().unwrap();
+        let svc = make_service(root.path());
+        create_default_project(&svc);
+        svc.create_or_update_project(
+            "superadmin",
+            &CreateProjectRequest {
+                project: "victim".to_string(),
+                title: Some("Victim".to_string()),
+                local_branch: None,
+                runtime: ProjectRuntimeSelectionRequest::default(),
+            },
+        )
+        .expect("create victim project");
+
+        let attacker = svc
+            .file
+            .ensure_project_layout("superadmin", "default")
+            .unwrap();
+        let victim = svc
+            .file
+            .ensure_project_layout("superadmin", "victim")
+            .unwrap();
+        let victim_target = victim
+            .repo_source_dir()
+            .join("pipelines")
+            .join("stolen.zf.json");
+
+        let hostile = "../../../../victim/repo/src/pipelines/stolen.zf.json";
+
+        // Identity: no traversal survives it.
+        let identity = normalize_pipeline_file_rel_path(&attacker.repo_layout, hostile);
+        assert!(
+            !identity.contains(".."),
+            "identity kept traversal: {identity}"
+        );
+
+        // Resolution: both derived paths stay under the attacker's own source.
+        let (repo_rel, abs) = svc.resolve_pipeline_paths(&attacker, hostile).unwrap();
+        assert!(
+            !repo_rel.contains(".."),
+            "repo-relative kept traversal: {repo_rel}"
+        );
+        assert!(abs.starts_with(attacker.repo_source_dir()));
+
+        // And the write lands there rather than in the victim's project.
+        svc.upsert_pipeline_definition(
+            "superadmin",
+            "default",
+            hostile,
+            "Stolen",
+            "",
+            "webhook",
+            valid_logic_match_router_source(),
+        )
+        .expect("the write is contained, not refused");
+
+        assert!(
+            !victim_target.exists(),
+            "an executable pipeline was written into another project at {}",
+            victim_target.display()
+        );
+        assert!(
+            abs.is_file(),
+            "the contained write should still have happened at {}",
+            abs.display()
+        );
+
+        // The read and delete doors take the same body-supplied path.
+        let source = svc
+            .read_pipeline_source("superadmin", "default", hostile)
+            .expect("read resolves to the caller's own project");
+        assert!(source.contains("\"kind\""), "read returned: {source}");
+        svc.delete_pipeline("superadmin", "default", hostile)
+            .expect("delete resolves to the caller's own project");
+        assert!(!abs.is_file());
+        assert!(!victim_target.exists());
     }
 
     fn invalid_logic_match_router_source() -> &'static str {

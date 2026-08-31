@@ -10,7 +10,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use super::file_ref::file_ref_to_rel_path_or_string;
+use super::file_ref::zebfs_rel_path_or_string;
 use super::util::{metadata_scope, resolve_path};
 use crate::pipeline::model::NodeCapability;
 use crate::pipeline::{
@@ -225,7 +225,9 @@ impl NodeHandler for Node {
         };
 
         let source_rel = resolve_path(&input.payload, source_key)
-            .and_then(file_ref_to_rel_path_or_string)
+            .map(zebfs_rel_path_or_string)
+            .transpose()?
+            .flatten()
             .ok_or_else(|| {
                 PipelineError::new(
                     "FW_NODE_FILE_DECOMPRESS",
@@ -269,8 +271,18 @@ impl NodeHandler for Node {
         let source_abs_for_task = source_abs.clone();
         let output_abs_for_task = output_abs.clone();
         let entries = tokio::task::spawn_blocking(move || {
+            // Path safety comes from the listing, before a byte is written --
+            // the same order project import uses. `sanitize_rel_path` was
+            // applied to the *reported* entries only, so an archive member
+            // named `../../../../etc/cron.d/evil` was reported as
+            // `etc/cron.d/evil` and extracted where it asked to go.
+            refuse_unsafe_archive_entries(&source_abs_for_task)?;
             let entries = list_tar_gz_entries(&source_abs_for_task)?;
             extract_tar_gz(&source_abs_for_task, &output_abs_for_task)?;
+            // A member may still be a symlink, which the name check cannot
+            // see: `link -> /etc/passwd` is a safe name pointing anywhere. The
+            // extract root is refused whole rather than partially trusted.
+            refuse_extracted_symlinks(&output_abs_for_task)?;
             Ok::<Vec<String>, PipelineError>(entries)
         })
         .await
@@ -314,6 +326,59 @@ impl NodeHandler for Node {
                 source_rel, output_rel, root, output.extracted_count
             )],
         })
+    }
+}
+
+/// Refuses an archive whose listing names anything that does not descend from
+/// the extract root: an absolute path, a `..` segment, or a backslash.
+///
+/// Shared with project import (`ProjectTransferService::stage_archive`) so the
+/// two cannot drift; only the error type differs.
+fn refuse_unsafe_archive_entries(source_abs: &Path) -> Result<(), PipelineError> {
+    crate::platform::services::project_transfer::validate_archive_entry_names(source_abs).map_err(
+        |err| {
+            PipelineError::new(
+                "FW_NODE_FILE_DECOMPRESS",
+                format!("unsafe archive entry: {}", err.message),
+            )
+        },
+    )
+}
+
+/// Refuses the extract root if anything under it is a symbolic link.
+///
+/// A symlink is the escape the name check cannot see: `link -> /etc/passwd` is
+/// an ordinary-looking member, and every later write through it lands outside
+/// the project. Detection is the shared walk project import uses; on a refusal
+/// the links themselves are unlinked, because a refused extraction that leaves
+/// the link on disk has not actually refused anything. Only the links are
+/// removed -- the extract directory may be one the project already had, and a
+/// hostile archive must not be able to make us delete it.
+fn refuse_extracted_symlinks(output_abs: &Path) -> Result<(), PipelineError> {
+    let Err(err) = crate::platform::services::project_transfer::refuse_symlinks(output_abs) else {
+        return Ok(());
+    };
+    unlink_symlinks_under(output_abs);
+    Err(PipelineError::new(
+        "FW_NODE_FILE_DECOMPRESS",
+        format!("unsafe archive entry: {}", err.message),
+    ))
+}
+
+/// Removes every symbolic link under `root`, following none of them.
+fn unlink_symlinks_under(root: &Path) {
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        if file_type.is_symlink() {
+            let _ = std::fs::remove_file(entry.path());
+        } else if file_type.is_dir() {
+            unlink_symlinks_under(&entry.path());
+        }
     }
 }
 
@@ -432,7 +497,256 @@ fn prefixed_output_path(output_rel_dir: &str, leaf: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{resolve_output_dir, sanitize_rel_path};
+    use std::io::Write;
+    use std::sync::Arc;
+
+    use serde_json::json;
+
+    use super::{
+        Config, Node, NodeExecutionInput, NodeHandler, refuse_extracted_symlinks,
+        refuse_unsafe_archive_entries, resolve_output_dir, sanitize_rel_path,
+    };
+    use crate::platform::PlatformConfig;
+    use crate::platform::services::PlatformService;
+
+    /// Appends one ustar entry. `type_flag` is `b'0'` for a file and `b'2'`
+    /// for a symbolic link, whose target is the entry's link name.
+    fn append_tar_entry(bytes: &mut Vec<u8>, name: &str, type_flag: u8, link: &str, body: &[u8]) {
+        let mut header = [0_u8; 512];
+        header[..name.len()].copy_from_slice(name.as_bytes());
+        header[100..107].copy_from_slice(b"0000644");
+        header[108..115].copy_from_slice(b"0000000");
+        header[116..123].copy_from_slice(b"0000000");
+        let size = if type_flag == b'2' { 0 } else { body.len() };
+        header[124..135].copy_from_slice(format!("{size:011o}").as_bytes());
+        header[136..147].copy_from_slice(b"00000000000");
+        header[156] = type_flag;
+        header[157..157 + link.len()].copy_from_slice(link.as_bytes());
+        header[257..262].copy_from_slice(b"ustar");
+        header[263..265].copy_from_slice(b"00");
+        header[148..156].copy_from_slice(b"        ");
+        let sum: u32 = header.iter().map(|byte| u32::from(*byte)).sum();
+        header[148..156].copy_from_slice(format!("{sum:06o}\0 ").as_bytes());
+        bytes.extend_from_slice(&header);
+        if type_flag != b'2' {
+            bytes.extend_from_slice(body);
+            bytes.extend(std::iter::repeat_n(0_u8, (512 - body.len() % 512) % 512));
+        }
+    }
+
+    fn write_tar_gz(path: &std::path::Path, entries: &[(&str, u8, &str, &[u8])]) {
+        let mut tar = Vec::new();
+        for (name, type_flag, link, body) in entries {
+            append_tar_entry(&mut tar, name, *type_flag, link, body);
+        }
+        tar.extend(std::iter::repeat_n(0_u8, 1024));
+        let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        encoder.write_all(&tar).unwrap();
+        std::fs::write(path, encoder.finish().unwrap()).unwrap();
+    }
+
+    /// S5 regression. `sanitize_rel_path` was applied to the *reported* entry
+    /// list and never to the extraction, so `tar -xzf` was handed the archive
+    /// with no member validation at all: a member named
+    /// `../../../../etc/cron.d/evil` was written where it asked and reported as
+    /// the harmless-looking `etc/cron.d/evil`. Remove the
+    /// `refuse_unsafe_archive_entries` call and this passes silently.
+    #[test]
+    fn an_archive_member_that_climbs_out_is_refused_before_extraction() {
+        let dir = tempfile::tempdir().unwrap();
+        let archive = dir.path().join("hostile.tar.gz");
+        write_tar_gz(
+            &archive,
+            &[
+                ("safe.txt", b'0', "", b"fine"),
+                ("../../../../tmp/zebflow-escape", b'0', "", b"owned"),
+            ],
+        );
+
+        let error = refuse_unsafe_archive_entries(&archive).expect_err("traversal is refused");
+        assert_eq!(error.code, "FW_NODE_FILE_DECOMPRESS");
+        assert!(error.message.contains("unsafe archive entry"), "{error:?}");
+
+        // And the sanitizer alone would have hidden it.
+        assert_eq!(
+            sanitize_rel_path("../../../../tmp/zebflow-escape"),
+            "tmp/zebflow-escape"
+        );
+    }
+
+    #[test]
+    fn an_absolute_archive_member_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let archive = dir.path().join("absolute.tar.gz");
+        write_tar_gz(&archive, &[("/etc/cron.d/evil", b'0', "", b"owned")]);
+        assert!(refuse_unsafe_archive_entries(&archive).is_err());
+    }
+
+    #[test]
+    fn an_ordinary_archive_is_accepted() {
+        let dir = tempfile::tempdir().unwrap();
+        let archive = dir.path().join("ok.tar.gz");
+        write_tar_gz(
+            &archive,
+            &[
+                ("bundle/", b'5', "", b""),
+                ("bundle/paper.txt", b'0', "", b"content"),
+            ],
+        );
+        refuse_unsafe_archive_entries(&archive).expect("an ordinary archive extracts");
+    }
+
+    /// A symlink member has an innocent name, so the listing check cannot see
+    /// it; every later write through it lands wherever it points.
+    #[test]
+    fn a_symlink_member_is_refused_after_extraction_and_unlinked() {
+        let dir = tempfile::tempdir().unwrap();
+        let extracted = dir.path().join("extracted");
+        std::fs::create_dir_all(extracted.join("nested")).unwrap();
+        std::fs::write(extracted.join("kept.txt"), "pre-existing").unwrap();
+        std::os::unix::fs::symlink("/etc/passwd", extracted.join("nested").join("link")).unwrap();
+
+        let error = refuse_extracted_symlinks(&extracted).expect_err("a symlink is refused");
+        assert!(error.message.contains("unsafe archive entry"), "{error:?}");
+        assert!(
+            !extracted.join("nested").join("link").exists()
+                && std::fs::symlink_metadata(extracted.join("nested").join("link")).is_err(),
+            "the link survived the refusal"
+        );
+        assert!(
+            extracted.join("kept.txt").is_file(),
+            "a hostile archive must not be able to delete what the project already had"
+        );
+
+        refuse_extracted_symlinks(&extracted).expect("a tree without links is fine");
+    }
+
+    /// S5 regression, through the node itself. `sanitize_rel_path` was applied
+    /// to the *reported* entry list and never to the extraction: `tar -xzf` was
+    /// handed the archive with no member validation, so a member named
+    /// `../../../../etc/...` landed where it asked and was reported under a
+    /// harmless-looking name. Delete the `refuse_unsafe_archive_entries` call
+    /// in `execute_async` and the escape file appears.
+    #[tokio::test]
+    async fn the_node_refuses_an_archive_whose_members_climb_out() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let mut config = PlatformConfig::default();
+        config.data_root = tmp.path().join("platform");
+        config.default_password = "secret".to_string();
+        let platform = Arc::new(PlatformService::from_config(config).expect("platform"));
+        let layout = platform
+            .file
+            .ensure_project_layout("superadmin", "default")
+            .expect("layout");
+
+        let source_rel = "uploads/hostile.tar.gz";
+        let source_abs = layout.files_dir.join(source_rel);
+        std::fs::create_dir_all(source_abs.parent().expect("parent")).expect("parent");
+        // Aimed three levels up from `files/extracted/hostile`, which is the
+        // project directory itself -- a real place with real consequences.
+        write_tar_gz(
+            &source_abs,
+            &[
+                ("safe.txt", b'0', "", b"fine"),
+                ("../../../owned.txt", b'0', "", b"owned"),
+            ],
+        );
+        let escape = layout.files_dir.join("../../owned.txt");
+
+        let node = Node::new(Config::default(), Arc::clone(&platform)).expect("node");
+        let error = node
+            .execute_async(NodeExecutionInput {
+                node_id: "n-test".to_string(),
+                input_pin: "in".to_string(),
+                payload: json!({ "saved": { "path": source_rel } }),
+                metadata: json!({
+                    "owner": "superadmin",
+                    "project": "default",
+                    "pipeline": "test",
+                    "request_id": "req-1"
+                }),
+                bus: None,
+            })
+            .await
+            .expect_err("a hostile archive is refused");
+        assert_eq!(error.code, "FW_NODE_FILE_DECOMPRESS");
+        assert!(
+            !escape.exists(),
+            "an archive member escaped to {}",
+            escape.display()
+        );
+        // Refused from the listing, so nothing at all was written -- not even
+        // the members that came before the hostile one. Some `tar` builds
+        // refuse a `..` member themselves, but only after extracting whatever
+        // preceded it, which leaves a half-extracted tree and an error message
+        // that depends on which `tar` the host happens to ship.
+        assert!(
+            !layout.files_dir.join("extracted/hostile/safe.txt").exists(),
+            "extraction started before the archive was reviewed"
+        );
+        assert!(error.message.contains("unsafe archive entry"), "{error:?}");
+
+        // A symlink member has a name the listing check cannot fault.
+        let linked_rel = "uploads/linked.tar.gz";
+        write_tar_gz(
+            &layout.files_dir.join(linked_rel),
+            &[
+                ("payload/readme.txt", b'0', "", b"ordinary"),
+                ("payload/passwd", b'2', "/etc/passwd", b""),
+            ],
+        );
+        let error = node
+            .execute_async(NodeExecutionInput {
+                node_id: "n-test".to_string(),
+                input_pin: "in".to_string(),
+                payload: json!({ "saved": { "path": linked_rel } }),
+                metadata: json!({
+                    "owner": "superadmin",
+                    "project": "default",
+                    "pipeline": "test",
+                    "request_id": "req-3"
+                }),
+                bus: None,
+            })
+            .await
+            .expect_err("a symlink member is refused");
+        assert!(error.message.contains("unsafe archive entry"), "{error:?}");
+        let link = layout.files_dir.join("extracted/linked/payload/passwd");
+        assert!(
+            std::fs::symlink_metadata(&link).is_err(),
+            "the symlink survived at {}",
+            link.display()
+        );
+
+        // An ordinary archive still extracts through the same door.
+        let ok_rel = "uploads/ok.tar.gz";
+        write_tar_gz(
+            &layout.files_dir.join(ok_rel),
+            &[("bundle/paper.txt", b'0', "", b"content")],
+        );
+        let output = node
+            .execute_async(NodeExecutionInput {
+                node_id: "n-test".to_string(),
+                input_pin: "in".to_string(),
+                payload: json!({ "saved": { "path": ok_rel } }),
+                metadata: json!({
+                    "owner": "superadmin",
+                    "project": "default",
+                    "pipeline": "test",
+                    "request_id": "req-2"
+                }),
+                bus: None,
+            })
+            .await
+            .expect("an ordinary archive extracts");
+        assert_eq!(output.payload["decompressed"]["extracted_count"], 1);
+        assert!(
+            layout
+                .files_dir
+                .join("extracted/ok/bundle/paper.txt")
+                .is_file()
+        );
+    }
 
     #[test]
     fn sanitizes_archive_paths() {

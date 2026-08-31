@@ -215,40 +215,95 @@ impl Node {
     }
 }
 
+/// How deep the sweep for sensitive values goes. Deep enough for a form posted
+/// inside `body`, a JSON envelope inside that, and a few layers of nesting
+/// under it; bounded so a hostile payload cannot turn trace redaction into the
+/// expensive part of a request.
+const SENSITIVE_SCAN_MAX_DEPTH: usize = 12;
+
+/// Key names whose value is a secret wherever it appears.
+const SENSITIVE_KEYS: &[&str] = &[
+    "password",
+    "passwd",
+    "pwd",
+    "passphrase",
+    "secret",
+    "client_secret",
+    "token",
+    "access_token",
+    "refresh_token",
+    "id_token",
+    "session_token",
+    "api_key",
+    "apikey",
+    "private_key",
+    "authorization",
+    "credit_card",
+    "card_number",
+    "cvv",
+    "otp",
+];
+
+/// True when `key` names a secret.
+///
+/// Comparison is on letters and digits only, so `apiKey`, `api-key`, `api_key`,
+/// and `API KEY` are one name. A trailing `s` is also dropped, because a field
+/// holding several secrets is spelled `tokens` at least as often as `token` and
+/// a list of secrets is not less secret than one.
+pub(crate) fn is_sensitive_payload_key(key: &str) -> bool {
+    let normalized = key
+        .chars()
+        .filter(|ch| ch.is_ascii_alphanumeric())
+        .collect::<String>()
+        .to_ascii_lowercase();
+    let singular = normalized.strip_suffix('s').unwrap_or(&normalized);
+    SENSITIVE_KEYS.iter().any(|candidate| {
+        let candidate = candidate.replace('_', "");
+        normalized == candidate || singular == candidate
+    })
+}
+
+/// Collects the literal secret values a request carries, so the engine can
+/// strike them out of every trace the run writes.
+///
+/// This walks the whole payload. It used to read top-level keys only, which
+/// made it dead code in production: the ingress always nests the request body
+/// under `body` (`build_structured_payload`), so the top-level keys of a real
+/// webhook payload are `body`/`query`/`params`/`path`/`method`/`files` and
+/// never a field name. A login form posted to a webhook therefore wrote its
+/// plaintext password into `trace.input` and onto disk.
 fn collect_trace_private_tokens(payload: &Value) -> Vec<String> {
-    const SENSITIVE_KEYS: &[&str] = &[
-        "password",
-        "passwd",
-        "pwd",
-        "secret",
-        "token",
-        "access_token",
-        "refresh_token",
-        "api_key",
-        "apikey",
-        "authorization",
-    ];
-    let Some(map) = payload.as_object() else {
-        return Vec::new();
-    };
     let mut out = Vec::new();
-    for (key, value) in map {
-        if !SENSITIVE_KEYS
-            .iter()
-            .any(|candidate| key.eq_ignore_ascii_case(candidate))
-        {
-            continue;
-        }
-        let Some(text) = value.as_str() else {
-            continue;
-        };
-        let trimmed = text.trim();
-        if trimmed.is_empty() || out.iter().any(|existing| existing == trimmed) {
-            continue;
-        }
-        out.push(trimmed.to_string());
-    }
+    collect_into(payload, false, 0, &mut out);
     out
+}
+
+fn collect_into(value: &Value, under_sensitive_key: bool, depth: usize, out: &mut Vec<String>) {
+    if depth > SENSITIVE_SCAN_MAX_DEPTH {
+        return;
+    }
+    match value {
+        Value::Object(map) => {
+            for (key, item) in map {
+                collect_into(item, is_sensitive_payload_key(key), depth + 1, out);
+            }
+        }
+        // An array under a sensitive key is a list of secrets -- `token: [..]`
+        // -- so the flag carries through it rather than being reset.
+        Value::Array(items) => {
+            for item in items {
+                collect_into(item, under_sensitive_key, depth + 1, out);
+            }
+        }
+        Value::String(text) if under_sensitive_key => {
+            let trimmed = text.trim();
+            if trimmed.is_empty() || out.iter().any(|existing| existing == trimmed) {
+                return;
+            }
+            out.push(trimmed.to_string());
+        }
+        _ => {}
+    }
 }
 
 #[async_trait]
@@ -294,11 +349,18 @@ impl NodeHandler for Node {
     }
 }
 
+/// The collector, reachable from the engine's own tests so that "the ingress
+/// publishes tokens the engine then applies" can be asserted end to end.
+#[cfg(test)]
+pub(crate) fn collect_trace_private_tokens_for_test(payload: &Value) -> Vec<String> {
+    collect_trace_private_tokens(payload)
+}
+
 #[cfg(test)]
 mod tests {
     use serde_json::json;
 
-    use super::collect_trace_private_tokens;
+    use super::{collect_trace_private_tokens, is_sensitive_payload_key};
 
     #[test]
     fn collects_common_sensitive_form_fields_for_trace_redaction() {
@@ -309,5 +371,61 @@ mod tests {
         }));
 
         assert_eq!(tokens, vec!["toryoto", "abc123"]);
+    }
+
+    /// The shape the ingress actually produces. A flat payload is not one:
+    /// `build_structured_payload` always nests the request body under `body`,
+    /// so a collector that read top-level keys only returned nothing for every
+    /// real request while its test passed on a payload no request can produce.
+    #[test]
+    fn collects_secrets_from_the_nested_shape_the_ingress_produces() {
+        let tokens = collect_trace_private_tokens(&json!({
+            "body": { "username": "wawan", "password": "toryoto" },
+            "query": { "api_key": "abc123" },
+            "params": {},
+            "path": "/login",
+            "method": "POST"
+        }));
+
+        assert!(tokens.contains(&"toryoto".to_string()));
+        assert!(tokens.contains(&"abc123".to_string()));
+        assert!(!tokens.contains(&"wawan".to_string()));
+    }
+
+    #[test]
+    fn reaches_secrets_nested_below_the_body() {
+        let tokens = collect_trace_private_tokens(&json!({
+            "body": {
+                "account": { "credentials": { "clientSecret": "deep-secret" } },
+                "tokens": ["t-one", "t-two"]
+            }
+        }));
+
+        assert!(tokens.contains(&"deep-secret".to_string()));
+        assert!(tokens.contains(&"t-one".to_string()));
+        assert!(tokens.contains(&"t-two".to_string()));
+    }
+
+    #[test]
+    fn key_spelling_does_not_decide_whether_a_secret_is_seen() {
+        for key in ["apiKey", "api-key", "API_KEY", "Api Key"] {
+            assert!(is_sensitive_payload_key(key), "'{key}' should be sensitive");
+        }
+        assert!(
+            is_sensitive_payload_key("tokens"),
+            "a list of secrets is still secret"
+        );
+        assert!(!is_sensitive_payload_key("username"));
+        assert!(!is_sensitive_payload_key("tokenizer"));
+    }
+
+    #[test]
+    fn a_hostile_depth_does_not_run_away() {
+        let mut value = json!({ "password": "bottom" });
+        for _ in 0..500 {
+            value = json!({ "wrap": value });
+        }
+        // Bounded: it stops rather than recursing 500 deep.
+        assert!(collect_trace_private_tokens(&value).is_empty());
     }
 }

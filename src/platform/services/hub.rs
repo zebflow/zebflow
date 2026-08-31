@@ -26,6 +26,7 @@ use crate::contracts::{
     ContractDocument, ContractMetadata, decode_contract, decode_contract_value, encode_contract,
 };
 use crate::infra::io::durable::{atomic_write, durable_remove_file};
+use crate::infra::io::path::{contained_rel_path, rel_path_escapes_root};
 use crate::platform::adapters::data::DataAdapter;
 use crate::platform::error::PlatformError;
 use crate::platform::model::{
@@ -5430,8 +5431,17 @@ fn sanitize_install_repo_path(
     layout: &ProjectFileLayout,
     rel_path: &str,
 ) -> Result<PathBuf, PlatformError> {
-    let cleaned = rel_path.trim_start_matches("./").trim_start_matches('/');
-    let abs = layout.repo_dir.join(cleaned);
+    // Refuse rather than relocate: this path names one artifact a package
+    // declares it wants written, so a package that asks to write outside the
+    // repository is telling us what it is, and installing a "cleaned" version
+    // of that request would hide it.
+    if rel_path_escapes_root(rel_path) {
+        return Err(PlatformError::new(
+            "HUB_INSTALL",
+            format!("artifact path '{rel_path}' escaped repo root"),
+        ));
+    }
+    let abs = layout.repo_dir.join(normalize_repo_rel(rel_path));
     if !abs.starts_with(&layout.repo_dir) {
         return Err(PlatformError::new(
             "HUB_INSTALL",
@@ -6160,12 +6170,16 @@ fn hex_lower(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
+/// The one spelling of a repository-relative path.
+///
+/// Every caller-supplied path that ends up joined onto `repo_dir` passes
+/// through here, so containment is decided once. It used to strip a leading
+/// `./` and `/` and nothing else, which let `billing/../../../../tmp/evil`
+/// through an install's `target_folder` and out of the project entirely: the
+/// only guard downstream was `destination.starts_with(install_base)`, and
+/// `Path::starts_with` compares components without resolving `..`.
 fn normalize_repo_rel(input: &str) -> String {
-    let trimmed = input
-        .trim()
-        .trim_start_matches("./")
-        .trim_start_matches('/');
-    trimmed.replace('\\', "/")
+    contained_rel_path(input)
 }
 
 fn normalize_template_repo_rel(layout: &ResolvedProjectLayout, input: &str) -> String {
@@ -7832,6 +7846,80 @@ mod tests {
         )
         .expect_err("a bundle with no configuration cannot be planned");
         assert_eq!(error.message, "project bundle is missing zebflow.yaml");
+    }
+
+    /// S1 regression. `target_folder` arrives from the install request body,
+    /// and its only cleaning stripped a leading `./` and `/`. The guard
+    /// downstream is `destination.starts_with(install_base)`, which cannot see
+    /// `..`: `Path::starts_with` compares components without resolving them, so
+    /// `base/../../../../tmp/evil` "starts with" `base` and passes. Revert
+    /// `normalize_repo_rel` to the old trim and this test writes outside the
+    /// repository.
+    #[test]
+    fn a_target_folder_full_of_traversal_cannot_leave_the_repository() {
+        let layout = ResolvedProjectLayout::platform_default();
+        let install_base = std::path::Path::new("/srv/zebflow/users/alice/shop/repo");
+
+        for hostile in [
+            "../../../../tmp/evil",
+            "billing/../../../../tmp/evil",
+            "/etc/cron.d",
+            "..\\..\\tmp\\evil",
+            "./../../secrets",
+        ] {
+            let root = install_root_for_target_folder(
+                &layout,
+                "some-package",
+                HUB_ASSET_KIND_PROJECT_BUNDLE,
+                hostile,
+            );
+            assert!(
+                !root.contains(".."),
+                "target_folder '{hostile}' produced install root '{root}'"
+            );
+            let destination = install_base.join(&root).join("pipelines/evil.zf.json");
+            assert!(
+                destination.starts_with(install_base),
+                "target_folder '{hostile}' escaped to {}",
+                destination.display()
+            );
+            assert!(
+                !destination.to_string_lossy().contains(".."),
+                "target_folder '{hostile}' escaped to {}",
+                destination.display()
+            );
+        }
+    }
+
+    /// A manifest entry that asks to be written outside the repository is
+    /// refused rather than relocated: the request is the package telling us
+    /// what it is, and a cleaned-up version of it would hide that.
+    #[test]
+    fn an_artifact_path_that_leaves_the_repository_is_refused() {
+        let root = tempfile::tempdir().unwrap();
+        let config = Arc::new(
+            crate::platform::services::project_config::ProjectConfigurationService::new(
+                root.path().join("users"),
+            ),
+        );
+        let file = crate::platform::adapters::file::FilesystemFileAdapter::new(
+            root.path().join("users"),
+            config,
+        );
+        crate::platform::adapters::file::FileAdapter::initialize(&file).unwrap();
+        let layout = crate::platform::adapters::file::FileAdapter::ensure_project_layout(
+            &file, "alice", "shop",
+        )
+        .unwrap();
+
+        let error = sanitize_install_repo_path(&layout, "../../../../tmp/evil.tsx")
+            .expect_err("traversal is refused");
+        assert_eq!(error.code, "HUB_INSTALL");
+        assert!(error.message.contains("escaped repo root"), "{error:?}");
+
+        let ok = sanitize_install_repo_path(&layout, "./src/pages/index.tsx").unwrap();
+        assert!(ok.starts_with(&layout.repo_dir));
+        assert!(ok.ends_with("src/pages/index.tsx"));
     }
 
     fn configuration_only_bundle(files: &[HubPackageFile]) -> HubPackageSpec {

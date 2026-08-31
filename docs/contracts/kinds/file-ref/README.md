@@ -45,8 +45,8 @@ All eleven fields are required.
 | `size` | byte count, verified before bytes are returned |
 | `sha256` | `sha256:` + exactly 64 lowercase hex digits, verified before bytes are returned |
 | `lifecycle` | `temporary` — deleted after the run — or `durable`, a project file that stays |
-| `origin` | where it entered: `webhook`, `http.response` |
-| `trust` | how far the bytes are trusted |
+| `origin` | where it entered: `webhook`, `http.response`, `node-output`, `fs.thumbnail`, `project.files.upload`. Open: a new producer adds a word |
+| `trust` | how far the bytes are trusted: `untrusted` (arrived from outside), `sanitized` (re-encoded by a node that discards what it did not understand), `generated` (a node produced them), `user` (a signed-in operator uploaded them). Open: no consumer branches on it yet |
 
 ## Why it has no envelope
 
@@ -70,9 +70,12 @@ backend.
 
 ## Open
 
-- **`trust` has one value.** Every writer sets `untrusted`
-  (`web/mod.rs`, `http_request.rs`). Either the trusted case gets defined, or
-  the field goes. A field with one possible value carries no information.
+- **`trust` is written but never read.** Four values are produced —
+  `untrusted` (`http_request.rs`, webhook ingress), `sanitized`
+  (`fs_thumbnail.rs`), `generated` (node output files), `user`
+  (`web/mod.rs` upload) — and no consumer branches on any of them. The field
+  carries a real distinction; nothing spends it yet. Corrected 2026-08-31: an
+  earlier draft said the field had one value and proposed removing it.
 - **Temporary cleanup.** `lifecycle: temporary` promises deletion after the
   run. `tmp/runs/{request_id}/files/` has no writer that removes it
   (`stability-matrix.md` row 8).

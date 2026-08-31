@@ -444,10 +444,6 @@ fn take_private_redact_tokens(payload: &mut Value) -> Vec<String> {
     take_private_tokens(payload, "__zf_private_redact")
 }
 
-fn take_private_trace_redact_tokens(payload: &mut Value) -> Vec<String> {
-    take_private_tokens(payload, "__zf_private_trace_redact")
-}
-
 fn take_private_redact_except_paths(payload: &mut Value) -> Vec<Vec<String>> {
     take_private_paths(payload, "__zf_private_redact_except_paths")
 }
@@ -690,17 +686,118 @@ fn summarize_trace_string(text: &str) -> Value {
     })
 }
 
+/// Blanks any value sitting under a key that names a secret.
+///
+/// The token mechanism above strikes out *values a node declared*; this strikes
+/// out values *nobody declared* — the payload a cron, WS, or script-built run
+/// carries, where no node publishes redaction tokens at all. The two are
+/// complementary: tokens catch a secret that was copied somewhere else in the
+/// trace, key names catch a secret nobody thought to declare.
+///
+/// `except_paths` is honoured here too, so a pipeline that deliberately traces
+/// a field named `token` keeps the same one escape hatch it already had.
+fn blank_sensitive_keys(value: &Value, except_paths: &[Vec<String>], path: &[String]) -> Value {
+    if except_paths.iter().any(|candidate| candidate == path) {
+        return value.clone();
+    }
+    match value {
+        Value::Object(map) => Value::Object(
+            map.iter()
+                .map(|(key, item)| {
+                    let mut next = path.to_vec();
+                    next.push(key.clone());
+                    let sanitized = if except_paths.iter().any(|candidate| candidate == &next) {
+                        item.clone()
+                    } else if crate::pipeline::nodes::basic::trigger::webhook::is_sensitive_payload_key(key)
+                    {
+                        blanked_like(item)
+                    } else {
+                        blank_sensitive_keys(item, except_paths, &next)
+                    };
+                    (key.clone(), sanitized)
+                })
+                .collect(),
+        ),
+        Value::Array(items) => Value::Array(
+            items
+                .iter()
+                .map(|item| blank_sensitive_keys(item, except_paths, path))
+                .collect(),
+        ),
+        other => other.clone(),
+    }
+}
+
+/// Replaces a secret with a mask of the same *shape*, so a trace still shows
+/// whether the field was present, a string, or a list — just not what it said.
+///
+/// Booleans and nulls pass through: one bit carries no secret, and a masked
+/// `"authorization": true` would cost a reader real information for nothing.
+/// Numbers do not, because a `cvv`, `otp`, or `pin` is a number.
+fn blanked_like(value: &Value) -> Value {
+    match value {
+        Value::Null | Value::Bool(_) => value.clone(),
+        Value::Array(items) => Value::Array(items.iter().map(blanked_like).collect()),
+        Value::Object(map) => Value::Object(
+            map.iter()
+                .map(|(key, item)| (key.clone(), blanked_like(item)))
+                .collect(),
+        ),
+        Value::String(_) | Value::Number(_) => Value::String("••••••".to_string()),
+    }
+}
+
+/// Lifts every redaction marker out of a payload, wherever it sits, and
+/// returns the literal values they name.
+///
+/// The markers used to be read at the top level only. That is where a node
+/// puts one, but not where it stays: `n.web.response` nests the whole upstream
+/// payload under `__zf_response.body`, so by the time that node's *output* was
+/// traced the marker was one level down -- unread, unremoved, and printed
+/// verbatim into the run history with the secrets inside it.
+fn sweep_private_markers(value: &mut Value, tokens: &mut Vec<String>) {
+    match value {
+        Value::Object(map) => {
+            for key in ["__zf_private_trace_redact", "__zf_private_redact"] {
+                let Some(Value::Array(items)) = map.remove(key) else {
+                    continue;
+                };
+                for item in items {
+                    let Some(text) = item.as_str() else { continue };
+                    let trimmed = text.trim();
+                    if !trimmed.is_empty() && !tokens.iter().any(|seen| seen == trimmed) {
+                        tokens.push(trimmed.to_string());
+                    }
+                }
+            }
+            map.remove("__zf_private_redact_except_paths");
+            for item in map.values_mut() {
+                sweep_private_markers(item, tokens);
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                sweep_private_markers(item, tokens);
+            }
+        }
+        _ => {}
+    }
+}
+
 fn sanitized_trace_value(value: &Value) -> Value {
     let mut payload = value.clone();
-    let mut tokens = take_private_trace_redact_tokens(&mut payload);
-    tokens.extend(take_private_redact_tokens(&mut payload));
+    // Only a top-level exception list defines paths, because a path is written
+    // from the payload root and a nested copy names nothing meaningful.
     let except_paths = take_private_redact_except_paths(&mut payload);
+    let mut tokens = Vec::new();
+    sweep_private_markers(&mut payload, &mut tokens);
     let redacted = if tokens.is_empty() {
         payload
     } else {
         redact_json_value(&payload, &tokens, &except_paths, &[])
     };
-    summarize_trace_value(&redacted)
+    let blanked = blank_sensitive_keys(&redacted, &except_paths, &[]);
+    summarize_trace_value(&blanked)
 }
 
 fn materialize_node_output_files(
@@ -780,15 +877,11 @@ fn materialize_node_output_files(
             "__zf_type": FILE_REF_TYPE,
             "backend": BACKEND_ZEBFS,
             "ref": stat.path,
-            "path": stat.path,
-            "url": format!("/fs/{}/{}/{}", ctx.owner, ctx.project, stat.path),
             "filename": name,
-            "name": name,
             "mime": content_type,
-            "content_type": content_type,
+            "kind": crate::pipeline::nodes::basic::file_ref::infer_kind(content_type, &rel_path),
             "size": bytes.len(),
             "sha256": format!("sha256:{:x}", Sha256::digest(&bytes)),
-            "kind": infer_output_file_kind(content_type, &rel_path),
             "lifecycle": LIFECYCLE_DURABLE,
             "origin": "node-output",
             "trust": "generated",
@@ -935,23 +1028,6 @@ fn sanitize_path_part(raw: &str) -> String {
         "run".to_string()
     } else {
         trimmed.to_string()
-    }
-}
-
-fn infer_output_file_kind(content_type: &str, path: &str) -> &'static str {
-    let mime = content_type.split(';').next().unwrap_or("").trim();
-    let ext = path
-        .rsplit_once('.')
-        .map(|(_, ext)| ext.to_ascii_lowercase())
-        .unwrap_or_default();
-    match (mime, ext.as_str()) {
-        ("application/json", _) | (_, "json") => "json",
-        ("application/geo+json", _) | (_, "geojson") => "geojson",
-        ("text/csv", _) | (_, "csv") => "csv",
-        ("text/plain", _) | (_, "txt") => "text",
-        ("application/vnd.apache.parquet", _) | (_, "parquet") => "parquet",
-        ("image/jpeg" | "image/png" | "image/webp" | "image/gif", _) => "image",
-        _ => "binary",
     }
 }
 
@@ -1784,11 +1860,14 @@ impl PipelineEngine for BasicPipelineEngine {
             *incoming_counts.entry(edge.to_node.as_str()).or_default() += 1;
         }
 
-        let start_nodes = if graph.entry_nodes.is_empty() {
-            vec![graph.nodes[0].id.clone()]
-        } else {
-            graph.entry_nodes.clone()
-        };
+        // Roots come from connectivity, never from source order
+        // (`kinds/pipeline/README.md` Frozen Defaults). A graph with two
+        // independent triggers has two roots and both run.
+        let start_nodes: Vec<String> = graph
+            .entry_node_ids()
+            .into_iter()
+            .map(ToString::to_string)
+            .collect();
 
         let bus = options.bus.clone();
         // Project configuration is immutable for this invocation. Snapshot the
@@ -2938,10 +3017,41 @@ impl PipelineEngine for BasicPipelineEngine {
         }
 
         Ok(PipelineOutput {
-            value: last_value,
+            value: strip_private_markers(last_value),
             trace,
             node_trace,
         })
+    }
+}
+
+/// Removes the engine's private redaction markers from a pipeline's result.
+///
+/// `__zf_private_trace_redact` and its siblings are how a node tells the trace
+/// sanitizer which literal values to strike out; they travel in the payload
+/// because that is the only channel between nodes. They are not part of
+/// anybody's API, and the trace marker's contents are the secrets themselves,
+/// so none of them may ride out to a caller in the response body.
+///
+/// The walk is recursive because a marker does not stay at the top: an
+/// `n.web.response` in the chain nests the whole upstream payload under
+/// `__zf_response.body`, and a top-level-only sweep would leave it there.
+fn strip_private_markers(value: Value) -> Value {
+    match value {
+        Value::Object(map) => Value::Object(
+            map.into_iter()
+                .filter(|(key, _)| {
+                    !matches!(
+                        key.as_str(),
+                        "__zf_private_trace_redact"
+                            | "__zf_private_redact"
+                            | "__zf_private_redact_except_paths"
+                    )
+                })
+                .map(|(key, item)| (key, strip_private_markers(item)))
+                .collect(),
+        ),
+        Value::Array(items) => Value::Array(items.into_iter().map(strip_private_markers).collect()),
+        other => other,
     }
 }
 
@@ -2954,8 +3064,7 @@ mod tests {
     use super::{
         BasicPipelineEngine, NodesAccess, NodesAccessAccumulator, PipelineContext,
         redact_json_value, sanitized_trace_value, scan_text_nodes_access,
-        take_private_redact_except_paths, take_private_redact_tokens,
-        take_private_trace_redact_tokens, trace_config_snapshot,
+        take_private_redact_except_paths, take_private_redact_tokens, trace_config_snapshot,
     };
     use crate::pipeline::interface::PipelineEngine;
     use crate::pipeline::model::{PipelineEdge, PipelineGraph, PipelineNode};
@@ -3180,12 +3289,18 @@ mod tests {
     fn private_trace_redact_tokens_are_removed_without_touching_payload_redact_keys() {
         let mut payload = json!({
             "__zf_private_trace_redact": ["abc123"],
-            "token": "abc123"
+            "token": "abc123",
+            "nested": { "__zf_private_trace_redact": ["deep-secret"] }
         });
 
-        let tokens = take_private_trace_redact_tokens(&mut payload);
-        assert_eq!(tokens, vec!["abc123"]);
+        let mut tokens = Vec::new();
+        super::sweep_private_markers(&mut payload, &mut tokens);
+        assert_eq!(
+            tokens,
+            vec!["abc123".to_string(), "deep-secret".to_string()]
+        );
         assert!(payload.get("__zf_private_trace_redact").is_none());
+        assert!(payload["nested"].get("__zf_private_trace_redact").is_none());
         assert_eq!(payload["token"], "abc123");
     }
 
@@ -3230,6 +3345,162 @@ mod tests {
             "numeric_array"
         );
         assert_eq!(summary["nested"]["items"][0]["payload"]["len"], 80);
+    }
+
+    /// S4 regression, engine half. Every trigger's payload passes through the
+    /// trace sanitizer, and only the webhook node ever publishes redaction
+    /// tokens -- so a cron, WS, or script-built run carrying a secret had
+    /// nothing standing between it and `trace.input` on disk. Remove the
+    /// `blank_sensitive_keys` call in `sanitized_trace_value` and the password
+    /// comes back in clear.
+    #[test]
+    fn a_secret_under_a_secret_key_never_reaches_a_trace() {
+        let trace = sanitized_trace_value(&json!({
+            "body": {
+                "username": "wawan",
+                "password": "toryoto",
+                "profile": { "apiKey": "abc123", "city": "Jakarta" },
+                "tokens": ["t-one", "t-two"]
+            },
+            "method": "POST"
+        }));
+
+        assert_eq!(
+            trace["body"]["password"],
+            "\u{2022}\u{2022}\u{2022}\u{2022}\u{2022}\u{2022}"
+        );
+        assert_eq!(
+            trace["body"]["profile"]["apiKey"],
+            "\u{2022}\u{2022}\u{2022}\u{2022}\u{2022}\u{2022}"
+        );
+        assert_eq!(
+            trace["body"]["tokens"][0],
+            "\u{2022}\u{2022}\u{2022}\u{2022}\u{2022}\u{2022}"
+        );
+        assert_eq!(
+            trace["body"]["tokens"][1],
+            "\u{2022}\u{2022}\u{2022}\u{2022}\u{2022}\u{2022}"
+        );
+
+        // What is not a secret is still legible, or the trace stops being useful.
+        assert_eq!(trace["body"]["username"], "wawan");
+        assert_eq!(
+            sanitized_trace_value(&json!({ "authorization": true }))["authorization"],
+            true,
+            "a flag carries no secret and must stay readable"
+        );
+        assert_eq!(trace["body"]["profile"]["city"], "Jakarta");
+        assert_eq!(trace["method"], "POST");
+
+        let serialized = trace.to_string();
+        for secret in ["toryoto", "abc123", "t-one", "t-two"] {
+            assert!(
+                !serialized.contains(secret),
+                "'{secret}' survived: {serialized}"
+            );
+        }
+    }
+
+    /// The redaction markers are an engine-internal channel between nodes, and
+    /// the trace one carries the secrets verbatim. A pipeline that returns its
+    /// payload must not return them with it.
+    #[test]
+    fn private_markers_never_ride_out_in_a_pipeline_result() {
+        let result = super::strip_private_markers(json!({
+            "body": { "username": "wawan" },
+            "__zf_private_trace_redact": ["toryoto"],
+            "__zf_private_redact": ["abc123"],
+            "__zf_private_redact_except_paths": ["response.body"]
+        }));
+        assert_eq!(result, json!({ "body": { "username": "wawan" } }));
+
+        // `n.web.response` nests the whole upstream payload, so the sweep has
+        // to reach down into it.
+        let nested = super::strip_private_markers(json!({
+            "__zf_response": {
+                "status": 200,
+                "body": {
+                    "username": "wawan",
+                    "__zf_private_trace_redact": ["toryoto"]
+                }
+            }
+        }));
+        assert!(
+            !nested.to_string().contains("__zf_private"),
+            "a nested marker survived: {nested}"
+        );
+        assert_eq!(nested["__zf_response"]["body"]["username"], "wawan");
+    }
+
+    /// A marker that has been nested by a downstream node is still read, still
+    /// removed, and its contents still redacted -- the shape `n.web.response`
+    /// produces, where the whole upstream payload becomes `__zf_response.body`.
+    #[test]
+    fn a_nested_redaction_marker_is_not_printed_into_the_run_history() {
+        let trace = sanitized_trace_value(&json!({
+            "__zf_response": {
+                "status": 200,
+                "body": {
+                    "body": { "username": "wawan", "password": "toryoto" },
+                    "audit": "login attempt with toryoto",
+                    "__zf_private_trace_redact": ["toryoto"]
+                }
+            }
+        }));
+
+        let serialized = trace.to_string();
+        assert!(
+            !serialized.contains("__zf_private"),
+            "an engine marker reached the trace: {serialized}"
+        );
+        assert!(
+            !serialized.contains("toryoto"),
+            "the secret reached the trace: {serialized}"
+        );
+        assert_eq!(trace["__zf_response"]["body"]["body"]["username"], "wawan");
+    }
+
+    /// The one escape hatch a pipeline already had keeps working: a field it
+    /// deliberately traces is not blanked just because of what it is called.
+    #[test]
+    fn an_excepted_path_is_still_traced_verbatim() {
+        let trace = sanitized_trace_value(&json!({
+            "__zf_private_redact_except_paths": ["response.token"],
+            "response": { "token": "deliberately-visible" },
+            "request": { "token": "hidden" }
+        }));
+
+        assert_eq!(trace["response"]["token"], "deliberately-visible");
+        assert_ne!(trace["request"]["token"], "hidden");
+    }
+
+    /// S4 regression, ingress half. The webhook collector published the tokens
+    /// that let the engine strike a secret out of *every* node's trace, not
+    /// just the trigger's -- and it read top-level keys only, so on the nested
+    /// shape the ingress actually produces it published nothing.
+    #[test]
+    fn a_webhook_secret_is_struck_out_of_a_later_nodes_trace_too() {
+        let ingress = json!({
+            "body": { "password": "toryoto" },
+            "method": "POST"
+        });
+        let tokens =
+            crate::pipeline::nodes::basic::trigger::webhook::collect_trace_private_tokens_for_test(
+                &ingress,
+            );
+        assert_eq!(tokens, vec!["toryoto".to_string()]);
+
+        // A downstream node copied the secret into a differently-named field;
+        // the token list still reaches it.
+        let downstream = json!({
+            "__zf_private_trace_redact": tokens,
+            "audit_line": "login attempt for wawan with toryoto"
+        });
+        let trace = sanitized_trace_value(&downstream);
+        assert!(
+            !trace.to_string().contains("toryoto"),
+            "a copy of the secret survived: {trace}"
+        );
     }
 
     #[test]
@@ -3343,6 +3614,77 @@ mod tests {
             .expect_err("dynamic nodes access should fail validation");
 
         assert_eq!(err.code, "FW_NODES_SCOPE_DYNAMIC");
+    }
+
+    /// `kinds/pipeline/README.md` Frozen Defaults: an omitted
+    /// `spec.entry_nodes` means "Runtime derives roots from graph
+    /// connectivity". Two independent roots are two roots — taking the first
+    /// node in source order runs half the pipeline and silently drops the
+    /// rest.
+    #[tokio::test]
+    async fn every_root_of_a_multi_root_graph_runs() {
+        let dsl = r#"
+[a] trigger.manual
+[b] script -- "return { left: true };"
+[c] trigger.manual
+[d] script -- "return { right: true };"
+
+[a] -> [b]
+[c] -> [d]
+"#;
+
+        // The DSL parser fills `entry_nodes` in; a graph registered as raw
+        // contract JSON does not have to, and the frozen default is what is
+        // under test.
+        let mut graph = build_pipeline_graph("multi-root-test", dsl).expect("graph");
+        graph.entry_nodes.clear();
+        assert_eq!(graph.entry_node_ids(), vec!["a", "c"]);
+
+        let engine = BasicPipelineEngine::default();
+        let out = engine
+            .execute_async(
+                &graph,
+                &PipelineContext {
+                    owner: "test".to_string(),
+                    project: "test".to_string(),
+                    pipeline: "multi-root-test".to_string(),
+                    request_id: "req-multi-root".to_string(),
+                    route: String::new(),
+                    input: json!({}),
+                    trigger: None,
+                    placeholder: None,
+                },
+            )
+            .await
+            .expect("execute");
+
+        let executed: Vec<&str> = out
+            .node_trace
+            .iter()
+            .map(|entry| entry.node_id.as_str())
+            .collect();
+        for node in ["a", "b", "c", "d"] {
+            assert!(
+                executed.contains(&node),
+                "node '{node}' never ran; executed {executed:?}"
+            );
+        }
+    }
+
+    /// A graph whose every node has an incoming edge has no root by
+    /// connectivity. Cycles are valid pipelines, so it still starts — source
+    /// order picks the entry in that one case, and only in that case.
+    #[test]
+    fn a_fully_cyclic_graph_still_has_a_starting_node() {
+        let dsl = r#"
+[a] script -- "return input;"
+[b] script -- "return input;"
+
+[a] -> [b]
+[b] -> [a]
+"#;
+        let graph = build_pipeline_graph("cyclic-root-test", dsl).expect("graph");
+        assert_eq!(graph.entry_node_ids(), vec!["a"]);
     }
 
     #[tokio::test]
@@ -3497,14 +3839,25 @@ mod tests {
 
         let file_ref = &out.value["state_sequence"];
         assert_eq!(file_ref["__zf_type"], "file_ref");
-        assert_eq!(file_ref["content_type"], "application/json");
+        // The eleven contract fields, and nothing that was dropped
+        // (`kinds/file-ref/README.md`).
+        crate::pipeline::nodes::basic::file_ref::validate_file_ref(file_ref)
+            .expect("valid FileRef");
+        assert_eq!(file_ref["mime"], "application/json");
+        assert_eq!(file_ref["kind"], "json");
+        for dropped in ["path", "name", "content_type", "url"] {
+            assert!(
+                file_ref.get(dropped).is_none(),
+                "FileRef must not carry '{dropped}'"
+            );
+        }
         assert!(out.value.get("__zf_files").is_none());
         assert_eq!(
-            out.value["file_refs"]["state-sequence.json"]["path"],
-            file_ref["path"]
+            out.value["file_refs"]["state-sequence.json"]["ref"],
+            file_ref["ref"]
         );
 
-        let rel_path = file_ref["path"].as_str().expect("file ref path");
+        let rel_path = file_ref["ref"].as_str().expect("file ref path");
         let layout = platform
             .file
             .ensure_project_layout(owner, project)

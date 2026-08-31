@@ -2129,36 +2129,31 @@ async fn project_scoped_library_asset(
         && let Some((lib_slug, lib_rest)) = rest.split_once('/')
     {
         let library_name = format!("zeb/{lib_slug}");
-        let install_root = state
-            .platform
-            .dependency_lock
-            .read(&owner, &project)
-            .ok()
-            .and_then(|lock| lock.rwe.libraries.get(&library_name).cloned())
-            .and_then(|entry| {
-                // `rwe-libraries/{package_id}` — the first two segments of
-                // the locked entry path are the package's install root.
-                let mut segments = entry.entry.split('/');
-                match (segments.next(), segments.next()) {
-                    (Some(base @ "rwe-libraries"), Some(package_id)) => {
-                        Some(format!("{base}/{package_id}"))
-                    }
-                    _ => None,
-                }
-            });
+        // The lock's digest is checked before a single installed byte is
+        // served: "Integrity validation happens before an artifact becomes
+        // available to RWE or the node registry"
+        // (`kinds/dependency-lock/README.md`). A drifted install is refused
+        // out loud rather than quietly answered with embedded bytes, because
+        // silently serving a different library than the one the lock pins is
+        // exactly the substitution the digest exists to catch.
+        let install_root = match state.platform.dependency_lock.verified_rwe_library_root(
+            &owner,
+            &project,
+            &library_name,
+        ) {
+            Ok(root) => root,
+            Err(err) if err.code == "PLATFORM_DEPENDENCY_INTEGRITY" => {
+                return (StatusCode::CONFLICT, err.message).into_response();
+            }
+            // Missing bytes or an unreadable lock are not an integrity
+            // failure; the embedded copy still answers, as it did before any
+            // library was installed.
+            Err(_) => None,
+        };
         if let Some(install_root) = install_root {
-            let installed = state
-                .platform
-                .config
-                .data_root
-                .join("users")
-                .join(crate::platform::model::slug_segment(&owner))
-                .join(crate::platform::model::slug_segment(&project))
-                .join("data")
-                .join("hub")
-                .join(&install_root)
-                .join(lib_rest);
-            if installed.is_file()
+            let installed = install_root.join(lib_rest);
+            if installed.starts_with(&install_root)
+                && installed.is_file()
                 && let Ok(bytes) = fs::read(&installed)
             {
                 return asset_response(content_type_for_path(FsPath::new(&normalized)), &bytes);
@@ -10134,9 +10129,11 @@ fn cluster_join_token_error(err: PlatformError) -> Response {
     let status = match err.code {
         "CLUSTER_JOIN_TOKEN_UNKNOWN" => StatusCode::NOT_FOUND,
         "CLUSTER_JOIN_TOKEN_EXISTS" => StatusCode::CONFLICT,
-        "CLUSTER_JOIN_TOKEN_OFFICE_INVALID" | "CLUSTER_JOIN_TOKEN_MALFORMED" => {
-            StatusCode::BAD_REQUEST
-        }
+        "CLUSTER_JOIN_TOKEN_OFFICE_INVALID"
+        | "CLUSTER_JOIN_TOKEN_MALFORMED"
+        // A mint naming no address is a bad request, not a server fault
+        // (`kinds/office-topology/README.md`, Rejections).
+        | "CLUSTER_OFFICE_BASE_URL_REQUIRED" => StatusCode::BAD_REQUEST,
         _ => StatusCode::INTERNAL_SERVER_ERROR,
     };
     (
@@ -10721,7 +10718,37 @@ async fn api_internal_project_transfer_import(
         return internal_error(err);
     }
     let _ = fs::remove_dir_all(state.platform.project_transfer.operation_dir(&op_id));
-    Json(json!({"ok": true, "import": outcome})).into_response()
+    let dependencies = post_import_dependency_report(&state, &owner, &project);
+    Json(json!({"ok": true, "import": outcome, "dependencies": dependencies})).into_response()
+}
+
+/// The dependency report an import owes its caller
+/// (`kinds/project-bundle/README.md`).
+///
+/// "Import verifies function targets resolve in the carried repo and reports
+/// misses through the dependency report as its fifth family — report, not
+/// refuse." The whole report travels, not just the fifth family: an import
+/// that lands a repo whose node bundles or libraries did not travel has the
+/// same problem, and the caller wants to see it in the same place. Producing
+/// the report can itself fail; that failure is reported too, and never turns a
+/// completed import into an error.
+fn post_import_dependency_report(
+    state: &PlatformAppState,
+    owner: &str,
+    project: &str,
+) -> serde_json::Value {
+    let requested = match state.platform.zebflow_cfg.get_rwe_libraries(owner, project) {
+        Ok(value) => value,
+        Err(err) => return json!({ "ok": false, "error": err.message }),
+    };
+    match state
+        .platform
+        .dependency_lock
+        .status(owner, project, &requested)
+    {
+        Ok(report) => json!(report),
+        Err(err) => json!({ "ok": false, "error": err.message }),
+    }
 }
 
 async fn api_project_transfer_operations(
@@ -11104,7 +11131,14 @@ async fn api_project_transfer_import(
         Ok(record) => record,
         Err(err) => return internal_error(err),
     };
-    Json(json!({"ok": true, "operation": operation, "import": outcome})).into_response()
+    let dependencies = post_import_dependency_report(&state, &owner, &project);
+    Json(json!({
+        "ok": true,
+        "operation": operation,
+        "import": outcome,
+        "dependencies": dependencies,
+    }))
+    .into_response()
 }
 
 /// Request body for `POST /api/projects/{owner}/{project}/transfer/rollback`.
@@ -11427,6 +11461,7 @@ async fn api_platform_transfer_import(
         Ok(record) => record,
         Err(err) => return internal_error(err),
     };
+    let dependencies = post_import_dependency_report(&state, &owner, &project);
     Json(json!({
         "ok": true,
         "owner": owner,
@@ -11436,6 +11471,7 @@ async fn api_platform_transfer_import(
         "store_auto_initiated": !store_carried,
         "initial_data_replayed": initial_data_steps,
         "pipelines_indexed": reindex,
+        "dependencies": dependencies,
     }))
     .into_response()
 }
@@ -12225,14 +12261,19 @@ async fn api_pipeline_lock_toggle(
         Err(err) => return internal_error(err),
     };
     // Identity is source-relative; git and the filesystem both want the
-    // repository-relative form, so it is rebuilt once here.
-    let pipeline_repo_rel = layout.repo_layout.source_rel(
-        layout
-            .repo_layout
-            .strip_source(&req.file_rel_path)
-            .unwrap_or(&req.file_rel_path),
-    );
-    let pipeline_path = layout.repo_dir.join(&pipeline_repo_rel);
+    // repository-relative form. Both come from the project service's one
+    // resolver, which applies the identity rule and refuses a path that leaves
+    // the source root -- this handler used to derive them itself, so a body
+    // naming `../../` reached another owner's project under this caller's
+    // authorisation.
+    let (pipeline_repo_rel, pipeline_path) = match state
+        .platform
+        .projects
+        .resolve_pipeline_paths(&layout, &req.file_rel_path)
+    {
+        Ok(paths) => paths,
+        Err(err) => return internal_error(err),
+    };
     let source = match std::fs::read(&pipeline_path) {
         Ok(s) => s,
         Err(_) => {
@@ -14844,18 +14885,21 @@ async fn api_files_upload(
         return internal_error(PlatformError::new("FILES_UPLOAD_WRITE", err.to_string()));
     }
 
+    // An upload answers with the FileRef the pipeline nodes would receive, so
+    // it is held to the same contract: eleven fields, `sha256` and `kind`
+    // included — a FileRef missing its digest is invalid by its own document
+    // (`kinds/file-ref/README.md`). `ok` is the HTTP envelope, not a field of
+    // the ref.
     Json(json!({
         "ok": true,
         "__zf_type": crate::pipeline::nodes::basic::file_ref::FILE_REF_TYPE,
         "backend": crate::pipeline::nodes::basic::file_ref::BACKEND_ZEBFS,
         "ref": entry_rel,
-        "path": entry_rel,
-        "url": format!("/fs/{owner}/{project}/{entry_rel}"),
         "filename": filename,
-        "name": filename,
         "mime": content_type,
-        "content_type": content_type,
+        "kind": crate::pipeline::nodes::basic::file_ref::infer_kind(&content_type, &filename),
         "size": bytes.len(),
+        "sha256": format!("sha256:{:x}", <sha2::Sha256 as sha2::Digest>::digest(bytes.as_ref())),
         "lifecycle": crate::pipeline::nodes::basic::file_ref::LIFECYCLE_DURABLE,
         "origin": "project.files.upload",
         "trust": "user"

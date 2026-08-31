@@ -34,6 +34,9 @@ impl ClusterRegistryService {
         request: &ClusterWorkerRegisterRequest,
     ) -> Result<WorkerRegistryRecord, PlatformError> {
         let now = now_ts();
+        // An office row is written below; it needs an address
+        // (`kinds/office-topology/README.md`, Rejections).
+        let base_url = super::normalize_office_base_url(&request.base_url)?;
         let existing = self.data.get_worker_registry_record(&request.node_id)?;
         let office_id = {
             let value = slug_segment(&request.node_id);
@@ -52,7 +55,7 @@ impl ClusterRegistryService {
             } else {
                 request.label.trim().to_string()
             },
-            base_url: request.base_url.trim_end_matches('/').to_string(),
+            base_url,
             status: existing
                 .as_ref()
                 .map(|value| value.status.clone())
@@ -122,9 +125,15 @@ impl ClusterRegistryService {
         if !request.status.trim().is_empty() {
             record.status = request.status.trim().to_string();
         }
-        if !request.base_url.trim().is_empty() {
-            record.base_url = request.base_url.trim_end_matches('/').to_string();
-        }
+        // A heartbeat may leave the address as it is, but it may not leave the
+        // office without one: this call rewrites the office row, and a row with
+        // no address is not an office (`kinds/office-topology/README.md`).
+        let requested = request.base_url.trim();
+        record.base_url = super::normalize_office_base_url(if requested.is_empty() {
+            &record.base_url
+        } else {
+            requested
+        })?;
         if !request.capabilities.tags.is_empty()
             || request.capabilities.supports_resident
             || request.capabilities.supports_k8s_job

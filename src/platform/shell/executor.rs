@@ -1153,6 +1153,15 @@ impl DslExecutor {
                 subcommand
             ));
         }
+        // The subcommand was the only thing ever checked, and git's own flags
+        // are a general-purpose file interface: `git diff --no-index
+        // /etc/passwd /dev/null` prints any file the server can read straight
+        // into the tool result, and `--output=<path>` writes one. `current_dir`
+        // bounds relative resolution and nothing else. So arguments are
+        // reviewed too, per subcommand.
+        if let Err(reason) = review_git_arguments(subcommand, &args) {
+            return DslOutput::err(format!("git: {reason}"));
+        }
 
         let layout = match self
             .platform
@@ -1397,4 +1406,445 @@ fn summarize_config(config: &Value) -> String {
         })
         .collect();
     parts.join(" ")
+}
+
+// ── Git argument policy ───────────────────────────────────────────────────────
+
+/// Flags each allowed git subcommand may be given, in exact form.
+///
+/// The list is an allowlist, not a denylist, because git's flag surface grows
+/// with every release and a denylist written today is wrong at the next
+/// upgrade. Anything absent is refused with the flag named, so a caller learns
+/// what to ask for instead of guessing.
+fn git_exact_flags(subcommand: &str) -> &'static [&'static str] {
+    match subcommand {
+        "status" => &[
+            "-s",
+            "--short",
+            "--long",
+            "-b",
+            "--branch",
+            "--show-stash",
+            "--porcelain",
+            "-u",
+            "--untracked-files",
+            "--ignored",
+            "-z",
+            "--no-renames",
+            "--renames",
+            "-v",
+            "--verbose",
+            "--",
+        ],
+        "log" => &[
+            "--oneline",
+            "--stat",
+            "--shortstat",
+            "--numstat",
+            "--name-only",
+            "--name-status",
+            "--graph",
+            "--decorate",
+            "--no-decorate",
+            "--all",
+            "--reverse",
+            "--merges",
+            "--no-merges",
+            "--first-parent",
+            "--follow",
+            "-p",
+            "--patch",
+            "--no-patch",
+            "--abbrev-commit",
+            "--no-abbrev-commit",
+            "--relative-date",
+            "--topo-order",
+            "--date-order",
+            "--author-date-order",
+            "--no-color",
+            "-z",
+            "--",
+        ],
+        "diff" => &[
+            "--stat",
+            "--shortstat",
+            "--numstat",
+            "--name-only",
+            "--name-status",
+            "--summary",
+            "--check",
+            "--cached",
+            "--staged",
+            "-p",
+            "--patch",
+            "--no-patch",
+            "--raw",
+            "-w",
+            "--ignore-all-space",
+            "-b",
+            "--ignore-space-change",
+            "--ignore-blank-lines",
+            "--no-color",
+            "--text",
+            "-z",
+            "--",
+        ],
+        "add" => &[
+            "-A",
+            "--all",
+            "-u",
+            "--update",
+            "-n",
+            "--dry-run",
+            "-f",
+            "--force",
+            "-N",
+            "--intent-to-add",
+            "--ignore-removal",
+            "--no-ignore-removal",
+            "-v",
+            "--verbose",
+            "--",
+        ],
+        "commit" => &[
+            "-a",
+            "--all",
+            "--amend",
+            "--allow-empty",
+            "--allow-empty-message",
+            "--no-verify",
+            "-q",
+            "--quiet",
+            "-v",
+            "--verbose",
+            "--",
+        ],
+        _ => &[],
+    }
+}
+
+/// Flags that carry a value, allowed only in the joined `--flag=value` form.
+///
+/// The joined form is required so the value can be reviewed with the flag it
+/// belongs to. A separated `--grep pattern` would otherwise leave `pattern`
+/// looking like a positional argument and be reviewed under the wrong rule.
+fn git_valued_flag_prefixes(subcommand: &str) -> &'static [&'static str] {
+    match subcommand {
+        "status" => &["--porcelain=", "--untracked-files=", "--ignored=", "-u"],
+        "log" => &[
+            "--max-count=",
+            "--skip=",
+            "--since=",
+            "--until=",
+            "--after=",
+            "--before=",
+            "--author=",
+            "--committer=",
+            "--grep=",
+            "--decorate=",
+            "--date=",
+            "--pretty=",
+            "--format=",
+            "--abbrev=",
+            "--unified=",
+            "--find-renames=",
+        ],
+        "diff" => &[
+            "--unified=",
+            "--find-renames=",
+            "--find-copies=",
+            "--diff-filter=",
+            "--word-diff=",
+            "--abbrev=",
+            "--src-prefix=",
+            "--dst-prefix=",
+        ],
+        "add" => &["--chmod="],
+        "commit" => &["--message="],
+        _ => &[],
+    }
+}
+
+/// Short flags whose value is glued on, in `-n5` / `-U3` shape.
+fn git_glued_numeric_flags(subcommand: &str) -> &'static [char] {
+    match subcommand {
+        "log" => &['n'],
+        "diff" => &['U'],
+        _ => &[],
+    }
+}
+
+/// Reviews one git invocation's arguments.
+///
+/// Three rules, in order:
+///
+/// 1. A value that a flag carries must not be a path out of the repository —
+///    `--pretty=` and friends are format strings, but `--find-renames=` and the
+///    pathspec forms are not, and one rule for all of them is cheaper to keep
+///    right than a per-flag exception list.
+/// 2. Every flag must be named in the subcommand's allowlist. This is what
+///    stops `--no-index`, `--output=`, `--file=`, `--ext-diff`, `-c`,
+///    `--git-dir=`, and every future equivalent.
+/// 3. Every positional argument must stay inside the repository: no absolute
+///    path, no `..` path segment, no null byte. `..` is refused as a *segment*
+///    rather than as a substring, so `main..HEAD` and `origin/main...HEAD`
+///    still name revision ranges while `../../etc/passwd` does not.
+///
+/// `-m` is special-cased for commit: its value is a message, not a path, and it
+/// is the one flag the DSL passes in separated form.
+pub(crate) fn review_git_arguments(subcommand: &str, args: &[String]) -> Result<(), String> {
+    let exact = git_exact_flags(subcommand);
+    let valued = git_valued_flag_prefixes(subcommand);
+    let glued = git_glued_numeric_flags(subcommand);
+
+    let mut expect_message_value = false;
+    let mut pathspec_only = false;
+
+    for arg in args {
+        if arg.contains('\0') {
+            return Err("argument contains a null byte".to_string());
+        }
+        if expect_message_value {
+            expect_message_value = false;
+            continue;
+        }
+        if pathspec_only || !arg.starts_with('-') || arg == "-" {
+            review_git_positional(arg)?;
+            continue;
+        }
+        if arg == "--" {
+            pathspec_only = true;
+            continue;
+        }
+        if subcommand == "commit" && arg == "-m" {
+            expect_message_value = true;
+            continue;
+        }
+        if subcommand == "commit" && arg.starts_with("-m") {
+            continue;
+        }
+        if exact.contains(&arg.as_str()) {
+            continue;
+        }
+        if let Some(prefix) = valued
+            .iter()
+            .find(|prefix| arg.starts_with(**prefix) && arg.len() > prefix.len())
+        {
+            let value = &arg[prefix.len()..];
+            review_git_flag_value(arg, value)?;
+            continue;
+        }
+        // `-5`, `-n5`, `-U3`: a count, not a path.
+        let short = &arg[1..];
+        let numeric_tail = short
+            .strip_prefix(|ch: char| glued.contains(&ch))
+            .unwrap_or(if subcommand == "log" { short } else { "" });
+        if !numeric_tail.is_empty() && numeric_tail.chars().all(|ch| ch.is_ascii_digit()) {
+            continue;
+        }
+        return Err(format!(
+            "'{arg}' is not an allowed option for 'git {subcommand}'. \
+             Allowed: {}",
+            allowed_summary(exact, valued)
+        ));
+    }
+    Ok(())
+}
+
+fn allowed_summary(exact: &[&str], valued: &[&str]) -> String {
+    let mut names: Vec<String> = exact
+        .iter()
+        .filter(|flag| **flag != "--")
+        .map(|flag| (*flag).to_string())
+        .collect();
+    names.extend(valued.iter().map(|prefix| format!("{prefix}<value>")));
+    names.join(", ")
+}
+
+/// A flag's value may not name a path outside the repository. A format string
+/// is not a path, so only the escaping shapes are refused rather than every
+/// value containing a slash.
+fn review_git_flag_value(flag: &str, value: &str) -> Result<(), String> {
+    if git_path_escapes(value) {
+        return Err(format!(
+            "the value given to '{}' leaves the repository",
+            flag.split('=').next().unwrap_or(flag)
+        ));
+    }
+    Ok(())
+}
+
+fn review_git_positional(arg: &str) -> Result<(), String> {
+    if git_path_escapes(arg) {
+        return Err(format!(
+            "'{arg}' leaves the repository; git may only read and write paths inside it"
+        ));
+    }
+    Ok(())
+}
+
+/// Whether a token names something outside the repository directory.
+///
+/// Absolute paths and Windows drive prefixes are out by construction. `..` is
+/// judged per path segment: `a/../b` escapes, `main..HEAD` is a revision range
+/// and does not.
+fn git_path_escapes(token: &str) -> bool {
+    if token.is_empty() {
+        return false;
+    }
+    let unified = token.replace('\\', "/");
+    if unified.starts_with('/') || unified.starts_with("~/") || unified == "~" {
+        return true;
+    }
+    if unified.len() >= 2
+        && unified.as_bytes()[1] == b':'
+        && unified.as_bytes()[0].is_ascii_alphabetic()
+    {
+        return true;
+    }
+    unified.split('/').any(|segment| segment == "..")
+}
+
+#[cfg(test)]
+mod git_policy_tests {
+    use super::review_git_arguments;
+
+    fn args(list: &[&str]) -> Vec<String> {
+        list.iter().map(|arg| (*arg).to_string()).collect()
+    }
+
+    /// S6 regression. The subcommand was the only thing checked and the
+    /// remaining arguments were passed to `git` verbatim, so git's own flags
+    /// became a file-read and file-write primitive for anything the server
+    /// process could reach. `current_dir(repo_dir)` bounds relative resolution
+    /// and nothing more. Delete the `review_git_arguments` call in `cmd_git`
+    /// and each of these reaches the real git.
+    #[test]
+    fn git_flags_cannot_be_turned_into_a_file_interface() {
+        let attacks: &[(&str, &[&str])] = &[
+            // Reads any file the server can read, straight into the result.
+            ("diff", &["--no-index", "/etc/passwd", "/dev/null"]),
+            (
+                "diff",
+                &["--no-index", "../../../../etc/passwd", "/dev/null"],
+            ),
+            // Writes anywhere.
+            ("diff", &["--output=/tmp/evil"]),
+            ("log", &["--output=/tmp/evil"]),
+            // Reads a file into the commit message, then `git log` reads it back.
+            ("commit", &["-F", "/etc/passwd"]),
+            ("commit", &["--file=/etc/passwd"]),
+            ("add", &["--pathspec-from-file=/etc/passwd"]),
+            // Runs a program.
+            ("diff", &["--ext-diff"]),
+            ("log", &["--ext-diff"]),
+            // Repoints git at another repository.
+            ("status", &["--git-dir=/srv/other/.git"]),
+            ("status", &["--work-tree=/"]),
+            ("log", &["-c", "core.pager=sh -c 'id'"]),
+            // Plain path traversal in a pathspec.
+            ("add", &["../../../../etc/cron.d/evil"]),
+            ("add", &["/etc/cron.d/evil"]),
+            ("diff", &["--", "../../secrets"]),
+            ("status", &["~/.ssh/id_rsa"]),
+        ];
+        for (subcommand, argv) in attacks {
+            assert!(
+                review_git_arguments(subcommand, &args(argv)).is_err(),
+                "git {subcommand} {argv:?} was allowed"
+            );
+        }
+    }
+
+    /// The policy has to leave real usage alone, or it will be worked around.
+    #[test]
+    fn ordinary_git_usage_still_passes() {
+        let allowed: &[(&str, &[&str])] = &[
+            ("status", &[]),
+            ("status", &["--short", "--branch"]),
+            ("status", &["--porcelain=v1"]),
+            ("log", &["--oneline", "-10"]),
+            ("log", &["-n5", "--stat"]),
+            ("log", &["--pretty=format:%h %s", "--date=short"]),
+            ("log", &["--since=2024-01-01", "--author=alice"]),
+            ("log", &["main..HEAD"]),
+            ("log", &["origin/main...HEAD", "--oneline"]),
+            ("log", &["--", "src/pages/index.tsx"]),
+            ("diff", &["--stat"]),
+            ("diff", &["--cached", "-U3"]),
+            ("diff", &["HEAD~1", "HEAD"]),
+            ("diff", &["--", "src/pipelines"]),
+            ("add", &["."]),
+            ("add", &["-A"]),
+            (
+                "add",
+                &["src/pages/index.tsx", "src/pipelines/api/foo.zf.json"],
+            ),
+            ("commit", &["-m", "feat: a thing"]),
+            ("commit", &["--amend", "--allow-empty"]),
+            ("commit", &["-a", "-q"]),
+        ];
+        for (subcommand, argv) in allowed {
+            review_git_arguments(subcommand, &args(argv))
+                .unwrap_or_else(|error| panic!("git {subcommand} {argv:?} refused: {error}"));
+        }
+    }
+
+    /// The policy has to be *reached*, not merely defined. This goes through
+    /// the real `cmd_git`, which is the one path both the DSL console and the
+    /// MCP `git_command` tool take.
+    #[tokio::test]
+    async fn the_executor_refuses_a_git_invocation_that_reads_a_file_off_the_host() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let mut config = crate::platform::PlatformConfig::default();
+        config.data_root = tmp.path().join("platform");
+        config.default_password = "secret".to_string();
+        let platform = std::sync::Arc::new(
+            crate::platform::services::PlatformService::from_config(config).expect("platform"),
+        );
+        platform
+            .file
+            .ensure_project_layout("superadmin", "default")
+            .expect("layout");
+        let executor = super::DslExecutor::new(platform, "superadmin", "default");
+
+        let output = executor
+            .execute_dsl("git diff --no-index /etc/hosts /dev/null")
+            .await;
+        let text = output
+            .lines
+            .iter()
+            .map(|line| line.text.clone())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(text.contains("--no-index"), "{text}");
+        let host_file = std::fs::read_to_string("/etc/hosts").unwrap_or_default();
+        let leaked = host_file
+            .lines()
+            .find(|line| line.contains("localhost") && !line.trim_start().starts_with('#'));
+        if let Some(leaked) = leaked {
+            assert!(
+                !text.contains(leaked.trim()),
+                "a host file line reached the tool result: {text}"
+            );
+        }
+
+        // The same door still runs ordinary git.
+        let status = executor.execute_dsl("git status --short").await;
+        assert!(
+            !status
+                .lines
+                .iter()
+                .any(|line| line.text.contains("is not an allowed option")),
+            "{:?}",
+            status.lines
+        );
+    }
+
+    #[test]
+    fn a_refusal_names_the_flag_and_what_is_allowed() {
+        let error = review_git_arguments("diff", &args(&["--no-index"])).unwrap_err();
+        assert!(error.contains("--no-index"), "{error}");
+        assert!(error.contains("--stat"), "{error}");
+    }
 }
