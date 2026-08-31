@@ -61,6 +61,29 @@ It is never written on its own, never transferred on its own, and exists only
 during a run. `__zf_type` is its discriminator, doing the work `kind` does in
 document contracts.
 
+## The format survives a change of backend
+
+ZebFS is one object-storage model whose first backend is the local filesystem;
+the settings page already offers S3, R2, MinIO, B2 and Tigris as the next ones.
+The shape above is what makes that swap a backend change rather than a format
+change.
+
+Every field is true wherever the bytes live. `sha256`, `size`, `mime`, `kind`
+and `filename` describe the object, not its host. `backend` names who owns it.
+`ref` is that backend's own key, opaque to everyone else.
+
+**Nothing here locates the bytes on a network.** The endpoint, the bucket, and
+the credential are configured once on the connection, never repeated per file —
+so moving a bucket, changing an endpoint, or swapping MinIO for R2 changes one
+setting and no stored FileRef.
+
+That is why there is no `url`. A URL is assembled when a caller needs one, from
+the connection plus `ref`, and presigned if the object is private. Stored
+instead, it would be either a link that expires while the FileRef sits in run
+history, or a permanent public address for a private object — and it would bake
+"these bytes are on this machine's disk" into a format meant to outlive that
+assumption. For the same reason `path` is gone: it named a filesystem.
+
 ## Rejections
 
 Missing any required field. A `sha256` without the prefix or without exactly 64
@@ -81,3 +104,11 @@ backend.
   (`stability-matrix.md` row 8).
 - **Remote streaming.** With a non-`zebfs` backend, whether a consumer streams
   or must hold whole bytes in memory is undefined.
+- **How a URL is obtained.** The format carries none, deliberately. What does
+  not exist yet is the operation that answers for one — local returning its
+  `/fs/{owner}/{project}/{ref}` path, S3 a presigned link — nor the choice
+  between proxying bytes through Zebflow, which keeps the ACL authoritative,
+  and presigning, which does not.
+- **The backend seam is not cut.** `LocalZebFs` is a concrete struct every
+  caller names directly; there is no trait for a second backend to implement.
+  The format is ready for one, the code is not.
