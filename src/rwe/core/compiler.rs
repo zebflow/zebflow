@@ -59,6 +59,7 @@ fn compile_inner(source: &str, options: CompileOptions) -> Result<CompiledTempla
 
     let raw_imports = collect_imports(&parsed.program);
     validate_zeb_exclusive_symbols(&parsed.program)?;
+    validate_zeb_hook_imports(source)?;
     validate_import_allowlist(&raw_imports, &options)?;
 
     let (rewritten_source, imports) =
@@ -139,6 +140,35 @@ fn collect_imports(program: &oxc_ast::ast::Program<'_>) -> Vec<String> {
     imports
 }
 
+/// Left alone by the compiler: not resolved, not bundled, passed through for
+/// the runtime to fetch (`kinds/rwe-source/README.md` §Imports).
+fn is_external_specifier(import: &str) -> bool {
+    import.starts_with("npm:")
+        || import.starts_with("node:")
+        || import.starts_with("jsr:")
+        || import.starts_with("http://")
+        || import.starts_with("https://")
+}
+
+/// The one refusal that has to name its replacement.
+///
+/// A relative path resolves here but the bundler does not carry what it finds,
+/// so the file would compile and then fail in the browser — and these files are
+/// mostly written by models, for which `../../components/ui/button` is correct
+/// from exactly one directory. `kinds/rwe-source/README.md` requires the
+/// message to name the `@/` form, because an error a model can act on is
+/// repaired in one step and an error it cannot is repaired by guessing.
+fn relative_import_refusal(import: &str) -> EngineError {
+    let bare = import.trim_start_matches(['.', '/']);
+    EngineError::new(
+        "RWE_IMPORT_NOT_ALLOWED",
+        format!(
+            "relative import '{import}' is not allowed; \
+             use \"@/{bare}\" addressed from the template root instead"
+        ),
+    )
+}
+
 fn validate_import_allowlist(
     imports: &[String],
     _options: &CompileOptions,
@@ -154,23 +184,48 @@ fn validate_import_allowlist(
             continue;
         }
         if import.starts_with("./") || import.starts_with("../") {
+            return Err(relative_import_refusal(import));
+        }
+        if is_external_specifier(import) {
             continue;
         }
-        // Absolute paths are the resolved form of @/ imports written to disk by
-        // prepare_template_root() before compile() is called, or the rewritten
-        // resolved form of relative imports. Never user-authored.
+        // Absolute paths are the resolved form of @/ imports, written to disk by
+        // prepare_template_root() before compile() is called. Never
+        // user-authored.
         if import.starts_with('/') {
             continue;
         }
         return Err(EngineError::new(
             "RWE_IMPORT_NOT_ALLOWED",
             format!(
-                "import '{import}' is not allowed; valid imports are \"zeb\", \"zeb/*\", \"@/…\", and boundary-checked relative imports"
+                "import '{import}' is not allowed; valid imports are \"zeb\", \"zeb/*\", \"@/…\", and npm:/node:/jsr:/http(s): specifiers"
             ),
         ));
     }
     Ok(())
 }
+
+/// The subset of [`ZEB_EXCLUSIVE_SYMBOLS`] the per-file import rule covers.
+///
+/// `kinds/rwe-source/README.md` rejects "a hook used without an import in that
+/// file", and a hook is what it says: `cx`, `Link`, `forwardRef`, `memo`,
+/// `createContext`, and `Fragment` are in the exclusive list because they may
+/// not come from anywhere else, not because a file must import them to use
+/// them. Widening this to the whole list would refuse templates the contract
+/// does not.
+const ZEB_HOOK_SYMBOLS: &[&str] = &[
+    "useState",
+    "useEffect",
+    "useRef",
+    "useMemo",
+    "useCallback",
+    "useContext",
+    "useReducer",
+    "useId",
+    "useLayoutEffect",
+    "usePageState",
+    "useNavigate",
+];
 
 const ZEB_EXCLUSIVE_SYMBOLS: &[&str] = &[
     "useState",
@@ -309,6 +364,20 @@ fn validate_zeb_exclusive_symbols(program: &oxc_ast::ast::Program<'_>) -> Result
     Ok(())
 }
 
+fn validate_zeb_hook_imports(source: &str) -> Result<(), EngineError> {
+    let missing = find_unimported_zeb_hooks(source);
+    let Some(first) = missing.first() else {
+        return Ok(());
+    };
+    Err(EngineError::new(
+        "RWE_HOOK_NOT_IMPORTED",
+        format!(
+            "'{first}' is used but not imported; add `import {{ {} }} from \"zeb\";` to this file",
+            missing.join(", ")
+        ),
+    ))
+}
+
 fn validate_zeb_icons_requirements(
     source: &str,
     detected_zeb_libs: &[String],
@@ -365,6 +434,76 @@ fn find_unbound_zeb_icon_components(source: &str) -> Vec<String> {
     used.sort();
     used.dedup();
     used
+}
+
+/// Zeb hooks called in a file that never imported them.
+///
+/// `kinds/rwe-source/README.md` rejects "a hook used without an import in that
+/// file" — there are no implicit globals, and the rule holds per file, not per
+/// bundle. Without this a page calling `useState` with no import compiled
+/// clean and only failed once it ran.
+///
+/// Mirrors `find_unbound_zeb_icon_components`: mask strings and comments first,
+/// then treat `name(` as a call. Imports count as bound whatever they are
+/// imported from, because importing a hook from the wrong place is already
+/// `validate_zeb_exclusive_symbols`'s refusal and deserves that message rather
+/// than this one.
+fn find_unimported_zeb_hooks(source: &str) -> Vec<String> {
+    let alloc = Allocator::default();
+    let source_type = SourceType::default()
+        .with_module(true)
+        .with_jsx(true)
+        .with_typescript(true);
+    let parsed = Parser::new(&alloc, source, source_type).parse();
+    if parsed.panicked {
+        return Vec::new();
+    }
+    let program = &parsed.program;
+
+    let mut bound = collect_top_level_declared_names(program);
+    for stmt in &program.body {
+        if let Statement::ImportDeclaration(import) = stmt {
+            let Some(specifiers) = &import.specifiers else {
+                continue;
+            };
+            for specifier in specifiers.iter() {
+                bound.insert(specifier.local().name.as_str().to_string());
+            }
+        }
+    }
+
+    let (masked, _) = super::js_masker::mask(source);
+    let mut used = ZEB_HOOK_SYMBOLS
+        .iter()
+        .filter(|name| !bound.contains(**name))
+        .filter(|name| is_called_in(&masked, name))
+        .map(|name| (*name).to_string())
+        .collect::<Vec<_>>();
+    used.sort();
+    used.dedup();
+    used
+}
+
+/// Whether `name` appears as a call: the identifier on its own word boundary,
+/// followed by `(`. A property access (`props.useState(…)`) is not a call of
+/// the free identifier and does not count.
+fn is_called_in(source: &str, name: &str) -> bool {
+    let bytes = source.as_bytes();
+    let mut from = 0;
+    while let Some(offset) = source[from..].find(name) {
+        let start = from + offset;
+        let end = start + name.len();
+        let before_ok = start == 0
+            || !(bytes[start - 1].is_ascii_alphanumeric()
+                || bytes[start - 1] == b'_'
+                || bytes[start - 1] == b'$'
+                || bytes[start - 1] == b'.');
+        if before_ok && source[end..].trim_start().starts_with('(') {
+            return true;
+        }
+        from = end;
+    }
+    false
 }
 
 fn collect_possible_jsx_component_names(source: &str) -> Vec<String> {
@@ -781,6 +920,20 @@ fn collect_inlined_module(
     } else {
         raw
     };
+
+    // A component's relative import is worse than the entry page's: it is not
+    // refused and not resolved either. `extract_filesystem_import_paths` keeps
+    // only `/`-prefixed paths, so the dependency is silently dropped from the
+    // bundle and the page fails in the browser. Refuse it where it is read.
+    if let Some(import) = first_relative_import(&content) {
+        return Err(relative_import_refusal(&import));
+    }
+
+    // The hook rule is per file, not per bundle. A component that calls
+    // `useState` without importing it works only because the flat bundle leaves
+    // the entry page's binding in scope — the implicit global the contract
+    // rules out.
+    validate_zeb_hook_imports(&content)?;
 
     // Collect rwe + zeb imports from this file before stripping them
     rwe_names.extend(extract_rwe_import_names(&content));
@@ -1214,6 +1367,26 @@ fn extract_zeb_lib_specifiers(source: &str) -> Vec<String> {
 
 /// Extract absolute filesystem paths from import declarations using OXC AST.
 /// Handles multi-line imports correctly.
+/// The first `./…` or `../…` specifier in a source file, if any.
+fn first_relative_import(source: &str) -> Option<String> {
+    let alloc = Allocator::default();
+    let source_type = SourceType::default()
+        .with_module(true)
+        .with_jsx(true)
+        .with_typescript(true);
+    let parsed = Parser::new(&alloc, source, source_type).parse();
+    if parsed.panicked {
+        return None;
+    }
+    parsed.program.body.iter().find_map(|stmt| {
+        let Statement::ImportDeclaration(import) = stmt else {
+            return None;
+        };
+        let path = import.source.value.as_str();
+        (path.starts_with("./") || path.starts_with("../")).then(|| path.to_string())
+    })
+}
+
 fn extract_filesystem_import_paths(source: &str) -> Vec<String> {
     let alloc = Allocator::default();
     let source_type = SourceType::default()
@@ -1435,8 +1608,93 @@ export default function Page() {
         let _ = fs::remove_dir_all(&root);
     }
 
+    /// The contract rejects "a hook used without an import in that file".
+    /// Before this, such a page compiled clean and failed in the browser.
     #[test]
-    fn compile_allows_relative_component_imports() {
+    fn compile_refuses_a_hook_that_was_never_imported() {
+        let root = std::env::temp_dir().join(format!("rwe-hook-import-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).expect("create root");
+        let file = root.join("page.tsx");
+        fs::write(
+            &file,
+            "export default function Page() { const [n] = useState(0); return <div>{n}</div>; }\n",
+        )
+        .expect("write page");
+
+        let err = compile(
+            &fs::read_to_string(&file).unwrap(),
+            CompileOptions {
+                template_root: Some(root.display().to_string()),
+                file_path: Some(file.display().to_string()),
+                ..Default::default()
+            },
+        )
+        .expect_err("a hook with no import must be refused");
+
+        assert_eq!(err.code, "RWE_HOOK_NOT_IMPORTED");
+        assert!(err.message.contains("useState"), "{}", err.message);
+        assert!(err.message.contains("from \"zeb\""), "{}", err.message);
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn compile_accepts_a_hook_imported_from_zeb() {
+        let root = std::env::temp_dir().join(format!("rwe-hook-ok-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).expect("create root");
+        let file = root.join("page.tsx");
+        fs::write(
+            &file,
+            "import { useState } from \"zeb\";\nexport default function Page() { const [n] = useState(0); return <div>{n}</div>; }\n",
+        )
+        .expect("write page");
+
+        compile(
+            &fs::read_to_string(&file).unwrap(),
+            CompileOptions {
+                template_root: Some(root.display().to_string()),
+                file_path: Some(file.display().to_string()),
+                ..Default::default()
+            },
+        )
+        .expect("an imported hook compiles");
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// A hook name that is the project's own function is not the zeb hook.
+    #[test]
+    fn compile_accepts_a_locally_declared_hook_name() {
+        let root = std::env::temp_dir().join(format!("rwe-hook-local-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).expect("create root");
+        let file = root.join("page.tsx");
+        fs::write(
+            &file,
+            "function useId() { return \"x\"; }\nexport default function Page() { return <div>{useId()}</div>; }\n",
+        )
+        .expect("write page");
+
+        compile(
+            &fs::read_to_string(&file).unwrap(),
+            CompileOptions {
+                template_root: Some(root.display().to_string()),
+                file_path: Some(file.display().to_string()),
+                ..Default::default()
+            },
+        )
+        .expect("a locally declared name is not the zeb hook");
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// The contract refuses relative imports and requires the refusal to name
+    /// the `@/` replacement (`kinds/rwe-source/README.md` §Imports). Both tests
+    /// here previously asserted the opposite.
+    #[test]
+    fn compile_refuses_a_relative_component_import() {
         let root =
             std::env::temp_dir().join(format!("rwe-relative-import-test-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
@@ -1444,11 +1702,7 @@ export default function Page() {
         fs::create_dir_all(root.join("components")).expect("create components dir");
         fs::write(
             root.join("components/badge.tsx"),
-            r#"
-export function Badge() {
-  return <span>badge</span>;
-}
-"#,
+            "export function Badge() { return <span>badge</span>; }\n",
         )
         .expect("write badge");
 
@@ -1465,7 +1719,7 @@ export default function Page() {
         )
         .expect("write page");
 
-        let compiled = compile(
+        let err = compile(
             &fs::read_to_string(&file).expect("read page"),
             CompileOptions {
                 template_root: Some(root.display().to_string()),
@@ -1473,22 +1727,20 @@ export default function Page() {
                 ..Default::default()
             },
         )
-        .expect("compile should succeed");
+        .expect_err("a relative import must be refused");
 
+        assert_eq!(err.code, "RWE_IMPORT_NOT_ALLOWED");
         assert!(
-            compiled
-                .dependency_paths
-                .iter()
-                .any(|path| path.ends_with("components/badge.tsx")),
-            "expected relative component dependency path, got {:?}",
-            compiled.dependency_paths
+            err.message.contains("@/components/badge"),
+            "the refusal must name the replacement, got: {}",
+            err.message
         );
 
         let _ = fs::remove_dir_all(&root);
     }
 
     #[test]
-    fn compile_collects_relative_css_imports() {
+    fn compile_refuses_a_relative_stylesheet_import() {
         let root =
             std::env::temp_dir().join(format!("rwe-relative-css-test-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
@@ -1512,7 +1764,7 @@ export default function Page() {
         )
         .expect("write page");
 
-        let compiled = compile(
+        let err = compile(
             &fs::read_to_string(&file).expect("read page"),
             CompileOptions {
                 template_root: Some(root.display().to_string()),
@@ -1520,14 +1772,44 @@ export default function Page() {
                 ..Default::default()
             },
         )
-        .expect("compile should succeed");
+        .expect_err("a relative stylesheet import must be refused");
 
-        assert_eq!(compiled.inline_styles.len(), 1);
-        assert!(
-            compiled.inline_styles[0].contains(".editor-pane"),
-            "expected collected relative CSS, got {:?}",
-            compiled.inline_styles
-        );
+        assert_eq!(err.code, "RWE_IMPORT_NOT_ALLOWED");
+        assert!(err.message.contains("@/editor.css"), "{}", err.message);
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// The same table keeps npm:/node:/jsr:/http(s): specifiers legal — left
+    /// alone rather than resolved. The allowlist had no branch for them.
+    #[test]
+    fn compile_leaves_external_specifiers_alone() {
+        let root =
+            std::env::temp_dir().join(format!("rwe-external-import-test-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).expect("create root");
+        let file = root.join("page.tsx");
+        fs::write(
+            &file,
+            r#"
+import confetti from "npm:canvas-confetti";
+
+export default function Page() {
+  return <div onClick={() => confetti()}>go</div>;
+}
+"#,
+        )
+        .expect("write page");
+
+        compile(
+            &fs::read_to_string(&file).expect("read page"),
+            CompileOptions {
+                template_root: Some(root.display().to_string()),
+                file_path: Some(file.display().to_string()),
+                ..Default::default()
+            },
+        )
+        .expect("an npm: specifier is one of the four legal forms");
 
         let _ = fs::remove_dir_all(&root);
     }

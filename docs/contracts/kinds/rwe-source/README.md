@@ -1,6 +1,6 @@
 # RweSource
 
-Status: **review** — spec settled 2026-08-30, code catch-up owed.
+Status: **review** — spec settled 2026-08-30; imports enforced in code.
 
 One authored RWE source file: a page, a component, a `.ts` behavior script, or
 a stylesheet. It is the content a project **adds** rather than installs, so it

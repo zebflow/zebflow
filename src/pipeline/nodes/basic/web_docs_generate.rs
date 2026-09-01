@@ -632,7 +632,8 @@ fn default_template_source(config: &Config) -> String {
         .filter(|s| !s.trim().is_empty())
         .unwrap_or_else(|| "Docs".to_string());
     format!(
-        r##"import Markdown from "zeb/markdown";
+        r##"import {{ useState, useEffect, useMemo, useCallback }} from "zeb";
+import Markdown from "zeb/markdown";
 
 const DOCS_MARKDOWN_CSS = `
 .docs-markdown {{

@@ -163,6 +163,8 @@ Simple polygon ring arrays like `[[lon, lat], ...]` are also accepted for backwa
 ### In TSX templates
 
 ```tsx
+import { usePageState } from "zeb";
+
 export default function PostList(input) {
   const state = usePageState(input.state ?? { posts: [] });
   const grouped = Tool.arr.groupBy(state.posts, 'category');

@@ -12,7 +12,7 @@ Most browser-only libraries should be loaded via dynamic `import()` inside `useE
 
 ## zeb/use — Utility Hooks
 
-Extra hooks beyond the core globals. After enabling, all hooks become globals — no import needed.
+Extra hooks beyond the core set. After enabling, import them from `"zeb/use"` in every file that uses them.
 
 | Hook | Signature | Description |
 |------|-----------|-------------|
@@ -31,7 +31,10 @@ Extra hooks beyond the core globals. After enabling, all hooks become globals �
 | `useTree` | `(options?)` | Tree expansion state. Returns `{ expanded, isExpanded, toggle, expand, collapse, expandAll, collapseAll }`. |
 
 ```tsx
-// All hooks are globals after enabling zeb/use — no import needed
+// Import the hooks you use, in every file that uses them
+import { useState } from "zeb";
+import { useDebounce, useClipboard } from "zeb/use";
+
 const [search, setSearch] = useState("");
 const debouncedSearch = useDebounce(search, 300);
 
@@ -100,6 +103,8 @@ Renders markdown to HTML with sanitisation (marked + DOMPurify).
 Or imperatively in `useEffect`:
 
 ```tsx
+import { useEffect, useRef } from "zeb";
+
 const containerRef = useRef(null);
 useEffect(() => {
   import('/assets/libraries/zeb/markdown/0.1/runtime/markdown.bundle.mjs')
@@ -119,6 +124,8 @@ return <div ref={containerRef} />;
 Full CodeMirror 6 editor. Always load in `useEffect` (browser only).
 
 ```tsx
+import { useEffect, useRef } from "zeb";
+
 const editorRef = useRef(null);
 
 useEffect(() => {
@@ -165,6 +172,8 @@ See also: `help_docs topic=zeb/prosemirror` for full config API and plugin docs.
 Full d3 v7 namespace plus a `useD3` Preact hook.
 
 ```tsx
+import { useEffect, useRef } from "zeb";
+
 const chartRef = useRef(null);
 
 useEffect(() => {
@@ -200,6 +209,8 @@ return <div ref={ref} />;
 Three.js with scene helpers.
 
 ```tsx
+import { useEffect, useRef } from "zeb";
+
 const canvasRef = useRef(null);
 
 useEffect(() => {

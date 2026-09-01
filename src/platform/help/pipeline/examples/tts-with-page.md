@@ -122,6 +122,8 @@ return {
 ## Template — `pages/tts-demo.tsx`
 
 ```tsx
+import { useState } from "zeb";
+
 export const page = {
   html: { lang: "en" },
   body: {

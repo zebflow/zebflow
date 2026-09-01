@@ -6,17 +6,19 @@ Zebflow serves HTML from **TSX files** in your project: the server renders them 
 
 ## Import Rules (CRITICAL)
 
-### Hooks — globals, no import needed
+### Hooks — import them in every file that uses them
 
-`useState`, `useEffect`, `useRef`, `useMemo`, `usePageState`, `cx` are **injected as globalThis globals** by the RWE runtime. Just use them.
-
-For the **entry page** only, you may write `import { useState } from "zeb"` — the compiler strips it. This is for editor type hints only.
+`useState`, `useEffect`, `useRef`, `useMemo`, `useCallback`, `usePageState`, `useNavigate` and the rest come from `"zeb"`. There are no implicit globals: **every file that calls a hook imports it in that file**, entry pages and component files alike. A hook used without an import is refused at compile time.
 
 ```tsx
-// ✓ CORRECT — entry page (pages/*.tsx), import stripped at compile time
-import { useState, useEffect, cx } from "zeb";
+// ✓ CORRECT — in every file that uses them
+import { useState, useEffect } from "zeb";
 
-// ✓ ALSO CORRECT — hooks are globals, no import needed
+const [open, setOpen] = useState(false);
+```
+
+```tsx
+// ✗ WRONG — refused: "'useState' is used but not imported"
 const [open, setOpen] = useState(false);
 ```
 
@@ -39,17 +41,21 @@ import MyWidget from "@/components/my-widget";
 import Button from "../../components/ui/button";
 ```
 
-### Component files (non-entry) — no imports for hooks
+### Component files — the same rule, no exception
 
-Files under `components/` are loaded without stripping. Hooks are already globals. Do not import from `"zeb"` or `"rwe"` in component files.
+A component file imports its own hooks. It is not covered by the entry page's imports.
 
 ```tsx
-// components/my-widget.tsx — NO import, hooks just work
+// components/my-widget.tsx
+import { useState } from "zeb";
+
 export default function MyWidget({ label }) {
-  const [open, setOpen] = useState(false);  // ← global, works
+  const [open, setOpen] = useState(false);
   return <button onClick={() => setOpen(!open)}>{label}</button>;
 }
 ```
+
+Relative imports are refused in component files too — use `@/` there as well. The compiler resolves a relative path but does not carry what it finds into the bundle, so the page would compile and then fail in the browser.
 
 ### `.ts` behavior files — use camelCase exports, never ALL_CAPS
 
@@ -81,6 +87,8 @@ import { apiUrl, defaultPageSize } from "@/behavior/config";
 
 ```tsx
 // pages/my-page.tsx
+
+import { usePageState } from "zeb";
 
 export default function MyPage(input: PageInput) {
   const state = usePageState(input.state ?? { count: 0, title: "Hello" });
@@ -156,6 +164,8 @@ Use **`className`**, not `class`.
 Returns a reactive Proxy. On server: renders with the initial snapshot. On client: live reactivity — mutations propagate to the DOM.
 
 ```tsx
+import { usePageState } from "zeb";
+
 const state = usePageState(input.state ?? { count: 0, items: [] });
 state.count++;           // ← triggers DOM update on client
 state.items = [...state.items, newItem];

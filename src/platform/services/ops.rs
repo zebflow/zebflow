@@ -15,6 +15,7 @@ use crate::platform::model::{
     TemplateTreeItem,
 };
 use crate::platform::services::PlatformService;
+use crate::platform::services::project::name_from_file_rel_path;
 
 /// The result of a platform operation.
 pub struct OpsResult {
@@ -1648,13 +1649,27 @@ impl PlatformOps {
             Ok(s) => s,
         };
 
-        // Patch the "id" field to the new file_rel_path
-        let new_source = match patch_pipeline_id_field(&source, &to) {
+        // Rename the pipeline inside its own source before re-registering it.
+        let new_source = match rename_pipeline_in_source(&source, &to) {
             Ok(s) => s,
             Err(e) => return OpsResult::err(format!("Failed to patch pipeline id: {e}")),
         };
 
-        // Register at new path (creates file + DB entry, not yet active)
+        // Withdraw the old registration before writing the new one. The moved
+        // pipeline keeps its own webhook triggers, and
+        // `check_webhook_path_conflict` exempts only the file being written, so
+        // while both paths are registered the pipeline collides with itself.
+        // Registering first and deleting after made every rename of a webhook
+        // pipeline fail on `PLATFORM_PIPELINE_WEBHOOK_CONFLICT`.
+        if let Err(e) = projects.delete_pipeline(owner, project, &from) {
+            return OpsResult::err(format!("Failed to delete old pipeline: {e}"));
+        }
+        // The DB row is gone, so `refresh_pipeline` on the old path would fail.
+        runtime.evict(owner, project, &from);
+
+        // Register at the new path (creates file + DB entry, not yet active).
+        // Nothing holds the pipeline at this point, so a refusal here has to put
+        // the original back rather than leave the project without it.
         if let Err(e) = projects.upsert_pipeline_definition(
             owner,
             project,
@@ -1664,7 +1679,26 @@ impl PlatformOps {
             &meta.trigger_kind,
             &new_source,
         ) {
-            return OpsResult::err(format!("Failed to register at new path: {e}"));
+            let restored = projects.upsert_pipeline_definition(
+                owner,
+                project,
+                &from,
+                &meta.title,
+                &meta.description,
+                &meta.trigger_kind,
+                &source,
+            );
+            if restored.is_ok() && was_active {
+                let _ = projects.activate_pipeline_definition(owner, project, &from);
+                let _ = runtime.refresh_pipeline(owner, project, &from);
+            }
+            return OpsResult::err(match restored {
+                Ok(_) => format!("Failed to register at new path: {e}"),
+                Err(restore_error) => format!(
+                    "Failed to register at new path: {e}. \
+                     The original at '{from}' could not be restored either: {restore_error}"
+                ),
+            });
         }
 
         // Re-activate at new path if was active before
@@ -1674,14 +1708,6 @@ impl PlatformOps {
             }
             let _ = runtime.refresh_pipeline(owner, project, &to);
         }
-
-        // Remove old pipeline (file + DB metadata)
-        if let Err(e) = projects.delete_pipeline(owner, project, &from) {
-            return OpsResult::err(format!("Failed to delete old pipeline: {e}"));
-        }
-
-        // Evict old path from runtime (it was already deleted from DB so refresh_pipeline would fail)
-        runtime.evict(owner, project, &from);
 
         OpsResult::ok(format!(
             "Moved pipeline {} → {}{}",
@@ -1762,16 +1788,86 @@ fn pipeline_path_heuristic(layout: &ResolvedProjectLayout, path: &str) -> bool {
 }
 
 /// Parses JSON source, sets the `"id"` field to `new_file_rel_path`, returns pretty-printed JSON.
-fn patch_pipeline_id_field(source: &str, new_file_rel_path: &str) -> Result<String, String> {
-    let mut obj: serde_json::Value =
+/// Points a pipeline's own source at its new path.
+///
+/// A pipeline source is a contract envelope, so the identifier lives at
+/// `spec.id` and not at the root. Two things follow, and both were wrong when
+/// this wrote a root `"id"`: the envelope refuses unknown root fields, so every
+/// rename failed to re-register; and `spec.id` is an identifier
+/// (`validate_identifier`, `pipeline.rs`), so it takes the pipeline's name and
+/// never the `pipelines/…/x.zf.json` path.
+///
+/// `metadata.name` moves with it. The contract requires the two to agree, and
+/// the source is decoded before it is re-encoded, so leaving the metadata on
+/// the old name only trades one refusal for another.
+fn rename_pipeline_in_source(source: &str, new_file_rel_path: &str) -> Result<String, String> {
+    let name = name_from_file_rel_path(new_file_rel_path);
+    let mut envelope: serde_json::Value =
         serde_json::from_str(source).map_err(|e| format!("invalid JSON: {e}"))?;
-    if let Some(map) = obj.as_object_mut() {
-        map.insert(
-            "id".to_string(),
-            serde_json::Value::String(new_file_rel_path.to_string()),
-        );
+
+    let spec = envelope
+        .get_mut("spec")
+        .and_then(serde_json::Value::as_object_mut)
+        .ok_or_else(|| "pipeline source has no spec object".to_string())?;
+    spec.insert("id".to_string(), serde_json::Value::String(name.clone()));
+
+    let metadata = envelope
+        .get_mut("metadata")
+        .and_then(serde_json::Value::as_object_mut)
+        .ok_or_else(|| "pipeline source has no metadata object".to_string())?;
+    metadata.insert("name".to_string(), serde_json::Value::String(name));
+
+    serde_json::to_string_pretty(&envelope).map_err(|e| format!("serialize error: {e}"))
+}
+
+#[cfg(test)]
+mod rename_tests {
+    use super::*;
+
+    fn source(name: &str) -> String {
+        serde_json::json!({
+            "apiVersion": "zebflow.com/v1",
+            "kind": "Pipeline",
+            "metadata": { "name": name },
+            "spec": {
+                "id": name,
+                "entry_nodes": ["n0"],
+                "nodes": [{
+                    "id": "n0",
+                    "kind": "n.trigger.webhook",
+                    "input_pins": [],
+                    "output_pins": ["out"],
+                    "config": { "path": "/hook", "method": "POST" }
+                }],
+                "edges": []
+            }
+        })
+        .to_string()
     }
-    serde_json::to_string_pretty(&obj).map_err(|e| format!("serialize error: {e}"))
+
+    /// The renamed source has to survive the same decode the writer performs.
+    /// Before this, the rename wrote a root `"id"` and every move died on
+    /// `unknown root field 'id'`.
+    #[test]
+    fn renamed_source_still_decodes_as_a_pipeline() {
+        let renamed =
+            rename_pipeline_in_source(&source("before"), "pipelines/team/after.zf.json").unwrap();
+
+        let document = decode_pipeline_graph(renamed.as_bytes()).expect("renamed source decodes");
+        assert_eq!(document.spec.id, "after");
+
+        let value: serde_json::Value = serde_json::from_str(&renamed).unwrap();
+        assert_eq!(value["metadata"]["name"], "after");
+        // The identifier is the name, never the path it was addressed by.
+        assert!(value.get("id").is_none());
+    }
+
+    #[test]
+    fn rename_refuses_a_source_that_is_not_an_envelope() {
+        let err = rename_pipeline_in_source(r#"{"id":"bare","nodes":[]}"#, "pipelines/x.zf.json")
+            .unwrap_err();
+        assert!(err.contains("no spec object"), "{err}");
+    }
 }
 
 // ── Project Docs ──────────────────────────────────────────────────────────────
