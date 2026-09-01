@@ -1,6 +1,6 @@
 # InvocationRecord
 
-Status: **review** — spec settled 2026-08-29, code catch-up owed.
+Status: **review** — spec settled 2026-08-29; secret handling re-decided and the code caught up 2026-09-01. The entries under Open are open, not owed.
 
 One row per pipeline run: when it ran, how long it took, whether it worked, and
 what each node received and returned. This is a project's run history.
@@ -55,24 +55,37 @@ expressions resolved, `duration_ms`, `input`, `output` (null on error), and
 A trace is written to disk and shown in the UI, so it is a place secrets leak
 into. Three rules, in order of authority:
 
-1. **The node declares its own secret fields.** A field marked secret in
-   [`NodeDefinition`](../node-definition/README.md) is always `••••••` in the
-   trace, whatever it is called. Fields are not secret by default — most
-   config is a folder name or an image width, and hiding all of it would make
-   the history useless — so a node author ticks the ones that are.
-2. **Name matching remains as a safety net.** `password`, `secret`, `api_key`,
-   `access_token`, `authorization`, `private_key` and the rest stay redacted
-   even when no node declared them, so a node author who forgets loses nothing
-   that works today.
+1. **A secret belongs in a credential, and then it is never in the config.**
+   A node reaches a secret through a `credential_id`; only that identifier is
+   in the config, so only that identifier reaches the trace. `http_request`
+   accepts a `secure_request` credential that supplies the whole request — URL,
+   method, headers, body — so basic auth and query-param tokens go this way
+   too, and `ws_trigger` has `auth_credential`. **No node forces a secret to be
+   typed inline.**
+2. **Name matching redacts config keys that name a secret.** `password`,
+   `secret`, `api_key`, `access_token`, `token`, `authorization`,
+   `private_key` and the rest are `••••••` in the trace. It exists for the node
+   this tree does not own: a third-party node may hold a secret in a plain
+   field with no credential behind it, and a name it shares with everyone
+   else's is the only handle available.
 3. **Payload values are redacted where a node marks them**
    (`__zf_private_redact`), then summarised so one large run cannot fill the
    disk.
 
-Rule 1 exists because rule 2 alone leaks. Name matching catches `api_key` and
-misses `pwd`, `token`, `x-api-key`, and `db_url` — and a connection URL carries
-its password inside it (`postgres://joseph:hunter2@db:5432/app`). That string is
-written to the run history in full today, and anyone who can open the pipeline's
-history reads it.
+**A secret typed into a free-text config field is not defended, and cannot be.**
+Writing `http://user:hunter2@host/` into a `url`, or a password into an
+`n.script` body, puts it in the run history in full. This is the same act as
+pasting a password into a chat message: the mechanism that keeps it out —
+credentials — was available and was bypassed. No redaction rule can tell a
+secret from ordinary text inside a field whose whole purpose is free text, and
+a rule that tried would have to redact script source, which would make the
+history useless.
+
+Corrected 2026-09-01. An earlier draft made this a defect the platform owed a
+fix for, and proposed a fourth mechanism — node-declared secret fields — to
+close it. That mechanism would not have closed it: a node author would never
+mark `source` or `url` secret, because both are ordinarily readable and are
+what makes the history worth opening.
 
 ## Retention
 

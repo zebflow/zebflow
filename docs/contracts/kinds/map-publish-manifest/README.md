@@ -1,6 +1,6 @@
 # MapPublishManifest
 
-Status: **review** — spec settled 2026-08-29, code catch-up owed.
+Status: **review** — spec settled 2026-08-29; code caught up 2026-09-01, when the audit found the `source_path` refusal missing.
 
 What a project has published as map layers: which layers exist, where each is
 served, what it was built from, and what the public may see of it.
@@ -79,8 +79,15 @@ fetched. This is the same closed default as
 
 ## Rejections
 
-An empty or duplicate `layer_id`. A `path` carrying a leading slash. A
-`source_path` that escapes the project. An unknown field at any level.
+An empty or duplicate `layer_id`. A `source_path` that escapes the project —
+the registry is an object a project member may upload over and a file a project
+bundle carries, so a record can arrive already written, and the serving path
+joins `source_path` onto the project's files directory. An unknown field at any
+level.
+
+A `path` carrying a leading slash is **normalised on read**, not refused: both
+publishers strip it before writing, and stripping it on read repairs a record
+written before they agreed rather than making the layer unreadable.
 
 ## Open
 

@@ -46,6 +46,15 @@ pub fn read_layers(path: &Path) -> Result<Vec<MapserverLayerRecord>, ContractErr
         };
     for item in &mut items {
         item.path = normalize_layer_path(&item.path).to_string();
+        // The legacy array below never reaches the contract's validator, so the
+        // one refusal that keeps a layer inside the project is repeated here.
+        // Both roads into this function end at a path joined onto `files/`.
+        if crate::infra::io::path::rel_path_escapes_root(&item.source_path) {
+            return Err(ContractError::invalid(format!(
+                "map layer '{}' source_path '{}' escapes the project",
+                item.layer_id, item.source_path
+            )));
+        }
     }
     Ok(items)
 }
@@ -124,6 +133,52 @@ pub fn manifest_from_runtime(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The registry is an object a project member can upload over and a file a
+    /// project bundle carries, so a record can arrive already written. A
+    /// `source_path` climbing out of the project is refused on read, by both
+    /// the enveloped road and the legacy array.
+    #[test]
+    fn a_layer_reaching_outside_the_project_is_refused_on_read() {
+        let dir = tempfile::tempdir().unwrap();
+
+        let enveloped = dir.path().join("enveloped.layers.json");
+        std::fs::write(
+            &enveloped,
+            serde_json::json!({
+                "apiVersion": "zebflow.com/v1",
+                "kind": "MapPublishManifest",
+                "metadata": { "name": "alice/demo" },
+                "spec": [{
+                    "layer_id": "roads", "path": "roads",
+                    "source_path": "../../../../etc/passwd",
+                    "source_kind": "geojson_file", "mode": "features",
+                    "min_zoom": 0, "max_zoom": 14, "bbox_required": true,
+                    "max_features": 1000, "allowed_properties": []
+                }]
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let err = read_layers(&enveloped).expect_err("an escaping source_path is refused");
+        assert!(err.to_string().contains("escapes the project"), "{err}");
+
+        let legacy = dir.path().join("legacy.layers.json");
+        std::fs::write(
+            &legacy,
+            serde_json::json!([{
+                "layer_id": "roads", "path": "roads",
+                "source_path": "../../../../etc/passwd",
+                "source_kind": "geojson_file", "mode": "features",
+                "min_zoom": 0, "max_zoom": 14, "bbox_required": true,
+                "max_features": 1000, "allowed_properties": []
+            }])
+            .to_string(),
+        )
+        .unwrap();
+        let err = read_layers(&legacy).expect_err("the legacy array is refused too");
+        assert!(err.to_string().contains("escapes the project"), "{err}");
+    }
 
     fn record(path: &str) -> MapserverLayerRecord {
         MapserverLayerRecord {

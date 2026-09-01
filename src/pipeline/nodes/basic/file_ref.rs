@@ -241,10 +241,16 @@ pub fn validate_file_ref(value: &Value) -> Result<(), PipelineError> {
             "FileRef sha256 must use sha256:<hex>",
         ));
     };
-    if hex.len() != 64 || !hex.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+    // Lowercase, not merely hexadecimal: the contract fixes one spelling so two
+    // FileRefs for the same bytes compare equal.
+    if hex.len() != 64
+        || !hex
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
         return Err(PipelineError::new(
             "FW_FILE_REF_INVALID",
-            "FileRef sha256 must contain exactly 64 hexadecimal digits",
+            "FileRef sha256 must contain exactly 64 lowercase hexadecimal digits",
         ));
     }
     Ok(())

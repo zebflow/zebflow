@@ -1,6 +1,6 @@
 # ZebFsAcl
 
-Status: **review** — spec settled 2026-08-29, code catch-up owed.
+Status: **review** — spec settled 2026-08-29; code caught up. Audited 2026-09-01: longest match wins, an unmatched path is private (`ZebFsAccess::default`), the reserved prefix is refused, unknown fields are refused, and the pre-contract bare shape is accepted on read and rewritten enveloped. The entries under Open are open, not owed.
 
 Which of a project's files the public may read. One document per project.
 

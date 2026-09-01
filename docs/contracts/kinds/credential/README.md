@@ -1,6 +1,6 @@
 # Credential
 
-Status: **review** — spec settled 2026-08-29, code catch-up owed.
+Status: **review** — spec settled 2026-08-29. The at-rest half ships: the `zfc1` envelope names its format and key, secrets are sealed at the storage boundary, and the keyring is versioned. The declaration half — `exposure`, inheritance along the type chain, unresolvable-type redaction, and the registration-time name check — is **deliberately deferred**, not owed by oversight; `exposure` appears nowhere in the code.
 
 One stored credential: the secret-bearing value a project holds so a node can
 authenticate. It is **not** the credential *type* definition, which a

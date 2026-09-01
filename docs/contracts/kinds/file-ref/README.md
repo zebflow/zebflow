@@ -1,6 +1,6 @@
 # FileRef
 
-Status: **review** — spec settled 2026-08-29, code catch-up owed.
+Status: **review** — spec settled 2026-08-29; code caught up. Audited 2026-09-01: all eleven fields are required, `kind` and `lifecycle` are closed, the digest is checked for the `sha256:` prefix and 64 lowercase hex digits, and size is verified against the stored bytes before they are returned. The entries under Open are open, not owed.
 
 The note that travels between pipeline nodes when a file moves through a run.
 Bytes are written to storage; this small object is what the nodes pass around.

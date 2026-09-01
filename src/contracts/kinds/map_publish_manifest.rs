@@ -56,6 +56,20 @@ impl PlatformContract for MapPublishManifestContract {
                     layer.layer_id
                 )));
             }
+            // `source_path` is joined onto the project's files directory to
+            // find the bytes a layer serves (`web/mod.rs`, the tile source
+            // resolution), and that join strips a leading slash without
+            // resolving `..`. The registry itself lives at
+            // `files/mapserver/{instance}.layers.json` — an object a project
+            // member may upload over, and a file a project bundle carries — so
+            // a record can arrive already written. Refuse it here, at the read
+            // boundary every serving path passes through.
+            if crate::infra::io::path::rel_path_escapes_root(&layer.source_path) {
+                return Err(ContractError::invalid(format!(
+                    "map layer '{}' source_path '{}' escapes the project",
+                    layer.layer_id, layer.source_path
+                )));
+            }
         }
         Ok(())
     }

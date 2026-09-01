@@ -1,6 +1,6 @@
 # OfficeTopology
 
-Status: **review** — spec settled 2026-08-30, code catch-up owed.
+Status: **review** — spec settled 2026-08-30; code caught up. Audited 2026-09-01: `office_kind` is the `ClusterRole` enum, an office may not be written without a `base_url`, `office_slug` is `UNIQUE`, and a service instance's host is a foreign key. The entries under Open are open, not owed.
 
 Where a Zebflow deployment may run work: which offices exist, what role each
 holds, where platform services are placed, and which runtime nodes are

@@ -492,6 +492,14 @@ fn is_sensitive_trace_config_key(key: &str) -> bool {
             | "idtoken"
             | "authorization"
             | "apikey"
+            // A node outside this tree may name a field plainly. `accesstoken`
+            // was matched and `token` was not, which is the gap a third-party
+            // node would fall into.
+            | "token"
+            | "apitoken"
+            | "authtoken"
+            | "sessiontoken"
+            | "bearertoken"
             | "privatekey"
             | "signingkey"
             | "jwtsecret"
@@ -3320,6 +3328,33 @@ mod tests {
         assert!(snapshot.get("ui").is_none());
         assert_eq!(snapshot["password"], "••••••");
         assert_eq!(snapshot["headers"]["authorization"], "••••••");
+    }
+
+    /// The fallback exists for the node this tree does not own. `access_token`
+    /// was matched and a plainly-named `token` was not, which is the gap a
+    /// third-party node would fall into.
+    #[test]
+    fn trace_config_snapshot_redacts_a_plainly_named_token() {
+        let snapshot = trace_config_snapshot(&json!({
+            "endpoint": "https://api.example.com/v1",
+            "token": "t-abc123",
+            "api_token": "t-def456",
+            "auth_token": "t-ghi789",
+            "session_token": "t-jkl012",
+            "bearer_token": "t-mno345",
+        }))
+        .expect("config snapshot");
+
+        assert_eq!(snapshot["endpoint"], "https://api.example.com/v1");
+        for key in [
+            "token",
+            "api_token",
+            "auth_token",
+            "session_token",
+            "bearer_token",
+        ] {
+            assert_eq!(snapshot[key], "••••••", "{key} must be redacted");
+        }
     }
 
     #[test]
