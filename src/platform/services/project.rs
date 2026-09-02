@@ -14,20 +14,21 @@ use crate::contracts::kinds::{
     decode_pipeline_graph, encode_pipeline_graph, validate_pipeline_activation,
 };
 use crate::infra::io::durable::{atomic_write, durable_remove_file};
-use crate::infra::io::path::contained_rel_path;
+use crate::infra::io::path::{contained_rel_path, rel_path_escapes_root};
 use crate::pipeline::PipelineGraph;
 use crate::platform::adapters::data::DataAdapter;
 use crate::platform::adapters::file::FileAdapter;
 use crate::platform::adapters::project_data::ProjectDataFactory;
 use crate::platform::error::PlatformError;
 use crate::platform::model::{
-    AgentDocItem, CreateProjectRequest, HubAuthority, LEGACY_PIPELINE_IDENTITY_ROOT,
-    PIPELINE_DEFINITION_EXTENSION, PIPELINE_IDENTITY_BACKUP_FILE, PipelineBreadcrumb,
-    PipelineFolderItem, PipelineMeta, PipelineRegistryItem, PipelineRegistryListing,
-    PlatformProject, ProjectDocItem, ProjectDocMoveRequest, ProjectFileLayout, RegistryFileItem,
-    ResolvedProjectLayout, TemplateCreateKind, TemplateCreateRequest, TemplateFilePayload,
-    TemplateGitStatusItem, TemplateMoveRequest, TemplateSaveRequest, TemplateTreeItem,
-    TemplateWorkspaceListing, normalize_virtual_path, now_ts, recovery_date_stamp, slug_segment,
+    ALWAYS_ALLOWED_FILE_NAMES, AgentDocItem, CreateProjectRequest, HubAuthority,
+    LEGACY_PIPELINE_IDENTITY_ROOT, PIPELINE_DEFINITION_EXTENSION, PIPELINE_IDENTITY_BACKUP_FILE,
+    PipelineBreadcrumb, PipelineFolderItem, PipelineMeta, PipelineRegistryItem,
+    PipelineRegistryListing, PlatformProject, ProjectDocItem, ProjectDocMoveRequest,
+    ProjectFileLayout, RegistryFileItem, ResolvedProjectLayout, TemplateCreateKind,
+    TemplateCreateRequest, TemplateFilePayload, TemplateGitStatusItem, TemplateMoveRequest,
+    TemplateSaveRequest, TemplateTreeItem, TemplateWorkspaceListing, normalize_virtual_path,
+    now_ts, recovery_date_stamp, slug_segment, strip_dir_prefix,
 };
 use crate::platform::services::dependency_lock::DependencyLockService;
 use crate::platform::services::project_config::ProjectConfigurationService;
@@ -1272,6 +1273,202 @@ impl ProjectService {
     }
 
     /// Returns the current template workspace tree for one project.
+    /// Every entry under `repo/`, in one tree.
+    ///
+    /// Replaces the two walks that came before it — one over the source root,
+    /// one over the docs root — and the virtual `docs` folder the sidebar used
+    /// to inject at the top of the first. `docs/`, `styles/` and `assets/` are
+    /// ordinary directories here, and a `.md` beside `zebflow.yaml` is as
+    /// reachable as one inside `docs/`, which is what the extension allowlist
+    /// has always permitted.
+    ///
+    /// A file the layout refuses, and the machine-owned names, are left out:
+    /// showing a file nothing may write is an invitation to try.
+    pub fn list_repo_tree(
+        &self,
+        owner: &str,
+        project: &str,
+    ) -> Result<TemplateWorkspaceListing, PlatformError> {
+        let owner = slug_segment(owner);
+        let project = slug_segment(project);
+        let layout = self.file.ensure_project_layout(&owner, &project)?;
+
+        let mut items = Vec::new();
+        let mut default_file = None;
+        walk_repo_tree(
+            &layout,
+            &layout.repo_dir.clone(),
+            0,
+            &mut items,
+            &mut default_file,
+        )?;
+
+        Ok(TemplateWorkspaceListing {
+            default_file,
+            items,
+        })
+    }
+
+    /// Reads one repository file.
+    pub fn read_repo_file(
+        &self,
+        owner: &str,
+        project: &str,
+        rel_path: &str,
+    ) -> Result<TemplateFilePayload, PlatformError> {
+        let owner = slug_segment(owner);
+        let project = slug_segment(project);
+        let layout = self.file.ensure_project_layout(&owner, &project)?;
+        let (rel, abs) = resolve_repo_entry(&layout, rel_path, true)?;
+        if !abs.is_file() {
+            return Err(PlatformError::new(
+                "PLATFORM_REPO_MISSING",
+                format!("file '{rel}' not found"),
+            ));
+        }
+        let content = fs::read_to_string(&abs)?;
+        Ok(repo_payload_from_content(
+            &layout.repo_layout,
+            &rel,
+            &content,
+        ))
+    }
+
+    /// Writes one repository file, creating its parent directories.
+    pub fn write_repo_file(
+        &self,
+        owner: &str,
+        project: &str,
+        rel_path: &str,
+        content: &str,
+    ) -> Result<TemplateFilePayload, PlatformError> {
+        let owner = slug_segment(owner);
+        let project = slug_segment(project);
+        self.ensure_template_editable(&owner, &project, rel_path, "edited")?;
+        let layout = self.file.ensure_project_layout(&owner, &project)?;
+        let (rel, abs) = resolve_repo_entry(&layout, rel_path, true)?;
+        if repo_entry_is_machine_owned(&rel) {
+            return Err(PlatformError::new(
+                "PLATFORM_REPO_MACHINE_OWNED",
+                format!("'{rel}' is written by the platform and cannot be edited here"),
+            ));
+        }
+        if let Some(parent) = abs.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        atomic_write(&abs, content.as_bytes())?;
+        Ok(repo_payload_from_content(
+            &layout.repo_layout,
+            &rel,
+            content,
+        ))
+    }
+
+    /// Creates one repository folder.
+    pub fn create_repo_folder(
+        &self,
+        owner: &str,
+        project: &str,
+        rel_path: &str,
+    ) -> Result<String, PlatformError> {
+        let owner = slug_segment(owner);
+        let project = slug_segment(project);
+        let layout = self.file.ensure_project_layout(&owner, &project)?;
+        let (rel, abs) = resolve_repo_entry(&layout, rel_path, false)?;
+        if abs.exists() {
+            return Err(PlatformError::new(
+                "PLATFORM_REPO_EXISTS",
+                format!("'{rel}' already exists"),
+            ));
+        }
+        fs::create_dir_all(&abs)?;
+        Ok(rel)
+    }
+
+    /// Deletes one repository file or folder.
+    pub fn delete_repo_entry(
+        &self,
+        owner: &str,
+        project: &str,
+        rel_path: &str,
+    ) -> Result<(), PlatformError> {
+        let owner = slug_segment(owner);
+        let project = slug_segment(project);
+        self.ensure_template_editable(&owner, &project, rel_path, "deleted")?;
+        let layout = self.file.ensure_project_layout(&owner, &project)?;
+        let (rel, abs) = resolve_repo_entry(&layout, rel_path, false)?;
+        if !abs.exists() {
+            return Err(PlatformError::new(
+                "PLATFORM_REPO_MISSING",
+                format!("'{rel}' not found"),
+            ));
+        }
+        if repo_entry_is_machine_owned(&rel) {
+            return Err(PlatformError::new(
+                "PLATFORM_REPO_MACHINE_OWNED",
+                format!("'{rel}' is written by the platform and cannot be deleted here"),
+            ));
+        }
+        if abs.is_dir() && repo_entry_is_declared_root(&layout.repo_layout, &rel) {
+            return Err(PlatformError::new(
+                "PLATFORM_REPO_DECLARED_ROOT",
+                format!("'{rel}' is named by this project's layout and cannot be deleted"),
+            ));
+        }
+        if abs.is_dir() {
+            fs::remove_dir_all(&abs)?;
+        } else {
+            durable_remove_file(&abs)?;
+        }
+        Ok(())
+    }
+
+    /// Moves one repository file or folder to another path.
+    pub fn move_repo_entry(
+        &self,
+        owner: &str,
+        project: &str,
+        from_path: &str,
+        to_path: &str,
+    ) -> Result<String, PlatformError> {
+        let owner = slug_segment(owner);
+        let project = slug_segment(project);
+        self.ensure_template_editable(&owner, &project, from_path, "moved")?;
+        let layout = self.file.ensure_project_layout(&owner, &project)?;
+        let (from_rel, from_abs) = resolve_repo_entry(&layout, from_path, false)?;
+        if !from_abs.exists() {
+            return Err(PlatformError::new(
+                "PLATFORM_REPO_MISSING",
+                format!("'{from_rel}' not found"),
+            ));
+        }
+        let is_file = from_abs.is_file();
+        let (to_rel, to_abs) = resolve_repo_entry(&layout, to_path, is_file)?;
+        if repo_entry_is_machine_owned(&from_rel) || repo_entry_is_machine_owned(&to_rel) {
+            return Err(PlatformError::new(
+                "PLATFORM_REPO_MACHINE_OWNED",
+                "platform-owned files cannot be moved here",
+            ));
+        }
+        if from_abs.is_dir() && repo_entry_is_declared_root(&layout.repo_layout, &from_rel) {
+            return Err(PlatformError::new(
+                "PLATFORM_REPO_DECLARED_ROOT",
+                format!("'{from_rel}' is named by this project's layout and cannot be moved"),
+            ));
+        }
+        if to_abs.exists() {
+            return Err(PlatformError::new(
+                "PLATFORM_REPO_EXISTS",
+                format!("'{to_rel}' already exists"),
+            ));
+        }
+        if let Some(parent) = to_abs.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::rename(&from_abs, &to_abs)?;
+        Ok(to_rel)
+    }
+
     pub fn list_template_workspace(
         &self,
         owner: &str,
@@ -2743,6 +2940,212 @@ fn collect_tsx_files(
     Ok(())
 }
 
+/// Resolves one repository-relative path against `repo/`.
+///
+/// The single door every repository read and write passes through, replacing
+/// the two that came before it — one anchored at the source root and one at the
+/// docs root, each with its own confinement and its own naming rule.
+///
+/// Three rules, and all three come from the contract rather than from a list
+/// kept here:
+///
+/// - **Containment.** `contained_rel_path` drops `..`, a leading `/`, and a
+///   drive prefix, so the join cannot leave `repo/`. `Path::starts_with` does
+///   not resolve `..` and is not enough on its own.
+/// - **The name is the author's.** No slugging. `README.md` stays `README.md`;
+///   the old template road lowercased it to `readme.md` while the docs road
+///   left it alone, so the same file got two names depending on the API used.
+/// - **The type is judged by the layout.** `refused_file_type` is the
+///   contract's own predicate (`kinds/project-configuration/layout.md` §8),
+///   until now called only by the Hub install review. A directory has no
+///   extension to judge, so only files are tested.
+/// Walks `repo/` once, skipping `.git`, the machine-owned names, and any file
+/// the project's layout would refuse to hold.
+///
+/// Directories are always walked: a folder carries no extension to judge, and
+/// one holding only refused files simply comes back empty.
+/// One repository file's payload, classified by [`repo_file_kind`].
+fn repo_payload_from_content(
+    layout: &ResolvedProjectLayout,
+    rel: &str,
+    content: &str,
+) -> TemplateFilePayload {
+    TemplateFilePayload {
+        rel_path: rel.to_string(),
+        name: rel.rsplit('/').next().unwrap_or(rel).to_string(),
+        file_kind: repo_file_kind(layout, rel),
+        content: content.to_string(),
+        line_count: content.lines().count(),
+        is_protected: false,
+    }
+}
+
+fn walk_repo_tree(
+    layout: &ProjectFileLayout,
+    current: &Path,
+    depth: usize,
+    items: &mut Vec<TemplateTreeItem>,
+    default_file: &mut Option<String>,
+) -> Result<(), PlatformError> {
+    let root = &layout.repo_dir;
+    let mut entries = fs::read_dir(current)?.collect::<Result<Vec<_>, _>>()?;
+    entries.sort_by(|a, b| {
+        let a_dir = a.file_type().map(|ft| ft.is_dir()).unwrap_or(false);
+        let b_dir = b.file_type().map(|ft| ft.is_dir()).unwrap_or(false);
+        match (a_dir, b_dir) {
+            (true, false) => std::cmp::Ordering::Less,
+            (false, true) => std::cmp::Ordering::Greater,
+            _ => a.file_name().cmp(&b.file_name()),
+        }
+    });
+
+    for entry in entries {
+        let path = entry.path();
+        let name = entry.file_name().to_string_lossy().to_string();
+        if name == ".git" {
+            continue;
+        }
+        let rel = path
+            .strip_prefix(root)
+            .map_err(|_| PlatformError::new("PLATFORM_REPO_PATH", "invalid repository path"))?
+            .to_string_lossy()
+            .replace('\\', "/");
+        let file_type = entry.file_type()?;
+        if file_type.is_dir() {
+            items.push(TemplateTreeItem {
+                name,
+                rel_path: rel.clone(),
+                kind: "folder".to_string(),
+                depth,
+                file_kind: "folder".to_string(),
+                is_protected: repo_entry_is_declared_root(&layout.repo_layout, &rel),
+            });
+            walk_repo_tree(layout, &path, depth + 1, items, default_file)?;
+        } else if file_type.is_file() {
+            if repo_entry_is_machine_owned(&rel)
+                || layout.repo_layout.refused_file_type(&rel).is_some()
+            {
+                continue;
+            }
+            let file_kind = repo_file_kind(&layout.repo_layout, &rel);
+            if default_file.is_none() && file_kind == "page" {
+                *default_file = Some(rel.clone());
+            }
+            items.push(TemplateTreeItem {
+                name,
+                rel_path: rel,
+                kind: "file".to_string(),
+                depth,
+                file_kind,
+                is_protected: false,
+            });
+        }
+    }
+    Ok(())
+}
+
+/// What a repository file is, judged by its extension and the declared source
+/// root rather than by a `/pages/` substring.
+///
+/// Every allowed extension gets a name here. The road this replaces knew only
+/// `tsx`, `ts` and `css` and called everything else `"other"`, which is why a
+/// `.md` in the source tree was invisible to the editor.
+fn repo_file_kind(layout: &ResolvedProjectLayout, rel: &str) -> String {
+    let extension = rel
+        .rsplit('/')
+        .next()
+        .unwrap_or(rel)
+        .rsplit_once('.')
+        .map(|(_, ext)| ext.to_ascii_lowercase())
+        .unwrap_or_default();
+    match extension.as_str() {
+        "tsx" => {
+            let in_source = strip_dir_prefix(&layout.source, rel).is_some();
+            if in_source && rel.contains("/pages/") {
+                "page".to_string()
+            } else {
+                "component".to_string()
+            }
+        }
+        "ts" | "js" | "mjs" | "jsx" => "script".to_string(),
+        "css" => "style".to_string(),
+        "md" | "txt" => "doc".to_string(),
+        "json" | "yaml" | "yml" | "xml" => {
+            if rel.ends_with(PIPELINE_DEFINITION_EXTENSION) {
+                "pipeline".to_string()
+            } else {
+                "data".to_string()
+            }
+        }
+        "sql" => "sql".to_string(),
+        "csv" | "geojson" => "data".to_string(),
+        _ => "asset".to_string(),
+    }
+}
+
+fn resolve_repo_entry(
+    layout: &ProjectFileLayout,
+    rel_path: &str,
+    is_file: bool,
+) -> Result<(String, PathBuf), PlatformError> {
+    // Refuse rather than contain. `contained_rel_path` would drop the `..` and
+    // write somewhere else inside the repository, which is safe but silently
+    // not the path the author asked for.
+    if rel_path_escapes_root(rel_path) {
+        return Err(PlatformError::new(
+            "PLATFORM_REPO_PATH",
+            "repository path must stay inside the repository",
+        ));
+    }
+    let rel = contained_rel_path(rel_path);
+    if rel.is_empty() {
+        return Err(PlatformError::new(
+            "PLATFORM_REPO_PATH",
+            "repository path must not be empty",
+        ));
+    }
+    if is_file && let Some(reason) = layout.repo_layout.refused_file_type(&rel) {
+        return Err(PlatformError::new(
+            "PLATFORM_REPO_FILE_TYPE",
+            format!("this project does not accept {reason} ('{rel}')"),
+        ));
+    }
+    Ok((rel.clone(), layout.repo_dir.join(&rel)))
+}
+
+/// Whether a repository entry is the platform's to write, not the author's.
+///
+/// These are the five names in `ALWAYS_ALLOWED_FILE_NAMES`: the project
+/// configuration, the dependency lock, the initialization payload, the schema
+/// export, and the directory keepers. Each has a service that owns it, and
+/// `zebflow.yaml` is the sharp one — a malformed layout relocates or breaks the
+/// whole source tree, so it is edited through `ProjectConfigurationService` or
+/// not at all. They are hidden from the tree and refused on write and delete.
+fn repo_entry_is_machine_owned(rel: &str) -> bool {
+    let name = rel.rsplit('/').next().unwrap_or(rel).to_ascii_lowercase();
+    ALWAYS_ALLOWED_FILE_NAMES.contains(&name.as_str())
+}
+
+/// Whether a directory is named by the project's own layout declaration.
+///
+/// Deleting one leaves `zebflow.yaml` pointing at nothing, so these refuse
+/// deletion. This replaces the hardcoded `styles`/`scripts`/`styles/main.css`
+/// trio, which protected three names nothing in the contract mentions while
+/// leaving the declared roots unprotected.
+fn repo_entry_is_declared_root(layout: &ResolvedProjectLayout, rel: &str) -> bool {
+    let declared = [
+        layout.source.as_str(),
+        layout.docs.as_str(),
+        layout.schema.as_str(),
+        layout.sqlite_schema.as_str(),
+        layout.assets.as_str(),
+        layout.node_interfaces.as_str(),
+    ];
+    declared
+        .iter()
+        .any(|root| !root.is_empty() && contained_rel_path(root) == rel)
+}
+
 fn walk_template_tree(
     root: &Path,
     current: &Path,
@@ -3304,6 +3707,99 @@ mod tests {
     /// executable pipeline into another owner's project. Revert
     /// `normalize_pipeline_file_rel_path` and this test finds the file on the
     /// victim's disk.
+    /// The contract decides what a repository may hold from the path alone
+    /// (`kinds/project-configuration/layout.md` §8), so a `.md` at the
+    /// repository root is as legal as one inside `docs/`. Before this there was
+    /// no surface that could write one: templates were anchored at the source
+    /// root and docs at the docs root, and neither could address `repo/`.
+    #[test]
+    fn any_allowed_file_may_be_written_at_any_path_under_the_repository() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let svc = make_service(tmp.path());
+        create_default_project(&svc);
+
+        let payload = svc
+            .write_repo_file("superadmin", "default", "README.md", "# My Project\n")
+            .expect("a markdown file at the repository root");
+        assert_eq!(payload.rel_path, "README.md");
+        assert_eq!(payload.file_kind, "doc");
+
+        // The author's spelling survives. The template road used to lowercase
+        // this to `readme.md` while the docs road left it alone, so the same
+        // file got two names depending on which API wrote it.
+        svc.write_repo_file("superadmin", "default", "notes/Design Notes.md", "# Notes")
+            .expect("a name with capitals and a space");
+        let read = svc
+            .read_repo_file("superadmin", "default", "notes/Design Notes.md")
+            .expect("read back under the same name");
+        assert_eq!(read.name, "Design Notes.md");
+    }
+
+    #[test]
+    fn the_repository_refuses_what_the_layout_refuses() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let svc = make_service(tmp.path());
+        create_default_project(&svc);
+
+        let err = svc
+            .write_repo_file("superadmin", "default", "install.sh", "rm -rf /")
+            .expect_err("an extension outside the allowlist");
+        assert_eq!(err.code, "PLATFORM_REPO_FILE_TYPE");
+
+        let err = svc
+            .write_repo_file("superadmin", "default", "zebflow.yaml", "broken: [")
+            .expect_err("the project configuration is not edited as a file");
+        assert_eq!(err.code, "PLATFORM_REPO_MACHINE_OWNED");
+
+        let err = svc
+            .write_repo_file("superadmin", "default", "../../escaped.md", "x")
+            .expect_err("traversal is refused, not quietly relocated");
+        assert_eq!(err.code, "PLATFORM_REPO_PATH");
+    }
+
+    /// `zebflow.yaml` and `zeb.lock` have services that own them, and a
+    /// malformed layout relocates the whole source tree, so they are not shown.
+    /// A directory the layout names cannot be deleted, because removing it
+    /// leaves the declaration pointing at nothing.
+    #[test]
+    fn the_tree_hides_machine_owned_files_and_protects_declared_roots() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let svc = make_service(tmp.path());
+        create_default_project(&svc);
+        svc.write_repo_file("superadmin", "default", "README.md", "# hi")
+            .expect("write");
+
+        let tree = svc
+            .list_repo_tree("superadmin", "default")
+            .expect("one tree rooted at repo/");
+        let names = tree
+            .items
+            .iter()
+            .map(|item| item.rel_path.as_str())
+            .collect::<Vec<_>>();
+        assert!(names.contains(&"README.md"), "{names:?}");
+        assert!(!names.contains(&"zebflow.yaml"), "{names:?}");
+        assert!(!names.contains(&"zeb.lock"), "{names:?}");
+        assert!(!names.iter().any(|n| n.starts_with(".git")), "{names:?}");
+
+        let docs = tree
+            .items
+            .iter()
+            .find(|item| item.rel_path == "docs")
+            .expect("docs is an ordinary folder in the one tree");
+        assert!(docs.is_protected, "a declared layout root is protected");
+
+        let err = svc
+            .delete_repo_entry("superadmin", "default", "docs")
+            .expect_err("a declared root cannot be deleted");
+        assert_eq!(err.code, "PLATFORM_REPO_DECLARED_ROOT");
+
+        svc.create_repo_folder("superadmin", "default", "notes")
+            .expect("an ordinary folder");
+        svc.delete_repo_entry("superadmin", "default", "notes")
+            .expect("and it can be deleted");
+    }
+
     #[test]
     fn a_pipeline_path_full_of_traversal_cannot_reach_another_project() {
         let root = tempfile::tempdir().unwrap();

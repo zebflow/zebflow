@@ -763,6 +763,26 @@ pub async fn router(platform: Arc<PlatformService>) -> Router {
             "/api/projects/{owner}/{project}/pipelines/invocations",
             get(api_pipeline_invocations),
         )
+        // One repository file surface. `kinds/project-configuration/layout.md`
+        // §8 decides what a repository may hold from the path alone, so there
+        // is one tree and one door rather than a source root and a docs root
+        // with a rule each.
+        .route(
+            "/api/projects/{owner}/{project}/repo",
+            get(api_repo_tree),
+        )
+        .route(
+            "/api/projects/{owner}/{project}/repo/file",
+            get(api_repo_read).put(api_repo_write).delete(api_repo_delete),
+        )
+        .route(
+            "/api/projects/{owner}/{project}/repo/folder",
+            post(api_repo_create_folder),
+        )
+        .route(
+            "/api/projects/{owner}/{project}/repo/move",
+            post(api_repo_move),
+        )
         .route(
             "/api/projects/{owner}/{project}/templates/workspace",
             get(api_template_workspace),
@@ -14023,6 +14043,212 @@ async fn api_pipeline_invocations(
             "count": entries.len(),
         }))
         .into_response(),
+        Err(err) => internal_error(err),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct RepoPathQuery {
+    path: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RepoMoveRequest {
+    from_path: String,
+    to_path: String,
+}
+
+fn repo_path_param(query: &RepoPathQuery) -> Result<String, Response> {
+    query
+        .path
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .ok_or_else(|| {
+            (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"ok": false, "error": {"code": "PLATFORM_REPO_PATH", "message": "missing repository path"}})),
+            )
+                .into_response()
+        })
+}
+
+async fn api_repo_tree(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((owner, project)): Path<(String, String)>,
+    uri: Uri,
+) -> Response {
+    if let Err(response) = require_project_api_capability(
+        &state,
+        &headers,
+        &owner,
+        &project,
+        ProjectCapability::TemplatesRead,
+    ) {
+        return response;
+    }
+    if let Ok(Some(worker_id)) = remote_project_worker_id(&state, &owner, &project) {
+        return match forward_project_api_request_to_worker(
+            &state,
+            &uri,
+            &Method::GET,
+            &headers,
+            Bytes::new(),
+            &worker_id,
+        )
+        .await
+        {
+            Ok(response) => response,
+            Err(err) => internal_error(err),
+        };
+    }
+    match state.platform.projects.list_repo_tree(&owner, &project) {
+        Ok(listing) => Json(listing).into_response(),
+        Err(err) => internal_error(err),
+    }
+}
+
+async fn api_repo_read(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((owner, project)): Path<(String, String)>,
+    Query(query): Query<RepoPathQuery>,
+) -> Response {
+    if let Err(response) = require_project_api_capability(
+        &state,
+        &headers,
+        &owner,
+        &project,
+        ProjectCapability::TemplatesRead,
+    ) {
+        return response;
+    }
+    let path = match repo_path_param(&query) {
+        Ok(path) => path,
+        Err(response) => return response,
+    };
+    match state
+        .platform
+        .projects
+        .read_repo_file(&owner, &project, &path)
+    {
+        Ok(payload) => Json(json!({"ok": true, "file": payload})).into_response(),
+        Err(err) => internal_error(err),
+    }
+}
+
+async fn api_repo_write(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((owner, project)): Path<(String, String)>,
+    Query(query): Query<RepoPathQuery>,
+    body: Bytes,
+) -> Response {
+    if let Err(response) = require_project_api_capability(
+        &state,
+        &headers,
+        &owner,
+        &project,
+        ProjectCapability::TemplatesWrite,
+    ) {
+        return response;
+    }
+    let path = match repo_path_param(&query) {
+        Ok(path) => path,
+        Err(response) => return response,
+    };
+    let content = String::from_utf8(body.to_vec()).unwrap_or_default();
+    match state
+        .platform
+        .projects
+        .write_repo_file(&owner, &project, &path, &content)
+    {
+        Ok(payload) => Json(json!({"ok": true, "file": payload})).into_response(),
+        Err(err) => internal_error(err),
+    }
+}
+
+async fn api_repo_delete(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((owner, project)): Path<(String, String)>,
+    Query(query): Query<RepoPathQuery>,
+) -> Response {
+    if let Err(response) = require_project_api_capability(
+        &state,
+        &headers,
+        &owner,
+        &project,
+        ProjectCapability::TemplatesDelete,
+    ) {
+        return response;
+    }
+    let path = match repo_path_param(&query) {
+        Ok(path) => path,
+        Err(response) => return response,
+    };
+    match state
+        .platform
+        .projects
+        .delete_repo_entry(&owner, &project, &path)
+    {
+        Ok(()) => Json(json!({"ok": true})).into_response(),
+        Err(err) => internal_error(err),
+    }
+}
+
+async fn api_repo_create_folder(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((owner, project)): Path<(String, String)>,
+    Json(query): Json<RepoPathQuery>,
+) -> Response {
+    if let Err(response) = require_project_api_capability(
+        &state,
+        &headers,
+        &owner,
+        &project,
+        ProjectCapability::TemplatesCreate,
+    ) {
+        return response;
+    }
+    let path = match repo_path_param(&query) {
+        Ok(path) => path,
+        Err(response) => return response,
+    };
+    match state
+        .platform
+        .projects
+        .create_repo_folder(&owner, &project, &path)
+    {
+        Ok(rel) => Json(json!({"ok": true, "path": rel})).into_response(),
+        Err(err) => internal_error(err),
+    }
+}
+
+async fn api_repo_move(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((owner, project)): Path<(String, String)>,
+    Json(req): Json<RepoMoveRequest>,
+) -> Response {
+    if let Err(response) = require_project_api_capability(
+        &state,
+        &headers,
+        &owner,
+        &project,
+        ProjectCapability::TemplatesMove,
+    ) {
+        return response;
+    }
+    match state
+        .platform
+        .projects
+        .move_repo_entry(&owner, &project, &req.from_path, &req.to_path)
+    {
+        Ok(rel) => Json(json!({"ok": true, "path": rel})).into_response(),
         Err(err) => internal_error(err),
     }
 }
