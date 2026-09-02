@@ -54,11 +54,11 @@ use crate::platform::model::{
     IDENTITY_WRITE_ACTION_LINKED, LoginRequest, McpSessionCreateRequest, McpSessionToggleRequest,
     PipelineExecuteTrigger, PipelineInvocationEntry, PipelineLocateRequest,
     PlatformOfficeIdentityWrite, PlatformOfficeLocalAuthorityEvent, ProjectAccessSubject,
-    ProjectCapability, ProjectDocItem, ProjectDocMoveRequest, ProjectOperationKind,
-    ProjectTransferArtifactKind, QueryProjectDbConnectionRequest, TemplateCompileRequest,
-    TemplateCompileResponse, TemplateCreateRequest, TemplateDiagnostic, TemplateMoveRequest,
-    TemplateSaveRequest, TestProjectDbConnectionRequest, UpdateSettingsSectionRequest,
-    UpdateSimpleTableRequest, UpdateUserSettingsRequest, UpsertPipelineDefinitionRequest,
+    ProjectCapability, ProjectDocMoveRequest, ProjectOperationKind, ProjectTransferArtifactKind,
+    QueryProjectDbConnectionRequest, TemplateCompileRequest, TemplateCompileResponse,
+    TemplateCreateRequest, TemplateDiagnostic, TemplateMoveRequest, TemplateSaveRequest,
+    TestProjectDbConnectionRequest, UpdateSettingsSectionRequest, UpdateSimpleTableRequest,
+    UpdateUserSettingsRequest, UpsertPipelineDefinitionRequest,
     UpsertProjectAssistantConfigRequest, UpsertProjectCredentialRequest,
     UpsertProjectDbConnectionRequest, UpsertProjectDocRequest, now_ts, slug_segment,
 };
@@ -4516,127 +4516,6 @@ async fn forward_project_page_request_to_worker(
     Ok(axum_response)
 }
 
-async fn list_project_docs_for_page(
-    state: &PlatformAppState,
-    owner: &str,
-    project: &str,
-) -> Result<Vec<ProjectDocItem>, PlatformError> {
-    let Some(worker_id) = remote_project_worker_id(state, owner, project)? else {
-        return state.platform.projects.list_project_docs(owner, project);
-    };
-    let worker = state
-        .platform
-        .cluster_registry
-        .get_worker(&worker_id)?
-        .ok_or_else(|| {
-            PlatformError::new(
-                "CLUSTER_WORKER_UNKNOWN",
-                format!("office '{}' not found", worker_id),
-            )
-        })?;
-    let token = cluster_call_header_for_office(state, worker_office_id(&worker))?;
-    let url = format!(
-        "{}/api/projects/{}/{}/docs",
-        worker.base_url.trim_end_matches('/'),
-        owner,
-        project
-    );
-    let response = state
-        .http_client
-        .get(url)
-        .header(INTERNAL_CLUSTER_TOKEN_HEADER, token)
-        .send()
-        .await
-        .map_err(|err| PlatformError::new("CLUSTER_WORKER_PROXY", err.to_string()))?;
-    let status = response.status();
-    let body = response
-        .bytes()
-        .await
-        .map_err(|err| PlatformError::new("CLUSTER_WORKER_PROXY", err.to_string()))?;
-    if !status.is_success() {
-        return Err(PlatformError::new(
-            "CLUSTER_WORKER_PROXY",
-            format!(
-                "office '{}' rejected docs list with {}: {}",
-                worker_id,
-                status,
-                String::from_utf8_lossy(&body)
-            ),
-        ));
-    }
-    let payload: Value = serde_json::from_slice(&body)?;
-    serde_json::from_value(
-        payload
-            .get("items")
-            .cloned()
-            .unwrap_or(Value::Array(vec![])),
-    )
-    .map_err(PlatformError::from)
-}
-
-async fn read_project_doc_for_page(
-    state: &PlatformAppState,
-    owner: &str,
-    project: &str,
-    path: &str,
-) -> Result<String, PlatformError> {
-    let Some(worker_id) = remote_project_worker_id(state, owner, project)? else {
-        return state
-            .platform
-            .projects
-            .read_project_doc(owner, project, path);
-    };
-    let worker = state
-        .platform
-        .cluster_registry
-        .get_worker(&worker_id)?
-        .ok_or_else(|| {
-            PlatformError::new(
-                "CLUSTER_WORKER_UNKNOWN",
-                format!("office '{}' not found", worker_id),
-            )
-        })?;
-    let token = cluster_call_header_for_office(state, worker_office_id(&worker))?;
-    let url = format!(
-        "{}/api/projects/{}/{}/docs/file",
-        worker.base_url.trim_end_matches('/'),
-        owner,
-        project
-    );
-    let response = state
-        .http_client
-        .get(url)
-        .query(&[("path", path)])
-        .header(INTERNAL_CLUSTER_TOKEN_HEADER, token)
-        .send()
-        .await
-        .map_err(|err| PlatformError::new("CLUSTER_WORKER_PROXY", err.to_string()))?;
-    let status = response.status();
-    let body = response
-        .bytes()
-        .await
-        .map_err(|err| PlatformError::new("CLUSTER_WORKER_PROXY", err.to_string()))?;
-    if !status.is_success() {
-        return Err(PlatformError::new(
-            "CLUSTER_WORKER_PROXY",
-            format!(
-                "office '{}' rejected doc read '{}' with {}: {}",
-                worker_id,
-                path,
-                status,
-                String::from_utf8_lossy(&body)
-            ),
-        ));
-    }
-    let payload: Value = serde_json::from_slice(&body)?;
-    Ok(payload
-        .get("doc")
-        .and_then(|doc| doc.get("content"))
-        .and_then(Value::as_str)
-        .unwrap_or_default()
-        .to_string())
-}
-
 /// Send this office's unreported break-glass records to its controller.
 ///
 /// Best effort by construction. The local record is the authority and is
@@ -5500,39 +5379,45 @@ fn template_display_path(layout: &ResolvedProjectLayout, rel_path: &str) -> Stri
         .to_string()
 }
 
-fn derive_scope_from_file_path(layout: &ResolvedProjectLayout, file: &str) -> String {
-    let stripped = layout.strip_source(file).unwrap_or(file);
-    let parent = stripped.rsplit_once('/').map(|(dir, _)| dir).unwrap_or("");
-    if parent.is_empty() {
-        "/".to_string()
-    } else {
-        crate::platform::model::normalize_virtual_path(parent)
+/// The children of one scope in the repository tree.
+///
+/// The sidebar used to merge two listings — the pipeline registry, scoped
+/// source-relative, and a `docs` overlay bolted onto the same namespace, which
+/// meant a real folder named `docs` inside the source root collided with the
+/// fake one. One tree, one scope, and `docs` is a directory like any other.
+fn repo_scope_children<'a>(
+    items: &'a [crate::platform::model::TemplateTreeItem],
+    scope: &str,
+) -> (
+    Vec<&'a crate::platform::model::TemplateTreeItem>,
+    Vec<&'a crate::platform::model::TemplateTreeItem>,
+) {
+    let prefix = scope.trim_matches('/');
+    let mut folders = Vec::new();
+    let mut files = Vec::new();
+    for item in items {
+        let parent = item
+            .rel_path
+            .rsplit_once('/')
+            .map(|(dir, _)| dir)
+            .unwrap_or("");
+        if parent != prefix {
+            continue;
+        }
+        if item.kind == "folder" {
+            folders.push(item);
+        } else {
+            files.push(item);
+        }
     }
+    (folders, files)
 }
 
-fn is_docs_virtual_path(path: &str) -> bool {
-    path == "/docs" || path.starts_with("/docs/")
-}
-
-fn docs_scope_rel_path(path: &str) -> Option<String> {
-    if path == "/docs" {
-        Some(String::new())
-    } else {
-        path.strip_prefix("/docs/")
-            .map(|rest| rest.trim_matches('/').to_string())
-    }
-}
-
-fn docs_parent_virtual_path(rel_path: &str) -> String {
-    let parent = std::path::Path::new(rel_path)
-        .parent()
-        .and_then(|p| p.to_str())
-        .unwrap_or("")
-        .trim_matches('/');
-    if parent.is_empty() {
-        "/docs".to_string()
-    } else {
-        format!("/docs/{parent}")
+/// The scope a repository path sits in, as a leading-slash repository path.
+fn repo_scope_of(rel_path: &str) -> String {
+    match rel_path.trim_matches('/').rsplit_once('/') {
+        Some((dir, _)) if !dir.is_empty() => format!("/{dir}"),
+        _ => "/".to_string(),
     }
 }
 
@@ -5593,25 +5478,22 @@ async fn render_project_editor(
         crate::platform::model::normalize_virtual_path(path)
     } else if let Some(ref file) = file_param {
         if editor_type == "doc" {
-            docs_parent_virtual_path(file)
+            repo_scope_of(file)
         } else {
-            derive_scope_from_file_path(&repo_layout, file)
+            repo_scope_of(file)
         }
     } else {
         "/".to_string()
     };
 
-    // /docs is a virtual folder — detect it for special handling
-    let is_docs_scope = is_docs_virtual_path(&scope_path);
-    let docs_scope_rel = docs_scope_rel_path(&scope_path).unwrap_or_default();
-    let docs_items = if is_docs_scope || scope_path == "/" {
-        match list_project_docs_for_page(&state, &owner, &project).await {
-            Ok(items) => items,
-            Err(err) => return internal_error(err),
-        }
-    } else {
-        vec![]
+    // One tree over `repo/`. Every folder in the sidebar is a real directory,
+    // so a `.md` beside `zebflow.yaml` is as reachable as one inside `docs/` --
+    // which is what the extension allowlist has always permitted.
+    let repo_tree = match state.platform.projects.list_repo_tree(&owner, &project) {
+        Ok(listing) => listing.items,
+        Err(err) => return internal_error(err),
     };
+    let (scope_folders_here, scope_files_here) = repo_scope_children(&repo_tree, &scope_path);
 
     // Git status map for git indicators
     let git_map: std::collections::HashMap<String, String> = state
@@ -5623,26 +5505,22 @@ async fn render_project_editor(
         .map(|item| (item.rel_path, item.code))
         .collect();
 
-    // Registry listing — skip for /docs (virtual folder not in the pipeline tree)
-    let listing = if !is_docs_scope {
-        match state.platform.projects.list_pipeline_registry(
-            &owner,
-            &project,
-            &scope_path,
-            &route_base,
-            &editor_base,
-        ) {
-            Ok(l) => l,
-            Err(err) => return internal_error(err),
-        }
-    } else {
-        crate::platform::model::PipelineRegistryListing {
-            current_path: "/docs".to_string(),
-            breadcrumbs: vec![],
-            folders: vec![],
-            pipelines: vec![],
-            files: vec![],
-        }
+    // The registry still answers for pipelines, which carry identity, activation
+    // state and a trigger kind that a directory walk cannot know. Its folder and
+    // file duties are the repository tree's now.
+    let listing = match state.platform.projects.list_pipeline_registry(
+        &owner,
+        &project,
+        &crate::platform::model::normalize_virtual_path(
+            repo_layout
+                .strip_source(scope_path.trim_start_matches('/'))
+                .unwrap_or(""),
+        ),
+        &route_base,
+        &editor_base,
+    ) {
+        Ok(l) => l,
+        Err(err) => return internal_error(err),
     };
 
     // All pipeline rows (for scope folder map)
@@ -5675,37 +5553,23 @@ async fn render_project_editor(
         }
     }
 
-    // All virtual paths with counts (for the sidebar folder accordion)
-    let mut folder_counts = std::collections::BTreeMap::<String, usize>::new();
-    for meta in &all_rows {
-        let vpath = crate::platform::model::normalize_virtual_path(&meta.virtual_path);
-        *folder_counts.entry(vpath).or_insert(0) += 1;
-    }
-    // Include template files in counts so badges reflect all items per folder.
-    // Skip .zf.json files — they are pipeline definitions already counted above.
-    if let Ok(workspace) = state
-        .platform
-        .projects
-        .list_template_workspace(&owner, &project)
-    {
-        for item in &workspace.items {
-            if item.kind == "file" && !item.rel_path.ends_with(".zf.json") {
-                let parent = std::path::Path::new(&item.rel_path)
-                    .parent()
-                    .and_then(|p| p.to_str())
-                    .unwrap_or("");
-                let vpath = crate::platform::model::normalize_virtual_path(parent);
-                *folder_counts.entry(vpath).or_insert(0) += 1;
-            }
-        }
-    }
-    let scope_folders = folder_counts
-        .into_iter()
-        .map(|(vpath, count)| {
+    // Every folder in the repository, with how many files it holds, for the
+    // sidebar accordion. Counted off the one tree so the accordion and the
+    // folder view cannot disagree — the road this replaces counted pipelines
+    // by their source-relative virtual path and templates by a second walk.
+    let scope_folders = repo_tree
+        .iter()
+        .filter(|item| item.kind == "folder")
+        .map(|folder| {
+            let prefix = format!("{}/", folder.rel_path);
+            let count = repo_tree
+                .iter()
+                .filter(|child| child.kind == "file" && child.rel_path.starts_with(&prefix))
+                .count();
             json!({
-                "virtual_path": vpath,
+                "virtual_path": format!("/{}", folder.rel_path),
                 "count": count,
-                "href": format!("{editor_base}?path={vpath}")
+                "href": format!("{editor_base}?path=/{}", folder.rel_path),
             })
         })
         .collect::<Vec<_>>();
@@ -5759,123 +5623,58 @@ async fn render_project_editor(
         })
         .collect::<Vec<_>>();
 
-    // Sidebar template/doc files — with new editor URLs
-    let sidebar_template_files: Vec<Value> = if is_docs_scope {
-        docs_items
-            .iter()
-            .filter_map(|d| {
-                if d.kind != "file" {
-                    return None;
-                }
-                let remainder = if docs_scope_rel.is_empty() {
-                    d.path.clone()
-                } else {
-                    d.path
-                        .strip_prefix(&format!("{docs_scope_rel}/"))?
-                        .to_string()
-                };
-                if remainder.contains('/') {
-                    return None;
-                }
-                let is_selected = file_param.as_deref() == Some(d.path.as_str());
-                let editor_href = format!(
-                    "{editor_base}?type=doc&path={}&file={}",
-                    docs_parent_virtual_path(&d.path),
-                    d.path
-                );
-                Some(json!({
-                    "name": d.name,
-                    "rel_path": format!("docs/{}", d.path),
-                    "template_path": d.path,
-                    "kind": "doc",
-                    "git_status": null,
-                    "is_selected": is_selected,
-                    "editor_href": editor_href,
-                }))
-            })
-            .collect()
-    } else {
-        listing
-            .files
-            .iter()
-            .map(|f| {
-                let template_path = template_display_path(&repo_layout, &f.rel_path);
-                let git_status = git_map.get(&f.rel_path).cloned();
-                let is_selected = file_param.as_deref() == Some(template_path.as_str());
-                json!({
-                    "name": f.name,
-                    "rel_path": template_path,
-                    "template_path": template_path,
-                    "kind": f.kind,
-                    "git_status": git_status,
-                    "is_selected": is_selected,
-                    "editor_href": format!("{editor_base}?type=template&path={scope_path}&file={template_path}"),
-                })
-            })
-            .collect()
-    };
-
-    // Child folders for sidebar + folder view
-    // folder.path contains the old registry URL (baked in by list_pipeline_registry);
-    // reconstruct clean virtual path from scope_path + folder.name instead.
-    let mut child_folders: Vec<Value> = listing
-        .folders
+    // Sidebar files — every non-pipeline file at this scope, one editor type.
+    // `type=doc` and `type=template` were the same operation reached by two
+    // roads; the path here is repository-relative, so nothing has to be
+    // un-prefixed on the way back.
+    let sidebar_template_files: Vec<Value> = scope_files_here
         .iter()
-        .map(|folder| {
-            let virtual_path = if scope_path == "/" {
-                format!("/{}", folder.name)
-            } else {
-                format!("{}/{}", scope_path, folder.name)
-            };
+        .filter(|item| {
+            !item
+                .rel_path
+                .ends_with(crate::platform::model::PIPELINE_DEFINITION_EXTENSION)
+        })
+        .map(|item| {
+            let git_status = git_map.get(&item.rel_path).cloned();
+            let is_selected = file_param.as_deref() == Some(item.rel_path.as_str());
             json!({
-                "name": folder.name,
-                "virtual_path": virtual_path,
-                "href": format!("{editor_base}?path={virtual_path}"),
-                "count": 0,
+                "name": item.name,
+                "rel_path": item.rel_path,
+                "template_path": item.rel_path,
+                "kind": item.file_kind,
+                "git_status": git_status,
+                "is_selected": is_selected,
+                "editor_href": format!(
+                    "{editor_base}?type=file&path={scope_path}&file={}",
+                    item.rel_path
+                ),
             })
         })
         .collect();
-    if is_docs_scope {
-        child_folders = docs_items
-            .iter()
-            .filter_map(|item| {
-                if item.kind != "folder" {
-                    return None;
-                }
-                let remainder = if docs_scope_rel.is_empty() {
-                    item.path.clone()
-                } else {
-                    item.path
-                        .strip_prefix(&format!("{docs_scope_rel}/"))?
-                        .to_string()
-                };
-                if remainder.is_empty() || remainder.contains('/') {
-                    return None;
-                }
-                let virtual_path = if docs_scope_rel.is_empty() {
-                    format!("/docs/{remainder}")
-                } else {
-                    format!("/docs/{docs_scope_rel}/{remainder}")
-                };
-                Some(json!({
-                    "name": item.name,
-                    "virtual_path": virtual_path,
-                    "href": format!("{editor_base}?path={virtual_path}"),
-                    "count": 0,
-                }))
+
+    // Child folders — real directories at this scope. Nothing is injected here
+    // any more; `docs/` shows up because it exists on disk.
+    let child_folders: Vec<Value> = scope_folders_here
+        .iter()
+        .map(|item| {
+            let virtual_path = format!("/{}", item.rel_path);
+            json!({
+                "name": item.name,
+                "virtual_path": virtual_path,
+                "href": format!("{editor_base}?path={virtual_path}"),
+                "count": repo_tree
+                    .iter()
+                    .filter(|child| {
+                        child.kind == "file"
+                            && child
+                                .rel_path
+                                .starts_with(&format!("{}/", item.rel_path))
+                    })
+                    .count(),
+                "is_protected": item.is_protected,
             })
-            .collect();
-    }
-    // At root: inject virtual /docs folder
-    if scope_path == "/" {
-        let docs_count = docs_items.iter().filter(|d| d.kind == "file").count();
-        child_folders.push(json!({
-            "name": "docs",
-            "virtual_path": "/docs",
-            "href": format!("{editor_base}?path=/docs"),
-            "count": docs_count,
-        }));
-    }
+        })
+        .collect();
 
     let sidebar = json!({
         "scope_path": scope_path,
@@ -5889,8 +5688,9 @@ async fn render_project_editor(
     // Determine effective editor type
     let effective_type = match (editor_type.as_str(), file_param.as_deref()) {
         ("pipeline", Some(_)) => "pipeline",
-        ("template", Some(_)) => "template",
-        ("doc", Some(_)) => "doc",
+        // `template` and `doc` both land here: one editor, one repository path.
+        // Older links carrying either word keep working.
+        ("file" | "template" | "doc", Some(_)) => "file",
         _ => "folder",
     };
 
@@ -5990,18 +5790,21 @@ async fn render_project_editor(
     };
 
     // Template payload
-    let template_payload = if effective_type == "template" {
+    // One file payload. `template` and `doc` were the same editor reached by two
+    // roads with two APIs; the path is repository-relative and the API is the
+    // one repository door.
+    let template_payload = if effective_type == "file" {
         let file = file_param.as_deref().unwrap_or("");
         let file_data = match state
             .platform
             .projects
-            .read_template_payload(&owner, &project, file)
+            .read_repo_file(&owner, &project, file)
         {
             Ok(d) => d,
             Err(_) => crate::platform::model::TemplateFilePayload {
                 rel_path: file.to_string(),
                 name: file.rsplit('/').next().unwrap_or(file).to_string(),
-                file_kind: "template".to_string(),
+                file_kind: "doc".to_string(),
                 content: String::new(),
                 line_count: 0,
                 is_protected: false,
@@ -6015,8 +5818,8 @@ async fn render_project_editor(
             "line_count": file_data.line_count,
             "is_protected": file_data.is_protected,
             "api": {
-                "file": format!("/api/projects/{owner}/{project}/templates/file"),
-                "save": format!("/api/projects/{owner}/{project}/templates/file"),
+                "file": format!("/api/projects/{owner}/{project}/repo/file"),
+                "save": format!("/api/projects/{owner}/{project}/repo/file"),
                 "outline": format!("/api/projects/{owner}/{project}/templates/outline"),
             }
         })
@@ -6024,29 +5827,7 @@ async fn render_project_editor(
         Value::Null
     };
 
-    // Doc payload — read doc file content for editor
-    let doc_payload = if effective_type == "doc" {
-        let file = file_param.as_deref().unwrap_or("");
-        let content = read_project_doc_for_page(&state, &owner, &project, file)
-            .await
-            .unwrap_or_default();
-        let name = file.rsplit('/').next().unwrap_or(file).to_string();
-        json!({
-            "name": name,
-            "path": file,
-            "rel_path": format!("docs/{}", file),
-            "parent_virtual_path": docs_parent_virtual_path(file),
-            "file_kind": "doc",
-            "content": content,
-            "api": {
-                "file": format!("/api/projects/{owner}/{project}/docs/file"),
-                "save": format!("/api/projects/{owner}/{project}/docs/file"),
-                "outline": format!("/api/projects/{owner}/{project}/templates/outline"),
-            }
-        })
-    } else {
-        Value::Null
-    };
+    let doc_payload = Value::Null;
 
     // Folder view payload — reuse sidebar data
     let folder_payload = if effective_type == "folder" {
@@ -6059,7 +5840,7 @@ async fn render_project_editor(
         Value::Null
     };
 
-    let selected_template_locked = if effective_type == "template" {
+    let selected_template_locked = if effective_type == "file" {
         let file = file_param.as_deref().unwrap_or("");
         crate::platform::services::project_config::is_template_path_locked(&locked_templates, file)
     } else {
