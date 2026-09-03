@@ -158,14 +158,23 @@ async fn a_pipeline_body_cannot_reach_across_projects_through_any_door() {
 
     // Counted so it genuinely lands on the victim's file: the pipeline doors
     // join onto `<data_root>/users/superadmin/attacker/repo/<source>`, and
-    // three levels up from there is `<data_root>/users/superadmin`.
-    let source = attacker
+    // `<data_root>/users/superadmin` is the source's own depth plus two —
+    // out of `repo/` and out of the project. The source root is the repository
+    // itself unless a project declares otherwise, so the depth is counted
+    // rather than assumed.
+    let source_rel = attacker
         .repo_source_dir()
         .strip_prefix(&attacker.repo_dir)
         .expect("source root under repo")
         .to_string_lossy()
         .to_string();
-    let hostile = format!("../../../victim/repo/{source}/api/payouts.zf.json");
+    let ups = "../".repeat(source_rel.split('/').filter(|s| !s.is_empty()).count() + 2);
+    let source_segment = if source_rel.is_empty() {
+        String::new()
+    } else {
+        format!("{source_rel}/")
+    };
+    let hostile = format!("{ups}victim/repo/{source_segment}api/payouts.zf.json");
     let hostile = hostile.as_str();
     assert_eq!(
         attacker.repo_source_dir().join(hostile).canonicalize().ok(),

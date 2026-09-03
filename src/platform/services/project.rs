@@ -598,7 +598,6 @@ impl ProjectService {
         self.dependency_lock
             .write_if_missing(&owner, &project, &DependencyLockSpec::default())?;
         self.project_data.initialize_project(&layout)?;
-        self.ensure_default_template_workspace(&layout)?;
 
         Ok((record, layout))
     }
@@ -1273,6 +1272,157 @@ impl ProjectService {
     }
 
     /// Returns the current template workspace tree for one project.
+    /// The files a new project starts with, at the repository root.
+    ///
+    /// A README the way a new repository on GitHub has one, and three samples
+    /// that show the two things a pipeline can be: an API endpoint, and a web
+    /// page. Nothing else -- no `pipelines/`, no `pages/`, no `docs/`. The
+    /// layout entries say where a kind is looked for; a folder exists because
+    /// an author made one.
+    ///
+    /// Written only when absent, so re-creating a project over an existing
+    /// repository never overwrites the author's work.
+    /// Called by the two user-facing create paths only, never by
+    /// `create_or_update_project`.
+    ///
+    /// An import, a hub install and a git clone all create a project and then
+    /// fill it, so a sample written at creation would end up as a stray file in
+    /// somebody else's repository. Only a person clicking "new project" wants
+    /// these.
+    pub fn write_starter_files(&self, owner: &str, project: &str) -> Result<(), PlatformError> {
+        let owner = slug_segment(owner);
+        let project = slug_segment(project);
+        let layout = self.file.ensure_project_layout(&owner, &project)?;
+        let title = self
+            .get_project(&owner, &project)?
+            .map(|record| record.title)
+            .filter(|title| !title.trim().is_empty())
+            .unwrap_or_else(|| project.clone());
+        let layout = &layout;
+        let title = title.as_str();
+        let readme = format!(
+            "# {title}\n\nA Zebflow project.\n\n\
+             - `sample_api_pipeline.zf.json` — a webhook that answers with JSON\n\
+             - `sample_web_page_pipeline.zf.json` — a page served at `/p/sample`\n\
+             - `sample_web_page.tsx` — the page it renders\n"
+        );
+
+        let api_pipeline = serde_json::json!({
+            "apiVersion": crate::contracts::CONTRACT_API_VERSION,
+            "kind": "Pipeline",
+            "metadata": { "name": "sample_api_pipeline" },
+            "spec": {
+                "id": "sample_api_pipeline",
+                "description": "A webhook that answers with JSON.",
+                "entry_nodes": ["trigger"],
+                "nodes": [
+                    {
+                        "id": "trigger",
+                        "kind": "n.trigger.webhook",
+                        "input_pins": [],
+                        "output_pins": ["out"],
+                        "config": { "path": "/sample", "method": "GET" }
+                    },
+                    {
+                        "id": "reply",
+                        "kind": "n.web.response",
+                        "input_pins": ["in"],
+                        "output_pins": ["out"],
+                        "config": { "status": 200 }
+                    }
+                ],
+                "edges": [
+                    { "from_node": "trigger", "from_pin": "out", "to_node": "reply", "to_pin": "in" }
+                ]
+            }
+        });
+
+        let page_pipeline = serde_json::json!({
+            "apiVersion": crate::contracts::CONTRACT_API_VERSION,
+            "kind": "Pipeline",
+            "metadata": { "name": "sample_web_page_pipeline" },
+            "spec": {
+                "id": "sample_web_page_pipeline",
+                "description": "Serves sample_web_page.tsx.",
+                "entry_nodes": ["trigger"],
+                "nodes": [
+                    {
+                        "id": "trigger",
+                        "kind": "n.trigger.webhook",
+                        "input_pins": [],
+                        "output_pins": ["out"],
+                        "config": { "path": "/p/sample", "method": "GET" }
+                    },
+                    {
+                        "id": "page",
+                        "kind": "n.web.response",
+                        "input_pins": ["in"],
+                        "output_pins": ["out"],
+                        "config": { "template": "sample_web_page.tsx", "status": 200 }
+                    }
+                ],
+                "edges": [
+                    { "from_node": "trigger", "from_pin": "out", "to_node": "page", "to_pin": "in" }
+                ]
+            }
+        });
+
+        let page = "import { useState } from \"zeb\";\n\n\
+                    export default function SampleWebPage() {\n\
+                    \u{20}\u{20}const [count, setCount] = useState(0);\n\
+                    \u{20}\u{20}return (\n\
+                    \u{20}\u{20}\u{20}\u{20}<main className=\"p-8\">\n\
+                    \u{20}\u{20}\u{20}\u{20}\u{20}\u{20}<h1 className=\"text-2xl font-bold\">Hello from Zebflow</h1>\n\
+                    \u{20}\u{20}\u{20}\u{20}\u{20}\u{20}<button onClick={() => setCount(count + 1)}>Clicked {count} times</button>\n\
+                    \u{20}\u{20}\u{20}\u{20}</main>\n\
+                    \u{20}\u{20});\n\
+                    }\n";
+
+        for (name, content) in [
+            ("README.md", readme),
+            ("sample_web_page.tsx", page.to_string()),
+        ] {
+            let path = layout.repo_dir.join(name);
+            if !path.exists() {
+                atomic_write(&path, content.as_bytes())?;
+            }
+        }
+
+        // The two samples are registered rather than written, because a
+        // pipeline is a row as well as a file: writing the bytes alone leaves a
+        // definition nothing lists, activates, or triggers.
+        for (file, title, description, trigger, source) in [
+            (
+                "sample_api_pipeline.zf.json",
+                "Sample API",
+                "A webhook that answers with JSON.",
+                "webhook",
+                &api_pipeline,
+            ),
+            (
+                "sample_web_page_pipeline.zf.json",
+                "Sample Web Page",
+                "Serves sample_web_page.tsx.",
+                "webhook",
+                &page_pipeline,
+            ),
+        ] {
+            if layout.repo_dir.join(file).exists() {
+                continue;
+            }
+            self.upsert_pipeline_definition(
+                &owner,
+                &project,
+                file,
+                title,
+                description,
+                trigger,
+                &serde_json::to_string_pretty(source).unwrap_or_default(),
+            )?;
+        }
+        Ok(())
+    }
+
     /// Every entry under `repo/`, in one tree.
     ///
     /// Replaces the two walks that came before it — one over the source root,
@@ -1568,7 +1718,6 @@ impl ProjectService {
         let owner = slug_segment(owner);
         let project = slug_segment(project);
         let layout = self.file.ensure_project_layout(&owner, &project)?;
-        self.ensure_default_template_workspace(&layout)?;
 
         let (rel, abs) = resolve_template_entry(&layout.repo_source_dir(), rel_path)?;
         if !abs.is_file() {
@@ -1590,7 +1739,6 @@ impl ProjectService {
         let owner = slug_segment(owner);
         let project = slug_segment(project);
         let layout = self.file.ensure_project_layout(&owner, &project)?;
-        self.ensure_default_template_workspace(&layout)?;
 
         let (rel, abs) = resolve_template_entry(&layout.repo_source_dir(), rel_path)?;
         if !abs.is_file() {
@@ -1614,7 +1762,6 @@ impl ProjectService {
         let project = slug_segment(project);
         self.ensure_template_editable(&owner, &project, &req.rel_path, "edited")?;
         let layout = self.file.ensure_project_layout(&owner, &project)?;
-        self.ensure_default_template_workspace(&layout)?;
 
         let (rel, abs) = resolve_template_entry(&layout.repo_source_dir(), &req.rel_path)?;
         if let Some(parent) = abs.parent() {
@@ -1804,7 +1951,6 @@ impl ProjectService {
         let owner = slug_segment(owner);
         let project = slug_segment(project);
         let layout = self.file.ensure_project_layout(&owner, &project)?;
-        self.ensure_default_template_workspace(&layout)?;
 
         let parent_rel =
             normalize_template_folder_rel_path(req.parent_rel_path.as_deref().unwrap_or_default());
@@ -1890,7 +2036,6 @@ impl ProjectService {
         let project = slug_segment(project);
         self.ensure_template_editable(&owner, &project, rel_path, "deleted")?;
         let layout = self.file.ensure_project_layout(&owner, &project)?;
-        self.ensure_default_template_workspace(&layout)?;
 
         let (rel, abs) = resolve_template_entry(&layout.repo_source_dir(), rel_path)?;
         if !abs.exists() {
@@ -1924,7 +2069,6 @@ impl ProjectService {
         let project = slug_segment(project);
         self.ensure_template_editable(&owner, &project, &req.from_rel_path, "moved")?;
         let layout = self.file.ensure_project_layout(&owner, &project)?;
-        self.ensure_default_template_workspace(&layout)?;
 
         let (from_rel, from_abs) =
             resolve_template_entry(&layout.repo_source_dir(), &req.from_rel_path)?;
@@ -1945,12 +2089,16 @@ impl ProjectService {
                 "resolved move target escaped template root",
             ));
         }
-        if !parent_abs.exists() || !parent_abs.is_dir() {
+        // Create the destination rather than demand it. Nothing scaffolds
+        // folders now, so requiring one to exist would mean a move can only
+        // land where something already happens to be.
+        if parent_abs.exists() && !parent_abs.is_dir() {
             return Err(PlatformError::new(
                 "PLATFORM_TEMPLATE_MOVE",
-                format!("target folder '{}' not found", parent_rel),
+                format!("target '{}' is not a folder", parent_rel),
             ));
         }
+        fs::create_dir_all(&parent_abs)?;
         let name = from_abs
             .file_name()
             .and_then(|v| v.to_str())
@@ -1984,7 +2132,6 @@ impl ProjectService {
         let owner = slug_segment(owner);
         let project = slug_segment(project);
         let layout = self.file.ensure_project_layout(&owner, &project)?;
-        self.ensure_default_template_workspace(&layout)?;
 
         let output = Command::new("git")
             .arg("-C")
@@ -2305,45 +2452,6 @@ impl ProjectService {
         if let Some(m) = meta {
             self.data
                 .delete_pipeline_meta(&m.owner, &m.project, &m.file_rel_path)?;
-        }
-
-        Ok(())
-    }
-
-    fn ensure_default_template_workspace(
-        &self,
-        layout: &ProjectFileLayout,
-    ) -> Result<(), PlatformError> {
-        // Subdirs are created by ensure_project_layout. Only scaffold default files here.
-        let pages_dir = layout.repo_source_dir().join("pages");
-        let styles_dir = layout.repo_source_dir().join("styles");
-        fs::create_dir_all(&pages_dir)?;
-        fs::create_dir_all(&styles_dir)?;
-
-        let main_css = styles_dir.join("main.css");
-        if !main_css.exists() {
-            fs::write(
-                &main_css,
-                r#":root {
-  --zf-color-bg: #020617;
-  --zf-color-panel: #0f172a;
-  --zf-color-text: #e2e8f0;
-  --zf-color-accent: #ff5c00;
-  --zf-color-accent-alt: #005b9a;
-}
-"#,
-            )?;
-        }
-
-        // Scaffold shared/ directories for cross-module shared code.
-        // @/shared/ui, @/shared/layout, @/shared/lib — import path: @/shared/ui/button
-        for subdir in ["shared/ui", "shared/layout", "shared/lib"] {
-            let dir = layout.repo_source_dir().join(subdir);
-            fs::create_dir_all(&dir)?;
-            let gitkeep = dir.join(".gitkeep");
-            if !gitkeep.exists() {
-                fs::write(&gitkeep, "")?;
-            }
         }
 
         Ok(())
@@ -3699,6 +3807,20 @@ mod tests {
         .expect("create project");
     }
 
+    /// A project that gathers its source under `pipelines/`, the way every
+    /// project did before the source root defaulted to the repository itself.
+    ///
+    /// Tests about identity, the legacy-prefix migration and source-relative
+    /// discovery declare it, because that is the arrangement they exercise —
+    /// an undeclared project now has no source folder to be relative to.
+    fn declare_source_pipelines(svc: &ProjectService) {
+        svc.zebflow_cfg
+            .update("superadmin", "default", |config| {
+                config.configs.layout.source = Some("pipelines".to_string());
+            })
+            .expect("declare source");
+    }
+
     /// S2 regression. `file_rel_path` comes from the request body while the
     /// caller is authorised against the project named in the *route*. The
     /// identity normalizer stripped a leading `/` and nothing else, and
@@ -3782,6 +3904,11 @@ mod tests {
         assert!(!names.contains(&"zeb.lock"), "{names:?}");
         assert!(!names.iter().any(|n| n.starts_with(".git")), "{names:?}");
 
+        // Nothing scaffolds a folder, so `docs/` exists only once an author
+        // makes one -- and then, being named by the layout, it is protected.
+        svc.create_repo_folder("superadmin", "default", "docs")
+            .expect("an author makes the docs folder");
+        let tree = svc.list_repo_tree("superadmin", "default").expect("tree");
         let docs = tree
             .items
             .iter()
@@ -3991,6 +4118,7 @@ mod tests {
             },
         )
         .expect("create project");
+        declare_source_pipelines(&svc);
 
         let file_rel_path = "pipelines/pages/home.zf.json";
         let source_a = r#"{
@@ -4073,6 +4201,7 @@ mod tests {
         let tmp = tempfile::tempdir().expect("temp dir");
         let svc = make_service(tmp.path());
         create_default_project(&svc);
+        declare_source_pipelines(&svc);
         let file_rel_path = "pipelines/api/router.zf.json";
 
         svc.upsert_pipeline_definition(
@@ -4300,6 +4429,7 @@ mod tests {
             },
         )
         .expect("create project");
+        declare_source_pipelines(&svc);
 
         let source = r#"{
   "apiVersion":"zebflow.com/v1",
@@ -4676,9 +4806,9 @@ mod tests {
         create_default_project(&svc);
 
         let layout = svc.project_layout("superadmin", "default").expect("layout");
-        assert_eq!(layout.repo_layout.source, "pipelines");
-        assert_eq!(layout.repo_layout.assets, "pipelines/assets");
-        assert_eq!(layout.repo_source_dir(), layout.repo_dir.join("pipelines"));
+        assert_eq!(layout.repo_layout.source, "");
+        assert_eq!(layout.repo_layout.assets, "assets");
+        assert_eq!(layout.repo_source_dir(), layout.repo_dir);
 
         let meta = svc
             .upsert_pipeline_definition(
@@ -4691,13 +4821,11 @@ mod tests {
                 &webhook_pipeline_source("router", "/router"),
             )
             .expect("save");
+        // Identity is the path inside the source root, and the source root is
+        // the repository, so the identity and the file agree with no prefix in
+        // between.
         assert_eq!(meta.file_rel_path, "api/router.zf.json");
-        assert!(
-            layout
-                .repo_dir
-                .join("pipelines/api/router.zf.json")
-                .is_file()
-        );
+        assert!(layout.repo_dir.join("api/router.zf.json").is_file());
     }
 
     #[test]
@@ -4762,6 +4890,7 @@ mod tests {
         let tmp = tempfile::tempdir().expect("temp dir");
         let svc = make_service(tmp.path());
         create_default_project(&svc);
+        declare_source_pipelines(&svc);
 
         let layout = svc.project_layout("superadmin", "default").expect("layout");
         let source = webhook_pipeline_source("legacy", "/legacy");

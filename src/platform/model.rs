@@ -2867,7 +2867,15 @@ pub struct ZebflowJsonConfigs {
 }
 
 /// Repository-relative source root: pipelines, pages, styles, and components.
-pub const DEFAULT_LAYOUT_SOURCE_DIR: &str = "pipelines";
+/// The source tree defaults to the repository itself.
+///
+/// A project starts as an empty repository: no `pipelines/`, no `pages/`, no
+/// `docs/`. A pipeline, a page and a stylesheet may sit at the root beside the
+/// README, and a project that wants them gathered under one directory says so
+/// with `spec.layout.source`. The directories named by the other layout entries
+/// are where their kind is *looked for*, never directories the platform
+/// creates.
+pub const DEFAULT_LAYOUT_SOURCE_DIR: &str = "";
 /// Directory name, inside the source root, served for
 /// `/assets/{owner}/{project}/...`.
 pub const DEFAULT_LAYOUT_ASSETS_SUBDIR: &str = "assets";
@@ -3014,12 +3022,21 @@ impl ZebflowJsonLayout {
         let source = resolved(&self.source, DEFAULT_LAYOUT_SOURCE_DIR);
         // Assets default *inside* the source root rather than at a fixed path,
         // so a project that moves its source does not keep an asset directory
-        // in the tree it moved out of. With no source declared this is
-        // `pipelines/assets`, exactly as before.
-        let assets = self
-            .assets
-            .clone()
-            .unwrap_or_else(|| format!("{source}/{DEFAULT_LAYOUT_ASSETS_SUBDIR}"));
+        // in the tree it moved out of. With the source at the repository root
+        // the subdirectory stands alone: joining `"/assets"` onto a path is
+        // absolute in Rust and would leave the project entirely.
+        //
+        // Assets keep a directory of their own whatever the source is, because
+        // `/assets/{owner}/{project}/…` serves everything beneath this one
+        // publicly -- rooting it at the repository would publish `zebflow.yaml`
+        // and every pipeline definition.
+        let assets = self.assets.clone().unwrap_or_else(|| {
+            if source.is_empty() {
+                DEFAULT_LAYOUT_ASSETS_SUBDIR.to_string()
+            } else {
+                format!("{source}/{DEFAULT_LAYOUT_ASSETS_SUBDIR}")
+            }
+        });
         ResolvedProjectLayout {
             source,
             assets,
@@ -3070,9 +3087,14 @@ impl ResolvedProjectLayout {
     }
 
     /// Repository-relative path of `rest` inside the source root.
+    ///
+    /// With the source at the repository root there is no prefix to add, and
+    /// adding one anyway would make the path absolute.
     pub fn source_rel(&self, rest: &str) -> String {
         if rest.is_empty() {
             self.source.clone()
+        } else if self.source.is_empty() {
+            rest.to_string()
         } else {
             format!("{}/{rest}", self.source)
         }
@@ -3173,6 +3195,11 @@ fn file_extension(name: &str) -> Option<String> {
 /// under `dir`. Anchored on a whole segment, so `pipelines-old/x` is not
 /// treated as living under `pipelines`.
 pub fn strip_dir_prefix<'a>(dir: &str, rel: &'a str) -> Option<&'a str> {
+    // An empty declaration names the repository root, so everything is inside
+    // it and nothing has a prefix to remove.
+    if dir.is_empty() {
+        return Some(rel);
+    }
     rel.strip_prefix(dir)?.strip_prefix('/')
 }
 

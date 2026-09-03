@@ -3686,7 +3686,7 @@ impl HubService {
         // artifact returns now, with the project untouched.
         let prepared =
             prepare_hub_install_entries(&placement, &install_base, &payload.files, artifacts)?;
-        validate_prepared_pipeline_sources(&layout.repo_layout, &prepared)?;
+        validate_prepared_pipeline_sources(&layout.repo_layout, &payload.asset_kind, &prepared)?;
         refuse_prepared_install_violations(&layout.repo_layout, &payload.asset_kind, &prepared)?;
         let previous_lock = if payload.asset_kind == HUB_ASSET_KIND_NODE_BUNDLE
             || payload.asset_kind == HUB_ASSET_KIND_RWE_LIBRARY
@@ -6846,10 +6846,26 @@ fn refuse_prepared_install_violations(
     Ok(())
 }
 
+/// Every entry that will land as one of the project's own pipelines has to be a
+/// pipeline the project can read.
+///
+/// A node bundle is exempt, for the reason `kinds/hub-package/README.md` gives:
+/// its `rel_path`s name files inside the bundle, which materializes into
+/// `data/hub/nodes/` under its own contract's layout, not inside anybody's
+/// repository. A bundle's own `functions/main.zf.json` is its business.
+///
+/// That exemption used to hold by accident — bundle paths did not begin with
+/// `pipelines/`, so the source-root test missed them. With the source root at
+/// the repository, every `.zf.json` under it is a pipeline path, so the
+/// exemption has to be stated.
 fn validate_prepared_pipeline_sources(
     layout: &ResolvedProjectLayout,
+    asset_kind: &str,
     entries: &[PreparedHubInstallEntry],
 ) -> Result<(), PlatformError> {
+    if asset_kind == HUB_ASSET_KIND_NODE_BUNDLE {
+        return Ok(());
+    }
     for entry in entries
         .iter()
         .filter(|entry| layout.is_pipeline_rel_path(&entry.install_rel))
@@ -8835,7 +8851,11 @@ mod tests {
     fn all_three_gates_accept_a_binary_that_is_not_at_a_pipeline_path() {
         let layout = ResolvedProjectLayout::platform_default();
         let icon = [0x89u8, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
-        let rel = format!("{}/icon.png", layout.assets);
+        let rel = if layout.assets.is_empty() {
+            "icon.png".to_string()
+        } else {
+            format!("{}/icon.png", layout.assets)
+        };
         let package = pipeline_package(
             HUB_ASSET_KIND_PIPELINE_BUNDLE,
             serde_json::json!({
@@ -8889,8 +8909,9 @@ mod tests {
             NOT_TEXT_PIPELINE,
         )];
 
-        let validator_error = validate_prepared_pipeline_sources(&layout, &prepared)
-            .expect_err("bytes that will not decode are not a pipeline");
+        let validator_error =
+            validate_prepared_pipeline_sources(&layout, HUB_ASSET_KIND_PIPELINE_BUNDLE, &prepared)
+                .expect_err("bytes that will not decode are not a pipeline");
         assert_eq!(validator_error.code, "HUB_INSTALL");
 
         let gate_error =
@@ -8915,7 +8936,7 @@ mod tests {
             prepared_entry(function_rel, NOT_TEXT_PIPELINE),
         ];
 
-        validate_prepared_pipeline_sources(&layout, &prepared)
+        validate_prepared_pipeline_sources(&layout, HUB_ASSET_KIND_NODE_BUNDLE, &prepared)
             .expect("a bundle's own function pipeline is not a repository pipeline path");
 
         let error =
@@ -9007,7 +9028,7 @@ mod tests {
             review
                 .violations
                 .iter()
-                .any(|item| item.starts_with("pipelines/hub/exfilpkg/exfiltrate.zf.json:")),
+                .any(|item| item.starts_with("hub/exfilpkg/pipelines/exfiltrate.zf.json:")),
             "the violation names the destination the install would write: {:?}",
             review.violations
         );
@@ -11112,7 +11133,7 @@ mod tests {
             "asset_kind": HUB_ASSET_KIND_PROJECT_BUNDLE,
             "title": "Seeded Blog",
             "description": "A bundle with a page, a pipeline and a seed script.",
-            "active_pipelines": ["feed.zf.json"],
+            "active_pipelines": ["pipelines/feed.zf.json"],
             "project_initialization": {
                 "initial_data": [{
                     "engine": "sekejap",
@@ -11171,11 +11192,17 @@ mod tests {
         assert!(review.installable);
         assert!(review.violations.is_empty());
         assert_eq!(review.project, "seeded-blog");
+        // The bundle carries the file at `pipelines/feed.zf.json`, and the
+        // receiving project's source is the repository, so that path is the
+        // identity rather than something to be stripped.
         assert_eq!(
             review.pipelines_registered,
-            vec!["feed.zf.json".to_string()]
+            vec!["pipelines/feed.zf.json".to_string()]
         );
-        assert_eq!(review.pipelines_activated, vec!["feed.zf.json".to_string()]);
+        assert_eq!(
+            review.pipelines_activated,
+            vec!["pipelines/feed.zf.json".to_string()]
+        );
         assert!(review.pipelines_not_activated.is_empty());
         assert!(review.skipped_files.is_empty());
         let initialization = review
@@ -11397,7 +11424,7 @@ mod tests {
         assert!(review.pipelines_activated.is_empty());
         assert_eq!(
             review.pipelines_not_activated,
-            vec!["feed.zf.json".to_string()],
+            vec!["pipelines/feed.zf.json".to_string()],
             "a pipeline the bundle names active is reported as not activated"
         );
         assert!(!review.schema_executed);
@@ -11583,8 +11610,8 @@ mod tests {
         let manifest: HubPackageSpec =
             serde_json::from_value(version.manifest).expect("manifest spec");
         let layout = manifest.layout.expect("a publish records its layout");
-        assert_eq!(layout.source.as_deref(), Some("pipelines"));
-        assert_eq!(layout.assets.as_deref(), Some("pipelines/assets"));
+        assert_eq!(layout.source.as_deref(), Some(""));
+        assert_eq!(layout.assets.as_deref(), Some("assets"));
         assert_eq!(layout.docs.as_deref(), Some("docs"));
         // Every entry is written out, not only the ones that differ from the
         // default: a release must mean the same thing forever.
@@ -11717,9 +11744,12 @@ mod tests {
             .expect("review");
         assert_eq!(
             reviewed_destinations(&review),
+            // A package with no recorded layout is read against today's
+            // default, which is the repository root -- so there is no
+            // publisher prefix to strip and the paths arrive whole.
             vec![
-                "src/hub/legacy-tools/blog/feed.zf.json".to_string(),
-                "src/hub/legacy-tools/pages/feed.tsx".to_string(),
+                "src/hub/legacy-tools/pipelines/blog/feed.zf.json".to_string(),
+                "src/hub/legacy-tools/pipelines/pages/feed.tsx".to_string(),
             ]
         );
 
@@ -11816,9 +11846,15 @@ mod tests {
             );
         }
         assert_eq!(result.pipelines_registered, review.pipelines_registered);
+        // Both register: with the source root at the repository, a `.zf.json`
+        // anywhere beneath it is a pipeline, including one that happens to sit
+        // in a directory named `pipelines`.
         assert_eq!(
             result.pipelines_registered,
-            vec![format!("{folder}/blog/feed.zf.json")]
+            vec![
+                format!("{folder}/blog/feed.zf.json"),
+                format!("{folder}/pipelines/calc.zf.json"),
+            ]
         );
         assert!(
             platform

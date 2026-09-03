@@ -153,15 +153,13 @@ impl FileAdapter for FilesystemFileAdapter {
             &resolved.data_recovery_dir(),
             &resolved.data_logs_dir(),
             &resolved.files_dir,
+            // `repo/` and nothing inside it. The layout entries name where a
+            // kind is looked for; they are not directories the platform makes.
+            // A project starts empty, and a folder appears when something is
+            // written into it -- every repository writer creates its own
+            // parents. Scaffolding them here ran on every request, so a folder
+            // the author deleted came back on the next page load.
             &resolved.repo_dir,
-            &resolved.repo_source_dir(),
-            &resolved.repo_docs_dir(),
-            // Only assets/ and styles/ are scaffolded inside the source root.
-            // All other folders (automation, web, components, lib, etc.) are
-            // created explicitly by the user — not auto-scaffolded on every
-            // request.
-            &resolved.repo_assets_dir(),
-            &resolved.repo_source_dir().join("styles"),
         ] {
             fs::create_dir_all(dir)?;
         }

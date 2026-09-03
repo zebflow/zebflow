@@ -250,7 +250,11 @@ mod tests {
 
     #[test]
     fn a_bootstrap_plan_written_against_the_old_identity_still_selects() {
-        let layout = ResolvedProjectLayout::platform_default();
+        // The tolerance only has something to strip when the project gathers
+        // its source under a folder. Undeclared, the source is the repository
+        // and `pipelines/` is an ordinary directory name.
+        let mut layout = ResolvedProjectLayout::platform_default();
+        layout.source = "pipelines".to_string();
         let pattern = normalize_pipeline_glob(&layout, "pipelines/pages/**/*.zf.json");
         assert_eq!(pattern, "pages/**/*.zf.json");
         assert!(path_glob_matches(&pattern, "pages/demo/safety.zf.json"));

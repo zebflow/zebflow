@@ -3516,6 +3516,15 @@ async fn home_create_project_submit(
         .create_or_update_project(&owner, &req)
     {
         Ok((project, _layout)) => {
+            // A person made this project, so it gets the starter README and
+            // samples. An import, an install and a clone do not.
+            if let Err(err) = state
+                .platform
+                .projects
+                .write_starter_files(&owner, &project.project)
+            {
+                return internal_error(err);
+            }
             match finalize_project_runtime_setup(&state, &owner, &project.project, &req.runtime)
                 .await
             {
@@ -8937,20 +8946,23 @@ async fn api_create_project(
         .projects
         .create_or_update_project(&owner, &req)
     {
-        Ok((project, layout)) => match finalize_project_runtime_setup(
-            &state,
-            &owner,
-            &project.project,
-            &runtime,
-        )
-        .await
-        {
-            Ok(placement) => Json(
-                json!({"ok": true, "project": project, "layout": layout, "placement": placement}),
-            )
-            .into_response(),
-            Err(err) => internal_error(err),
-        },
+        Ok((project, layout)) => {
+            if let Err(err) = state
+                .platform
+                .projects
+                .write_starter_files(&owner, &project.project)
+            {
+                return internal_error(err);
+            }
+            match finalize_project_runtime_setup(&state, &owner, &project.project, &runtime).await
+            {
+                Ok(placement) => Json(
+                    json!({"ok": true, "project": project, "layout": layout, "placement": placement}),
+                )
+                .into_response(),
+                Err(err) => internal_error(err),
+            }
+        }
         Err(err) => internal_error(err),
     }
 }

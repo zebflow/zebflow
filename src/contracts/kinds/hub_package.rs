@@ -648,7 +648,9 @@ mod tests {
     /// it is held to the same rule a project's own declaration is held to.
     #[test]
     fn rejects_a_layout_directory_that_could_escape_the_project() {
-        for bad in ["/absolute", "src/", "../up", "src/*/pages", ""] {
+        // `""` is absent from this list deliberately: it names the repository
+        // root, which is the default source and a legal declaration.
+        for bad in ["/absolute", "src/", "../up", "src/*/pages"] {
             assert!(
                 decode_hub_package(&mutate(V1_PACKAGE, |value| {
                     value["spec"]["layout"] = serde_json::json!({ "source": bad });

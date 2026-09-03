@@ -600,9 +600,9 @@ mod tests {
 
         assert_eq!(review.source, "built_in");
         assert_eq!(review.asset_kind, "ui_components");
-        assert_eq!(review.install_root, "pipelines/shared/ui");
+        assert_eq!(review.install_root, "shared/ui");
         assert_eq!(review.components, vec!["button"]);
-        assert_eq!(review.files_added, vec!["pipelines/shared/ui/button.tsx"]);
+        assert_eq!(review.files_added, vec!["shared/ui/button.tsx"]);
         assert!(review.files_skipped.is_empty());
         assert!(review.files_overwritten.is_empty());
         assert_eq!(review.risk_level, "low");
@@ -623,10 +623,7 @@ mod tests {
             &dir,
             false,
         );
-        assert_eq!(
-            skipped.files_skipped,
-            vec!["pipelines/shared/ui/button.tsx"]
-        );
+        assert_eq!(skipped.files_skipped, vec!["shared/ui/button.tsx"]);
         assert!(skipped.files_overwritten.is_empty());
 
         let overwritten = CatalogService::review_ui(
@@ -636,10 +633,7 @@ mod tests {
             true,
         );
         assert!(overwritten.files_skipped.is_empty());
-        assert_eq!(
-            overwritten.files_overwritten,
-            vec!["pipelines/shared/ui/button.tsx"]
-        );
+        assert_eq!(overwritten.files_overwritten, vec!["shared/ui/button.tsx"]);
         assert_eq!(overwritten.risk_level, "medium");
 
         let _ = std::fs::remove_dir_all(&dir);

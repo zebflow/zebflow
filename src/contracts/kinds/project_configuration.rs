@@ -731,9 +731,18 @@ impl ProjectLayoutSpec {
 /// `HubPackage` records the layout a publisher's paths were produced by and
 /// validates it through this same rule, because a package layout an install
 /// would translate against has to be exactly as safe as one a project declares.
+/// One layout directory: a normalized, project-relative path, or empty.
+///
+/// Empty names the repository root, and is how a project says a kind is not
+/// gathered under a directory of its own — a pipeline, a page and a README
+/// side by side at the top of the repository. It is the default for
+/// `spec.layout.source`, so a project that declares nothing is a project with
+/// no imposed folders at all.
 pub(crate) fn validate_layout_dir(path: &str, value: &str) -> Result<(), ContractError> {
-    let invalid = value.is_empty()
-        || value.len() > 1024
+    if value.is_empty() {
+        return Ok(());
+    }
+    let invalid = value.len() > 1024
         || value.starts_with('/')
         || value.ends_with('/')
         || value
@@ -1378,8 +1387,9 @@ mod tests {
         assert_eq!(document.spec.layout, ProjectLayoutSpec::default());
 
         let layout = ZebflowJson::from(document.spec).layout();
-        assert_eq!(layout.source, "pipelines");
-        assert_eq!(layout.assets, "pipelines/assets");
+        // Undeclared means the repository itself: no imposed folders.
+        assert_eq!(layout.source, "");
+        assert_eq!(layout.assets, "assets");
         assert_eq!(layout.docs, "docs");
         assert_eq!(layout.schema, "schemas/sekejap");
         assert_eq!(layout.sqlite_schema, "schemas/sqlite");
@@ -1444,10 +1454,6 @@ mod tests {
             },
             ProjectLayoutSpec {
                 source: Some("../pipelines".to_string()),
-                ..ProjectLayoutSpec::default()
-            },
-            ProjectLayoutSpec {
-                source: Some(String::new()),
                 ..ProjectLayoutSpec::default()
             },
             ProjectLayoutSpec {

@@ -1248,7 +1248,9 @@ async fn platform_bootstrap_and_login_flow_works() {
     // (project-directory.md section 4).
     assert!(project_root.join("repo").exists());
     assert!(project_root.join("repo").join(".git").exists());
-    assert!(project_root.join("repo").join("pipelines").exists());
+    // No folder is scaffolded any more: the layout entries name where a kind is
+    // looked for, not directories the platform makes.
+    assert!(!project_root.join("repo").join("pipelines").exists());
 
     let settings = app
         .clone()
@@ -2229,7 +2231,7 @@ async fn hub_scoped_tokens_split_prosumer_and_consumer_projects() {
         .read_pipeline_source(
             "superadmin",
             "consumer-app",
-            "pipelines/hub/zebflow-labs.prosumer-demo-pack/prosumer-demo.zf.json",
+            "hub/zebflow-labs.prosumer-demo-pack/pipelines/prosumer-demo.zf.json",
         )
         .expect("installed pipeline");
     assert!(installed.contains("prosumer-demo"));
@@ -2780,7 +2782,7 @@ async fn hub_add_reviews_risks_and_respects_target_folders() {
     assert_eq!(review["review"]["risk_level"], json!("high"));
     assert_eq!(
         review["review"]["files_added"][0],
-        json!("pipelines/safety-demo/safety-demo.zf.json")
+        json!("safety-demo/pipelines/safety-demo.zf.json")
     );
     assert!(
         review["review"]["nodes_used"]
@@ -2840,7 +2842,7 @@ async fn hub_add_reviews_risks_and_respects_target_folders() {
     let nested_review = response_json(nested_review).await;
     assert_eq!(
         nested_review["review"]["files_added"][0],
-        json!("pipelines/functions/blogging/safety-demo/safety-demo.zf.json")
+        json!("functions/blogging/safety-demo/pipelines/safety-demo.zf.json")
     );
 
     let add = app
@@ -2864,7 +2866,7 @@ async fn hub_add_reviews_risks_and_respects_target_folders() {
         .read_pipeline_source(
             "superadmin",
             "consumer-review",
-            "safety-demo/safety-demo.zf.json",
+            "safety-demo/pipelines/safety-demo.zf.json",
         )
         .expect("added pipeline");
     assert!(added.contains("unsafe-public-hook"));
@@ -2875,11 +2877,13 @@ async fn hub_add_reviews_risks_and_respects_target_folders() {
     // nothing. All three spellings now review and register the same pipeline.
     // One webhook path may only be claimed once, so each spelling is installed
     // on its own and removed again.
-    let mut previous_install = Some("safety-demo/safety-demo.zf.json".to_string());
+    let mut previous_install = Some("safety-demo/pipelines/safety-demo.zf.json".to_string());
     for (target_folder, expected_root) in [
-        ("", "pipelines/hub/review-lab.safety-demo"),
-        ("billing", "pipelines/billing"),
-        ("/billing", "pipelines/billing"),
+        // The source root is the repository, so an install root is the target
+        // folder itself with no prefix in front of it.
+        ("", "hub/review-lab.safety-demo"),
+        ("billing", "billing"),
+        ("/billing", "billing"),
     ] {
         if let Some(previous) = previous_install.take() {
             platform
