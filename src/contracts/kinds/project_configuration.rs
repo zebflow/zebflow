@@ -605,7 +605,7 @@ pub struct ProjectLayoutSpec {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub assets: Option<String>,
+    pub r#static: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub docs: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -653,7 +653,7 @@ impl ProjectLayoutSpec {
     fn validate(&self) -> Result<(), ContractError> {
         for (path, value) in [
             ("spec.layout.source", self.source.as_deref()),
-            ("spec.layout.assets", self.assets.as_deref()),
+            ("spec.layout.r#static", self.r#static.as_deref()),
             ("spec.layout.docs", self.docs.as_deref()),
             ("spec.layout.schema", self.schema.as_deref()),
             ("spec.layout.sqlite_schema", self.sqlite_schema.as_deref()),
@@ -1040,7 +1040,7 @@ impl From<ZebflowJson> for ProjectConfigurationSpec {
             },
             layout: ProjectLayoutSpec {
                 source: value.configs.layout.source,
-                assets: value.configs.layout.assets,
+                r#static: value.configs.layout.r#static,
                 docs: value.configs.layout.docs,
                 schema: value.configs.layout.schema,
                 sqlite_schema: value.configs.layout.sqlite_schema,
@@ -1140,7 +1140,7 @@ impl From<ProjectConfigurationSpec> for ZebflowJson {
             configs: ZebflowJsonConfigs {
                 layout: ZebflowJsonLayout {
                     source: value.layout.source,
-                    assets: value.layout.assets,
+                    r#static: value.layout.r#static,
                     docs: value.layout.docs,
                     schema: value.layout.schema,
                     sqlite_schema: value.layout.sqlite_schema,
@@ -1363,7 +1363,7 @@ mod tests {
     fn declared_layout() -> ProjectLayoutSpec {
         ProjectLayoutSpec {
             source: Some("src".to_string()),
-            assets: Some("src/assets".to_string()),
+            r#static: Some("src/static".to_string()),
             docs: Some("documentation".to_string()),
             schema: Some("db/schema".to_string()),
             sqlite_schema: Some("db/sqlite".to_string()),
@@ -1389,7 +1389,7 @@ mod tests {
         let layout = ZebflowJson::from(document.spec).layout();
         // Undeclared means the repository itself: no imposed folders.
         assert_eq!(layout.source, "");
-        assert_eq!(layout.assets, "assets");
+        assert_eq!(layout.r#static, "static");
         assert_eq!(layout.docs, "docs");
         assert_eq!(layout.schema, "schemas/sekejap");
         assert_eq!(layout.sqlite_schema, "schemas/sqlite");
@@ -1433,7 +1433,7 @@ mod tests {
         let runtime: ZebflowJson = expected.clone().into();
         assert_eq!(runtime.layout().source, "src");
         // Undeclared entries still resolve to the platform default.
-        assert_eq!(runtime.layout().assets, "src/assets");
+        assert_eq!(runtime.layout().r#static, "src/static");
         assert_eq!(ProjectConfigurationSpec::from(runtime), expected);
     }
 
@@ -1457,7 +1457,7 @@ mod tests {
                 ..ProjectLayoutSpec::default()
             },
             ProjectLayoutSpec {
-                assets: Some("pipelines/*".to_string()),
+                r#static: Some("pipelines/*".to_string()),
                 ..ProjectLayoutSpec::default()
             },
             ProjectLayoutSpec {

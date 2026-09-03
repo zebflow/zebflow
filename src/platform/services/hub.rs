@@ -6562,8 +6562,8 @@ impl HubInstallPlacement {
         };
         // Assets default *inside* the source root, so this order is the rule
         // and not a preference: testing source first would swallow them.
-        if let Some(rest) = strip_dir_prefix(&publisher.assets, &rel) {
-            return join_repo_rel(&join_repo_rel(&target.assets, folder), rest);
+        if let Some(rest) = strip_dir_prefix(&publisher.r#static, &rel) {
+            return join_repo_rel(&join_repo_rel(&target.r#static, folder), rest);
         }
         if let Some(rest) = strip_dir_prefix(&publisher.docs, &rel) {
             return join_repo_rel(&join_repo_rel(&target.docs, folder), rest);
@@ -6590,7 +6590,7 @@ fn publisher_layout(payload: &HubPackageSpec) -> ResolvedProjectLayout {
     let declared = payload.layout.clone().unwrap_or_default();
     ZebflowJsonLayout {
         source: declared.source,
-        assets: declared.assets,
+        r#static: declared.r#static,
         docs: declared.docs,
         schema: declared.schema,
         sqlite_schema: declared.sqlite_schema,
@@ -6704,7 +6704,7 @@ fn recorded_publisher_layout(layout: &ResolvedProjectLayout) -> HubPackageLayout
     // become.
     HubPackageLayout {
         source: Some(layout.source.clone()),
-        assets: Some(layout.assets.clone()),
+        r#static: Some(layout.r#static.clone()),
         docs: Some(layout.docs.clone()),
         schema: Some(layout.schema.clone()),
         sqlite_schema: Some(layout.sqlite_schema.clone()),
@@ -8851,10 +8851,10 @@ mod tests {
     fn all_three_gates_accept_a_binary_that_is_not_at_a_pipeline_path() {
         let layout = ResolvedProjectLayout::platform_default();
         let icon = [0x89u8, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
-        let rel = if layout.assets.is_empty() {
+        let rel = if layout.r#static.is_empty() {
             "icon.png".to_string()
         } else {
-            format!("{}/icon.png", layout.assets)
+            format!("{}/icon.png", layout.r#static)
         };
         let package = pipeline_package(
             HUB_ASSET_KIND_PIPELINE_BUNDLE,
@@ -11518,7 +11518,7 @@ mod tests {
             .project_layout("superadmin", "default")
             .expect("publisher layout");
         for (dir, name, content) in [
-            (layout.repo_assets_dir(), "logo.svg", HUB_LAYOUT_LOGO),
+            (layout.repo_static_dir(), "logo.svg", HUB_LAYOUT_LOGO),
             (layout.repo_docs_dir(), "README.md", HUB_LAYOUT_DOC),
         ] {
             std::fs::create_dir_all(&dir).expect("area directory");
@@ -11611,7 +11611,7 @@ mod tests {
             serde_json::from_value(version.manifest).expect("manifest spec");
         let layout = manifest.layout.expect("a publish records its layout");
         assert_eq!(layout.source.as_deref(), Some(""));
-        assert_eq!(layout.assets.as_deref(), Some("assets"));
+        assert_eq!(layout.r#static.as_deref(), Some("static"));
         assert_eq!(layout.docs.as_deref(), Some("docs"));
         // Every entry is written out, not only the ones that differ from the
         // default: a release must mean the same thing forever.
@@ -11816,8 +11816,8 @@ mod tests {
             "source keeps the receiver's source root: {destinations:?}"
         );
         assert!(
-            destinations.contains(&format!("src/assets/{folder}/logo.svg")),
-            "assets land where the receiver serves assets from: {destinations:?}"
+            destinations.contains(&format!("src/static/{folder}/logo.svg")),
+            "static files land where the receiver serves them from: {destinations:?}"
         );
         assert!(
             destinations.contains(&format!("docs/{folder}/README.md")),
@@ -11898,8 +11898,8 @@ mod tests {
             "src/hub/demo/blog/feed.zf.json"
         );
         assert_eq!(
-            placement.destination("pipelines/assets/logo.svg"),
-            "src/assets/hub/demo/logo.svg"
+            placement.destination("pipelines/static/logo.svg"),
+            "src/static/hub/demo/logo.svg"
         );
         assert_eq!(
             placement.destination("docs/README.md"),

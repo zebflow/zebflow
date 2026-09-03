@@ -662,7 +662,7 @@ mod tests {
             .expect("layout");
         let template_dir = layout.repo_source_dir().join("pages");
         std::fs::create_dir_all(&template_dir).expect("template dir");
-        let asset_dir = layout.repo_assets_dir().join("icons");
+        let asset_dir = layout.repo_static_dir().join("icons");
         std::fs::create_dir_all(&asset_dir).expect("asset dir");
         std::fs::write(asset_dir.join("favicon.ico"), b"ico").expect("favicon");
         std::fs::write(
@@ -672,7 +672,7 @@ export const page = {
   head: {
     title: "Lyric",
     icons: [
-      { rel: "icon", href: "/assets/superadmin/example-project/icons/favicon.ico" }
+      { rel: "icon", href: "/static/superadmin/example-project/icons/favicon.ico" }
     ]
   }
 };

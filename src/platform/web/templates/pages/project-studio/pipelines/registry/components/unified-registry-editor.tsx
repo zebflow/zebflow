@@ -242,8 +242,8 @@ export default function UnifiedRegistryEditor(input) {
   const sidebarPipelines = Array.isArray(sidebar?.pipelines) ? sidebar.pipelines : [];
   const sidebarTemplateFiles = Array.isArray(sidebar?.template_files) ? sidebar.template_files : [];
   const currentPath = String(sidebar?.scope_path ?? "/");
-  const isAssets = isFolder && (currentPath === "/assets" || currentPath.startsWith("/assets/"));
-  const assetsSubfolder = currentPath.startsWith("/assets/") ? currentPath.slice("/assets/".length) : "";
+  const isAssets = isFolder && (currentPath === "/static" || currentPath.startsWith("/static/"));
+  const assetsSubfolder = currentPath.startsWith("/static/") ? currentPath.slice("/static/".length) : "";
   const expandedFolders = expandFolderPaths(scopeFolders, editorBase);
   const directChildFolders = getDirectChildFolders(expandedFolders, currentPath);
   const listingChildFolders = Array.isArray(sidebar?.child_folders) ? sidebar.child_folders : [];

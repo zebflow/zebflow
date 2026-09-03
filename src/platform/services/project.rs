@@ -3246,7 +3246,7 @@ fn repo_entry_is_declared_root(layout: &ResolvedProjectLayout, rel: &str) -> boo
         layout.docs.as_str(),
         layout.schema.as_str(),
         layout.sqlite_schema.as_str(),
-        layout.assets.as_str(),
+        layout.r#static.as_str(),
         layout.node_interfaces.as_str(),
     ];
     declared
@@ -4807,7 +4807,7 @@ mod tests {
 
         let layout = svc.project_layout("superadmin", "default").expect("layout");
         assert_eq!(layout.repo_layout.source, "");
-        assert_eq!(layout.repo_layout.assets, "assets");
+        assert_eq!(layout.repo_layout.r#static, "static");
         assert_eq!(layout.repo_source_dir(), layout.repo_dir);
 
         let meta = svc
@@ -4844,8 +4844,8 @@ mod tests {
         // Assets follow the source they default inside, rather than staying in
         // the tree the project moved out of.
         assert_eq!(
-            layout.repo_assets_dir(),
-            layout.repo_dir.join("src/app/assets")
+            layout.repo_static_dir(),
+            layout.repo_dir.join("src/app/static")
         );
         assert_eq!(
             svc.get_project_template_root("superadmin", "default")

@@ -6,7 +6,7 @@ spec:
   profile: {}
   layout:
     source: src
-    assets: src/assets
+    static: src/static
     docs: documentation
     schema: db/schema
     sqlite_schema: db/sqlite

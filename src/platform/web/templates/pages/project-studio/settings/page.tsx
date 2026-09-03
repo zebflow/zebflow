@@ -775,12 +775,12 @@ function RwePanel({ api, initialConfig, owner, project }) {
           <span>Asset Base Path</span>
           <Input
             name="deployment_asset_base"
-            placeholder={`/assets/${owner ?? "owner"}/${project ?? "project"}`}
+            placeholder={`/static/${owner ?? "owner"}/${project ?? "project"}`}
             value={deploymentAssetBase}
             onInput={(e) => setDeploymentAssetBase(e.currentTarget.value)}
           />
           <small className="pipeline-editor-field-help">
-            Replaces the default <code>/assets/{"{owner}/{project}"}</code> prefix in all rendered HTML — scripts, images, uploads, library chunks. E.g. set to <code>/my/custom/path</code> and <code>/assets/{"{owner}/{project}"}/rwe/…</code> becomes <code>/my/custom/path/rwe/…</code>. Leave empty to keep the default.
+            Replaces the default <code>/static/{"{owner}/{project}"}</code> prefix in all rendered HTML — scripts, images, uploads, library chunks. E.g. set to <code>/my/custom/path</code> and <code>/static/{"{owner}/{project}"}/_rwe/…</code> becomes <code>/my/custom/path/_rwe/…</code>. Leave empty to keep the default.
           </small>
         </label>
 

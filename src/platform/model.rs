@@ -2270,9 +2270,9 @@ impl ProjectFileLayout {
         self.repo_dir.join(&self.repo_layout.source)
     }
 
-    /// `.../repo/{assets}` — files served under `/assets/{owner}/{project}/...`.
-    pub fn repo_assets_dir(&self) -> PathBuf {
-        self.repo_dir.join(&self.repo_layout.assets)
+    /// `.../repo/{assets}` — files served under `/static/{owner}/{project}/...`.
+    pub fn repo_static_dir(&self) -> PathBuf {
+        self.repo_dir.join(&self.repo_layout.r#static)
     }
 
     /// `.../repo/{docs}` (project docs: ERD, README.md, use cases, etc.).
@@ -2877,8 +2877,8 @@ pub struct ZebflowJsonConfigs {
 /// creates.
 pub const DEFAULT_LAYOUT_SOURCE_DIR: &str = "";
 /// Directory name, inside the source root, served for
-/// `/assets/{owner}/{project}/...`.
-pub const DEFAULT_LAYOUT_ASSETS_SUBDIR: &str = "assets";
+/// `/static/{owner}/{project}/...`.
+pub const DEFAULT_LAYOUT_STATIC_SUBDIR: &str = "static";
 /// Repository-relative directory holding project documentation.
 pub const DEFAULT_LAYOUT_DOCS_DIR: &str = "docs";
 /// Repository-relative directory holding the exported database schema document.
@@ -2949,7 +2949,7 @@ pub struct ZebflowJsonLayout {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub assets: Option<String>,
+    pub r#static: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub docs: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -2997,7 +2997,7 @@ pub fn default_initial_data_dirs() -> Vec<ZebflowJsonInitialDataDir> {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ResolvedProjectLayout {
     pub source: String,
-    pub assets: String,
+    pub r#static: String,
     pub docs: String,
     pub schema: String,
     pub sqlite_schema: String,
@@ -3020,26 +3020,27 @@ impl ZebflowJsonLayout {
             declared.clone().unwrap_or_else(|| fallback.to_string())
         };
         let source = resolved(&self.source, DEFAULT_LAYOUT_SOURCE_DIR);
-        // Assets default *inside* the source root rather than at a fixed path,
-        // so a project that moves its source does not keep an asset directory
-        // in the tree it moved out of. With the source at the repository root
-        // the subdirectory stands alone: joining `"/assets"` onto a path is
-        // absolute in Rust and would leave the project entirely.
+        // The static root sits *inside* the source root rather than at a fixed
+        // path, so a project that moves its source does not leave a static
+        // directory behind in the tree it moved out of. With the source at the
+        // repository root the subdirectory stands alone: joining `"/static"`
+        // onto a path is absolute in Rust and would leave the project entirely.
         //
-        // Assets keep a directory of their own whatever the source is, because
-        // `/assets/{owner}/{project}/…` serves everything beneath this one
-        // publicly -- rooting it at the repository would publish `zebflow.yaml`
-        // and every pipeline definition.
-        let assets = self.assets.clone().unwrap_or_else(|| {
+        // It keeps a directory of its own whatever the source is, because
+        // `/static/{owner}/{project}/…` serves everything beneath it publicly
+        // -- rooting it at the repository would publish `zebflow.yaml` and
+        // every pipeline definition. It is the one layout entry that may not
+        // be empty.
+        let r#static = self.r#static.clone().unwrap_or_else(|| {
             if source.is_empty() {
-                DEFAULT_LAYOUT_ASSETS_SUBDIR.to_string()
+                DEFAULT_LAYOUT_STATIC_SUBDIR.to_string()
             } else {
-                format!("{source}/{DEFAULT_LAYOUT_ASSETS_SUBDIR}")
+                format!("{source}/{DEFAULT_LAYOUT_STATIC_SUBDIR}")
             }
         });
         ResolvedProjectLayout {
             source,
-            assets,
+            r#static,
             docs: resolved(&self.docs, DEFAULT_LAYOUT_DOCS_DIR),
             schema: resolved(&self.schema, DEFAULT_LAYOUT_SCHEMA_DIR),
             sqlite_schema: resolved(&self.sqlite_schema, DEFAULT_LAYOUT_SQLITE_SCHEMA_DIR),
@@ -3382,10 +3383,10 @@ pub struct ZebflowJsonRwe {
     /// Base URL prefix used when generating `<script src="...">` paths for
     /// compiled RWE scripts in production.
     ///
-    /// Default (`None`): `/assets/{owner}/{project}/rwe/scripts/{hash}`
+    /// Default (`None`): `/static/{owner}/{project}/_rwe/scripts/{hash}`
     ///
-    /// When set, the prefix replaces `/assets/{owner}/{project}`, so the
-    /// resulting path becomes `{deployment_asset_base}/rwe/scripts/{hash}`.
+    /// When set, the prefix replaces `/static/{owner}/{project}`, so the
+    /// resulting path becomes `{deployment_asset_base}/_rwe/scripts/{hash}`.
     ///
     /// Useful when the app is served behind a reverse proxy that rewrites
     /// asset paths, or when static assets are hosted at a custom sub-path.

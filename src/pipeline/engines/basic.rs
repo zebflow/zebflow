@@ -2203,7 +2203,7 @@ impl PipelineEngine for BasicPipelineEngine {
                             let project_asset_root = self
                                 .repo_layout
                                 .as_ref()
-                                .map(|layout| layout.repo_assets_dir());
+                                .map(|layout| layout.repo_static_dir());
 
                             let enabled_libraries: Vec<String> = self
                                 .platform
@@ -2554,7 +2554,7 @@ impl PipelineEngine for BasicPipelineEngine {
                             let project_asset_root = self
                                 .repo_layout
                                 .as_ref()
-                                .map(|layout| layout.repo_assets_dir());
+                                .map(|layout| layout.repo_static_dir());
                             let localized = if let Some(site_root_rel) =
                                 web_static_generate::effective_site_root_rel_path(&config)?
                             {

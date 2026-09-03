@@ -155,7 +155,7 @@ pub struct HubPackageLayout {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub assets: Option<String>,
+    pub r#static: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub docs: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -305,7 +305,7 @@ impl HubPackageLayout {
     fn entries(&self) -> [(&'static str, Option<&str>); 6] {
         [
             ("spec.layout.source", self.source.as_deref()),
-            ("spec.layout.assets", self.assets.as_deref()),
+            ("spec.layout.r#static", self.r#static.as_deref()),
             ("spec.layout.docs", self.docs.as_deref()),
             ("spec.layout.schema", self.schema.as_deref()),
             ("spec.layout.sqlite_schema", self.sqlite_schema.as_deref()),
@@ -624,7 +624,7 @@ mod tests {
     fn a_declared_layout_roundtrips() {
         let declared = serde_json::json!({
             "source": "src",
-            "assets": "static",
+            "static": "public-files",
             "docs": "documentation",
             "schema": "db/sekejap",
             "sqlite_schema": "db/sqlite",

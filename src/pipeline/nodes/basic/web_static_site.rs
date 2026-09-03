@@ -468,7 +468,7 @@ impl AssetOrigin {
             return Some(Self::Branding(path.to_string()));
         }
         if let (Some(owner), Some(project)) = (owner, project) {
-            let prefix = format!("/assets/{owner}/{project}/");
+            let prefix = format!("/static/{owner}/{project}/");
             if let Some(path) = url.strip_prefix(&prefix) {
                 return Some(Self::Project(path.to_string()));
             }
@@ -493,7 +493,7 @@ impl AssetOrigin {
             Self::Project(path) => {
                 let owner = owner.unwrap_or("owner");
                 let project = project.unwrap_or("project");
-                format!("/assets/{owner}/{project}/{path}")
+                format!("/static/{owner}/{project}/{path}")
             }
         }
     }
@@ -520,7 +520,7 @@ fn collect_static_asset_refs(
         "/assets/branding/".to_string(),
     ];
     if let (Some(owner), Some(project)) = (owner, project) {
-        prefixes.push(format!("/assets/{owner}/{project}/"));
+        prefixes.push(format!("/static/{owner}/{project}/"));
     }
     for prefix in prefixes {
         let mut cursor = 0usize;
@@ -578,7 +578,7 @@ fn materialize_asset(
             let root = asset_sources.project_asset_root_abs.ok_or_else(|| {
                 PipelineError::new(
                     "WEB_STATIC_SITE_PROJECT_ASSETS",
-                    "project asset root is required to localize /assets/{owner}/{project}/ references",
+                    "project asset root is required to localize /static/{owner}/{project}/ references",
                 )
             })?;
             let abs = root.join(path);
@@ -1109,14 +1109,14 @@ mod tests {
         .expect("theme css");
         std::fs::write(project_assets.join("fonts").join("demo.woff2"), b"font").expect("font");
         let html = concat!(
-            "<link rel=\"icon\" href=\"/assets/superadmin/default/icons/favicon.ico\">",
-            "<link rel=\"stylesheet\" href=\"/assets/superadmin/default/styles/base.css\">",
+            "<link rel=\"icon\" href=\"/static/superadmin/default/icons/favicon.ico\">",
+            "<link rel=\"stylesheet\" href=\"/static/superadmin/default/styles/base.css\">",
             "<script type=\"module\">",
             "import { h } from '/assets/libraries/zeb/preact/0.1/runtime/preact.bundle.mjs';",
             "const mod = await import('/assets/libraries/zeb/codemirror/0.1/runtime/entry.mjs');",
             "</script>",
             "<link rel=\"stylesheet\" href=\"/assets/libraries/zeb/icons/0.1/runtime/devicons.css\">",
-            "<img srcset=\"/assets/superadmin/default/images/cover.png 1x, /assets/superadmin/default/images/cover@2x.png 2x\">"
+            "<img srcset=\"/static/superadmin/default/images/cover.png 1x, /static/superadmin/default/images/cover@2x.png 2x\">"
         );
 
         let LocalizedStaticHtml {
@@ -1232,7 +1232,7 @@ mod tests {
             }],
             &[StaticAssetRecord {
                 path: "_assets/project/old.png".to_string(),
-                source_url: "/assets/superadmin/default/old.png".to_string(),
+                source_url: "/static/superadmin/default/old.png".to_string(),
                 kind: "image".to_string(),
                 content_hash: "old".to_string(),
                 asset_group: "tpl-docs".to_string(),
@@ -1258,7 +1258,7 @@ mod tests {
             }],
             &[StaticAssetRecord {
                 path: "_assets/project/new.png".to_string(),
-                source_url: "/assets/superadmin/default/new.png".to_string(),
+                source_url: "/static/superadmin/default/new.png".to_string(),
                 kind: "image".to_string(),
                 content_hash: "new".to_string(),
                 asset_group: "tpl-docs".to_string(),

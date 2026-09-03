@@ -3713,7 +3713,7 @@ async fn a_declared_source_root_moves_templates_pipelines_and_assets() {
         .project_layout("superadmin", "declared")
         .expect("layout");
     assert_eq!(layout.repo_source_dir(), layout.repo_dir.join("src"));
-    assert_eq!(layout.repo_assets_dir(), layout.repo_dir.join("src/assets"));
+    assert_eq!(layout.repo_static_dir(), layout.repo_dir.join("src/static"));
 
     let create = app
         .clone()
@@ -3792,14 +3792,14 @@ async fn a_declared_source_root_moves_templates_pipelines_and_assets() {
     );
     assert_eq!(listed[0]["file_rel_path"], json!("blog/feed.zf.json"));
 
-    std::fs::create_dir_all(layout.repo_assets_dir()).expect("assets dir");
-    std::fs::write(layout.repo_assets_dir().join("logo.txt"), b"declared-asset")
+    std::fs::create_dir_all(layout.repo_static_dir()).expect("assets dir");
+    std::fs::write(layout.repo_static_dir().join("logo.txt"), b"declared-asset")
         .expect("asset file");
     let asset = app
         .clone()
         .oneshot(
             Request::builder()
-                .uri("/assets/superadmin/declared/logo.txt")
+                .uri("/static/superadmin/declared/logo.txt")
                 .method("GET")
                 .header(header::COOKIE, &cookie)
                 .body(Body::empty())

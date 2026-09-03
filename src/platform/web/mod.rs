@@ -393,17 +393,18 @@ pub async fn router(platform: Arc<PlatformService>) -> Router {
         .route("/assets/node-icons/{*path}", get(node_icon_asset))
         .route("/assets/rwe/scripts/{hash}", get(rwe_script_asset))
         .route(
-            "/assets/{owner}/{project}/rwe/scripts/{hash}",
+            "/static/{owner}/{project}/_rwe/scripts/{hash}",
             get(project_rwe_script_asset),
         )
-        // When deployment_asset_base proxies /v2/assets/ → /assets/{owner}/{project}/,
-        // library bundle requests land at /assets/{owner}/{project}/libraries/... .
-        // Serve them from embedded platform libraries so one nginx rule covers everything.
+        // `_rwe/` is reserved: compiled bundles and RWE libraries are machinery,
+        // not files the author wrote, and they are content-hashed so they can be
+        // cached forever. Keeping them under the same prefix means one proxy
+        // rule, and the origin -- not the proxy -- sets Cache-Control.
         .route(
-            "/assets/{owner}/{project}/libraries/{*path}",
+            "/static/{owner}/{project}/_rwe/lib/{*path}",
             get(project_scoped_library_asset),
         )
-        .route("/assets/{owner}/{project}/{*path}", get(project_asset))
+        .route("/static/{owner}/{project}/{*path}", get(project_asset))
         .route("/assets/libraries/{*path}", get(library_asset))
         .route(
             "/p/{owner}/{project}/assets/{*path}",
@@ -1692,7 +1693,7 @@ fn externalize_rwe_scripts(
     project_scope: Option<(&str, &str)>,
 ) -> Result<String, PlatformError> {
     // Read deployment_asset_base up front — needed on all return paths, not
-    // just when scripts are present.  When set, every `/assets/{owner}/{project}/`
+    // just when scripts are present.  When set, every `/static/{owner}/{project}/`
     // occurrence in the final HTML is rewritten to `{base}/`, covering scripts,
     // uploaded files, images, and library chunks alike.
     let deployment_asset_base = match project_scope {
@@ -1717,11 +1718,11 @@ fn externalize_rwe_scripts(
             .read(owner, project)
             .ok()
             .filter(|lock| !lock.rwe.libraries.is_empty())
-            .map(|_| format!("/assets/{owner}/{project}/libraries/")),
+            .map(|_| format!("/static/{owner}/{project}/_rwe/lib/")),
         _ => None,
     };
 
-    // Rewrite remaining `/assets/{owner}/{project}/` occurrences that were not
+    // Rewrite remaining `/static/{owner}/{project}/` occurrences that were not
     // handled by the script-tag logic below (images, uploads, library chunks).
     let rewrite_assets = |s: String| -> String {
         let s = match (project_scope, &deployment_asset_base) {
@@ -1761,7 +1762,7 @@ fn externalize_rwe_scripts(
         let maybe_patched: Option<CompiledScript> = {
             const LIB_FROM: &str = "/assets/libraries/";
             let lib_to = match &deployment_asset_base {
-                Some(base) => Some(format!("{}/libraries/", base.trim_end_matches('/'))),
+                Some(base) => Some(format!("{}/_rwe/lib/", base.trim_end_matches('/'))),
                 // Same content-patch for hub-installed libraries: the compiled
                 // script must import from the project-scoped route that serves
                 // the installed copy.
@@ -1796,12 +1797,12 @@ fn externalize_rwe_scripts(
             "page"
         };
         let src = if let Some(ref base) = deployment_asset_base {
-            format!("{base}/rwe/scripts/{}", script.content_hash)
+            format!("{base}/_rwe/scripts/{}", script.content_hash)
         } else {
             match project_scope {
                 Some((owner, project)) => {
                     format!(
-                        "/assets/{owner}/{project}/rwe/scripts/{}",
+                        "/static/{owner}/{project}/_rwe/scripts/{}",
                         script.content_hash
                     )
                 }
@@ -2130,8 +2131,8 @@ async fn library_asset(Path(path): Path<String>) -> Response {
 
 /// Serves platform library assets via the project-scoped asset path.
 /// Used when `deployment_asset_base` is set and a CDN/nginx rule maps
-/// `/base/` → `/assets/{owner}/{project}/` — library bundle requests
-/// (e.g. `/assets/{owner}/{project}/libraries/zeb/preact/...`) are routed here
+/// `/base/` → `/static/{owner}/{project}/` — library bundle requests
+/// (e.g. `/static/{owner}/{project}/_rwe/lib/zeb/preact/...`) are routed here
 /// so a single nginx rule covers both project assets and library bundles.
 async fn project_scoped_library_asset(
     State(state): State<PlatformAppState>,
@@ -2327,7 +2328,7 @@ async fn project_asset(
             }
         }
     } else {
-        let static_root = layout.repo_assets_dir();
+        let static_root = layout.repo_static_dir();
         let static_abs = static_root.join(&normalized);
         if !static_abs.starts_with(&static_root) || !static_abs.is_file() {
             return (StatusCode::NOT_FOUND, "asset not found").into_response();
@@ -2347,9 +2348,14 @@ async fn project_asset(
     if let Ok(v) = HeaderValue::from_str(content_type_for_path(&serve_path)) {
         resp.headers_mut().insert(CONTENT_TYPE, v);
     }
+    // An authored file keeps its name when its contents change, so it may not be
+    // cached as immutable -- editing `logo.png` would otherwise never reach a
+    // browser that had seen the old one. The content-hashed machinery that can
+    // be cached forever lives under the reserved `_rwe/` prefix and is served by
+    // its own handlers.
     resp.headers_mut().insert(
         CACHE_CONTROL,
-        HeaderValue::from_static("public, max-age=31536000, immutable"),
+        HeaderValue::from_static("public, max-age=0, must-revalidate"),
     );
     resp
 }
@@ -2395,7 +2401,7 @@ async fn project_static_asset(
         Ok(layout) => layout,
         Err(err) => return internal_error(err),
     };
-    let assets_root = layout.repo_assets_dir();
+    let assets_root = layout.repo_static_dir();
     let abs = assets_root.join(&normalized);
     if !abs.starts_with(&assets_root) {
         return (StatusCode::BAD_REQUEST, "invalid asset path").into_response();
@@ -4502,7 +4508,7 @@ async fn forward_project_page_request_to_worker(
         let html = String::from_utf8_lossy(&body);
         Bytes::from(html.replace(
             "/assets/rwe/scripts/",
-            &format!("/assets/{owner}/{project}/rwe/scripts/"),
+            &format!("/static/{owner}/{project}/_rwe/scripts/"),
         ))
     } else {
         body
@@ -26399,7 +26405,7 @@ fn reindex_project_repo_files(
         .ensure_project_layout(&owner_slug, &project_slug)?;
 
     let repo_root = layout.repo_source_dir();
-    let assets_root = layout.repo_assets_dir();
+    let assets_root = layout.repo_static_dir();
     let mut pipelines_indexed: usize = 0;
     let mut templates_indexed: usize = 0;
     let mut assets_indexed: usize = 0;
@@ -26666,9 +26672,9 @@ async fn api_list_assets(
         .and_then(sanitize_subfolder)
         .unwrap_or_default();
     let assets_dir = if subfolder.is_empty() {
-        layout.repo_assets_dir()
+        layout.repo_static_dir()
     } else {
-        layout.repo_assets_dir().join(&subfolder)
+        layout.repo_static_dir().join(&subfolder)
     };
     if let Err(e) = std::fs::create_dir_all(&assets_dir) {
         return internal_error(PlatformError::new("ASSET_DIR_CREATE", e.to_string()));
@@ -26819,9 +26825,9 @@ async fn api_upload_asset(
         .and_then(sanitize_subfolder)
         .unwrap_or_default();
     let assets_dir = if subfolder.is_empty() {
-        layout.repo_assets_dir()
+        layout.repo_static_dir()
     } else {
-        layout.repo_assets_dir().join(&subfolder)
+        layout.repo_static_dir().join(&subfolder)
     };
     if let Err(e) = std::fs::create_dir_all(&assets_dir) {
         return internal_error(PlatformError::new("ASSET_DIR_CREATE", e.to_string()));
@@ -26947,7 +26953,7 @@ async fn api_delete_asset(
         Err(err) => return internal_error(err),
     };
 
-    let assets_dir = layout.repo_assets_dir();
+    let assets_dir = layout.repo_static_dir();
     let abs = assets_dir.join(&subpath);
 
     if !abs.starts_with(&assets_dir) {
