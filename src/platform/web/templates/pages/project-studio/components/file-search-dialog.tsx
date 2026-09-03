@@ -81,8 +81,7 @@ export default function FileSearchDialog({ open, onClose, onSelect, owner, proje
     const t = setTimeout(async () => {
       try {
         const params = new URLSearchParams({ q });
-        if (scope === "pages") params.set("scope", "pages");
-        const resp = await fetch(`/api/projects/${owner}/${project}/templates/search?${params}`);
+        const resp = await fetch(`/api/projects/${owner}/${project}/repo/search?${params}`);
         const data = await resp.json();
         const matches: SearchMatch[] = Array.isArray(data?.matches) ? data.matches : [];
         setResults(

@@ -652,7 +652,7 @@ function MyComponent() {
 }`;
 
   const newComponentCode = `// src/platform/web/templates/components/ui/my-widget.tsx
-// cx() is a runtime global — no import needed, no import from "zeb" required.
+// Every file imports what it uses from "zeb". There are no implicit globals.
 function MyWidget({ label, variant = "default", className }) {
   const cls = variant === "accent"
     ? "bg-accent text-white"

@@ -26,7 +26,7 @@ export function FileSearchProvider({ children, owner, project }) {
     if (!owner || !project) return;
     try {
       const [tmplResp, plResp] = await Promise.all([
-        fetch(`/api/projects/${owner}/${project}/templates/workspace`),
+        fetch(`/api/projects/${owner}/${project}/repo`),
         fetch(`/api/projects/${owner}/${project}/pipelines?recursive=true`),
       ]);
       const tmplData = tmplResp.ok ? await tmplResp.json() : {};

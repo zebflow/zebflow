@@ -285,23 +285,29 @@ export function initPipelineRegistryBehavior() {
     }
 
     async function createTemplateAndNavigate(virtualPath: string, name: string, kindVal: string) {
-      // Map kindVal (page/component/script) to parent folder relative to repo/pipelines/
+      // A file is created where you are standing, and its extension comes from
+      // the kind. Nothing relocates it into a folder of the platform's choosing.
       const parentPath = virtualPath === "/" ? "" : virtualPath.replace(/^\//, "");
-      const kind = kindVal === "script" ? "Script" : kindVal === "component" ? "Component" : "Page";
-      const resp = await fetch(`/api/projects/${owner}/${project}/templates/create`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ kind, name, parent_rel_path: parentPath || null }),
-      });
+      const ext = kindVal === "script" ? "ts" : "tsx";
+      const base = name.replace(/\.(tsx|ts)$/i, "");
+      const relPath = parentPath ? `${parentPath}/${base}.${ext}` : `${base}.${ext}`;
+      const resp = await fetch(
+        `/api/projects/${owner}/${project}/repo/file?path=${encodeURIComponent(relPath)}`,
+        {
+          method: "PUT",
+          headers: { "Content-Type": "text/plain" },
+          body: kindVal === "script" ? "export {};\n" : `export default function Component() {\n  return <div />;\n}\n`,
+        },
+      );
       if (!resp.ok) {
         const data = await resp.json().catch(() => ({}));
         alert(`Failed to create template: ${(data as any).error ?? resp.status}`);
         return;
       }
       const data = await resp.json() as any;
-      const relPath: string = data?.rel_path ?? "";
+      const relPath: string = data?.file?.rel_path ?? "";
       if (relPath) {
-        window.location.href = `/projects/${owner}/${project}/editor?type=template&file=${encodeURIComponent(relPath)}`;
+        window.location.href = `/projects/${owner}/${project}/editor?type=file&file=${encodeURIComponent(relPath)}`;
       } else {
         window.location.reload();
       }

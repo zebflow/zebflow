@@ -785,6 +785,10 @@ pub async fn router(platform: Arc<PlatformService>) -> Router {
             post(api_repo_move),
         )
         .route(
+            "/api/projects/{owner}/{project}/repo/search",
+            get(api_repo_search),
+        )
+        .route(
             "/api/projects/{owner}/{project}/templates/workspace",
             get(api_template_workspace),
         )
@@ -13871,6 +13875,55 @@ fn repo_path_param(query: &RepoPathQuery) -> Result<String, Response> {
             )
                 .into_response()
         })
+}
+
+#[derive(Debug, Deserialize)]
+struct RepoSearchQuery {
+    q: Option<String>,
+    #[serde(default)]
+    context: Option<usize>,
+}
+
+async fn api_repo_search(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((owner, project)): Path<(String, String)>,
+    Query(query): Query<RepoSearchQuery>,
+) -> Response {
+    if let Err(response) = require_project_api_capability(
+        &state,
+        &headers,
+        &owner,
+        &project,
+        ProjectCapability::TemplatesRead,
+    ) {
+        return response;
+    }
+    let Some(pattern) = query
+        .q
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return Json(json!({"ok": true, "matches": []})).into_response();
+    };
+    match state.platform.projects.search_repo_files(
+        &owner,
+        &project,
+        pattern,
+        query.context.unwrap_or(0),
+    ) {
+        Ok(hits) => {
+            let matches = hits
+                .into_iter()
+                .map(|(rel_path, line, block)| {
+                    json!({ "rel_path": rel_path, "line": line, "block": block })
+                })
+                .collect::<Vec<_>>();
+            Json(json!({"ok": true, "matches": matches})).into_response()
+        }
+        Err(err) => internal_error(err),
+    }
 }
 
 async fn api_repo_tree(

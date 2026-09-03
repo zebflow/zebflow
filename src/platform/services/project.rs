@@ -1459,6 +1459,60 @@ impl ProjectService {
         })
     }
 
+    /// Searches every repository file for a pattern, line by line.
+    ///
+    /// One search over `repo/`, filtered by the layout's own file-type rule,
+    /// replacing the source-root-only search that could not see a `.md` beside
+    /// `zebflow.yaml`. Pipeline definitions are skipped: they are a contract
+    /// document with their own editor, not prose to grep.
+    pub fn search_repo_files(
+        &self,
+        owner: &str,
+        project: &str,
+        pattern: &str,
+        context: usize,
+    ) -> Result<Vec<(String, usize, String)>, PlatformError> {
+        let owner = slug_segment(owner);
+        let project = slug_segment(project);
+        let layout = self.file.ensure_project_layout(&owner, &project)?;
+
+        let needle = pattern.to_lowercase();
+        let mut matches: Vec<(String, usize, String)> = Vec::new();
+        let mut files: Vec<(String, std::path::PathBuf)> = Vec::new();
+        collect_all_files(&layout.repo_dir, &layout.repo_dir, &mut files);
+
+        for (rel, abs) in &files {
+            if rel.starts_with(".git/")
+                || rel.ends_with(PIPELINE_DEFINITION_EXTENSION)
+                || repo_entry_is_machine_owned(rel)
+                || layout.repo_layout.refused_file_type(rel).is_some()
+            {
+                continue;
+            }
+            let Ok(content) = fs::read_to_string(abs) else {
+                continue;
+            };
+            let lines: Vec<&str> = content.lines().collect();
+            for (index, line) in lines.iter().enumerate() {
+                if !line.to_lowercase().contains(&needle) {
+                    continue;
+                }
+                let block = if context == 0 {
+                    (*line).to_string()
+                } else {
+                    let start = index.saturating_sub(context);
+                    let end = (index + context + 1).min(lines.len());
+                    lines[start..end].join("\n")
+                };
+                matches.push((rel.clone(), index + 1, block));
+                if matches.len() >= 200 {
+                    return Ok(matches);
+                }
+            }
+        }
+        Ok(matches)
+    }
+
     /// Reads one repository file.
     pub fn read_repo_file(
         &self,
