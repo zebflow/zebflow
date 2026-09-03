@@ -1303,7 +1303,8 @@ impl ProjectService {
             "# {title}\n\nA Zebflow project.\n\n\
              - `sample_api_pipeline.zf.json` — a webhook that answers with JSON\n\
              - `sample_web_page_pipeline.zf.json` — a page served at `/p/sample`\n\
-             - `sample_web_page.tsx` — the page it renders\n"
+             - `sample_web_page.tsx` — the page it renders\n\
+             - `globals.css` — the one always-loaded stylesheet; a page imports it\n"
         );
 
         let api_pipeline = serde_json::json!({
@@ -1366,19 +1367,59 @@ impl ProjectService {
             }
         });
 
-        let page = "import { useState } from \"zeb\";\n\n\
-                    export default function SampleWebPage() {\n\
-                    \u{20}\u{20}const [count, setCount] = useState(0);\n\
-                    \u{20}\u{20}return (\n\
-                    \u{20}\u{20}\u{20}\u{20}<main className=\"p-8\">\n\
-                    \u{20}\u{20}\u{20}\u{20}\u{20}\u{20}<h1 className=\"text-2xl font-bold\">Hello from Zebflow</h1>\n\
-                    \u{20}\u{20}\u{20}\u{20}\u{20}\u{20}<button onClick={() => setCount(count + 1)}>Clicked {count} times</button>\n\
-                    \u{20}\u{20}\u{20}\u{20}</main>\n\
-                    \u{20}\u{20});\n\
-                    }\n";
+        // The stylesheet reaches a page because the page imports it, the way
+        // `app/layout.tsx` imports `globals.css` in Next. There is no implicit
+        // global here either.
+        let page = concat!(
+            "import { useState } from \"zeb\";\n",
+            "import \"@/globals.css\";\n",
+            "\n",
+            "export default function SampleWebPage() {\n",
+            "  const [count, setCount] = useState(0);\n",
+            "  return (\n",
+            "    <main className=\"zf-page p-8\">\n",
+            "      <h1 className=\"text-2xl font-bold\">Hello from Zebflow</h1>\n",
+            "      <p className=\"zf-muted\">Tailwind classes work with no setup. </p>\n",
+            "      <button onClick={() => setCount(count + 1)}>Clicked {count} times</button>\n",
+            "    </main>\n",
+            "  );\n",
+            "}\n",
+        );
+
+        // One always-loaded stylesheet, named the way Next and Astro name it.
+        // Tokens live here rather than in a second file: splitting them out
+        // would leave two files claiming to be the global one.
+        let globals = concat!(
+            "/* Loaded by every page that imports it:\n",
+            "     import \"@/globals.css\";\n",
+            "\n",
+            "   Tailwind utilities need no setup and no import -- the engine\n",
+            "   emits the ones your markup uses. This file is for what Tailwind\n",
+            "   cannot express: design tokens, base rules, and your own classes.\n",
+            "\n",
+            "   Every other .css file is imported by whoever needs it. There is\n",
+            "   only one global. */\n",
+            "\n",
+            ":root {\n",
+            "  --zf-brand: #ff5c00;\n",
+            "  --zf-surface: #0f172a;\n",
+            "  --zf-text: #e2e8f0;\n",
+            "}\n",
+            "\n",
+            ".zf-page {\n",
+            "  background: var(--zf-surface);\n",
+            "  color: var(--zf-text);\n",
+            "  min-height: 100vh;\n",
+            "}\n",
+            "\n",
+            ".zf-muted {\n",
+            "  color: color-mix(in srgb, var(--zf-text) 65%, transparent);\n",
+            "}\n",
+        );
 
         for (name, content) in [
             ("README.md", readme),
+            ("globals.css", globals.to_string()),
             ("sample_web_page.tsx", page.to_string()),
         ] {
             let path = layout.repo_dir.join(name);

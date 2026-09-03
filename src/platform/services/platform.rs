@@ -664,6 +664,11 @@ impl PlatformService {
                 runtime: Default::default(),
             },
         )?;
+        // First boot is a person's new project, so it gets the starter files.
+        // An import, a hub install and a clone do not — they arrive with their
+        // own content and a sample would be a stray file in it.
+        self.projects
+            .write_starter_files(&self.config.default_owner, &self.config.default_project)?;
         Ok(())
     }
 }

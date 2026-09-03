@@ -11847,6 +11847,10 @@ mod tests {
             vec![
                 format!("{folder}/blog/feed.zf.json"),
                 format!("{folder}/pipelines/calc.zf.json"),
+                // A bootstrapped project carries its starter samples, and
+                // adding the whole project as a folder carries them too.
+                format!("{folder}/sample_api_pipeline.zf.json"),
+                format!("{folder}/sample_web_page_pipeline.zf.json"),
             ]
         );
         assert!(
