@@ -1369,7 +1369,9 @@ impl ProjectService {
 
         // The stylesheet reaches a page because the page imports it, the way
         // `app/layout.tsx` imports `globals.css` in Next. There is no implicit
-        // global here either.
+        // global here either. Styling is Tailwind utilities in the markup; the
+        // tokens are reached with arbitrary values, `bg-[var(--color-surface)]`,
+        // which is Tailwind's own escape hatch and needs no custom classes.
         let page = concat!(
             "import { useState } from \"zeb\";\n",
             "import \"@/globals.css\";\n",
@@ -1377,43 +1379,51 @@ impl ProjectService {
             "export default function SampleWebPage() {\n",
             "  const [count, setCount] = useState(0);\n",
             "  return (\n",
-            "    <main className=\"zf-page p-8\">\n",
-            "      <h1 className=\"text-2xl font-bold\">Hello from Zebflow</h1>\n",
-            "      <p className=\"zf-muted\">Tailwind classes work with no setup. </p>\n",
-            "      <button onClick={() => setCount(count + 1)}>Clicked {count} times</button>\n",
+            "    <main className=\"min-h-screen bg-[var(--color-surface)] text-[var(--color-text)] p-8\">\n",
+            "      <h1 className=\"text-2xl font-bold text-[var(--color-brand)]\">Hello from Zebflow</h1>\n",
+            "      <p className=\"mt-2 opacity-70\">Tailwind utilities work with no setup.</p>\n",
+            "      <button\n",
+            "        className=\"mt-6 rounded-md bg-[var(--color-brand)] px-4 py-2 font-medium\"\n",
+            "        onClick={() => setCount(count + 1)}\n",
+            "      >\n",
+            "        Clicked {count} times\n",
+            "      </button>\n",
             "    </main>\n",
             "  );\n",
             "}\n",
         );
 
         // One always-loaded stylesheet, named the way Next and Astro name it.
-        // Tokens live here rather than in a second file: splitting them out
-        // would leave two files claiming to be the global one.
+        //
+        // The token names follow Tailwind's own namespaces -- `--color-*`,
+        // `--font-*`, `--spacing-*` -- so they read the same as everyone
+        // else's, and so they already match if `@theme` support arrives. They
+        // sit in `:root` rather than `@theme` because this engine reads
+        // `--theme()` inside preflight and not the at-rule.
         let globals = concat!(
             "/* Loaded by every page that imports it:\n",
             "     import \"@/globals.css\";\n",
             "\n",
-            "   Tailwind utilities need no setup and no import -- the engine\n",
-            "   emits the ones your markup uses. This file is for what Tailwind\n",
-            "   cannot express: design tokens, base rules, and your own classes.\n",
+            "   Tailwind utilities need no setup and no import -- the engine emits\n",
+            "   the ones your markup uses, including arbitrary values like\n",
+            "   `bg-[var(--color-surface)]`. This file is for what utilities cannot\n",
+            "   express: design tokens, base rules, and fonts.\n",
             "\n",
-            "   Every other .css file is imported by whoever needs it. There is\n",
-            "   only one global. */\n",
+            "   Every other .css file is imported by whoever needs it. A layout that\n",
+            "   imports this one passes it to every page built on that layout, and a\n",
+            "   stylesheet reached twice is still emitted once.\n",
+            "\n",
+            "   There is only one global. */\n",
             "\n",
             ":root {\n",
-            "  --zf-brand: #ff5c00;\n",
-            "  --zf-surface: #0f172a;\n",
-            "  --zf-text: #e2e8f0;\n",
+            "  --color-brand: #ff5c00;\n",
+            "  --color-surface: #020617;\n",
+            "  --color-text: #e2e8f0;\n",
+            "  --font-sans: ui-sans-serif, system-ui, sans-serif;\n",
             "}\n",
             "\n",
-            ".zf-page {\n",
-            "  background: var(--zf-surface);\n",
-            "  color: var(--zf-text);\n",
-            "  min-height: 100vh;\n",
-            "}\n",
-            "\n",
-            ".zf-muted {\n",
-            "  color: color-mix(in srgb, var(--zf-text) 65%, transparent);\n",
+            "body {\n",
+            "  font-family: var(--font-sans);\n",
             "}\n",
         );
 
