@@ -113,15 +113,27 @@ for verification, but they do not own the same decision.
 ### spec.layout
 
 Every entry is one directory, relative to `repo/`, and every entry is optional.
-An absent entry means the default in [Frozen Defaults](#frozen-defaults), so a
-project that declares no layout describes exactly the directories the platform
-has always used.
+An absent entry means the default in [Frozen Defaults](#frozen-defaults).
+
+**A layout entry names where a kind is looked for. It is never a directory the
+platform creates.** A project starts as an empty repository; a folder exists
+because an author made one, and every writer creates its own parents. Scaffolding
+them ran on every request, so a folder the author deleted came back on the next
+page load.
 
 `source` is one directory, not two: it is the root that holds pipelines, pages,
 stylesheets, and shared components, and it is the same directory the RWE
-compiler treats as its template root and `@/` import root. `assets` defaults to
-`assets` inside whatever `source` resolves to, so a project that moves its
-source does not leave an asset directory behind in the tree it moved out of.
+compiler treats as its template root and `@/` import root. **It defaults to the
+repository itself** — an empty declaration names the repository root — so a
+pipeline, a page and a README sit side by side at the top until a project says
+otherwise.
+
+`static` is the one entry that may **not** be empty. Everything beneath it is
+served by `GET /static/{owner}/{project}/…` with no authentication, so rooting it
+at the repository would publish `zebflow.yaml`, `zeb.lock` and every pipeline
+definition. It defaults to `static` inside whatever `source` resolves to, so a
+project that moves its source does not leave a public directory behind in the
+tree it moved out of.
 
 `schema` and `sqlite_schema` are separate entries because they are different
 documents written by different engines, and a project may carry one without the
@@ -246,8 +258,8 @@ Omitted fields use these v1 meanings:
 | Field | Default |
 | --- | --- |
 | `spec.layout` | Every entry below; an absent section declares nothing |
-| `spec.layout.source` | `pipelines` |
-| `spec.layout.assets` | `assets` inside the resolved `source`, so `pipelines/assets` when `source` is undeclared |
+| `spec.layout.source` | empty — the repository itself |
+| `spec.layout.static` | `static` inside the resolved `source`, so `static` when `source` is undeclared. May not be empty |
 | `spec.layout.docs` | `docs` |
 | `spec.layout.schema` | `schemas/sekejap` |
 | `spec.layout.sqlite_schema` | `schemas/sqlite` |
@@ -349,7 +361,9 @@ schema stops being a draft and starts being a promise.
 | 2026-08-20 | Added `spec.layout.sqlite_schema` | The SQLite export directory was the one repository directory with no entry, so `schemas/sqlite/` stayed a literal in two places that could drift from each other. Optional, defaults to the literal it replaces, and absent stays absent on rewrite. |
 | 2026-08-20 | Added `spec.layout.allowed_extensions` | Optional; an absent entry resolves to the platform set, which is derived from what a repository in this codebase actually holds plus the media types the asset route serves, so no existing content becomes uninstallable and absent stays absent on rewrite. It can only narrow, so no document can weaken the gate built on it. No existing field changed meaning and the golden fixture still round-trips byte for byte. |
 | 2026-09-01 | Added `spec.files.backend` | Optional; an absent entry resolves to `zebfs`, the store every project already used, and absent stays absent on rewrite, so no existing file is modified on its next save. No existing field changed meaning and both golden fixtures still round-trip byte for byte. The only accepted value is the one a stored FileRef already carries, so nothing written before the entry existed becomes unreadable. |
-| 2026-08-20 | `spec.layout.assets` now defaults inside the resolved `source` | For an undeclared `source` the default is the same string it always was, `pipelines/assets`, so no existing document changes meaning. It only differs for a project that declares a different `source` -- a case that could not arise before the declaration was read, and where the previous literal would have scaffolded an asset directory in the tree the project moved out of. |
+| 2026-08-20 | `spec.layout.assets` now defaults inside the resolved `source` | It only differs for a project that declares a different `source` -- a case that could not arise before the declaration was read, and where the previous literal would have scaffolded an asset directory in the tree the project moved out of. |
+| 2026-09-03 | `spec.layout.assets` renamed to `spec.layout.static`, default `static` | `assets` was the wrong word: in Vite, Astro, Rails and Hugo it names files that are processed and content-hashed, while this directory is served byte-for-byte -- which those same projects call `static`. `public` was not taken because it is the *state* the exposure inventory reports, and a folder claiming that word would collide with it. |
+| 2026-09-03 | `spec.layout.source` defaults to the repository itself | It was `pipelines`, and every layout entry was also a directory the platform created on every request -- so a folder an author deleted returned on the next page load. A project now starts as an empty repository and a layout entry only says where a kind is looked for. An empty declaration is legal and names the repository root; `static` is the one entry that may not be empty, because its route serves everything beneath it unauthenticated. |
 
 ## Freeze Evidence
 

@@ -15,7 +15,7 @@ runtime state, activation timestamps, or invocation history.
 | --- | --- |
 | API version | `zebflow.com/v1` |
 | Kind | `Pipeline` |
-| Canonical files | `repo/pipelines/**/*.zf.json` |
+| Canonical files | `repo/{source}/**/*.zf.json`, and `{source}` is the repository itself unless declared |
 | Durable representation | Strict UTF-8 JSON |
 | Logical identity | `metadata.name`, equal to `spec.id` |
 | Project locator | Project-relative `file_rel_path` |

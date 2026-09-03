@@ -296,8 +296,9 @@ orphan rows for deleted projects keep the file alive until hand-drained.
   `LOCAL_HUB_STORE_DIR` in `hub.rs` is `hub-local`. The appendix line saying
   the code catch-up was owed was stale and is corrected (2026-08-31).
 - `data/cache/web-assets/`: removed from both trees (rule 10) — a reader with
-  no writer. `GET /assets/{owner}/{project}/…` looks there first and falls
-  through to `repo/{assets}/`, which is where every asset comes from today.
+  no writer. `GET /static/{owner}/{project}/…` looks there first and falls
+  through to `repo/{static}/`, which is where every served file comes from
+  today.
   It returns the day a compiler writes it.
 - `.bootstrap/superadmin-password` lifecycle: shipped — the first successful
   password change deletes it (rule 9), and `zeb admin reset-password` rotates

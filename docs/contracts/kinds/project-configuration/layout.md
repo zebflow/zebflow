@@ -153,7 +153,7 @@ in this codebase contains an image was also wrong: `pipelines/assets/` holds
 
 `ResolvedProjectLayout` (`platform/model.rs`) now answers every question in
 section 1 that is not identity. `ProjectFileLayout` carries one and derives
-`repo_source_dir()`, `repo_assets_dir()`, `repo_docs_dir()` and
+`repo_source_dir()`, `repo_static_dir()`, `repo_docs_dir()` and
 `repo_node_interfaces_dir()` from it, so an absolute path and the
 repository-relative rule that names it cannot disagree. The safety review, the
 prepared-install gate, and every place that decides which installed files to
@@ -381,3 +381,74 @@ inside anyone's repository. Applying a repository rule there would let a project
 that narrowed its own extensions refuse a bundle that never touches its
 repository. That leaves the bundle's `.wasm` governed by its contract's path,
 symlink, ABI and reference checks and by nothing in this set.
+
+## 9. What removing the scaffolding changed
+
+Sections 1 to 8 all assume the platform creates the directories it names.
+`ensure_project_layout` did, on **every request** — `repo/{source}`,
+`repo/{docs}`, `repo/{assets}` and `{source}/styles` — so a folder an author
+deleted came back on the next page load, and section 4's "images do have a
+home" was true only because the platform kept putting one there.
+
+It creates none of them now. **A layout entry says where a kind is looked for;
+it is not a directory that must exist.** Every repository writer creates its own
+parents, so a folder exists because somebody put something in it.
+
+With nothing scaffolded, `source` defaulting to `pipelines` had nothing left to
+recommend it: it named a directory that no longer existed in a new project. The
+default is the repository itself, and an empty declaration is legal and means
+exactly that. `strip_dir_prefix` returns the whole path for an empty dir, so
+identity is unchanged in shape — the path inside the source root, where the
+source root is now usually the root.
+
+Three defects surfaced in making the source root empty, and all three were the
+same mistake in different places:
+
+- `assets` resolved to `"/assets"`, and `repo_dir.join("/assets")` is
+  **absolute** in Rust, so it left the project for the filesystem root — which
+  the unauthenticated serving route would then have published. `source_rel` and
+  the hub icon path had it too.
+- `validate_prepared_pipeline_sources` began treating a node bundle's own
+  `functions/*.zf.json` as one of the project's pipelines. The exemption
+  [`hub-package/README.md`](../hub-package/README.md) states was holding by
+  accident, because bundle paths did not begin with `pipelines/`.
+- `validate_layout_dir` refused an empty string, so the repository root could
+  not be declared at all.
+
+### What a project starts with
+
+An empty repository, plus a README the way a new repository on GitHub has one,
+one always-loaded stylesheet, and two samples showing the two things a pipeline
+can be:
+
+```
+repo/
+  README.md
+  globals.css
+  sample_api_pipeline.zf.json
+  sample_web_page_pipeline.zf.json
+  sample_web_page.tsx
+  zeb.lock
+  zebflow.yaml
+```
+
+Written by the paths where a **person** makes a project — first boot and the two
+create handlers — and never by `create_or_update_project`, because an import, a
+hub install and a git clone all create a project and then fill it, so a sample
+written at creation is a stray file in somebody else's repository.
+
+### `assets` became `static`, and `_rwe/` is reserved
+
+`assets` names processed, content-hashed files in Vite, Astro, Rails and Hugo;
+this directory is served byte-for-byte, which those same projects call `static`.
+`public` was not taken, because it is the word the exposure inventory uses for
+the *state* of a channel.
+
+The URL follows the folder: `/static/{owner}/{project}/…`. RWE machinery keeps
+the same prefix under a reserved `_rwe/` — `_rwe/scripts/{hash}` for compiled
+bundles, `_rwe/lib/…` for libraries — so one proxy rule still covers everything
+and the origin, not the proxy, sets `Cache-Control`. That split is the point:
+`_rwe/` is content-hashed and `immutable`, while an authored file keeps its name
+when its contents change and is `must-revalidate`. It had been served
+`immutable` too, so editing `logo.png` never reached a browser that had seen the
+old one.

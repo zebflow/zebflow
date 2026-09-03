@@ -62,7 +62,7 @@ An installed bundle is not declared, it is *materialized from* a declaration.
 The declaration is `zeb.lock` — declared in `repo/`, machine-written
 (`instance-directory.md` Rule 1) — and it stays the project's. The bytes
 are the machine's output, so they belong in `data/hub/nodes/`. This mirrors the
-split that already exists between `repo/pipelines/` and the activated snapshots
+split that already exists between `repo/` and the activated snapshots
 under `data/cache/pipelines/` (`instance-directory.md`, "The tree").
 
 `data/hub/nodes/` is classified by `instance-directory.md` (its tiers table) as the

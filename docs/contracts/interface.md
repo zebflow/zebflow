@@ -560,7 +560,7 @@ coverage claim becomes false.
 | Public ingress and delivery | 9 | `/wh/*`, `/ms/*`, the WebSocket room and preview sockets, and the debug reload stream. A person triggers these by using an application, not by naming a command. |
 | Internal machine-to-machine | 8 | All of `/api/internal/*`: cluster register and heartbeat, runtime materialize, execute, and webhook forwarding, and project-transfer internals. Authenticated by the cluster token, never by a session. |
 | Remote-hub far end | 9 | `/api/hub/remote/*` plus the four `artifact` / `artifacts/{sha256}` byte fetches. These answer *another* instance holding a publisher token or a digest. Nothing in this instance's own UI or CLI calls them; they are the server half of an operation whose client half is counted under `hub`. `distribution.md` §2 names the byte fetch `artifact()`, one of three calls behind the repository interface, and it is the one no person makes. |
-| Second spellings | 6 | One operation reachable two ways: `POST /home/projects/create` is the form twin of `POST /api/users/{owner}/projects`; `POST …/files/access` of the `PUT`; `PUT …/credentials/{id}` of `POST …/credentials`; `PUT …/db/connections/{slug}` of `POST …/db/connections`; `PUT …/docs/file` of `POST …/docs`; and `GET …/hub/assets/preview` is literally the same handler as `GET …/hub/publish-preview`. |
+| Second spellings | 5 | One operation reachable two ways: `POST /home/projects/create` is the form twin of `POST /api/users/{owner}/projects`; `POST …/files/access` of the `PUT`; `PUT …/credentials/{id}` of `POST …/credentials`; `PUT …/db/connections/{slug}` of `POST …/db/connections`; and `GET …/hub/assets/preview` is literally the same handler as `GET …/hub/publish-preview`. |
 | Liveness and readiness | 2 | `/health` and `/ready`. Probes. The three routes on the dedicated health server are a separate router and are not in the 222 at all. |
 | Protocol discovery | 3 | The two `/.well-known/oauth-*` documents and `/oauth/callback`. Transport for an OAuth exchange a person starts elsewhere. |
 
@@ -746,7 +746,7 @@ Each is recorded with its evidence so none is re-proposed.
 already has routes on both sides of the split, which is not a design.
 
 **`assets` into source — correct.** `api_upload_asset` writes to
-`layout.repo_assets_dir()` and requires `ProjectCapability::TemplatesWrite`.
+`layout.repo_static_dir()` and requires `ProjectCapability::TemplatesWrite`.
 By `distribution.md` §6, `repo/` is what the human declares. Same area, same
 capability, same noun.
 

@@ -169,6 +169,35 @@ fn relative_import_refusal(import: &str) -> EngineError {
     )
 }
 
+/// The specifiers a model reaches for out of habit, and what to say instead.
+///
+/// Zebflow's runtime is not React's: `usePageState`, `useNavigate` and `cx` do
+/// not exist there, so `from "react"` would promise semantics this engine does
+/// not have. The refusal names `"zeb"` for the same reason the relative-import
+/// one names `@/` — an error that states the replacement is repaired in one
+/// step, and one that does not is repaired by guessing.
+fn runtime_import_refusal(import: &str) -> Option<EngineError> {
+    let familiar = matches!(
+        import,
+        "react"
+            | "react-dom"
+            | "react/jsx-runtime"
+            | "react-dom/client"
+            | "preact"
+            | "preact/hooks"
+            | "preact/compat"
+    );
+    familiar.then(|| {
+        EngineError::new(
+            "RWE_IMPORT_NOT_ALLOWED",
+            format!(
+                "import from '{import}' is not allowed; \
+                 hooks and helpers come from \"zeb\" — write `from \"zeb\"` instead"
+            ),
+        )
+    })
+}
+
 fn validate_import_allowlist(
     imports: &[String],
     _options: &CompileOptions,
@@ -185,6 +214,9 @@ fn validate_import_allowlist(
         }
         if import.starts_with("./") || import.starts_with("../") {
             return Err(relative_import_refusal(import));
+        }
+        if let Some(error) = runtime_import_refusal(import) {
+            return Err(error);
         }
         if is_external_specifier(import) {
             continue;
@@ -1686,6 +1718,54 @@ export default function Page() {
             },
         )
         .expect("a locally declared name is not the zeb hook");
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// A model emits `from "react"` out of habit. The refusal names `"zeb"`,
+    /// because Zebflow's runtime is not React's — `usePageState` and
+    /// `useNavigate` do not exist there.
+    #[test]
+    fn compile_refuses_a_react_import_and_names_zeb() {
+        let root = std::env::temp_dir().join(format!("rwe-react-import-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).expect("create root");
+
+        // Named hooks are caught by `validate_zeb_exclusive_symbols`, a default
+        // import only by the allowlist. Both must name `"zeb"`, which is the
+        // guarantee worth holding — not which check happened to fire.
+        for source in [
+            "import { useState } from \"react\";",
+            "import { useState } from \"preact/hooks\";",
+            "import ReactDOM from \"react-dom\";",
+            "import Preact from \"preact\";",
+        ] {
+            let file = root.join("page.tsx");
+            fs::write(
+                &file,
+                format!(
+                    "{source}\n\
+                     export default function Page() {{ return <div />; }}\n"
+                ),
+            )
+            .expect("write page");
+
+            let err = compile(
+                &fs::read_to_string(&file).unwrap(),
+                CompileOptions {
+                    template_root: Some(root.display().to_string()),
+                    file_path: Some(file.display().to_string()),
+                    ..Default::default()
+                },
+            )
+            .expect_err("a runtime import must be refused");
+
+            assert!(
+                err.message.contains("\"zeb\""),
+                "the refusal must name the replacement, got: {}",
+                err.message
+            );
+        }
 
         let _ = fs::remove_dir_all(&root);
     }

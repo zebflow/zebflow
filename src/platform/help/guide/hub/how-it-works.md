@@ -219,7 +219,7 @@ directory of the receiving project:
 - source (pipelines, pages, styles, shared components) goes to the target folder
   inside this project's source root, defaulting to `hub/{package_id}`
 - assets go to this project's asset directory, under the same folder name, so
-  they are served at `/assets/{owner}/{project}/...`
+  they are served at `/static/{owner}/{project}/...`
 - docs go to this project's docs directory, under the same folder name
 
 Anything else the package carries — its own `zebflow.yaml`, exported schema

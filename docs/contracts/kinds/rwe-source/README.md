@@ -45,6 +45,7 @@ Four forms, and only four.
 | `"@/…"` | a project file, addressed from the template root |
 | `"npm:…"`, `"node:…"`, `"jsr:…"`, `"http://…"`, `"https://…"` | left alone; the compiler does not resolve them |
 | `"./…"`, `"../…"` | **refused** |
+| `"react"`, `"preact"`, and their submodules | **refused**, naming `"zeb"` — the runtime here is not React's |
 
 ### Why relative imports are refused
 
@@ -95,17 +96,63 @@ Adding a file that already exists is refused and names the path. Add is not
 merge: the receiving project owns its source, and silently overwriting an
 authored file is the one outcome nothing can undo.
 
+## Stylesheets
+
+A page reaches CSS the way it reaches anything else: it imports it.
+
+```tsx
+import "@/globals.css";
+```
+
+There is no implicit global and no automatic root layout, so nothing loads a
+stylesheet on a page's behalf. This is Next's mechanism minus the part Zebflow
+does not have — `app/layout.tsx` imports `globals.css` once and every page
+inherits it, and here a page inherits it from whatever layout component it
+imports.
+
+Two properties the compiler guarantees, both of which the alternative designs
+depend on:
+
+- **A layout's import reaches the pages built on it.** A component's `.css`
+  import is collected while that component is inlined, so a page that imports
+  only the layout still carries the rules.
+- **A stylesheet reached twice is emitted once.** `collect_inline_style`
+  canonicalises the path and checks the shared `visited` set before reading, so
+  a diamond — a button imports it, a sidebar imports the button and it, a page
+  imports both — inlines one copy.
+
+`globals.css` at the repository root is what a new project starts with. The name
+is Next's and Astro's, and it is the only one of the candidates that answers
+*when it loads*: `main.css` in a subfolder is just as plausibly a local file,
+which is the question a second one raises. Design tokens live in it rather than
+in a `theme.css` beside it — Tailwind v4 moved configuration into the CSS for the
+same reason, and splitting them out leaves two files each claiming to be the
+global one.
+
+Token names follow Tailwind's namespaces — `--color-*`, `--font-*`,
+`--spacing-*` — so they read the same as every other Tailwind project and
+already match if `@theme` support arrives. They sit in `:root` because this
+engine reads `--theme()` inside preflight and not the at-rule. Nothing needs a
+custom class to spend one: Tailwind's own arbitrary-value syntax compiles here,
+so `bg-[var(--color-surface)]` emits the rule.
+
 ## Rejections
 
 A page without exactly one default export. A relative import. An import
-escaping the template root. A hook used without an import in that file.
+escaping the template root. A hook used without an import in that file. An
+import from `react`, `react-dom`, `preact` or `preact/hooks` — the refusal names
+`"zeb"`, because this runtime is not React's and `usePageState`, `useNavigate`
+and `cx` do not exist there.
 
 ## Open
 
 - **Behavior scripts.** A `.ts` file's own import rules are undefined; it is
   not a component and does not export a page.
-- **Stylesheets.** `@/…` resolves a `.css` import through a separate path;
-  what a stylesheet may import is unstated.
+- **What a stylesheet may import.** `@/…` resolves a `.css` import through a
+  separate path, and whether that file may `@import` another is unstated.
+- **A root layout.** Nothing wraps every rendered page, so "import it once"
+  has nowhere to live. Until that exists, a page with no layout repeats the
+  stylesheet import.
 - **The compiled artifact.** This kind governs the source. The compiled bundle
   and the wire protocol are the other half of `stability-matrix.md` row 13 and
   are still one undivided row.
