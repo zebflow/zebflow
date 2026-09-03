@@ -48,19 +48,18 @@ use crate::platform::model::ResolvedProjectLayout;
 use crate::platform::model::{
     ChangePasswordRequest, ClusterJoinTokenMintRequest, ClusterWorkerHeartbeatRequest,
     ClusterWorkerRegisterRequest, ClusterWorkerRegisterResponse, CreateHubTokenRequest,
-    CreateProjectDocFolderRequest, CreateProjectRequest, CreateSimpleTableRequest,
-    CreateUserRequest, DeletePipelineRequest, DescribeProjectDbConnectionRequest,
-    ExecutePipelineRequest, GitCommitRequest, IDENTITY_WRITE_ACTION_CREATED,
-    IDENTITY_WRITE_ACTION_LINKED, LoginRequest, McpSessionCreateRequest, McpSessionToggleRequest,
-    PipelineExecuteTrigger, PipelineInvocationEntry, PipelineLocateRequest,
-    PlatformOfficeIdentityWrite, PlatformOfficeLocalAuthorityEvent, ProjectAccessSubject,
-    ProjectCapability, ProjectDocMoveRequest, ProjectOperationKind, ProjectTransferArtifactKind,
-    QueryProjectDbConnectionRequest, TemplateCompileRequest, TemplateCompileResponse,
-    TemplateCreateRequest, TemplateDiagnostic, TemplateMoveRequest, TemplateSaveRequest,
+    CreateProjectRequest, CreateSimpleTableRequest, CreateUserRequest, DeletePipelineRequest,
+    DescribeProjectDbConnectionRequest, ExecutePipelineRequest, GitCommitRequest,
+    IDENTITY_WRITE_ACTION_CREATED, IDENTITY_WRITE_ACTION_LINKED, LoginRequest,
+    McpSessionCreateRequest, McpSessionToggleRequest, PipelineExecuteTrigger,
+    PipelineInvocationEntry, PipelineLocateRequest, PlatformOfficeIdentityWrite,
+    PlatformOfficeLocalAuthorityEvent, ProjectAccessSubject, ProjectCapability,
+    ProjectOperationKind, ProjectTransferArtifactKind, QueryProjectDbConnectionRequest,
+    TemplateCompileRequest, TemplateCompileResponse, TemplateDiagnostic,
     TestProjectDbConnectionRequest, UpdateSettingsSectionRequest, UpdateSimpleTableRequest,
     UpdateUserSettingsRequest, UpsertPipelineDefinitionRequest,
     UpsertProjectAssistantConfigRequest, UpsertProjectCredentialRequest,
-    UpsertProjectDbConnectionRequest, UpsertProjectDocRequest, now_ts, slug_segment,
+    UpsertProjectDbConnectionRequest, now_ts, slug_segment,
 };
 use crate::platform::sekejap;
 use crate::platform::services::PlatformService;
@@ -789,34 +788,8 @@ pub async fn router(platform: Arc<PlatformService>) -> Router {
             get(api_repo_search),
         )
         .route(
-            "/api/projects/{owner}/{project}/templates/workspace",
-            get(api_template_workspace),
-        )
-        .route(
-            "/api/projects/{owner}/{project}/templates/search",
-            get(api_template_search),
-        )
-        .route(
-            "/api/projects/{owner}/{project}/templates/pages",
-            get(api_template_pages),
-        )
-        .route(
-            "/api/projects/{owner}/{project}/templates/file",
-            get(api_template_file)
-                .put(api_template_save)
-                .delete(api_template_delete),
-        )
-        .route(
             "/api/projects/{owner}/{project}/templates/outline",
             get(api_template_outline),
-        )
-        .route(
-            "/api/projects/{owner}/{project}/templates/create",
-            post(api_template_create),
-        )
-        .route(
-            "/api/projects/{owner}/{project}/templates/move",
-            post(api_template_move),
         )
         .route(
             "/api/projects/{owner}/{project}/templates/git-status",
@@ -1098,28 +1071,6 @@ pub async fn router(platform: Arc<PlatformService>) -> Router {
         .route(
             "/api/projects/{owner}/{project}/hub/publishers/{publisher_id}",
             delete(api_delete_hub_publisher),
-        )
-        .route(
-            "/api/projects/{owner}/{project}/docs",
-            get(api_list_project_docs).post(api_upsert_project_doc),
-        )
-        .route(
-            "/api/projects/{owner}/{project}/docs/file",
-            get(api_read_project_doc)
-                .put(api_upsert_project_doc_file)
-                .delete(api_delete_project_doc_file),
-        )
-        .route(
-            "/api/projects/{owner}/{project}/docs/folder",
-            post(api_create_project_doc_folder),
-        )
-        .route(
-            "/api/projects/{owner}/{project}/docs/move",
-            post(api_move_project_doc_entry),
-        )
-        .route(
-            "/api/projects/{owner}/{project}/docs/entry",
-            delete(api_delete_project_doc_entry),
         )
         .route(
             "/api/projects/{owner}/{project}/agent-docs",
@@ -5008,17 +4959,22 @@ async fn render_project_pipelines_with_tab(
                         let docs_items = state
                             .platform
                             .projects
-                            .list_project_docs(&owner, &project)
+                            .list_repo_tree(&owner, &project)
+                            .map(|listing| listing.items)
                             .unwrap_or_default()
                             .into_iter()
-                            .filter(|d| d.kind == "file")
-                            .map(|d| {
-                                let encoded = d.path.replace(' ', "%20");
+                            .filter(|item| item.file_kind == "doc")
+                            .map(|item| {
+                                let encoded = item.rel_path.replace(' ', "%20");
                                 let href = format!(
-                                    "/projects/{owner}/{project}/editor?type=doc&file={}",
+                                    "/projects/{owner}/{project}/editor?type=file&file={}",
                                     encoded
                                 );
-                                json!({ "name": d.name, "path": d.path, "href": href })
+                                json!({
+                                    "name": item.name,
+                                    "path": item.rel_path,
+                                    "href": href
+                                })
                             })
                             .collect::<Vec<_>>();
                         json!({
@@ -5196,11 +5152,7 @@ async fn render_project_pipelines_with_tab(
                 }
                 // Also count template files so folder badges reflect all items, not just pipelines.
                 // Skip .zf.json files — they are pipeline definitions already counted above.
-                if let Ok(workspace) = state
-                    .platform
-                    .projects
-                    .list_template_workspace(&owner, &project)
-                {
+                if let Ok(workspace) = state.platform.projects.list_repo_tree(&owner, &project) {
                     for item in &workspace.items {
                         if item.kind == "file" && !item.rel_path.ends_with(".zf.json") {
                             let parent = std::path::Path::new(&item.rel_path)
@@ -14105,209 +14057,6 @@ async fn api_repo_move(
     }
 }
 
-async fn api_template_workspace(
-    State(state): State<PlatformAppState>,
-    headers: HeaderMap,
-    Path((owner, project)): Path<(String, String)>,
-    uri: Uri,
-) -> Response {
-    if let Err(response) = require_project_api_capability(
-        &state,
-        &headers,
-        &owner,
-        &project,
-        ProjectCapability::TemplatesRead,
-    ) {
-        return response;
-    }
-    if let Ok(Some(worker_id)) = remote_project_worker_id(&state, &owner, &project) {
-        return match forward_project_api_request_to_worker(
-            &state,
-            &uri,
-            &Method::GET,
-            &headers,
-            Bytes::new(),
-            &worker_id,
-        )
-        .await
-        {
-            Ok(response) => response,
-            Err(err) => internal_error(err),
-        };
-    }
-    match state
-        .platform
-        .projects
-        .list_template_workspace(&owner, &project)
-    {
-        Ok(workspace) => Json(workspace).into_response(),
-        Err(err) => internal_error(err),
-    }
-}
-
-/// `GET /api/projects/{owner}/{project}/templates/search?q=TEXT&scope=all|pages`
-/// Searches template file contents line-by-line. Returns up to 50 matches.
-async fn api_template_search(
-    State(state): State<PlatformAppState>,
-    headers: HeaderMap,
-    Path((owner, project)): Path<(String, String)>,
-    uri: Uri,
-    Query(query): Query<TemplateSearchQuery>,
-) -> Response {
-    if let Err(r) = require_project_api_capability(
-        &state,
-        &headers,
-        &owner,
-        &project,
-        ProjectCapability::TemplatesRead,
-    ) {
-        return r;
-    }
-    if let Ok(Some(worker_id)) = remote_project_worker_id(&state, &owner, &project) {
-        return match forward_project_api_request_to_worker(
-            &state,
-            &uri,
-            &Method::GET,
-            &headers,
-            Bytes::new(),
-            &worker_id,
-        )
-        .await
-        {
-            Ok(response) => response,
-            Err(err) => internal_error(err),
-        };
-    }
-    let q = query.q.as_deref().unwrap_or("").trim().to_string();
-    if q.is_empty() {
-        return Json(json!({ "matches": [] })).into_response();
-    }
-    let scope = query.scope.as_deref().unwrap_or("all");
-    let glob = if scope == "pages" {
-        Some("pages/*.tsx")
-    } else {
-        None
-    };
-    match state
-        .platform
-        .projects
-        .search_template_files(&owner, &project, &q, glob, 0)
-    {
-        Ok(raw) => {
-            let matches: Vec<_> = raw
-                .into_iter()
-                .take(50)
-                .map(|(rel_path, line, snippet)| {
-                    json!({ "rel_path": rel_path, "line": line, "snippet": snippet.trim() })
-                })
-                .collect();
-            Json(json!({ "matches": matches })).into_response()
-        }
-        Err(err) => internal_error(err),
-    }
-}
-
-#[derive(Debug, Deserialize)]
-struct TemplateSearchQuery {
-    q: Option<String>,
-    scope: Option<String>,
-}
-
-async fn api_template_pages(
-    State(state): State<PlatformAppState>,
-    headers: HeaderMap,
-    Path((owner, project)): Path<(String, String)>,
-    uri: Uri,
-    Query(query): Query<TemplatePathQuery>,
-) -> Response {
-    if let Err(response) = require_project_api_capability(
-        &state,
-        &headers,
-        &owner,
-        &project,
-        ProjectCapability::TemplatesRead,
-    ) {
-        return response;
-    }
-    if let Ok(Some(worker_id)) = remote_project_worker_id(&state, &owner, &project) {
-        return match forward_project_api_request_to_worker(
-            &state,
-            &uri,
-            &Method::GET,
-            &headers,
-            Bytes::new(),
-            &worker_id,
-        )
-        .await
-        {
-            Ok(response) => response,
-            Err(err) => internal_error(err),
-        };
-    }
-    let path = query.path.as_deref();
-    match state
-        .platform
-        .projects
-        .list_template_pages(&owner, &project, path)
-    {
-        Ok(items) => Json(json!({
-            "ok": true,
-            "path": path.unwrap_or("/"),
-            "items": items,
-        }))
-        .into_response(),
-        Err(err) => internal_error(err),
-    }
-}
-
-async fn api_template_file(
-    State(state): State<PlatformAppState>,
-    headers: HeaderMap,
-    Path((owner, project)): Path<(String, String)>,
-    uri: Uri,
-    Query(query): Query<TemplatePathQuery>,
-) -> Response {
-    if let Err(response) = require_project_api_capability(
-        &state,
-        &headers,
-        &owner,
-        &project,
-        ProjectCapability::TemplatesRead,
-    ) {
-        return response;
-    }
-    if let Ok(Some(worker_id)) = remote_project_worker_id(&state, &owner, &project) {
-        return match forward_project_api_request_to_worker(
-            &state,
-            &uri,
-            &Method::GET,
-            &headers,
-            Bytes::new(),
-            &worker_id,
-        )
-        .await
-        {
-            Ok(response) => response,
-            Err(err) => internal_error(err),
-        };
-    }
-    let Some(path) = query.path.as_deref() else {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(json!({"error":"missing path"})),
-        )
-            .into_response();
-    };
-    match state
-        .platform
-        .projects
-        .read_template_payload(&owner, &project, path)
-    {
-        Ok(file) => Json(file).into_response(),
-        Err(err) => internal_error(err),
-    }
-}
-
 async fn api_template_outline(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
@@ -14349,7 +14098,7 @@ async fn api_template_outline(
     match state
         .platform
         .projects
-        .read_template_file(&owner, &project, path)
+        .read_repo_file_text(&owner, &project, path)
     {
         Ok(content) => {
             let outline =
@@ -14361,193 +14110,6 @@ async fn api_template_outline(
             }))
             .into_response()
         }
-        Err(err) => internal_error(err),
-    }
-}
-
-async fn api_template_save(
-    State(state): State<PlatformAppState>,
-    headers: HeaderMap,
-    Path((owner, project)): Path<(String, String)>,
-    uri: Uri,
-    Json(req): Json<TemplateSaveRequest>,
-) -> Response {
-    if let Err(response) = require_project_api_capability(
-        &state,
-        &headers,
-        &owner,
-        &project,
-        ProjectCapability::TemplatesWrite,
-    ) {
-        return response;
-    }
-    if let Ok(Some(worker_id)) = remote_project_worker_id(&state, &owner, &project) {
-        return match forward_project_json_request_to_worker(
-            &state,
-            &uri,
-            &headers,
-            Method::PUT,
-            &req,
-            &worker_id,
-        )
-        .await
-        {
-            Ok(response) => response,
-            Err(err) => internal_error(err),
-        };
-    }
-    match state
-        .platform
-        .projects
-        .write_template_file(&owner, &project, &req)
-    {
-        Ok(file) => {
-            let owner_slug = crate::platform::model::slug_segment(&owner);
-            let project_slug = crate::platform::model::slug_segment(&project);
-            // Entry-page saves cause a hash miss automatically; component saves need
-            // explicit eviction so importing pages recompile with the new content.
-            if let Ok(abs) = state.platform.projects.resolve_template_abs_path(
-                &owner_slug,
-                &project_slug,
-                &req.rel_path,
-            ) {
-                crate::pipeline::engines::basic::evict_template_cache_by_path(
-                    &state.template_cache,
-                    &abs.to_string_lossy(),
-                );
-            }
-            Json(file).into_response()
-        }
-        Err(err) => internal_error(err),
-    }
-}
-
-async fn api_template_create(
-    State(state): State<PlatformAppState>,
-    headers: HeaderMap,
-    Path((owner, project)): Path<(String, String)>,
-    uri: Uri,
-    Json(req): Json<TemplateCreateRequest>,
-) -> Response {
-    if let Err(response) = require_project_api_capability(
-        &state,
-        &headers,
-        &owner,
-        &project,
-        ProjectCapability::TemplatesCreate,
-    ) {
-        return response;
-    }
-    if let Ok(Some(worker_id)) = remote_project_worker_id(&state, &owner, &project) {
-        return match forward_project_json_request_to_worker(
-            &state,
-            &uri,
-            &headers,
-            Method::POST,
-            &req,
-            &worker_id,
-        )
-        .await
-        {
-            Ok(response) => response,
-            Err(err) => internal_error(err),
-        };
-    }
-    match state
-        .platform
-        .projects
-        .create_template_entry(&owner, &project, &req)
-    {
-        Ok(file) => Json(file).into_response(),
-        Err(err) => internal_error(err),
-    }
-}
-
-async fn api_template_move(
-    State(state): State<PlatformAppState>,
-    headers: HeaderMap,
-    Path((owner, project)): Path<(String, String)>,
-    uri: Uri,
-    Json(req): Json<TemplateMoveRequest>,
-) -> Response {
-    if let Err(response) = require_project_api_capability(
-        &state,
-        &headers,
-        &owner,
-        &project,
-        ProjectCapability::TemplatesMove,
-    ) {
-        return response;
-    }
-    if let Ok(Some(worker_id)) = remote_project_worker_id(&state, &owner, &project) {
-        return match forward_project_json_request_to_worker(
-            &state,
-            &uri,
-            &headers,
-            Method::POST,
-            &req,
-            &worker_id,
-        )
-        .await
-        {
-            Ok(response) => response,
-            Err(err) => internal_error(err),
-        };
-    }
-    match state
-        .platform
-        .projects
-        .move_template_entry(&owner, &project, &req)
-    {
-        Ok(rel_path) => Json(json!({ "rel_path": rel_path })).into_response(),
-        Err(err) => internal_error(err),
-    }
-}
-
-async fn api_template_delete(
-    State(state): State<PlatformAppState>,
-    headers: HeaderMap,
-    Path((owner, project)): Path<(String, String)>,
-    uri: Uri,
-    Query(query): Query<TemplatePathQuery>,
-) -> Response {
-    if let Err(response) = require_project_api_capability(
-        &state,
-        &headers,
-        &owner,
-        &project,
-        ProjectCapability::TemplatesDelete,
-    ) {
-        return response;
-    }
-    if let Ok(Some(worker_id)) = remote_project_worker_id(&state, &owner, &project) {
-        return match forward_project_api_request_to_worker(
-            &state,
-            &uri,
-            &Method::DELETE,
-            &headers,
-            Bytes::new(),
-            &worker_id,
-        )
-        .await
-        {
-            Ok(response) => response,
-            Err(err) => internal_error(err),
-        };
-    }
-    let Some(path) = query.path.as_deref() else {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(json!({"error":"missing path"})),
-        )
-            .into_response();
-    };
-    match state
-        .platform
-        .projects
-        .delete_template_entry(&owner, &project, path)
-    {
-        Ok(()) => StatusCode::NO_CONTENT.into_response(),
         Err(err) => internal_error(err),
     }
 }
@@ -17522,7 +17084,7 @@ async fn api_project_assistant_chat(
         let readme = state
             .platform
             .projects
-            .read_project_doc(&owner, &project, "README.md")
+            .read_repo_file_text(&owner, &project, "README.md")
             .unwrap_or_default();
         let readme_section = if readme.trim().is_empty() {
             String::new()
@@ -21308,412 +20870,6 @@ async fn api_query_db_connection(
     }
 }
 
-async fn api_list_project_docs(
-    State(state): State<PlatformAppState>,
-    headers: HeaderMap,
-    Path((owner, project)): Path<(String, String)>,
-    uri: Uri,
-) -> Response {
-    if let Err(response) = require_project_api_capability(
-        &state,
-        &headers,
-        &owner,
-        &project,
-        ProjectCapability::ProjectRead,
-    ) {
-        return response;
-    }
-    if let Ok(Some(worker_id)) = remote_project_worker_id(&state, &owner, &project) {
-        return match forward_project_api_request_to_worker(
-            &state,
-            &uri,
-            &Method::GET,
-            &headers,
-            Bytes::new(),
-            &worker_id,
-        )
-        .await
-        {
-            Ok(response) => response,
-            Err(err) => internal_error(err),
-        };
-    }
-
-    match state.platform.projects.list_project_docs(&owner, &project) {
-        Ok(items) => Json(json!({"ok": true, "items": items})).into_response(),
-        Err(err) => internal_error(err),
-    }
-}
-
-async fn api_read_project_doc(
-    State(state): State<PlatformAppState>,
-    headers: HeaderMap,
-    Path((owner, project)): Path<(String, String)>,
-    uri: Uri,
-    Query(query): Query<DocPathQuery>,
-) -> Response {
-    if let Err(response) = require_project_api_capability(
-        &state,
-        &headers,
-        &owner,
-        &project,
-        ProjectCapability::ProjectRead,
-    ) {
-        return response;
-    }
-    let Some(path) = query
-        .path
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-    else {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(json!({"ok": false, "error": {"code":"PLATFORM_DOC_PATH","message":"missing docs path"}})),
-        )
-            .into_response();
-    };
-    if let Ok(Some(worker_id)) = remote_project_worker_id(&state, &owner, &project) {
-        return match forward_project_api_request_to_worker(
-            &state,
-            &uri,
-            &Method::GET,
-            &headers,
-            Bytes::new(),
-            &worker_id,
-        )
-        .await
-        {
-            Ok(response) => response,
-            Err(err) => internal_error(err),
-        };
-    }
-
-    match state
-        .platform
-        .projects
-        .read_project_doc(&owner, &project, path)
-    {
-        Ok(content) => Json(json!({
-            "ok": true,
-            "doc": {
-                "path": path,
-                "content": content
-            }
-        }))
-        .into_response(),
-        Err(err) if err.code == "PLATFORM_DOC_MISSING" => (
-            StatusCode::NOT_FOUND,
-            Json(json!({"ok": false, "error": {"code": err.code, "message": err.message}})),
-        )
-            .into_response(),
-        Err(err) => internal_error(err),
-    }
-}
-
-async fn api_upsert_project_doc(
-    State(state): State<PlatformAppState>,
-    headers: HeaderMap,
-    Path((owner, project)): Path<(String, String)>,
-    uri: Uri,
-    Json(req): Json<UpsertProjectDocRequest>,
-) -> Response {
-    if let Err(response) = require_project_api_capability(
-        &state,
-        &headers,
-        &owner,
-        &project,
-        ProjectCapability::FilesWrite,
-    ) {
-        return response;
-    }
-    if let Ok(Some(worker_id)) = remote_project_worker_id(&state, &owner, &project) {
-        return match forward_project_json_request_to_worker(
-            &state,
-            &uri,
-            &headers,
-            Method::POST,
-            &req,
-            &worker_id,
-        )
-        .await
-        {
-            Ok(response) => response,
-            Err(err) => internal_error(err),
-        };
-    }
-
-    match state
-        .platform
-        .projects
-        .upsert_project_doc(&owner, &project, &req.path, &req.content)
-    {
-        Ok(item) => Json(json!({"ok": true, "doc": item})).into_response(),
-        Err(err) if err.code == "PLATFORM_DOC_PATH" => (
-            StatusCode::BAD_REQUEST,
-            Json(json!({"ok": false, "error": {"code": err.code, "message": err.message}})),
-        )
-            .into_response(),
-        Err(err) => internal_error(err),
-    }
-}
-
-async fn api_upsert_project_doc_file(
-    State(state): State<PlatformAppState>,
-    headers: HeaderMap,
-    Path((owner, project)): Path<(String, String)>,
-    uri: Uri,
-    Query(query): Query<DocPathQuery>,
-    body: Bytes,
-) -> Response {
-    let Some(path) = query
-        .path
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-    else {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(json!({"ok": false, "error": {"code":"PLATFORM_DOC_PATH","message":"missing docs path"}})),
-        )
-            .into_response();
-    };
-    let req = UpsertProjectDocRequest {
-        path: path.to_string(),
-        content: String::from_utf8(body.to_vec()).unwrap_or_default(),
-    };
-    if let Ok(Some(worker_id)) = remote_project_worker_id(&state, &owner, &project) {
-        return match forward_project_api_request_to_worker(
-            &state,
-            &uri,
-            &Method::PUT,
-            &headers,
-            body,
-            &worker_id,
-        )
-        .await
-        {
-            Ok(response) => response,
-            Err(err) => internal_error(err),
-        };
-    }
-    api_upsert_project_doc(
-        State(state),
-        headers,
-        Path((owner, project)),
-        uri,
-        Json(req),
-    )
-    .await
-}
-
-async fn api_delete_project_doc_file(
-    State(state): State<PlatformAppState>,
-    headers: HeaderMap,
-    Path((owner, project)): Path<(String, String)>,
-    uri: Uri,
-    Query(query): Query<DocPathQuery>,
-) -> Response {
-    if let Err(response) = require_project_api_capability(
-        &state,
-        &headers,
-        &owner,
-        &project,
-        ProjectCapability::FilesWrite,
-    ) {
-        return response;
-    }
-    let Some(path) = query
-        .path
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-    else {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(json!({"ok": false, "error": {"code":"PLATFORM_DOC_PATH","message":"missing doc path"}})),
-        )
-            .into_response();
-    };
-    if let Ok(Some(worker_id)) = remote_project_worker_id(&state, &owner, &project) {
-        return match forward_project_api_request_to_worker(
-            &state,
-            &uri,
-            &Method::DELETE,
-            &headers,
-            Bytes::new(),
-            &worker_id,
-        )
-        .await
-        {
-            Ok(response) => response,
-            Err(err) => internal_error(err),
-        };
-    }
-    match state
-        .platform
-        .projects
-        .delete_project_doc(&owner, &project, path)
-    {
-        Ok(()) => StatusCode::NO_CONTENT.into_response(),
-        Err(err) => internal_error(err),
-    }
-}
-
-async fn api_create_project_doc_folder(
-    State(state): State<PlatformAppState>,
-    headers: HeaderMap,
-    Path((owner, project)): Path<(String, String)>,
-    uri: Uri,
-    Json(req): Json<CreateProjectDocFolderRequest>,
-) -> Response {
-    if let Err(response) = require_project_api_capability(
-        &state,
-        &headers,
-        &owner,
-        &project,
-        ProjectCapability::FilesWrite,
-    ) {
-        return response;
-    }
-    if let Ok(Some(worker_id)) = remote_project_worker_id(&state, &owner, &project) {
-        return match forward_project_json_request_to_worker(
-            &state,
-            &uri,
-            &headers,
-            Method::POST,
-            &req,
-            &worker_id,
-        )
-        .await
-        {
-            Ok(response) => response,
-            Err(err) => internal_error(err),
-        };
-    }
-
-    match state
-        .platform
-        .projects
-        .create_project_doc_folder(&owner, &project, &req.path)
-    {
-        Ok(item) => Json(json!({"ok": true, "doc": item})).into_response(),
-        Err(err) if err.code == "PLATFORM_DOC_PATH" => (
-            StatusCode::BAD_REQUEST,
-            Json(json!({"ok": false, "error": {"code": err.code, "message": err.message}})),
-        )
-            .into_response(),
-        Err(err) => internal_error(err),
-    }
-}
-
-async fn api_move_project_doc_entry(
-    State(state): State<PlatformAppState>,
-    headers: HeaderMap,
-    Path((owner, project)): Path<(String, String)>,
-    uri: Uri,
-    Json(req): Json<ProjectDocMoveRequest>,
-) -> Response {
-    if let Err(response) = require_project_api_capability(
-        &state,
-        &headers,
-        &owner,
-        &project,
-        ProjectCapability::FilesWrite,
-    ) {
-        return response;
-    }
-    if let Ok(Some(worker_id)) = remote_project_worker_id(&state, &owner, &project) {
-        return match forward_project_json_request_to_worker(
-            &state,
-            &uri,
-            &headers,
-            Method::POST,
-            &req,
-            &worker_id,
-        )
-        .await
-        {
-            Ok(response) => response,
-            Err(err) => internal_error(err),
-        };
-    }
-
-    match state
-        .platform
-        .projects
-        .move_project_doc_entry(&owner, &project, &req)
-    {
-        Ok(path) => Json(json!({"ok": true, "path": path})).into_response(),
-        Err(err)
-            if matches!(
-                err.code,
-                "PLATFORM_DOC_PATH" | "PLATFORM_DOC_MOVE" | "PLATFORM_DOC_MISSING"
-            ) =>
-        {
-            (
-                StatusCode::BAD_REQUEST,
-                Json(json!({"ok": false, "error": {"code": err.code, "message": err.message}})),
-            )
-                .into_response()
-        }
-        Err(err) => internal_error(err),
-    }
-}
-
-async fn api_delete_project_doc_entry(
-    State(state): State<PlatformAppState>,
-    headers: HeaderMap,
-    Path((owner, project)): Path<(String, String)>,
-    uri: Uri,
-    Query(query): Query<DocPathQuery>,
-) -> Response {
-    if let Err(response) = require_project_api_capability(
-        &state,
-        &headers,
-        &owner,
-        &project,
-        ProjectCapability::FilesWrite,
-    ) {
-        return response;
-    }
-    let Some(path) = query
-        .path
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-    else {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(json!({"ok": false, "error": {"code":"PLATFORM_DOC_PATH","message":"missing doc path"}})),
-        )
-            .into_response();
-    };
-    if let Ok(Some(worker_id)) = remote_project_worker_id(&state, &owner, &project) {
-        return match forward_project_api_request_to_worker(
-            &state,
-            &uri,
-            &Method::DELETE,
-            &headers,
-            Bytes::new(),
-            &worker_id,
-        )
-        .await
-        {
-            Ok(response) => response,
-            Err(err) => internal_error(err),
-        };
-    }
-    match state
-        .platform
-        .projects
-        .delete_project_doc_entry(&owner, &project, path)
-    {
-        Ok(()) => StatusCode::NO_CONTENT.into_response(),
-        Err(err) => internal_error(err),
-    }
-}
-
 async fn api_list_agent_docs(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
@@ -25289,7 +24445,7 @@ fn hydrate_template_markup(
         let markup = state
             .platform
             .projects
-            .read_template_file(owner, project, template_rel)?;
+            .read_repo_file_text(owner, project, template_rel)?;
         if let Some(map) = node.config.as_object_mut() {
             map.insert("markup".to_string(), Value::String(markup));
         }

@@ -268,7 +268,7 @@ impl DslExecutor {
                 match self
                     .platform
                     .projects
-                    .list_template_workspace(&self.owner, &self.project)
+                    .list_repo_tree(&self.owner, &self.project)
                 {
                     Ok(ws) => {
                         let mut out = DslOutput::new_ok();
@@ -290,16 +290,21 @@ impl DslExecutor {
                 match self
                     .platform
                     .projects
-                    .list_project_docs(&self.owner, &self.project)
+                    .list_repo_tree(&self.owner, &self.project)
                 {
-                    Ok(docs) => {
+                    Ok(listing) => {
                         let mut out = DslOutput::new_ok();
+                        let docs = listing
+                            .items
+                            .iter()
+                            .filter(|item| item.file_kind == "doc")
+                            .collect::<Vec<_>>();
                         if docs.is_empty() {
                             out.push(DslLine::muted("(no docs)"));
                             return out;
                         }
-                        for d in &docs {
-                            out.push(DslLine::info(d.path.clone()));
+                        for item in docs {
+                            out.push(DslLine::info(item.rel_path.clone()));
                         }
                         out
                     }

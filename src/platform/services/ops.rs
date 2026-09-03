@@ -11,8 +11,7 @@ use serde_json::{Value, json};
 use crate::contracts::kinds::decode_pipeline_graph;
 use crate::platform::model::{
     DescribeProjectDbConnectionRequest, PIPELINE_DEFINITION_EXTENSION, PipelineMeta,
-    ResolvedProjectLayout, TemplateCreateKind, TemplateCreateRequest, TemplateSaveRequest,
-    TemplateTreeItem,
+    ResolvedProjectLayout, TemplateSaveRequest, TemplateTreeItem,
 };
 use crate::platform::services::PlatformService;
 use crate::platform::services::project::name_from_file_rel_path;
@@ -1426,28 +1425,57 @@ impl PlatformOps {
         OpsResult::ok(results.join("\n"))
     }
 
+    /// Creates one file or folder at a path, with a starter body chosen by kind.
+    ///
+    /// The kind decides the extension and the first few lines; it does not
+    /// decide *where* the file lands. The road this replaces sent a page to
+    /// `{source}/pages` whatever folder the caller named.
     pub fn file_create(&self, kind: &str, name: &str, parent_rel_path: Option<&str>) -> OpsResult {
-        let kind = match kind {
-            "page" => TemplateCreateKind::Page,
-            "component" => TemplateCreateKind::Component,
-            "script" => TemplateCreateKind::Script,
-            "folder" => TemplateCreateKind::Folder,
+        let parent = parent_rel_path.unwrap_or("").trim_matches('/');
+        let join = |leaf: &str| {
+            if parent.is_empty() {
+                leaf.to_string()
+            } else {
+                format!("{parent}/{leaf}")
+            }
+        };
+
+        if kind == "folder" {
+            return match self.platform.projects.create_repo_folder(
+                &self.owner,
+                &self.project,
+                &join(name),
+            ) {
+                Ok(rel) => OpsResult::ok(format!("Created folder {rel}")),
+                Err(e) => OpsResult::err(e.to_string()),
+            };
+        }
+
+        let (extension, body) = match kind {
+            "page" | "component" => (
+                "tsx",
+                format!("export default function {name}() {{\n  return <div />;\n}}\n"),
+            ),
+            "script" => ("ts", "export {};\n".to_string()),
+            "doc" => ("md", format!("# {name}\n")),
+            "style" => ("css", String::new()),
             other => {
                 return OpsResult::err(format!(
-                    "Invalid kind '{other}'. Must be: page, component, script, folder"
+                    "Invalid kind '{other}'. Must be: page, component, script, style, doc, folder"
                 ));
             }
         };
-        let req = TemplateCreateRequest {
-            kind,
-            name: name.to_string(),
-            parent_rel_path: parent_rel_path.map(|s| s.to_string()),
+        let leaf = if name.ends_with(&format!(".{extension}")) {
+            name.to_string()
+        } else {
+            format!("{name}.{extension}")
         };
-        match self
-            .platform
-            .projects
-            .create_template_entry(&self.owner, &self.project, &req)
-        {
+        match self.platform.projects.write_repo_file(
+            &self.owner,
+            &self.project,
+            &join(&leaf),
+            &body,
+        ) {
             Ok(payload) => {
                 let nav = format!("/projects/{}/{}/files", self.owner, self.project);
                 OpsResult::ok_nav(

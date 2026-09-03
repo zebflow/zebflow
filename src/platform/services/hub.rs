@@ -2413,7 +2413,7 @@ impl HubService {
                     .collect())
             }
             "template_with_dependencies" => {
-                let listing = self.projects.list_template_workspace(&owner, &project)?;
+                let listing = self.projects.list_repo_tree(&owner, &project)?;
                 Ok(listing
                     .items
                     .into_iter()
@@ -5036,7 +5036,7 @@ impl HubService {
         layout: &ProjectFileLayout,
         source_ref: &str,
     ) -> Result<HubExportPreview, PlatformError> {
-        let listing = self.projects.list_template_workspace(owner, project)?;
+        let listing = self.projects.list_repo_tree(owner, project)?;
         let selected = listing
             .items
             .into_iter()
@@ -11475,14 +11475,7 @@ mod tests {
             .expect("the publish fixture's own pipeline is not part of this application");
         platform
             .projects
-            .write_template_file(
-                "superadmin",
-                "default",
-                &crate::platform::model::TemplateSaveRequest {
-                    rel_path: "pages/feed.tsx".to_string(),
-                    content: HUB_LAYOUT_PAGE.to_string(),
-                },
-            )
+            .write_repo_file("superadmin", "default", "pages/feed.tsx", HUB_LAYOUT_PAGE)
             .expect("page");
         platform
             .projects

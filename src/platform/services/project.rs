@@ -24,11 +24,10 @@ use crate::platform::model::{
     ALWAYS_ALLOWED_FILE_NAMES, AgentDocItem, CreateProjectRequest, HubAuthority,
     LEGACY_PIPELINE_IDENTITY_ROOT, PIPELINE_DEFINITION_EXTENSION, PIPELINE_IDENTITY_BACKUP_FILE,
     PipelineBreadcrumb, PipelineFolderItem, PipelineMeta, PipelineRegistryItem,
-    PipelineRegistryListing, PlatformProject, ProjectDocItem, ProjectDocMoveRequest,
-    ProjectFileLayout, RegistryFileItem, ResolvedProjectLayout, TemplateCreateKind,
-    TemplateCreateRequest, TemplateFilePayload, TemplateGitStatusItem, TemplateMoveRequest,
-    TemplateSaveRequest, TemplateTreeItem, TemplateWorkspaceListing, normalize_virtual_path,
-    now_ts, recovery_date_stamp, slug_segment, strip_dir_prefix,
+    PipelineRegistryListing, PlatformProject, ProjectFileLayout, RegistryFileItem,
+    ResolvedProjectLayout, TemplateFilePayload, TemplateGitStatusItem, TemplateTreeItem,
+    TemplateWorkspaceListing, normalize_virtual_path, now_ts, recovery_date_stamp, slug_segment,
+    strip_dir_prefix,
 };
 use crate::platform::services::dependency_lock::DependencyLockService;
 use crate::platform::services::project_config::ProjectConfigurationService;
@@ -1740,63 +1739,6 @@ impl ProjectService {
         Ok(to_rel)
     }
 
-    pub fn list_template_workspace(
-        &self,
-        owner: &str,
-        project: &str,
-    ) -> Result<TemplateWorkspaceListing, PlatformError> {
-        let owner = slug_segment(owner);
-        let project = slug_segment(project);
-        let layout = self.file.ensure_project_layout(&owner, &project)?;
-
-        let mut items = Vec::new();
-        let mut default_file = None;
-        walk_template_tree(
-            &layout.repo_source_dir(),
-            &layout.repo_source_dir(),
-            0,
-            &mut items,
-            &mut default_file,
-        )?;
-
-        Ok(TemplateWorkspaceListing {
-            default_file,
-            items,
-        })
-    }
-
-    /// Lists `.tsx` template files in the project, optionally scoped to a sub-path.
-    ///
-    /// Returns items with `file_kind` of `"page"` or `"component"` (only `.tsx` files).
-    /// `path` is a relative sub-path under the template root; `"/"` means all files.
-    pub fn list_template_pages(
-        &self,
-        owner: &str,
-        project: &str,
-        path: Option<&str>,
-    ) -> Result<Vec<TemplateTreeItem>, PlatformError> {
-        let owner = slug_segment(owner);
-        let project = slug_segment(project);
-        let layout = self.file.ensure_project_layout(&owner, &project)?;
-
-        let root = &layout.repo_source_dir();
-        let search_root = if let Some(p) = path.filter(|p| !p.is_empty() && p != &"/") {
-            let sub = p.trim_start_matches('/');
-            let candidate = root.join(sub);
-            if candidate.starts_with(root) && candidate.is_dir() {
-                candidate
-            } else {
-                root.clone()
-            }
-        } else {
-            root.clone()
-        };
-
-        let mut items = Vec::new();
-        collect_tsx_files(root, &search_root, &mut items)?;
-        Ok(items)
-    }
-
     /// Returns the filesystem path of the project's template root directory.
     pub fn get_project_template_root(
         &self,
@@ -1821,133 +1763,12 @@ impl ProjectService {
         let owner = slug_segment(owner);
         let project = slug_segment(project);
         let layout = self.file.ensure_project_layout(&owner, &project)?;
-        let (_, abs) = resolve_template_entry(&layout.repo_source_dir(), rel_path)?;
+        let (_, abs) = resolve_repo_entry(&layout, rel_path, true)?;
         // Canonicalize so the path format matches what the RWE compiler stores in
         // dependency_paths (the compiler uses fs::canonicalize via canonical_or_current).
         // Without this, a relative data_root like ".zebflow-platform-data" causes a
         // path mismatch and eviction never fires.
         Ok(std::fs::canonicalize(&abs).unwrap_or(abs))
-    }
-
-    /// Reads one template workspace file by relative path under `app/templates`.
-    pub fn read_template_file(
-        &self,
-        owner: &str,
-        project: &str,
-        rel_path: &str,
-    ) -> Result<String, PlatformError> {
-        let owner = slug_segment(owner);
-        let project = slug_segment(project);
-        let layout = self.file.ensure_project_layout(&owner, &project)?;
-
-        let (rel, abs) = resolve_template_entry(&layout.repo_source_dir(), rel_path)?;
-        if !abs.is_file() {
-            return Err(PlatformError::new(
-                "PLATFORM_TEMPLATE_MISSING",
-                format!("template file '{}' not found", rel),
-            ));
-        }
-        fs::read_to_string(&abs).map_err(PlatformError::from)
-    }
-
-    /// Reads one template file with editor metadata.
-    pub fn read_template_payload(
-        &self,
-        owner: &str,
-        project: &str,
-        rel_path: &str,
-    ) -> Result<TemplateFilePayload, PlatformError> {
-        let owner = slug_segment(owner);
-        let project = slug_segment(project);
-        let layout = self.file.ensure_project_layout(&owner, &project)?;
-
-        let (rel, abs) = resolve_template_entry(&layout.repo_source_dir(), rel_path)?;
-        if !abs.is_file() {
-            return Err(PlatformError::new(
-                "PLATFORM_TEMPLATE_MISSING",
-                format!("template file '{}' not found", rel),
-            ));
-        }
-        let content = fs::read_to_string(&abs)?;
-        Ok(template_payload_from_content(&rel, &content))
-    }
-
-    /// Saves one template file under `app/templates`.
-    pub fn write_template_file(
-        &self,
-        owner: &str,
-        project: &str,
-        req: &TemplateSaveRequest,
-    ) -> Result<TemplateFilePayload, PlatformError> {
-        let owner = slug_segment(owner);
-        let project = slug_segment(project);
-        self.ensure_template_editable(&owner, &project, &req.rel_path, "edited")?;
-        let layout = self.file.ensure_project_layout(&owner, &project)?;
-
-        let (rel, abs) = resolve_template_entry(&layout.repo_source_dir(), &req.rel_path)?;
-        if let Some(parent) = abs.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        fs::write(&abs, &req.content)?;
-        Ok(template_payload_from_content(&rel, &req.content))
-    }
-
-    /// Search template files for a pattern. Returns (rel_path, line_number, block) tuples.
-    /// Optional `glob` filters which files to search (e.g. "pages/*.tsx", "**/*.tsx").
-    /// `context` lines before and after each match are included in the block.
-    pub fn search_template_files(
-        &self,
-        owner: &str,
-        project: &str,
-        pattern: &str,
-        glob: Option<&str>,
-        context: usize,
-    ) -> Result<Vec<(String, usize, String)>, PlatformError> {
-        let owner = slug_segment(owner);
-        let project = slug_segment(project);
-        let layout = self.file.ensure_project_layout(&owner, &project)?;
-        let root = &layout.repo_source_dir();
-
-        let pattern_lower = pattern.to_lowercase();
-        let mut matches: Vec<(String, usize, String)> = Vec::new();
-
-        let mut all_files: Vec<(String, std::path::PathBuf)> = Vec::new();
-        collect_all_files(root, root, &mut all_files);
-
-        for (rel, abs) in &all_files {
-            // Template search must never include pipeline graph files.
-            if rel.ends_with(".zf.json") {
-                continue;
-            }
-            if let Some(g) = glob {
-                if !template_glob_matches(g, rel) {
-                    continue;
-                }
-            }
-            let content = match fs::read_to_string(abs) {
-                Ok(c) => c,
-                Err(_) => continue,
-            };
-            if context == 0 {
-                for (line_idx, line) in content.lines().enumerate() {
-                    if line.to_lowercase().contains(&pattern_lower) {
-                        matches.push((rel.clone(), line_idx + 1, line.to_string()));
-                    }
-                }
-            } else {
-                let all_lines: Vec<&str> = content.lines().collect();
-                for (line_idx, line) in all_lines.iter().enumerate() {
-                    if line.to_lowercase().contains(&pattern_lower) {
-                        let start = line_idx.saturating_sub(context);
-                        let end = (line_idx + context + 1).min(all_lines.len());
-                        let block = all_lines[start..end].join("\n");
-                        matches.push((rel.clone(), line_idx + 1, block));
-                    }
-                }
-            }
-        }
-
-        Ok(matches)
     }
 
     /// Search pipeline `.zf.json` files for a pattern. Returns (rel_path, line_number, block) tuples.
@@ -2005,243 +1826,6 @@ impl ProjectService {
         }
 
         Ok(matches)
-    }
-
-    /// Surgical string replacement in a template file.
-    /// Fails if old_string not found or appears more than once.
-    pub fn edit_template_file(
-        &self,
-        owner: &str,
-        project: &str,
-        rel_path: &str,
-        old_string: &str,
-        new_string: &str,
-    ) -> Result<usize, PlatformError> {
-        let owner = slug_segment(owner);
-        let project = slug_segment(project);
-        self.ensure_template_editable(&owner, &project, rel_path, "edited")?;
-        let layout = self.file.ensure_project_layout(&owner, &project)?;
-
-        let (rel, abs) = resolve_template_entry(&layout.repo_source_dir(), rel_path)?;
-        if !abs.is_file() {
-            return Err(PlatformError::new(
-                "PLATFORM_TEMPLATE_MISSING",
-                format!("template file '{}' not found", rel),
-            ));
-        }
-
-        let content = fs::read_to_string(&abs)?;
-        let count = content.matches(old_string).count();
-
-        if count == 0 {
-            return Err(PlatformError::new(
-                "PLATFORM_TEMPLATE_EDIT",
-                "old_string not found in file",
-            ));
-        }
-        if count > 1 {
-            return Err(PlatformError::new(
-                "PLATFORM_TEMPLATE_EDIT",
-                format!(
-                    "old_string matches {} times — provide more context to make it unique",
-                    count
-                ),
-            ));
-        }
-
-        let line_number = content
-            .lines()
-            .enumerate()
-            .find(|(_, line)| line.contains(old_string))
-            .map(|(i, _)| i + 1)
-            .unwrap_or(0);
-
-        let new_content = content.replacen(old_string, new_string, 1);
-        fs::write(&abs, &new_content)?;
-
-        Ok(line_number)
-    }
-
-    /// Creates one controlled template entry.
-    pub fn create_template_entry(
-        &self,
-        owner: &str,
-        project: &str,
-        req: &TemplateCreateRequest,
-    ) -> Result<TemplateFilePayload, PlatformError> {
-        let owner = slug_segment(owner);
-        let project = slug_segment(project);
-        let layout = self.file.ensure_project_layout(&owner, &project)?;
-
-        let parent_rel =
-            normalize_template_folder_rel_path(req.parent_rel_path.as_deref().unwrap_or_default());
-        let parent_rel = default_template_parent(&req.kind, &parent_rel);
-        if !parent_rel.is_empty() {
-            self.ensure_template_editable(&owner, &project, &parent_rel, "modified")?;
-        }
-        let parent_abs = layout.repo_source_dir().join(&parent_rel);
-        if !parent_abs.starts_with(&layout.repo_source_dir()) {
-            return Err(PlatformError::new(
-                "PLATFORM_TEMPLATE_PATH",
-                "resolved template parent escaped template root",
-            ));
-        }
-        fs::create_dir_all(&parent_abs)?;
-
-        if req.kind == TemplateCreateKind::Folder {
-            let folder_name = slug_segment(&req.name);
-            if folder_name.is_empty() {
-                return Err(PlatformError::new(
-                    "PLATFORM_TEMPLATE_CREATE",
-                    "folder name must not be empty",
-                ));
-            }
-            let rel = if parent_rel.is_empty() {
-                folder_name
-            } else {
-                format!("{parent_rel}/{folder_name}")
-            };
-            let abs = layout.repo_source_dir().join(&rel);
-            if abs.exists() {
-                return Err(PlatformError::new(
-                    "PLATFORM_TEMPLATE_CREATE",
-                    format!("template folder '{}' already exists", rel),
-                ));
-            }
-            fs::create_dir_all(&abs)?;
-            return Ok(TemplateFilePayload {
-                rel_path: rel.clone(),
-                name: rel.rsplit('/').next().unwrap_or("folder").to_string(),
-                file_kind: "folder".to_string(),
-                content: String::new(),
-                line_count: 0,
-                is_protected: template_entry_is_protected(&rel, true),
-            });
-        }
-
-        let (filename, scaffold) = scaffold_template_entry(&req.kind, &req.name)?;
-        let rel = if parent_rel.is_empty() {
-            filename
-        } else {
-            format!("{parent_rel}/{filename}")
-        };
-        self.ensure_template_editable(&owner, &project, &rel, "created")?;
-        let abs = layout.repo_source_dir().join(&rel);
-        if !abs.starts_with(&layout.repo_source_dir()) {
-            return Err(PlatformError::new(
-                "PLATFORM_TEMPLATE_PATH",
-                "resolved template path escaped template root",
-            ));
-        }
-        if abs.exists() {
-            return Err(PlatformError::new(
-                "PLATFORM_TEMPLATE_CREATE",
-                format!("template '{}' already exists", rel),
-            ));
-        }
-        if let Some(parent) = abs.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        fs::write(&abs, &scaffold)?;
-        Ok(template_payload_from_content(&rel, &scaffold))
-    }
-
-    /// Deletes one template file or folder.
-    pub fn delete_template_entry(
-        &self,
-        owner: &str,
-        project: &str,
-        rel_path: &str,
-    ) -> Result<(), PlatformError> {
-        let owner = slug_segment(owner);
-        let project = slug_segment(project);
-        self.ensure_template_editable(&owner, &project, rel_path, "deleted")?;
-        let layout = self.file.ensure_project_layout(&owner, &project)?;
-
-        let (rel, abs) = resolve_template_entry(&layout.repo_source_dir(), rel_path)?;
-        if !abs.exists() {
-            return Err(PlatformError::new(
-                "PLATFORM_TEMPLATE_MISSING",
-                format!("template entry '{}' not found", rel),
-            ));
-        }
-        if template_entry_is_protected(&rel, abs.is_dir()) {
-            return Err(PlatformError::new(
-                "PLATFORM_TEMPLATE_DELETE",
-                format!("protected template entry '{}' cannot be deleted", rel),
-            ));
-        }
-        if abs.is_dir() {
-            fs::remove_dir_all(&abs)?;
-        } else {
-            fs::remove_file(&abs)?;
-        }
-        Ok(())
-    }
-
-    /// Moves one template file or folder into another folder.
-    pub fn move_template_entry(
-        &self,
-        owner: &str,
-        project: &str,
-        req: &TemplateMoveRequest,
-    ) -> Result<String, PlatformError> {
-        let owner = slug_segment(owner);
-        let project = slug_segment(project);
-        self.ensure_template_editable(&owner, &project, &req.from_rel_path, "moved")?;
-        let layout = self.file.ensure_project_layout(&owner, &project)?;
-
-        let (from_rel, from_abs) =
-            resolve_template_entry(&layout.repo_source_dir(), &req.from_rel_path)?;
-        if !from_abs.exists() {
-            return Err(PlatformError::new(
-                "PLATFORM_TEMPLATE_MISSING",
-                format!("template entry '{}' not found", from_rel),
-            ));
-        }
-        let parent_rel = normalize_template_folder_rel_path(&req.to_parent_rel_path);
-        if !parent_rel.is_empty() {
-            self.ensure_template_editable(&owner, &project, &parent_rel, "modified")?;
-        }
-        let parent_abs = layout.repo_source_dir().join(&parent_rel);
-        if !parent_abs.starts_with(&layout.repo_source_dir()) {
-            return Err(PlatformError::new(
-                "PLATFORM_TEMPLATE_PATH",
-                "resolved move target escaped template root",
-            ));
-        }
-        // Create the destination rather than demand it. Nothing scaffolds
-        // folders now, so requiring one to exist would mean a move can only
-        // land where something already happens to be.
-        if parent_abs.exists() && !parent_abs.is_dir() {
-            return Err(PlatformError::new(
-                "PLATFORM_TEMPLATE_MOVE",
-                format!("target '{}' is not a folder", parent_rel),
-            ));
-        }
-        fs::create_dir_all(&parent_abs)?;
-        let name = from_abs
-            .file_name()
-            .and_then(|v| v.to_str())
-            .ok_or_else(|| PlatformError::new("PLATFORM_TEMPLATE_MOVE", "invalid source filename"))?
-            .to_string();
-        let to_abs = parent_abs.join(&name);
-        let to_rel = if parent_rel.is_empty() {
-            name
-        } else {
-            format!("{parent_rel}/{name}")
-        };
-        if from_abs == to_abs {
-            return Ok(to_rel);
-        }
-        if to_abs.exists() {
-            return Err(PlatformError::new(
-                "PLATFORM_TEMPLATE_MOVE",
-                format!("target '{}' already exists", to_rel),
-            ));
-        }
-        fs::rename(&from_abs, &to_abs)?;
-        Ok(to_rel)
     }
 
     /// Returns git status rows for files under `app/templates`.
@@ -2707,201 +2291,6 @@ impl ProjectService {
         Ok(())
     }
 
-    /// Lists project doc files under app/docs (ERD, README.md, AGENTS.md, use cases, etc.).
-    pub fn list_project_docs(
-        &self,
-        owner: &str,
-        project: &str,
-    ) -> Result<Vec<ProjectDocItem>, PlatformError> {
-        let owner = slug_segment(owner);
-        let project = slug_segment(project);
-        let layout = self.file.ensure_project_layout(&owner, &project)?;
-        let mut items = Vec::new();
-        walk_docs_tree(&layout.repo_docs_dir(), &layout.repo_docs_dir(), &mut items)?;
-        Ok(items)
-    }
-
-    /// Reads one project doc file by path under app/docs.
-    pub fn read_project_doc(
-        &self,
-        owner: &str,
-        project: &str,
-        rel_path: &str,
-    ) -> Result<String, PlatformError> {
-        let owner = slug_segment(owner);
-        let project = slug_segment(project);
-        let layout = self.file.ensure_project_layout(&owner, &project)?;
-        let (_rel, abs) = resolve_doc_path(&layout.repo_docs_dir(), rel_path)?;
-        if !abs.is_file() {
-            return Err(PlatformError::new(
-                "PLATFORM_DOC_MISSING",
-                format!("doc file '{}' not found", rel_path),
-            ));
-        }
-        fs::read_to_string(&abs).map_err(PlatformError::from)
-    }
-
-    /// Creates or updates one project doc file by path under `app/docs`.
-    pub fn upsert_project_doc(
-        &self,
-        owner: &str,
-        project: &str,
-        rel_path: &str,
-        content: &str,
-    ) -> Result<ProjectDocItem, PlatformError> {
-        let owner = slug_segment(owner);
-        let project = slug_segment(project);
-        let layout = self.file.ensure_project_layout(&owner, &project)?;
-        let (rel, abs) = resolve_doc_path(&layout.repo_docs_dir(), rel_path)?;
-
-        if rel.ends_with('/') {
-            return Err(PlatformError::new(
-                "PLATFORM_DOC_PATH",
-                "doc path must point to a file",
-            ));
-        }
-        if let Some(parent) = abs.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        fs::write(&abs, content)?;
-
-        let name = abs
-            .file_name()
-            .and_then(std::ffi::OsStr::to_str)
-            .unwrap_or("doc")
-            .to_string();
-        Ok(ProjectDocItem {
-            path: rel,
-            name,
-            kind: "file".to_string(),
-        })
-    }
-
-    /// Creates one project docs folder under `repo/docs`.
-    pub fn create_project_doc_folder(
-        &self,
-        owner: &str,
-        project: &str,
-        rel_path: &str,
-    ) -> Result<ProjectDocItem, PlatformError> {
-        let owner = slug_segment(owner);
-        let project = slug_segment(project);
-        let layout = self.file.ensure_project_layout(&owner, &project)?;
-        let (rel, abs) = resolve_doc_folder_path(&layout.repo_docs_dir(), rel_path, false)?;
-        fs::create_dir_all(&abs)?;
-        let name = abs
-            .file_name()
-            .and_then(std::ffi::OsStr::to_str)
-            .unwrap_or("docs")
-            .to_string();
-        Ok(ProjectDocItem {
-            path: rel,
-            name,
-            kind: "folder".to_string(),
-        })
-    }
-
-    /// Moves one project docs file or folder into another docs folder.
-    pub fn move_project_doc_entry(
-        &self,
-        owner: &str,
-        project: &str,
-        req: &ProjectDocMoveRequest,
-    ) -> Result<String, PlatformError> {
-        let owner = slug_segment(owner);
-        let project = slug_segment(project);
-        let layout = self.file.ensure_project_layout(&owner, &project)?;
-
-        let (from_rel, from_abs) = resolve_doc_path(&layout.repo_docs_dir(), &req.from_path)?;
-        if !from_abs.exists() {
-            return Err(PlatformError::new(
-                "PLATFORM_DOC_MISSING",
-                format!("doc entry '{}' not found", from_rel),
-            ));
-        }
-        let (parent_rel, parent_abs) =
-            resolve_doc_folder_path(&layout.repo_docs_dir(), &req.to_parent_path, true)?;
-        if !parent_abs.exists() || !parent_abs.is_dir() {
-            return Err(PlatformError::new(
-                "PLATFORM_DOC_MOVE",
-                format!("target folder '{}' not found", parent_rel),
-            ));
-        }
-        if from_abs.is_dir() && parent_abs.starts_with(&from_abs) {
-            return Err(PlatformError::new(
-                "PLATFORM_DOC_MOVE",
-                "cannot move a folder into itself",
-            ));
-        }
-        let name = from_abs
-            .file_name()
-            .and_then(|v| v.to_str())
-            .ok_or_else(|| PlatformError::new("PLATFORM_DOC_MOVE", "invalid source filename"))?
-            .to_string();
-        let to_abs = parent_abs.join(&name);
-        let to_rel = if parent_rel.is_empty() {
-            name
-        } else {
-            format!("{parent_rel}/{name}")
-        };
-        if from_abs == to_abs {
-            return Ok(to_rel);
-        }
-        if to_abs.exists() {
-            return Err(PlatformError::new(
-                "PLATFORM_DOC_MOVE",
-                format!("target '{}' already exists", to_rel),
-            ));
-        }
-        fs::rename(&from_abs, &to_abs)?;
-        Ok(to_rel)
-    }
-
-    /// Deletes one project doc file by path under `repo/docs`.
-    pub fn delete_project_doc(
-        &self,
-        owner: &str,
-        project: &str,
-        rel_path: &str,
-    ) -> Result<(), PlatformError> {
-        let owner = slug_segment(owner);
-        let project = slug_segment(project);
-        let layout = self.file.ensure_project_layout(&owner, &project)?;
-        let (_rel, abs) = resolve_doc_path(&layout.repo_docs_dir(), rel_path)?;
-        if !abs.is_file() {
-            return Err(PlatformError::new(
-                "PLATFORM_DOC_MISSING",
-                format!("doc file '{}' not found", rel_path),
-            ));
-        }
-        fs::remove_file(&abs).map_err(PlatformError::from)
-    }
-
-    /// Deletes one project docs file or folder by path under `repo/docs`.
-    pub fn delete_project_doc_entry(
-        &self,
-        owner: &str,
-        project: &str,
-        rel_path: &str,
-    ) -> Result<(), PlatformError> {
-        let owner = slug_segment(owner);
-        let project = slug_segment(project);
-        let layout = self.file.ensure_project_layout(&owner, &project)?;
-        let (_rel, abs) = resolve_doc_path(&layout.repo_docs_dir(), rel_path)?;
-        if !abs.exists() {
-            return Err(PlatformError::new(
-                "PLATFORM_DOC_MISSING",
-                format!("doc entry '{}' not found", rel_path),
-            ));
-        }
-        if abs.is_dir() {
-            fs::remove_dir_all(&abs)?;
-        } else {
-            fs::remove_file(&abs)?;
-        }
-        Ok(())
-    }
-
     /// Lists the three agent doc files (AGENTS.md, SOUL.md, MEMORY.md), creating defaults if absent.
     pub fn list_agent_docs(
         &self,
@@ -3047,127 +2436,6 @@ and tone for this project.\n";
 
 const MEMORY_MD_DEFAULT: &str = "# Memory\n\n_(This file is managed by the assistant. \
 It records important project information discovered during conversations.)_\n";
-
-fn walk_docs_tree(
-    root: &Path,
-    current: &Path,
-    items: &mut Vec<ProjectDocItem>,
-) -> Result<(), PlatformError> {
-    if !current.exists() {
-        return Ok(());
-    }
-    let mut entries = fs::read_dir(current)?
-        .collect::<Result<Vec<_>, _>>()?
-        .into_iter()
-        .collect::<Vec<_>>();
-    entries.sort_by(|a, b| {
-        let a_is_dir = a.file_type().map(|ft| ft.is_dir()).unwrap_or(false);
-        let b_is_dir = b.file_type().map(|ft| ft.is_dir()).unwrap_or(false);
-        match (a_is_dir, b_is_dir) {
-            (true, false) => std::cmp::Ordering::Less,
-            (false, true) => std::cmp::Ordering::Greater,
-            _ => a.file_name().cmp(&b.file_name()),
-        }
-    });
-    for entry in entries {
-        let path = entry.path();
-        let name = entry.file_name().to_string_lossy().to_string();
-        let rel = path
-            .strip_prefix(root)
-            .map_err(|_| PlatformError::new("PLATFORM_DOC_PATH", "invalid doc path"))?
-            .to_string_lossy()
-            .replace('\\', "/");
-        let file_type = entry.file_type()?;
-        if file_type.is_dir() {
-            items.push(ProjectDocItem {
-                path: rel.clone(),
-                name: name.clone(),
-                kind: "folder".to_string(),
-            });
-            walk_docs_tree(root, &path, items)?;
-        } else {
-            items.push(ProjectDocItem {
-                path: rel,
-                name,
-                kind: "file".to_string(),
-            });
-        }
-    }
-    Ok(())
-}
-
-fn resolve_doc_path(root: &Path, rel_path: &str) -> Result<(String, PathBuf), PlatformError> {
-    resolve_doc_folder_path(root, rel_path, false)
-}
-
-fn resolve_doc_folder_path(
-    root: &Path,
-    rel_path: &str,
-    allow_empty: bool,
-) -> Result<(String, PathBuf), PlatformError> {
-    let normalized = rel_path
-        .trim()
-        .replace('\\', "/")
-        .trim_matches('/')
-        .to_string();
-    if normalized.contains("..") {
-        return Err(PlatformError::new(
-            "PLATFORM_DOC_PATH",
-            "doc path must not contain ..",
-        ));
-    }
-    if normalized.is_empty() && !allow_empty {
-        return Err(PlatformError::new(
-            "PLATFORM_DOC_PATH",
-            "doc path must not be empty",
-        ));
-    }
-    let abs = root.join(&normalized);
-    if !abs.starts_with(root) {
-        return Err(PlatformError::new(
-            "PLATFORM_DOC_PATH",
-            "resolved doc path escaped docs root",
-        ));
-    }
-    Ok((normalized, abs))
-}
-
-/// Recursively collects `.tsx` files under `current`, returning `TemplateTreeItem` entries.
-/// `file_kind` is `"page"` for paths containing `/pages/`, else `"component"`.
-fn collect_tsx_files(
-    root: &Path,
-    current: &Path,
-    items: &mut Vec<TemplateTreeItem>,
-) -> Result<(), PlatformError> {
-    let mut entries = fs::read_dir(current)?.collect::<Result<Vec<_>, _>>()?;
-    entries.sort_by_key(|e| e.file_name());
-    for entry in entries {
-        let path = entry.path();
-        let file_type = entry.file_type()?;
-        if file_type.is_dir() {
-            collect_tsx_files(root, &path, items)?;
-        } else if file_type.is_file() {
-            if path.extension().and_then(std::ffi::OsStr::to_str) != Some("tsx") {
-                continue;
-            }
-            let rel = path
-                .strip_prefix(root)
-                .map_err(|_| PlatformError::new("PLATFORM_TEMPLATE_PATH", "invalid template path"))?
-                .to_string_lossy()
-                .replace('\\', "/");
-            let file_kind = template_file_kind(&path);
-            items.push(TemplateTreeItem {
-                name: entry.file_name().to_string_lossy().to_string(),
-                rel_path: rel,
-                kind: "file".to_string(),
-                depth: 0,
-                file_kind,
-                is_protected: false,
-            });
-        }
-    }
-    Ok(())
-}
 
 /// Resolves one repository-relative path against `repo/`.
 ///
@@ -3375,117 +2643,6 @@ fn repo_entry_is_declared_root(layout: &ResolvedProjectLayout, rel: &str) -> boo
         .any(|root| !root.is_empty() && contained_rel_path(root) == rel)
 }
 
-fn walk_template_tree(
-    root: &Path,
-    current: &Path,
-    depth: usize,
-    items: &mut Vec<TemplateTreeItem>,
-    default_file: &mut Option<String>,
-) -> Result<(), PlatformError> {
-    let mut entries = fs::read_dir(current)?
-        .collect::<Result<Vec<_>, _>>()?
-        .into_iter()
-        .collect::<Vec<_>>();
-
-    entries.sort_by(|a, b| {
-        let a_is_dir = a.file_type().map(|ft| ft.is_dir()).unwrap_or(false);
-        let b_is_dir = b.file_type().map(|ft| ft.is_dir()).unwrap_or(false);
-        match (a_is_dir, b_is_dir) {
-            (true, false) => std::cmp::Ordering::Less,
-            (false, true) => std::cmp::Ordering::Greater,
-            _ => a.file_name().cmp(&b.file_name()),
-        }
-    });
-
-    for entry in entries {
-        let path = entry.path();
-        let rel = path
-            .strip_prefix(root)
-            .map_err(|_| PlatformError::new("PLATFORM_TEMPLATE_PATH", "invalid template path"))?
-            .to_string_lossy()
-            .replace('\\', "/");
-        let file_type = entry.file_type()?;
-        if file_type.is_dir() {
-            items.push(TemplateTreeItem {
-                name: entry.file_name().to_string_lossy().to_string(),
-                rel_path: rel.clone(),
-                kind: "folder".to_string(),
-                depth,
-                file_kind: "folder".to_string(),
-                is_protected: template_entry_is_protected(&rel, true),
-            });
-            walk_template_tree(root, &path, depth + 1, items, default_file)?;
-        } else if file_type.is_file() {
-            let file_kind = template_file_kind(&path);
-            if default_file.is_none() && file_kind != "other" {
-                *default_file = Some(rel.clone());
-            }
-            items.push(TemplateTreeItem {
-                name: entry.file_name().to_string_lossy().to_string(),
-                rel_path: rel.clone(),
-                kind: "file".to_string(),
-                depth,
-                file_kind,
-                is_protected: template_entry_is_protected(&rel, false),
-            });
-        }
-    }
-
-    Ok(())
-}
-
-fn template_file_kind(path: &Path) -> String {
-    match path.extension().and_then(std::ffi::OsStr::to_str) {
-        Some("tsx") => {
-            let rel = path.to_string_lossy();
-            if rel.contains("/pages/") {
-                "page".to_string()
-            } else {
-                "component".to_string()
-            }
-        }
-        Some("ts") => "script".to_string(),
-        Some("css") => "style".to_string(),
-        _ => "other".to_string(),
-    }
-}
-
-fn normalize_template_rel_path(raw: &str) -> String {
-    raw.split('/')
-        .map(str::trim)
-        .filter(|seg| !seg.is_empty() && *seg != "." && *seg != "..")
-        .map(slug_preserving_extension)
-        .filter(|seg| !seg.is_empty())
-        .collect::<Vec<_>>()
-        .join("/")
-}
-
-fn normalize_template_folder_rel_path(raw: &str) -> String {
-    raw.split('/')
-        .map(str::trim)
-        .filter(|seg| !seg.is_empty() && *seg != "." && *seg != "..")
-        .map(slug_segment)
-        .filter(|seg| !seg.is_empty())
-        .collect::<Vec<_>>()
-        .join("/")
-}
-
-fn slug_preserving_extension(raw: &str) -> String {
-    let mut parts = raw.rsplitn(2, '.').collect::<Vec<_>>();
-    parts.reverse();
-    if parts.len() == 2 {
-        let stem = slug_segment(parts[0]);
-        let ext = parts[1].trim().to_ascii_lowercase();
-        if stem.is_empty() || ext.is_empty() {
-            String::new()
-        } else {
-            format!("{stem}.{ext}")
-        }
-    } else {
-        slug_segment(raw)
-    }
-}
-
 /// Recursively collect all files under `dir` as (rel_path, abs_path) pairs.
 fn collect_all_files(root: &Path, dir: &Path, out: &mut Vec<(String, std::path::PathBuf)>) {
     let entries = match fs::read_dir(dir) {
@@ -3584,150 +2741,6 @@ fn glob_segment_matches(pattern: &str, value: &str) -> bool {
 fn glob_star_match_prefix(pattern: &str, path: &str) -> bool {
     let trimmed = pattern.trim_end_matches('/').trim_end_matches('*');
     path.starts_with(trimmed)
-}
-
-fn resolve_template_entry(root: &Path, rel_path: &str) -> Result<(String, PathBuf), PlatformError> {
-    let normalized =
-        if rel_path.ends_with(".tsx") || rel_path.ends_with(".ts") || rel_path.ends_with(".css") {
-            normalize_template_rel_path(rel_path)
-        } else {
-            normalize_template_folder_rel_path(rel_path)
-        };
-    if normalized.is_empty() {
-        return Err(PlatformError::new(
-            "PLATFORM_TEMPLATE_PATH",
-            "template path must not be empty",
-        ));
-    }
-    let abs = root.join(&normalized);
-    if !abs.starts_with(root) {
-        return Err(PlatformError::new(
-            "PLATFORM_TEMPLATE_PATH",
-            "resolved template path escaped template root",
-        ));
-    }
-    Ok((normalized, abs))
-}
-
-fn default_template_parent(kind: &TemplateCreateKind, requested_parent: &str) -> String {
-    if !requested_parent.is_empty() {
-        return requested_parent.to_string();
-    }
-    match kind {
-        TemplateCreateKind::Page => "pages".to_string(),
-        TemplateCreateKind::Component => "components".to_string(),
-        TemplateCreateKind::Script => "scripts".to_string(),
-        TemplateCreateKind::Folder => String::new(),
-    }
-}
-
-fn scaffold_template_entry(
-    kind: &TemplateCreateKind,
-    raw_name: &str,
-) -> Result<(String, String), PlatformError> {
-    let base = slug_segment(raw_name);
-    if base.is_empty() {
-        return Err(PlatformError::new(
-            "PLATFORM_TEMPLATE_CREATE",
-            "template name must not be empty",
-        ));
-    }
-
-    match kind {
-        TemplateCreateKind::Page => {
-            let title = humanize_slug(&base);
-            let component_name = page_component_name(&base);
-            let filename = format!("{base}.tsx");
-            let content = format!(
-                "export const page = {{\n  head: {{\n    title: \"{title}\",\n    description: \"{title} page\"\n  }},\n  html: {{\n    lang: \"en\"\n  }},\n  body: {{\n    className: \"min-h-screen bg-slate-950 text-slate-100 font-sans\"\n  }},\n  navigation: \"history\"\n}};\n\nexport const app = {{}};\n\nexport default function {component_name}(input) {{\n  return (\n    <Page>\n      <main className=\"p-6\">\n        <h1 className=\"text-3xl font-black\">{title}</h1>\n      </main>\n    </Page>\n  );\n}}\n"
-            );
-            Ok((filename, content))
-        }
-        TemplateCreateKind::Component => {
-            let component_name = component_name(&base);
-            let filename = format!("{base}.tsx");
-            let content = format!(
-                "export default function {component_name}(props) {{\n  return (\n    <div>\n      <span>{component_name}</span>\n    </div>\n  );\n}}\n"
-            );
-            Ok((filename, content))
-        }
-        TemplateCreateKind::Script => {
-            let filename = format!("{base}.ts");
-            let export_name = script_export_name(&base);
-            let content = format!("export function {export_name}() {{\n  return null;\n}}\n");
-            Ok((filename, content))
-        }
-        TemplateCreateKind::Folder => Err(PlatformError::new(
-            "PLATFORM_TEMPLATE_CREATE",
-            "folder creation does not use file scaffolds",
-        )),
-    }
-}
-
-fn template_payload_from_content(rel_path: &str, content: &str) -> TemplateFilePayload {
-    TemplateFilePayload {
-        rel_path: rel_path.to_string(),
-        name: rel_path.rsplit('/').next().unwrap_or(rel_path).to_string(),
-        file_kind: template_file_kind(Path::new(rel_path)),
-        content: content.to_string(),
-        line_count: content.lines().count().max(1),
-        is_protected: template_entry_is_protected(rel_path, false),
-    }
-}
-
-fn template_entry_is_protected(rel_path: &str, is_dir: bool) -> bool {
-    match rel_path {
-        "styles" | "scripts" => is_dir,
-        "styles/main.css" => true,
-        _ => false,
-    }
-}
-
-fn humanize_slug(raw: &str) -> String {
-    raw.split('-')
-        .filter(|seg| !seg.is_empty())
-        .map(capitalize_ascii)
-        .collect::<Vec<_>>()
-        .join(" ")
-}
-
-fn component_name(raw: &str) -> String {
-    let mut out = String::new();
-    for part in raw.split('-').filter(|seg| !seg.is_empty()) {
-        out.push_str(&capitalize_ascii(part));
-    }
-    if out.is_empty() {
-        "Component".to_string()
-    } else {
-        out
-    }
-}
-
-fn page_component_name(raw: &str) -> String {
-    let base = component_name(raw);
-    if base.ends_with("Page") {
-        base
-    } else {
-        format!("{base}Page")
-    }
-}
-
-fn script_export_name(raw: &str) -> String {
-    let mut parts = raw.split('-').filter(|seg| !seg.is_empty());
-    let first = parts.next().unwrap_or("script").to_string();
-    let mut out = first;
-    for part in parts {
-        out.push_str(&capitalize_ascii(part));
-    }
-    out
-}
-
-fn capitalize_ascii(raw: &str) -> String {
-    let mut chars = raw.chars();
-    match chars.next() {
-        Some(first) => format!("{}{}", first.to_ascii_uppercase(), chars.as_str()),
-        None => String::new(),
-    }
 }
 
 /// `file_rel_path` with the project's source root removed.
@@ -4795,88 +3808,65 @@ mod tests {
         assert_eq!(err.code, "PLATFORM_PIPELINE_LOCKED");
     }
 
+    /// A lock is a lock whatever door is used. The old template API is gone, so
+    /// the check is exercised through the one repository service that replaced
+    /// it — write, edit, move and delete all refuse.
     #[test]
-    fn locked_template_rejects_write_create_move_delete_and_edit() {
+    fn a_locked_file_refuses_write_edit_move_and_delete() {
         let tmp = tempfile::tempdir().expect("temp dir");
         let svc = make_service(tmp.path());
-        svc.create_or_update_project(
-            "superadmin",
-            &CreateProjectRequest {
-                project: "default".to_string(),
-                title: Some("Default".to_string()),
-                local_branch: None,
-                runtime: ProjectRuntimeSelectionRequest::default(),
-            },
-        )
-        .expect("create project");
+        create_default_project(&svc);
 
-        let req = TemplateCreateRequest {
-            kind: TemplateCreateKind::Page,
-            name: "locked-page".to_string(),
-            parent_rel_path: Some("pages".to_string()),
-        };
         let payload = svc
-            .create_template_entry("superadmin", "default", &req)
-            .expect("create template");
-
-        svc.zebflow_cfg
-            .set_template_locked("superadmin", "default", &payload.rel_path, true)
-            .expect("lock template");
-
-        let err = svc
-            .write_template_file(
+            .write_repo_file(
                 "superadmin",
                 "default",
-                &TemplateSaveRequest {
-                    rel_path: payload.rel_path.clone(),
-                    content: "changed".to_string(),
-                },
+                "pages/locked-page.tsx",
+                "export {};\n",
             )
-            .expect_err("locked template write should fail");
+            .expect("create the file");
+        svc.zebflow_cfg
+            .set_template_locked("superadmin", "default", &payload.rel_path, true)
+            .expect("lock it");
+
+        let err = svc
+            .write_repo_file("superadmin", "default", &payload.rel_path, "changed")
+            .expect_err("a locked file refuses a write");
         assert_eq!(err.code, "PLATFORM_TEMPLATE_LOCKED");
 
         let err = svc
-            .edit_template_file(
+            .edit_repo_file(
                 "superadmin",
                 "default",
                 &payload.rel_path,
                 "export",
                 "import",
             )
-            .expect_err("locked template edit should fail");
+            .expect_err("a locked file refuses an edit");
         assert_eq!(err.code, "PLATFORM_TEMPLATE_LOCKED");
 
         let err = svc
-            .move_template_entry(
+            .move_repo_entry(
                 "superadmin",
                 "default",
-                &TemplateMoveRequest {
-                    from_rel_path: payload.rel_path.clone(),
-                    to_parent_rel_path: "components".to_string(),
-                },
+                &payload.rel_path,
+                "components/locked-page.tsx",
             )
-            .expect_err("locked template move should fail");
+            .expect_err("a locked file refuses a move");
         assert_eq!(err.code, "PLATFORM_TEMPLATE_LOCKED");
 
         let err = svc
-            .delete_template_entry("superadmin", "default", &payload.rel_path)
-            .expect_err("locked template delete should fail");
+            .delete_repo_entry("superadmin", "default", &payload.rel_path)
+            .expect_err("a locked file refuses a delete");
         assert_eq!(err.code, "PLATFORM_TEMPLATE_LOCKED");
 
+        // Locking a folder covers what is written beneath it.
         svc.zebflow_cfg
             .set_template_locked("superadmin", "default", "pages", true)
-            .expect("lock pages folder");
+            .expect("lock the folder");
         let err = svc
-            .create_template_entry(
-                "superadmin",
-                "default",
-                &TemplateCreateRequest {
-                    kind: TemplateCreateKind::Page,
-                    name: "blocked-child".to_string(),
-                    parent_rel_path: Some("pages".to_string()),
-                },
-            )
-            .expect_err("create inside locked folder should fail");
+            .write_repo_file("superadmin", "default", "pages/blocked-child.tsx", "x")
+            .expect_err("a locked folder refuses a new child");
         assert_eq!(err.code, "PLATFORM_TEMPLATE_LOCKED");
     }
 

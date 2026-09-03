@@ -14,7 +14,7 @@ use zebflow::infra::cluster::security::{
     ControllerSigningKey, JoinToken, OfficeVouch, verify_registration_proof,
 };
 use zebflow::platform::model::{
-    CollectionAttribute, CreateHubTokenRequest, CreateSimpleTableRequest, TemplateSaveRequest,
+    CollectionAttribute, CreateHubTokenRequest, CreateSimpleTableRequest,
     ZebflowJsonDistributionHub,
 };
 use zebflow::platform::sekejap;
@@ -2320,12 +2320,11 @@ async fn project_bundle_installs_spatial_blog_with_sekejap_schema_across_two_ins
     .expect("seed file");
     publisher
         .projects
-        .write_template_file(
+        .write_repo_file(
             "superadmin",
             "spatial-blogging-source",
-            &TemplateSaveRequest {
-                rel_path: "pages/spatial-blog.tsx".to_string(),
-                content: r#"
+            "pages/spatial-blog.tsx",
+            r#"
 export default function SpatialBlogPage({ input }) {
   const count = Array.isArray(input?.rows) ? input.rows.length : 0;
   return (
@@ -2347,9 +2346,7 @@ export default function SpatialBlogPage({ input }) {
   );
 }
 "#
-                .trim()
-                .to_string(),
-            },
+                .trim(),
         )
         .expect("template");
     publisher
@@ -3476,107 +3473,79 @@ async fn platform_tts_upload_credential_and_execute_smoke() {
 }
 
 #[tokio::test]
-async fn project_docs_support_nested_folder_create_move_and_registry_render() {
+async fn a_markdown_file_lives_anywhere_and_the_registry_renders_its_folder() {
     let mut config = PlatformConfig::default();
     config.data_root = temp_test_dir("docs-nested-registry");
     config.default_password = "test-pass".to_string();
-
-    let app = build_router(config).await.expect("platform router");
+    let app = build_router(config).await.expect("router starts");
     let cookie = login_cookie(app.clone(), "superadmin", "test-pass").await;
 
-    let create_folder = app
+    // A folder and a `.md` inside it, at a path the layout never named. The
+    // road this replaces could only reach `repo/docs/`.
+    let created = app
         .clone()
         .oneshot(
             Request::builder()
-                .uri("/api/projects/superadmin/default/docs/folder")
-                .method("POST")
-                .header(header::COOKIE, &cookie)
-                .header(header::CONTENT_TYPE, "application/json")
-                .body(Body::from(
-                    serde_json::to_vec(&json!({ "path": "guides/archive" })).expect("folder body"),
-                ))
-                .expect("request"),
-        )
-        .await
-        .expect("response");
-    assert_eq!(create_folder.status(), StatusCode::OK);
-
-    let create_doc = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .uri("/api/projects/superadmin/default/docs/file?path=guides/archive/intro.md")
+                .uri("/api/projects/superadmin/default/repo/file?path=guides/archive/intro.md")
                 .method("PUT")
                 .header(header::COOKIE, &cookie)
                 .header(header::CONTENT_TYPE, "text/plain")
-                .body(Body::from("# Intro"))
+                .body(Body::from("# Intro\n"))
                 .expect("request"),
         )
         .await
-        .expect("response");
-    assert_eq!(create_doc.status(), StatusCode::OK);
+        .expect("write response");
+    assert_eq!(created.status(), StatusCode::OK);
 
-    let move_doc = app
+    let moved = app
         .clone()
         .oneshot(
             Request::builder()
-                .uri("/api/projects/superadmin/default/docs/move")
+                .uri("/api/projects/superadmin/default/repo/move")
                 .method("POST")
                 .header(header::COOKIE, &cookie)
                 .header(header::CONTENT_TYPE, "application/json")
                 .body(Body::from(
-                    serde_json::to_vec(&json!({
-                        "from_path": "guides/archive/intro.md",
-                        "to_parent_path": "guides",
-                    }))
-                    .expect("move body"),
+                    r#"{"from_path":"guides/archive/intro.md","to_path":"guides/intro.md"}"#,
                 ))
                 .expect("request"),
         )
         .await
-        .expect("response");
-    assert_eq!(move_doc.status(), StatusCode::OK);
-    let moved = response_json(move_doc).await;
-    assert_eq!(moved["path"], "guides/intro.md");
+        .expect("move response");
+    assert_eq!(moved.status(), StatusCode::OK);
 
-    let docs = app
+    let tree = app
         .clone()
         .oneshot(
             Request::builder()
-                .uri("/api/projects/superadmin/default/docs")
+                .uri("/api/projects/superadmin/default/repo")
                 .method("GET")
                 .header(header::COOKIE, &cookie)
                 .body(Body::empty())
                 .expect("request"),
         )
         .await
-        .expect("response");
-    assert_eq!(docs.status(), StatusCode::OK);
-    let docs_json = response_json(docs).await;
-    let items = docs_json["items"].as_array().expect("doc items");
-    assert!(items.iter().any(|item| item["path"] == "guides"));
-    assert!(items.iter().any(|item| item["path"] == "guides/archive"));
-    assert!(items.iter().any(|item| item["path"] == "guides/intro.md"));
+        .expect("tree response");
+    assert_eq!(tree.status(), StatusCode::OK);
+    let body = response_text(tree).await;
+    assert!(body.contains("guides/intro.md"), "{body}");
 
-    let registry = app
+    // The registry renders that folder like any other, with no `/docs` overlay.
+    let page = app
         .clone()
         .oneshot(
             Request::builder()
-                .uri("/projects/superadmin/default/pipelines/registry?path=/docs/guides")
+                .uri("/projects/superadmin/default/pipelines/registry?path=/guides")
                 .method("GET")
                 .header(header::COOKIE, &cookie)
                 .body(Body::empty())
                 .expect("request"),
         )
         .await
-        .expect("response");
-    assert_eq!(registry.status(), StatusCode::OK);
-    let body = to_bytes(registry.into_body(), usize::MAX)
-        .await
-        .expect("registry body bytes");
-    let html = String::from_utf8(body.to_vec()).expect("utf8");
-    assert!(html.contains("intro.md"));
-    assert!(html.contains("/docs/guides"));
+        .expect("registry response");
+    assert_eq!(page.status(), StatusCode::OK);
+    let html = response_text(page).await;
+    assert!(html.contains("intro.md"), "the folder lists its file");
 }
 
 #[tokio::test]
@@ -3719,12 +3688,12 @@ async fn a_declared_source_root_moves_templates_pipelines_and_assets() {
         .clone()
         .oneshot(
             Request::builder()
-                .uri("/api/projects/superadmin/declared/templates/create")
-                .method("POST")
+                .uri("/api/projects/superadmin/declared/repo/file?path=src/components/panel.tsx")
+                .method("PUT")
                 .header(header::COOKIE, &cookie)
-                .header(header::CONTENT_TYPE, "application/json")
+                .header(header::CONTENT_TYPE, "text/plain")
                 .body(Body::from(
-                    r#"{"kind":"component","name":"panel","parent_rel_path":"components"}"#,
+                    "export default function Panel() { return <div />; }\n",
                 ))
                 .expect("request"),
         )
@@ -3812,103 +3781,86 @@ async fn a_declared_source_root_moves_templates_pipelines_and_assets() {
 }
 
 #[tokio::test]
-async fn platform_template_api_supports_create_save_move_delete_and_git_status() {
+async fn the_repository_api_creates_saves_moves_and_deletes_a_file() {
     let mut config = PlatformConfig::default();
-    config.data_root = temp_test_dir("template-api");
+    config.data_root = temp_test_dir("repo-file-api");
     config.default_password = "test-pass".to_string();
-
-    let app = build_router(config).await.expect("platform router");
+    let app = build_router(config).await.expect("router starts");
     let cookie = login_cookie(app.clone(), "superadmin", "test-pass").await;
 
-    let create = app
+    let write = |path: &str, body: &'static str| {
+        let app = app.clone();
+        let cookie = cookie.clone();
+        let uri = format!("/api/projects/superadmin/default/repo/file?path={path}");
+        async move {
+            app.oneshot(
+                Request::builder()
+                    .uri(uri)
+                    .method("PUT")
+                    .header(header::COOKIE, &cookie)
+                    .header(header::CONTENT_TYPE, "text/plain")
+                    .body(Body::from(body))
+                    .expect("request"),
+            )
+            .await
+            .expect("write response")
+        }
+    };
+
+    assert_eq!(
+        write(
+            "components/editor-panel.tsx",
+            "export default function P() { return <div />; }\n"
+        )
+        .await
+        .status(),
+        StatusCode::OK
+    );
+
+    let moved = app
         .clone()
         .oneshot(
             Request::builder()
-                .uri("/api/projects/superadmin/default/templates/create")
+                .uri("/api/projects/superadmin/default/repo/move")
                 .method("POST")
                 .header(header::COOKIE, &cookie)
                 .header(header::CONTENT_TYPE, "application/json")
                 .body(Body::from(
-                    r#"{"kind":"component","name":"editor-panel","parent_rel_path":"components"}"#,
+                    r#"{"from_path":"components/editor-panel.tsx","to_path":"pages/editor-panel.tsx"}"#,
                 ))
                 .expect("request"),
         )
         .await
-        .expect("response");
-    assert_eq!(create.status(), axum::http::StatusCode::OK);
-    let body = to_bytes(create.into_body(), usize::MAX)
-        .await
-        .expect("create body");
-    let json = String::from_utf8(body.to_vec()).expect("utf8");
-    assert!(json.contains("components/editor-panel.tsx"));
+        .expect("move response");
+    assert_eq!(moved.status(), StatusCode::OK);
 
-    let save = app
+    let read = app
         .clone()
         .oneshot(
             Request::builder()
-                .uri("/api/projects/superadmin/default/templates/file")
-                .method("PUT")
-                .header(header::COOKIE, &cookie)
-                .header(header::CONTENT_TYPE, "application/json")
-                .body(Body::from(
-                    r#"{"rel_path":"components/editor-panel.tsx","content":"export default function EditorPanel(props) {\n  return <div>Editor</div>;\n}\n"}"#,
-                ))
-                .expect("request"),
-        )
-        .await
-        .expect("response");
-    assert_eq!(save.status(), axum::http::StatusCode::OK);
-
-    let git_status = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .uri("/api/projects/superadmin/default/templates/git-status")
+                .uri("/api/projects/superadmin/default/repo/file?path=pages/editor-panel.tsx")
                 .method("GET")
                 .header(header::COOKIE, &cookie)
                 .body(Body::empty())
                 .expect("request"),
         )
         .await
-        .expect("response");
-    assert_eq!(git_status.status(), axum::http::StatusCode::OK);
-    let json = response_json(git_status).await;
-    assert!(json.is_array());
+        .expect("read response");
+    assert_eq!(read.status(), StatusCode::OK);
 
-    let moved = app
+    let deleted = app
         .clone()
         .oneshot(
             Request::builder()
-                .uri("/api/projects/superadmin/default/templates/move")
-                .method("POST")
-                .header(header::COOKIE, &cookie)
-                .header(header::CONTENT_TYPE, "application/json")
-                .body(Body::from(
-                    r#"{"from_rel_path":"components/editor-panel.tsx","to_parent_rel_path":"pages"}"#,
-                ))
-                .expect("request"),
-        )
-        .await
-        .expect("response");
-    assert_eq!(moved.status(), axum::http::StatusCode::OK);
-    let body = to_bytes(moved.into_body(), usize::MAX)
-        .await
-        .expect("move body");
-    let json = String::from_utf8(body.to_vec()).expect("utf8");
-    assert!(json.contains("pages/editor-panel.tsx"));
-
-    let delete = app
-        .oneshot(
-            Request::builder()
-                .uri("/api/projects/superadmin/default/templates/file?path=pages/editor-panel.tsx")
+                .uri("/api/projects/superadmin/default/repo/file?path=pages/editor-panel.tsx")
                 .method("DELETE")
                 .header(header::COOKIE, &cookie)
                 .body(Body::empty())
                 .expect("request"),
         )
         .await
-        .expect("response");
-    assert_eq!(delete.status(), axum::http::StatusCode::NO_CONTENT);
+        .expect("delete response");
+    assert_eq!(deleted.status(), StatusCode::OK);
 }
 
 /// `kinds/project-bundle/README.md`: "Import verifies function targets
@@ -4733,14 +4685,11 @@ async fn a_static_repository_installs_through_the_same_review_and_pins_its_relea
         .expect("source project");
     publisher
         .projects
-        .write_template_file(
+        .write_repo_file(
             "superadmin",
             "static-source",
-            &TemplateSaveRequest {
-                rel_path: "pages/home.tsx".to_string(),
-                content: "export default function Home() { return <main>Static</main>; }\n"
-                    .to_string(),
-            },
+            "pages/home.tsx",
+            "export default function Home() { return <main>Static</main>; }\n",
         )
         .expect("template");
     publisher
@@ -5607,7 +5556,7 @@ async fn an_office_join_token_is_not_a_project_credential_on_its_controller() {
         ),
         (
             "GET",
-            "/api/projects/superadmin/default/templates/workspace",
+            "/api/projects/superadmin/default/repo",
             String::new(),
         ),
         (
