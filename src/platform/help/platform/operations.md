@@ -224,8 +224,8 @@ spec:
 
 ### Lock scope
 
-- `pipeline_list` / `template_list` — **still visible** (agents can see names)
-- All read/write tools (`get`, `describe`, `register`, `patch`, `activate`, `deactivate`, `template_get`, `template_write`, `template_create`) — **blocked with error**
+- `pipeline_list` / `file_list` — **still visible** (agents can see names)
+- All read/write tools (`get`, `describe`, `register`, `patch`, `activate`, `deactivate`, `file_read`, `file_write`, `file_create`) — **blocked with error**
 - Human web UI — **always works**, lock is agent-only
 
 ---

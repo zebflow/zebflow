@@ -63,7 +63,7 @@ pub struct PipelineListOptions<'a> {
 }
 
 #[derive(Debug, Clone, Default)]
-pub struct TemplateListOptions<'a> {
+pub struct FileListOptions<'a> {
     pub query: Option<&'a str>,
     pub glob: Option<&'a str>,
     pub kind: Option<&'a str>,
@@ -132,7 +132,7 @@ impl PlatformOps {
              - Inspect the full graph first with `pipeline_describe file_rel_path=\"...\"`.\n\
              - Patch one node with `pipeline_patch`, then `pipeline_activate` to make it live.\n\
              - Use `pipeline_get_invocations file_rel_path=\"...\"` for webhook or scheduled runs.\n\
-             - Search before creating: `pipeline_search` and `template_search`.\n\n\
+             - Search before creating: `pipeline_search` and `file_search`.\n\n\
              ## Template Cache Note\n\n\
              If template changes do not show after agent-side edits, clear the RWE template cache. UI saves already do this automatically.\n"
         );
@@ -322,7 +322,7 @@ impl PlatformOps {
              ## First Moves\n\
              1. Read the embedded AGENTS.md and MEMORY.md below.\n\
              2. For pipelines, call `pipeline_list`, then `pipeline_describe file_rel_path=\"...\" compact=true`.\n\
-             3. For templates, call `template_list`, then `template_outline rel_path=\"...\"` before `template_get`.\n\
+             3. For templates, call `file_list`, then `file_outline rel_path=\"...\"` before `file_read`.\n\
              4. For SQL, call `connection_list`, then `connection_describe slug=\"...\" scope=\"tables\"` before writing queries.\n\
              5. For syntax, call `help topic=\"pipeline/dsl\"`, `help topic=\"web\"`, or `help_search query=\"...\"`.\n"
         ));
@@ -372,12 +372,12 @@ impl PlatformOps {
         }
 
         out.push_str("\n\n---\n\n## Project Docs\n");
-        match self.platform.projects.list_project_docs(owner, project) {
-            Ok(docs) if !docs.is_empty() => {
-                for d in &docs {
+        match self.platform.projects.list_repo_tree(owner, project) {
+            Ok(listing) if listing.items.iter().any(|item| item.file_kind == "doc") => {
+                for item in listing.items.iter().filter(|item| item.file_kind == "doc") {
                     out.push_str(&format!(
-                        "  {} -> `docs_project_read path=\"{}\"`\n",
-                        d.path, d.path
+                        "  {} -> `file_read rel_path=\"{}\"`\n",
+                        item.rel_path, item.rel_path
                     ));
                 }
             }
@@ -385,7 +385,7 @@ impl PlatformOps {
                 out.push_str(
                     "(none — interview the user: what to build, DB schema, auth needs?)\n",
                 );
-                out.push_str("Then: `docs_project_write path=\"REQUIREMENTS.md\" content=...`\n");
+                out.push_str("Then: `file_write_doc path=\"REQUIREMENTS.md\" content=...`\n");
             }
             Err(e) => out.push_str(&format!("(error: {e})\n")),
         }
@@ -429,11 +429,7 @@ impl PlatformOps {
             Err(e) => out.push_str(&format!("\n### Pipelines\n  (error: {e})\n")),
         }
 
-        match self
-            .platform
-            .projects
-            .list_template_workspace(owner, project)
-        {
+        match self.platform.projects.list_repo_tree(owner, project) {
             Ok(workspace) => {
                 let files: Vec<_> = workspace
                     .items
@@ -442,7 +438,7 @@ impl PlatformOps {
                     .collect();
                 out.push_str(&format!("\n### Templates [{} files]\n", files.len()));
                 if files.is_empty() {
-                    out.push_str("  (none — use `template_create` to scaffold)\n");
+                    out.push_str("  (none — use `file_create` to scaffold)\n");
                 } else {
                     for item in files.iter().take(40) {
                         let tag = template_type_tag(&item.rel_path);
@@ -451,7 +447,7 @@ impl PlatformOps {
                     if files.len() > 40 {
                         out.push_str(&format!("  ... ({} more)\n", files.len() - 40));
                     }
-                    out.push_str("  -> `template_outline rel_path=\"...\"` first, then `template_get rel_path=\"...\"` when content is needed\n");
+                    out.push_str("  -> `file_outline rel_path=\"...\"` first, then `file_read rel_path=\"...\"` when content is needed\n");
                 }
             }
             Err(e) => out.push_str(&format!("\n### Templates\n  (error: {e})\n")),
@@ -508,9 +504,9 @@ impl PlatformOps {
              Pipeline DSL: `help topic=\"pipeline/dsl\"`; node catalog: `help topic=\"pipeline/nodes\"` ({node_count} official nodes)\n\
              Web templates: `help topic=\"web\"`; examples: `help topic=\"pipeline/examples\"` ({example_count} recipes)\n\
              Search docs: `help_search query=\"...\"`\n\
-             Read/write project docs: `docs_project_list`, `docs_project_read`, `docs_project_write`\n\
+             Read/write project docs: `file_list_docs`, `file_read_doc`, `file_write_doc`\n\
              Read/write agent memory: `docs_agent_read name=\"MEMORY.md\"`, `docs_agent_write name=\"MEMORY.md\" content=...`\n\
-             Inspect code cheaply: `template_outline`, `template_deps`; edit with `template_edit` or `template_batch_edit`\n\
+             Inspect code cheaply: `file_outline`, `file_deps`; edit with `file_edit` or `file_batch_edit`\n\
              Full agent workflow: `help topic=\"platform/workflow\"`\n"
         ));
 
@@ -951,7 +947,7 @@ impl PlatformOps {
             Ok(value) => value,
             Err(e) => return OpsResult::err(e.to_string()),
         };
-        // Reuse the same glob matcher used by template_search / pipeline_search.
+        // Reuse the same glob matcher used by file_search / pipeline_search.
         let matching: Vec<String> = rows
             .iter()
             .filter(|m| {
@@ -1122,11 +1118,11 @@ impl PlatformOps {
 // ── Templates ─────────────────────────────────────────────────────────────────
 
 impl PlatformOps {
-    pub fn template_list(&self, options: TemplateListOptions<'_>) -> OpsResult {
+    pub fn file_list(&self, options: FileListOptions<'_>) -> OpsResult {
         match self
             .platform
             .projects
-            .list_template_workspace(&self.owner, &self.project)
+            .list_repo_tree(&self.owner, &self.project)
         {
             Ok(workspace) => {
                 let format = options.format.unwrap_or("compact");
@@ -1158,16 +1154,16 @@ impl PlatformOps {
                     );
                 }
 
-                self.format_template_list(workspace.items, options)
+                self.format_file_list(workspace.items, options)
             }
             Err(e) => OpsResult::err(e.to_string()),
         }
     }
 
-    fn format_template_list(
+    fn format_file_list(
         &self,
         items: Vec<TemplateTreeItem>,
-        options: TemplateListOptions<'_>,
+        options: FileListOptions<'_>,
     ) -> OpsResult {
         let format = options.format.unwrap_or("compact");
         let mut rows = filter_template_rows(self, items, &options);
@@ -1212,23 +1208,18 @@ impl PlatformOps {
                 OpsResult::ok(out)
             }
             other => OpsResult::err(format!(
-                "template_list format must be compact, json, or tree; got '{other}'"
+                "file_list format must be compact, json, or tree; got '{other}'"
             )),
         }
     }
 
-    pub fn template_get(
-        &self,
-        rel_path: &str,
-        offset: Option<u32>,
-        limit: Option<u32>,
-    ) -> OpsResult {
+    pub fn file_read(&self, rel_path: &str, offset: Option<u32>, limit: Option<u32>) -> OpsResult {
         // Resolve content — try exact match first, then fuzzy fallback.
         let (resolved_path, content) =
             match self
                 .platform
                 .projects
-                .read_template_file(&self.owner, &self.project, rel_path)
+                .read_repo_file_text(&self.owner, &self.project, rel_path)
             {
                 Ok(content) => (rel_path.to_string(), content),
                 Err(_) => {
@@ -1236,7 +1227,7 @@ impl PlatformOps {
                     let listing = match self
                         .platform
                         .projects
-                        .list_template_workspace(&self.owner, &self.project)
+                        .list_repo_tree(&self.owner, &self.project)
                     {
                         Ok(l) => l,
                         Err(e) => return OpsResult::err(e.to_string()),
@@ -1252,7 +1243,7 @@ impl PlatformOps {
                         .collect();
                     match candidates.len() {
                         0 => return OpsResult::err(format!("Template '{rel_path}' not found")),
-                        1 => match self.platform.projects.read_template_file(
+                        1 => match self.platform.projects.read_repo_file_text(
                             &self.owner,
                             &self.project,
                             &candidates[0],
@@ -1307,12 +1298,12 @@ impl PlatformOps {
         }
     }
 
-    pub fn template_outline(&self, rel_path: &str) -> OpsResult {
+    pub fn file_outline(&self, rel_path: &str) -> OpsResult {
         let content =
             match self
                 .platform
                 .projects
-                .read_template_file(&self.owner, &self.project, rel_path)
+                .read_repo_file_text(&self.owner, &self.project, rel_path)
             {
                 Ok(c) => c,
                 Err(e) => return OpsResult::err(e.to_string()),
@@ -1324,12 +1315,12 @@ impl PlatformOps {
         ))
     }
 
-    pub fn template_deps(&self, rel_path: &str) -> OpsResult {
+    pub fn file_deps(&self, rel_path: &str) -> OpsResult {
         let content =
             match self
                 .platform
                 .projects
-                .read_template_file(&self.owner, &self.project, rel_path)
+                .read_repo_file_text(&self.owner, &self.project, rel_path)
             {
                 Ok(c) => c,
                 Err(e) => return OpsResult::err(e.to_string()),
@@ -1361,7 +1352,7 @@ impl PlatformOps {
         let workspace = match self
             .platform
             .projects
-            .list_template_workspace(&self.owner, &self.project)
+            .list_repo_tree(&self.owner, &self.project)
         {
             Ok(w) => w,
             Err(_) => return OpsResult::ok(out),
@@ -1372,7 +1363,7 @@ impl PlatformOps {
             if item.kind == "folder" || item.rel_path == rel_path {
                 continue;
             }
-            let file_content = match self.platform.projects.read_template_file(
+            let file_content = match self.platform.projects.read_repo_file_text(
                 &self.owner,
                 &self.project,
                 &item.rel_path,
@@ -1405,7 +1396,7 @@ impl PlatformOps {
         OpsResult::ok(out)
     }
 
-    pub fn template_batch_edit(&self, edits: &[(String, String, String)]) -> OpsResult {
+    pub fn file_batch_edit(&self, edits: &[(String, String, String)]) -> OpsResult {
         if edits.is_empty() {
             return OpsResult::err("edits list must not be empty");
         }
@@ -1415,7 +1406,7 @@ impl PlatformOps {
                 results.push(format!("[{}] {} — SKIP: old_string empty", i + 1, rel_path));
                 continue;
             }
-            match self.platform.projects.edit_template_file(
+            match self.platform.projects.edit_repo_file(
                 &self.owner,
                 &self.project,
                 rel_path,
@@ -1435,12 +1426,7 @@ impl PlatformOps {
         OpsResult::ok(results.join("\n"))
     }
 
-    pub fn template_create(
-        &self,
-        kind: &str,
-        name: &str,
-        parent_rel_path: Option<&str>,
-    ) -> OpsResult {
+    pub fn file_create(&self, kind: &str, name: &str, parent_rel_path: Option<&str>) -> OpsResult {
         let kind = match kind {
             "page" => TemplateCreateKind::Page,
             "component" => TemplateCreateKind::Component,
@@ -1473,16 +1459,17 @@ impl PlatformOps {
         }
     }
 
-    pub fn template_write(&self, rel_path: &str, content: &str) -> OpsResult {
+    pub fn file_write(&self, rel_path: &str, content: &str) -> OpsResult {
         let req = TemplateSaveRequest {
             rel_path: rel_path.to_string(),
             content: content.to_string(),
         };
-        match self
-            .platform
-            .projects
-            .write_template_file(&self.owner, &self.project, &req)
-        {
+        match self.platform.projects.write_repo_file(
+            &self.owner,
+            &self.project,
+            &req.rel_path,
+            &req.content,
+        ) {
             Ok(payload) => {
                 let nav = format!("/projects/{}/{}/files", self.owner, self.project);
                 OpsResult::ok_nav(
@@ -1494,7 +1481,7 @@ impl PlatformOps {
         }
     }
 
-    pub fn template_search(
+    pub fn file_search(
         &self,
         pattern: &str,
         glob: Option<&str>,
@@ -1505,16 +1492,14 @@ impl PlatformOps {
         if pattern.trim().is_empty() {
             return OpsResult::err("pattern must not be empty");
         }
-        match self.platform.projects.search_template_files(
-            &self.owner,
-            &self.project,
-            pattern,
-            glob,
-            context,
-        ) {
+        match self
+            .platform
+            .projects
+            .search_repo_files(&self.owner, &self.project, pattern, context)
+        {
             Err(e) => OpsResult::err(e.to_string()),
             Ok(matches) if matches.is_empty() => OpsResult::ok(format!(
-                "No matches for '{}' in templates{}.",
+                "No matches for '{}' in the repository{}.",
                 pattern,
                 glob.map(|g| format!(" (glob: {g})")).unwrap_or_default()
             )),
@@ -1550,11 +1535,11 @@ impl PlatformOps {
         }
     }
 
-    pub fn template_edit(&self, rel_path: &str, old_string: &str, new_string: &str) -> OpsResult {
+    pub fn file_edit(&self, rel_path: &str, old_string: &str, new_string: &str) -> OpsResult {
         if old_string.is_empty() {
             return OpsResult::err("old_string must not be empty");
         }
-        match self.platform.projects.edit_template_file(
+        match self.platform.projects.edit_repo_file(
             &self.owner,
             &self.project,
             rel_path,
@@ -1872,43 +1857,7 @@ mod rename_tests {
 
 // ── Project Docs ──────────────────────────────────────────────────────────────
 
-impl PlatformOps {
-    pub fn docs_project_list(&self) -> OpsResult {
-        match self
-            .platform
-            .projects
-            .list_project_docs(&self.owner, &self.project)
-        {
-            Ok(docs) => OpsResult::ok(
-                serde_json::to_string_pretty(&json!({ "docs": docs, "count": docs.len() }))
-                    .unwrap_or_default(),
-            ),
-            Err(e) => OpsResult::err(e.to_string()),
-        }
-    }
-
-    pub fn docs_project_read(&self, path: &str) -> OpsResult {
-        match self
-            .platform
-            .projects
-            .read_project_doc(&self.owner, &self.project, path)
-        {
-            Ok(content) => OpsResult::ok(content),
-            Err(e) => OpsResult::err(e.to_string()),
-        }
-    }
-
-    pub fn docs_project_write(&self, path: &str, content: &str) -> OpsResult {
-        match self
-            .platform
-            .projects
-            .upsert_project_doc(&self.owner, &self.project, path, content)
-        {
-            Ok(doc) => OpsResult::ok(serde_json::to_string_pretty(&doc).unwrap_or_default()),
-            Err(e) => OpsResult::err(e.to_string()),
-        }
-    }
-}
+impl PlatformOps {}
 
 // ── Agent Docs ────────────────────────────────────────────────────────────────
 
@@ -2210,7 +2159,7 @@ fn filter_pipeline_rows(
 fn filter_template_rows(
     ops: &PlatformOps,
     items: Vec<TemplateTreeItem>,
-    options: &TemplateListOptions<'_>,
+    options: &FileListOptions<'_>,
 ) -> Vec<(TemplateTreeItem, TemplateSemanticMeta)> {
     let query = options
         .query
@@ -2371,7 +2320,7 @@ fn read_template_semantic_meta(ops: &PlatformOps, rel_path: &str) -> TemplateSem
     let Ok(content) = ops
         .platform
         .projects
-        .read_template_file(&ops.owner, &ops.project, rel_path)
+        .read_repo_file_text(&ops.owner, &ops.project, rel_path)
     else {
         return TemplateSemanticMeta::default();
     };

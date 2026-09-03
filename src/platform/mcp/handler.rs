@@ -62,7 +62,7 @@ struct PipelineListParams {
 }
 
 #[derive(serde::Deserialize, JsonSchema)]
-struct TemplateGetParams {
+struct FileReadParams {
     /// Relative path to the template file (e.g. "pages/home.tsx").
     rel_path: String,
     /// 1-based starting line number. Omit to read the full file.
@@ -74,7 +74,7 @@ struct TemplateGetParams {
 }
 
 #[derive(serde::Deserialize, JsonSchema)]
-struct TemplateListParams {
+struct FileListParams {
     /// Optional glob to filter files (e.g. "pages/*.tsx", "**/*.tsx"). Omit to list all files.
     #[schemars(with = "String")]
     glob: Option<String>,
@@ -93,12 +93,6 @@ struct TemplateListParams {
 }
 
 #[derive(serde::Deserialize, JsonSchema)]
-struct DocsProjectReadParams {
-    /// Relative path to the doc file under repo/docs (e.g. "README.md").
-    path: String,
-}
-
-#[derive(serde::Deserialize, JsonSchema)]
 struct HelpParams {
     /// Help path to load (e.g. "pipeline", "web/hooks", "pipeline/nodes", "tool").
     /// Pass empty string or omit for the full index.
@@ -107,7 +101,7 @@ struct HelpParams {
 }
 
 #[derive(serde::Deserialize, JsonSchema)]
-struct TemplateWriteParams {
+struct FileWriteParams {
     /// Relative path under templates/ (e.g. "pages/blog-home.tsx", "components/ui/card.tsx").
     rel_path: String,
     /// Full file content to write.
@@ -115,7 +109,7 @@ struct TemplateWriteParams {
 }
 
 #[derive(serde::Deserialize, JsonSchema)]
-struct TemplateSearchParams {
+struct FileSearchParams {
     /// Pattern to search for (case-insensitive substring).
     pattern: String,
     /// Optional glob to filter files (e.g. "pages/*.tsx", "**/*.tsx"). Omit to search all files.
@@ -151,7 +145,7 @@ struct PipelineSearchParams {
 }
 
 #[derive(serde::Deserialize, JsonSchema)]
-struct TemplateEditParams {
+struct FileEditParams {
     /// Relative path to the template file (e.g. "pages/home.tsx").
     rel_path: String,
     /// Exact string to find. Must match exactly once — provide enough context to be unique.
@@ -161,13 +155,13 @@ struct TemplateEditParams {
 }
 
 #[derive(serde::Deserialize, JsonSchema)]
-struct TemplateOutlineParams {
+struct FileOutlineParams {
     /// Relative path to the template file (e.g. "pages/home.tsx").
     rel_path: String,
 }
 
 #[derive(serde::Deserialize, JsonSchema)]
-struct TemplateDepsParams {
+struct FileDepsParams {
     /// Relative path to the template file (e.g. "pages/home.tsx").
     rel_path: String,
 }
@@ -183,13 +177,13 @@ struct TemplateBatchEditItem {
 }
 
 #[derive(serde::Deserialize, JsonSchema)]
-struct TemplateBatchEditParams {
+struct FileBatchEditParams {
     /// Edits to apply. Fails fast on the first edit error.
     edits: Vec<TemplateBatchEditItem>,
 }
 
 #[derive(serde::Deserialize, JsonSchema)]
-struct TemplateCreateParams {
+struct FileCreateParams {
     /// Kind of entry to create: "page", "component", "script", or "folder".
     kind: String,
     /// Base name for the file or folder (e.g. "blog-home", "user-card").
@@ -197,14 +191,6 @@ struct TemplateCreateParams {
     /// Optional parent folder path under templates/ (e.g. "components/ui").
     #[schemars(with = "String")]
     parent_rel_path: Option<String>,
-}
-
-#[derive(serde::Deserialize, JsonSchema)]
-struct DocsProjectWriteParams {
-    /// Relative path under repo/docs/ (e.g. "README.md", "architecture.md", "erd.md").
-    path: String,
-    /// Full file content to write.
-    content: String,
 }
 
 #[derive(serde::Deserialize, JsonSchema)]
@@ -779,15 +765,15 @@ impl ZebflowMcpHandler {
     // ── Templates ────────────────────────────────────────────────────────────
 
     #[tool(description = "List templates in the project workspace. Optional glob filters files.")]
-    async fn template_list(
+    async fn file_list(
         &self,
         Extension(parts): Extension<http::request::Parts>,
-        Parameters(params): Parameters<TemplateListParams>,
+        Parameters(params): Parameters<FileListParams>,
     ) -> Result<CallToolResult, McpError> {
         let session = self.get_session_from_http_parts(&parts)?;
-        self.check_tool_capability(&session, "template_list")?;
+        self.check_tool_capability(&session, "file_list")?;
         let ops = PlatformOps::new(self.platform.clone(), &session.owner, &session.project);
-        let result = ops.template_list(crate::platform::services::ops::TemplateListOptions {
+        let result = ops.file_list(crate::platform::services::ops::FileListOptions {
             query: params.query.as_deref(),
             glob: params.glob.as_deref(),
             kind: params.kind.as_deref(),
@@ -799,13 +785,13 @@ impl ZebflowMcpHandler {
 
     #[tool(description = "Get a specific template by relative path. \
                        Use offset and limit to read a line-numbered slice instead of the full file.")]
-    async fn template_get(
+    async fn file_read(
         &self,
         Extension(parts): Extension<http::request::Parts>,
-        Parameters(params): Parameters<TemplateGetParams>,
+        Parameters(params): Parameters<FileReadParams>,
     ) -> Result<CallToolResult, McpError> {
         let session = self.get_session_from_http_parts(&parts)?;
-        self.check_tool_capability(&session, "template_get")?;
+        self.check_tool_capability(&session, "file_read")?;
         if self.template_locked(&session.owner, &session.project, &params.rel_path) {
             return Err(McpError::invalid_params(
                 "This template is locked by the project owner and cannot be accessed by agents. Ask the owner to unlock it.",
@@ -813,21 +799,21 @@ impl ZebflowMcpHandler {
             ));
         }
         let ops = PlatformOps::new(self.platform.clone(), &session.owner, &session.project);
-        let result = ops.template_get(&params.rel_path, params.offset, params.limit);
+        let result = ops.file_read(&params.rel_path, params.offset, params.limit);
         ok_or_err(result)
     }
 
     #[tool(description = "Create a new template file with scaffolding. \
                        Kind must be one of: page (pages/*.tsx), component (components/*.tsx), \
                        script (scripts/*.ts), folder. \
-                       Returns the scaffolded content — use template_write to customise it after.")]
-    async fn template_create(
+                       Returns the scaffolded content — use file_write to customise it after.")]
+    async fn file_create(
         &self,
         Extension(parts): Extension<http::request::Parts>,
-        Parameters(params): Parameters<TemplateCreateParams>,
+        Parameters(params): Parameters<FileCreateParams>,
     ) -> Result<CallToolResult, McpError> {
         let session = self.get_session_from_http_parts(&parts)?;
-        self.check_tool_capability(&session, "template_create")?;
+        self.check_tool_capability(&session, "file_create")?;
         // Check lock on parent folder if provided
         if let Some(ref parent) = params.parent_rel_path {
             if self.template_locked(&session.owner, &session.project, parent) {
@@ -838,7 +824,7 @@ impl ZebflowMcpHandler {
             }
         }
         let ops = PlatformOps::new(self.platform.clone(), &session.owner, &session.project);
-        let result = ops.template_create(
+        let result = ops.file_create(
             &params.kind,
             &params.name,
             params.parent_rel_path.as_deref(),
@@ -848,16 +834,16 @@ impl ZebflowMcpHandler {
     }
 
     #[tool(description = "Write (create or overwrite) a template file. \
-                       Use template_create first to scaffold with boilerplate, then template_write to fill in content. \
+                       Use file_create first to scaffold with boilerplate, then file_write to fill in content. \
                        Path is relative to templates/ (e.g. 'pages/blog-home.tsx', 'components/ui/card.tsx', 'scripts/format-address.ts'). \
                        Use help(\"web\") for TSX conventions or help(\"web/custom-scripts\") for TypeScript module rules before writing.")]
-    async fn template_write(
+    async fn file_write(
         &self,
         Extension(parts): Extension<http::request::Parts>,
-        Parameters(params): Parameters<TemplateWriteParams>,
+        Parameters(params): Parameters<FileWriteParams>,
     ) -> Result<CallToolResult, McpError> {
         let session = self.get_session_from_http_parts(&parts)?;
-        self.check_tool_capability(&session, "template_write")?;
+        self.check_tool_capability(&session, "file_write")?;
         if self.template_locked(&session.owner, &session.project, &params.rel_path) {
             return Err(McpError::invalid_params(
                 "This template is locked by the project owner and cannot be accessed by agents. Ask the owner to unlock it.",
@@ -865,7 +851,7 @@ impl ZebflowMcpHandler {
             ));
         }
         let ops = PlatformOps::new(self.platform.clone(), &session.owner, &session.project);
-        let result = ops.template_write(&params.rel_path, &params.content);
+        let result = ops.file_write(&params.rel_path, &params.content);
         if !result.text.starts_with("Error:") {
             if let Ok(abs) = self.platform.projects.resolve_template_abs_path(
                 &session.owner,
@@ -887,15 +873,15 @@ impl ZebflowMcpHandler {
                        Use glob to narrow scope (e.g. \"pages/*.tsx\", \"**/*.tsx\"). \
                        Equivalent to Grep across templates — find which files use an import, component, or value."
     )]
-    async fn template_search(
+    async fn file_search(
         &self,
         Extension(parts): Extension<http::request::Parts>,
-        Parameters(params): Parameters<TemplateSearchParams>,
+        Parameters(params): Parameters<FileSearchParams>,
     ) -> Result<CallToolResult, McpError> {
         let session = self.get_session_from_http_parts(&parts)?;
-        self.check_tool_capability(&session, "template_search")?;
+        self.check_tool_capability(&session, "file_search")?;
         let ops = PlatformOps::new(self.platform.clone(), &session.owner, &session.project);
-        ok_or_err(ops.template_search(
+        ok_or_err(ops.file_search(
             &params.pattern,
             params.glob.as_deref(),
             params.context.unwrap_or(0) as usize,
@@ -908,13 +894,13 @@ impl ZebflowMcpHandler {
                        Equivalent to Edit — no need to read the full file first. \
                        Fails if old_string is not found or matches more than once (provide more context). \
                        Returns the line number of the replacement.")]
-    async fn template_edit(
+    async fn file_edit(
         &self,
         Extension(parts): Extension<http::request::Parts>,
-        Parameters(params): Parameters<TemplateEditParams>,
+        Parameters(params): Parameters<FileEditParams>,
     ) -> Result<CallToolResult, McpError> {
         let session = self.get_session_from_http_parts(&parts)?;
-        self.check_tool_capability(&session, "template_edit")?;
+        self.check_tool_capability(&session, "file_edit")?;
         if self.template_locked(&session.owner, &session.project, &params.rel_path) {
             return Err(McpError::invalid_params(
                 "This template is locked by the project owner and cannot be accessed by agents. Ask the owner to unlock it.",
@@ -922,7 +908,7 @@ impl ZebflowMcpHandler {
             ));
         }
         let ops = PlatformOps::new(self.platform.clone(), &session.owner, &session.project);
-        let result = ops.template_edit(&params.rel_path, &params.old_string, &params.new_string);
+        let result = ops.file_edit(&params.rel_path, &params.old_string, &params.new_string);
         if !result.text.starts_with("Error:") {
             if let Ok(abs) = self.platform.projects.resolve_template_abs_path(
                 &session.owner,
@@ -941,15 +927,15 @@ impl ZebflowMcpHandler {
     #[tool(
         description = "Parse a template file and return its code outline: imports, exports, \
                        functions, classes, types, interfaces, and line numbers. \
-                       Use this before template_get when orienting on a large TSX/TS file."
+                       Use this before file_read when orienting on a large TSX/TS file."
     )]
-    async fn template_outline(
+    async fn file_outline(
         &self,
         Extension(parts): Extension<http::request::Parts>,
-        Parameters(params): Parameters<TemplateOutlineParams>,
+        Parameters(params): Parameters<FileOutlineParams>,
     ) -> Result<CallToolResult, McpError> {
         let session = self.get_session_from_http_parts(&parts)?;
-        self.check_tool_capability(&session, "template_outline")?;
+        self.check_tool_capability(&session, "file_outline")?;
         if self.template_locked(&session.owner, &session.project, &params.rel_path) {
             return Err(McpError::invalid_params(
                 "This template is locked by the project owner and cannot be accessed by agents. Ask the owner to unlock it.",
@@ -957,7 +943,7 @@ impl ZebflowMcpHandler {
             ));
         }
         let ops = PlatformOps::new(self.platform.clone(), &session.owner, &session.project);
-        let result = ops.template_outline(&params.rel_path);
+        let result = ops.file_outline(&params.rel_path);
         ok_or_err(result)
     }
 
@@ -965,13 +951,13 @@ impl ZebflowMcpHandler {
         description = "Show a template dependency graph: imports used by this file and \
                        other project templates that import it. Use before refactoring shared UI."
     )]
-    async fn template_deps(
+    async fn file_deps(
         &self,
         Extension(parts): Extension<http::request::Parts>,
-        Parameters(params): Parameters<TemplateDepsParams>,
+        Parameters(params): Parameters<FileDepsParams>,
     ) -> Result<CallToolResult, McpError> {
         let session = self.get_session_from_http_parts(&parts)?;
-        self.check_tool_capability(&session, "template_deps")?;
+        self.check_tool_capability(&session, "file_deps")?;
         if self.template_locked(&session.owner, &session.project, &params.rel_path) {
             return Err(McpError::invalid_params(
                 "This template is locked by the project owner and cannot be accessed by agents. Ask the owner to unlock it.",
@@ -979,7 +965,7 @@ impl ZebflowMcpHandler {
             ));
         }
         let ops = PlatformOps::new(self.platform.clone(), &session.owner, &session.project);
-        let result = ops.template_deps(&params.rel_path);
+        let result = ops.file_deps(&params.rel_path);
         ok_or_err(result)
     }
 
@@ -988,13 +974,13 @@ impl ZebflowMcpHandler {
                        Each edit is rel_path + old_string + new_string. \
                        Evicts template cache for edited files when the batch succeeds."
     )]
-    async fn template_batch_edit(
+    async fn file_batch_edit(
         &self,
         Extension(parts): Extension<http::request::Parts>,
-        Parameters(params): Parameters<TemplateBatchEditParams>,
+        Parameters(params): Parameters<FileBatchEditParams>,
     ) -> Result<CallToolResult, McpError> {
         let session = self.get_session_from_http_parts(&parts)?;
-        self.check_tool_capability(&session, "template_batch_edit")?;
+        self.check_tool_capability(&session, "file_batch_edit")?;
         for edit in &params.edits {
             if self.template_locked(&session.owner, &session.project, &edit.rel_path) {
                 return Err(McpError::invalid_params(
@@ -1015,7 +1001,7 @@ impl ZebflowMcpHandler {
                 )
             })
             .collect();
-        let result = ops.template_batch_edit(&edits);
+        let result = ops.file_batch_edit(&edits);
         if result.text.contains("ERROR:") {
             return Err(McpError::invalid_params(result.text, None));
         }
@@ -1033,54 +1019,6 @@ impl ZebflowMcpHandler {
                 }
             }
         }
-        ok_or_err(result)
-    }
-
-    // ── Project Docs ─────────────────────────────────────────────────────────
-
-    #[tool(
-        description = "List project doc files (ERD, README.md, architecture docs, use cases) under repo/docs"
-    )]
-    async fn docs_project_list(
-        &self,
-        Extension(parts): Extension<http::request::Parts>,
-    ) -> Result<CallToolResult, McpError> {
-        let session = self.get_session_from_http_parts(&parts)?;
-        self.check_tool_capability(&session, "docs_project_list")?;
-        let ops = PlatformOps::new(self.platform.clone(), &session.owner, &session.project);
-        let result = ops.docs_project_list();
-        ok_or_err(result)
-    }
-
-    #[tool(
-        description = "Read one project doc by path (e.g. README.md, AGENTS.md, architecture.md)"
-    )]
-    async fn docs_project_read(
-        &self,
-        Extension(parts): Extension<http::request::Parts>,
-        Parameters(params): Parameters<DocsProjectReadParams>,
-    ) -> Result<CallToolResult, McpError> {
-        let session = self.get_session_from_http_parts(&parts)?;
-        self.check_tool_capability(&session, "docs_project_read")?;
-        let ops = PlatformOps::new(self.platform.clone(), &session.owner, &session.project);
-        let result = ops.docs_project_read(&params.path);
-        ok_or_err(result)
-    }
-
-    #[tool(
-        description = "Write (create or update) a project doc file under repo/docs/. \
-                       Use for specs, architecture docs, ERDs, API contracts, README, CHANGELOG. \
-                       These files are git-synced. Always commit after writing with git_command."
-    )]
-    async fn docs_project_write(
-        &self,
-        Extension(parts): Extension<http::request::Parts>,
-        Parameters(params): Parameters<DocsProjectWriteParams>,
-    ) -> Result<CallToolResult, McpError> {
-        let session = self.get_session_from_http_parts(&parts)?;
-        self.check_tool_capability(&session, "docs_project_write")?;
-        let ops = PlatformOps::new(self.platform.clone(), &session.owner, &session.project);
-        let result = ops.docs_project_write(&params.path, &params.content);
         ok_or_err(result)
     }
 

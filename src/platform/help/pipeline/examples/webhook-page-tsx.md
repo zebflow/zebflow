@@ -101,6 +101,6 @@ export default function Page(input) {
 
 ## Templates Needed
 
-Use `template_create kind=page name=<page-name>` then `template_write` to fill content.
+Use `file_create kind=page name=<page-name>` then `file_write` to fill content.
 Access upstream data via `input` (function parameter) — it's whatever the previous node returned.
 `ctx` is the same object available as `globalThis.ctx` in both SSR and browser.

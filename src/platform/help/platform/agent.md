@@ -18,7 +18,7 @@ Then based on what you need:
 docs_agent_read  name=AGENTS.md    ← project-specific rules (required reading)
 docs_agent_read  name=MEMORY.md    ← what happened in previous sessions
 pipeline_list                      ← understand existing logic
-template_list                      ← understand existing UI
+file_list                      ← understand existing UI
 connection_list                    ← understand data sources
 ```
 
@@ -64,24 +64,24 @@ If AGENTS.md contradicts any skill doc, follow AGENTS.md.
 
 | Tool | What it does |
 |------|-------------|
-| `template_list` | Lean semantic index. Default rows: `rel_path | kind | title | description`. Use `query`, `glob`, `kind`, `limit`; use `format="json"` for full workspace metadata. Optional `zebflow` frontmatter provides title/description/keywords. |
-| `template_get` | Read a template file. Accepts partial path. Use `offset`/`limit` to read a range of lines (1-based) instead of the full file. |
-| `template_outline` | **Code-aware**: Parse a template and return its structural outline — imports, exports, functions, classes, types, interfaces with line numbers. Much cheaper than `template_get` for understanding file structure. |
-| `template_deps` | **Code-aware**: Show a template's dependency graph — what it imports (forward deps) and which other templates import it (reverse deps). Use before refactoring. |
-| `template_create` | Scaffold a new template file with boilerplate |
-| `template_write` | Write (overwrite) a template file's content |
-| `template_search` | Grep across all template files with optional glob filter and context lines. Use `output_mode="files_with_matches"` for file paths only. Use `head_limit` to cap results. |
-| `template_edit` | Exact string replacement inside a template file — `old_string` → `new_string`. Fails if `old_string` is not unique in the file |
-| `template_batch_edit` | Apply multiple edits across one or more files in a single call. Each edit is `{ rel_path, old_string, new_string }`. Fails fast on first error. |
+| `file_list` | Lean semantic index. Default rows: `rel_path | kind | title | description`. Use `query`, `glob`, `kind`, `limit`; use `format="json"` for full workspace metadata. Optional `zebflow` frontmatter provides title/description/keywords. |
+| `file_read` | Read a template file. Accepts partial path. Use `offset`/`limit` to read a range of lines (1-based) instead of the full file. |
+| `file_outline` | **Code-aware**: Parse a template and return its structural outline — imports, exports, functions, classes, types, interfaces with line numbers. Much cheaper than `file_read` for understanding file structure. |
+| `file_deps` | **Code-aware**: Show a template's dependency graph — what it imports (forward deps) and which other templates import it (reverse deps). Use before refactoring. |
+| `file_create` | Scaffold a new template file with boilerplate |
+| `file_write` | Write (overwrite) a template file's content |
+| `file_search` | Grep across all template files with optional glob filter and context lines. Use `output_mode="files_with_matches"` for file paths only. Use `head_limit` to cap results. |
+| `file_edit` | Exact string replacement inside a template file — `old_string` → `new_string`. Fails if `old_string` is not unique in the file |
+| `file_batch_edit` | Apply multiple edits across one or more files in a single call. Each edit is `{ rel_path, old_string, new_string }`. Fails fast on first error. |
 | `move_resource` | Rename or reorganize a pipeline or template file. Domain auto-detected from extension (`.zf.json` = pipeline, else template). Pipeline lifecycle (deactivate → move → re-activate) handled automatically. Parent folders created. No cross-domain moves |
 
 ### Docs
 
 | Tool | What it does |
 |------|-------------|
-| `docs_project_list` | List markdown docs in repo/docs/ |
-| `docs_project_read` | Read a doc file |
-| `docs_project_write` | Write a doc (spec, ERD, README, CHANGELOG, ADR) |
+| `file_list` | List markdown docs in repo/docs/ |
+| `file_read` | Read a doc file |
+| `file_write` | Write a doc (spec, ERD, README, CHANGELOG, ADR) |
 
 ### Agent Docs
 
@@ -122,16 +122,16 @@ Project owners can lock individual pipelines or templates (and entire template f
 | Tool | Behavior |
 |------|----------|
 | `pipeline_list` | Still shows the locked pipeline — you can see it exists |
-| `template_list` | Still shows the locked template/folder |
+| `file_list` | Still shows the locked template/folder |
 | `pipeline_get` | ❌ Error — locked |
 | `pipeline_describe` | ❌ Error — locked |
 | `pipeline_register` (update) | ❌ Error — locked |
 | `pipeline_patch` | ❌ Error — locked |
 | `pipeline_activate` | ❌ Error — locked |
 | `pipeline_deactivate` | ❌ Error — locked |
-| `template_get` | ❌ Error — locked |
-| `template_write` | ❌ Error — locked |
-| `template_create` (inside locked folder) | ❌ Error — locked |
+| `file_read` | ❌ Error — locked |
+| `file_write` | ❌ Error — locked |
+| `file_create` (inside locked folder) | ❌ Error — locked |
 
 Error message returned: `"This pipeline/template is locked by the project owner and cannot be accessed by agents. Ask the owner to unlock it."`
 
@@ -151,10 +151,10 @@ Two values in pipelines are often hallucinated wrong — always use the actual v
 
 | What you're writing | Source of truth | How to get it |
 |---------------------|----------------|---------------|
-| `web.response --template <path>` | exact `rel_path` from the project (always ends in `.tsx`, e.g. `pages/home.tsx`) | `template_list` |
+| `web.response --template <path>` | exact `rel_path` from the project (always ends in `.tsx`, e.g. `pages/home.tsx`) | `file_list` |
 | `--credential <slug>` on any node | exact `slug` from the project | `connection_list` |
 
-**Rule:** If you already have the exact value in your current context (e.g. from a recent `template_list` or `connection_list` call), use it directly. If you're not certain, call the tool first. Never guess, never use memory from a different project.
+**Rule:** If you already have the exact value in your current context (e.g. from a recent `file_list` or `connection_list` call), use it directly. If you're not certain, call the tool first. Never guess, never use memory from a different project.
 
 ---
 
@@ -216,10 +216,10 @@ Pass this as `body` to `pipeline_register` with a canonical `file_rel_path` (e.g
 ### 2. Create the template
 
 ```
-template_create  kind=page  name=blog-home
+file_create  kind=page  name=blog-home
 ```
 
-Then `template_write rel_path=pages/blog-home.tsx` with TSX content.
+Then `file_write rel_path=pages/blog-home.tsx` with TSX content.
 See `help(topic="web")` for TSX conventions.
 
 ### 3. Activate and commit

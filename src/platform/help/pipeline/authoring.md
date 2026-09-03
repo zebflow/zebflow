@@ -7,11 +7,11 @@ Use the **DSL** (`pipeline_register`) to author them — the JSON is auto-genera
 Read this doc for the underlying model. See `help("pipeline/dsl")` for the DSL.
 
 > **Before you write a pipeline node that references a template or credential:**
-> - `web.response --template <path>` — the path must be an exact `rel_path` from `template_list` (e.g. `pages/home.tsx` — always ends in `.tsx`). Call it if you don't have the value in your current context.
+> - `web.response --template <path>` — the path must be an exact `rel_path` from `file_list` (e.g. `pages/home.tsx` — always ends in `.tsx`). Call it if you don't have the value in your current context.
 > - `--credential <slug>` — the slug must be exact from `connection_list`. Call it if unsure.
 > Never guess these values. A wrong template path silently serves nothing; a wrong credential slug causes auth failures.
 
-`pipeline_list` and `template_list` are semantic indexes, not source dumps. Use `*_list`
+`pipeline_list` and `file_list` are semantic indexes, not source dumps. Use `*_list`
 to find the right path, `*_search` to grep implementation content, then `*_get` or
 `*_outline` for the exact file.
 
@@ -34,9 +34,9 @@ zebflow:
 */
 ```
 
-`template_list(query=...)` searches `rel_path`, inferred kind, title,
+`file_list(query=...)` searches `rel_path`, inferred kind, title,
 description, and keywords. Templates without this block still appear in
-`template_list`; their title and description are empty.
+`file_list`; their title and description are empty.
 
 ## File Location
 

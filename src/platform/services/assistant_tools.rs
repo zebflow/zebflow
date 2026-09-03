@@ -267,7 +267,7 @@ impl AssistantPlatformTools {
             },
             // ── Templates ──────────────────────────────────────────────────────
             ToolDef {
-                name: "template_list".to_string(),
+                name: "file_list".to_string(),
                 description: "List templates as a lean semantic index. Default compact rows are: \
                     rel_path | kind | title | description. Optional top-of-file zebflow frontmatter \
                     provides title/description/keywords. Use format='json' for full legacy workspace data.".to_string(),
@@ -283,7 +283,7 @@ impl AssistantPlatformTools {
                 }),
             },
             ToolDef {
-                name: "template_get".to_string(),
+                name: "file_read".to_string(),
                 description: "Read a template file. Use offset/limit to read a range of lines.".to_string(),
                 parameters: json!({
                     "type": "object",
@@ -296,11 +296,11 @@ impl AssistantPlatformTools {
                 }),
             },
             ToolDef {
-                name: "template_create".to_string(),
+                name: "file_create".to_string(),
                 description: "Create a new template file with scaffolding. \
                     Kind must be one of: page (pages/*.tsx), component (components/*.tsx), \
                     script (scripts/*.ts), folder. \
-                    Returns the scaffolded content — use template_write to customise it after.".to_string(),
+                    Returns the scaffolded content — use file_write to customise it after.".to_string(),
                 parameters: json!({
                     "type": "object",
                     "required": ["kind", "name"],
@@ -312,7 +312,7 @@ impl AssistantPlatformTools {
                 }),
             },
             ToolDef {
-                name: "template_write".to_string(),
+                name: "file_write".to_string(),
                 description: "Write (create or overwrite) a template file. \
                     Path is relative to templates/ (e.g. 'pages/blog-home.tsx' or 'scripts/format-address.ts'). \
                     Read the web guide before writing; custom scripts must use local imports and camelCase exports.".to_string(),
@@ -326,7 +326,7 @@ impl AssistantPlatformTools {
                 }),
             },
             ToolDef {
-                name: "template_search".to_string(),
+                name: "file_search".to_string(),
                 description: "Search template files for a pattern. Returns file:line matches. \
                     Optional glob filters files. Use output_mode='files_with_matches' for file paths only.".to_string(),
                 parameters: json!({
@@ -342,7 +342,7 @@ impl AssistantPlatformTools {
                 }),
             },
             ToolDef {
-                name: "template_edit".to_string(),
+                name: "file_edit".to_string(),
                 description: "Surgical string replacement in a template file. \
                     No need to read the full file first — just provide old_string and new_string. \
                     Fails if old_string not found or matches more than once.".to_string(),
@@ -357,10 +357,10 @@ impl AssistantPlatformTools {
                 }),
             },
             ToolDef {
-                name: "template_outline".to_string(),
+                name: "file_outline".to_string(),
                 description: "Parse a template file and return its structural outline: imports, exports, \
                     functions, classes, types, interfaces — with line numbers. \
-                    Much cheaper than template_get for understanding file structure.".to_string(),
+                    Much cheaper than file_read for understanding file structure.".to_string(),
                 parameters: json!({
                     "type": "object",
                     "required": ["rel_path"],
@@ -370,7 +370,7 @@ impl AssistantPlatformTools {
                 }),
             },
             ToolDef {
-                name: "template_deps".to_string(),
+                name: "file_deps".to_string(),
                 description: "Show a template's dependency graph: what it imports and \
                     which other templates import it. Use to understand component relationships.".to_string(),
                 parameters: json!({
@@ -382,7 +382,7 @@ impl AssistantPlatformTools {
                 }),
             },
             ToolDef {
-                name: "template_batch_edit".to_string(),
+                name: "file_batch_edit".to_string(),
                 description: "Apply multiple edits across one or more template files in a single call. \
                     Each edit has rel_path, old_string, new_string. Fails fast on first error.".to_string(),
                 parameters: json!({
@@ -417,37 +417,6 @@ impl AssistantPlatformTools {
                     "properties": {
                         "from_path": { "type": "string", "description": "Source path. Pipeline: file_rel_path e.g. 'pipelines/api/old.zf.json'. Template: rel_path e.g. 'pages/old.tsx'." },
                         "to_path": { "type": "string", "description": "Destination path. Same domain as from_path. Parent folders created automatically." }
-                    }
-                }),
-            },
-            // ── Project Docs ───────────────────────────────────────────────────
-            ToolDef {
-                name: "docs_project_list".to_string(),
-                description: "List project doc files (ERD, README.md, architecture docs) under repo/docs/.".to_string(),
-                parameters: json!({ "type": "object", "properties": {} }),
-            },
-            ToolDef {
-                name: "docs_project_read".to_string(),
-                description: "Read one project doc by path (e.g. README.md, architecture.md).".to_string(),
-                parameters: json!({
-                    "type": "object",
-                    "required": ["path"],
-                    "properties": {
-                        "path": { "type": "string", "description": "Relative path to the doc file under repo/docs (e.g. 'README.md')." }
-                    }
-                }),
-            },
-            ToolDef {
-                name: "docs_project_write".to_string(),
-                description: "Write (create or update) a project doc file under repo/docs/. \
-                    Use for specs, architecture docs, ERDs, API contracts, README, CHANGELOG. \
-                    Always commit after writing with git_command.".to_string(),
-                parameters: json!({
-                    "type": "object",
-                    "required": ["path", "content"],
-                    "properties": {
-                        "path": { "type": "string", "description": "Relative path under repo/docs/ (e.g. 'README.md', 'architecture.md')." },
-                        "content": { "type": "string", "description": "Full file content to write." }
                     }
                 }),
             },
@@ -661,32 +630,30 @@ impl AssistantPlatformTools {
             }
 
             // ── Templates ──────────────────────────────────────────────────────
-            "template_list" => {
-                ops.template_list(crate::platform::services::ops::TemplateListOptions {
-                    query: args.get("query").and_then(|v| v.as_str()),
-                    glob: args.get("glob").and_then(|v| v.as_str()),
-                    kind: args.get("kind").and_then(|v| v.as_str()),
-                    limit: args.get("limit").and_then(|v| v.as_u64()).map(|n| n as u32),
-                    format: args.get("format").and_then(|v| v.as_str()),
-                })
-            }
-            "template_get" => ops.template_get(
+            "file_list" => ops.file_list(crate::platform::services::ops::FileListOptions {
+                query: args.get("query").and_then(|v| v.as_str()),
+                glob: args.get("glob").and_then(|v| v.as_str()),
+                kind: args.get("kind").and_then(|v| v.as_str()),
+                limit: args.get("limit").and_then(|v| v.as_u64()).map(|n| n as u32),
+                format: args.get("format").and_then(|v| v.as_str()),
+            }),
+            "file_read" => ops.file_read(
                 args["rel_path"].as_str().unwrap_or(""),
                 args.get("offset")
                     .and_then(|v| v.as_u64())
                     .map(|n| n as u32),
                 args.get("limit").and_then(|v| v.as_u64()).map(|n| n as u32),
             ),
-            "template_create" => ops.template_create(
+            "file_create" => ops.file_create(
                 args["kind"].as_str().unwrap_or(""),
                 args["name"].as_str().unwrap_or(""),
                 args.get("parent_rel_path").and_then(|v| v.as_str()),
             ),
-            "template_write" => ops.template_write(
+            "file_write" => ops.file_write(
                 args["rel_path"].as_str().unwrap_or(""),
                 args["content"].as_str().unwrap_or(""),
             ),
-            "template_search" => ops.template_search(
+            "file_search" => ops.file_search(
                 args["pattern"].as_str().unwrap_or(""),
                 args.get("glob").and_then(|v| v.as_str()),
                 args.get("context").and_then(|v| v.as_u64()).unwrap_or(0) as usize,
@@ -704,9 +671,9 @@ impl AssistantPlatformTools {
                     .map(|n| n as u32),
                 args.get("output_mode").and_then(|v| v.as_str()),
             ),
-            "template_outline" => ops.template_outline(args["rel_path"].as_str().unwrap_or("")),
-            "template_deps" => ops.template_deps(args["rel_path"].as_str().unwrap_or("")),
-            "template_batch_edit" => {
+            "file_outline" => ops.file_outline(args["rel_path"].as_str().unwrap_or("")),
+            "file_deps" => ops.file_deps(args["rel_path"].as_str().unwrap_or("")),
+            "file_batch_edit" => {
                 let edits: Vec<(String, String, String)> = args
                     .get("edits")
                     .and_then(|v| v.as_array())
@@ -722,9 +689,9 @@ impl AssistantPlatformTools {
                             .collect()
                     })
                     .unwrap_or_default();
-                ops.template_batch_edit(&edits)
+                ops.file_batch_edit(&edits)
             }
-            "template_edit" => ops.template_edit(
+            "file_edit" => ops.file_edit(
                 args["rel_path"].as_str().unwrap_or(""),
                 args["old_string"].as_str().unwrap_or(""),
                 args["new_string"].as_str().unwrap_or(""),
@@ -736,14 +703,6 @@ impl AssistantPlatformTools {
                 )
                 .await
             }
-
-            // ── Project Docs ───────────────────────────────────────────────────
-            "docs_project_list" => ops.docs_project_list(),
-            "docs_project_read" => ops.docs_project_read(args["path"].as_str().unwrap_or("")),
-            "docs_project_write" => ops.docs_project_write(
-                args["path"].as_str().unwrap_or(""),
-                args["content"].as_str().unwrap_or(""),
-            ),
 
             // ── Agent Docs ─────────────────────────────────────────────────────
             "docs_agent_list" => ops.docs_agent_list(),

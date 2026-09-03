@@ -17539,8 +17539,8 @@ async fn api_project_assistant_chat(
              You have 33 native tools covering every project management operation:\n\
              - **Orientation**: `start_here` — call at the start of every session for a live project overview\n\
              - **Pipelines**: `pipeline_list`, `pipeline_get`, `pipeline_register`, `pipeline_describe`, `pipeline_patch`, `pipeline_activate`, `pipeline_deactivate`, `pipeline_execute`, `pipeline_run`\n\
-             - **Templates**: `template_list`, `template_get`, `template_create`, `template_write`\n\
-             - **Docs**: `docs_project_list`, `docs_project_read`, `docs_project_write`, `docs_agent_list`, `docs_agent_read`, `docs_agent_write`\n\
+             - **Files**: `file_list`, `file_read`, `file_write`, `file_edit`, `file_search` — every file in the repository, whatever its extension or folder\n\
+             - **Agent docs**: `docs_agent_list`, `docs_agent_read`, `docs_agent_write`\n\
              - **Database**: `connection_list`, `connection_describe` — then use `pipeline_run` with `pg.query` or `n.sqlite.query` nodes to execute queries\n\
              - **Credentials**: `credential_list`\n\
              - **Git**: `git_command` — subcommands: status, log, diff, add, commit\n\

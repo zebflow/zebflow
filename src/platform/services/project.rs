@@ -1459,6 +1459,62 @@ impl ProjectService {
         })
     }
 
+    /// Replaces one unique occurrence of `old_string` in a repository file.
+    ///
+    /// Uniqueness is the safety rule: an edit that matches twice is refused
+    /// rather than guessing which one the caller meant.
+    pub fn edit_repo_file(
+        &self,
+        owner: &str,
+        project: &str,
+        rel_path: &str,
+        old_string: &str,
+        new_string: &str,
+    ) -> Result<usize, PlatformError> {
+        let owner = slug_segment(owner);
+        let project = slug_segment(project);
+        self.ensure_template_editable(&owner, &project, rel_path, "edited")?;
+        let layout = self.file.ensure_project_layout(&owner, &project)?;
+        let (rel, abs) = resolve_repo_entry(&layout, rel_path, true)?;
+        if repo_entry_is_machine_owned(&rel) {
+            return Err(PlatformError::new(
+                "PLATFORM_REPO_MACHINE_OWNED",
+                format!("'{rel}' is written by the platform and cannot be edited here"),
+            ));
+        }
+        if !abs.is_file() {
+            return Err(PlatformError::new(
+                "PLATFORM_REPO_MISSING",
+                format!("file '{rel}' not found"),
+            ));
+        }
+
+        let content = fs::read_to_string(&abs)?;
+        let count = content.matches(old_string).count();
+        if count == 0 {
+            return Err(PlatformError::new(
+                "PLATFORM_REPO_EDIT",
+                "old_string not found in file",
+            ));
+        }
+        if count > 1 {
+            return Err(PlatformError::new(
+                "PLATFORM_REPO_EDIT",
+                format!(
+                    "old_string matches {count} times — provide more context to make it unique"
+                ),
+            ));
+        }
+        let line_number = content
+            .lines()
+            .enumerate()
+            .find(|(_, line)| line.contains(old_string))
+            .map(|(index, _)| index + 1)
+            .unwrap_or(0);
+        atomic_write(&abs, content.replace(old_string, new_string).as_bytes())?;
+        Ok(line_number)
+    }
+
     /// Searches every repository file for a pattern, line by line.
     ///
     /// One search over `repo/`, filtered by the layout's own file-type rule,
@@ -1536,6 +1592,17 @@ impl ProjectService {
             &rel,
             &content,
         ))
+    }
+
+    /// One repository file's text, for callers that want the bytes and not the
+    /// payload around them.
+    pub fn read_repo_file_text(
+        &self,
+        owner: &str,
+        project: &str,
+        rel_path: &str,
+    ) -> Result<String, PlatformError> {
+        Ok(self.read_repo_file(owner, project, rel_path)?.content)
     }
 
     /// Writes one repository file, creating its parent directories.

@@ -89,4 +89,4 @@ A public blog with paginated listing and post detail pages, plus a JWT-protected
 - `pages/blog-detail.tsx` — single post display
 - `pages/admin-posts.tsx` — admin CRUD interface
 
-Use `template_create kind=page name=blog-home` then `template_write` to fill content.
+Use `file_create kind=page name=blog-home` then `file_write` to fill content.

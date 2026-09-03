@@ -8,19 +8,19 @@ for focused behavior that is too specific for a shared Zeb Library.
 Create the scaffold first:
 
 ```text
-template_create kind=script name=format-address
+file_create kind=script name=format-address
 ```
 
 Read the returned scaffold or fetch it directly:
 
 ```text
-template_get rel_path=scripts/format-address.ts
+file_read rel_path=scripts/format-address.ts
 ```
 
 Write the complete module:
 
 ```text
-template_write rel_path=scripts/format-address.ts content="<complete TypeScript source>"
+file_write rel_path=scripts/format-address.ts content="<complete TypeScript source>"
 ```
 
 Read it again after writing and test the page that imports it.

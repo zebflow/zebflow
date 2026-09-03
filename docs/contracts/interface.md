@@ -630,7 +630,7 @@ one of them is an operation, and not one has a CLI word. Thirty-two are the
 agent-facing rendering of routes already counted. Five reach behaviour no HTTP
 route offers, and so are operations the API surface does not contain:
 `pipeline_run` executes a node body ephemerally with nothing saved, logged, or
-counted as a hit; `pipeline_search` and `template_deps` have no route at all;
+counted as a hit; `pipeline_search` and `file_deps` have no route at all;
 and `start_here` and `help_search` are entry points into the help corpus that
 `GET …/help` returns whole. A sixth is partial: `git_command` permits `log` and
 `diff`, which the six `git/*` routes do not.

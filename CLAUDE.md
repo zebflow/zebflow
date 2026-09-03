@@ -107,7 +107,7 @@ curl -s -X POST "$MCP_URL" \
   -d '{
     "jsonrpc":"2.0","id":1,"method":"tools/call",
     "params":{
-      "name":"template_write",
+      "name":"file_write",
       "arguments":{
         "rel_path":"components/my-component.tsx",
         "content":"export default function Foo() { return <div>hello</div>; }"

@@ -26,21 +26,21 @@ project route set the scope.
 
 ## Templates
 
-- `template_list`
-- `template_get`
-- `template_create`
-- `template_write`
-- `template_search`
-- `template_edit`
-- `template_outline`
-- `template_deps`
-- `template_batch_edit`
+- `file_list`
+- `file_read`
+- `file_create`
+- `file_write`
+- `file_search`
+- `file_edit`
+- `file_outline`
+- `file_deps`
+- `file_batch_edit`
 
 ## Project Knowledge and Services
 
-- `docs_project_list`
-- `docs_project_read`
-- `docs_project_write`
+- `file_list`
+- `file_read`
+- `file_write`
 - `docs_agent_list`
 - `docs_agent_read`
 - `docs_agent_write`
@@ -66,17 +66,17 @@ help topic=web/custom-scripts
 Then scaffold, inspect, and replace the script:
 
 ```text
-template_create kind=script name=format-address
-template_get rel_path=scripts/format-address.ts
-template_write rel_path=scripts/format-address.ts content="<complete TypeScript source>"
+file_create kind=script name=format-address
+file_read rel_path=scripts/format-address.ts
+file_write rel_path=scripts/format-address.ts content="<complete TypeScript source>"
 ```
 
-Use `template_create` first so the destination follows the project layout. Keep
+Use `file_create` first so the destination follows the project layout. Keep
 exports camelCase, use `@/` for local imports, and do not add npm, JSR, CDN,
 React, Preact, or Node package imports. For complex existing behavior, search
 Hub packages or use a project-enabled `zeb/*` library.
 
-After writing, use `template_get` to verify the saved source and compile or run
+After writing, use `file_read` to verify the saved source and compile or run
 the page that imports it. Never place credentials or private tokens in a web
 script.
 

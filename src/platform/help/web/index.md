@@ -1,6 +1,6 @@
 # Web Templates (TSX Pages)
 
-Zebflow serves HTML from **TSX files** in your project: the server renders them to HTML (SSR), then the browser hydrates for interactivity. After you save with `template_write`, the next request uses the new file — no separate frontend build.
+Zebflow serves HTML from **TSX files** in your project: the server renders them to HTML (SSR), then the browser hydrates for interactivity. After you save with `file_write`, the next request uses the new file — no separate frontend build.
 
 ---
 
@@ -219,9 +219,9 @@ template:  input = { rows: [...], row_count: 20 }  (pg.query output)
 ## MCP Workflow
 
 ```
-template_create   kind=page   name=my-page
-template_get      rel_path=pages/my-page.tsx
-template_write    rel_path=pages/my-page.tsx   content="..."
+file_create   kind=page   name=my-page
+file_read      rel_path=pages/my-page.tsx
+file_write    rel_path=pages/my-page.tsx   content="..."
 pipeline_register + pipeline_activate
 ```
 
@@ -229,9 +229,9 @@ For a reusable TypeScript module:
 
 ```text
 help              topic=web/custom-scripts
-template_create   kind=script   name=format-address
-template_get      rel_path=scripts/format-address.ts
-template_write    rel_path=scripts/format-address.ts   content="..."
+file_create   kind=script   name=format-address
+file_read      rel_path=scripts/format-address.ts
+file_write    rel_path=scripts/format-address.ts   content="..."
 ```
 
 Do not add npm, JSR, CDN, React, Preact, or Node package imports to project

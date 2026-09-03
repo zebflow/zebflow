@@ -16,7 +16,7 @@ start_here
 docs_agent_read  name=AGENTS.md
 docs_agent_read  name=MEMORY.md
 pipeline_list
-template_list
+file_list
 connection_list
 ```
 
@@ -24,7 +24,7 @@ connection_list
 - AGENTS.md: "Blog for @acme. Tone is casual. DB is PostgreSQL (credential: `main-db`)."
 - MEMORY.md: "(empty — first session)"
 - pipeline_list: "(no pipelines)"
-- template_list: "(no templates)"
+- file_list: "(no templates)"
 - connection_list: "main-db (postgres)"
 
 **Agent decision:** Fresh project. Read the domain skills before anything else.
@@ -44,7 +44,7 @@ The agent and owner clarify what "blog" means before touching any code.
 **Agent writes a concept doc first:**
 
 ```
-docs_project_write
+file_write
   path=REQUIREMENTS.md
   content="""
   # Blog Concept
@@ -75,7 +75,7 @@ docs_project_write
 Agent designs the schema and writes it as a spec doc before creating anything.
 
 ```
-docs_project_write
+file_write
   path=schema.md
   content="""
   # Database Schema
@@ -132,7 +132,7 @@ docs_agent_write
 Before writing any pipeline or template, the agent designs the full architecture:
 
 ```
-docs_project_write
+file_write
   path=architecture.md
   content="""
   # Architecture
@@ -304,19 +304,19 @@ Output shows 5 pipelines, all `draft`.
 
 ## Phase 5: Build Templates
 
-Agent creates each template. Pattern: `template_create` → inspect scaffold → `template_write` with real content.
+Agent creates each template. Pattern: `file_create` → inspect scaffold → `file_write` with real content.
 
 ### 5.1 Blog list page
 
 ```
-template_create  kind=page  name=blog-list
-template_get     rel_path=pages/blog-list.tsx
+file_create  kind=page  name=blog-list
+file_read     rel_path=pages/blog-list.tsx
 ```
 
 Agent sees the scaffold, then writes the real component:
 
 ```
-template_write
+file_write
   rel_path=pages/blog-list.tsx
   content="""
   import Button from "@/components/ui/button";
@@ -351,8 +351,8 @@ template_write
 ### 5.2 Post detail
 
 ```
-template_create  kind=page  name=blog-post
-template_write
+file_create  kind=page  name=blog-post
+file_write
   rel_path=pages/blog-post.tsx
   content="""
   import Markdown from "@/components/ui/markdown";
@@ -383,8 +383,8 @@ template_write
 ### 5.3 Admin posts table
 
 ```
-template_create  kind=page  name=admin-posts
-template_write
+file_create  kind=page  name=admin-posts
+file_write
   rel_path=pages/admin-posts.tsx
   content="""
   import Badge from "@/components/ui/badge";
@@ -437,8 +437,8 @@ template_write
 ### 5.4 Admin editor
 
 ```
-template_create  kind=page  name=admin-editor
-template_write
+file_create  kind=page  name=admin-editor
+file_write
   rel_path=pages/admin-editor.tsx
   content="""
   import Button from "@/components/ui/button";
