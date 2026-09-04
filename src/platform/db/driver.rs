@@ -5,8 +5,9 @@ use async_trait::async_trait;
 
 use crate::platform::error::PlatformError;
 use crate::platform::model::{
-    DescribeProjectDbConnectionRequest, ProjectDbConnection, ProjectDbConnectionDescribeResult,
-    ProjectDbConnectionQueryResult, QueryProjectDbConnectionRequest,
+    DbCapabilities, DescribeProjectDbConnectionRequest, ProjectDbConnection,
+    ProjectDbConnectionDescribeResult, ProjectDbConnectionQueryResult,
+    QueryProjectDbConnectionRequest,
 };
 use crate::platform::services::CredentialService;
 
@@ -25,6 +26,15 @@ pub struct DbDriverContext {
 pub trait DbDriver: Send + Sync {
     /// Stable kind key (`sqlite`, `postgresql`, ...).
     fn kind(&self) -> &'static str;
+
+    /// What this engine supports.
+    ///
+    /// The UI renders its panels from this rather than from `kind()`, so an
+    /// engine gains a feature by declaring it here and nowhere else. The
+    /// default is read-and-query only, which is always safe.
+    fn capabilities(&self) -> DbCapabilities {
+        DbCapabilities::default()
+    }
 
     /// Describes objects available in one connection.
     async fn describe(

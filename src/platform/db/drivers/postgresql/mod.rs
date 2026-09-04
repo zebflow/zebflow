@@ -11,9 +11,9 @@ use sqlx::{Column, Row, TypeInfo, postgres::PgConnectOptions, postgres::PgRow};
 use crate::platform::db::driver::{DbDriver, DbDriverContext};
 use crate::platform::error::PlatformError;
 use crate::platform::model::{
-    DbObjectNode, DbQueryColumn, DescribeProjectDbConnectionRequest,
-    ProjectDbConnectionDescribeResult, ProjectDbConnectionQueryResult,
-    QueryProjectDbConnectionRequest, slug_segment,
+    DbCapabilities, DbObjectNode, DbQueryColumn, DbRelationStyle,
+    DescribeProjectDbConnectionRequest, ProjectDbConnectionDescribeResult,
+    ProjectDbConnectionQueryResult, QueryProjectDbConnectionRequest, slug_segment,
 };
 
 #[derive(Default)]
@@ -23,6 +23,21 @@ pub struct PostgresqlDbDriver;
 impl DbDriver for PostgresqlDbDriver {
     fn kind(&self) -> &'static str {
         "postgresql"
+    }
+
+    fn capabilities(&self) -> DbCapabilities {
+        DbCapabilities {
+            inline_edit: true,
+            create_table: true,
+            drop_table: true,
+            // No sekejap-style health/compact surface to offer.
+            maintenance: false,
+            schemas: true,
+            // PostGIS may be absent; the grid asks per column rather than
+            // assuming the whole connection can hold geometry.
+            geo: true,
+            relations: DbRelationStyle::ForeignKey,
+        }
     }
 
     async fn describe(
@@ -67,6 +82,7 @@ impl DbDriver for PostgresqlDbDriver {
             connection_slug: ctx.connection.connection_slug.clone(),
             database_kind: ctx.connection.database_kind.clone(),
             scope,
+            capabilities: self.capabilities(),
             nodes,
         })
     }

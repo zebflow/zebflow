@@ -58,7 +58,12 @@ impl DbRuntimeService {
             connection,
             credentials: self.credentials.clone(),
         };
-        driver.describe(&ctx, req).await
+        // Stamped here rather than inside each driver's result construction, so
+        // a driver reports its capabilities by implementing one method and can
+        // never forget to copy them into the payload.
+        let mut result = driver.describe(&ctx, req).await?;
+        result.capabilities = driver.capabilities();
+        Ok(result)
     }
 
     /// Executes one query against DB connection by immutable connection id.

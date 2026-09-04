@@ -3,8 +3,9 @@ use async_trait::async_trait;
 use crate::platform::db::driver::{DbDriver, DbDriverContext};
 use crate::platform::error::PlatformError;
 use crate::platform::model::{
-    DbObjectNode, DescribeProjectDbConnectionRequest, ProjectDbConnectionDescribeResult,
-    ProjectDbConnectionQueryResult, QueryProjectDbConnectionRequest, slug_segment,
+    DbCapabilities, DbObjectNode, DbRelationStyle, DescribeProjectDbConnectionRequest,
+    ProjectDbConnectionDescribeResult, ProjectDbConnectionQueryResult,
+    QueryProjectDbConnectionRequest, slug_segment,
 };
 use crate::platform::sekejap;
 
@@ -27,6 +28,21 @@ where
 impl DbDriver for SekejapDbDriver {
     fn kind(&self) -> &'static str {
         sekejap::DB_KIND
+    }
+
+    fn capabilities(&self) -> DbCapabilities {
+        DbCapabilities {
+            inline_edit: true,
+            create_table: true,
+            drop_table: true,
+            // Health, sync and compact are sekejap's own maintenance surface.
+            maintenance: true,
+            // Collections live in one flat namespace.
+            schemas: false,
+            geo: true,
+            // Rows are joined by free edges rather than declared keys.
+            relations: DbRelationStyle::Graph,
+        }
     }
 
     async fn describe(
@@ -63,6 +79,7 @@ impl DbDriver for SekejapDbDriver {
             connection_slug: ctx.connection.connection_slug.clone(),
             database_kind: ctx.connection.database_kind.clone(),
             scope,
+            capabilities: self.capabilities(),
             nodes,
         })
     }

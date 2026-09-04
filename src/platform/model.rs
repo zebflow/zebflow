@@ -2071,6 +2071,59 @@ pub struct DbObjectNode {
     pub meta: serde_json::Value,
 }
 
+/// What one database engine supports, declared by its driver.
+///
+/// The data-management UI renders panels from this and never branches on
+/// `database_kind`. Adding an engine is writing a driver, not editing the UI.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DbCapabilities {
+    /// Rows can be edited in place in the grid.
+    pub inline_edit: bool,
+    /// Tables can be created from the UI.
+    pub create_table: bool,
+    /// Tables can be dropped from the UI.
+    pub drop_table: bool,
+    /// The engine exposes a health/sync/compact surface.
+    pub maintenance: bool,
+    /// The engine namespaces tables under schemas.
+    pub schemas: bool,
+    /// The engine can store and return geometry.
+    pub geo: bool,
+    /// How this engine relates rows to each other.
+    pub relations: DbRelationStyle,
+}
+
+impl Default for DbCapabilities {
+    /// The conservative set: read and query only.
+    ///
+    /// A new driver that declares nothing gets a working read-only surface
+    /// rather than buttons that fail when pressed.
+    fn default() -> Self {
+        Self {
+            inline_edit: false,
+            create_table: false,
+            drop_table: false,
+            maintenance: false,
+            schemas: false,
+            geo: false,
+            relations: DbRelationStyle::None,
+        }
+    }
+}
+
+/// How an engine expresses relationships between rows.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum DbRelationStyle {
+    /// No relationship surface.
+    #[default]
+    None,
+    /// Declared foreign keys, as in SQL engines.
+    ForeignKey,
+    /// Free edges between rows, as in sekejap.
+    Graph,
+}
+
 /// Describe result for one DB connection.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ProjectDbConnectionDescribeResult {
@@ -2082,6 +2135,10 @@ pub struct ProjectDbConnectionDescribeResult {
     pub database_kind: String,
     /// Effective scope.
     pub scope: String,
+    /// What this engine supports. Stamped by the runtime from the driver, so a
+    /// driver cannot forget to report it.
+    #[serde(default)]
+    pub capabilities: DbCapabilities,
     /// Object tree/list payload.
     #[serde(default)]
     pub nodes: Vec<DbObjectNode>,
