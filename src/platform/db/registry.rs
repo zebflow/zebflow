@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use super::driver::DbDriver;
-use super::drivers::{PostgresqlDbDriver, SekejapDbDriver};
+use super::drivers::{PostgresqlDbDriver, SekejapDbDriver, SqliteDbDriver};
 
 /// Registry of DB runtime drivers keyed by normalized database kind.
 #[derive(Clone, Default)]
@@ -16,6 +16,7 @@ impl DbDriverRegistry {
         let mut out = Self::default();
         out.register(Arc::new(PostgresqlDbDriver::default()));
         out.register(Arc::new(SekejapDbDriver));
+        out.register(Arc::new(SqliteDbDriver::default()));
         out
     }
 

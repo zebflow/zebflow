@@ -108,6 +108,52 @@ A silent discard is the worst of the three: it lets a user set a default in the
 studio, see it accepted, and get a column that has none. Zebflow removed that
 input rather than keep the promise it could not honour.
 
+## One studio surface, driven by what a driver declares
+
+Every engine is reached through one runtime driver and rendered by one page.
+The page never branches on the engine's name.
+
+```
+DbDriver            kind()  capabilities()  describe()  query()
+DbDriverRegistry    keyed by database kind
+```
+
+Rules:
+
+- A driver declares `DbCapabilities`; `DbRuntimeService::describe_connection`
+  stamps them onto every describe result, so a driver cannot report a
+  capability in one place and forget it in another.
+- The studio renders each optional panel from that declaration. An engine gains
+  a panel by declaring the capability and by no other edit.
+- The default is read-and-query only. A kind with no registered driver reports
+  it and gets a read-only shell rather than an error page.
+- `relations` is a style (`none`, `foreign_key`, `graph`), not a per-engine
+  feature. `graph` exists for multimodel engines generally; only sekejap
+  declares it today.
+- Structure for the studio's column list comes from `describe` with
+  `scope=columns`, which every driver implements. No engine's DDL dialect is
+  issued at another engine.
+
+What ships today:
+
+| Engine | inline_edit | create/drop table | maintenance | schemas | geo | relations |
+| --- | --- | --- | --- | --- | --- | --- |
+| sekejap | yes | yes | yes | no | yes | graph |
+| postgresql | yes | yes | no | yes | yes | foreign_key |
+| sqlite | yes | **no** | no | no | no | foreign_key |
+
+SQLite declares no table definition on purpose. Row edits travel the
+connection's own query endpoint and reach the right engine; table definition
+still travels `POST /api/projects/{owner}/{project}/tables`, which calls
+`sekejap::create_table` whatever connection is open. Declaring it would offer a
+button that writes a sekejap collection instead of a SQLite table. Moving
+create and drop onto `DbDriver` is what lets SQLite and MySQL declare them.
+
+Evidence: `src/platform/db/driver.rs`, `src/platform/db/registry.rs`,
+`src/platform/db/drivers/{sekejap,postgresql,sqlite}/mod.rs`,
+`src/platform/services/db_runtime.rs`,
+`src/platform/web/templates/pages/project-studio/connections/db/connection/page.tsx`.
+
 ## Open
 
 Deliberately unbuilt. Each is a decision, not an oversight.
@@ -125,6 +171,9 @@ Deliberately unbuilt. Each is a decision, not an oversight.
   refuses and names the file rather than correcting it.
 - **Export selection.** Which initial-data files a bundle carries is not asked;
   the agreed shape asks at export time.
+- **Table definition per engine.** Create, alter and drop travel one
+  sekejap-owned route, so no other engine can declare them. The agreed shape is
+  `create_table` and `drop_table` on `DbDriver`, routed per connection.
 - **Postgres and MySQL.** Saving is the same safe read. Applying needs target
   selection and consent.
 - **Changing an existing store.** No upgrades, no diffing, no drift detection.

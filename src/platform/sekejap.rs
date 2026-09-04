@@ -1246,20 +1246,35 @@ pub fn describe_columns(
     let Some(def) = defs.into_iter().find(|item| item.table == wanted) else {
         return Ok(Vec::new());
     };
-    Ok(def
-        .attributes
-        .into_iter()
-        .map(|attr| DbObjectNode {
-            kind: "column".to_string(),
-            name: attr.name.clone(),
-            schema: Some("default".to_string()),
-            children: Vec::new(),
-            meta: json!({
-                "data_type": attr.kind,
-                "index_types": attr.index_types,
-            }),
-        })
-        .collect())
+    // Every sekejap row is identified by `_key`, which is not one of the
+    // declared attributes but is a structure fact the engine knows. Reporting
+    // it keeps the studio's column list the same as the engine's own row shape.
+    let mut nodes = vec![DbObjectNode {
+        kind: "column".to_string(),
+        name: "_key".to_string(),
+        schema: Some("default".to_string()),
+        children: Vec::new(),
+        meta: json!({
+            "data_type": "string",
+            "type": "string",
+            "pk": true,
+            "index_types": Vec::<String>::new(),
+        }),
+    }];
+    nodes.extend(def.attributes.into_iter().map(|attr| DbObjectNode {
+        kind: "column".to_string(),
+        name: attr.name.clone(),
+        schema: Some("default".to_string()),
+        children: Vec::new(),
+        meta: json!({
+            "data_type": attr.kind,
+            // `type` mirrors what the SQL drivers emit so one structure table
+            // renders every engine.
+            "type": attr.kind,
+            "index_types": attr.index_types,
+        }),
+    }));
+    Ok(nodes)
 }
 
 #[derive(Debug, Clone)]

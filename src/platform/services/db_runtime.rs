@@ -6,8 +6,9 @@ use std::sync::Arc;
 use crate::platform::db::{DbDriverContext, DbDriverRegistry};
 use crate::platform::error::PlatformError;
 use crate::platform::model::{
-    DescribeProjectDbConnectionRequest, ProjectDbConnection, ProjectDbConnectionDescribeResult,
-    ProjectDbConnectionQueryResult, QueryProjectDbConnectionRequest, slug_segment,
+    DbCapabilities, DescribeProjectDbConnectionRequest, ProjectDbConnection,
+    ProjectDbConnectionDescribeResult, ProjectDbConnectionQueryResult,
+    QueryProjectDbConnectionRequest, slug_segment,
 };
 
 use super::{CredentialService, DbConnectionService};
@@ -32,6 +33,24 @@ impl DbRuntimeService {
             data_root,
             drivers: DbDriverRegistry::with_defaults(),
         }
+    }
+
+    /// What one database kind supports.
+    ///
+    /// Page handlers use this to decide which panels to offer before any
+    /// query runs. An unknown kind reports the conservative default rather
+    /// than failing, so a connection whose driver is missing still renders a
+    /// read-only shell instead of an error page.
+    pub fn capabilities_for_kind(&self, database_kind: &str) -> DbCapabilities {
+        self.drivers
+            .get(database_kind)
+            .map(|driver| driver.capabilities())
+            .unwrap_or_default()
+    }
+
+    /// Whether a runtime driver exists for one database kind.
+    pub fn has_driver(&self, database_kind: &str) -> bool {
+        self.drivers.get(database_kind).is_some()
     }
 
     /// Describes one DB connection by immutable connection id.

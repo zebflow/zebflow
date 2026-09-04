@@ -203,16 +203,6 @@ const PAGE_DEFS: &[(&str, &str, &str)] = &[
         "pages/project-studio/connections/db/connection/page.tsx",
     ),
     (
-        "platform-project-table-connection-postgresql",
-        "platform.project.table_connection.postgresql",
-        "pages/project-studio/connections/db/postgresql/page.tsx",
-    ),
-    (
-        "platform-project-table-connection-sekejap",
-        "platform.project.table_connection.sekejap",
-        "pages/project-studio/connections/db/sekejap/page.tsx",
-    ),
-    (
         "platform-project-table-connection-mapserver",
         "platform.project.table_connection.mapserver",
         "pages/project-studio/connections/db/mapserver/page.tsx",
@@ -1935,6 +1925,9 @@ struct DbSuiteQuery {
 struct DbDescribeQuery {
     scope: Option<String>,
     schema: Option<String>,
+    /// Table whose columns are wanted. Required by `scope=columns`, which is
+    /// unreachable without it.
+    table: Option<String>,
     include_system: Option<bool>,
 }
 
@@ -6378,17 +6371,20 @@ async fn project_db_suite_page(
                 )
                     .into_response();
             }
-            if tab_key == "maintenance" && connection_info.database_kind != "sekejap" {
+            let capabilities = state
+                .platform
+                .db_runtime
+                .capabilities_for_kind(&connection_info.database_kind);
+            if tab_key == "maintenance" && !capabilities.maintenance {
                 return (StatusCode::NOT_FOUND, Html("db tab not found".to_string()))
                     .into_response();
             }
             let nav = nav_classes(&owner, &project, "databases", Some("connections"));
             let route = format!("/projects/{owner}/{project}/db/{db_kind}/{connection}/{tab_key}");
-            let table_page_key = match connection_info.database_kind.as_str() {
-                "postgresql" => "platform-project-table-connection-postgresql",
-                "sekejap" => "platform-project-table-connection-sekejap",
-                _ => "platform-project-table-connection",
-            };
+            // One page for every engine. It renders its panels from the
+            // driver's declared capabilities, so a new engine needs a driver
+            // and no page at all.
+            let table_page_key = "platform-project-table-connection";
 
             let requested = query.table.unwrap_or_default();
             let selected_table = requested.trim().to_lowercase().replace(
@@ -6433,12 +6429,36 @@ async fn project_db_suite_page(
                     "classes": if tab_key == "mart" { "is-active" } else { "" },
                 }),
             ];
-            if connection_info.database_kind == "sekejap" {
+            if capabilities.maintenance {
                 suite_tabs.push(json!({
                     "label": "Maintenance",
                     "href": format!("{base}/maintenance{table_query}"),
                     "classes": if tab_key == "maintenance" { "is-active" } else { "" },
                 }));
+            }
+
+            // Sekejap owns table definition through the project tables route and
+            // its own maintenance route. Engines without those keep the keys
+            // absent, which is what hides the panels.
+            let mut db_schema_api = serde_json::Map::new();
+            if capabilities.create_table || capabilities.drop_table {
+                db_schema_api.insert(
+                    "tables".to_string(),
+                    json!(format!("/api/projects/{owner}/{project}/tables")),
+                );
+                db_schema_api.insert(
+                    "schema_sync".to_string(),
+                    json!(format!("/api/projects/{owner}/{project}/tables/schema/sync")),
+                );
+            }
+            if capabilities.maintenance {
+                db_schema_api.insert(
+                    "maintenance".to_string(),
+                    json!(format!(
+                        "/api/projects/{owner}/{project}/db/{}/maintenance",
+                        connection_info.database_kind
+                    )),
+                );
             }
 
             let input = json!({
@@ -6466,6 +6486,14 @@ async fn project_db_suite_page(
                     "preview": format!("/api/projects/{owner}/{project}/db/connections/{}/table-preview", connection_info.connection_id),
                     "query": format!("/api/projects/{owner}/{project}/db/connections/{}/query", connection_info.connection_id),
                 },
+                // The page renders its panels from this and never from the kind
+                // name, so an engine gains a panel by declaring the capability
+                // in its driver.
+                "capabilities": capabilities,
+                // Schema definition still travels an engine-owned route. The URL
+                // is supplied only when the engine supports the operation, so
+                // the page tests for the URL rather than for a driver name.
+                "db_schema_api": db_schema_api,
                 "suite_tabs": suite_tabs,
                 "object_groups": Vec::<Value>::new(),
                 "tables": Vec::<Value>::new(),
@@ -20592,7 +20620,7 @@ async fn api_describe_db_connection(
     let req = DescribeProjectDbConnectionRequest {
         scope: query.scope,
         schema: query.schema,
-        table: None,
+        table: query.table,
         include_system: query.include_system,
     };
     match state
