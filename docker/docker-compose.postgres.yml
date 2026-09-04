@@ -38,6 +38,23 @@ services:
       timeout: 5s
       retries: 5
 
+  mysql:
+    image: mysql:8
+    environment:
+      MYSQL_ROOT_PASSWORD: "${MYSQL_ROOT_PASSWORD:-zebflow}"
+      MYSQL_USER: zebflow
+      MYSQL_PASSWORD: "${MYSQL_PASSWORD:-zebflow}"
+      MYSQL_DATABASE: zebflow
+    volumes:
+      - mysql-data:/var/lib/mysql
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uzebflow", "-p${MYSQL_PASSWORD:-zebflow}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
 volumes:
   zebflow-data:
   postgres-data:
+  mysql-data:

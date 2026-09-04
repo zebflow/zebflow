@@ -459,10 +459,10 @@ export default function Page(input) {
   useEffect(() => {
     if (!dbApi.describe || !selectedTable) return;
     let active = true;
-    const tableName = selectedTable.split(".").pop() || selectedTable;
-    // Column structure comes from `describe`, which every driver implements,
-    // rather than from one engine's DDL dialect.
-    requestJson(`${dbApi.describe}?scope=columns&table=${encodeURIComponent(tableName)}`)
+    // Sent exactly as the tree named it, qualifier included. An engine that
+    // namespaces its tables needs the qualifier to find the right one, and an
+    // engine that does not simply drops it.
+    requestJson(`${dbApi.describe}?scope=columns&table=${encodeURIComponent(selectedTable)}`)
       .then((payload) => {
         if (!active) return;
         const nodes = Array.isArray(payload?.result?.nodes) ? payload.result.nodes : [];

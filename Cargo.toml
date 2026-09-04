@@ -40,7 +40,7 @@ pulldown-cmark = "0.12"
 swc_common = "19.0.0"
 swc_ecma_ast = "21.0.0"
 swc_ecma_parser = "35.0.0"
-sqlx = { version = "0.8", features = ["runtime-tokio", "postgres", "chrono", "uuid", "json"] }
+sqlx = { version = "0.8", features = ["runtime-tokio", "postgres", "chrono", "uuid", "json", "bigdecimal"] }
 futures = "0.3"
 async-stream = "0.3"
 arc-swap = "1"

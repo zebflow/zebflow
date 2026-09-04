@@ -6,7 +6,7 @@ use futures::TryStreamExt;
 use serde_json::{Map, Value, json};
 use sqlx::types::Uuid;
 use sqlx::types::chrono::{DateTime, FixedOffset, NaiveDate, NaiveDateTime, NaiveTime, Utc};
-use sqlx::{Column, Row, TypeInfo, postgres::PgConnectOptions, postgres::PgRow};
+use sqlx::{Column, Row, TypeInfo, ValueRef, postgres::PgConnectOptions, postgres::PgRow};
 
 use crate::platform::db::driver::{DbDriver, DbDriverContext};
 use crate::platform::error::PlatformError;
@@ -222,7 +222,10 @@ async fn describe_schemas(
     include_system: bool,
 ) -> Result<Vec<DbObjectNode>, PlatformError> {
     let rows = sqlx::query(
-        "SELECT schema_name FROM information_schema.schemata\n         WHERE ($1::bool OR schema_name NOT IN ('pg_catalog', 'information_schema'))\n         ORDER BY schema_name",
+        // PostgreSQL reserves the `pg_` prefix for its own schemas, so
+        // `pg_toast` and friends are excluded by the prefix rather than by
+        // naming each one.
+        "SELECT schema_name FROM information_schema.schemata\n         WHERE ($1::bool OR (schema_name NOT LIKE 'pg\\_%' AND schema_name <> 'information_schema'))\n         ORDER BY schema_name",
     )
     .bind(include_system)
     .fetch_all(pool)
@@ -664,6 +667,13 @@ fn row_cell_to_json(row: &PgRow, idx: usize) -> Value {
     if let Ok(v) = row.try_get::<Option<i16>, _>(idx) {
         return v.map(|x| json!(x)).unwrap_or(Value::Null);
     }
+    // NUMERIC carries more precision than an f64 can hold, so it is returned
+    // as its exact digits rather than rounded into a JSON number.
+    if let Ok(v) = row.try_get::<Option<sqlx::types::BigDecimal>, _>(idx) {
+        return v
+            .map(|d| Value::String(d.to_string()))
+            .unwrap_or(Value::Null);
+    }
     if let Ok(v) = row.try_get::<Option<f64>, _>(idx) {
         return v
             .and_then(serde_json::Number::from_f64)
@@ -681,7 +691,16 @@ fn row_cell_to_json(row: &PgRow, idx: usize) -> Value {
             .map(|bytes| Value::String(hex::encode(bytes)))
             .unwrap_or(Value::Null);
     }
-    Value::Null
+    // Nothing above could decode this column. Reporting `null` here would be a
+    // lie: the reader cannot tell a value this driver does not understand from
+    // a column that is genuinely empty. Say which type went unread instead.
+    match row.try_get_raw(idx) {
+        Ok(raw) if !raw.is_null() => {
+            let type_name = raw.type_info().name().to_string();
+            Value::String(format!("<unsupported {type_name}>"))
+        }
+        _ => Value::Null,
+    }
 }
 
 enum StatementKind {

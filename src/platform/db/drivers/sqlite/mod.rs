@@ -108,8 +108,13 @@ fn describe_tables(conn: &Connection) -> Result<Vec<DbObjectNode>, PlatformError
 /// Columns of one table, in the same shape the PostgreSQL driver emits so the
 /// studio renders both identically.
 fn table_columns(conn: &Connection, table: &str) -> Result<Vec<Value>, PlatformError> {
+    // The studio identifies a table as the tree showed it, which carries this
+    // engine's single namespace as a prefix. Drop it before asking PRAGMA.
+    let bare = table
+        .strip_prefix(&format!("{MAIN_SCHEMA}."))
+        .unwrap_or(table);
     // PRAGMA takes no bind parameters, so the name is quoted rather than bound.
-    let quoted = table.replace('"', "\"\"");
+    let quoted = bare.replace('"', "\"\"");
 
     let mut fk_lookup = BTreeMap::<String, Value>::new();
     let mut fk_stmt = conn
