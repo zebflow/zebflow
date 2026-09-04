@@ -128,16 +128,13 @@ export default function Page(input) {
                   <label className="pipeline-editor-field">
                     <span>Database Kind</span>
                     <select name="database_kind" data-db-connection-kind="true" required>
+                      {/* Only engines with a registered runtime driver. Offering
+                          one without a driver creates a connection that answers
+                          PLATFORM_DB_DRIVER_MISSING the moment it is opened. */}
                       <option value="sekejap">sekejap</option>
                       <option value="postgresql">postgresql</option>
                       <option value="mysql">mysql</option>
                       <option value="sqlite">sqlite</option>
-                      <option value="mongodb">mongodb</option>
-                      <option value="redis">redis</option>
-                      <option value="qdrant">qdrant</option>
-                      <option value="pinecone">pinecone</option>
-                      <option value="chromadb">chromadb</option>
-                      <option value="elasticsearch">elasticsearch</option>
                     </select>
                   </label>
 

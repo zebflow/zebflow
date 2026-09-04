@@ -73,6 +73,7 @@ use crate::rwe::{
 };
 use crate::version::APP_VERSION;
 use embedded::{PLATFORM_TEMPLATE_ASSETS, platform_library_asset, platform_node_icon_asset};
+use crate::platform::db::sql_ddl::SqlDialect;
 
 /// Platform login path — used for unauthenticated page redirects and frontend 401 handling.
 const LOGIN_PATH: &str = "/login";
@@ -910,7 +911,11 @@ pub async fn router(platform: Arc<PlatformService>) -> Router {
         )
         .route(
             "/api/projects/{owner}/{project}/db/connections/{connection_id}/tables",
-            get(api_list_db_connection_tables),
+            get(api_list_db_connection_tables).post(api_create_db_connection_table),
+        )
+        .route(
+            "/api/projects/{owner}/{project}/db/connections/{connection_id}/tables/{table}",
+            delete(api_drop_db_connection_table),
         )
         .route(
             "/api/projects/{owner}/{project}/db/connections/{connection_id}/functions",
@@ -6437,13 +6442,26 @@ async fn project_db_suite_page(
                 }));
             }
 
-            // Sekejap owns table definition through the project tables route and
-            // its own maintenance route. Engines without those keep the keys
-            // absent, which is what hides the panels.
+            // Every URL here is absent unless the engine declares the matching
+            // capability, so the page hides a surface by finding no address for
+            // it rather than by testing a driver name.
             let mut db_schema_api = serde_json::Map::new();
             if capabilities.create_table || capabilities.drop_table {
+                // Table definition is scoped to the connection, so it reaches
+                // the engine the user is actually looking at.
                 db_schema_api.insert(
                     "tables".to_string(),
+                    json!(format!(
+                        "/api/projects/{owner}/{project}/db/connections/{}/tables",
+                        connection_info.connection_id
+                    )),
+                );
+            }
+            if capabilities.edit_table_properties {
+                // Editing attributes and index kinds after creation is
+                // sekejap's model, and travels its own project route.
+                db_schema_api.insert(
+                    "properties".to_string(),
                     json!(format!("/api/projects/{owner}/{project}/tables")),
                 );
                 db_schema_api.insert(
@@ -20634,6 +20652,80 @@ async fn api_describe_db_connection(
     }
 }
 
+/// POST /api/projects/{owner}/{project}/db/connections/{connection_id}/tables
+async fn api_create_db_connection_table(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((owner, project, connection_id)): Path<(String, String, String)>,
+    Json(req): Json<CreateSimpleTableRequest>,
+) -> Response {
+    if let Err(response) = require_project_api_capability(
+        &state,
+        &headers,
+        &owner,
+        &project,
+        ProjectCapability::TablesWrite,
+    ) {
+        return response;
+    }
+    match state
+        .platform
+        .db_runtime
+        .create_table(&owner, &project, &connection_id, &req)
+        .await
+    {
+        Ok(table) => Json(json!({"ok": true, "table": table})).into_response(),
+        Err(err) => db_ddl_error(err),
+    }
+}
+
+/// DELETE /api/projects/{owner}/{project}/db/connections/{connection_id}/tables/{table}
+async fn api_drop_db_connection_table(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((owner, project, connection_id, table)): Path<(String, String, String, String)>,
+) -> Response {
+    if let Err(response) = require_project_api_capability(
+        &state,
+        &headers,
+        &owner,
+        &project,
+        ProjectCapability::TablesWrite,
+    ) {
+        return response;
+    }
+    match state
+        .platform
+        .db_runtime
+        .drop_table(&owner, &project, &connection_id, &table)
+        .await
+    {
+        Ok(()) => Json(json!({"ok": true})).into_response(),
+        Err(err) => db_ddl_error(err),
+    }
+}
+
+/// A refused definition is the caller's mistake, not a server fault, so it
+/// answers 400 rather than 500.
+fn db_ddl_error(err: PlatformError) -> Response {
+    let caller_error = matches!(
+        &*err.code,
+        "PLATFORM_DB_DDL_UNSUPPORTED"
+            | "PLATFORM_DB_DDL_NAME"
+            | "PLATFORM_DB_DDL_KIND"
+            | "PLATFORM_DB_DDL_INDEX"
+            | "PLATFORM_DB_DDL_FAILED"
+    );
+    if caller_error {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"ok": false, "error": {"code": err.code, "message": err.message}})),
+        )
+            .into_response();
+    }
+    internal_error(err)
+}
+
 async fn api_list_db_connection_schemas(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
@@ -20837,7 +20929,8 @@ async fn api_preview_db_connection_table(
             .into_response();
     };
     let table_name = table.split('.').next_back().unwrap_or(&table).trim();
-    let sql = build_table_preview_sql(&database_kind, &table, table_name, limit);
+    let dialect = state.platform.db_runtime.sql_dialect_for_kind(&database_kind);
+    let sql = build_table_preview_sql(dialect, &table, table_name, limit);
     let req = QueryProjectDbConnectionRequest {
         table: Some(table_name.to_string()),
         sql,
@@ -23877,27 +23970,33 @@ fn parse_query_to_json(raw_query: Option<&str>) -> Value {
     Value::Object(map)
 }
 
-fn quote_sql_identifier_path(raw: &str) -> String {
+fn quote_sql_identifier_path(raw: &str, dialect: SqlDialect) -> String {
     raw.split('.')
         .filter(|part| !part.trim().is_empty())
-        .map(|part| format!("\"{}\"", part.trim().replace('\"', "\"\"")))
+        .map(|part| dialect.quote(part.trim()))
         .collect::<Vec<_>>()
         .join(".")
 }
 
+/// The statement the studio runs to show the first rows of a table.
+///
+/// The dialect comes from the driver rather than from a match on the engine's
+/// name, because the quoting character differs — MySQL rejects the double
+/// quotes PostgreSQL requires. An engine with no SQL dialect is addressed by
+/// its bare table name.
 fn build_table_preview_sql(
-    database_kind: &str,
+    dialect: Option<SqlDialect>,
     raw_table: &str,
     bare_table: &str,
     limit: usize,
 ) -> String {
-    match database_kind {
-        "sekejap" => format!("SELECT * FROM {} LIMIT {}", bare_table.trim(), limit),
-        _ => format!(
+    match dialect {
+        Some(dialect) => format!(
             "SELECT * FROM {} LIMIT {}",
-            quote_sql_identifier_path(raw_table),
+            quote_sql_identifier_path(raw_table, dialect),
             limit
         ),
+        None => format!("SELECT * FROM {} LIMIT {}", bare_table.trim(), limit),
     }
 }
 
@@ -23909,20 +24008,26 @@ mod preview_sql_tests {
         build_table_preview_sql, content_type_for_path, file_content_disposition,
         query_flag_enabled,
     };
+    use crate::platform::db::sql_ddl::SqlDialect;
 
     #[test]
-    fn builds_unquoted_preview_sql_for_sekejap() {
+    fn builds_unquoted_preview_sql_for_an_engine_with_no_dialect() {
         assert_eq!(
-            build_table_preview_sql("sekejap", "default.posts", "posts", 120),
+            build_table_preview_sql(None, "default.posts", "posts", 120),
             "SELECT * FROM posts LIMIT 120"
         );
     }
 
     #[test]
-    fn builds_quoted_preview_sql_for_sql_backends() {
+    fn each_sql_dialect_quotes_the_way_its_engine_requires() {
         assert_eq!(
-            build_table_preview_sql("postgresql", "public.posts", "posts", 50),
+            build_table_preview_sql(Some(SqlDialect::Postgres), "public.posts", "posts", 50),
             "SELECT * FROM \"public\".\"posts\" LIMIT 50"
+        );
+        // MySQL rejects double quotes around identifiers by default.
+        assert_eq!(
+            build_table_preview_sql(Some(SqlDialect::MySql), "zebflow.orders", "orders", 10),
+            "SELECT * FROM `zebflow`.`orders` LIMIT 10"
         );
     }
 

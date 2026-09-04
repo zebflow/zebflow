@@ -9,11 +9,15 @@ use sqlx::types::chrono::{DateTime, FixedOffset, NaiveDate, NaiveDateTime, Naive
 use sqlx::{Column, Row, TypeInfo, ValueRef, postgres::PgConnectOptions, postgres::PgRow};
 
 use crate::platform::db::driver::{DbDriver, DbDriverContext};
+use crate::platform::db::sql_ddl::{
+    SqlDialect, create_table_statements, drop_table_statement, validate_identifier,
+};
 use crate::platform::error::PlatformError;
 use crate::platform::model::{
-    DbCapabilities, DbObjectNode, DbQueryColumn, DbRelationStyle,
-    DescribeProjectDbConnectionRequest, ProjectDbConnectionDescribeResult,
-    ProjectDbConnectionQueryResult, QueryProjectDbConnectionRequest, slug_segment,
+    CollectionAttribute, CreateSimpleTableRequest, DbCapabilities, DbObjectNode, DbQueryColumn,
+    DbRelationStyle, DescribeProjectDbConnectionRequest, ProjectDbConnectionDescribeResult,
+    ProjectDbConnectionQueryResult, QueryProjectDbConnectionRequest, SimpleTableDefinition,
+    slug_segment,
 };
 
 #[derive(Default)]
@@ -25,6 +29,10 @@ impl DbDriver for PostgresqlDbDriver {
         "postgresql"
     }
 
+    fn sql_dialect(&self) -> Option<SqlDialect> {
+        Some(SqlDialect::Postgres)
+    }
+
     fn capabilities(&self) -> DbCapabilities {
         DbCapabilities {
             inline_edit: true,
@@ -33,6 +41,9 @@ impl DbDriver for PostgresqlDbDriver {
             // No sekejap-style health/compact surface to offer.
             maintenance: false,
             schemas: true,
+            // Columns can be altered, but the studio's editor assumes sekejap's
+            // attribute model; nothing maps it onto ALTER TABLE yet.
+            edit_table_properties: false,
             // PostGIS may be absent; the grid asks per column rather than
             // assuming the whole connection can hold geometry.
             geo: true,
@@ -85,6 +96,40 @@ impl DbDriver for PostgresqlDbDriver {
             capabilities: self.capabilities(),
             nodes,
         })
+    }
+
+    async fn create_table(
+        &self,
+        ctx: &DbDriverContext,
+        req: &CreateSimpleTableRequest,
+    ) -> Result<SimpleTableDefinition, PlatformError> {
+        let statements =
+            create_table_statements(&req.table, &req.attributes, SqlDialect::Postgres)?;
+        let table = validate_identifier(&req.table, "table")?;
+        let attributes: Vec<CollectionAttribute> = req.attributes.clone();
+        let pool = connect_pool(ctx).await?;
+        for statement in statements {
+            sqlx::query(&statement)
+                .execute(&pool)
+                .await
+                .map_err(|err| PlatformError::new("PLATFORM_DB_DDL_FAILED", err.to_string()))?;
+        }
+        Ok(SimpleTableDefinition {
+            table: table.clone(),
+            collection: table,
+            attributes,
+            ..Default::default()
+        })
+    }
+
+    async fn drop_table(&self, ctx: &DbDriverContext, table: &str) -> Result<(), PlatformError> {
+        let statement = drop_table_statement(table, SqlDialect::Postgres)?;
+        let pool = connect_pool(ctx).await?;
+        sqlx::query(&statement)
+            .execute(&pool)
+            .await
+            .map_err(|err| PlatformError::new("PLATFORM_DB_DDL_FAILED", err.to_string()))?;
+        Ok(())
     }
 
     async fn query(

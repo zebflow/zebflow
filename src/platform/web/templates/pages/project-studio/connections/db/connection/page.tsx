@@ -280,8 +280,14 @@ export default function Page(input) {
   // Schema-definition routes arrive only when the engine supports them, so an
   // absent URL is what disables the surface.
   const schemaApi = input?.db_schema_api ?? {};
+  // Table definition, scoped to this connection so it reaches the engine on
+  // screen. Absent unless the driver declares create or drop.
   const simpleTablesApi = schemaApi.tables || "";
-  const sekejapSchemaExportApi = simpleTablesApi ? `${simpleTablesApi}/schema/export` : "";
+  // Editing attributes and index kinds after creation is a separate capability
+  // and travels its own route.
+  const tablePropertiesApi = schemaApi.properties || "";
+  const canEditProperties = caps.edit_table_properties === true;
+  const sekejapSchemaExportApi = tablePropertiesApi ? `${tablePropertiesApi}/schema/export` : "";
   const sekejapSchemaSyncApi = schemaApi.schema_sync || "";
   const sekejapMaintenanceApi = schemaApi.maintenance || "";
   const initialTable = typeof window !== "undefined" ? new URLSearchParams(window.location.search).get("table") || "" : "";
@@ -860,7 +866,7 @@ export default function Page(input) {
     setPropsBusy(true);
     setPropsStatus(status);
     const payload = currentPropertiesPayload();
-    const response = await requestJson(`${simpleTablesApi}/${encodeURIComponent(activeTable.table)}`, {
+    const response = await requestJson(`${tablePropertiesApi}/${encodeURIComponent(activeTable.table)}`, {
       method: "PUT",
       body: JSON.stringify(payload),
     });
@@ -1393,6 +1399,7 @@ export default function Page(input) {
                                   Relations
                                 </button>
                                 ) : null}
+                                {canEditProperties ? (
                                 <button
                                   type="button"
                                   disabled={!activeTable}
@@ -1407,6 +1414,7 @@ export default function Page(input) {
                                 >
                                   Properties
                                 </button>
+                                ) : null}
                               </div>
 
                             {contentTab === "relations" && activeTable && hasGraphRelations ? (
@@ -1438,7 +1446,7 @@ export default function Page(input) {
                                   />
                                 </div>
                               </div>
-                            ) : contentTab === "properties" && activeTable ? (
+                            ) : contentTab === "properties" && activeTable && canEditProperties ? (
                               <div className="flex min-h-0 flex-1 flex-col overflow-y-auto px-4 py-4">
                                 <form onSubmit={handleUpdateTable} className="flex flex-col gap-5">
                                   <div className="flex flex-col gap-3">

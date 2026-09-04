@@ -14,11 +14,15 @@ use std::path::PathBuf;
 use std::time::Instant;
 
 use crate::platform::db::driver::{DbDriver, DbDriverContext};
+use crate::platform::db::sql_ddl::{
+    SqlDialect, create_table_statements, drop_table_statement, validate_identifier,
+};
 use crate::platform::error::PlatformError;
 use crate::platform::model::{
-    DbCapabilities, DbObjectNode, DbQueryColumn, DbRelationStyle,
-    DescribeProjectDbConnectionRequest, ProjectDbConnectionDescribeResult,
-    ProjectDbConnectionQueryResult, QueryProjectDbConnectionRequest, slug_segment,
+    CollectionAttribute, CreateSimpleTableRequest, DbCapabilities, DbObjectNode, DbQueryColumn,
+    DbRelationStyle, DescribeProjectDbConnectionRequest, ProjectDbConnectionDescribeResult,
+    ProjectDbConnectionQueryResult, QueryProjectDbConnectionRequest, SimpleTableDefinition,
+    slug_segment,
 };
 use crate::platform::sqlite_schema;
 
@@ -200,22 +204,25 @@ impl DbDriver for SqliteDbDriver {
         DB_KIND
     }
 
+    fn sql_dialect(&self) -> Option<SqlDialect> {
+        Some(SqlDialect::Sqlite)
+    }
+
     fn capabilities(&self) -> DbCapabilities {
         DbCapabilities {
             // Row edits travel the connection's own query endpoint, so they
             // reach this engine.
             inline_edit: true,
-            // Table definition still travels the project `tables` route, which
-            // calls `sekejap::create_table` whatever connection is open. Until
-            // DDL moves onto the driver, declaring these would offer a button
-            // that silently writes a sekejap collection instead of a SQLite
-            // table.
-            create_table: false,
-            drop_table: false,
+            create_table: true,
+            drop_table: true,
             // No health, sync or compact surface to offer.
             maintenance: false,
             // Every object lives in one namespace.
             schemas: false,
+            // Columns are fixed once created; SQLite's ALTER TABLE cannot
+            // change a column's type or drop an index the way the editor
+            // assumes.
+            edit_table_properties: false,
             // Geometry needs an extension that is not loaded here.
             geo: false,
             relations: DbRelationStyle::ForeignKey,
@@ -286,6 +293,52 @@ impl DbDriver for SqliteDbDriver {
             capabilities: self.capabilities(),
             nodes,
         })
+    }
+
+    async fn create_table(
+        &self,
+        ctx: &DbDriverContext,
+        req: &CreateSimpleTableRequest,
+    ) -> Result<SimpleTableDefinition, PlatformError> {
+        let statements =
+            create_table_statements(&req.table, &req.attributes, SqlDialect::Sqlite)?;
+        let table = validate_identifier(&req.table, "table")?;
+        let attributes: Vec<CollectionAttribute> = req.attributes.clone();
+        let data_root = ctx.data_root.clone();
+        let owner = ctx.owner.clone();
+        let project = ctx.project.clone();
+        let created = table.clone();
+
+        run_blocking(move || {
+            let conn = open_store(&data_root, &owner, &project)?;
+            for statement in statements {
+                conn.execute_batch(&statement).map_err(|err| {
+                    PlatformError::new("PLATFORM_DB_DDL_FAILED", err.to_string())
+                })?;
+            }
+            Ok(())
+        })
+        .await?;
+
+        Ok(SimpleTableDefinition {
+            table: created.clone(),
+            collection: created,
+            attributes,
+            ..Default::default()
+        })
+    }
+
+    async fn drop_table(&self, ctx: &DbDriverContext, table: &str) -> Result<(), PlatformError> {
+        let statement = drop_table_statement(table, SqlDialect::Sqlite)?;
+        let data_root = ctx.data_root.clone();
+        let owner = ctx.owner.clone();
+        let project = ctx.project.clone();
+        run_blocking(move || {
+            let conn = open_store(&data_root, &owner, &project)?;
+            conn.execute_batch(&statement)
+                .map_err(|err| PlatformError::new("PLATFORM_DB_DDL_FAILED", err.to_string()))
+        })
+        .await
     }
 
     async fn query(

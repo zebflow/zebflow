@@ -136,18 +136,40 @@ Rules:
 
 What ships today:
 
-| Engine | inline_edit | create/drop table | maintenance | schemas | geo | relations |
-| --- | --- | --- | --- | --- | --- | --- |
-| sekejap | yes | yes | yes | no | yes | graph |
-| postgresql | yes | yes | no | yes | yes | foreign_key |
-| sqlite | yes | **no** | no | no | no | foreign_key |
+| Engine | inline_edit | create/drop table | edit properties | maintenance | schemas | geo | relations |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| sekejap | yes | yes | yes | yes | no | yes | graph |
+| postgresql | yes | yes | no | no | yes | yes | foreign_key |
+| mysql | yes | yes | no | no | yes | no | foreign_key |
+| sqlite | yes | yes | no | no | no | no | foreign_key |
 
-SQLite declares no table definition on purpose. Row edits travel the
-connection's own query endpoint and reach the right engine; table definition
-still travels `POST /api/projects/{owner}/{project}/tables`, which calls
-`sekejap::create_table` whatever connection is open. Declaring it would offer a
-button that writes a sekejap collection instead of a SQLite table. Moving
-create and drop onto `DbDriver` is what lets SQLite and MySQL declare them.
+Table definition is scoped to the connection —
+`POST|DELETE /api/projects/{owner}/{project}/db/connections/{id}/tables` — so it
+reaches the engine the user is looking at. `DbRuntimeService` refuses before
+calling a driver that does not declare the capability, so an engine cannot
+half-support it.
+
+For SQL engines the statements come from `sql_ddl.rs`, one generator shared by
+every dialect. Rules it holds:
+
+- Identifiers reach the database as text, never as bind parameters, so every
+  name is validated as a plain identifier and **refused** rather than escaped.
+  A name that would need quoting to be safe would also be a name nothing else
+  in Zebflow can address.
+- Every created table carries an identity column (`id`), because a row with no
+  identity cannot be edited or deleted afterwards. Sekejap's equivalent is
+  `_key`.
+- An attribute kind or index type needing a database extension — `vector`,
+  `geo`, `fulltext` — is refused by name. A column that claims to hold geometry
+  and holds text is worse than a rejected request.
+
+A driver also declares which SQL dialect it speaks, if any. Callers that must
+write a statement themselves — the studio's row preview — ask the driver rather
+than matching on the engine's name, because the quoting differs: MySQL rejects
+the double quotes PostgreSQL requires, and sekejap takes a bare table name.
+
+`edit_table_properties` is separate from creation: changing attributes and index
+kinds after the fact is sekejap's model, and travels its own project route.
 
 Evidence: `src/platform/db/driver.rs`, `src/platform/db/registry.rs`,
 `src/platform/db/drivers/{sekejap,postgresql,sqlite}/mod.rs`,
@@ -171,9 +193,9 @@ Deliberately unbuilt. Each is a decision, not an oversight.
   refuses and names the file rather than correcting it.
 - **Export selection.** Which initial-data files a bundle carries is not asked;
   the agreed shape asks at export time.
-- **Table definition per engine.** Create, alter and drop travel one
-  sekejap-owned route, so no other engine can declare them. The agreed shape is
-  `create_table` and `drop_table` on `DbDriver`, routed per connection.
+- **Altering an existing table.** Create and drop are per engine; changing a
+  table afterwards is still sekejap's attribute model alone. Mapping it onto
+  `ALTER TABLE` is the remaining half.
 - **Postgres and MySQL.** Saving is the same safe read. Applying needs target
   selection and consent.
 - **Changing an existing store.** No upgrades, no diffing, no drift detection.

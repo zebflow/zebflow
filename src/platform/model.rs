@@ -1896,7 +1896,7 @@ pub struct CollectionAttribute {
 }
 
 /// One managed Simple Table definition stored inside the project runtime DB.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SimpleTableDefinition {
     /// Stable table slug.
     pub table: String,
@@ -2087,6 +2087,8 @@ pub struct DbCapabilities {
     pub maintenance: bool,
     /// The engine namespaces tables under schemas.
     pub schemas: bool,
+    /// Attributes and index kinds can be edited after a table exists.
+    pub edit_table_properties: bool,
     /// The engine can store and return geometry.
     pub geo: bool,
     /// How this engine relates rows to each other.
@@ -2105,6 +2107,7 @@ impl Default for DbCapabilities {
             drop_table: false,
             maintenance: false,
             schemas: false,
+            edit_table_properties: false,
             geo: false,
             relations: DbRelationStyle::None,
         }

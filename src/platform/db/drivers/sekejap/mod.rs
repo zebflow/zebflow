@@ -3,9 +3,10 @@ use async_trait::async_trait;
 use crate::platform::db::driver::{DbDriver, DbDriverContext};
 use crate::platform::error::PlatformError;
 use crate::platform::model::{
-    DbCapabilities, DbObjectNode, DbRelationStyle, DescribeProjectDbConnectionRequest,
-    ProjectDbConnectionDescribeResult, ProjectDbConnectionQueryResult,
-    QueryProjectDbConnectionRequest, slug_segment,
+    CreateSimpleTableRequest, DbCapabilities, DbObjectNode, DbRelationStyle,
+    DescribeProjectDbConnectionRequest, ProjectDbConnectionDescribeResult,
+    ProjectDbConnectionQueryResult, QueryProjectDbConnectionRequest, SimpleTableDefinition,
+    slug_segment,
 };
 use crate::platform::sekejap;
 
@@ -39,6 +40,8 @@ impl DbDriver for SekejapDbDriver {
             maintenance: true,
             // Collections live in one flat namespace.
             schemas: false,
+            // Attributes and index kinds are editable after creation.
+            edit_table_properties: true,
             geo: true,
             // Rows are joined by free edges rather than declared keys.
             relations: DbRelationStyle::Graph,
@@ -82,6 +85,26 @@ impl DbDriver for SekejapDbDriver {
             capabilities: self.capabilities(),
             nodes,
         })
+    }
+
+    async fn create_table(
+        &self,
+        ctx: &DbDriverContext,
+        req: &CreateSimpleTableRequest,
+    ) -> Result<SimpleTableDefinition, PlatformError> {
+        let data_root = ctx.data_root.clone();
+        let owner = ctx.owner.clone();
+        let project = ctx.project.clone();
+        let req = req.clone();
+        run_blocking(move || sekejap::create_table(&data_root, &owner, &project, &req)).await
+    }
+
+    async fn drop_table(&self, ctx: &DbDriverContext, table: &str) -> Result<(), PlatformError> {
+        let data_root = ctx.data_root.clone();
+        let owner = ctx.owner.clone();
+        let project = ctx.project.clone();
+        let table = table.to_string();
+        run_blocking(move || sekejap::delete_table(&data_root, &owner, &project, &table)).await
     }
 
     async fn query(

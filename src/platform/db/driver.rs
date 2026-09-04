@@ -5,9 +5,9 @@ use async_trait::async_trait;
 
 use crate::platform::error::PlatformError;
 use crate::platform::model::{
-    DbCapabilities, DescribeProjectDbConnectionRequest, ProjectDbConnection,
-    ProjectDbConnectionDescribeResult, ProjectDbConnectionQueryResult,
-    QueryProjectDbConnectionRequest,
+    CreateSimpleTableRequest, DbCapabilities, DescribeProjectDbConnectionRequest,
+    ProjectDbConnection, ProjectDbConnectionDescribeResult, ProjectDbConnectionQueryResult,
+    QueryProjectDbConnectionRequest, SimpleTableDefinition,
 };
 use crate::platform::services::CredentialService;
 
@@ -26,6 +26,16 @@ pub struct DbDriverContext {
 pub trait DbDriver: Send + Sync {
     /// Stable kind key (`sqlite`, `postgresql`, ...).
     fn kind(&self) -> &'static str;
+
+    /// Which SQL dialect this engine speaks, if any.
+    ///
+    /// Callers that must write a statement themselves — the studio's table
+    /// preview, for one — ask this rather than matching on the kind name, so
+    /// identifiers are quoted the way the engine expects. `None` means the
+    /// engine is not addressed with quoted SQL identifiers.
+    fn sql_dialect(&self) -> Option<crate::platform::db::sql_ddl::SqlDialect> {
+        None
+    }
 
     /// What this engine supports.
     ///
@@ -49,4 +59,28 @@ pub trait DbDriver: Send + Sync {
         ctx: &DbDriverContext,
         req: &QueryProjectDbConnectionRequest,
     ) -> Result<ProjectDbConnectionQueryResult, PlatformError>;
+
+    /// Creates one table in this connection's database.
+    ///
+    /// Refused unless the driver declares `create_table`, so an engine cannot
+    /// half-support table definition: the capability and the implementation
+    /// arrive together.
+    async fn create_table(
+        &self,
+        _ctx: &DbDriverContext,
+        _req: &CreateSimpleTableRequest,
+    ) -> Result<SimpleTableDefinition, PlatformError> {
+        Err(PlatformError::new(
+            "PLATFORM_DB_DDL_UNSUPPORTED",
+            format!("'{}' cannot create tables", self.kind()),
+        ))
+    }
+
+    /// Drops one table from this connection's database.
+    async fn drop_table(&self, _ctx: &DbDriverContext, _table: &str) -> Result<(), PlatformError> {
+        Err(PlatformError::new(
+            "PLATFORM_DB_DDL_UNSUPPORTED",
+            format!("'{}' cannot drop tables", self.kind()),
+        ))
+    }
 }
