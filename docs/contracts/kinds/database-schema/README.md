@@ -139,9 +139,9 @@ What ships today:
 | Engine | inline_edit | create/drop table | edit properties | maintenance | schemas | geo | relations |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | sekejap | yes | yes | yes | yes | no | yes | graph |
-| postgresql | yes | yes | no | no | yes | yes | foreign_key |
-| mysql | yes | yes | no | no | yes | no | foreign_key |
-| sqlite | yes | yes | no | no | no | no | foreign_key |
+| postgresql | yes | yes | yes | no | yes | yes | foreign_key |
+| mysql | yes | yes | yes | no | yes | no | foreign_key |
+| sqlite | yes | yes | yes | no | no | no | foreign_key |
 
 Table definition is scoped to the connection —
 `POST|DELETE /api/projects/{owner}/{project}/db/connections/{id}/tables` — so it
@@ -168,11 +168,20 @@ write a statement themselves — the studio's row preview — ask the driver rat
 than matching on the engine's name, because the quoting differs: MySQL rejects
 the double quotes PostgreSQL requires, and sekejap takes a bare table name.
 
-`edit_table_properties` is separate from creation: changing attributes and index
-kinds after the fact is sekejap's model, and travels its own project route.
+`edit_table_properties` is separate from creation because the two can differ:
+an engine may make a table it cannot afterwards change. Altering adds and drops
+columns and their indexes. **A column whose type changed is refused**, because
+rewriting a populated column can lose what is in it, and quietly keeping the old
+type would be a worse answer than saying no.
+
+A driver also declares `row_identity`, the column that addresses one row for
+editing and deletion — `_key` for sekejap, the created primary key for the SQL
+engines. Adding a row is the one row operation the driver writes itself, since
+the statement differs: `DEFAULT VALUES`, `() VALUES ()`, or a minted key.
 
 Evidence: `src/platform/db/driver.rs`, `src/platform/db/registry.rs`,
-`src/platform/db/drivers/{sekejap,postgresql,sqlite}/mod.rs`,
+`src/platform/db/drivers/{sekejap,postgresql,mysql,sqlite}/mod.rs`,
+`src/platform/db/sql_ddl.rs`,
 `src/platform/services/db_runtime.rs`,
 `src/platform/web/templates/pages/project-studio/connections/db/connection/page.tsx`.
 
@@ -193,9 +202,9 @@ Deliberately unbuilt. Each is a decision, not an oversight.
   refuses and names the file rather than correcting it.
 - **Export selection.** Which initial-data files a bundle carries is not asked;
   the agreed shape asks at export time.
-- **Altering an existing table.** Create and drop are per engine; changing a
-  table afterwards is still sekejap's attribute model alone. Mapping it onto
-  `ALTER TABLE` is the remaining half.
+- **Changing a column's type.** Adding and dropping columns is per engine;
+  changing an existing column's type is refused. Doing it safely means copying
+  the table, which is a migration and needs the author's consent.
 - **Postgres and MySQL.** Saving is the same safe read. Applying needs target
   selection and consent.
 - **Changing an existing store.** No upgrades, no diffing, no drift detection.

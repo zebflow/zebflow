@@ -6,7 +6,7 @@ use crate::platform::model::{
     CreateSimpleTableRequest, DbCapabilities, DbObjectNode, DbRelationStyle,
     DescribeProjectDbConnectionRequest, ProjectDbConnectionDescribeResult,
     ProjectDbConnectionQueryResult, QueryProjectDbConnectionRequest, SimpleTableDefinition,
-    slug_segment,
+    UpdateSimpleTableRequest, slug_segment,
 };
 use crate::platform::sekejap;
 
@@ -99,6 +99,20 @@ impl DbDriver for SekejapDbDriver {
         let project = ctx.project.clone();
         let req = req.clone();
         run_blocking(move || sekejap::create_table(&data_root, &owner, &project, &req)).await
+    }
+
+    async fn alter_table(
+        &self,
+        ctx: &DbDriverContext,
+        table: &str,
+        req: &UpdateSimpleTableRequest,
+    ) -> Result<SimpleTableDefinition, PlatformError> {
+        let data_root = ctx.data_root.clone();
+        let owner = ctx.owner.clone();
+        let project = ctx.project.clone();
+        let table = table.rsplit('.').next().unwrap_or(table).to_string();
+        let req = req.clone();
+        run_blocking(move || sekejap::update_table(&data_root, &owner, &project, &table, &req)).await
     }
 
     async fn insert_empty_row(

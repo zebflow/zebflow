@@ -8,7 +8,7 @@ use crate::platform::error::PlatformError;
 use crate::platform::model::{
     CreateSimpleTableRequest, DbCapabilities, DescribeProjectDbConnectionRequest,
     ProjectDbConnection, ProjectDbConnectionDescribeResult, ProjectDbConnectionQueryResult,
-    QueryProjectDbConnectionRequest, SimpleTableDefinition, slug_segment,
+    QueryProjectDbConnectionRequest, SimpleTableDefinition, UpdateSimpleTableRequest, slug_segment,
 };
 
 use super::{CredentialService, DbConnectionService};
@@ -131,6 +131,25 @@ impl DbRuntimeService {
             ));
         }
         driver.drop_table(&ctx, table).await
+    }
+
+    /// Changes one table to match a wanted set of attributes.
+    pub async fn alter_table(
+        &self,
+        owner: &str,
+        project: &str,
+        connection_id: &str,
+        table: &str,
+        req: &UpdateSimpleTableRequest,
+    ) -> Result<SimpleTableDefinition, PlatformError> {
+        let (ctx, driver) = self.driver_context(owner, project, connection_id)?;
+        if !driver.capabilities().edit_table_properties {
+            return Err(PlatformError::new(
+                "PLATFORM_DB_DDL_UNSUPPORTED",
+                format!("'{}' cannot alter tables", driver.kind()),
+            ));
+        }
+        driver.alter_table(&ctx, table, req).await
     }
 
     /// Adds one empty row and answers with its identity.

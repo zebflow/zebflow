@@ -7,7 +7,7 @@ use crate::platform::error::PlatformError;
 use crate::platform::model::{
     CreateSimpleTableRequest, DbCapabilities, DescribeProjectDbConnectionRequest,
     ProjectDbConnection, ProjectDbConnectionDescribeResult, ProjectDbConnectionQueryResult,
-    QueryProjectDbConnectionRequest, SimpleTableDefinition,
+    QueryProjectDbConnectionRequest, SimpleTableDefinition, UpdateSimpleTableRequest,
 };
 use crate::platform::services::CredentialService;
 
@@ -73,6 +73,21 @@ pub trait DbDriver: Send + Sync {
         Err(PlatformError::new(
             "PLATFORM_DB_DDL_UNSUPPORTED",
             format!("'{}' cannot create tables", self.kind()),
+        ))
+    }
+
+    /// Changes one table to match a wanted set of attributes.
+    ///
+    /// Refused unless the driver declares `edit_table_properties`.
+    async fn alter_table(
+        &self,
+        _ctx: &DbDriverContext,
+        _table: &str,
+        _req: &UpdateSimpleTableRequest,
+    ) -> Result<SimpleTableDefinition, PlatformError> {
+        Err(PlatformError::new(
+            "PLATFORM_DB_DDL_UNSUPPORTED",
+            format!("'{}' cannot alter tables", self.kind()),
         ))
     }
 

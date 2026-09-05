@@ -10,14 +10,15 @@ use sqlx::{Column, Row, TypeInfo, ValueRef, postgres::PgConnectOptions, postgres
 
 use crate::platform::db::driver::{DbDriver, DbDriverContext};
 use crate::platform::db::sql_ddl::{
-    IDENTITY_COLUMN, SqlDialect, create_table_statements, drop_table_statement, validate_identifier,
+    ExistingColumn, IDENTITY_COLUMN, SqlDialect, alter_table_statements, create_table_statements,
+    drop_table_statement, index_name, validate_identifier,
 };
 use crate::platform::error::PlatformError;
 use crate::platform::model::{
     CollectionAttribute, CreateSimpleTableRequest, DbCapabilities, DbObjectNode, DbQueryColumn,
     DbRelationStyle, DescribeProjectDbConnectionRequest, ProjectDbConnectionDescribeResult,
     ProjectDbConnectionQueryResult, QueryProjectDbConnectionRequest, SimpleTableDefinition,
-    slug_segment,
+    UpdateSimpleTableRequest, slug_segment,
 };
 
 #[derive(Default)]
@@ -43,7 +44,7 @@ impl DbDriver for PostgresqlDbDriver {
             schemas: true,
             // Columns can be altered, but the studio's editor assumes sekejap's
             // attribute model; nothing maps it onto ALTER TABLE yet.
-            edit_table_properties: false,
+            edit_table_properties: true,
             row_identity: IDENTITY_COLUMN.to_string(),
             // PostGIS may be absent; the grid asks per column rather than
             // assuming the whole connection can hold geometry.
@@ -119,6 +120,36 @@ impl DbDriver for PostgresqlDbDriver {
             table: table.clone(),
             collection: table,
             attributes,
+            ..Default::default()
+        })
+    }
+
+    async fn alter_table(
+        &self,
+        ctx: &DbDriverContext,
+        table: &str,
+        req: &UpdateSimpleTableRequest,
+    ) -> Result<SimpleTableDefinition, PlatformError> {
+        let (schema, bare) = match table.find('.') {
+            Some(dot) => (&table[..dot], &table[dot + 1..]),
+            None => ("public", table),
+        };
+        let schema = validate_identifier(schema, "schema")?;
+        let name = validate_identifier(bare, "table")?;
+        let pool = connect_pool(ctx).await?;
+        let existing = existing_columns(&pool, &schema, &name).await?;
+        let statements =
+            alter_table_statements(&name, &existing, &req.attributes, SqlDialect::Postgres)?;
+        for statement in statements {
+            sqlx::query(&statement)
+                .execute(&pool)
+                .await
+                .map_err(|err| PlatformError::new("PLATFORM_DB_DDL_FAILED", err.to_string()))?;
+        }
+        Ok(SimpleTableDefinition {
+            table: name.clone(),
+            collection: name,
+            attributes: req.attributes.clone(),
             ..Default::default()
         })
     }
@@ -289,6 +320,52 @@ async fn describe_tree(
         out.push(schema_node);
     }
     Ok(out)
+}
+
+
+/// The table's columns as they exist, with whether this platform's index for
+/// each one is present.
+async fn existing_columns(
+    pool: &sqlx::PgPool,
+    schema: &str,
+    table: &str,
+) -> Result<Vec<ExistingColumn>, PlatformError> {
+    let cols = sqlx::query(
+        "SELECT column_name, data_type FROM information_schema.columns \
+         WHERE table_schema = $1 AND table_name = $2 ORDER BY ordinal_position",
+    )
+    .bind(schema)
+    .bind(table)
+    .fetch_all(pool)
+    .await
+    .map_err(|err| PlatformError::new("PLATFORM_DB_DESCRIBE_FAILED", err.to_string()))?;
+
+    let indexes = sqlx::query(
+        "SELECT indexname FROM pg_indexes WHERE schemaname = $1 AND tablename = $2",
+    )
+    .bind(schema)
+    .bind(table)
+    .fetch_all(pool)
+    .await
+    .map_err(|err| PlatformError::new("PLATFORM_DB_DESCRIBE_FAILED", err.to_string()))?;
+    let present: Vec<String> = indexes
+        .iter()
+        .map(|row| row.get::<String, _>("indexname"))
+        .collect();
+
+    Ok(cols
+        .into_iter()
+        .map(|row| {
+            let name: String = row.get("column_name");
+            let column_type: String = row.get("data_type");
+            let indexed = present.contains(&index_name(table, &name));
+            ExistingColumn {
+                name,
+                column_type,
+                indexed,
+            }
+        })
+        .collect())
 }
 
 async fn describe_schemas(

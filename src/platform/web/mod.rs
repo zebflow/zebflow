@@ -915,7 +915,7 @@ pub async fn router(platform: Arc<PlatformService>) -> Router {
         )
         .route(
             "/api/projects/{owner}/{project}/db/connections/{connection_id}/tables/{table}",
-            delete(api_drop_db_connection_table),
+            delete(api_drop_db_connection_table).put(api_alter_db_connection_table),
         )
         .route(
             "/api/projects/{owner}/{project}/db/connections/{connection_id}/tables/{table}/rows",
@@ -6462,11 +6462,14 @@ async fn project_db_suite_page(
                 );
             }
             if capabilities.edit_table_properties {
-                // Editing attributes and index kinds after creation is
-                // sekejap's model, and travels its own project route.
+                // Editing attributes and index kinds is scoped to the
+                // connection, like creation, so it reaches the right engine.
                 db_schema_api.insert(
                     "properties".to_string(),
-                    json!(format!("/api/projects/{owner}/{project}/tables")),
+                    json!(format!(
+                        "/api/projects/{owner}/{project}/db/connections/{}/tables",
+                        connection_info.connection_id
+                    )),
                 );
                 db_schema_api.insert(
                     "schema_sync".to_string(),
@@ -20709,6 +20712,33 @@ async fn api_drop_db_connection_table(
     }
 }
 
+/// PUT /api/projects/{owner}/{project}/db/connections/{connection_id}/tables/{table}
+async fn api_alter_db_connection_table(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((owner, project, connection_id, table)): Path<(String, String, String, String)>,
+    Json(req): Json<UpdateSimpleTableRequest>,
+) -> Response {
+    if let Err(response) = require_project_api_capability(
+        &state,
+        &headers,
+        &owner,
+        &project,
+        ProjectCapability::TablesWrite,
+    ) {
+        return response;
+    }
+    match state
+        .platform
+        .db_runtime
+        .alter_table(&owner, &project, &connection_id, &table, &req)
+        .await
+    {
+        Ok(table) => Json(json!({"ok": true, "table": table})).into_response(),
+        Err(err) => db_ddl_error(err),
+    }
+}
+
 /// POST /api/projects/{owner}/{project}/db/connections/{connection_id}/tables/{table}/rows
 ///
 /// Adds one empty row. The statement differs by engine, so the driver writes it.
@@ -20749,6 +20779,7 @@ fn db_ddl_error(err: PlatformError) -> Response {
             | "PLATFORM_DB_DDL_FAILED"
             | "PLATFORM_DB_ROW_UNSUPPORTED"
             | "PLATFORM_DB_ROW_FAILED"
+            | "PLATFORM_DB_DDL_TYPE_CHANGE"
     );
     if caller_error {
         return (

@@ -192,6 +192,125 @@ pub fn create_table_statements(
     Ok(statements)
 }
 
+/// One column as it exists in the database today.
+pub struct ExistingColumn {
+    pub name: String,
+    /// The engine's own type name, used only to notice a change.
+    pub column_type: String,
+    /// Whether this platform's index for the column is present.
+    pub indexed: bool,
+}
+
+/// The index name this platform gives one column.
+pub fn index_name(table: &str, column: &str) -> String {
+    format!("idx_{table}_{column}")
+}
+
+/// The statements that change one table to match a wanted set of attributes.
+///
+/// Columns are added and dropped, and indexes created and removed. A column
+/// whose type changed is **refused**: rewriting a populated column can lose
+/// what is in it, and silently keeping the old type would be a worse lie than
+/// saying no.
+pub fn alter_table_statements(
+    table: &str,
+    existing: &[ExistingColumn],
+    desired: &[CollectionAttribute],
+    dialect: SqlDialect,
+) -> Result<Vec<String>, PlatformError> {
+    let table = validate_identifier(table, "table")?;
+    let quoted_table = dialect.quote(&table);
+    let mut statements = Vec::new();
+
+    let mut wanted: Vec<(String, &'static str, bool)> = Vec::new();
+    for attr in desired {
+        let name = validate_identifier(&attr.name, "column")?;
+        if name == IDENTITY_COLUMN {
+            // The identity column is this platform's, not the author's.
+            continue;
+        }
+        let ty = column_type(&attr.kind, dialect)?;
+        let indexed = attr.index_types.iter().any(|index| {
+            matches!(index.trim().to_ascii_lowercase().as_str(), "hash" | "range")
+        });
+        for index in &attr.index_types {
+            match index.trim().to_ascii_lowercase().as_str() {
+                "hash" | "range" | "" => {}
+                other => {
+                    return Err(PlatformError::new(
+                        "PLATFORM_DB_DDL_INDEX",
+                        format!(
+                            "'{other}' indexes need a database extension this driver does not manage"
+                        ),
+                    ));
+                }
+            }
+        }
+        wanted.push((name, ty, indexed));
+    }
+
+    // Added and changed columns.
+    for (name, ty, _) in &wanted {
+        match existing.iter().find(|col| &col.name == name) {
+            None => statements.push(format!(
+                "ALTER TABLE {quoted_table} ADD COLUMN {} {ty}",
+                dialect.quote(name)
+            )),
+            Some(current) if !current.column_type.eq_ignore_ascii_case(ty) => {
+                return Err(PlatformError::new(
+                    "PLATFORM_DB_DDL_TYPE_CHANGE",
+                    format!(
+                        "column '{name}' is {} and cannot be changed to {ty} without risking its contents",
+                        current.column_type
+                    ),
+                ));
+            }
+            Some(_) => {}
+        }
+    }
+
+    // Columns the author removed.
+    for current in existing {
+        if current.name == IDENTITY_COLUMN {
+            continue;
+        }
+        if !wanted.iter().any(|(name, _, _)| name == &current.name) {
+            statements.push(format!(
+                "ALTER TABLE {quoted_table} DROP COLUMN {}",
+                dialect.quote(&current.name)
+            ));
+        }
+    }
+
+    // Index changes, by this platform's naming convention.
+    for (name, ty, indexed) in &wanted {
+        let already = existing
+            .iter()
+            .find(|col| &col.name == name)
+            .map(|col| col.indexed)
+            .unwrap_or(false);
+        let index = dialect.quote(&index_name(&table, name));
+        if *indexed && !already {
+            let target = if dialect == SqlDialect::MySql && *ty == "TEXT" {
+                format!("{}(191)", dialect.quote(name))
+            } else {
+                dialect.quote(name)
+            };
+            statements.push(format!(
+                "CREATE INDEX {index} ON {quoted_table} ({target})"
+            ));
+        } else if !*indexed && already {
+            statements.push(match dialect {
+                // MySQL names the table when dropping an index; the others do not.
+                SqlDialect::MySql => format!("DROP INDEX {index} ON {quoted_table}"),
+                _ => format!("DROP INDEX {index}"),
+            });
+        }
+    }
+
+    Ok(statements)
+}
+
 /// The statement that drops one table.
 pub fn drop_table_statement(table: &str, dialect: SqlDialect) -> Result<String, PlatformError> {
     let table = validate_identifier(table, "table")?;
@@ -257,6 +376,61 @@ mod tests {
         assert!(statements[1].contains("ON `orders` (`label`)"));
         // TEXT cannot be indexed whole in MySQL
         assert!(statements[2].contains("(`body`(191))"), "got {}", statements[2]);
+    }
+
+    fn existing(name: &str, ty: &str, indexed: bool) -> ExistingColumn {
+        ExistingColumn {
+            name: name.to_string(),
+            column_type: ty.to_string(),
+            indexed,
+        }
+    }
+
+    #[test]
+    fn altering_adds_drops_and_reindexes_columns() {
+        let statements = alter_table_statements(
+            "orders",
+            &[
+                existing("id", "SERIAL", false),
+                existing("label", "TEXT", true),
+                existing("stale", "TEXT", false),
+            ],
+            &[attr("label", "string", &[]), attr("total", "number", &["hash"])],
+            SqlDialect::Postgres,
+        )
+        .expect("statements");
+
+        assert!(statements.iter().any(|s| s == "ALTER TABLE \"orders\" ADD COLUMN \"total\" DOUBLE PRECISION"));
+        assert!(statements.iter().any(|s| s == "ALTER TABLE \"orders\" DROP COLUMN \"stale\""));
+        // label lost its index, total gained one
+        assert!(statements.iter().any(|s| s == "DROP INDEX \"idx_orders_label\""));
+        assert!(statements.iter().any(|s| s.contains("CREATE INDEX \"idx_orders_total\"")));
+        // the identity column is never dropped
+        assert!(!statements.iter().any(|s| s.contains("DROP COLUMN \"id\"")));
+    }
+
+    #[test]
+    fn altering_refuses_a_type_change_rather_than_risk_the_contents() {
+        let err = alter_table_statements(
+            "orders",
+            &[existing("total", "TEXT", false)],
+            &[attr("total", "number", &[])],
+            SqlDialect::Postgres,
+        )
+        .expect_err("should refuse");
+        assert_eq!(err.code, "PLATFORM_DB_DDL_TYPE_CHANGE");
+    }
+
+    #[test]
+    fn mysql_names_the_table_when_dropping_an_index() {
+        let statements = alter_table_statements(
+            "orders",
+            &[existing("label", "VARCHAR(255)", true)],
+            &[attr("label", "string", &[])],
+            SqlDialect::MySql,
+        )
+        .expect("statements");
+        assert_eq!(statements, vec!["DROP INDEX `idx_orders_label` ON `orders`"]);
     }
 
     #[test]

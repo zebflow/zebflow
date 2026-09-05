@@ -17,14 +17,15 @@ use sqlx::{Column, Row, TypeInfo, ValueRef, mysql::MySqlConnectOptions, mysql::M
 
 use crate::platform::db::driver::{DbDriver, DbDriverContext};
 use crate::platform::db::sql_ddl::{
-    IDENTITY_COLUMN, SqlDialect, create_table_statements, drop_table_statement, validate_identifier,
+    ExistingColumn, IDENTITY_COLUMN, SqlDialect, alter_table_statements, create_table_statements,
+    drop_table_statement, index_name, validate_identifier,
 };
 use crate::platform::error::PlatformError;
 use crate::platform::model::{
     CollectionAttribute, CreateSimpleTableRequest, DbCapabilities, DbObjectNode, DbQueryColumn,
     DbRelationStyle, DescribeProjectDbConnectionRequest, ProjectDbConnectionDescribeResult,
     ProjectDbConnectionQueryResult, QueryProjectDbConnectionRequest, SimpleTableDefinition,
-    slug_segment,
+    UpdateSimpleTableRequest, slug_segment,
 };
 
 pub const DB_KIND: &str = "mysql";
@@ -230,6 +231,52 @@ async fn describe_schemas(
             schema: None,
             children: Vec::new(),
             meta: Value::Null,
+        })
+        .collect())
+}
+
+
+/// The table's columns as they exist, with whether this platform's index for
+/// each one is present.
+async fn existing_columns(
+    pool: &sqlx::MySqlPool,
+    schema: &str,
+    table: &str,
+) -> Result<Vec<ExistingColumn>, PlatformError> {
+    let cols = sqlx::query(
+        "SELECT COLUMN_NAME, COLUMN_TYPE FROM information_schema.columns \
+         WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? ORDER BY ORDINAL_POSITION",
+    )
+    .bind(schema)
+    .bind(table)
+    .fetch_all(pool)
+    .await
+    .map_err(|err| PlatformError::new("PLATFORM_DB_DESCRIBE_FAILED", err.to_string()))?;
+
+    let indexes = sqlx::query(
+        "SELECT DISTINCT INDEX_NAME FROM information_schema.statistics \
+         WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?",
+    )
+    .bind(schema)
+    .bind(table)
+    .fetch_all(pool)
+    .await
+    .map_err(|err| PlatformError::new("PLATFORM_DB_DESCRIBE_FAILED", err.to_string()))?;
+    let present: Vec<String> = indexes.iter().map(|row| text(row, "INDEX_NAME")).collect();
+
+    Ok(cols
+        .into_iter()
+        .map(|row| {
+            let name = text(&row, "COLUMN_NAME");
+            // COLUMN_TYPE keeps the length, so VARCHAR(255) compares equal to
+            // what this platform writes rather than to a bare VARCHAR.
+            let column_type = text(&row, "COLUMN_TYPE").to_ascii_uppercase();
+            let indexed = present.contains(&index_name(table, &name));
+            ExistingColumn {
+                name,
+                column_type,
+                indexed,
+            }
         })
         .collect())
 }
@@ -465,7 +512,7 @@ impl DbDriver for MysqlDbDriver {
             maintenance: false,
             // MySQL's databases are the namespace the studio calls a schema.
             schemas: true,
-            edit_table_properties: false,
+            edit_table_properties: true,
             row_identity: IDENTITY_COLUMN.to_string(),
             // Spatial types exist but are not managed by this driver.
             geo: false,
@@ -613,6 +660,45 @@ impl DbDriver for MysqlDbDriver {
             table: table.clone(),
             collection: table,
             attributes,
+            ..Default::default()
+        })
+    }
+
+    async fn alter_table(
+        &self,
+        ctx: &DbDriverContext,
+        table: &str,
+        req: &UpdateSimpleTableRequest,
+    ) -> Result<SimpleTableDefinition, PlatformError> {
+        let (schema, bare) = match table.find('.') {
+            Some(dot) => (Some(&table[..dot]), &table[dot + 1..]),
+            None => (None, table),
+        };
+        let name = validate_identifier(bare, "table")?;
+        let pool = connect_pool(ctx).await?;
+        // Without a qualifier the connection's own database is the namespace.
+        let schema = match schema {
+            Some(value) => validate_identifier(value, "schema")?,
+            None => sqlx::query_scalar::<_, String>("SELECT DATABASE()")
+                .fetch_one(&pool)
+                .await
+                .map_err(|err| {
+                    PlatformError::new("PLATFORM_DB_DESCRIBE_FAILED", err.to_string())
+                })?,
+        };
+        let existing = existing_columns(&pool, &schema, &name).await?;
+        let statements =
+            alter_table_statements(&name, &existing, &req.attributes, SqlDialect::MySql)?;
+        for statement in statements {
+            sqlx::query(&statement)
+                .execute(&pool)
+                .await
+                .map_err(|err| PlatformError::new("PLATFORM_DB_DDL_FAILED", err.to_string()))?;
+        }
+        Ok(SimpleTableDefinition {
+            table: name.clone(),
+            collection: name,
+            attributes: req.attributes.clone(),
             ..Default::default()
         })
     }

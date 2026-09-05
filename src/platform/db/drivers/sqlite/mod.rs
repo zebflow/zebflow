@@ -15,14 +15,15 @@ use std::time::Instant;
 
 use crate::platform::db::driver::{DbDriver, DbDriverContext};
 use crate::platform::db::sql_ddl::{
-    IDENTITY_COLUMN, SqlDialect, create_table_statements, drop_table_statement, validate_identifier,
+    ExistingColumn, IDENTITY_COLUMN, SqlDialect, alter_table_statements, create_table_statements,
+    drop_table_statement, index_name, validate_identifier,
 };
 use crate::platform::error::PlatformError;
 use crate::platform::model::{
     CollectionAttribute, CreateSimpleTableRequest, DbCapabilities, DbObjectNode, DbQueryColumn,
     DbRelationStyle, DescribeProjectDbConnectionRequest, ProjectDbConnectionDescribeResult,
     ProjectDbConnectionQueryResult, QueryProjectDbConnectionRequest, SimpleTableDefinition,
-    slug_segment,
+    UpdateSimpleTableRequest, slug_segment,
 };
 use crate::platform::sqlite_schema;
 
@@ -187,6 +188,45 @@ fn table_columns(conn: &Connection, table: &str) -> Result<Vec<Value>, PlatformE
     Ok(columns)
 }
 
+/// The table's columns as they exist, with whether this platform's index for
+/// each one is present.
+fn existing_columns(conn: &Connection, table: &str) -> Result<Vec<ExistingColumn>, PlatformError> {
+    let quoted = table.replace('"', "\"\"");
+    let mut present = Vec::new();
+    let mut stmt = conn
+        .prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = ?1")
+        .map_err(|err| PlatformError::new("PLATFORM_DB_DESCRIBE_FAILED", err.to_string()))?;
+    let rows = stmt
+        .query_map([table], |row| row.get::<_, String>(0))
+        .map_err(|err| PlatformError::new("PLATFORM_DB_DESCRIBE_FAILED", err.to_string()))?;
+    for row in rows {
+        present.push(
+            row.map_err(|err| PlatformError::new("PLATFORM_DB_DESCRIBE_FAILED", err.to_string()))?,
+        );
+    }
+
+    let mut stmt = conn
+        .prepare(&format!("PRAGMA table_info(\"{quoted}\")"))
+        .map_err(|err| PlatformError::new("PLATFORM_DB_DESCRIBE_FAILED", err.to_string()))?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok((row.get::<_, String>("name")?, row.get::<_, String>("type")?))
+        })
+        .map_err(|err| PlatformError::new("PLATFORM_DB_DESCRIBE_FAILED", err.to_string()))?;
+    let mut out = Vec::new();
+    for row in rows {
+        let (name, column_type) = row
+            .map_err(|err| PlatformError::new("PLATFORM_DB_DESCRIBE_FAILED", err.to_string()))?;
+        let indexed = present.contains(&index_name(table, &name));
+        out.push(ExistingColumn {
+            name,
+            column_type,
+            indexed,
+        });
+    }
+    Ok(out)
+}
+
 /// The single namespace, carrying its tables as children.
 fn describe_tree(conn: &Connection) -> Result<Vec<DbObjectNode>, PlatformError> {
     Ok(vec![DbObjectNode {
@@ -222,7 +262,9 @@ impl DbDriver for SqliteDbDriver {
             // Columns are fixed once created; SQLite's ALTER TABLE cannot
             // change a column's type or drop an index the way the editor
             // assumes.
-            edit_table_properties: false,
+            // SQLite adds and drops columns; a type change is refused rather
+            // than rebuilt, which is the same rule the other SQL engines get.
+            edit_table_properties: true,
             row_identity: IDENTITY_COLUMN.to_string(),
             // Geometry needs an extension that is not loaded here.
             geo: false,
@@ -325,6 +367,45 @@ impl DbDriver for SqliteDbDriver {
             table: created.clone(),
             collection: created,
             attributes,
+            ..Default::default()
+        })
+    }
+
+    async fn alter_table(
+        &self,
+        ctx: &DbDriverContext,
+        table: &str,
+        req: &UpdateSimpleTableRequest,
+    ) -> Result<SimpleTableDefinition, PlatformError> {
+        let bare = table
+            .strip_prefix(&format!("{MAIN_SCHEMA}."))
+            .unwrap_or(table)
+            .to_string();
+        let name = validate_identifier(&bare, "table")?;
+        let attributes = req.attributes.clone();
+        let data_root = ctx.data_root.clone();
+        let owner = ctx.owner.clone();
+        let project = ctx.project.clone();
+        let created = name.clone();
+
+        run_blocking(move || {
+            let conn = open_store(&data_root, &owner, &project)?;
+            let existing = existing_columns(&conn, &name)?;
+            let statements =
+                alter_table_statements(&name, &existing, &attributes, SqlDialect::Sqlite)?;
+            for statement in statements {
+                conn.execute_batch(&statement).map_err(|err| {
+                    PlatformError::new("PLATFORM_DB_DDL_FAILED", err.to_string())
+                })?;
+            }
+            Ok(())
+        })
+        .await?;
+
+        Ok(SimpleTableDefinition {
+            table: created.clone(),
+            collection: created,
+            attributes: req.attributes.clone(),
             ..Default::default()
         })
     }

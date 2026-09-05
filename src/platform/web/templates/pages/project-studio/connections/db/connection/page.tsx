@@ -874,7 +874,9 @@ export default function Page(input) {
     setPropsBusy(true);
     setPropsStatus(status);
     const payload = currentPropertiesPayload();
-    const response = await requestJson(`${tablePropertiesApi}/${encodeURIComponent(activeTable.table)}`, {
+    // Qualified as the tree named it, so a schema-namespaced engine alters the
+    // right table.
+    const response = await requestJson(`${tablePropertiesApi}/${encodeURIComponent(selectedTable)}`, {
       method: "PUT",
       body: JSON.stringify(payload),
     });
