@@ -17,7 +17,7 @@ use sqlx::{Column, Row, TypeInfo, ValueRef, mysql::MySqlConnectOptions, mysql::M
 
 use crate::platform::db::driver::{DbDriver, DbDriverContext};
 use crate::platform::db::sql_ddl::{
-    SqlDialect, create_table_statements, drop_table_statement, validate_identifier,
+    IDENTITY_COLUMN, SqlDialect, create_table_statements, drop_table_statement, validate_identifier,
 };
 use crate::platform::error::PlatformError;
 use crate::platform::model::{
@@ -466,6 +466,7 @@ impl DbDriver for MysqlDbDriver {
             // MySQL's databases are the namespace the studio calls a schema.
             schemas: true,
             edit_table_properties: false,
+            row_identity: IDENTITY_COLUMN.to_string(),
             // Spatial types exist but are not managed by this driver.
             geo: false,
             relations: DbRelationStyle::ForeignKey,
@@ -614,6 +615,27 @@ impl DbDriver for MysqlDbDriver {
             attributes,
             ..Default::default()
         })
+    }
+
+    async fn insert_empty_row(
+        &self,
+        ctx: &DbDriverContext,
+        table: &str,
+    ) -> Result<serde_json::Value, PlatformError> {
+        // The table arrives qualified as the tree named it; each part is
+        // validated and quoted rather than pasted in.
+        let quoted = table
+            .split('.')
+            .filter(|part| !part.trim().is_empty())
+            .map(|part| validate_identifier(part, "table").map(|name| SqlDialect::MySql.quote(&name)))
+            .collect::<Result<Vec<_>, _>>()?
+            .join(".");
+        let pool = connect_pool(ctx).await?;
+        let result = sqlx::query(&format!("INSERT INTO {quoted} () VALUES ()"))
+            .execute(&pool)
+            .await
+            .map_err(|err| PlatformError::new("PLATFORM_DB_ROW_FAILED", err.to_string()))?;
+        Ok(serde_json::Value::from(result.last_insert_id()))
     }
 
     async fn drop_table(&self, ctx: &DbDriverContext, table: &str) -> Result<(), PlatformError> {

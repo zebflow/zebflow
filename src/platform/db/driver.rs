@@ -76,6 +76,23 @@ pub trait DbDriver: Send + Sync {
         ))
     }
 
+    /// Adds one empty row and answers with its identity.
+    ///
+    /// The only row operation that differs by engine: sekejap supplies its own
+    /// `_key`, PostgreSQL and SQLite take `DEFAULT VALUES`, and MySQL spells
+    /// the same thing `() VALUES ()`. Update and delete are ordinary SQL once
+    /// the identity column is known, so they stay in the caller.
+    async fn insert_empty_row(
+        &self,
+        _ctx: &DbDriverContext,
+        _table: &str,
+    ) -> Result<serde_json::Value, PlatformError> {
+        Err(PlatformError::new(
+            "PLATFORM_DB_ROW_UNSUPPORTED",
+            format!("'{}' cannot add rows", self.kind()),
+        ))
+    }
+
     /// Drops one table from this connection's database.
     async fn drop_table(&self, _ctx: &DbDriverContext, _table: &str) -> Result<(), PlatformError> {
         Err(PlatformError::new(

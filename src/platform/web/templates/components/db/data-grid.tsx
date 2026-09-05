@@ -1,5 +1,7 @@
 import { useState, useEffect, useRef, cx } from "zeb";
 import {
+  prettyValue,
+  isGeoJsonGeometry,
   isGeoJsonPoint,
   formatGeoValue,
   stringifyCell,
@@ -274,21 +276,6 @@ export default function ResizableDataGrid({ columns, rows, selectedRowKey, onRow
       </tfoot>
     </table>
   );
-}
-
-function prettyValue(raw) {
-  const text = String(raw || "").trim();
-  if (!text) return "";
-  if (!text.startsWith("{") && !text.startsWith("[")) return text;
-  try {
-    return JSON.stringify(JSON.parse(text), null, 2);
-  } catch (_) {
-    return text;
-  }
-}
-
-function isGeoJsonGeometry(val) {
-  return val && typeof val === "object" && val.type && val.coordinates;
 }
 
 function flattenCoordinates(geometry) {

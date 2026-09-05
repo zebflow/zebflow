@@ -10,7 +10,7 @@ use sqlx::{Column, Row, TypeInfo, ValueRef, postgres::PgConnectOptions, postgres
 
 use crate::platform::db::driver::{DbDriver, DbDriverContext};
 use crate::platform::db::sql_ddl::{
-    SqlDialect, create_table_statements, drop_table_statement, validate_identifier,
+    IDENTITY_COLUMN, SqlDialect, create_table_statements, drop_table_statement, validate_identifier,
 };
 use crate::platform::error::PlatformError;
 use crate::platform::model::{
@@ -44,6 +44,7 @@ impl DbDriver for PostgresqlDbDriver {
             // Columns can be altered, but the studio's editor assumes sekejap's
             // attribute model; nothing maps it onto ALTER TABLE yet.
             edit_table_properties: false,
+            row_identity: IDENTITY_COLUMN.to_string(),
             // PostGIS may be absent; the grid asks per column rather than
             // assuming the whole connection can hold geometry.
             geo: true,
@@ -120,6 +121,34 @@ impl DbDriver for PostgresqlDbDriver {
             attributes,
             ..Default::default()
         })
+    }
+
+    async fn insert_empty_row(
+        &self,
+        ctx: &DbDriverContext,
+        table: &str,
+    ) -> Result<serde_json::Value, PlatformError> {
+        // The table arrives qualified as the tree named it; each part is
+        // validated and quoted rather than pasted in.
+        let quoted = table
+            .split('.')
+            .filter(|part| !part.trim().is_empty())
+            .map(|part| validate_identifier(part, "table").map(|name| SqlDialect::Postgres.quote(&name)))
+            .collect::<Result<Vec<_>, _>>()?
+            .join(".");
+        let pool = connect_pool(ctx).await?;
+        // PostgreSQL has no last-insert-id, so the new row names itself. A
+        // table with no identity column fails here with the column named,
+        // which is the truthful outcome: the studio could not address the row
+        // it just made.
+        let identity = SqlDialect::Postgres.quote(IDENTITY_COLUMN);
+        let row = sqlx::query(&format!(
+            "INSERT INTO {quoted} DEFAULT VALUES RETURNING {identity}"
+        ))
+        .fetch_one(&pool)
+        .await
+        .map_err(|err| PlatformError::new("PLATFORM_DB_ROW_FAILED", err.to_string()))?;
+        Ok(row_cell_to_json(&row, 0))
     }
 
     async fn drop_table(&self, ctx: &DbDriverContext, table: &str) -> Result<(), PlatformError> {

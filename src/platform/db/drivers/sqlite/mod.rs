@@ -15,7 +15,7 @@ use std::time::Instant;
 
 use crate::platform::db::driver::{DbDriver, DbDriverContext};
 use crate::platform::db::sql_ddl::{
-    SqlDialect, create_table_statements, drop_table_statement, validate_identifier,
+    IDENTITY_COLUMN, SqlDialect, create_table_statements, drop_table_statement, validate_identifier,
 };
 use crate::platform::error::PlatformError;
 use crate::platform::model::{
@@ -223,6 +223,7 @@ impl DbDriver for SqliteDbDriver {
             // change a column's type or drop an index the way the editor
             // assumes.
             edit_table_properties: false,
+            row_identity: IDENTITY_COLUMN.to_string(),
             // Geometry needs an extension that is not loaded here.
             geo: false,
             relations: DbRelationStyle::ForeignKey,
@@ -326,6 +327,28 @@ impl DbDriver for SqliteDbDriver {
             attributes,
             ..Default::default()
         })
+    }
+
+    async fn insert_empty_row(
+        &self,
+        ctx: &DbDriverContext,
+        table: &str,
+    ) -> Result<serde_json::Value, PlatformError> {
+        let bare = table
+            .strip_prefix(&format!("{MAIN_SCHEMA}."))
+            .unwrap_or(table);
+        let name = validate_identifier(bare, "table")?;
+        let statement = format!("INSERT INTO {} DEFAULT VALUES", SqlDialect::Sqlite.quote(&name));
+        let data_root = ctx.data_root.clone();
+        let owner = ctx.owner.clone();
+        let project = ctx.project.clone();
+        run_blocking(move || {
+            let conn = open_store(&data_root, &owner, &project)?;
+            conn.execute(&statement, [])
+                .map_err(|err| PlatformError::new("PLATFORM_DB_ROW_FAILED", err.to_string()))?;
+            Ok(serde_json::Value::from(conn.last_insert_rowid()))
+        })
+        .await
     }
 
     async fn drop_table(&self, ctx: &DbDriverContext, table: &str) -> Result<(), PlatformError> {

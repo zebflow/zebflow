@@ -2089,6 +2089,12 @@ pub struct DbCapabilities {
     pub schemas: bool,
     /// Attributes and index kinds can be edited after a table exists.
     pub edit_table_properties: bool,
+    /// The column that identifies one row, for editing and deletion.
+    ///
+    /// Sekejap answers `_key`; SQL engines answer the primary key this
+    /// platform creates. The studio reads this rather than assuming a name,
+    /// because a row it cannot address is a row it cannot change.
+    pub row_identity: String,
     /// The engine can store and return geometry.
     pub geo: bool,
     /// How this engine relates rows to each other.
@@ -2108,6 +2114,7 @@ impl Default for DbCapabilities {
             maintenance: false,
             schemas: false,
             edit_table_properties: false,
+            row_identity: String::new(),
             geo: false,
             relations: DbRelationStyle::None,
         }

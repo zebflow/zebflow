@@ -133,6 +133,24 @@ impl DbRuntimeService {
         driver.drop_table(&ctx, table).await
     }
 
+    /// Adds one empty row and answers with its identity.
+    pub async fn insert_empty_row(
+        &self,
+        owner: &str,
+        project: &str,
+        connection_id: &str,
+        table: &str,
+    ) -> Result<serde_json::Value, PlatformError> {
+        let (ctx, driver) = self.driver_context(owner, project, connection_id)?;
+        if !driver.capabilities().inline_edit {
+            return Err(PlatformError::new(
+                "PLATFORM_DB_ROW_UNSUPPORTED",
+                format!("'{}' cannot add rows", driver.kind()),
+            ));
+        }
+        driver.insert_empty_row(&ctx, table).await
+    }
+
     /// Resolves one connection to its driver and call context.
     fn driver_context(
         &self,

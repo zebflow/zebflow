@@ -141,3 +141,20 @@ export function autoSizeColumns(columns, rows, vectorFields) {
   });
   return widths;
 }
+
+/// Pretty-prints a value for the inspector, indenting JSON when it is JSON.
+export function prettyValue(raw) {
+  const text = String(raw || "").trim();
+  if (!text) return "";
+  if (!text.startsWith("{") && !text.startsWith("[")) return text;
+  try {
+    return JSON.stringify(JSON.parse(text), null, 2);
+  } catch (_) {
+    return text;
+  }
+}
+
+/// Whether a value looks like a GeoJSON geometry.
+export function isGeoJsonGeometry(val) {
+  return val && typeof val === "object" && val.type && val.coordinates;
+}

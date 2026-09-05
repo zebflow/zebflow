@@ -30,7 +30,12 @@ import {
   uniqueRelationDefs,
   relationCountFromRows,
 } from "@/components/db/relations-graph";
-import { rawCellValue, displayCellText } from "@/components/db/cell-format";
+import {
+  rawCellValue,
+  displayCellText,
+  prettyValue,
+  isGeoJsonGeometry,
+} from "@/components/db/cell-format";
 
 export const page = {
   head: {
@@ -287,6 +292,9 @@ export default function Page(input) {
   // and travels its own route.
   const tablePropertiesApi = schemaApi.properties || "";
   const canEditProperties = caps.edit_table_properties === true;
+  // The column that addresses one row. Declared by the driver because it
+  // differs: sekejap answers `_key`, SQL engines answer their primary key.
+  const rowIdentity = String(caps.row_identity || "_key");
   const sekejapSchemaExportApi = tablePropertiesApi ? `${tablePropertiesApi}/schema/export` : "";
   const sekejapSchemaSyncApi = schemaApi.schema_sync || "";
   const sekejapMaintenanceApi = schemaApi.maintenance || "";
@@ -451,14 +459,14 @@ export default function Page(input) {
     }
 
     const records = mergedRows.map((row) => mapRowToObject(mergedColumns, row));
-    const existing = records.find((record) => String(record?._key || "") === selectedPreviewRowKey);
+    const existing = records.find((record) => String(record?.[rowIdentity] ?? "") === selectedPreviewRowKey);
     const chosen = existing || records[0] || null;
     if (!chosen) {
       setSelectedPreviewRowKey("");
       setSelectedPreviewRowData(null);
       return;
     }
-    setSelectedPreviewRowKey(String(chosen?._key || ""));
+    setSelectedPreviewRowKey(String(chosen?.[rowIdentity] ?? ""));
     setSelectedPreviewRowData(chosen);
   }, [activeTable, previewColumns, previewRows, selectedPreviewRowKey]);
 
@@ -1043,7 +1051,7 @@ export default function Page(input) {
           })
           .join(", ");
         await runDbQuery(
-          `UPDATE ${activeTable.table} SET ${setClauses} WHERE _key = '${sqlStringLiteral(rowKey)}'`,
+          `UPDATE ${activeTable.table} SET ${setClauses} WHERE ${rowIdentity} = '${sqlStringLiteral(rowKey)}'`,
           { readOnly: false, tableName: activeTable.table, limit: 0 },
         );
       }
@@ -1063,13 +1071,19 @@ export default function Page(input) {
   async function handleAddRow() {
     if (!activeTable || !dbApi.query) return;
     try {
-      const uid = crypto.randomUUID();
-      await runDbQuery(`INSERT INTO ${activeTable.table} (_key) VALUES ('${uid}')`, { readOnly: false, tableName: activeTable.table, limit: 0 });
+      // The insert statement differs by engine, so the driver writes it and
+      // answers with the new row's identity.
+      if (!simpleTablesApi) throw new Error("This engine cannot add rows");
+      const created = await requestJson(
+        `${simpleTablesApi}/${encodeURIComponent(selectedTable)}/rows`,
+        { method: "POST" },
+      );
+      const uid = String(created?.identity ?? "");
       const { rows } = await loadPreviewData(activeTable.table);
       await loadTreeData(activeTable.table);
       if (rows.length) {
         const cols = mergedColumns.length ? mergedColumns : (activeTable.attributes || []).map((a) => a.name);
-        const keyIdx = cols.indexOf("_key");
+        const keyIdx = cols.indexOf(rowIdentity);
         const match = keyIdx >= 0 ? rows.find((r) => Array.isArray(r) && String(r[keyIdx]) === uid) : rows[rows.length - 1];
         const found = match || rows[rows.length - 1];
         const record = mapRowToObject(cols, Array.isArray(found) ? found : []);
@@ -1083,13 +1097,13 @@ export default function Page(input) {
 
   async function handleDeleteSelectedRow() {
     if (!activeTable || !selectedPreviewRowData) return;
-    const key = String(selectedPreviewRowData?._key || "").trim();
+    const key = String(selectedPreviewRowData?.[rowIdentity] ?? "").trim();
     if (!key) {
-      setQueryStatus("Cannot delete · row has no _key");
+      setQueryStatus(`Cannot delete · row has no ${rowIdentity}`);
       return;
     }
     try {
-      await runDbQuery(`DELETE FROM ${activeTable.table} WHERE _key = '${sqlStringLiteral(key)}'`, { readOnly: false, tableName: activeTable.table, limit: 0 });
+      await runDbQuery(`DELETE FROM ${activeTable.table} WHERE ${rowIdentity} = '${sqlStringLiteral(key)}'`, { readOnly: false, tableName: activeTable.table, limit: 0 });
       setSelectedPreviewRowKey("");
       setSelectedPreviewRowData(null);
       await loadPreviewData(activeTable.table);

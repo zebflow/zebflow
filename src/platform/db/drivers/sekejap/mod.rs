@@ -42,6 +42,8 @@ impl DbDriver for SekejapDbDriver {
             schemas: false,
             // Attributes and index kinds are editable after creation.
             edit_table_properties: true,
+            // Every sekejap row is addressed by `_key`.
+            row_identity: "_key".to_string(),
             geo: true,
             // Rows are joined by free edges rather than declared keys.
             relations: DbRelationStyle::Graph,
@@ -97,6 +99,25 @@ impl DbDriver for SekejapDbDriver {
         let project = ctx.project.clone();
         let req = req.clone();
         run_blocking(move || sekejap::create_table(&data_root, &owner, &project, &req)).await
+    }
+
+    async fn insert_empty_row(
+        &self,
+        ctx: &DbDriverContext,
+        table: &str,
+    ) -> Result<serde_json::Value, PlatformError> {
+        let bare = table.rsplit('.').next().unwrap_or(table).to_string();
+        // Sekejap rows carry a key the caller supplies, so one is minted here
+        // and answered back for the studio to select.
+        let key = uuid::Uuid::new_v4().to_string();
+        let sql = format!("INSERT INTO {bare} (_key) VALUES ('{key}')");
+        let req = QueryProjectDbConnectionRequest {
+            sql,
+            read_only: Some(false),
+            ..Default::default()
+        };
+        self.query(ctx, &req).await?;
+        Ok(serde_json::Value::String(key))
     }
 
     async fn drop_table(&self, ctx: &DbDriverContext, table: &str) -> Result<(), PlatformError> {

@@ -918,6 +918,10 @@ pub async fn router(platform: Arc<PlatformService>) -> Router {
             delete(api_drop_db_connection_table),
         )
         .route(
+            "/api/projects/{owner}/{project}/db/connections/{connection_id}/tables/{table}/rows",
+            post(api_insert_db_connection_row),
+        )
+        .route(
             "/api/projects/{owner}/{project}/db/connections/{connection_id}/functions",
             get(api_list_db_connection_functions),
         )
@@ -20705,6 +20709,34 @@ async fn api_drop_db_connection_table(
     }
 }
 
+/// POST /api/projects/{owner}/{project}/db/connections/{connection_id}/tables/{table}/rows
+///
+/// Adds one empty row. The statement differs by engine, so the driver writes it.
+async fn api_insert_db_connection_row(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((owner, project, connection_id, table)): Path<(String, String, String, String)>,
+) -> Response {
+    if let Err(response) = require_project_api_capability(
+        &state,
+        &headers,
+        &owner,
+        &project,
+        ProjectCapability::TablesWrite,
+    ) {
+        return response;
+    }
+    match state
+        .platform
+        .db_runtime
+        .insert_empty_row(&owner, &project, &connection_id, &table)
+        .await
+    {
+        Ok(identity) => Json(json!({"ok": true, "identity": identity})).into_response(),
+        Err(err) => db_ddl_error(err),
+    }
+}
+
 /// A refused definition is the caller's mistake, not a server fault, so it
 /// answers 400 rather than 500.
 fn db_ddl_error(err: PlatformError) -> Response {
@@ -20715,6 +20747,8 @@ fn db_ddl_error(err: PlatformError) -> Response {
             | "PLATFORM_DB_DDL_KIND"
             | "PLATFORM_DB_DDL_INDEX"
             | "PLATFORM_DB_DDL_FAILED"
+            | "PLATFORM_DB_ROW_UNSUPPORTED"
+            | "PLATFORM_DB_ROW_FAILED"
     );
     if caller_error {
         return (
