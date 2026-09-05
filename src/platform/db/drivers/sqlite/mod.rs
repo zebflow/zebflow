@@ -16,12 +16,12 @@ use std::time::Instant;
 use crate::platform::db::driver::{DbDriver, DbDriverContext};
 use crate::platform::db::sql_ddl::{
     ExistingColumn, IDENTITY_COLUMN, SqlDialect, alter_table_statements, create_table_statements,
-    drop_table_statement, index_name, validate_identifier,
+    drop_table_statement, index_name, type_catalog, validate_identifier,
 };
 use crate::platform::error::PlatformError;
 use crate::platform::model::{
     CollectionAttribute, CreateSimpleTableRequest, DbCapabilities, DbObjectNode, DbQueryColumn,
-    DbRelationStyle, DescribeProjectDbConnectionRequest, ProjectDbConnectionDescribeResult,
+    DbRelationStyle, DbTypeDef, DescribeProjectDbConnectionRequest, ProjectDbConnectionDescribeResult,
     ProjectDbConnectionQueryResult, QueryProjectDbConnectionRequest, SimpleTableDefinition,
     UpdateSimpleTableRequest, slug_segment,
 };
@@ -148,6 +148,23 @@ fn table_columns(conn: &Connection, table: &str) -> Result<Vec<Value>, PlatformE
         );
     }
 
+    // Which of this platform's indexes exist, so the properties editor can
+    // round-trip them instead of dropping them on save.
+    let mut present: Vec<String> = Vec::new();
+    {
+        let mut stmt = conn
+            .prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = ?1")
+            .map_err(|err| PlatformError::new("PLATFORM_DB_DESCRIBE_FAILED", err.to_string()))?;
+        let rows = stmt
+            .query_map([bare], |row| row.get::<_, String>(0))
+            .map_err(|err| PlatformError::new("PLATFORM_DB_DESCRIBE_FAILED", err.to_string()))?;
+        for row in rows {
+            present.push(row.map_err(|err| {
+                PlatformError::new("PLATFORM_DB_DESCRIBE_FAILED", err.to_string())
+            })?);
+        }
+    }
+
     let mut stmt = conn
         .prepare(&format!("PRAGMA table_info(\"{quoted}\")"))
         .map_err(|err| PlatformError::new("PLATFORM_DB_DESCRIBE_FAILED", err.to_string()))?;
@@ -172,10 +189,14 @@ fn table_columns(conn: &Connection, table: &str) -> Result<Vec<Value>, PlatformE
             // A column declared without a type has none in SQLite; report that
             // rather than inventing one.
             "type": if data_type.is_empty() { Value::Null } else { json!(data_type) },
+            "full_type": if data_type.is_empty() { Value::Null } else { json!(data_type) },
             "nullable": notnull == 0,
         });
         if pk > 0 {
             col["pk"] = json!(true);
+        }
+        if present.contains(&index_name(bare, &name)) {
+            col["indexed"] = json!(true);
         }
         if let Some(fk_ref) = fk_lookup.get(col["name"].as_str().unwrap_or_default()) {
             col["fk"] = fk_ref.clone();
@@ -246,6 +267,10 @@ impl DbDriver for SqliteDbDriver {
 
     fn sql_dialect(&self) -> Option<SqlDialect> {
         Some(SqlDialect::Sqlite)
+    }
+
+    fn type_catalog(&self) -> Vec<DbTypeDef> {
+        type_catalog(SqlDialect::Sqlite)
     }
 
     fn capabilities(&self) -> DbCapabilities {
@@ -410,22 +435,59 @@ impl DbDriver for SqliteDbDriver {
         })
     }
 
-    async fn insert_empty_row(
+    async fn insert_row(
         &self,
         ctx: &DbDriverContext,
         table: &str,
+        values: &serde_json::Map<String, serde_json::Value>,
     ) -> Result<serde_json::Value, PlatformError> {
         let bare = table
             .strip_prefix(&format!("{MAIN_SCHEMA}."))
             .unwrap_or(table);
         let name = validate_identifier(bare, "table")?;
-        let statement = format!("INSERT INTO {} DEFAULT VALUES", SqlDialect::Sqlite.quote(&name));
+
+        let mut columns = Vec::new();
+        let mut bound: Vec<serde_json::Value> = Vec::new();
+        for (column, value) in values {
+            columns.push(SqlDialect::Sqlite.quote(&validate_identifier(column, "column")?));
+            bound.push(value.clone());
+        }
+        let statement = if columns.is_empty() {
+            format!("INSERT INTO {} DEFAULT VALUES", SqlDialect::Sqlite.quote(&name))
+        } else {
+            let marks = vec!["?"; columns.len()].join(", ");
+            format!(
+                "INSERT INTO {} ({}) VALUES ({marks})",
+                SqlDialect::Sqlite.quote(&name),
+                columns.join(", ")
+            )
+        };
+
         let data_root = ctx.data_root.clone();
         let owner = ctx.owner.clone();
         let project = ctx.project.clone();
         run_blocking(move || {
             let conn = open_store(&data_root, &owner, &project)?;
-            conn.execute(&statement, [])
+            let params: Vec<Box<dyn rusqlite::ToSql>> = bound
+                .iter()
+                .map(|value| -> Box<dyn rusqlite::ToSql> {
+                    match value {
+                        serde_json::Value::Null => Box::new(Option::<String>::None),
+                        serde_json::Value::Bool(b) => Box::new(*b),
+                        serde_json::Value::Number(n) => {
+                            if let Some(i) = n.as_i64() {
+                                Box::new(i)
+                            } else {
+                                Box::new(n.as_f64().unwrap_or_default())
+                            }
+                        }
+                        serde_json::Value::String(text) => Box::new(text.clone()),
+                        other => Box::new(other.to_string()),
+                    }
+                })
+                .collect();
+            let refs: Vec<&dyn rusqlite::ToSql> = params.iter().map(|b| b.as_ref()).collect();
+            conn.execute(&statement, refs.as_slice())
                 .map_err(|err| PlatformError::new("PLATFORM_DB_ROW_FAILED", err.to_string()))?;
             Ok(serde_json::Value::from(conn.last_insert_rowid()))
         })

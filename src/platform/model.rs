@@ -2071,6 +2071,42 @@ pub struct DbObjectNode {
     pub meta: serde_json::Value,
 }
 
+/// One column type an engine actually offers.
+///
+/// The studio's type picker is built from these, so a PostgreSQL column is
+/// declared `int4` or `timestamptz` — the engine's own words — rather than a
+/// generic kind that has to be translated twice and loses meaning both ways.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DbTypeDef {
+    /// The name written into DDL, lowercase (`varchar`, `int4`, `jsonb`).
+    pub name: String,
+    /// Grouping for the picker and the column icon.
+    pub family: DbTypeFamily,
+    /// Whether the type takes arguments, as `varchar(255)` or `numeric(10,2)`.
+    pub parameterized: bool,
+    /// Shown beside the name where the name alone is cryptic.
+    pub note: String,
+}
+
+/// What a column type is for. Drives the picker's grouping and the icon the
+/// column grid shows, and is the granularity at which a type change is judged
+/// safe or refused.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum DbTypeFamily {
+    #[default]
+    Text,
+    Number,
+    Boolean,
+    Json,
+    DateTime,
+    Uuid,
+    Binary,
+    Geometry,
+    Vector,
+    Other,
+}
+
 /// What one database engine supports, declared by its driver.
 ///
 /// The data-management UI renders panels from this and never branches on

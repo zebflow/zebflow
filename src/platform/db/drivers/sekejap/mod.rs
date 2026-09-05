@@ -3,7 +3,8 @@ use async_trait::async_trait;
 use crate::platform::db::driver::{DbDriver, DbDriverContext};
 use crate::platform::error::PlatformError;
 use crate::platform::model::{
-    CreateSimpleTableRequest, DbCapabilities, DbObjectNode, DbRelationStyle,
+    CreateSimpleTableRequest, DbCapabilities, DbObjectNode, DbRelationStyle, DbTypeDef,
+    DbTypeFamily,
     DescribeProjectDbConnectionRequest, ProjectDbConnectionDescribeResult,
     ProjectDbConnectionQueryResult, QueryProjectDbConnectionRequest, SimpleTableDefinition,
     UpdateSimpleTableRequest, slug_segment,
@@ -11,6 +12,20 @@ use crate::platform::model::{
 use crate::platform::sekejap;
 
 pub struct SekejapDbDriver;
+
+/// One value as sekejap's SQL spells it.
+///
+/// Sekejap's parser takes literals rather than bind parameters here, so a
+/// string is quoted and its quotes doubled.
+fn sekejap_literal(value: &serde_json::Value) -> String {
+    match value {
+        serde_json::Value::Null => "NULL".to_string(),
+        serde_json::Value::Bool(b) => b.to_string(),
+        serde_json::Value::Number(n) => n.to_string(),
+        serde_json::Value::String(text) => format!("'{}'", text.replace('\'', "''")),
+        other => format!("'{}'", other.to_string().replace('\'', "''")),
+    }
+}
 
 async fn run_blocking<T, F>(f: F) -> Result<T, PlatformError>
 where
@@ -29,6 +44,26 @@ where
 impl DbDriver for SekejapDbDriver {
     fn kind(&self) -> &'static str {
         sekejap::DB_KIND
+    }
+
+    fn type_catalog(&self) -> Vec<DbTypeDef> {
+        // Sekejap stores values by kind rather than by SQL type, so these are
+        // its own words, not a dialect's.
+        let def = |name: &str, family: DbTypeFamily, note: &str| DbTypeDef {
+            name: name.to_string(),
+            family,
+            parameterized: false,
+            note: note.to_string(),
+        };
+        vec![
+            def("string", DbTypeFamily::Text, ""),
+            def("text", DbTypeFamily::Text, "long form"),
+            def("number", DbTypeFamily::Number, ""),
+            def("boolean", DbTypeFamily::Boolean, ""),
+            def("json", DbTypeFamily::Json, ""),
+            def("geo", DbTypeFamily::Geometry, "GeoJSON"),
+            def("vector", DbTypeFamily::Vector, "similarity search"),
+        ]
     }
 
     fn capabilities(&self) -> DbCapabilities {
@@ -115,16 +150,35 @@ impl DbDriver for SekejapDbDriver {
         run_blocking(move || sekejap::update_table(&data_root, &owner, &project, &table, &req)).await
     }
 
-    async fn insert_empty_row(
+    async fn insert_row(
         &self,
         ctx: &DbDriverContext,
         table: &str,
+        values: &serde_json::Map<String, serde_json::Value>,
     ) -> Result<serde_json::Value, PlatformError> {
         let bare = table.rsplit('.').next().unwrap_or(table).to_string();
-        // Sekejap rows carry a key the caller supplies, so one is minted here
-        // and answered back for the studio to select.
-        let key = uuid::Uuid::new_v4().to_string();
-        let sql = format!("INSERT INTO {bare} (_key) VALUES ('{key}')");
+        // A sekejap row carries the key its caller supplies, so one is minted
+        // here unless the caller chose it.
+        let key = values
+            .get("_key")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string)
+            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+
+        let mut columns = vec!["_key".to_string()];
+        let mut literals = vec![format!("'{}'", key.replace('\'', "''"))];
+        for (name, value) in values {
+            if name == "_key" {
+                continue;
+            }
+            columns.push(name.clone());
+            literals.push(sekejap_literal(value));
+        }
+        let sql = format!(
+            "INSERT INTO {bare} ({}) VALUES ({})",
+            columns.join(", "),
+            literals.join(", ")
+        );
         let req = QueryProjectDbConnectionRequest {
             sql,
             read_only: Some(false),

@@ -17,7 +17,11 @@ import ResizableDataGrid from "@/components/db/data-grid";
 import GeoPreviewMap, { parseGeoJsonGeometry } from "@/components/db/geo-preview";
 import StructureTable from "@/components/db/structure-table";
 import MaintenancePanel from "@/components/db/maintenance-panel";
-import CreateTableDialog, { AttributeEditorRow, DEFAULT_ATTRIBUTE } from "@/components/db/create-table-dialog";
+import CreateTableDialog, {
+  AttributeEditorRow,
+  AttributeEditorHeader,
+  DEFAULT_ATTRIBUTE,
+} from "@/components/db/create-table-dialog";
 import {
   RelationDialog,
   RelationTargetSearchDialog,
@@ -94,6 +98,85 @@ function normalizeSchemaNodes(nodes) {
     .sort((a, b) => a.localeCompare(b));
 }
 
+/**
+ * Editable attributes for one table.
+ *
+ * Sekejap reports `attributes` in this platform's own shape. The SQL engines
+ * report `columns` in theirs, so those are read back into attributes — carrying
+ * whether each column is indexed, because saving without that would silently
+ * drop every index the table has.
+ */
+function attributesFromNode(meta) {
+  if (Array.isArray(meta?.attributes) && meta.attributes.length) {
+    return meta.attributes;
+  }
+  const columns = Array.isArray(meta?.columns) ? meta.columns : [];
+  return columns
+    .filter((col) => col?.pk !== true)
+    .map((col) => ({
+      name: String(col?.name || ""),
+      // The engine's own type name, which is what the picker lists and what
+      // the writer takes back. Arguments are dropped for the picker and kept
+      // in `full_type` for display.
+      kind: String(col?.type ?? col?.data_type ?? "").split("(")[0].trim(),
+      full_type: String(col?.full_type ?? col?.type ?? ""),
+      index_types: col?.indexed === true ? ["hash"] : [],
+    }))
+    .filter((attr) => attr.name);
+}
+
+/**
+ * The facets of a table, in the order a database tool lists them.
+ *
+ * `ready` marks what is wired. The rest are shown disabled rather than hidden,
+ * because a screen that quietly omits constraints and triggers reads as though
+ * the table has none.
+ */
+/**
+ * One typed cell as JSON.
+ *
+ * A grid cell is text, but a database column is typed and checks what it is
+ * given: a number bound as text is refused by an integer column. Anything that
+ * reads as a number is sent as one, and an empty cell as null.
+ */
+/**
+ * The part of a driver error worth showing.
+ *
+ * Every engine prefixes its message with its own plumbing; the sentence after
+ * it is the one that names the column and the constraint.
+ */
+function readableDbError(error) {
+  const text = String(error?.message || error || "");
+  return text.replace(/^error returned from database:\s*/i, "");
+}
+
+function jsonValueForCell(raw) {
+  if (raw === null || raw === undefined) return null;
+  const text = String(raw).trim();
+  if (text === "") return null;
+  if (text === "true") return true;
+  if (text === "false") return false;
+  if (/^-?\d+(\.\d+)?$/.test(text)) {
+    const num = Number(text);
+    if (Number.isFinite(num)) return num;
+  }
+  return String(raw);
+}
+
+/** Marks a row the author is still composing, before it reaches the database. */
+const DRAFT_ROW_PREFIX = "__draft:";
+
+const PROPERTY_SECTIONS = [
+  { id: "columns", label: "Columns", glyph: "\u25a4", ready: true },
+  { id: "constraints", label: "Constraints", glyph: "\u25c9", ready: false },
+  { id: "foreign_keys", label: "Foreign Keys", glyph: "\u2192", ready: false },
+  { id: "indexes", label: "Indexes", glyph: "\u2261", ready: false },
+  { id: "triggers", label: "Triggers", glyph: "\u26a1", ready: false },
+  { id: "permissions", label: "Permissions", glyph: "\u26bf", ready: false },
+  { id: "statistics", label: "Statistics", glyph: "\u2211", ready: false },
+  { id: "ddl", label: "DDL", glyph: "\u2328", ready: false },
+];
+
 function normalizeTableNodes(nodes) {
   return (Array.isArray(nodes) ? nodes : [])
     .filter((node) => String(node?.kind || "") === "table")
@@ -106,7 +189,8 @@ function normalizeTableNodes(nodes) {
         table,
         key,
         rowCount: Number(node?.meta?.row_count || 0),
-        attributes: Array.isArray(node?.meta?.attributes) ? node.meta.attributes : [],
+        attributes: attributesFromNode(node?.meta),
+        columns: Array.isArray(node?.meta?.columns) ? node.meta.columns : [],
         hashIndexed: Array.isArray(node?.meta?.hash_indexed_fields) ? node.meta.hash_indexed_fields : [],
         rangeIndexed: Array.isArray(node?.meta?.range_indexed_fields) ? node.meta.range_indexed_fields : [],
         fulltextFields: Array.isArray(node?.meta?.fulltext_fields) ? node.meta.fulltext_fields : [],
@@ -295,6 +379,9 @@ export default function Page(input) {
   // The column that addresses one row. Declared by the driver because it
   // differs: sekejap answers `_key`, SQL engines answer their primary key.
   const rowIdentity = String(caps.row_identity || "_key");
+  // The engine's own column types, used by the type picker and the column
+  // glyphs, so PostgreSQL offers timestamptz where SQLite offers INTEGER.
+  const dbTypes = Array.isArray(input?.db_types) ? input.db_types : [];
   const sekejapSchemaExportApi = tablePropertiesApi ? `${tablePropertiesApi}/schema/export` : "";
   const sekejapSchemaSyncApi = schemaApi.schema_sync || "";
   const sekejapMaintenanceApi = schemaApi.maintenance || "";
@@ -346,6 +433,17 @@ export default function Page(input) {
   const [pendingRelationDelete, setPendingRelationDelete] = useState(null);
   const [contentTab, setContentTab] = useState("data");
   const [propsAttributes, setPropsAttributes] = useState([]);
+  // Which facet of the table the properties pane is showing. Only columns is
+  // wired; the rest are listed so the shape of the screen is visible and each
+  // one has an obvious place to land.
+  const [propsSection, setPropsSection] = useState("columns");
+  // Rows the author is composing. A table with NOT NULL columns has no valid
+  // empty row, so a new row is collected here and inserted on save rather than
+  // written the moment the button is pressed.
+  const [draftRows, setDraftRows] = useState([]);
+  // Failures from the grid's own actions. `queryStatus` is shown on the query
+  // tab, so a row insert that failed there said nothing at all.
+  const [gridNotice, setGridNotice] = useState("");
   const [propsBusy, setPropsBusy] = useState(false);
   const [propsStatus, setPropsStatus] = useState("");
   const [schemaSyncBusy, setSchemaSyncBusy] = useState(false);
@@ -369,6 +467,26 @@ export default function Page(input) {
     : previewRows;
   const mergedColumns = orderedDataColumns(rawMergedColumns);
   const mergedRows = reorderRowsForColumns(rawMergedColumns, rawMergedRows, mergedColumns);
+  // Drafts are shown after the loaded rows, keyed so their edits are kept apart.
+  // What the engine reports about each column of the open table, keyed by name.
+  const columnMeta = {};
+  for (const col of activeTable?.columns || []) {
+    if (col?.name) columnMeta[col.name] = col;
+  }
+  // How this engine must be told which table to touch. An engine that
+  // namespaces its tables needs the qualifier — `UPDATE orders` fails on
+  // PostgreSQL when the table lives in `shop` — and one that does not would
+  // choke on it. Decided by the declared capability, not by the engine's name.
+  const tableRef = activeTable
+    ? caps.schemas === true
+      ? `${activeTable.schema}.${activeTable.table}`
+      : activeTable.table
+    : "";
+  const draftKeyFor = (index) => `${DRAFT_ROW_PREFIX}${index}`;
+  const draftDisplayRows = draftRows.map((draft, index) =>
+    mergedColumns.map((col) => (col === rowIdentity ? draftKeyFor(index) : draft?.[col] ?? null)),
+  );
+  const displayRows = mergedRows.concat(draftDisplayRows);
 
   async function loadTreeData(preferredTable = "") {
     const [schemasPayload, tablesPayload] = await Promise.all([
@@ -966,7 +1084,7 @@ export default function Page(input) {
     if (!activeTable) return;
     setDeleteBusy(true);
     try {
-      await requestJson(`${simpleTablesApi}/${encodeURIComponent(activeTable.table)}`, {
+      await requestJson(`${simpleTablesApi}/${encodeURIComponent(selectedTable)}`, {
         method: "DELETE",
       });
       setDeleteConfirmOpen(false);
@@ -986,12 +1104,12 @@ export default function Page(input) {
   const [editingCell, setEditingCell] = useState(null);
   const [mapPickerOpen, setMapPickerOpen] = useState(false);
   const [mapPickerTarget, setMapPickerTarget] = useState(null);
-  const hasPendingEdits = Object.keys(pendingEdits).length > 0;
+  const hasPendingEdits = Object.keys(pendingEdits).length > 0 || draftRows.length > 0;
 
   async function handleRefreshData() {
     if (activeTable) {
-      await loadPreviewData(activeTable.table);
-      await loadTreeData(activeTable.table);
+      await loadPreviewData(selectedTable);
+      await loadTreeData(selectedTable);
     } else {
       setReloadToken((v) => v + 1);
     }
@@ -999,6 +1117,14 @@ export default function Page(input) {
   }
 
   function handleCellEdit(rowKey, colName, newValue) {
+    const key = String(rowKey ?? "");
+    if (key.startsWith(DRAFT_ROW_PREFIX)) {
+      const index = Number(key.slice(DRAFT_ROW_PREFIX.length));
+      setDraftRows((prev) =>
+        prev.map((draft, i) => (i === index ? { ...draft, [colName]: newValue } : draft)),
+      );
+      return;
+    }
     setPendingEdits((prev) => {
       const rowEdits = { ...(prev[rowKey] || {}), [colName]: newValue };
       return { ...prev, [rowKey]: rowEdits };
@@ -1025,6 +1151,20 @@ export default function Page(input) {
   async function handleSaveEdits() {
     if (!activeTable || !dbApi.query || !hasPendingEdits) return;
     try {
+      setGridNotice("");
+      // Drafts first: each becomes one insert carrying the values typed into it.
+      for (const draft of draftRows) {
+        const values = {};
+        for (const [col, val] of Object.entries(draft || {})) {
+          if (col === rowIdentity) continue;
+          values[col] = jsonValueForCell(val);
+        }
+        await requestJson(`${simpleTablesApi}/${encodeURIComponent(selectedTable)}/rows`, {
+          method: "POST",
+          body: JSON.stringify(values),
+        });
+      }
+      setDraftRows([]);
       for (const edits of Object.values(pendingEdits)) {
         for (const [col, val] of Object.entries(edits || {})) {
           const warning = validateCellEditValue(activeTable, col, val);
@@ -1053,48 +1193,36 @@ export default function Page(input) {
           })
           .join(", ");
         await runDbQuery(
-          `UPDATE ${activeTable.table} SET ${setClauses} WHERE ${rowIdentity} = '${sqlStringLiteral(rowKey)}'`,
-          { readOnly: false, tableName: activeTable.table, limit: 0 },
+          `UPDATE ${tableRef} SET ${setClauses} WHERE ${rowIdentity} = '${sqlStringLiteral(rowKey)}'`,
+          { readOnly: false, tableName: tableRef, limit: 0 },
         );
       }
       setPendingEdits({});
       setEditingCell(null);
-      await loadPreviewData(activeTable.table);
+      await loadPreviewData(selectedTable);
     } catch (error) {
+      setGridNotice(`Save failed · ${readableDbError(error)}`);
       setQueryStatus(`Save failed · ${String(error?.message || error)}`);
     }
   }
 
   function handleCancelEdits() {
     setPendingEdits({});
+    setDraftRows([]);
+    setGridNotice("");
     setEditingCell(null);
   }
 
-  async function handleAddRow() {
-    if (!activeTable || !dbApi.query) return;
-    try {
-      // The insert statement differs by engine, so the driver writes it and
-      // answers with the new row's identity.
-      if (!simpleTablesApi) throw new Error("This engine cannot add rows");
-      const created = await requestJson(
-        `${simpleTablesApi}/${encodeURIComponent(selectedTable)}/rows`,
-        { method: "POST" },
-      );
-      const uid = String(created?.identity ?? "");
-      const { rows } = await loadPreviewData(activeTable.table);
-      await loadTreeData(activeTable.table);
-      if (rows.length) {
-        const cols = mergedColumns.length ? mergedColumns : (activeTable.attributes || []).map((a) => a.name);
-        const keyIdx = cols.indexOf(rowIdentity);
-        const match = keyIdx >= 0 ? rows.find((r) => Array.isArray(r) && String(r[keyIdx]) === uid) : rows[rows.length - 1];
-        const found = match || rows[rows.length - 1];
-        const record = mapRowToObject(cols, Array.isArray(found) ? found : []);
-        setSelectedPreviewRowKey(uid);
-        setSelectedPreviewRowData(record);
-      }
-    } catch (error) {
-      setQueryStatus(`Insert failed · ${String(error?.message || error)}`);
+  function handleAddRow() {
+    if (!activeTable) return;
+    if (!simpleTablesApi) {
+      setGridNotice("This engine cannot add rows.");
+      return;
     }
+    // A blank draft, not an insert: the database rejects an empty row on any
+    // table with a column that cannot be null, which is most of them.
+    setDraftRows((prev) => prev.concat([{}]));
+    setGridNotice("");
   }
 
   async function handleDeleteSelectedRow() {
@@ -1105,13 +1233,13 @@ export default function Page(input) {
       return;
     }
     try {
-      await runDbQuery(`DELETE FROM ${activeTable.table} WHERE ${rowIdentity} = '${sqlStringLiteral(key)}'`, { readOnly: false, tableName: activeTable.table, limit: 0 });
+      await runDbQuery(`DELETE FROM ${tableRef} WHERE ${rowIdentity} = '${sqlStringLiteral(key)}'`, { readOnly: false, tableName: tableRef, limit: 0 });
       setSelectedPreviewRowKey("");
       setSelectedPreviewRowData(null);
-      await loadPreviewData(activeTable.table);
-      await loadTreeData(activeTable.table);
+      await loadPreviewData(selectedTable);
+      await loadTreeData(selectedTable);
     } catch (error) {
-      setQueryStatus(`Delete failed · ${String(error?.message || error)}`);
+      setGridNotice(`Delete failed · ${readableDbError(error)}`);
     }
   }
 
@@ -1119,7 +1247,7 @@ export default function Page(input) {
     if (!activeTable || !dbApi.query) return;
     setCountBusy(true);
     try {
-      const res = await runDbQuery(`SELECT COUNT(*) AS cnt FROM ${activeTable.table}`, { readOnly: true, tableName: activeTable.table, limit: 1 });
+      const res = await runDbQuery(`SELECT COUNT(*) AS cnt FROM ${tableRef}`, { readOnly: true, tableName: tableRef, limit: 1 });
       const cnt = Number(res.objects?.[0]?.cnt ?? res.rows?.[0]?.[0] ?? 0);
       setTotalRowCount(cnt);
     } catch {
@@ -1341,7 +1469,15 @@ export default function Page(input) {
                         )}
                       </aside>
 
-                      <div className="db-suite-data-split">
+                      {/* The split reserves a column for the row inspector,
+                          which belongs to Data. Properties takes the whole
+                          width instead, so a table's columns are readable. */}
+                      <div
+                        className={cx(
+                          "db-suite-data-split",
+                          contentTab === "properties" ? "!grid-cols-[minmax(0,1fr)]" : "",
+                        )}
+                      >
                         <div className="flex min-h-0 flex-col">
                           <div className="flex min-h-0 flex-1 flex-col">
                             <div className="flex items-center justify-between gap-3 border-b border-ui-border/70 bg-ui-bg-muted/30 px-3 py-2">
@@ -1463,11 +1599,71 @@ export default function Page(input) {
                                 </div>
                               </div>
                             ) : contentTab === "properties" && activeTable && canEditProperties ? (
-                              <div className="flex min-h-0 flex-1 flex-col overflow-y-auto px-4 py-4">
+                              <div className="flex min-h-0 flex-1 flex-row overflow-hidden">
+                                {/* The table's facets. Only columns is wired; the
+                                    rest are listed so the screen's shape is
+                                    visible and each has an obvious place to land. */}
+                                <nav className="flex w-40 shrink-0 flex-col gap-0.5 overflow-y-auto border-r border-ui-border/70 bg-ui-bg-muted/20 p-2">
+                                  {PROPERTY_SECTIONS.map((section) => (
+                                    <button
+                                      key={section.id}
+                                      type="button"
+                                      disabled={!section.ready}
+                                      onClick={() => section.ready && setPropsSection(section.id)}
+                                      title={section.ready ? section.label : `${section.label} — not built yet`}
+                                      className={cx(
+                                        "flex items-center gap-2 rounded px-2 py-1 text-left text-xs transition-colors",
+                                        propsSection === section.id
+                                          ? "bg-ui-bg-muted text-ui-text"
+                                          : "text-ui-text-soft hover:bg-ui-bg-muted/60",
+                                        !section.ready ? "cursor-not-allowed opacity-40" : "",
+                                      )}
+                                    >
+                                      <span className="w-3 shrink-0 text-center text-[10px]">{section.glyph}</span>
+                                      <span className="truncate">{section.label}</span>
+                                    </button>
+                                  ))}
+                                </nav>
+
+                                <div className="flex min-w-0 flex-1 flex-col overflow-y-auto px-4 py-3">
+                                {/* A compact header, the way a database tool
+                                    states what you are looking at. */}
+                                <div className="mb-3 grid gap-x-6 gap-y-1 border-b border-ui-border/60 pb-3 text-xs sm:grid-cols-2">
+                                  <div className="flex gap-2">
+                                    <span className="w-20 shrink-0 text-ui-text-muted">Table</span>
+                                    <span className="truncate text-ui-text">{activeTable.table}</span>
+                                  </div>
+                                  <div className="flex gap-2">
+                                    <span className="w-20 shrink-0 text-ui-text-muted">Schema</span>
+                                    <span className="truncate text-ui-text">{activeTable.schema}</span>
+                                  </div>
+                                  <div className="flex gap-2">
+                                    <span className="w-20 shrink-0 text-ui-text-muted">Engine</span>
+                                    <span className="truncate text-ui-text">{connection.kind}</span>
+                                  </div>
+                                  <div className="flex gap-2">
+                                    <span className="w-20 shrink-0 text-ui-text-muted">Columns</span>
+                                    <span className="text-ui-text">{propsAttributes.length}</span>
+                                  </div>
+                                </div>
+
+                                {propsSection !== "columns" ? (
+                                  <div className="flex flex-1 items-center justify-center px-6 py-10 text-center">
+                                    <div className="max-w-sm">
+                                      <p className="text-sm text-ui-text">
+                                        {(PROPERTY_SECTIONS.find((s) => s.id === propsSection) || {}).label}
+                                      </p>
+                                      <p className="mt-2 text-xs text-ui-text-soft">
+                                        Not built yet. The engine reports this, but nothing reads it back into the studio.
+                                      </p>
+                                    </div>
+                                  </div>
+                                ) : (
+                                <>
                                 <form onSubmit={handleUpdateTable} className="flex flex-col gap-5">
                                   <div className="flex flex-col gap-3">
                                     <div className="flex items-center justify-between">
-                                      <p className="text-xs font-medium uppercase tracking-[0.14em] text-ui-text-soft">Attributes</p>
+                                      <p className="text-xs font-medium uppercase tracking-[0.14em] text-ui-text-soft">Columns</p>
                                       <Button
                                         type="button"
                                         variant="outline"
@@ -1483,12 +1679,16 @@ export default function Page(input) {
                                       </Button>
                                     </div>
                                     {propsAttributes.length === 0 ? (
-                                      <p className="text-xs text-ui-text-soft">No attributes defined yet.</p>
+                                      <p className="text-xs text-ui-text-soft">This table has no columns yet.</p>
                                     ) : (
+                                      <AttributeEditorHeader />
+                                    )}
+                                    {propsAttributes.length === 0 ? null : (
                                       propsAttributes.map((attr, idx) => (
                                         <AttributeEditorRow
                                           key={idx}
                                           item={attr}
+                                          types={dbTypes}
                                           onChange={(next) =>
                                             setPropsAttributes((prev) =>
                                               prev.map((a, i) => (i === idx ? next : a))
@@ -1573,9 +1773,20 @@ export default function Page(input) {
                                     </DialogContent>
                                   </Dialog>
                                 ) : null}
+                                </>
+                                )}
+                                </div>
                               </div>
                             ) : (
                             <div className="db-suite-grid-wrap db-suite-grid-editor-wrap">
+                              {/* Failures from the grid's own actions. Without
+                                  this an insert the database refused said
+                                  nothing at all. */}
+                              {gridNotice ? (
+                                <div className="shrink-0 border-b border-red-500/40 bg-red-500/10 px-3 py-1.5 text-[11px] text-red-400">
+                                  {gridNotice}
+                                </div>
+                              ) : null}
                               {activeTable ? (
                                 <div className="flex shrink-0 flex-wrap items-center gap-1 border-b border-ui-border/70 bg-ui-bg-muted/30 px-2 py-1.5">
                                   <button type="button" title="Save changes" className={`flex items-center gap-1 rounded px-2 py-1 text-[11px] font-medium disabled:opacity-30 ${hasPendingEdits ? "bg-blue-600 text-white hover:bg-blue-700" : "text-ui-text-soft hover:bg-ui-bg-muted hover:text-ui-text"}`} disabled={!hasPendingEdits} onClick={handleSaveEdits}>
@@ -1621,7 +1832,9 @@ export default function Page(input) {
                               ) : mergedRows.length ? (
                                 <ResizableDataGrid
                                   columns={mergedColumns}
-                                  rows={mergedRows}
+                                  rows={displayRows}
+                                  columnMeta={columnMeta}
+                                  identityColumn={rowIdentity}
                                   selectedRowKey={selectedPreviewRowKey}
                                   onRowSelect={(key, record) => {
                                     setSelectedPreviewRowKey(key);
@@ -1698,6 +1911,7 @@ export default function Page(input) {
                           ) : null}
                         </div>
 
+                        {contentTab === "properties" ? null : (
                         <aside className="db-suite-value-panel">
                           <div className="db-suite-value-head">{selectedPreviewRowData ? "Node" : hasInspectedValue ? "Value" : "Overview"}</div>
                           <div className="db-suite-value-meta">
@@ -1804,6 +2018,7 @@ export default function Page(input) {
                             <pre className="db-suite-value-body">Choose a table from the left to inspect its data and structure.</pre>
                           )}
                         </aside>
+                        )}
                       </div>
                     </div>
                   </section>
@@ -1955,6 +2170,7 @@ export default function Page(input) {
         </div>
         {canCreateTable ? (
         <CreateTableDialog
+          types={dbTypes}
           open={createOpen}
           onOpenChange={setCreateOpen}
           tableSlug={createTableSlug}

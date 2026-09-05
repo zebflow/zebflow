@@ -18,12 +18,12 @@ use sqlx::{Column, Row, TypeInfo, ValueRef, mysql::MySqlConnectOptions, mysql::M
 use crate::platform::db::driver::{DbDriver, DbDriverContext};
 use crate::platform::db::sql_ddl::{
     ExistingColumn, IDENTITY_COLUMN, SqlDialect, alter_table_statements, create_table_statements,
-    drop_table_statement, index_name, validate_identifier,
+    drop_table_statement, index_name, type_catalog, validate_identifier,
 };
 use crate::platform::error::PlatformError;
 use crate::platform::model::{
     CollectionAttribute, CreateSimpleTableRequest, DbCapabilities, DbObjectNode, DbQueryColumn,
-    DbRelationStyle, DescribeProjectDbConnectionRequest, ProjectDbConnectionDescribeResult,
+    DbRelationStyle, DbTypeDef, DescribeProjectDbConnectionRequest, ProjectDbConnectionDescribeResult,
     ProjectDbConnectionQueryResult, QueryProjectDbConnectionRequest, SimpleTableDefinition,
     UpdateSimpleTableRequest, slug_segment,
 };
@@ -287,7 +287,7 @@ async fn column_lookup(
     include_system: bool,
 ) -> Result<BTreeMap<(String, String), Vec<Value>>, PlatformError> {
     let mut sql = format!(
-        "SELECT TABLE_SCHEMA, TABLE_NAME, COLUMN_NAME, DATA_TYPE, IS_NULLABLE, \
+        "SELECT TABLE_SCHEMA, TABLE_NAME, COLUMN_NAME, DATA_TYPE, COLUMN_TYPE, IS_NULLABLE, \
                 COLUMN_DEFAULT, COLUMN_KEY \
          FROM information_schema.columns WHERE 1=1{}",
         system_filter(include_system)
@@ -342,6 +342,31 @@ async fn column_lookup(
         );
     }
 
+    // This platform's indexes, so the properties editor round-trips them.
+    let mut idx_sql = String::from(
+        "SELECT DISTINCT TABLE_SCHEMA, TABLE_NAME, INDEX_NAME FROM information_schema.statistics WHERE 1=1",
+    );
+    idx_sql.push_str(&system_filter(include_system));
+    if schema_filter.is_some() {
+        idx_sql.push_str(" AND TABLE_SCHEMA = ?");
+    }
+    let mut idx_query = sqlx::query(&idx_sql);
+    if let Some(schema) = schema_filter {
+        idx_query = idx_query.bind(schema);
+    }
+    let idx_rows = idx_query
+        .fetch_all(pool)
+        .await
+        .map_err(|err| PlatformError::new("PLATFORM_DB_DESCRIBE_FAILED", err.to_string()))?;
+    let mut index_lookup = BTreeSet::<(String, String, String)>::new();
+    for row in idx_rows {
+        index_lookup.insert((
+            text(&row, "TABLE_SCHEMA"),
+            text(&row, "TABLE_NAME"),
+            text(&row, "INDEX_NAME"),
+        ));
+    }
+
     let mut out = BTreeMap::<(String, String), Vec<Value>>::new();
     for row in rows {
         let schema = text(&row, "TABLE_SCHEMA");
@@ -355,10 +380,19 @@ async fn column_lookup(
         let mut col = json!({
             "name": name,
             "type": data_type,
+            // COLUMN_TYPE keeps the width, as `varchar(255)` or `tinyint(1)`.
+            "full_type": text(&row, "COLUMN_TYPE"),
             "nullable": nullable.eq_ignore_ascii_case("YES"),
         });
         if key == "PRI" {
             col["pk"] = json!(true);
+        }
+        if index_lookup.contains(&(
+            schema.clone(),
+            table.clone(),
+            index_name(&table, &name),
+        )) {
+            col["indexed"] = json!(true);
         }
         if let Some(fk) = fk_lookup.get(&(schema.clone(), table.clone(), name)) {
             col["fk"] = fk.clone();
@@ -502,6 +536,10 @@ impl DbDriver for MysqlDbDriver {
 
     fn sql_dialect(&self) -> Option<SqlDialect> {
         Some(SqlDialect::MySql)
+    }
+
+    fn type_catalog(&self) -> Vec<DbTypeDef> {
+        type_catalog(SqlDialect::MySql)
     }
 
     fn capabilities(&self) -> DbCapabilities {
@@ -703,10 +741,11 @@ impl DbDriver for MysqlDbDriver {
         })
     }
 
-    async fn insert_empty_row(
+    async fn insert_row(
         &self,
         ctx: &DbDriverContext,
         table: &str,
+        values: &serde_json::Map<String, serde_json::Value>,
     ) -> Result<serde_json::Value, PlatformError> {
         // The table arrives qualified as the tree named it; each part is
         // validated and quoted rather than pasted in.
@@ -716,8 +755,36 @@ impl DbDriver for MysqlDbDriver {
             .map(|part| validate_identifier(part, "table").map(|name| SqlDialect::MySql.quote(&name)))
             .collect::<Result<Vec<_>, _>>()?
             .join(".");
+
+        let mut columns = Vec::new();
+        let mut bound: Vec<Value> = Vec::new();
+        for (column, value) in values {
+            columns.push(SqlDialect::MySql.quote(&validate_identifier(column, "column")?));
+            bound.push(value.clone());
+        }
+
         let pool = connect_pool(ctx).await?;
-        let result = sqlx::query(&format!("INSERT INTO {quoted} () VALUES ()"))
+        let statement = if columns.is_empty() {
+            format!("INSERT INTO {quoted} () VALUES ()")
+        } else {
+            let marks = vec!["?"; columns.len()].join(", ");
+            format!(
+                "INSERT INTO {quoted} ({}) VALUES ({marks})",
+                columns.join(", ")
+            )
+        };
+        let mut query = sqlx::query(&statement);
+        for value in &bound {
+            query = match value {
+                Value::Null => query.bind(Option::<String>::None),
+                Value::Bool(b) => query.bind(*b),
+                Value::Number(n) if n.is_i64() => query.bind(n.as_i64().unwrap_or_default()),
+                Value::Number(n) => query.bind(n.as_f64().unwrap_or_default()),
+                Value::String(text) => query.bind(text.clone()),
+                other => query.bind(other.to_string()),
+            };
+        }
+        let result = query
             .execute(&pool)
             .await
             .map_err(|err| PlatformError::new("PLATFORM_DB_ROW_FAILED", err.to_string()))?;

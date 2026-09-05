@@ -23,7 +23,7 @@ import {
  * inspection. Engine differences arrive as props (which columns are
  * geometry, which are vectors) rather than as branches on a driver name.
  */
-export default function ResizableDataGrid({ columns, rows, selectedRowKey, onRowSelect, onCellInspect, mapRowToObject, editingCell, pendingEdits, onEditingCellChange, onCellEdit, vectorFields, geoFields, onGeoPick }) {
+export default function ResizableDataGrid({ columns, rows, columnMeta, identityColumn = "_key", selectedRowKey, onRowSelect, onCellInspect, mapRowToObject, editingCell, pendingEdits, onEditingCellChange, onCellEdit, vectorFields, geoFields, onGeoPick }) {
   const [colWidths, setColWidths] = useState({});
   const [sortCol, setSortCol] = useState(null);
   const [sortDir, setSortDir] = useState("asc");
@@ -109,15 +109,39 @@ export default function ResizableDataGrid({ columns, rows, selectedRowKey, onRow
         <tr>
           {columns.map((col, index) => {
             const isSorted = sortCol === col;
+            // What the engine says about this column, so the header can state
+            // its type and what a foreign key points at. Without it a rejected
+            // value gives no clue what a valid one would be.
+            const meta = (columnMeta || {})[col] || {};
+            const ref = meta.fk
+              ? `${meta.fk.schema ? `${meta.fk.schema}.` : ""}${meta.fk.table}.${meta.fk.column}`
+              : "";
+            const headerTitle = [
+              col,
+              meta.full_type || meta.type || "",
+              meta.pk ? "primary key" : "",
+              ref ? `references ${ref}` : "",
+              meta.nullable === false ? "not null" : "",
+            ]
+              .filter(Boolean)
+              .join(" · ");
             return (
               <th
                 key={`${col}-${index}`}
+                title={headerTitle}
                 className="relative px-[0.65rem] py-[0.4rem] border-b border-border-soft text-left text-[0.68rem] font-mono uppercase tracking-[0.12em] text-body-soft select-none cursor-pointer hover:text-body"
                 style={{ width: colWidths[col] || defaultColumnWidth(col), minWidth: 48, maxWidth: 600 }}
                 onClick={() => onHeaderClick(index)}
               >
                 <span className="flex items-center gap-1 overflow-hidden whitespace-nowrap">
                   <span className="overflow-hidden text-ellipsis">{col}</span>
+                  {/* A column that points at another table says so, because a
+                      value it will accept is not guessable otherwise. */}
+                  {ref ? (
+                    <span className="shrink-0 text-[0.6rem] normal-case tracking-normal text-ui-text-muted" title={`references ${ref}`}>
+                      {"\u2192"}
+                    </span>
+                  ) : null}
                   {isSorted && (
                     <svg viewBox="0 0 10 10" fill="currentColor" className="w-2.5 h-2.5 shrink-0 opacity-70">
                       {sortDir === "asc"
@@ -141,7 +165,11 @@ export default function ResizableDataGrid({ columns, rows, selectedRowKey, onRow
       <tbody>
         {sortedRows.map((row, rowIndex) => {
           const record = mapRowToObject(columns, row);
-          const rowKey = String(record?._key || "");
+          // The column that identifies a row, which differs by engine: sekejap
+          // answers `_key`, a SQL engine its primary key. Without this a row on
+          // a SQL engine has no identity, so it cannot be selected, edited or
+          // deleted.
+          const rowKey = String(record?.[identityColumn] ?? "");
           const isSelected = selectedRowKey && rowKey === selectedRowKey;
           const rowPending = pendingEdits?.[rowKey] || {};
           return (

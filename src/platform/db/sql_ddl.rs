@@ -6,7 +6,7 @@
 //! identifier is refused rather than escaped.
 
 use crate::platform::error::PlatformError;
-use crate::platform::model::CollectionAttribute;
+use crate::platform::model::{CollectionAttribute, DbTypeDef, DbTypeFamily};
 
 /// The SQL dialect a statement is being written for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -28,6 +28,148 @@ impl SqlDialect {
             _ => format!("\"{name}\""),
         }
     }
+}
+
+/// The types one SQL dialect offers, in the order the picker shows them.
+///
+/// Written in the engine's own words, because that is what its DDL takes and
+/// what its catalog reports back. A generic set would have to be translated on
+/// the way in and guessed at on the way out, and `timestamptz` has no generic
+/// equivalent worth the loss.
+pub fn type_catalog(dialect: SqlDialect) -> Vec<DbTypeDef> {
+    let def = |name: &str, family: DbTypeFamily, parameterized: bool, note: &str| DbTypeDef {
+        name: name.to_string(),
+        family,
+        parameterized,
+        note: note.to_string(),
+    };
+    match dialect {
+        SqlDialect::Postgres => vec![
+            def("text", DbTypeFamily::Text, false, "unbounded"),
+            def("varchar", DbTypeFamily::Text, true, "bounded"),
+            def("char", DbTypeFamily::Text, true, "blank padded"),
+            def("int2", DbTypeFamily::Number, false, "small integer"),
+            def("int4", DbTypeFamily::Number, false, "integer"),
+            def("int8", DbTypeFamily::Number, false, "big integer"),
+            def("numeric", DbTypeFamily::Number, true, "exact decimal"),
+            def("float4", DbTypeFamily::Number, false, "real"),
+            def("float8", DbTypeFamily::Number, false, "double precision"),
+            def("bool", DbTypeFamily::Boolean, false, ""),
+            def("jsonb", DbTypeFamily::Json, false, "indexed json"),
+            def("json", DbTypeFamily::Json, false, "stored as text"),
+            def("uuid", DbTypeFamily::Uuid, false, ""),
+            def("date", DbTypeFamily::DateTime, false, ""),
+            def("time", DbTypeFamily::DateTime, false, ""),
+            def("timestamp", DbTypeFamily::DateTime, false, "without time zone"),
+            def("timestamptz", DbTypeFamily::DateTime, false, "with time zone"),
+            def("interval", DbTypeFamily::DateTime, false, ""),
+            def("bytea", DbTypeFamily::Binary, false, ""),
+        ],
+        SqlDialect::MySql => vec![
+            def("varchar", DbTypeFamily::Text, true, "bounded"),
+            def("char", DbTypeFamily::Text, true, "fixed width"),
+            def("text", DbTypeFamily::Text, false, "needs a prefix to index"),
+            def("mediumtext", DbTypeFamily::Text, false, ""),
+            def("longtext", DbTypeFamily::Text, false, ""),
+            def("tinyint", DbTypeFamily::Number, false, "also holds a boolean"),
+            def("smallint", DbTypeFamily::Number, false, ""),
+            def("int", DbTypeFamily::Number, false, ""),
+            def("bigint", DbTypeFamily::Number, false, ""),
+            def("decimal", DbTypeFamily::Number, true, "exact decimal"),
+            def("float", DbTypeFamily::Number, false, ""),
+            def("double", DbTypeFamily::Number, false, ""),
+            def("boolean", DbTypeFamily::Boolean, false, "stored as tinyint(1)"),
+            def("json", DbTypeFamily::Json, false, ""),
+            def("date", DbTypeFamily::DateTime, false, ""),
+            def("time", DbTypeFamily::DateTime, false, ""),
+            def("datetime", DbTypeFamily::DateTime, false, ""),
+            def("timestamp", DbTypeFamily::DateTime, false, ""),
+            def("blob", DbTypeFamily::Binary, false, ""),
+            def("varbinary", DbTypeFamily::Binary, true, ""),
+        ],
+        SqlDialect::Sqlite => vec![
+            // SQLite has affinities rather than types; these are the five it
+            // recognises plus the spellings it accepts and stores as one of them.
+            def("TEXT", DbTypeFamily::Text, false, ""),
+            def("INTEGER", DbTypeFamily::Number, false, "also holds a boolean"),
+            def("REAL", DbTypeFamily::Number, false, ""),
+            def("NUMERIC", DbTypeFamily::Number, false, ""),
+            def("BLOB", DbTypeFamily::Binary, false, ""),
+        ],
+    }
+}
+
+/// Whether one requested type is in the dialect's catalog.
+///
+/// A parameterized type may carry its arguments — `varchar(255)`,
+/// `numeric(10,2)` — which are checked for shape and passed through.
+pub fn resolve_column_type(
+    requested: &str,
+    dialect: SqlDialect,
+) -> Result<String, PlatformError> {
+    let raw = requested.trim();
+    if raw.is_empty() {
+        return Err(PlatformError::new(
+            "PLATFORM_DB_DDL_KIND",
+            "column type is empty",
+        ));
+    }
+    let (base, args) = match raw.find('(') {
+        Some(open) => {
+            let close = raw.rfind(')').ok_or_else(|| {
+                PlatformError::new(
+                    "PLATFORM_DB_DDL_KIND",
+                    format!("type '{raw}' is missing its closing bracket"),
+                )
+            })?;
+            // Anything after the arguments is refused rather than dropped.
+            // Discarding it quietly would accept `varchar(20); DROP TABLE x`
+            // and report success for a request nobody made.
+            if !raw[close + 1..].trim().is_empty() {
+                return Err(PlatformError::new(
+                    "PLATFORM_DB_DDL_KIND",
+                    format!("type '{raw}' has trailing text after its arguments"),
+                ));
+            }
+            (&raw[..open], Some(raw[open + 1..close].trim().to_string()))
+        }
+        None => (raw, None),
+    };
+    let base = base.trim();
+
+    let catalog = type_catalog(dialect);
+    let found = catalog
+        .iter()
+        .find(|entry| entry.name.eq_ignore_ascii_case(base))
+        .ok_or_else(|| {
+            PlatformError::new(
+                "PLATFORM_DB_DDL_KIND",
+                format!("'{base}' is not a type this engine offers"),
+            )
+        })?;
+
+    let Some(args) = args else {
+        return Ok(found.name.clone());
+    };
+    if !found.parameterized {
+        return Err(PlatformError::new(
+            "PLATFORM_DB_DDL_KIND",
+            format!("type '{}' takes no arguments", found.name),
+        ));
+    }
+    // Arguments reach the database as text, so only digits and one comma pass.
+    if args.is_empty()
+        || !args
+            .chars()
+            .all(|c| c.is_ascii_digit() || c == ',' || c.is_whitespace())
+    {
+        return Err(PlatformError::new(
+            "PLATFORM_DB_DDL_KIND",
+            format!("type arguments '{args}' must be numbers"),
+        ));
+    }
+    let cleaned: String = args.chars().filter(|c| !c.is_whitespace()).collect();
+    Ok(format!("{}({cleaned})", found.name))
 }
 
 /// The column every created table carries, so a row can be identified for
@@ -77,7 +219,7 @@ pub fn validate_identifier(raw: &str, what: &str) -> Result<String, PlatformErro
 /// Kinds that need a database extension are refused by name rather than
 /// silently stored as text, because a column that claims to hold geometry and
 /// holds a string is worse than a rejected request.
-fn column_type(kind: &str, dialect: SqlDialect) -> Result<&'static str, PlatformError> {
+fn column_type(kind: &str, dialect: SqlDialect) -> Result<String, PlatformError> {
     let kind = kind.trim().to_ascii_lowercase();
     let ty = match (kind.as_str(), dialect) {
         // MySQL cannot index a TEXT column without a prefix length, so the
@@ -105,14 +247,11 @@ fn column_type(kind: &str, dialect: SqlDialect) -> Result<&'static str, Platform
                 "geometry columns need a database extension this driver does not manage",
             ));
         }
-        (other, _) => {
-            return Err(PlatformError::new(
-                "PLATFORM_DB_DDL_KIND",
-                format!("unknown attribute kind '{other}'"),
-            ));
-        }
+        // Not one of the portable kinds, so it is read as the engine's own
+        // type name and checked against that engine's catalog.
+        (other, _) => return resolve_column_type(other, dialect),
     };
-    Ok(ty)
+    Ok(ty.to_string())
 }
 
 /// The statements that create one table and its indexes.
@@ -151,8 +290,8 @@ pub fn create_table_statements(
                 // Both are ordinary btree indexes in a SQL engine; the
                 // distinction sekejap draws does not exist here.
                 "hash" | "range" => {
-                    if !indexed.contains(&(name.clone(), ty.to_string())) {
-                        indexed.push((name.clone(), ty.to_string()));
+                    if !indexed.contains(&(name.clone(), ty.clone())) {
+                        indexed.push((name.clone(), ty.clone()));
                     }
                 }
                 "fulltext" | "vector" | "spatial" => {
@@ -180,7 +319,7 @@ pub fn create_table_statements(
         let index_name = dialect.quote(&format!("idx_{table}_{column}"));
         // A MySQL index over TEXT must state how many characters to index;
         // 191 is the largest prefix that fits utf8mb4 in a legacy key length.
-        let target = if dialect == SqlDialect::MySql && ty == "TEXT" {
+        let target = if dialect == SqlDialect::MySql && ty.eq_ignore_ascii_case("text") {
             format!("{}(191)", dialect.quote(&column))
         } else {
             dialect.quote(&column)
@@ -190,6 +329,42 @@ pub fn create_table_statements(
         ));
     }
     Ok(statements)
+}
+
+/// The family one column type belongs to.
+///
+/// Types are compared by family rather than by spelling, because an engine
+/// answers in its own words: MySQL reports `varchar(255)` where this platform
+/// wrote `VARCHAR(255)`, and SQLite reports `INTEGER` for a column created as
+/// boolean. Comparing the exact text would call those a type change and refuse
+/// an edit that changes nothing.
+///
+/// SQLite has no boolean type at all — it stores one as an integer — so there
+/// the two are one family. Refusing still happens across families, which is
+/// where data would actually be at risk.
+fn type_family(raw: &str, dialect: SqlDialect) -> &'static str {
+    let value = raw.to_ascii_lowercase();
+    if value.contains("json") {
+        return "json";
+    }
+    let boolean = value.contains("bool");
+    let numeric = value.contains("int")
+        || value.contains("real")
+        || value.contains("double")
+        || value.contains("float")
+        || value.contains("numeric")
+        || value.contains("decimal");
+    if boolean {
+        return if dialect == SqlDialect::Sqlite {
+            "number"
+        } else {
+            "boolean"
+        };
+    }
+    if numeric {
+        return "number";
+    }
+    "text"
 }
 
 /// One column as it exists in the database today.
@@ -222,7 +397,7 @@ pub fn alter_table_statements(
     let quoted_table = dialect.quote(&table);
     let mut statements = Vec::new();
 
-    let mut wanted: Vec<(String, &'static str, bool)> = Vec::new();
+    let mut wanted: Vec<(String, String, bool)> = Vec::new();
     for attr in desired {
         let name = validate_identifier(&attr.name, "column")?;
         if name == IDENTITY_COLUMN {
@@ -256,7 +431,9 @@ pub fn alter_table_statements(
                 "ALTER TABLE {quoted_table} ADD COLUMN {} {ty}",
                 dialect.quote(name)
             )),
-            Some(current) if !current.column_type.eq_ignore_ascii_case(ty) => {
+            Some(current)
+                if type_family(&current.column_type, dialect) != type_family(ty, dialect) =>
+            {
                 return Err(PlatformError::new(
                     "PLATFORM_DB_DDL_TYPE_CHANGE",
                     format!(
@@ -291,7 +468,7 @@ pub fn alter_table_statements(
             .unwrap_or(false);
         let index = dialect.quote(&index_name(&table, name));
         if *indexed && !already {
-            let target = if dialect == SqlDialect::MySql && *ty == "TEXT" {
+            let target = if dialect == SqlDialect::MySql && ty.eq_ignore_ascii_case("text") {
                 format!("{}(191)", dialect.quote(name))
             } else {
                 dialect.quote(name)
@@ -410,6 +587,29 @@ mod tests {
     }
 
     #[test]
+    fn a_type_the_engine_spells_differently_is_not_a_change() {
+        // MySQL answers `varchar(255)` where this platform wrote VARCHAR(255).
+        let statements = alter_table_statements(
+            "t",
+            &[existing("label", "varchar(255)", false)],
+            &[attr("label", "string", &[])],
+            SqlDialect::MySql,
+        )
+        .expect("no change");
+        assert!(statements.is_empty(), "got {statements:?}");
+
+        // SQLite stores a boolean as INTEGER, so reading it back is not a change.
+        let statements = alter_table_statements(
+            "t",
+            &[existing("active", "INTEGER", false)],
+            &[attr("active", "boolean", &[])],
+            SqlDialect::Sqlite,
+        )
+        .expect("no change");
+        assert!(statements.is_empty(), "got {statements:?}");
+    }
+
+    #[test]
     fn altering_refuses_a_type_change_rather_than_risk_the_contents() {
         let err = alter_table_statements(
             "orders",
@@ -431,6 +631,39 @@ mod tests {
         )
         .expect("statements");
         assert_eq!(statements, vec!["DROP INDEX `idx_orders_label` ON `orders`"]);
+    }
+
+    #[test]
+    fn an_engines_own_type_names_are_accepted_and_checked() {
+        // PostgreSQL's own words, straight through.
+        let statements = create_table_statements(
+            "t",
+            &[attr("ref", "uuid", &[]), attr("seen", "timestamptz", &[])],
+            SqlDialect::Postgres,
+        )
+        .expect("statements");
+        assert!(statements[0].contains("\"ref\" uuid"), "got {}", statements[0]);
+        assert!(statements[0].contains("\"seen\" timestamptz"));
+
+        // Arguments are kept when the type takes them.
+        let statements =
+            create_table_statements("t", &[attr("code", "varchar(20)", &[])], SqlDialect::Postgres)
+                .expect("statements");
+        assert!(statements[0].contains("\"code\" varchar(20)"), "got {}", statements[0]);
+
+        // A type another engine has is not silently accepted here.
+        let err = create_table_statements("t", &[attr("c", "jsonb", &[])], SqlDialect::MySql)
+            .expect_err("mysql has no jsonb");
+        assert_eq!(err.code, "PLATFORM_DB_DDL_KIND");
+
+        // Arguments are numbers, never pasted text.
+        let err = create_table_statements(
+            "t",
+            &[attr("c", "varchar(20); DROP TABLE x", &[])],
+            SqlDialect::Postgres,
+        )
+        .expect_err("should refuse");
+        assert_eq!(err.code, "PLATFORM_DB_DDL_KIND");
     }
 
     #[test]

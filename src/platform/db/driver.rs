@@ -37,6 +37,13 @@ pub trait DbDriver: Send + Sync {
         None
     }
 
+    /// The column types this engine offers, for the studio's type picker.
+    ///
+    /// Empty means the engine does not let a caller choose a type.
+    fn type_catalog(&self) -> Vec<crate::platform::model::DbTypeDef> {
+        Vec::new()
+    }
+
     /// What this engine supports.
     ///
     /// The UI renders its panels from this rather than from `kind()`, so an
@@ -91,16 +98,21 @@ pub trait DbDriver: Send + Sync {
         ))
     }
 
-    /// Adds one empty row and answers with its identity.
+    /// Inserts one row with the values given and answers with its identity.
     ///
-    /// The only row operation that differs by engine: sekejap supplies its own
-    /// `_key`, PostgreSQL and SQLite take `DEFAULT VALUES`, and MySQL spells
-    /// the same thing `() VALUES ()`. Update and delete are ordinary SQL once
-    /// the identity column is known, so they stay in the caller.
-    async fn insert_empty_row(
+    /// Values rather than an empty row, because most tables have columns that
+    /// cannot be null: an empty insert is rejected by the database on any table
+    /// worth having. The studio collects the values first and sends them here.
+    ///
+    /// The statement differs by engine — sekejap supplies its own `_key`,
+    /// PostgreSQL answers with `RETURNING`, MySQL with its last insert id — so
+    /// the driver writes it. Update and delete are ordinary SQL once the
+    /// identity column is known, so they stay in the caller.
+    async fn insert_row(
         &self,
         _ctx: &DbDriverContext,
         _table: &str,
+        _values: &serde_json::Map<String, serde_json::Value>,
     ) -> Result<serde_json::Value, PlatformError> {
         Err(PlatformError::new(
             "PLATFORM_DB_ROW_UNSUPPORTED",

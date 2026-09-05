@@ -6449,6 +6449,10 @@ async fn project_db_suite_page(
             // Every URL here is absent unless the engine declares the matching
             // capability, so the page hides a surface by finding no address for
             // it rather than by testing a driver name.
+            let db_types = state
+                .platform
+                .db_runtime
+                .type_catalog_for_kind(&connection_info.database_kind);
             let mut db_schema_api = serde_json::Map::new();
             if capabilities.create_table || capabilities.drop_table {
                 // Table definition is scoped to the connection, so it reaches
@@ -6515,6 +6519,9 @@ async fn project_db_suite_page(
                 // name, so an engine gains a panel by declaring the capability
                 // in its driver.
                 "capabilities": capabilities,
+                // The engine's own column types, so the picker offers what this
+                // database actually has rather than a generic set.
+                "db_types": db_types,
                 // Schema definition still travels an engine-owned route. The URL
                 // is supplied only when the engine supports the operation, so
                 // the page tests for the URL rather than for a driver name.
@@ -20741,11 +20748,13 @@ async fn api_alter_db_connection_table(
 
 /// POST /api/projects/{owner}/{project}/db/connections/{connection_id}/tables/{table}/rows
 ///
-/// Adds one empty row. The statement differs by engine, so the driver writes it.
+/// Inserts one row with the values in the body. The statement differs by
+/// engine, so the driver writes it.
 async fn api_insert_db_connection_row(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
     Path((owner, project, connection_id, table)): Path<(String, String, String, String)>,
+    Json(values): Json<serde_json::Map<String, serde_json::Value>>,
 ) -> Response {
     if let Err(response) = require_project_api_capability(
         &state,
@@ -20759,7 +20768,7 @@ async fn api_insert_db_connection_row(
     match state
         .platform
         .db_runtime
-        .insert_empty_row(&owner, &project, &connection_id, &table)
+        .insert_row(&owner, &project, &connection_id, &table, &values)
         .await
     {
         Ok(identity) => Json(json!({"ok": true, "identity": identity})).into_response(),

@@ -11,12 +11,12 @@ use sqlx::{Column, Row, TypeInfo, ValueRef, postgres::PgConnectOptions, postgres
 use crate::platform::db::driver::{DbDriver, DbDriverContext};
 use crate::platform::db::sql_ddl::{
     ExistingColumn, IDENTITY_COLUMN, SqlDialect, alter_table_statements, create_table_statements,
-    drop_table_statement, index_name, validate_identifier,
+    drop_table_statement, index_name, type_catalog, validate_identifier,
 };
 use crate::platform::error::PlatformError;
 use crate::platform::model::{
     CollectionAttribute, CreateSimpleTableRequest, DbCapabilities, DbObjectNode, DbQueryColumn,
-    DbRelationStyle, DescribeProjectDbConnectionRequest, ProjectDbConnectionDescribeResult,
+    DbRelationStyle, DbTypeDef, DescribeProjectDbConnectionRequest, ProjectDbConnectionDescribeResult,
     ProjectDbConnectionQueryResult, QueryProjectDbConnectionRequest, SimpleTableDefinition,
     UpdateSimpleTableRequest, slug_segment,
 };
@@ -32,6 +32,10 @@ impl DbDriver for PostgresqlDbDriver {
 
     fn sql_dialect(&self) -> Option<SqlDialect> {
         Some(SqlDialect::Postgres)
+    }
+
+    fn type_catalog(&self) -> Vec<DbTypeDef> {
+        type_catalog(SqlDialect::Postgres)
     }
 
     fn capabilities(&self) -> DbCapabilities {
@@ -154,10 +158,11 @@ impl DbDriver for PostgresqlDbDriver {
         })
     }
 
-    async fn insert_empty_row(
+    async fn insert_row(
         &self,
         ctx: &DbDriverContext,
         table: &str,
+        values: &serde_json::Map<String, serde_json::Value>,
     ) -> Result<serde_json::Value, PlatformError> {
         // The table arrives qualified as the tree named it; each part is
         // validated and quoted rather than pasted in.
@@ -167,18 +172,34 @@ impl DbDriver for PostgresqlDbDriver {
             .map(|part| validate_identifier(part, "table").map(|name| SqlDialect::Postgres.quote(&name)))
             .collect::<Result<Vec<_>, _>>()?
             .join(".");
+
+        let mut columns = Vec::new();
+        let mut bound: Vec<Value> = Vec::new();
+        for (column, value) in values {
+            columns.push(SqlDialect::Postgres.quote(&validate_identifier(column, "column")?));
+            bound.push(value.clone());
+        }
+
         let pool = connect_pool(ctx).await?;
-        // PostgreSQL has no last-insert-id, so the new row names itself. A
-        // table with no identity column fails here with the column named,
-        // which is the truthful outcome: the studio could not address the row
-        // it just made.
         let identity = SqlDialect::Postgres.quote(IDENTITY_COLUMN);
-        let row = sqlx::query(&format!(
-            "INSERT INTO {quoted} DEFAULT VALUES RETURNING {identity}"
-        ))
-        .fetch_one(&pool)
-        .await
-        .map_err(|err| PlatformError::new("PLATFORM_DB_ROW_FAILED", err.to_string()))?;
+        let statement = if columns.is_empty() {
+            format!("INSERT INTO {quoted} DEFAULT VALUES RETURNING {identity}")
+        } else {
+            let marks: Vec<String> = (1..=columns.len()).map(|i| format!("${i}")).collect();
+            format!(
+                "INSERT INTO {quoted} ({}) VALUES ({}) RETURNING {identity}",
+                columns.join(", "),
+                marks.join(", ")
+            )
+        };
+        let mut query = sqlx::query(&statement);
+        for value in &bound {
+            query = bind_json_param(query, value);
+        }
+        let row = query
+            .fetch_one(&pool)
+            .await
+            .map_err(|err| PlatformError::new("PLATFORM_DB_ROW_FAILED", err.to_string()))?;
         Ok(row_cell_to_json(&row, 0))
     }
 
@@ -423,7 +444,8 @@ async fn describe_tables(
 
     // ── 2. Columns + primary key membership ──────────────────────────────────
     let col_rows = sqlx::query(
-        "SELECT c.table_schema, c.table_name, c.column_name, c.data_type, \
+        "SELECT c.table_schema, c.table_name, c.column_name, c.udt_name AS data_type, \
+                c.character_maximum_length, c.numeric_precision, c.numeric_scale, \
                 c.is_nullable, c.column_default, \
                 (pk.column_name IS NOT NULL) AS is_pk \
          FROM information_schema.columns c \
@@ -487,6 +509,24 @@ async fn describe_tables(
         );
     }
 
+    // ── 4b. This platform's indexes, so the properties editor round-trips ────
+    let index_rows = sqlx::query(
+        "SELECT schemaname, tablename, indexname FROM pg_indexes \
+         WHERE ($1::text IS NULL OR schemaname = $1)",
+    )
+    .bind(schema_filter)
+    .fetch_all(pool)
+    .await
+    .map_err(|err| PlatformError::new("PLATFORM_DB_DESCRIBE_FAILED", err.to_string()))?;
+    let mut index_lookup = BTreeSet::<(String, String, String)>::new();
+    for row in index_rows {
+        index_lookup.insert((
+            row.get::<String, _>("schemaname"),
+            row.get::<String, _>("tablename"),
+            row.get::<String, _>("indexname"),
+        ));
+    }
+
     // ── 5. Build columns lookup: (schema, table) → Vec<column object> ─────────
     let mut cols_lookup = BTreeMap::<(String, String), Vec<Value>>::new();
     for row in col_rows {
@@ -494,6 +534,18 @@ async fn describe_tables(
         let table: String = row.get("table_name");
         let col_name: String = row.get("column_name");
         let data_type: String = row.get("data_type");
+        // Length and precision, so the studio can show `varchar(20)` the way
+        // the engine's own tools do.
+        let max_len: Option<i32> = row.try_get("character_maximum_length").ok().flatten();
+        let precision: Option<i32> = row.try_get("numeric_precision").ok().flatten();
+        let scale: Option<i32> = row.try_get("numeric_scale").ok().flatten();
+        let full_type = match (max_len, precision, scale) {
+            (Some(len), _, _) => format!("{data_type}({len})"),
+            (None, Some(p), Some(sc)) if data_type == "numeric" && sc > 0 => {
+                format!("{data_type}({p},{sc})")
+            }
+            _ => data_type.clone(),
+        };
         let is_nullable: String = row.get("is_nullable");
         let default: Option<String> = row.try_get("column_default").ok().flatten();
         let is_pk: bool = row.try_get("is_pk").unwrap_or(false);
@@ -504,11 +556,21 @@ async fn describe_tables(
 
         let mut col = json!({
             "name": col_name,
+            // The bare type name, which the picker matches against.
             "type": data_type,
+            // The same type as the engine writes it, arguments included.
+            "full_type": full_type,
             "nullable": is_nullable == "YES",
         });
         if is_pk {
             col["pk"] = json!(true);
+        }
+        if index_lookup.contains(&(
+            schema.clone(),
+            table.clone(),
+            index_name(&table, &col_name),
+        )) {
+            col["indexed"] = json!(true);
         }
         if let Some(fk_ref) = fk {
             col["fk"] = fk_ref;
@@ -588,7 +650,8 @@ async fn describe_columns_for_table(
     table: &str,
 ) -> Result<Vec<DbObjectNode>, PlatformError> {
     let col_rows = sqlx::query(
-        "SELECT c.column_name, c.data_type, c.is_nullable, c.column_default, \
+        "SELECT c.column_name, c.udt_name AS data_type, c.character_maximum_length, \
+                c.numeric_precision, c.numeric_scale, c.is_nullable, c.column_default, \
                 (pk.column_name IS NOT NULL) AS is_pk, \
                 ccu.table_schema AS ref_schema, ccu.table_name AS ref_table, \
                 ccu.column_name AS ref_column \
@@ -638,8 +701,20 @@ async fn describe_columns_for_table(
             None
         };
 
+        let max_len: Option<i32> = row.try_get("character_maximum_length").ok().flatten();
+        let precision: Option<i32> = row.try_get("numeric_precision").ok().flatten();
+        let scale: Option<i32> = row.try_get("numeric_scale").ok().flatten();
+        let full_type = match (max_len, precision, scale) {
+            (Some(len), _, _) => format!("{data_type}({len})"),
+            (None, Some(p), Some(sc)) if data_type == "numeric" && sc > 0 => {
+                format!("{data_type}({p},{sc})")
+            }
+            _ => data_type.clone(),
+        };
+
         let mut meta = json!({
             "type": data_type,
+            "full_type": full_type,
             "nullable": is_nullable == "YES",
             "pk": is_pk,
         });
@@ -755,7 +830,10 @@ fn bind_json_param<'q>(
     match value {
         Value::Null => query.bind(Option::<String>::None),
         Value::Bool(v) => query.bind(*v),
-        Value::Number(n) => query.bind(n.to_string()),
+        // Bound as a number, not as its text. PostgreSQL checks a parameter's
+        // type, so a text-bound 1 is refused by an integer column.
+        Value::Number(n) if n.is_i64() => query.bind(n.as_i64().unwrap_or_default()),
+        Value::Number(n) => query.bind(n.as_f64().unwrap_or_default()),
         Value::String(s) => query.bind(s.clone()),
         other => query.bind(other.to_string()),
     }

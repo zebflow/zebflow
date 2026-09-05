@@ -56,6 +56,14 @@ impl DbRuntimeService {
         self.drivers.get(database_kind)?.sql_dialect()
     }
 
+    /// The column types one database kind offers.
+    pub fn type_catalog_for_kind(&self, database_kind: &str) -> Vec<crate::platform::model::DbTypeDef> {
+        self.drivers
+            .get(database_kind)
+            .map(|driver| driver.type_catalog())
+            .unwrap_or_default()
+    }
+
     /// Whether a runtime driver exists for one database kind.
     pub fn has_driver(&self, database_kind: &str) -> bool {
         self.drivers.get(database_kind).is_some()
@@ -152,13 +160,14 @@ impl DbRuntimeService {
         driver.alter_table(&ctx, table, req).await
     }
 
-    /// Adds one empty row and answers with its identity.
-    pub async fn insert_empty_row(
+    /// Inserts one row with the values given and answers with its identity.
+    pub async fn insert_row(
         &self,
         owner: &str,
         project: &str,
         connection_id: &str,
         table: &str,
+        values: &serde_json::Map<String, serde_json::Value>,
     ) -> Result<serde_json::Value, PlatformError> {
         let (ctx, driver) = self.driver_context(owner, project, connection_id)?;
         if !driver.capabilities().inline_edit {
@@ -167,7 +176,7 @@ impl DbRuntimeService {
                 format!("'{}' cannot add rows", driver.kind()),
             ));
         }
-        driver.insert_empty_row(&ctx, table).await
+        driver.insert_row(&ctx, table, values).await
     }
 
     /// Resolves one connection to its driver and call context.
