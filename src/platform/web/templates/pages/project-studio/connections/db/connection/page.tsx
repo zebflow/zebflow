@@ -2,11 +2,6 @@ import ProjectStudioShell from "@/pages/project-studio/components/shell";
 import { StudioTable, StudioTd, StudioThead, StudioTh } from "@/components/ui/studio-data-table";
 import { useEffect, useState, cx } from "zeb";
 import { StudioTabNav, StudioTabLink } from "@/components/ui/studio-tab-nav";
-import { Dialog } from "@/components/ui/dialog";
-import DialogContent from "@/components/ui/dialog-content";
-import DialogHeader from "@/components/ui/dialog-header";
-import DialogTitle from "@/components/ui/dialog-title";
-import DialogFooter from "@/components/ui/dialog-footer";
 import Button from "@/components/ui/button";
 import Input from "@/components/ui/input";
 import Textarea from "@/components/ui/textarea";
@@ -325,27 +320,32 @@ function selectedTableDefinition(tables, selectedTable) {
 
 
 
+/**
+ * A notice with nothing to decide. The shared dialog's OK-only mode, so it
+ * scrolls and looks the same as every other dialog rather than being a second
+ * implementation that drifts.
+ */
 function DataWarningDialog({ notice, onClose }) {
   return (
-    <Dialog open={!!notice} onOpenChange={(value) => { if (!value) onClose(); }}>
-      <DialogContent className="max-w-xl border-border bg-surface text-body">
-        <DialogHeader className="px-6 pt-6">
-          <DialogTitle>{notice?.title || "Invalid Input"}</DialogTitle>
-          <p className="text-sm text-body-soft">{notice?.message || ""}</p>
-        </DialogHeader>
-        {notice?.example ? (
-          <div className="px-6 py-2">
-            <p className="mb-2 text-xs font-medium uppercase tracking-[0.14em] text-body-soft">Example</p>
-            <pre className="overflow-auto rounded-md border border-ui-border/70 bg-ui-bg-muted/30 p-3 text-xs text-body">{notice.example}</pre>
-          </div>
-        ) : null}
-        <DialogFooter className="px-6 pb-6">
-          <Button type="button" size="sm" onClick={onClose}>OK</Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+    <ConfirmDialog
+      open={!!notice}
+      onClose={onClose}
+      onConfirm={onClose}
+      title={notice?.title || "Invalid Input"}
+      message={notice?.message || ""}
+      confirmLabel="OK"
+      cancelLabel={null}
+    >
+      {notice?.example ? (
+        <div className="mt-3">
+          <p className="mb-2 text-xs font-medium uppercase tracking-[0.14em] text-body-soft">Example</p>
+          <pre className="overflow-auto rounded-md border border-ui-border/70 bg-ui-bg-muted/30 p-3 text-xs text-body">{notice.example}</pre>
+        </div>
+      ) : null}
+    </ConfirmDialog>
   );
 }
+
 
 
 
@@ -444,6 +444,10 @@ export default function Page(input) {
   // Failures from the grid's own actions. `queryStatus` is shown on the query
   // tab, so a row insert that failed there said nothing at all.
   const [gridNotice, setGridNotice] = useState("");
+  // Writing rows and deleting one are asked first. Both change data the reader
+  // cannot get back by pressing undo.
+  const [confirmSaveOpen, setConfirmSaveOpen] = useState(false);
+  const [confirmDeleteRowOpen, setConfirmDeleteRowOpen] = useState(false);
   const [propsBusy, setPropsBusy] = useState(false);
   const [propsStatus, setPropsStatus] = useState("");
   const [schemaSyncBusy, setSchemaSyncBusy] = useState(false);
@@ -1104,7 +1108,11 @@ export default function Page(input) {
   const [editingCell, setEditingCell] = useState(null);
   const [mapPickerOpen, setMapPickerOpen] = useState(false);
   const [mapPickerTarget, setMapPickerTarget] = useState(null);
-  const hasPendingEdits = Object.keys(pendingEdits).length > 0 || draftRows.length > 0;
+  const pendingEditCount = Object.values(pendingEdits).reduce(
+    (total, edits) => total + Object.keys(edits || {}).length,
+    0,
+  );
+  const hasPendingEdits = pendingEditCount > 0 || draftRows.length > 0;
 
   async function handleRefreshData() {
     if (activeTable) {
@@ -1735,44 +1743,27 @@ export default function Page(input) {
                                   ) : null}
                                 </div>
 
-                                {deleteConfirmOpen ? (
-                                  <Dialog open onOpenChange={(v) => { if (!v) setDeleteConfirmOpen(false); }}>
-                                    <DialogContent onKeyDown={(e) => e.stopPropagation()}>
-                                      <DialogHeader>
-                                        <DialogTitle>Delete Table</DialogTitle>
-                                      </DialogHeader>
-                                      <div className="flex flex-col gap-3 py-2">
-                                        <p className="text-sm text-ui-text-soft">
-                                          This will permanently delete <strong>{activeTable.table}</strong> and all its rows. Type the table name to confirm.
-                                        </p>
-                                        <Input
-                                          value={deleteConfirmInput}
-                                          onInput={(e) => setDeleteConfirmInput(e.currentTarget.value)}
-                                          placeholder={activeTable.table}
-                                        />
-                                      </div>
-                                      <DialogFooter>
-                                        <Button
-                                          type="button"
-                                          variant="outline"
-                                          size="sm"
-                                          onClick={() => setDeleteConfirmOpen(false)}
-                                        >
-                                          Cancel
-                                        </Button>
-                                        <Button
-                                          type="button"
-                                          size="sm"
-                                          disabled={deleteConfirmInput !== activeTable.table || deleteBusy}
-                                          className="bg-red-600 text-white hover:bg-red-700 disabled:opacity-40"
-                                          onClick={handleDeleteTable}
-                                        >
-                                          {deleteBusy ? "Deleting…" : "Delete"}
-                                        </Button>
-                                      </DialogFooter>
-                                    </DialogContent>
-                                  </Dialog>
-                                ) : null}
+                                {/* Asked through the shared dialog like every
+                                    other yes/no question, with the name field
+                                    as its body. */}
+                                <ConfirmDialog
+                                  open={deleteConfirmOpen}
+                                  onClose={() => setDeleteConfirmOpen(false)}
+                                  onConfirm={handleDeleteTable}
+                                  title="Delete table"
+                                  message={`This permanently deletes ${activeTable.table} and every row in it. Type the table name to confirm.`}
+                                  confirmLabel={deleteBusy ? "Deleting…" : "Delete"}
+                                  variant="destructive"
+                                  busy={deleteBusy}
+                                  confirmDisabled={deleteConfirmInput !== activeTable.table}
+                                >
+                                  <Input
+                                    className="mt-3"
+                                    value={deleteConfirmInput}
+                                    onInput={(e) => setDeleteConfirmInput(e.currentTarget.value)}
+                                    placeholder={activeTable.table}
+                                  />
+                                </ConfirmDialog>
                                 </>
                                 )}
                                 </div>
@@ -1789,7 +1780,7 @@ export default function Page(input) {
                               ) : null}
                               {activeTable ? (
                                 <div className="flex shrink-0 flex-wrap items-center gap-1 border-b border-ui-border/70 bg-ui-bg-muted/30 px-2 py-1.5">
-                                  <button type="button" title="Save changes" className={`flex items-center gap-1 rounded px-2 py-1 text-[11px] font-medium disabled:opacity-30 ${hasPendingEdits ? "bg-blue-600 text-white hover:bg-blue-700" : "text-ui-text-soft hover:bg-ui-bg-muted hover:text-ui-text"}`} disabled={!hasPendingEdits} onClick={handleSaveEdits}>
+                                  <button type="button" title="Save changes" className={`flex items-center gap-1 rounded px-2 py-1 text-[11px] font-medium disabled:opacity-30 ${hasPendingEdits ? "bg-blue-600 text-white hover:bg-blue-700" : "text-ui-text-soft hover:bg-ui-bg-muted hover:text-ui-text"}`} disabled={!hasPendingEdits} onClick={() => setConfirmSaveOpen(true)}>
                                     <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" className="h-3 w-3"><path d="M13 14H3a1 1 0 0 1-1-1V3a1 1 0 0 1 1-1h7.586a1 1 0 0 1 .707.293l2.414 2.414a1 1 0 0 1 .293.707V13a1 1 0 0 1-1 1Z"/><path d="M5 14V9h6v5M5 2v3h4"/></svg>
                                     Save
                                   </button>
@@ -1802,7 +1793,7 @@ export default function Page(input) {
                                     <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" className="h-3.5 w-3.5"><path d="M8 3v10M3 8h10"/></svg>
                                     Row
                                   </button>
-                                  <button type="button" title="Delete selected row" className="flex items-center gap-1 rounded px-2 py-1 text-[11px] font-medium text-ui-text-soft hover:bg-ui-bg-muted hover:text-red-500 disabled:opacity-30" disabled={!selectedPreviewRowData} onClick={handleDeleteSelectedRow}>
+                                  <button type="button" title="Delete selected row" className="flex items-center gap-1 rounded px-2 py-1 text-[11px] font-medium text-ui-text-soft hover:bg-ui-bg-muted hover:text-red-500 disabled:opacity-30" disabled={!selectedPreviewRowData} onClick={() => setConfirmDeleteRowOpen(true)}>
                                     <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" className="h-3.5 w-3.5"><path d="M3 8h10"/></svg>
                                     Delete
                                   </button>
@@ -2236,6 +2227,23 @@ export default function Page(input) {
               ? `Delete relation ${pendingRelationDelete.type} between ${selectedNodeSlug} and ${pendingRelationDelete.otherSlug}?`
               : ""
           }
+          confirmLabel="Delete"
+          variant="destructive"
+        />
+        <ConfirmDialog
+          open={confirmSaveOpen}
+          onClose={() => setConfirmSaveOpen(false)}
+          onConfirm={handleSaveEdits}
+          title="Write changes"
+          message={`Write ${pendingEditCount} cell change${pendingEditCount === 1 ? "" : "s"} and ${draftRows.length} new row${draftRows.length === 1 ? "" : "s"} to ${tableRef}?`}
+          confirmLabel="Write"
+        />
+        <ConfirmDialog
+          open={confirmDeleteRowOpen}
+          onClose={() => setConfirmDeleteRowOpen(false)}
+          onConfirm={handleDeleteSelectedRow}
+          title="Delete row"
+          message={`Delete the row where ${rowIdentity} is ${String(selectedPreviewRowData?.[rowIdentity] ?? "")} from ${tableRef}? This cannot be undone.`}
           confirmLabel="Delete"
           variant="destructive"
         />
