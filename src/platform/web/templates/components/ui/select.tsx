@@ -1,4 +1,4 @@
-import { useRef, useEffect, cx } from "zeb";
+import { useRef, useEffect, cx } from "zeb/react";
 
 /**
  * Controlled <select> wrapper.

@@ -10,8 +10,13 @@ use serde_json::{Value, json};
 
 use crate::contracts::kinds::decode_pipeline_graph;
 use crate::platform::model::{
-    DescribeProjectDbConnectionRequest, PIPELINE_DEFINITION_EXTENSION, PipelineMeta,
-    ResolvedProjectLayout, TemplateSaveRequest, TemplateTreeItem,
+    DescribeProjectDbConnectionRequest,
+    PIPELINE_DEFINITION_EXTENSION,
+    PipelineMeta,
+    RepoTreeScope,
+    ResolvedProjectLayout,
+    TemplateSaveRequest,
+    TemplateTreeItem,
 };
 use crate::platform::services::PlatformService;
 use crate::platform::services::project::name_from_file_rel_path;
@@ -371,7 +376,7 @@ impl PlatformOps {
         }
 
         out.push_str("\n\n---\n\n## Project Docs\n");
-        match self.platform.projects.list_repo_tree(owner, project) {
+        match self.platform.projects.list_repo_tree(owner, project, &RepoTreeScope::all()) {
             Ok(listing) if listing.items.iter().any(|item| item.file_kind == "doc") => {
                 for item in listing.items.iter().filter(|item| item.file_kind == "doc") {
                     out.push_str(&format!(
@@ -428,7 +433,7 @@ impl PlatformOps {
             Err(e) => out.push_str(&format!("\n### Pipelines\n  (error: {e})\n")),
         }
 
-        match self.platform.projects.list_repo_tree(owner, project) {
+        match self.platform.projects.list_repo_tree(owner, project, &RepoTreeScope::all()) {
             Ok(workspace) => {
                 let files: Vec<_> = workspace
                     .items
@@ -1121,7 +1126,7 @@ impl PlatformOps {
         match self
             .platform
             .projects
-            .list_repo_tree(&self.owner, &self.project)
+            .list_repo_tree(&self.owner, &self.project, &RepoTreeScope::all())
         {
             Ok(workspace) => {
                 let format = options.format.unwrap_or("compact");
@@ -1226,7 +1231,7 @@ impl PlatformOps {
                     let listing = match self
                         .platform
                         .projects
-                        .list_repo_tree(&self.owner, &self.project)
+                        .list_repo_tree(&self.owner, &self.project, &RepoTreeScope::all())
                     {
                         Ok(l) => l,
                         Err(e) => return OpsResult::err(e.to_string()),
@@ -1351,7 +1356,7 @@ impl PlatformOps {
         let workspace = match self
             .platform
             .projects
-            .list_repo_tree(&self.owner, &self.project)
+            .list_repo_tree(&self.owner, &self.project, &RepoTreeScope::all())
         {
             Ok(w) => w,
             Err(_) => return OpsResult::ok(out),

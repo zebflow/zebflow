@@ -1,4 +1,4 @@
-import { useState, useMemo, useNavigate, Link } from "zeb";
+import { useState, useMemo, useRouter, Link } from "zeb/react";
 
 // ─── Inline sub-components ────────────────────────────────────────────────
 
@@ -59,7 +59,7 @@ const POSTS = [
   {
     id: 3,
     title: "SPA Navigation Without a Framework",
-    excerpt: "useNavigate and Link give SPA-style history routing on top of plain Axum routes.",
+    excerpt: "useRouter and Link give SPA-style history routing on top of plain Axum routes.",
     author: "Mala",
     date: "2026-02-10",
     url: "/",

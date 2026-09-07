@@ -32,9 +32,13 @@ use serde_json::Value;
 use super::error::EngineError;
 
 // ---------------------------------------------------------------------------
-// Embedded JS — installs preact SSR globals once at startup.
+// Embedded JS — installs Zeb React SSR globals once at startup.
 // ---------------------------------------------------------------------------
-const PREACT_SSR_INIT: &str = include_str!("../runtime/preact_ssr_init.js");
+const ZEB_SSR_INIT: &str = concat!(
+    include_str!("../runtime/zeb_react.js"),
+    "\n",
+    include_str!("../runtime/zeb_ssr_init.js"),
+);
 const TOOL_INIT: &str = include_str!("../../language/runtime/tool_init.js");
 
 // ---------------------------------------------------------------------------
@@ -152,12 +156,11 @@ fn run_js_thread(worker_id: usize, mut rx: tokio::sync::mpsc::UnboundedReceiver<
             ..Default::default()
         });
 
-        // Load the preact SSR globals once.
-        if let Err(e) = js_rt.execute_script(
-            "<preact_ssr_init>",
-            FastString::from_static(PREACT_SSR_INIT),
-        ) {
-            eprintln!("rwe-js-runtime[{worker_id}]: preact_ssr_init failed: {e}");
+        // Load the Zeb React SSR globals once.
+        if let Err(e) =
+            js_rt.execute_script("<zeb_ssr_init>", FastString::from_static(ZEB_SSR_INIT))
+        {
+            eprintln!("rwe-js-runtime[{worker_id}]: zeb_ssr_init failed: {e}");
             return;
         }
         if let Err(e) = js_rt.execute_script("<tool_init>", FastString::from_static(TOOL_INIT)) {
@@ -238,7 +241,7 @@ async fn do_render_ssr(
     //     convention aliases like 'rwe-sky') verbatim because they are valid in the
     //     source. But our deno_core module loader only handles file:// URLs — it would
     //     try to resolve "rwe" as a relative path and fail with "no such file".
-    //     All symbols from those imports are already on globalThis via preact_ssr_init.js,
+    //     All symbols from those imports are already on globalThis via zeb_ssr_init.js,
     //     so stripping the lines is safe and correct.
     let js = strip_rwe_imports(&js);
 
@@ -474,7 +477,7 @@ fn load_sync(specifier: &ModuleSpecifier) -> Result<ModuleSource, JsErrorBox> {
 // TSX → JS transpilation via oxc
 //
 // Strips TypeScript types and converts JSX to `h(…)` calls (classic runtime)
-// compatible with the globals installed by preact_ssr_init.js and by
+// compatible with the globals installed by zeb_ssr_init.js and by
 // build_client_module() in render.rs.
 // ---------------------------------------------------------------------------
 pub fn transpile_tsx(source: &str) -> Result<String, EngineError> {
@@ -543,7 +546,7 @@ pub fn transpile_tsx(source: &str) -> Result<String, EngineError> {
 /// `import { … } from "zeb/*"` lines before SSR.
 ///
 /// SSR stubs for all `zeb/*` library symbols are installed once at JsRuntime
-/// startup via `preact_ssr_init.js` as `globalThis.*` assignments — no
+/// startup via `zeb_ssr_init.js` as `globalThis.*` assignments — no
 /// per-render injection needed here.
 fn strip_rwe_imports(js: &str) -> String {
     js.lines()
@@ -552,7 +555,7 @@ fn strip_rwe_imports(js: &str) -> String {
             if !t.starts_with("import ") {
                 return true;
             }
-            !(t.contains("from \"zeb\"")
+            !(t.contains("from \"zeb/react\"")
                 || t.contains("from 'zeb'")
                 || t.contains("from \"zeb/")
                 || t.contains("from 'zeb/"))

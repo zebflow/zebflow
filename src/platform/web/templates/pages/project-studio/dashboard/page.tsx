@@ -1,6 +1,6 @@
 import ProjectStudioShell from "@/pages/project-studio/components/shell";
 import { initDashboardBehavior } from "@/pages/project-studio/dashboard/dashboard-behavior";
-import { Link } from "zeb";
+import { Link } from "zeb/react";
 import { StudioTabNav, StudioTabLink } from "@/components/ui/studio-tab-nav";
 
 export const page = {

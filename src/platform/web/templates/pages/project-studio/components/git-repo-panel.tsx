@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useNavigate, cx } from "zeb";
+import { useState, useEffect, useRef, useRouter, cx, Link } from "zeb/react";
 import { useWindowEvent } from "zeb/use";
 import Button from "@/components/ui/button";
 import Input from "@/components/ui/input";
@@ -15,7 +15,7 @@ const credInputCx = "w-full bg-surface-2 border border-border rounded-[0.35rem] 
 const credSelectCx = "w-full bg-surface-2 border border-border rounded-[0.35rem] text-body text-[0.72rem] px-[0.4rem] h-7 outline-none cursor-pointer";
 
 export function GitRepoPanel({ owner, project }) {
-  const nav = useNavigate();
+  const nav = useRouter().push;
   const { repoEpoch, activePanel, openHeaderPanel } = useStudioChrome();
   // ── Git state ────────────────────────────────────────────────────────────
   const [open, setOpen] = useState(false);
@@ -273,16 +273,14 @@ export function GitRepoPanel({ owner, project }) {
                     {localBranch}
                   </span>
                 )}
-                {localBranch && (
-                  <a
-                    href={`/projects/${owner}/${project}/settings/general#git`}
-                    onClick={() => setOpen(false)}
-                    className="text-[0.62rem] text-body-soft hover:text-body underline ml-[0.15rem]"
-                    tw-variants="hover:text-body"
-                  >
-                    change
-                  </a>
-                )}
+                <Link
+                  href={`/projects/${owner}/${project}/settings/git`}
+                  onClick={() => setOpen(false)}
+                  className="text-[0.62rem] text-body-soft hover:text-body underline ml-[0.15rem]"
+                  tw-variants="hover:text-body"
+                >
+                  settings
+                </Link>
               </div>
               <div className="flex items-center gap-2 text-[0.7rem] text-body-soft">
                 <span>{gitLoading ? "…" : `${count} change${count !== 1 ? "s" : ""}`}</span>

@@ -1112,7 +1112,7 @@ mod tests {
             "<link rel=\"icon\" href=\"/static/superadmin/default/icons/favicon.ico\">",
             "<link rel=\"stylesheet\" href=\"/static/superadmin/default/styles/base.css\">",
             "<script type=\"module\">",
-            "import { h } from '/assets/libraries/zeb/preact/0.1/runtime/preact.bundle.mjs';",
+            "import { h } from '/assets/libraries/zeb/react/0.1/runtime/zeb_react.mjs';",
             "const mod = await import('/assets/libraries/zeb/codemirror/0.1/runtime/entry.mjs');",
             "</script>",
             "<link rel=\"stylesheet\" href=\"/assets/libraries/zeb/icons/0.1/runtime/devicons.css\">",
@@ -1135,9 +1135,7 @@ mod tests {
         )
         .expect("localize assets");
 
-        assert!(
-            rewritten.contains("../../_assets/libraries/zeb/preact/0.1/runtime/preact.bundle.mjs")
-        );
+        assert!(rewritten.contains("../../_assets/libraries/zeb/react/0.1/runtime/zeb_react.mjs"));
         assert!(rewritten.contains("../../_assets/libraries/zeb/codemirror/0.1/runtime/entry.mjs"));
         assert!(rewritten.contains("../../_assets/libraries/zeb/icons/0.1/runtime/devicons.css"));
         assert!(rewritten.contains("../../_assets/project/icons/favicon.ico"));
@@ -1146,7 +1144,12 @@ mod tests {
         assert!(rewritten.contains("../../_assets/project/images/cover@2x.png 2x"));
         assert!(
             temp.path()
-                .join("_assets/libraries/zeb/preact/0.1/runtime/preact.bundle.mjs")
+                .join("_assets/libraries/zeb/react/0.1/runtime/zeb_react.mjs")
+                .is_file()
+        );
+        assert!(
+            temp.path()
+                .join("_assets/libraries/zeb/react/0.1/runtime/zeb_react.js")
                 .is_file()
         );
         assert!(

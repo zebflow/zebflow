@@ -1,0 +1,16 @@
+{
+  "name": "zebflow-e2e",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Browser smoke tests for the Zebflow Studio UI.",
+  "scripts": {
+    "test": "playwright test",
+    "test:headed": "playwright test --headed",
+    "report": "playwright show-report",
+    "install-browsers": "playwright install chromium"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.48.0",
+    "@types/node": "^26.4.1"
+  }
+}

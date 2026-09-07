@@ -1,4 +1,4 @@
-import { cx } from "zeb";
+import { cx } from "zeb/react";
 
 const VARIANT_CLASSES = {
   error:   "border-red-500/30 bg-red-500/10 text-red-500",

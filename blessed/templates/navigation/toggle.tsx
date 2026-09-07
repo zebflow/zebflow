@@ -1,4 +1,4 @@
-import { cx } from "zeb";
+import { cx } from "zeb/react";
 
 const VARIANTS = {
   default: "bg-transparent hover:bg-gray-100 hover:text-gray-900 data-[state=on]:bg-gray-100 data-[state=on]:text-gray-900",

@@ -6,6 +6,7 @@ pub mod js_masker;
 pub mod model;
 pub mod render;
 pub mod security;
+pub(crate) mod zeb_react;
 
 pub use config::{CompileOptions, RuntimeMode, SecurityPolicy};
 pub use error::EngineError;
@@ -33,7 +34,7 @@ pub fn prewarm(compiled: &CompiledTemplate) -> Result<(), EngineError> {
 /// written to `root`. It:
 ///
 /// 1. Writes the `rwe.ts` shim into the root so legacy component files can
-///    `import { useState, useNavigate, Link } from "rwe"`.
+///    `import { useState, useRouter, Link } from "rwe"`.
 /// 2. Walks every `.tsx / .ts / .jsx / .js` file under `root` and
 ///    rewrites:
 ///    - `from "rwe"` / `from 'rwe'`   → absolute path of the shim
@@ -128,6 +129,19 @@ fn rewrite_imports_variant(
         };
         let spec_end = spec_start + end_rel;
         let rel = &out[spec_start..spec_end];
+
+        // Refused here rather than in the compiler's allowlist, because that
+        // check never sees a component file. Left alone, `zeb` reaches the
+        // module loader, which resolves it against the temp root and reports a
+        // missing path — an error naming a directory the writer never chose.
+        if rel == "zeb" {
+            return Err(EngineError::new(
+                "RWE_IMPORT_NOT_ALLOWED",
+                "import from 'zeb' is not allowed; hooks and helpers come from \"zeb/react\" \
+                 — write `from \"zeb/react\"` instead"
+                    .to_string(),
+            ));
+        }
 
         if rel == "rwe" {
             let shim = root.join("rwe.ts");

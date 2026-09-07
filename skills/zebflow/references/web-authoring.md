@@ -24,7 +24,7 @@ Rules:
 - Use `className`, not `class`.
 - Use `@/` alias for component imports.
 - Do not import Preact hooks from npm paths.
-- Entry pages may import from `zeb` for editor hints; component files should rely on injected globals.
+- Entry pages may import from `zeb/react` for editor hints; component files should rely on injected globals.
 - Behavior `.ts` exports should be camelCase, not ALL_CAPS.
 - Fix shared RWE/Tailwind/library behavior when the same issue appears in multiple pages.
 
@@ -53,7 +53,9 @@ Library surfaces:
 - `zeb/livegeo`
 - `zeb/markdown`
 - `zeb/pdf`
-- `zeb/preact`
+- `zeb/react` (built-in core UI hooks and rendering API, including `ErrorBoundary`
+  with `fallbackRender`/`resetKeys` and `useSyncExternalStore`; external stores must
+  provide a matching `getServerSnapshot` for SSR and hydration)
 - `zeb/prosemirror`
 - `zeb/threejs`
 - `zeb/threejs-vrm`

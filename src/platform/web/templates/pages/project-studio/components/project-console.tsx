@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, cx } from "zeb";
+import { useEffect, useMemo, useRef, useState, cx } from "zeb/react";
 import Button from "@/components/ui/button";
 import Kbd from "@/components/ui/kbd";
 import Checkbox from "@/components/ui/checkbox";

@@ -1,4 +1,4 @@
-import { cx } from "zeb";
+import { cx } from "zeb/react";
 
 const VARIANTS = {
   default:     "bg-white text-gray-900 border-gray-200",

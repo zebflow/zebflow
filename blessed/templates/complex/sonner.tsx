@@ -1,5 +1,5 @@
-import { cx } from "zeb";
-import { useState, useEffect } from "zeb";
+import { cx } from "zeb/react";
+import { useState, useEffect } from "zeb/react";
 
 interface ToastItem {
   id: number;

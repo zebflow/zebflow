@@ -1,3 +1,5 @@
+import { cx } from "zeb/react";
+
 export default function ZCodeSidebarHeader(props) {
   return (
     <div className={cx("px-3 py-2 border-b border-gray-200 dark:border-gray-800 flex items-center justify-between min-h-[40px]", props?.className)}>

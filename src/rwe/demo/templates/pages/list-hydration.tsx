@@ -1,4 +1,4 @@
-import { usePageState } from 'zeb';
+import { usePageState } from 'zeb/react';
 
 export const page = {
   head: {

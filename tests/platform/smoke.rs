@@ -6271,3 +6271,112 @@ fn the_file_storage_backend_is_declared_and_an_unknown_one_is_refused() {
 
     let _ = fs::remove_dir_all(&data_root);
 }
+
+/// A stranger cannot read another owner's project through preview.
+///
+/// Preview asked only whether *someone* was signed in. A brand-new member with
+/// no standing in `superadmin/default` could therefore turn preview on for a
+/// private file and fetch the rendered page, while every other project route
+/// refused them — the capability system was sound, these four handlers simply
+/// never consulted it.
+#[tokio::test]
+async fn preview_refuses_a_subject_without_project_capabilities() {
+    let mut config = PlatformConfig::default();
+    config.data_root = temp_test_dir("preview-authz");
+    config.default_password = "test-pass".to_string();
+
+    let app = build_router(config).await.expect("platform router");
+    let owner_cookie = login_cookie(app.clone(), "superadmin", "test-pass").await;
+
+    let create_user = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/users")
+                .method("POST")
+                .header(header::COOKIE, &owner_cookie)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({ "owner": "mallory", "password": "mallory-pass", "role": "member" })
+                        .to_string(),
+                ))
+                .expect("request"),
+        )
+        .await
+        .expect("create user response");
+    assert_eq!(create_user.status(), StatusCode::OK);
+
+    let stranger = login_cookie(app.clone(), "mallory", "mallory-pass").await;
+
+    // Turning preview on decides what is served outward, so it needs write.
+    let toggle = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/projects/superadmin/default/preview/toggle")
+                .method("POST")
+                .header(header::COOKIE, &stranger)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({ "file": "sample_web_page.tsx", "active": true }).to_string(),
+                ))
+                .expect("request"),
+        )
+        .await
+        .expect("toggle response");
+    assert_eq!(
+        toggle.status(),
+        StatusCode::FORBIDDEN,
+        "a stranger must not decide what another project previews"
+    );
+
+    // Whether preview is on is itself a fact about someone else's project.
+    let status = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/projects/superadmin/default/preview/status?file=sample_web_page.tsx")
+                .header(header::COOKIE, &stranger)
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("status response");
+    assert_eq!(status.status(), StatusCode::FORBIDDEN);
+
+    // And the rendered page is the payload that mattered.
+    let page = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/preview/superadmin/default?file=sample_web_page.tsx")
+                .header(header::COOKIE, &stranger)
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("preview page response");
+    assert_eq!(
+        page.status(),
+        StatusCode::FORBIDDEN,
+        "the rendered private page must not be served to a stranger"
+    );
+
+    // The owner is unaffected.
+    let owner_status = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/projects/superadmin/default/preview/status?file=sample_web_page.tsx")
+                .header(header::COOKIE, &owner_cookie)
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("owner status response");
+    assert_eq!(
+        owner_status.status(),
+        StatusCode::OK,
+        "the owner still reads their own preview state"
+    );
+}

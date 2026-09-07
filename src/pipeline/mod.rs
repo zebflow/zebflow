@@ -17,6 +17,7 @@ pub mod nodes;
 pub mod prototypes;
 pub mod registry;
 pub mod security;
+pub mod trace_capture;
 
 pub use engines::{BasicPipelineEngine, NoopPipelineEngine, build_composite_placeholder_map};
 pub use interface::PipelineEngine;

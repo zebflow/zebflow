@@ -1,4 +1,4 @@
-import { useState } from "zeb";
+import { cx, useState } from "zeb/react";
 import Button from "@/components/ui/button";
 import Input from "@/components/ui/input";
 import Badge from "@/components/ui/badge";
@@ -636,8 +636,8 @@ const el = document.querySelector("[data-thing]");
 el.style.color = "red";
 
 // ✓ CORRECT — use Preact useRef:
-// (useRef is a global — no import needed, or import from "zeb" for clarity)
-import { useRef, useEffect } from "zeb";
+// (useRef is a global — no import needed, or import from "zeb/react" for clarity)
+import { useRef, useEffect } from "zeb/react";
 
 function MyComponent() {
   const ref = useRef<HTMLDivElement>(null);
@@ -652,7 +652,7 @@ function MyComponent() {
 }`;
 
   const newComponentCode = `// src/platform/web/templates/components/ui/my-widget.tsx
-// Every file imports what it uses from "zeb". There are no implicit globals.
+// Every file imports what it uses from "zeb/react". There are no implicit globals.
 function MyWidget({ label, variant = "default", className }) {
   const cls = variant === "accent"
     ? "bg-accent text-white"
@@ -695,7 +695,7 @@ import { initMyFeatureBehavior } from "@/pages/my-area/components/my-feature-beh
         <RuleAlert>
           Use @/ for all local template imports — it resolves to the template root at compile time.
           Hooks (useState, useRef, useEffect, usePageState, useMemo) and cx() are runtime globals —
-          import them from "zeb" as a declaration hint (the import is stripped; they are already available).
+          import them from "zeb/react" as a declaration hint (the import is stripped; they are already available).
           Never use npm:preact, npm:preact/hooks, or call render(). Components belong in the page or layout.
         </RuleAlert>
         <CodeBlock code={atAliasCode} />

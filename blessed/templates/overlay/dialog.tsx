@@ -1,5 +1,5 @@
-import { cx } from "zeb";
-import { useState, useRef } from "zeb";
+import { cx } from "zeb/react";
+import { useState, useRef } from "zeb/react";
 import { useClickAway } from "zeb/use";
 
 interface DialogProps {

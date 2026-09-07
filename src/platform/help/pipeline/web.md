@@ -129,7 +129,7 @@ name=session,value=$.access_token,http-only,max-age=86400,secure,same-site=Stric
 The upstream pipeline payload becomes **`input`** (the function parameter) inside the template. `ctx` is the same object available as a global (`globalThis.ctx`) in both SSR and browser.
 
 ```tsx
-import { useState } from "zeb";
+import { useState } from "zeb/react";
 
 export default function Page(input) {
   // input = full upstream payload (e.g. { rows: [...], total: 42 })
@@ -148,7 +148,7 @@ export default function Page(input) {
 
 **Rules:**
 - Use `input` (function parameter) to access server data — works in both SSR and browser.
-- Use `useState`, `useEffect`, etc. for client interactivity — import them from `"zeb"` in every file that uses them.
+- Use `useState`, `useEffect`, etc. for client interactivity — import them from `"zeb/react"` in every file that uses them.
 - `ctx` also works as a bare global if you prefer, but `input` as the function param is the convention.
 
 ---

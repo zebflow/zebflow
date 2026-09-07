@@ -1,4 +1,4 @@
-import { cx } from "zeb";
+import { cx } from "zeb/react";
 
 const studioTableThClass =
   "px-[0.8rem] py-[0.65rem] border-b border-border-soft text-left text-[0.68rem] font-mono uppercase tracking-[0.12em] text-body-soft";

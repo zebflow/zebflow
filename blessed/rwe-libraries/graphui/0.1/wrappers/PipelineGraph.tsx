@@ -9,7 +9,7 @@
 // SSR stub lives in:
 //   src/rwe/runtime/preact_ssr_init.js (globalThis.PipelineGraph)
 
-import { forwardRef } from "zeb";
+import { forwardRef } from "zeb/react";
 
 export interface PipelineNodeData {
   graphNodeId: number;

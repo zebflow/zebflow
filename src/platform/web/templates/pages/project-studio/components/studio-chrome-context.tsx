@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useMemo, useState } from "zeb";
+import { createContext, useContext, useEffect, useMemo, useState } from "zeb/react";
 import { registerStudioChrome } from "@/pages/project-studio/components/studio-chrome-bridge";
 
 type StudioChromeValue = {

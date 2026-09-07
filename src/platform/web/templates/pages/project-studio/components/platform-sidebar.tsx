@@ -1,4 +1,4 @@
-import { cx, Link, useState } from "zeb";
+import { cx, Link, useState } from "zeb/react";
 
 function navRowCx(expanded: boolean, isLight: boolean, routeClass: string) {
   const active = routeClass?.includes("is-active");

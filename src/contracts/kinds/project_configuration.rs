@@ -141,6 +141,11 @@ impl ProjectConfigurationSpec {
                 ));
             }
         }
+        if let Some(capture) = &self.pipelines.logging.trace_capture {
+            capture.validate().map_err(|message| {
+                ContractError::invalid(format!("spec.pipelines.logging.trace_capture: {message}"))
+            })?;
+        }
         if let Some(value) = self.pipelines.logging.max_invocations
             && !(1..=1000).contains(&value)
         {
@@ -809,6 +814,10 @@ pub struct ProjectPipelinesSpec {
 pub struct ProjectPipelineLoggingSpec {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_invocations: Option<u32>,
+    /// Default capture bounds for node input/output previews. Pipelines may
+    /// override individual fields; execution payloads are never compacted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trace_capture: Option<crate::pipeline::trace_capture::TraceCaptureSettings>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, PartialEq, Eq)]
@@ -1080,6 +1089,7 @@ impl From<ZebflowJson> for ProjectConfigurationSpec {
             pipelines: ProjectPipelinesSpec {
                 logging: ProjectPipelineLoggingSpec {
                     max_invocations: value.configs.pipelines.logging.max_invocations,
+                    trace_capture: value.configs.pipelines.logging.trace_capture,
                 },
                 node_timeout_secs: value.configs.pipelines.node_timeout_secs,
             },
@@ -1179,6 +1189,7 @@ impl From<ProjectConfigurationSpec> for ZebflowJson {
                 pipelines: ZebflowJsonPipelines {
                     logging: ZebflowJsonLogging {
                         max_invocations: value.pipelines.logging.max_invocations,
+                        trace_capture: value.pipelines.logging.trace_capture,
                     },
                     node_timeout_secs: value.pipelines.node_timeout_secs,
                 },
@@ -1351,6 +1362,49 @@ mod tests {
         encode_contract_yaml,
     };
     use crate::platform::model::ResolvedProjectLayout;
+
+    #[test]
+    fn trace_capture_defaults_survive_runtime_and_yaml_roundtrip() {
+        let mut spec = ProjectConfigurationSpec::default();
+        let capture = crate::pipeline::trace_capture::TraceCaptureSettings {
+            array_sample_count: Some(1),
+            max_string_chars: Some(1024),
+            max_depth: Some(4),
+            max_node_bytes: Some(4096),
+            max_run_bytes: Some(16384),
+        };
+        spec.pipelines.logging.trace_capture = Some(capture.clone());
+        let runtime: ZebflowJson = spec.into();
+        let restored: ProjectConfigurationSpec = runtime.into();
+        assert_eq!(
+            restored.pipelines.logging.trace_capture,
+            Some(capture.clone())
+        );
+        let bytes = encode_contract_yaml::<ProjectConfigurationContract>(
+            ContractMetadata::named("project"),
+            restored,
+        )
+        .unwrap();
+        let decoded = decode_contract_yaml::<ProjectConfigurationContract>(&bytes).unwrap();
+        assert_eq!(decoded.spec.pipelines.logging.trace_capture, Some(capture));
+    }
+
+    #[test]
+    fn trace_capture_defaults_reject_invalid_limits() {
+        let mut spec = ProjectConfigurationSpec::default();
+        spec.pipelines.logging.trace_capture =
+            Some(crate::pipeline::trace_capture::TraceCaptureSettings {
+                max_node_bytes: Some(0),
+                ..Default::default()
+            });
+        assert!(
+            encode_contract::<ProjectConfigurationContract>(
+                ContractMetadata::named("project"),
+                spec,
+            )
+            .is_err()
+        );
+    }
 
     const COMPLETE_V1: &[u8] =
         include_bytes!("../../../tests/fixtures/contracts/project-configuration/v1-complete.yaml");

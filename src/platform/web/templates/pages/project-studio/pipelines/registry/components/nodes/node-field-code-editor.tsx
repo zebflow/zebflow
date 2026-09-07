@@ -1,4 +1,4 @@
-import { cx, useEffect, useRef, useState } from "zeb";
+import { cx, useEffect, useRef, useState } from "zeb/react";
 import Field from "@/components/ui/field";
 import Label from "@/components/ui/label";
 import HelpTooltip from "@/components/ui/help-tooltip";

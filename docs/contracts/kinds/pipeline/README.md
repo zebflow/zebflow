@@ -100,6 +100,7 @@ The golden fixture contains the complete v1 example.
 | `spec.description` | Optional text, at most 16,384 bytes |
 | `spec.metadata.locked` | Prevents editing, moving, activation, and deletion through managed interfaces |
 | `spec.metadata.settings.invocation_retention` | Optional override of project invocation retention |
+| `spec.metadata.settings.trace_capture` | Optional per-field overrides of project trace capture limits; affects logs only |
 | `spec.entry_nodes` | Unique node ids where execution begins |
 | `spec.nodes` | Required ordered source list of unique node instances |
 | `spec.edges` | Required ordered source list of unique directed connections |
@@ -113,6 +114,19 @@ Structural objects reject unknown fields. `node.config` is the one intentional
 extension point because each node kind owns a different typed configuration.
 The pipeline contract requires it to be an object. The node definition and
 compiler apply the more specific schema before activation.
+
+Trace capture accepts `array_sample_count`, `max_string_chars`, `max_depth`,
+`max_node_bytes`, and `max_run_bytes`. An omitted or null field inherits the
+project value, then the engine default. `array_sample_count: 0` keeps all array
+elements subject to the independent depth, string, and byte limits. Positive
+counts retain the first N elements recursively, including arrays nested inside
+objects and retained array elements. Execution data passed to downstream nodes
+is unchanged. See the [project defaults](../project-configuration/README.md).
+
+The byte limits apply to captured config/input/output JSON together, excluding
+budget-exhaustion markers and trace bookkeeping such as IDs, timings, and error
+messages. `max_run_bytes` is per invocation; a called function pipeline uses its
+own policy and budget. Count/age retention remains independent of capture size.
 
 Pins are stored on each instance in v1. This supports configuration-dependent
 pins such as routes from `n.logic.match`. An edge may use a declared output pin

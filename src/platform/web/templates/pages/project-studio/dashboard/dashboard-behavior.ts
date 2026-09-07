@@ -1,15 +1,4 @@
-function fmtBytes(n) {
-  if (!Number.isFinite(Number(n)) || n <= 0) return "0 B";
-  const units = ["B", "KB", "MB", "GB", "TB"];
-  let val = Number(n);
-  let idx = 0;
-  while (val >= 1024 && idx + 1 < units.length) {
-    val = val / 1024;
-    idx += 1;
-  }
-  return val.toFixed(1) + " " + units[idx];
-}
-
+import { formatBytes as fmtBytes } from "@/components/lib/format";
 function fmtUptime(secs) {
   const s = Math.floor(Number(secs) || 0);
   const h = Math.floor(s / 3600);

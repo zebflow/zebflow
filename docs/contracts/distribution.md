@@ -276,19 +276,19 @@ not in it.
 
 ### Binary name
 
-The long name is `zebflow`; the short name is `zeb`. Shortening is the norm —
+The long name is `zebflow`; the short name is `zeb/react`. Shortening is the norm —
 Kubernetes ships `kubectl`, Google Cloud ships `gcloud`, Cloudflare ships
 `wrangler` — and `zeb install` is the shape people will actually type.
 
-Both names exist. The crate builds two binary targets from one source, so `zeb`
+Both names exist. The crate builds two binary targets from one source, so `zeb/react`
 and `zebflow` are the same program under two names rather than two programs, and
-installing a product called Zebflow and finding only a `zeb` binary is never
-surprising. `zeb` also matches the `zeb/*` library namespace and the `zeb.lock`
+installing a product called Zebflow and finding only a `zeb/react` binary is never
+surprising. `zeb/react` also matches the `zeb/*` library namespace and the `zeb.lock`
 file, so the short name is already the project's own vocabulary.
 
 Neither name is written into the program. Every usage line, error, and hint
 reads `argv[0]`, so a person who typed `zebflow` is told to run `zebflow` and a
-person who typed `zeb` is told to run `zeb`. A binary invoked under some third
+person who typed `zeb/react` is told to run `zeb/react`. A binary invoked under some third
 name reports the primary one.
 
 ## 1. What is distributable

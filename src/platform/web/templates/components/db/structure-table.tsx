@@ -1,3 +1,4 @@
+import { stringifyCell } from "@/components/db/cell-format";
 import { StudioTable, StudioTd, StudioThead, StudioTh } from "@/components/ui/studio-data-table";
 
 /**

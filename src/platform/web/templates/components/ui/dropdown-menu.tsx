@@ -1,4 +1,4 @@
-import { cx, useState, useEffect, useRef } from "zeb";
+import { cx, useState, useEffect, useRef } from "zeb/react";
 
 /**
  * DropdownMenu — shadcn-style state-driven dropdown.

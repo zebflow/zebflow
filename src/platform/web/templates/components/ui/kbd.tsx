@@ -1,4 +1,4 @@
-import { cx } from "zeb";
+import { cx } from "zeb/react";
 
 /**
  * Keyboard key chip — inline mono badge styled like a physical key.

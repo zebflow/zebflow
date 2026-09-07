@@ -21,12 +21,31 @@ use crate::platform::adapters::file::FileAdapter;
 use crate::platform::adapters::project_data::ProjectDataFactory;
 use crate::platform::error::PlatformError;
 use crate::platform::model::{
-    ALWAYS_ALLOWED_FILE_NAMES, AgentDocItem, CreateProjectRequest, HubAuthority,
-    LEGACY_PIPELINE_IDENTITY_ROOT, PIPELINE_DEFINITION_EXTENSION, PIPELINE_IDENTITY_BACKUP_FILE,
-    PipelineBreadcrumb, PipelineFolderItem, PipelineMeta, PipelineRegistryItem,
-    PipelineRegistryListing, PlatformProject, ProjectFileLayout, RegistryFileItem,
-    ResolvedProjectLayout, TemplateFilePayload, TemplateGitStatusItem, TemplateTreeItem,
-    TemplateWorkspaceListing, normalize_virtual_path, now_ts, recovery_date_stamp, slug_segment,
+    ALWAYS_ALLOWED_FILE_NAMES,
+    AgentDocItem,
+    CreateProjectRequest,
+    HubAuthority,
+    LEGACY_PIPELINE_IDENTITY_ROOT,
+    PIPELINE_DEFINITION_EXTENSION,
+    PIPELINE_IDENTITY_BACKUP_FILE,
+    PipelineBreadcrumb,
+    PipelineFolderItem,
+    PipelineMeta,
+    PipelineRegistryItem,
+    PipelineRegistryListing,
+    PlatformProject,
+    ProjectFileLayout,
+    RegistryFileItem,
+    RepoTreeScope,
+    ResolvedProjectLayout,
+    TemplateFilePayload,
+    TemplateGitStatusItem,
+    TemplateTreeItem,
+    TemplateWorkspaceListing,
+    normalize_virtual_path,
+    now_ts,
+    recovery_date_stamp,
+    slug_segment,
     strip_dir_prefix,
 };
 use crate::platform::services::dependency_lock::DependencyLockService;
@@ -1373,7 +1392,7 @@ impl ProjectService {
         // tokens are reached with arbitrary values, `bg-[var(--color-surface)]`,
         // which is Tailwind's own escape hatch and needs no custom classes.
         let page = concat!(
-            "import { useState } from \"zeb\";\n",
+            "import { useState } from \"zeb/react\";\n",
             "import \"@/globals.css\";\n",
             "\n",
             "export default function SampleWebPage() {\n",
@@ -1484,29 +1503,75 @@ impl ProjectService {
     ///
     /// A file the layout refuses, and the machine-owned names, are left out:
     /// showing a file nothing may write is an invitation to try.
+    /// Lists part of the repository tree.
+    ///
+    /// The scope is the whole point: a sidebar asks for one folder's children
+    /// as the reader opens it, so adding a file costs a request for that one
+    /// folder instead of another walk of the entire repository. Asking for
+    /// everything is still possible — it is `RepoTreeScope::all()` — and that
+    /// is what the quick-open palette and the pipeline pages use.
     pub fn list_repo_tree(
         &self,
         owner: &str,
         project: &str,
+        scope: &RepoTreeScope,
     ) -> Result<TemplateWorkspaceListing, PlatformError> {
         let owner = slug_segment(owner);
         let project = slug_segment(project);
         let layout = self.file.ensure_project_layout(&owner, &project)?;
 
+        let start = if scope.path.is_empty() {
+            layout.repo_dir.clone()
+        } else {
+            let (_, abs) = resolve_repo_entry(&layout, &scope.path, false)?;
+            if !abs.is_dir() {
+                return Err(PlatformError::new(
+                    "PLATFORM_REPO_MISSING",
+                    format!("'{}' is not a folder", scope.path),
+                ));
+            }
+            abs
+        };
+        // Rows carry their depth from the repository root, not from the scope,
+        // so a folder fetched on its own indents the same as it did inside a
+        // full listing.
+        let base_depth = if scope.path.is_empty() {
+            0
+        } else {
+            scope.path.split('/').count()
+        };
+
         let mut items = Vec::new();
         let mut default_file = None;
         walk_repo_tree(
             &layout,
-            &layout.repo_dir.clone(),
-            0,
+            &start,
+            base_depth,
+            scope.depth,
             &mut items,
             &mut default_file,
         )?;
 
         Ok(TemplateWorkspaceListing {
             default_file,
+            path: scope.path.clone(),
             items,
         })
+    }
+
+    /// Every file path in the repository, and nothing else.
+    ///
+    /// The quick-open palette wants names to match against; it used to read the
+    /// full tree and throw the folders and the metadata away. Answering only
+    /// what it reads makes the payload roughly a third of the size.
+    pub fn list_repo_paths(&self, owner: &str, project: &str) -> Result<Vec<String>, PlatformError> {
+        let listing = self.list_repo_tree(owner, project, &RepoTreeScope::all())?;
+        Ok(listing
+            .items
+            .into_iter()
+            .filter(|item| item.kind == "file")
+            .map(|item| item.rel_path)
+            .collect())
     }
 
     /// Replaces one unique occurrence of `old_string` in a repository file.
@@ -1730,7 +1795,22 @@ impl ProjectService {
                 format!("'{rel}' is written by the platform and cannot be deleted here"),
             ));
         }
-        if abs.is_dir() && repo_entry_is_declared_root(&layout.repo_layout, &rel) {
+        // A declared root is protected while it holds something. An empty one is
+        // just a reserved name, and refusing to delete it would leave a folder
+        // nobody asked for that nobody can remove — the platform re-creates it
+        // the moment a feature writes there.
+        let declared_and_used = abs.is_dir()
+            && repo_entry_is_declared_root(&layout.repo_layout, &rel)
+            && std::fs::read_dir(&abs)
+                .map(|mut entries| entries.next().is_some())
+                .unwrap_or(true);
+        if abs.is_dir() && repo_entry_contains_declared_root(&layout.repo_layout, &rel) {
+            return Err(PlatformError::new(
+                "PLATFORM_REPO_DECLARED_ROOT",
+                format!("'{rel}' holds a directory this project's layout names and cannot be deleted"),
+            ));
+        }
+        if declared_and_used {
             return Err(PlatformError::new(
                 "PLATFORM_REPO_DECLARED_ROOT",
                 format!("'{rel}' is named by this project's layout and cannot be deleted"),
@@ -2532,9 +2612,15 @@ fn walk_repo_tree(
     layout: &ProjectFileLayout,
     current: &Path,
     depth: usize,
+    remaining: Option<usize>,
     items: &mut Vec<TemplateTreeItem>,
     default_file: &mut Option<String>,
 ) -> Result<(), PlatformError> {
+    // `Some(0)` means the caller has what it asked for. `None` means it wants
+    // the rest of the tree however deep it goes.
+    if remaining == Some(0) {
+        return Ok(());
+    }
     let root = &layout.repo_dir;
     let mut entries = fs::read_dir(current)?.collect::<Result<Vec<_>, _>>()?;
     entries.sort_by(|a, b| {
@@ -2568,7 +2654,14 @@ fn walk_repo_tree(
                 file_kind: "folder".to_string(),
                 is_protected: repo_entry_is_declared_root(&layout.repo_layout, &rel),
             });
-            walk_repo_tree(layout, &path, depth + 1, items, default_file)?;
+            walk_repo_tree(
+                layout,
+                &path,
+                depth + 1,
+                remaining.map(|levels| levels - 1),
+                items,
+                default_file,
+            )?;
         } else if file_type.is_file() {
             if repo_entry_is_machine_owned(&rel)
                 || layout.repo_layout.refused_file_type(&rel).is_some()
@@ -2681,17 +2774,36 @@ fn repo_entry_is_machine_owned(rel: &str) -> bool {
 /// trio, which protected three names nothing in the contract mentions while
 /// leaving the declared roots unprotected.
 fn repo_entry_is_declared_root(layout: &ResolvedProjectLayout, rel: &str) -> bool {
-    let declared = [
+    declared_roots(layout)
+        .iter()
+        .any(|root| !root.is_empty() && contained_rel_path(root) == rel)
+}
+
+/// Every directory the layout names.
+fn declared_roots(layout: &ResolvedProjectLayout) -> [&str; 6] {
+    [
         layout.source.as_str(),
         layout.docs.as_str(),
         layout.schema.as_str(),
         layout.sqlite_schema.as_str(),
         layout.r#static.as_str(),
         layout.node_interfaces.as_str(),
-    ];
-    declared
-        .iter()
-        .any(|root| !root.is_empty() && contained_rel_path(root) == rel)
+    ]
+}
+
+/// Whether a declared root sits below this directory.
+///
+/// A root can be nested — `schemas/sekejap` is declared while `schemas` is
+/// not — so guarding only the root itself lets a delete of its parent take it
+/// anyway. Protection a parent walks past is not protection.
+fn repo_entry_contains_declared_root(layout: &ResolvedProjectLayout, rel: &str) -> bool {
+    if rel.is_empty() {
+        return false;
+    }
+    let prefix = format!("{rel}/");
+    declared_roots(layout).iter().any(|root| {
+        !root.is_empty() && contained_rel_path(root).starts_with(&prefix)
+    })
 }
 
 /// Recursively collect all files under `dir` as (rel_path, abs_path) pairs.
@@ -3064,6 +3176,142 @@ mod tests {
         assert_eq!(err.code, "PLATFORM_REPO_PATH");
     }
 
+    /// A sidebar opens one folder at a time, so the tree has to answer one
+    /// folder at a time.
+    ///
+    /// Answering the whole repository on every expansion is what this replaces:
+    /// a 10,000-file project shipped 1.4 MB to draw a row the reader had just
+    /// clicked. The rows still carry their depth from the repository root, so a
+    /// folder fetched alone indents exactly where it did inside a full listing.
+    #[test]
+    fn a_scoped_tree_answers_one_folder_without_walking_the_rest() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let svc = make_service(tmp.path());
+        create_default_project(&svc);
+        for rel in [
+            "top.md",
+            "docs/guide.md",
+            "docs/deep/inner.md",
+            "docs/deep/deeper/buried.md",
+        ] {
+            svc.write_repo_file("superadmin", "default", rel, "x")
+                .expect("write");
+        }
+
+        let children = svc
+            .list_repo_tree("superadmin", "default", &RepoTreeScope::children_of("docs"))
+            .expect("one folder");
+        let names = children
+            .items
+            .iter()
+            .map(|item| item.rel_path.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(children.path, "docs", "the answer names what was asked");
+        assert!(names.contains(&"docs/guide.md"), "{names:?}");
+        assert!(names.contains(&"docs/deep"), "{names:?}");
+        assert!(
+            !names.contains(&"docs/deep/inner.md"),
+            "depth 1 must not descend: {names:?}"
+        );
+        assert!(
+            !names.contains(&"top.md"),
+            "a scoped answer must not carry the root: {names:?}"
+        );
+
+        let deep = children
+            .items
+            .iter()
+            .find(|item| item.rel_path == "docs/deep")
+            .expect("the subfolder is listed as a folder to open next");
+        assert_eq!(deep.depth, 1, "depth is measured from the repository root");
+
+        // Two levels reaches the grandchild but still stops short of the rest.
+        let two = svc
+            .list_repo_tree(
+                "superadmin",
+                "default",
+                &RepoTreeScope {
+                    path: "docs".to_string(),
+                    depth: Some(2),
+                },
+            )
+            .expect("two levels");
+        let names = two
+            .items
+            .iter()
+            .map(|item| item.rel_path.as_str())
+            .collect::<Vec<_>>();
+        assert!(names.contains(&"docs/deep/inner.md"), "{names:?}");
+        assert!(
+            !names.contains(&"docs/deep/deeper/buried.md"),
+            "{names:?}"
+        );
+
+        // Unscoped still means everything, which is what the palette reads.
+        let all = svc
+            .list_repo_tree("superadmin", "default", &RepoTreeScope::all())
+            .expect("everything");
+        let names = all
+            .items
+            .iter()
+            .map(|item| item.rel_path.as_str())
+            .collect::<Vec<_>>();
+        assert!(names.contains(&"docs/deep/deeper/buried.md"), "{names:?}");
+        assert!(names.contains(&"top.md"), "{names:?}");
+    }
+
+    /// The quick-open palette matches on paths, so paths are all it is sent.
+    ///
+    /// It used to read the full tree and throw away every folder row and every
+    /// field but one.
+    #[test]
+    fn the_path_listing_carries_files_and_nothing_else() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let svc = make_service(tmp.path());
+        create_default_project(&svc);
+        svc.write_repo_file("superadmin", "default", "docs/guide.md", "x")
+            .expect("write");
+
+        let paths = svc
+            .list_repo_paths("superadmin", "default")
+            .expect("paths only");
+        assert!(paths.contains(&"docs/guide.md".to_string()), "{paths:?}");
+        assert!(
+            !paths.contains(&"docs".to_string()),
+            "a folder is not something to open: {paths:?}"
+        );
+    }
+
+    /// Asking for a file, or for something that is not there, is refused rather
+    /// than quietly answered with the root.
+    #[test]
+    fn a_scope_that_is_not_a_folder_is_refused() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let svc = make_service(tmp.path());
+        create_default_project(&svc);
+        svc.write_repo_file("superadmin", "default", "README.md", "# hi")
+            .expect("write");
+
+        assert!(
+            svc.list_repo_tree(
+                "superadmin",
+                "default",
+                &RepoTreeScope::children_of("README.md")
+            )
+            .is_err(),
+            "a file has no children"
+        );
+        assert!(
+            svc.list_repo_tree(
+                "superadmin",
+                "default",
+                &RepoTreeScope::children_of("nope/missing")
+            )
+            .is_err(),
+            "a folder that is not there is an error, not an empty root"
+        );
+    }
+
     /// `zebflow.yaml` and `zeb.lock` have services that own them, and a
     /// malformed layout relocates the whole source tree, so they are not shown.
     /// A directory the layout names cannot be deleted, because removing it
@@ -3077,7 +3325,7 @@ mod tests {
             .expect("write");
 
         let tree = svc
-            .list_repo_tree("superadmin", "default")
+            .list_repo_tree("superadmin", "default", &RepoTreeScope::all())
             .expect("one tree rooted at repo/");
         let names = tree
             .items
@@ -3090,20 +3338,41 @@ mod tests {
         assert!(!names.iter().any(|n| n.starts_with(".git")), "{names:?}");
 
         // Nothing scaffolds a folder, so `docs/` exists only once an author
-        // makes one -- and then, being named by the layout, it is protected.
+        // makes one -- and then, being named by the layout, it is marked.
         svc.create_repo_folder("superadmin", "default", "docs")
             .expect("an author makes the docs folder");
-        let tree = svc.list_repo_tree("superadmin", "default").expect("tree");
+        let tree = svc
+            .list_repo_tree("superadmin", "default", &RepoTreeScope::all())
+            .expect("tree");
         let docs = tree
             .items
             .iter()
             .find(|item| item.rel_path == "docs")
             .expect("docs is an ordinary folder in the one tree");
-        assert!(docs.is_protected, "a declared layout root is protected");
+        assert!(docs.is_protected, "a declared layout root is marked protected");
 
+        // An empty declared root is only a reserved name. Refusing to delete it
+        // would leave a folder nobody asked for that nobody can remove, which
+        // is the scaffolding this project does not do.
+        svc.delete_repo_entry("superadmin", "default", "docs")
+            .expect("an empty declared root can be removed");
+
+        // Holding something, it is protected.
+        svc.write_repo_file("superadmin", "default", "docs/guide.md", "# guide")
+            .expect("write into docs");
         let err = svc
             .delete_repo_entry("superadmin", "default", "docs")
-            .expect_err("a declared root cannot be deleted");
+            .expect_err("a declared root with content cannot be deleted");
+        assert_eq!(err.code, "PLATFORM_REPO_DECLARED_ROOT");
+
+        // And a plain parent cannot be used to take a declared root with it.
+        // `schemas/sekejap` is declared while `schemas` is not, so guarding the
+        // root alone would let a delete of its parent carry it off.
+        svc.create_repo_folder("superadmin", "default", "schemas/sekejap")
+            .expect("the declared schema root");
+        let err = svc
+            .delete_repo_entry("superadmin", "default", "schemas")
+            .expect_err("a parent holding a declared root cannot be deleted");
         assert_eq!(err.code, "PLATFORM_REPO_DECLARED_ROOT");
 
         svc.create_repo_folder("superadmin", "default", "notes")

@@ -1,4 +1,4 @@
-import { createPortal, useEffect, useId, useLayoutEffect, useRef, useState } from "zeb";
+import { createPortal, useEffect, useId, useLayoutEffect, useRef, useState } from "zeb/react";
 
 export default function HelpTooltip({ text }) {
   const buttonRef = useRef(null);

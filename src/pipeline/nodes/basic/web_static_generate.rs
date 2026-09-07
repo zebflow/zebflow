@@ -668,6 +668,12 @@ mod tests {
         std::fs::write(
             template_dir.join("lyric.tsx"),
             r#"
+import { ErrorBoundary, useSyncExternalStore } from "zeb/react";
+function LiveStatus() {
+  const status = useSyncExternalStore(() => () => {}, () => 'online', () => 'snapshot');
+  return <b>{status}</b>;
+}
+function BrokenPanel() { throw new Error('static recovery'); }
 export const page = {
   head: {
     title: "Lyric",
@@ -686,6 +692,8 @@ export default function LyricPage(input) {
         <img src="/assets/branding/logo.svg" alt="Zebflow" />
         <h1 className="text-3xl font-black">{input.artist_name} - {input.song_title}</h1>
         <p className="mt-4">{input.lyric_line}</p>
+        <LiveStatus />
+        <ErrorBoundary fallback={<i>panel unavailable</i>}><BrokenPanel /></ErrorBoundary>
       </main>
     </Page>
   );
@@ -767,10 +775,13 @@ export default function LyricPage(input) {
         let generated_html = std::fs::read_to_string(&generated_path).expect("generated html");
         assert!(generated_html.contains("Iwan Fals - Bento"));
         assert!(generated_html.contains("Namaku Bento."));
+        assert!(generated_html.contains("<b>snapshot</b>"));
+        assert!(generated_html.contains("<i>panel unavailable</i>"));
+        assert!(!generated_html.contains("RWE component error"));
         assert!(generated_html.contains("data-rwe-tw"));
         assert!(
             generated_html
-                .contains("../../../_assets/libraries/zeb/preact/0.1/runtime/preact.bundle.mjs")
+                .contains("../../../_assets/libraries/zeb/react/0.1/runtime/zeb_react.mjs")
         );
         assert!(generated_html.contains("../../../_assets/project/icons/favicon.ico"));
         assert!(generated_html.contains("../../../_assets/branding/logo.svg"));
@@ -782,10 +793,10 @@ export default function LyricPage(input) {
                 .join("_assets")
                 .join("libraries")
                 .join("zeb")
-                .join("preact")
+                .join("react")
                 .join("0.1")
                 .join("runtime")
-                .join("preact.bundle.mjs")
+                .join("zeb_react.mjs")
                 .is_file()
         );
         assert!(

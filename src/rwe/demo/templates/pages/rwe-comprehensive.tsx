@@ -1,4 +1,4 @@
-import { usePageState, useEffect, useMemo, useRef, useState } from "zeb";
+import { usePageState, useEffect, useMemo, useRef, useState } from "zeb/react";
 
 const STATUS = {
   ok: "success",

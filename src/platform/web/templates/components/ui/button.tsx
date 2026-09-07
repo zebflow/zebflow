@@ -1,4 +1,4 @@
-import { cx } from "zeb";
+import { cx } from "zeb/react";
 
 const VARIANT_CLASSES = {
   primary: "border border-brand-orange bg-brand-orange text-white hover:opacity-90",

@@ -725,8 +725,12 @@ impl DbDriver for MysqlDbDriver {
                 })?,
         };
         let existing = existing_columns(&pool, &schema, &name).await?;
+        // Qualified, so a table outside the connection's current database is
+        // altered in place rather than resolved through `DATABASE()` — which
+        // could silently reach a same-named table there instead.
+        let qualified = format!("{schema}.{name}");
         let statements =
-            alter_table_statements(&name, &existing, &req.attributes, SqlDialect::MySql)?;
+            alter_table_statements(&qualified, &existing, &req.attributes, SqlDialect::MySql)?;
         for statement in statements {
             sqlx::query(&statement)
                 .execute(&pool)

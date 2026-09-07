@@ -4,7 +4,7 @@
  *
  * Layout uses Tailwind utilities (RWE `data-rwe-tw`); `--studio-*` / `--zf-ui-*` come from `[data-studio-theme]` in `pages/project-studio/styles.css` (SSR-safe).
  */
-import { useEffect, useState, Link, cx } from "zeb";
+import { useEffect, useState, Link, cx } from "zeb/react";
 import PlatformSidebar from "@/pages/project-studio/components/platform-sidebar";
 import Button from "@/components/ui/button";
 import { HelpIcon, HomeIcon, MoonIcon, PreferencesIcon, SunIcon, TerminalIcon, UserIcon } from "@/pages/project-studio/components/icons";

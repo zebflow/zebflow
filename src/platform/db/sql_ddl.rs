@@ -214,6 +214,21 @@ pub fn validate_identifier(raw: &str, what: &str) -> Result<String, PlatformErro
     Ok(name.to_ascii_lowercase())
 }
 
+/// Quotes a table reference that may be schema-qualified.
+///
+/// A dot separates schema from table on an engine where `caps.schemas` is
+/// true; each side is validated and quoted on its own, the same rule
+/// `insert_row` already follows per driver, so a stray dot cannot smuggle a
+/// second statement in and a namespaced table is addressed by its own name
+/// rather than resolved through whatever schema the connection defaults to.
+pub fn quote_table_ref(table: &str, dialect: SqlDialect) -> Result<String, PlatformError> {
+    table
+        .split('.')
+        .map(|part| validate_identifier(part, "table").map(|name| dialect.quote(&name)))
+        .collect::<Result<Vec<_>, _>>()
+        .map(|parts| parts.join("."))
+}
+
 /// The column type one attribute kind becomes.
 ///
 /// Kinds that need a database extension are refused by name rather than
@@ -393,8 +408,13 @@ pub fn alter_table_statements(
     desired: &[CollectionAttribute],
     dialect: SqlDialect,
 ) -> Result<Vec<String>, PlatformError> {
-    let table = validate_identifier(table, "table")?;
-    let quoted_table = dialect.quote(&table);
+    // This platform's own index-naming convention uses the bare name only —
+    // a dot in an index identifier would just be another character to it —
+    // while the statements below address whatever schema the caller passed,
+    // qualified, so a table outside the default schema is altered in place
+    // instead of resolved through the connection's search path.
+    let bare = validate_identifier(table.rsplit('.').next().unwrap_or(table), "table")?;
+    let quoted_table = quote_table_ref(table, dialect)?;
     let mut statements = Vec::new();
 
     let mut wanted: Vec<(String, String, bool)> = Vec::new();
@@ -466,7 +486,7 @@ pub fn alter_table_statements(
             .find(|col| &col.name == name)
             .map(|col| col.indexed)
             .unwrap_or(false);
-        let index = dialect.quote(&index_name(&table, name));
+        let index = dialect.quote(&index_name(&bare, name));
         if *indexed && !already {
             let target = if dialect == SqlDialect::MySql && ty.eq_ignore_ascii_case("text") {
                 format!("{}(191)", dialect.quote(name))
@@ -489,9 +509,14 @@ pub fn alter_table_statements(
 }
 
 /// The statement that drops one table.
+///
+/// `table` arrives schema-qualified on an engine where `caps.schemas` is
+/// true — the tree names it that way — so this quotes each part rather than
+/// requiring a bare name, which used to make dropping any table outside the
+/// default schema fail before it reached the database at all.
 pub fn drop_table_statement(table: &str, dialect: SqlDialect) -> Result<String, PlatformError> {
-    let table = validate_identifier(table, "table")?;
-    Ok(format!("DROP TABLE {}", dialect.quote(&table)))
+    let quoted = quote_table_ref(table, dialect)?;
+    Ok(format!("DROP TABLE {quoted}"))
 }
 
 #[cfg(test)]
@@ -584,6 +609,57 @@ mod tests {
         assert!(statements.iter().any(|s| s.contains("CREATE INDEX \"idx_orders_total\"")));
         // the identity column is never dropped
         assert!(!statements.iter().any(|s| s.contains("DROP COLUMN \"id\"")));
+    }
+
+    #[test]
+    fn altering_a_schema_qualified_table_addresses_that_schema_not_the_bare_name() {
+        // A driver resolves `existing` against the named schema but used to
+        // hand alter_table_statements only the bare table name, so the
+        // ALTER TABLE it emitted fell back to whatever schema the connection
+        // defaulted to instead of the one just inspected.
+        let statements = alter_table_statements(
+            "shop.orders",
+            &[existing("id", "SERIAL", false)],
+            &[attr("total", "number", &[])],
+            SqlDialect::Postgres,
+        )
+        .expect("statements");
+
+        assert!(
+            statements
+                .iter()
+                .any(|s| s == "ALTER TABLE \"shop\".\"orders\" ADD COLUMN \"total\" DOUBLE PRECISION"),
+            "got {statements:?}"
+        );
+        // This platform's own index name stays keyed off the bare table —
+        // a dot has no meaning inside an identifier.
+        let statements = alter_table_statements(
+            "shop.orders",
+            &[],
+            &[attr("total", "number", &["hash"])],
+            SqlDialect::Postgres,
+        )
+        .expect("statements");
+        assert!(
+            statements
+                .iter()
+                .any(|s| s.contains("\"idx_orders_total\"") && s.contains("ON \"shop\".\"orders\"")),
+            "got {statements:?}"
+        );
+    }
+
+    #[test]
+    fn dropping_a_schema_qualified_table_quotes_each_part() {
+        // Used to run the whole `schema.table` string through
+        // validate_identifier, which rejects the dot outright — so dropping
+        // any table outside the default schema failed before it reached the
+        // database.
+        let statement =
+            drop_table_statement("shop.orders", SqlDialect::Postgres).expect("statement");
+        assert_eq!(statement, "DROP TABLE \"shop\".\"orders\"");
+
+        let statement = drop_table_statement("orders", SqlDialect::MySql).expect("statement");
+        assert_eq!(statement, "DROP TABLE `orders`");
     }
 
     #[test]

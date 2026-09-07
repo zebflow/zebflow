@@ -596,14 +596,16 @@ pub const PLATFORM_LIBRARY_ASSETS: &[EmbeddedAsset] = &[
         ),
     },
     EmbeddedAsset {
-        path: "zeb/preact/0.1/library.json",
-        bytes: include_bytes!("../../../blessed/rwe-libraries/preact/0.1/library.json"),
+        path: "zeb/react/0.1/library.json",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/react/0.1/library.json"),
     },
     EmbeddedAsset {
-        path: "zeb/preact/0.1/runtime/preact.bundle.mjs",
-        bytes: include_bytes!(
-            "../../../blessed/rwe-libraries/preact/0.1/runtime/preact.bundle.mjs"
-        ),
+        path: "zeb/react/0.1/runtime/zeb_react.js",
+        bytes: include_bytes!("../../rwe/runtime/zeb_react.js"),
+    },
+    EmbeddedAsset {
+        path: "zeb/react/0.1/runtime/zeb_react.mjs",
+        bytes: include_bytes!("../../rwe/runtime/zeb_react.mjs"),
     },
     EmbeddedAsset {
         path: "zeb/pdf/manifest.json",
@@ -648,10 +650,6 @@ pub const PLATFORM_LIBRARY_ASSETS: &[EmbeddedAsset] = &[
     EmbeddedAsset {
         path: "zeb/pdf/package.yaml",
         bytes: include_bytes!("../../../blessed/rwe-libraries/pdf/package.yaml"),
-    },
-    EmbeddedAsset {
-        path: "zeb/preact/package.yaml",
-        bytes: include_bytes!("../../../blessed/rwe-libraries/preact/package.yaml"),
     },
     EmbeddedAsset {
         path: "zeb/prosemirror/package.yaml",

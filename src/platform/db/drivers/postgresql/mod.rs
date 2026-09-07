@@ -142,8 +142,12 @@ impl DbDriver for PostgresqlDbDriver {
         let name = validate_identifier(bare, "table")?;
         let pool = connect_pool(ctx).await?;
         let existing = existing_columns(&pool, &schema, &name).await?;
+        // Qualified, so a table outside `public` is altered in place rather
+        // than resolved through `search_path` — which could silently reach a
+        // same-named table in a different schema.
+        let qualified = format!("{schema}.{name}");
         let statements =
-            alter_table_statements(&name, &existing, &req.attributes, SqlDialect::Postgres)?;
+            alter_table_statements(&qualified, &existing, &req.attributes, SqlDialect::Postgres)?;
         for statement in statements {
             sqlx::query(&statement)
                 .execute(&pool)

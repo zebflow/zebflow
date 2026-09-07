@@ -1777,8 +1777,46 @@ pub struct TemplateTreeItem {
 pub struct TemplateWorkspaceListing {
     /// Relative path of the preferred initial file.
     pub default_file: Option<String>,
+    /// The folder these rows are the contents of. Empty is the repository root.
+    ///
+    /// Echoed back so a client holding several folders can file the answer
+    /// under the right key without remembering what it asked for.
+    #[serde(default)]
+    pub path: String,
     /// Flattened tree rows in display order.
     pub items: Vec<TemplateTreeItem>,
+}
+
+/// Which part of the repository tree a caller wants.
+///
+/// A sidebar asks for one folder at a time as the reader opens it; the
+/// quick-open palette and the pipeline pages ask for all of it. Making that a
+/// parameter rather than two endpoints means a screen can change its mind
+/// without the server growing a second road.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RepoTreeScope {
+    /// Subtree root relative to `repo/`. Empty is the repository root.
+    pub path: String,
+    /// Levels to walk below `path`. `None` walks the whole subtree.
+    pub depth: Option<usize>,
+}
+
+impl RepoTreeScope {
+    /// The whole repository, however deep it goes.
+    pub fn all() -> Self {
+        Self {
+            path: String::new(),
+            depth: None,
+        }
+    }
+
+    /// One folder's immediate children — what an expanding sidebar asks for.
+    pub fn children_of(path: impl Into<String>) -> Self {
+        Self {
+            path: path.into(),
+            depth: Some(1),
+        }
+    }
 }
 
 /// One file status row from the project git repository for templates.
@@ -3544,6 +3582,10 @@ pub struct ZebflowJsonLogging {
     /// Max invocation entries to retain per pipeline. Defaults to 20.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_invocations: Option<u32>,
+    /// Project defaults for bounded node trace capture, overridden independently
+    /// by each pipeline. Omitted fields inherit the engine defaults.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trace_capture: Option<crate::pipeline::trace_capture::TraceCaptureSettings>,
 }
 
 impl ZebflowJsonLogging {

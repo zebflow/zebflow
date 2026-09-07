@@ -3,7 +3,7 @@
   "version": "0.1",
   "kind": "web-library",
   "trust": "official",
-  "description": "RWE hooks collection for templates. useDebounce, useThrottle, useLocalStorage, useClipboard, useTemporaryState, useWindowEvent, useLazyModule, useSearchParams, useSplitPane, useClickAway, useInterval, useGeolocation, useTree.",
+  "description": "RWE hooks collection for templates. useDebounce, useThrottle, useLocalStorage, useClipboard, useTemporaryState, useWindowEvent, useLazyModule, useSplitPane, useClickAway, useInterval, useGeolocation, useTree.",
   "source": {
     "provider": "zebflow",
     "package": "use",
@@ -26,7 +26,6 @@
       "useTemporaryState",
       "useWindowEvent",
       "useLazyModule",
-      "useSearchParams",
       "useSplitPane",
       "useClickAway",
       "useInterval",

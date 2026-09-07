@@ -1,3 +1,5 @@
+import { cx, Link } from "zeb/react";
+
 export function StudioTabNav({ children }: any) {
   return (
     <nav className="shrink-0 flex items-stretch border-b border-border bg-surface px-[0.625rem]">

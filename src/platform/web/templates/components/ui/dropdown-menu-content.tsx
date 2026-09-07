@@ -1,4 +1,4 @@
-import { cx } from "zeb";
+import { cx } from "zeb/react";
 
 const ALIGN_CLASSES = {
   left: "left-0",

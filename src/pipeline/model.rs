@@ -711,6 +711,10 @@ pub struct PipelineGraphMetadata {
 pub struct PipelineGraphSettings {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub invocation_retention: Option<PipelineInvocationRetention>,
+    /// Per-field overrides of project trace capture defaults. These bounds affect
+    /// recorded node previews only; downstream execution receives complete data.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trace_capture: Option<crate::pipeline::trace_capture::TraceCaptureSettings>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

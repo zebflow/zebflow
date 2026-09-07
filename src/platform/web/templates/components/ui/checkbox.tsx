@@ -1,4 +1,4 @@
-import { cx } from "zeb";
+import { cx } from "zeb/react";
 
 /**
  * Inline checkbox toggle — compact mono style for dark console/toolbar contexts.

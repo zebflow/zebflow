@@ -1,4 +1,5 @@
-import { cx, useEffect, useRef, useState } from "zeb";
+import StorageBackendPanel from "@/pages/project-studio/files/components/storage-backend-panel";
+import { cx, useEffect, useRef, useState } from "zeb/react";
 import ProjectStudioShell from "@/pages/project-studio/components/shell";
 import { StudioTabNav, StudioTabLink } from "@/components/ui/studio-tab-nav";
 import Badge from "@/components/ui/badge";
@@ -13,6 +14,7 @@ import DialogHeader from "@/components/ui/dialog-header";
 import DialogTitle from "@/components/ui/dialog-title";
 import DialogFooter from "@/components/ui/dialog-footer";
 import { LockIcon, LockOpenIcon } from "@/pages/project-studio/components/icons";
+import { formatBytes } from "@/components/lib/format";
 
 export const page = {
   html: { lang: "en" },
@@ -418,6 +420,15 @@ export default function Page(input) {
                     </tbody>
                   </table>
                 </div>
+
+                {/* The backend behind those namespaces. It used to be shown in
+                    Settings, where you could read it but do nothing with it. */}
+                <StorageBackendPanel
+                  backend={input?.storage?.backend}
+                  backendLabel={input?.storage?.backend_label}
+                  declared={input?.storage?.declared}
+                  field={input?.storage?.field}
+                />
               </div>
             </div>
           ) : null}
@@ -964,13 +975,6 @@ function TrashIcon() {
       <path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" />
     </svg>
   );
-}
-
-function formatBytes(bytes: number): string {
-  if (!bytes) return "0 B";
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 function buildCrumbs(currentPath: string): Array<{ label: string; path: string }> {

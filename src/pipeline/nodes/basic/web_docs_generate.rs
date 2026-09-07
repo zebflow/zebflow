@@ -632,7 +632,7 @@ fn default_template_source(config: &Config) -> String {
         .filter(|s| !s.trim().is_empty())
         .unwrap_or_else(|| "Docs".to_string());
     format!(
-        r##"import {{ useState, useEffect, useMemo, useCallback }} from "zeb";
+        r##"import {{ useState, useEffect, useMemo, useCallback }} from "zeb/react";
 import Markdown from "zeb/markdown";
 
 const DOCS_MARKDOWN_CSS = `
@@ -1960,10 +1960,8 @@ mod tests {
         assert!(query_html.contains("Query Basics"));
         assert!(query_html.contains("id=\"select\""));
         assert!(home_html.contains("Search the docs"));
-        assert!(home_html.contains("_assets/libraries/zeb/preact/0.1/runtime/preact.bundle.mjs"));
-        assert!(
-            query_html.contains("../../_assets/libraries/zeb/preact/0.1/runtime/preact.bundle.mjs")
-        );
+        assert!(home_html.contains("_assets/libraries/zeb/react/0.1/runtime/zeb_react.mjs"));
+        assert!(query_html.contains("../../_assets/libraries/zeb/react/0.1/runtime/zeb_react.mjs"));
         assert!(
             layout
                 .files_dir
@@ -1971,10 +1969,10 @@ mod tests {
                 .join("_assets")
                 .join("libraries")
                 .join("zeb")
-                .join("preact")
+                .join("react")
                 .join("0.1")
                 .join("runtime")
-                .join("preact.bundle.mjs")
+                .join("zeb_react.mjs")
                 .is_file()
         );
         assert!(sitemap.contains("https://db.docs.example/docs/"));

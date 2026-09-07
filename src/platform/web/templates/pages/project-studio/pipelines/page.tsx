@@ -1,8 +1,9 @@
+import FileKindIcon from "@/components/ui/file-kind-icon";
 import ProjectStudioShell from "@/pages/project-studio/components/shell";
 import { initPipelineRegistryBehavior } from "@/pages/project-studio/pipelines/pipelines-behavior";
 import { initInstallCatalogBehavior } from "@/pages/project-studio/pipelines/install-catalog-behavior";
 import WebhookRouteTree from "@/components/ui/webhook-route-tree";
-import { cx, Link, usePageState, useNavigate } from "zeb";
+import { cx, Link, usePageState, useRouter } from "zeb/react";
 import { StudioTabNav, StudioTabLink } from "@/components/ui/studio-tab-nav";
 import Button from "@/components/ui/button";
 import Input from "@/components/ui/input";
@@ -45,25 +46,6 @@ function PipelineIcon({ className = "w-4 h-4" }) {
   );
 }
 
-function FileKindIcon({ name = "" }) {
-  const ext = (name.split(".").pop() ?? "").toLowerCase();
-  if (ext === "tsx" || ext === "jsx") {
-    return <i className="devicon-react-original colored text-[0.95rem] leading-none" aria-hidden="true" />;
-  }
-  if (ext === "ts") {
-    return <i className="devicon-typescript-plain colored text-[0.95rem] leading-none" aria-hidden="true" />;
-  }
-  if (ext === "css" || ext === "scss") {
-    return <i className="devicon-css3-plain colored text-[0.95rem] leading-none" aria-hidden="true" />;
-  }
-  return (
-    <svg viewBox="0 0 24 24" fill="none" className="w-4 h-4" aria-hidden="true">
-      <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z" stroke="currentColor" strokeWidth="1.6" strokeLinejoin="round"/>
-      <path d="M14 2v6h6" stroke="currentColor" strokeWidth="1.6" strokeLinejoin="round"/>
-    </svg>
-  );
-}
-
 function TrashIcon() {
   return (
     <svg viewBox="0 0 24 24" fill="none" className="w-3.5 h-3.5" aria-hidden="true">
@@ -86,7 +68,7 @@ function StatusDot({ isActive, hasDraft }) {
 export default function Page(input) {
   initPipelineRegistryBehavior();
   initInstallCatalogBehavior();
-  const spaNav = useNavigate();
+  const spaNav = useRouter().push;
   const navLinks = input?.nav?.links ?? {};
   const navClasses = input?.nav?.classes ?? {};
   const registry = input?.registry ?? {};

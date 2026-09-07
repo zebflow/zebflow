@@ -48,6 +48,9 @@ use crate::pipeline::nodes::basic::{
     ws_sync_state, ws_trigger,
 };
 use crate::pipeline::nodes::{NodeExecutionInput, NodeExecutionOutput, NodeHandler};
+use crate::pipeline::trace_capture::TraceCapture;
+#[cfg(test)]
+use crate::pipeline::trace_capture::TraceCaptureSettings;
 use crate::platform::services::CredentialService;
 use crate::platform::services::PlatformService;
 use crate::rwe::{ReactiveWebEngine, TemplateSource, resolve_engine_or_default};
@@ -474,7 +477,7 @@ fn build_retry_error_payload(input_payload: &Value, error: &PipelineError) -> Va
     })
 }
 
-fn is_sensitive_trace_config_key(key: &str) -> bool {
+pub(crate) fn is_sensitive_trace_config_key(key: &str) -> bool {
     let normalized = key
         .chars()
         .filter(|ch| ch.is_ascii_alphanumeric())
@@ -508,41 +511,11 @@ fn is_sensitive_trace_config_key(key: &str) -> bool {
     )
 }
 
-fn sanitize_trace_config_value(value: &Value) -> Value {
-    match value {
-        Value::Object(map) => {
-            let mut out = serde_json::Map::with_capacity(map.len());
-            for (key, value) in map {
-                if key == "ui" {
-                    continue;
-                }
-                let sanitized = if is_sensitive_trace_config_key(key) {
-                    Value::String("••••••".to_string())
-                } else {
-                    sanitize_trace_config_value(value)
-                };
-                out.insert(key.clone(), sanitized);
-            }
-            Value::Object(out)
-        }
-        Value::Array(items) => Value::Array(
-            items
-                .iter()
-                .map(sanitize_trace_config_value)
-                .collect::<Vec<_>>(),
-        ),
-        _ => value.clone(),
-    }
-}
-
+#[cfg(test)]
 fn trace_config_snapshot(value: &Value) -> Option<Value> {
-    let sanitized = sanitize_trace_config_value(value);
-    match &sanitized {
-        Value::Null => None,
-        Value::Object(map) if map.is_empty() => None,
-        Value::Array(items) if items.is_empty() => None,
-        _ => Some(sanitized),
-    }
+    let mut capture = TraceCapture::new(TraceCaptureSettings::default().resolve(None));
+    capture.begin_node();
+    capture.config(value)
 }
 
 fn redact_string(value: &str, tokens: &[String]) -> String {
@@ -589,18 +562,27 @@ fn redact_json_value(
     }
 }
 
+#[cfg(test)]
 const TRACE_SUMMARY_MAX_DEPTH: usize = 8;
+#[cfg(test)]
 const TRACE_SUMMARY_MAX_OBJECT_KEYS: usize = 48;
+#[cfg(test)]
 const TRACE_SUMMARY_MAX_ARRAY_ITEMS: usize = 16;
+#[cfg(test)]
 const TRACE_SUMMARY_PREVIEW_ITEMS: usize = 6;
+#[cfg(test)]
 const TRACE_SUMMARY_NUMERIC_ARRAY_THRESHOLD: usize = 64;
+#[cfg(test)]
 const TRACE_SUMMARY_MAX_STRING_CHARS: usize = 8192;
+#[cfg(test)]
 const TRACE_SUMMARY_STRING_PREVIEW_CHARS: usize = 512;
 
+#[cfg(test)]
 fn summarize_trace_value(value: &Value) -> Value {
     summarize_trace_value_inner(value, 0)
 }
 
+#[cfg(test)]
 fn summarize_trace_value_inner(value: &Value, depth: usize) -> Value {
     if depth >= TRACE_SUMMARY_MAX_DEPTH {
         return match value {
@@ -681,6 +663,7 @@ fn summarize_trace_value_inner(value: &Value, depth: usize) -> Value {
     }
 }
 
+#[cfg(test)]
 fn summarize_trace_string(text: &str) -> Value {
     let preview = text
         .chars()
@@ -703,6 +686,7 @@ fn summarize_trace_string(text: &str) -> Value {
 ///
 /// `except_paths` is honoured here too, so a pipeline that deliberately traces
 /// a field named `token` keeps the same one escape hatch it already had.
+#[cfg(test)]
 fn blank_sensitive_keys(value: &Value, except_paths: &[Vec<String>], path: &[String]) -> Value {
     if except_paths.iter().any(|candidate| candidate == path) {
         return value.clone();
@@ -741,6 +725,7 @@ fn blank_sensitive_keys(value: &Value, except_paths: &[Vec<String>], path: &[Str
 /// Booleans and nulls pass through: one bit carries no secret, and a masked
 /// `"authorization": true` would cost a reader real information for nothing.
 /// Numbers do not, because a `cvv`, `otp`, or `pin` is a number.
+#[cfg(test)]
 fn blanked_like(value: &Value) -> Value {
     match value {
         Value::Null | Value::Bool(_) => value.clone(),
@@ -762,6 +747,7 @@ fn blanked_like(value: &Value) -> Value {
 /// payload under `__zf_response.body`, so by the time that node's *output* was
 /// traced the marker was one level down -- unread, unremoved, and printed
 /// verbatim into the run history with the secrets inside it.
+#[cfg(test)]
 fn sweep_private_markers(value: &mut Value, tokens: &mut Vec<String>) {
     match value {
         Value::Object(map) => {
@@ -791,7 +777,8 @@ fn sweep_private_markers(value: &mut Value, tokens: &mut Vec<String>) {
     }
 }
 
-fn sanitized_trace_value(value: &Value) -> Value {
+#[cfg(test)]
+fn legacy_sanitized_trace_value(value: &Value) -> Value {
     let mut payload = value.clone();
     // Only a top-level exception list defines paths, because a path is written
     // from the payload root and a nested copy names nothing meaningful.
@@ -805,6 +792,13 @@ fn sanitized_trace_value(value: &Value) -> Value {
     };
     let blanked = blank_sensitive_keys(&redacted, &except_paths, &[]);
     summarize_trace_value(&blanked)
+}
+
+#[cfg(test)]
+fn sanitized_trace_value(value: &Value) -> Value {
+    let mut capture = TraceCapture::new(TraceCaptureSettings::default().resolve(None));
+    capture.begin_node();
+    capture.capture(value)
 }
 
 fn materialize_node_output_files(
@@ -1879,17 +1873,37 @@ impl PipelineEngine for BasicPipelineEngine {
         let bus = options.bus.clone();
         // Project configuration is immutable for this invocation. Snapshot the
         // timeout once instead of reparsing zebflow.yaml for every node.
-        let project_timeout_secs = self
+        let project_config = self
             .platform
             .as_ref()
             .map(|platform| {
                 platform
                     .zebflow_cfg
                     .read_or_default(&ctx.owner, &ctx.project)
-                    .map(|config| config.configs.pipelines.effective_node_timeout_secs())
             })
             .transpose()
-            .map_err(|err| PipelineError::new(err.code, err.message))?
+            .map_err(|err| PipelineError::new(err.code, err.message))?;
+        let project_capture = project_config
+            .as_ref()
+            .and_then(|config| config.configs.pipelines.logging.trace_capture.as_ref())
+            .cloned()
+            .unwrap_or_default();
+        let pipeline_capture = graph
+            .metadata
+            .as_ref()
+            .and_then(|metadata| metadata.settings.trace_capture.as_ref());
+        project_capture
+            .validate()
+            .map_err(|message| PipelineError::new("FW_TRACE_CONFIG", message))?;
+        if let Some(settings) = pipeline_capture {
+            settings
+                .validate()
+                .map_err(|message| PipelineError::new("FW_TRACE_CONFIG", message))?;
+        }
+        let mut trace_capture = TraceCapture::new(project_capture.resolve(pipeline_capture));
+        let project_timeout_secs = project_config
+            .as_ref()
+            .map(|config| config.configs.pipelines.effective_node_timeout_secs())
             .or_else(|| {
                 std::env::var("PIPELINE_NODE_TIMEOUT_SECS")
                     .ok()
@@ -1941,7 +1955,8 @@ impl PipelineEngine for BasicPipelineEngine {
                 &input.metadata,
                 &self.language,
             )?;
-            let base_trace_config = trace_config_snapshot(&effective_config);
+            trace_capture.begin_node();
+            let base_trace_config = trace_capture.config(&effective_config);
             let dispatch = if effective_config == node.config {
                 // No expressions resolved — use original node directly (common fast path).
                 self.build_node(node)?
@@ -2783,8 +2798,7 @@ impl PipelineEngine for BasicPipelineEngine {
             let outputs = match exec_result {
                 Ok(mut outs) => {
                     let mut processed_payloads: Vec<Value> = Vec::new();
-                    let mut redacted_outputs: Vec<Value> = Vec::new();
-                    let trace_input = sanitized_trace_value(&input_snapshot);
+                    let trace_input = trace_capture.capture(&input_snapshot);
 
                     for out in &mut outs {
                         out.payload = materialize_node_output_files(
@@ -2808,19 +2822,11 @@ impl PipelineEngine for BasicPipelineEngine {
                             )
                         };
                         processed_payloads.push(payload_output.clone());
-                        redacted_outputs.push(sanitized_trace_value(&payload_output));
                         out.payload = payload_output;
                     }
 
                     let redacted_config = base_trace_config.clone();
-                    let node_output_value = if redacted_outputs.len() == 1 {
-                        redacted_outputs[0].clone()
-                    } else {
-                        json!({
-                            "count": redacted_outputs.len(),
-                            "emissions": redacted_outputs,
-                        })
-                    };
+                    let node_output_value = trace_capture.outputs(&outs);
                     let nodes_output_value = if processed_payloads.len() == 1 {
                         processed_payloads[0].clone()
                     } else {
@@ -2846,7 +2852,7 @@ impl PipelineEngine for BasicPipelineEngine {
                         node_kind: trace_node_kind.clone(),
                         config: base_trace_config,
                         duration_ms: node_start.elapsed().as_millis() as u64,
-                        input: sanitized_trace_value(&input_snapshot),
+                        input: trace_capture.capture(&input_snapshot),
                         output: Value::Null,
                         error: Some(e.message.clone()),
                     });
@@ -3082,6 +3088,124 @@ mod tests {
     use crate::platform::model::PlatformConfig;
     use crate::platform::services::PlatformService;
     use crate::platform::shell::parser::build_pipeline_graph;
+
+    /// Compaction affects logs only, including across intermediate nodes. A
+    /// zero override must preserve all array items while other caps still apply.
+    #[tokio::test]
+    async fn trace_capture_preserves_execution_data_and_pipeline_overrides() {
+        use crate::pipeline::model::{PipelineGraphMetadata, PipelineGraphSettings};
+        use crate::pipeline::trace_capture::TraceCaptureSettings;
+        let mut graph = build_pipeline_graph(
+            "trace-capture",
+            r#"
+[a] trigger.manual
+[b] logic.if --expr "1 == 1"
+[c] script -- "return { count: input.rows.length, last: input.rows[input.rows.length - 1] };"
+[a] -> [b]
+[b]:true -> [c]
+"#,
+        )
+        .expect("graph");
+        graph.metadata = Some(PipelineGraphMetadata {
+            settings: PipelineGraphSettings {
+                trace_capture: Some(TraceCaptureSettings {
+                    array_sample_count: Some(1),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+        let ctx = PipelineContext {
+            owner: "test".into(),
+            project: "test".into(),
+            pipeline: "trace-capture".into(),
+            request_id: "trace-test".into(),
+            route: String::new(),
+            input: json!({"rows": (0..100).collect::<Vec<_>>()}),
+            trigger: None,
+            placeholder: None,
+        };
+        let engine = BasicPipelineEngine::default();
+        let sampled = engine
+            .execute_async(&graph, &ctx)
+            .await
+            .expect("sampled execution");
+        assert_eq!(sampled.value, json!({"count":100,"last":99}));
+        for trace in &sampled.node_trace {
+            assert_eq!(trace.input["rows"]["len"], 100);
+            assert_eq!(trace.input["rows"]["preview"], json!([0]));
+        }
+        graph
+            .metadata
+            .as_mut()
+            .unwrap()
+            .settings
+            .trace_capture
+            .as_mut()
+            .unwrap()
+            .array_sample_count = Some(0);
+        let full = engine
+            .execute_async(&graph, &ctx)
+            .await
+            .expect("unsampled execution");
+        assert_eq!(full.value, sampled.value);
+        assert_eq!(
+            full.node_trace[0].input["rows"].as_array().unwrap().len(),
+            100
+        );
+    }
+
+    /// Reproducible capture-only comparison, without external I/O. This is an
+    /// ignored diagnostic, not a timing assertion or a production throughput
+    /// promise. The legacy implementation is compiled only into tests.
+    #[test]
+    #[ignore = "manual capture performance measurement"]
+    fn trace_capture_benchmark() {
+        use crate::pipeline::trace_capture::{TraceCapture, TraceCaptureSettings};
+        use std::hint::black_box;
+        use std::time::Instant;
+        for (name, rows, repeats, nodes) in [
+            ("small", 4, 1000, 1),
+            ("large", 10000, 5, 1),
+            ("long-chain", 10000, 1, 30),
+        ] {
+            let payload = json!({"rows": (0..rows).map(|i| json!({"id": i, "name": "example-row", "nested": {"values": [1,2,3,4]}, "body": "x".repeat(256)})).collect::<Vec<_>>()});
+            for mode in ["disabled", "legacy", "compact"] {
+                let start = Instant::now();
+                let mut bytes = 0;
+                for _ in 0..repeats {
+                    let mut capture = TraceCapture::new(
+                        TraceCaptureSettings {
+                            array_sample_count: Some(1),
+                            ..Default::default()
+                        }
+                        .resolve(None),
+                    );
+                    for _ in 0..nodes {
+                        if mode == "disabled" {
+                            black_box(&payload);
+                            continue;
+                        }
+                        capture.begin_node();
+                        let log = if mode == "legacy" {
+                            super::legacy_sanitized_trace_value(black_box(&payload))
+                        } else {
+                            capture.capture(black_box(&payload))
+                        };
+                        bytes += serde_json::to_vec(black_box(&log)).unwrap().len();
+                    }
+                }
+                eprintln!(
+                    "capture-bench {name} {mode}: {:.3} ms/capture, {} bytes/capture ({} captures, debug_assertions={})",
+                    start.elapsed().as_secs_f64() * 1000.0 / (repeats * nodes) as f64,
+                    bytes / (repeats * nodes),
+                    repeats * nodes,
+                    cfg!(debug_assertions)
+                );
+            }
+        }
+    }
 
     /// A curated bundle ships in the binary, so a declaration it cannot run
     /// under is a startup-shaped bug rather than a user's problem.
@@ -3371,11 +3495,11 @@ mod tests {
         }));
 
         assert_eq!(summary["id"], "row-1");
-        assert_eq!(summary["values"]["__zf_trace_summary"], "numeric_array");
+        assert_eq!(summary["values"]["__zf_trace_summary"], "array");
         assert_eq!(summary["values"]["len"], 128);
         assert_eq!(
             summary["nested"]["items"][0]["payload"]["__zf_trace_summary"],
-            "numeric_array"
+            "array"
         );
         assert_eq!(summary["nested"]["items"][0]["payload"]["len"], 80);
     }

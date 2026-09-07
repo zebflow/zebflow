@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "zeb";
+import { useEffect, useMemo, useState } from "zeb/react";
 import ChromeHeader from "@/pages/home/components/chrome-header";
 import Button from "@/components/ui/button";
 import Field from "@/components/ui/field";
@@ -10,6 +10,7 @@ import DialogTitle from "@/components/ui/dialog-title";
 import DialogDescription from "@/components/ui/dialog-description";
 import DialogFooter from "@/components/ui/dialog-footer";
 import BundleReview from "@/components/package-review/bundle-review";
+import { formatBytes as fmtBytes } from "@/components/lib/format";
 
 export const page = {
   html: { lang: "en" },
@@ -73,7 +74,7 @@ function describeStatus(value) {
   return String(value);
 }
 
-function requestJson(url, options = {}) {
+function requestHubJson(url, options = {}) {
   return fetch(url, {
     headers: {
       Accept: "application/json",
@@ -126,14 +127,6 @@ function blankGrant(sourceOwner, projects) {
     can_manage: false,
     enabled: true,
   };
-}
-
-function fmtBytes(value) {
-  const n = Number(value || 0);
-  if (!n) return "-";
-  if (n >= 1024 * 1024) return `${Math.round(n / 1024 / 1024)} MB`;
-  if (n >= 1024) return `${Math.round(n / 1024)} KB`;
-  return `${n} B`;
 }
 
 function publisherScopes(item) {
@@ -228,8 +221,8 @@ export default function Page(input) {
 
   async function reloadExplore() {
     const [sourcePayload, appPayload] = await Promise.all([
-      requestJson(api.repositories),
-      requestJson(api.assets),
+      requestHubJson(api.repositories),
+      requestHubJson(api.assets),
     ]);
     setSources(Array.isArray(sourcePayload?.items) ? sourcePayload.items : []);
     setApps(Array.isArray(appPayload?.items) ? appPayload.items : []);
@@ -238,11 +231,11 @@ export default function Page(input) {
   async function reloadManage() {
     if (!isSuperadmin) return;
     const [servicePayload, publisherPayload, tokenPayload, grantPayload, sourcePayload] = await Promise.all([
-      requestJson(api.service),
-      requestJson(api.publishers),
-      requestJson(api.tokens),
-      requestJson(api.grants),
-      requestJson(api.repositories),
+      requestHubJson(api.service),
+      requestHubJson(api.publishers),
+      requestHubJson(api.tokens),
+      requestHubJson(api.grants),
+      requestHubJson(api.repositories),
     ]);
     setService(servicePayload?.service || null);
     setPublishers(Array.isArray(publisherPayload?.items) ? publisherPayload.items : []);
@@ -256,7 +249,7 @@ export default function Page(input) {
     setBusy(true);
     setStatus("");
     try {
-      await requestJson(api.repositories, { method: "POST", body: JSON.stringify(sourceForm) });
+      await requestHubJson(api.repositories, { method: "POST", body: JSON.stringify(sourceForm) });
       setSourceForm(blankSource());
       await reloadExplore();
       setStatus("Hub source saved");
@@ -271,7 +264,7 @@ export default function Page(input) {
     setBusy(true);
     setStatus("");
     try {
-      await requestJson(`${api.repositories}/${encodeURIComponent(repositoryId)}`, { method: "DELETE" });
+      await requestHubJson(`${api.repositories}/${encodeURIComponent(repositoryId)}`, { method: "DELETE" });
       await reloadExplore();
       setStatus("Hub source deleted");
     } catch (err) {
@@ -300,7 +293,7 @@ export default function Page(input) {
     setInstallBusy(true);
     setStatus("");
     try {
-      const payload = await requestJson(api.install_review, {
+      const payload = await requestHubJson(api.install_review, {
         method: "POST",
         body: JSON.stringify(installBody(item, scope)),
       });
@@ -343,7 +336,7 @@ export default function Page(input) {
     setInstallBusy(true);
     setStatus("");
     try {
-      const payload = await requestJson(api.install, {
+      const payload = await requestHubJson(api.install, {
         method: "POST",
         body: JSON.stringify(installBody(installTarget, installScope)),
       });
@@ -367,7 +360,7 @@ export default function Page(input) {
     setBusy(true);
     setStatus("");
     try {
-      const payload = await requestJson(api.service, { method: "POST", body: JSON.stringify(serviceForm) });
+      const payload = await requestHubJson(api.service, { method: "POST", body: JSON.stringify(serviceForm) });
       setService(payload?.service || null);
       setServiceForm((prev) => ({ ...prev, password: "" }));
       setStatus(payload?.service?.enabled ? "Hub service enabled" : "Hub service disabled");
@@ -383,7 +376,7 @@ export default function Page(input) {
     setBusy(true);
     setStatus("");
     try {
-      const payload = await requestJson(api.publishers, { method: "POST", body: JSON.stringify(publisherForm) });
+      const payload = await requestHubJson(api.publishers, { method: "POST", body: JSON.stringify(publisherForm) });
       const saved = payload?.publisher || publisherForm;
       setSelectedPublisherId(saved?.publisher_id || publisherForm.publisher_id);
       setPublisherForm({ ...blankPublisher(), ...saved });
@@ -401,7 +394,7 @@ export default function Page(input) {
     setBusy(true);
     setStatus("");
     try {
-      await requestJson(`${api.publishers}/${encodeURIComponent(publisherId)}`, { method: "DELETE" });
+      await requestHubJson(`${api.publishers}/${encodeURIComponent(publisherId)}`, { method: "DELETE" });
       if (publisherForm.publisher_id === publisherId) startNewPublisher();
       await reloadManage();
       setStatus("Publisher deleted");
@@ -422,7 +415,7 @@ export default function Page(input) {
       if (tokenForm.read) scopes.push("hub:read");
       if (tokenForm.publish) scopes.push("hub:publish");
       if (tokenForm.manage) scopes.push("hub:manage");
-      const payload = await requestJson(api.tokens, {
+      const payload = await requestHubJson(api.tokens, {
         method: "POST",
         body: JSON.stringify({
           owner: tokenForm.owner,
@@ -446,7 +439,7 @@ export default function Page(input) {
     setBusy(true);
     setStatus("");
     try {
-      await requestJson(`${api.tokens}/${encodeURIComponent(tokenId)}`, { method: "DELETE" });
+      await requestHubJson(`${api.tokens}/${encodeURIComponent(tokenId)}`, { method: "DELETE" });
       await reloadManage();
       setStatus("Token revoked");
     } catch (err) {
@@ -461,7 +454,7 @@ export default function Page(input) {
     setBusy(true);
     setStatus("");
     try {
-      await requestJson(api.grants, { method: "POST", body: JSON.stringify(grantForm) });
+      await requestHubJson(api.grants, { method: "POST", body: JSON.stringify(grantForm) });
       await reloadManage();
       setStatus("Hub access grant saved");
     } catch (err) {
@@ -475,7 +468,7 @@ export default function Page(input) {
     setBusy(true);
     setStatus("");
     try {
-      await requestJson(`${api.grants}/${encodeURIComponent(grantId)}`, { method: "DELETE" });
+      await requestHubJson(`${api.grants}/${encodeURIComponent(grantId)}`, { method: "DELETE" });
       await reloadManage();
       setStatus("Hub access grant deleted");
     } catch (err) {

@@ -163,7 +163,7 @@ Simple polygon ring arrays like `[[lon, lat], ...]` are also accepted for backwa
 ### In TSX templates
 
 ```tsx
-import { usePageState } from "zeb";
+import { usePageState } from "zeb/react";
 
 export default function PostList(input) {
   const state = usePageState(input.state ?? { posts: [] });

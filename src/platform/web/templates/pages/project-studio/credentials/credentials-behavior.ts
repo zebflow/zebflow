@@ -1,27 +1,5 @@
+import { requestJson } from "@/components/lib/http";
 import { studioTableTdClass } from "@/components/ui/studio-data-table";
-
-function requestJson(url, options = {}) {
-  return fetch(url, {
-    headers: {
-      Accept: "application/json",
-      ...(options.body ? { "Content-Type": "application/json" } : {}),
-      ...(options.headers || {}),
-    },
-    ...options,
-  }).then(async (response) => {
-    if (response.status === 401) { window.location.href = "/login"; return null; }
-    const payload = await response.json().catch(() => null);
-    if (!response.ok) {
-      const message =
-        payload?.error?.message ||
-        payload?.message ||
-        payload?.error ||
-        `${response.status} ${response.statusText}`;
-      throw new Error(message);
-    }
-    return payload;
-  });
-}
 
 const SECRET_SCHEMAS = {
   postgres: [

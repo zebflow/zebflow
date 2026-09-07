@@ -1,3 +1,5 @@
+import { cx } from "zeb/react";
+
 export default function TreeItem(props) {
   const isFolder = Boolean(props?.isFolder);
   const isExpanded = props?.expanded !== false;

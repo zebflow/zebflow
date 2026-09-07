@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "zeb";
+import { useState, useEffect, useRef } from "zeb/react";
 import Button from "@/components/ui/button";
 import Input from "@/components/ui/input";
 import { loadEditorRuntime } from "@/pages/project-studio/pipelines/registry/components/pipeline-editor/template-editor-runtime";

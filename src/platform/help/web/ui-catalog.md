@@ -87,7 +87,7 @@ import { Dialog, DialogContent, DialogHeader } from "@/shared/ui/dialog"
 ## Usage Example
 
 ```tsx
-import { usePageState } from "zeb";
+import { usePageState } from "zeb/react";
 
 import Button from "@/shared/ui/button"
 import { Card, CardHeader, CardTitle, CardContent } from "@/shared/ui/card"

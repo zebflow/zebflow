@@ -11,10 +11,11 @@
  *  - Opens GitCommitDialog after save
  *  - Exposes addNode, save, activate, deactivate
  */
-import { useState, useEffect, useRef, useCallback, useNavigate, cx } from "zeb";
+import { useState, useEffect, useRef, useCallback, useRouter, cx } from "zeb/react";
 import { notifyStudioRepoChanged } from "@/pages/project-studio/components/studio-chrome-bridge";
 import Button from "@/components/ui/button";
 import Badge from "@/components/ui/badge";
+import { formatTracePreview } from "@/components/lib/trace-preview";
 import { Dialog } from "@/components/ui/dialog";
 import DialogContent from "@/components/ui/dialog-content";
 import DialogHeader from "@/components/ui/dialog-header";
@@ -38,6 +39,7 @@ import { sanitizeSlug, ensureUniqueSlug } from "@/pages/project-studio/pipelines
 import { extractNodeConfig } from "@/pages/project-studio/pipelines/registry/components/pipeline-editor/nodes/extract";
 import NodeDialog from "@/pages/project-studio/pipelines/registry/components/pipeline-editor/dialogs/node-dialog";
 import WebRenderDialog from "@/pages/project-studio/pipelines/registry/components/pipeline-editor/dialogs/web-render-dialog";
+import PipelineSettingsDialog from "@/pages/project-studio/pipelines/registry/components/pipeline-editor/dialogs/pipeline-settings-dialog";
 import GitCommitDialog from "@/pages/project-studio/pipelines/registry/components/pipeline-editor/dialogs/git-commit-dialog";
 import { LockIcon, LockOpenIcon } from "@/pages/project-studio/components/icons";
 import { pePipelineDocument, pePipelineGraph } from "@/pages/project-studio/pipelines/registry/components/registry-helpers";
@@ -110,17 +112,6 @@ function PipelineRunIcon() {
   );
 }
 
-function PipelineDeleteIcon() {
-  return (
-    <svg viewBox="0 0 24 24" fill="none" className="w-4 h-4" aria-hidden="true" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M4 7h16" />
-      <path d="M9 3h6" />
-      <path d="M7 7l1 13h8l1-13" />
-      <path d="M10 11v5M14 11v5" />
-    </svg>
-  );
-}
-
 function PipelineSettingsIcon() {
   return (
     <svg viewBox="0 0 24 24" fill="none" className="w-4 h-4" aria-hidden="true" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
@@ -170,6 +161,7 @@ interface PipelineEditorProps {
   snapToGrid?: boolean;
   graphuiPackageLabel?: string;
   projectDefaultMaxInvocations?: number;
+  projectDefaultTraceCapture?: any;
   onDeleteClick?: () => void;
   onLockToggle?: (locked: boolean) => void;
 }
@@ -184,6 +176,7 @@ export default function PipelineEditor({
   snapToGrid = true,
   graphuiPackageLabel = "Graph UI",
   projectDefaultMaxInvocations = 20,
+  projectDefaultTraceCapture,
   onDeleteClick,
   onLockToggle,
 }: PipelineEditorProps) {
@@ -218,7 +211,7 @@ export default function PipelineEditor({
   };
   const graphRef = useRef(null);
   const canvasRef = useRef<HTMLDivElement>(null);
-  const nav = useNavigate();
+  const nav = useRouter().push;
 
   const requestJson = useCallback(async (url: string, options: RequestInit = {}): Promise<any> => {
     const response = await fetch(url, {
@@ -276,9 +269,6 @@ export default function PipelineEditor({
   const [dialogNode, setDialogNode] = useState<PipelineNodeData | null>(null);
   const [webRenderNode, setWebRenderNode] = useState<PipelineNodeData | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [retentionInherit, setRetentionInherit] = useState(true);
-  const [retentionMaxInv, setRetentionMaxInv] = useState("");
-  const [retentionMaxAgeDays, setRetentionMaxAgeDays] = useState("");
   const [continuationRequest, setContinuationRequest] = useState<ContinuationRequest | null>(null);
   const [nodePickerQuery, setNodePickerQuery] = useState("");
   const [nodePickerCategory, setNodePickerCategory] = useState("all");
@@ -532,6 +522,8 @@ export default function PipelineEditor({
         {
           ...(rawPipeline.metadata || {}),
           ...(pipelineMetadata || {}),
+          // A cleared final override must not revive settings from the graph snapshot.
+          settings: pipelineMetadata?.settings,
         },
         currentLocked,
       ),
@@ -921,45 +913,12 @@ export default function PipelineEditor({
 
   function openSettingsDialog() {
     if (!currentMeta) return;
-    const retentionCfg = pipelineMetadata?.settings?.invocation_retention || null;
-    setRetentionInherit(!retentionCfg?.max_invocations && !retentionCfg?.max_age_secs);
-    setRetentionMaxInv(retentionCfg?.max_invocations ? String(retentionCfg.max_invocations) : "");
-    setRetentionMaxAgeDays(
-      retentionCfg?.max_age_secs
-        ? String(Math.max(1, Math.round(Number(retentionCfg.max_age_secs) / 86400)))
-        : ""
-    );
     setSettingsOpen(true);
   }
 
   function closeSettingsDialog() {
     setSettingsOpen(false);
   }
-
-  function applyPipelineSettings(e) {
-    e.preventDefault();
-    const maxInv = parseInt(retentionMaxInv || "0", 10);
-    const maxAgeDays = parseInt(retentionMaxAgeDays || "0", 10);
-    const next = { ...(pipelineMetadata || {}) } as any;
-    if (retentionInherit) {
-      if (next.settings?.invocation_retention) {
-        const settings = { ...(next.settings || {}) };
-        delete settings.invocation_retention;
-        next.settings = Object.keys(settings).length > 0 ? settings : undefined;
-      }
-    } else {
-      next.settings = {
-        ...(next.settings || {}),
-        invocation_retention: {
-          ...(maxInv > 0 ? { max_invocations: maxInv } : {}),
-          ...(maxAgeDays > 0 ? { max_age_secs: maxAgeDays * 86400 } : {}),
-        },
-      };
-    }
-    setPipelineMetadata(next);
-    closeSettingsDialog();
-  }
-
 
   // ── Multi-select helpers ──────────────────────────────────────────────────
   function showToast(msg: string) {
@@ -1540,7 +1499,7 @@ export default function PipelineEditor({
                               ].filter(([, val]) => val !== undefined && val !== null).map(([label, val]) => (
                                 <div key={label as string}>
                                   <span className="text-[0.6rem] font-semibold uppercase text-body-muted">{label}</span>
-                                  <pre className="pipeline-editor-logs-io-pre">{JSON.stringify(val, null, 2)}</pre>
+                                  <pre className="pipeline-editor-logs-io-pre">{formatTracePreview(val)}</pre>
                                 </div>
                               ))}
                             </div>
@@ -1703,82 +1662,16 @@ export default function PipelineEditor({
         </DialogContent>
       </Dialog>
 
-      <Dialog open={settingsOpen} onOpenChange={(v: boolean) => !v && closeSettingsDialog()}>
-        <DialogContent className="max-w-xl border-border bg-surface text-body">
-          <form className="flex flex-col gap-4" onSubmit={applyPipelineSettings}>
-            <DialogHeader className="px-6 pt-6">
-              <DialogTitle>Pipeline Settings</DialogTitle>
-              <p className="text-xs text-body-muted">
-                Pipeline-specific execution log retention and destructive actions.
-              </p>
-            </DialogHeader>
-            <div className="grid gap-3 px-6">
-              <label className="pipeline-editor-field">
-                <span className="flex items-center gap-2">
-                  <input
-                    type="checkbox"
-                    checked={retentionInherit}
-                    onInput={(e) => setRetentionInherit((e.target as HTMLInputElement).checked)}
-                  />
-                  <span>Use project default retention</span>
-                </span>
-                <small className="pipeline-editor-field-help">
-                  Current inherited count limit: {projectDefaultMaxInvocations} invocation(s) per pipeline.
-                </small>
-              </label>
-              <label className="pipeline-editor-field">
-                <span>Max invocation count override</span>
-                <input
-                  className="zf-input"
-                  type="number"
-                  min="1"
-                  placeholder={`${projectDefaultMaxInvocations}`}
-                  value={retentionMaxInv}
-                  disabled={retentionInherit}
-                  onInput={(e) => setRetentionMaxInv((e.target as HTMLInputElement).value)}
-                />
-                <small className="pipeline-editor-field-help">
-                  Optional hard cap on retained runs for this pipeline.
-                </small>
-              </label>
-              <label className="pipeline-editor-field">
-                <span>Max age override (days)</span>
-                <input
-                  className="zf-input"
-                  type="number"
-                  min="1"
-                  placeholder="1"
-                  value={retentionMaxAgeDays}
-                  disabled={retentionInherit}
-                  onInput={(e) => setRetentionMaxAgeDays((e.target as HTMLInputElement).value)}
-                />
-                <small className="pipeline-editor-field-help">
-                  Optional time-based retention. Example: set <code>1</code> for a login pipeline that should keep only one day of runs.
-                </small>
-              </label>
-            </div>
-            <div className="mx-6 flex items-center justify-between gap-3 border-t border-border-soft pt-4">
-              <div>
-                <div className="text-xs font-semibold uppercase tracking-[0.12em] text-body-muted">Danger Zone</div>
-                <div className="text-xs text-body-muted">Delete this pipeline from the project.</div>
-              </div>
-              {currentLocked ? (
-                <span className="inline-flex items-center justify-center text-dark-accent1" title="Locked — cannot delete" aria-label="Locked pipeline">
-                  <LockIcon />
-                </span>
-              ) : onDeleteClick ? (
-                <Button variant="destructive" size="xs" type="button" onClick={() => { closeSettingsDialog(); onDeleteClick(); }}>
-                  <PipelineDeleteIcon /> Delete Pipeline
-                </Button>
-              ) : null}
-            </div>
-            <div className="flex items-center justify-end gap-2 border-t border-border px-6 py-4">
-              <Button variant="outline" size="xs" type="button" onClick={closeSettingsDialog}>Cancel</Button>
-              <Button variant="primary" size="xs" type="submit">Apply to Draft</Button>
-            </div>
-          </form>
-        </DialogContent>
-      </Dialog>
+      {settingsOpen ? (
+        <PipelineSettingsDialog
+          metadata={pipelineMetadata}
+          defaults={{ max_invocations: projectDefaultMaxInvocations, trace_capture: projectDefaultTraceCapture }}
+          locked={currentLocked}
+          onApply={setPipelineMetadata}
+          onClose={closeSettingsDialog}
+          onDelete={onDeleteClick}
+        />
+      ) : null}
 
     </div>
   );

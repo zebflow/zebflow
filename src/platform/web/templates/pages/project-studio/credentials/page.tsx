@@ -1,4 +1,5 @@
-import { useState, useEffect, cx } from "zeb";
+import { requestJson } from "@/components/lib/http";
+import { useState, useEffect, cx } from "zeb/react";
 import ProjectStudioShell from "@/pages/project-studio/components/shell";
 import { StudioTabNav, StudioTabLink } from "@/components/ui/studio-tab-nav";
 import { StudioTable, StudioThead, StudioTh } from "@/components/ui/studio-data-table";
@@ -26,22 +27,6 @@ export function getPage(input) {
       description: input?.seo?.description ?? "",
     },
   };
-}
-
-async function requestJson(url, options: any = {}) {
-  return fetch(url, {
-    headers: {
-      Accept: "application/json",
-      ...(options.body ? { "Content-Type": "application/json" } : {}),
-      ...(options.headers || {}),
-    },
-    ...options,
-  }).then(async (res) => {
-    if (res.status === 401) { window.location.href = "/login"; return null; }
-    const data = await res.json().catch(() => null);
-    if (!res.ok) throw new Error(data?.error?.message || data?.message || `${res.status}`);
-    return data;
-  });
 }
 
 // ── Constants ─────────────────────────────────────────────────────────────────

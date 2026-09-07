@@ -1,3 +1,4 @@
+import { geoLabel, geoViewState } from "@/components/db/geo-shape";
 import DeckMap from "zeb/deckgl";
 
 /**

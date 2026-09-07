@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, cx } from "zeb";
+import { useState, useEffect, useRef, cx } from "zeb/react";
 import { subscribeConsole, getConsoleLines, navigate } from "@/pages/project-studio/components/studio-shell-behavior";
 
 const LINE_STYLES: Record<string, string> = {

@@ -1,6 +1,0 @@
-# Publish metadata for the blessed local-hub seed.
-# The seeder publishes this package as the reserved `zebflow` publisher.
-id: zebflow.preact
-version: 0.1.0
-title: zeb/preact
-description: "Preact 10.28.4 \u2014 offline bundle (preact + hooks + compat + jsx-runtime)"

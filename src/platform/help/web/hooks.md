@@ -1,6 +1,10 @@
 # Zeb Hooks — Import Contract
 
-All Zeb hooks and utilities are imported explicitly from `"zeb"` (or a `"zeb/*"` subpath).
+Core UI hooks can be imported from `zeb/react`. Existing imports from `zeb/react`
+remain supported. Zebflow helpers (`usePageState`, `useRouter`, `Link`, `cx`)
+continue to come from `zeb/react`.
+
+All Zeb hooks and utilities are imported explicitly from `"zeb/react"` (or a `"zeb/*"` subpath).
 **There are no implicit globals** — always write the import, in every file that uses them.
 
 The compiler strips these imports at build time (they are runtime-provided), so they never
@@ -8,7 +12,8 @@ appear in the final bundle as a real module specifier. They exist purely as an e
 in source code — for readability, IDE type hints, and linting.
 
 ```tsx
-import { useState, useEffect, useRef, useMemo, usePageState, useNavigate, Link, cx, tv } from "zeb";
+import { useState, useEffect, useRef, useMemo } from "zeb/react";
+import { usePageState, useRouter, Link, cx, tv } from "zeb/react";
 ```
 
 This applies to **all template files** — entry pages (`pages/*.tsx`) and component files
@@ -24,20 +29,49 @@ This applies to **all template files** — entry pages (`pages/*.tsx`) and compo
 | `useEffect` | hook | Side effects (client-only; runs after mount) |
 | `useRef` | hook | DOM element reference / stable mutable value |
 | `useMemo` | hook | Memoised computed value |
+| `useSyncExternalStore` | hook | Subscribe to external state with an SSR snapshot (`zeb/react`) |
+| `ErrorBoundary` | component | Isolate failures and retry a subtree (`zeb/react`) |
 | `usePageState` | hook | Reactive page-level state (SSR + hydration) |
-| `useNavigate` | hook | SPA navigation function (client only) |
+| `useRouter` | hook | SPA navigation function (client only) |
 | `Link` | component | `<a>` wrapper for SPA navigation |
 | `cx` | function | Class name concatenation |
 | `tv` | function | `tailwind-variants` variant map builder |
 
 ---
 
-## `useState(initial)` — local component state
+## Error recovery and external stores
 
-Standard Preact `useState`. Use for UI-only state (open/closed toggle, selected tab, etc.):
+Import these APIs from `zeb/react`:
 
 ```tsx
-import { useState } from "zeb";
+import { ErrorBoundary, useSyncExternalStore } from "zeb/react";
+```
+
+Wrap a panel in `<ErrorBoundary fallback={<p>Panel unavailable</p>}>` or use
+`fallbackRender={({ error, resetErrorBoundary }) => ...}` for a retry button.
+`onError(error, { componentStack })` reports each failure; optional `onReset`
+repairs its cause before retrying. Changing `resetKeys={[documentId]}` retries
+when a different document is selected. Children remount with fresh state.
+
+This is Zeb's function-component runtime boundary, not React's class API. It
+catches descendant rendering, effects, refs and cleanup, including SSR fallback
+rendering. Fallback failures escalate to a parent boundary. Event handlers,
+promise rejections and independent timer callbacks need their own error handling.
+
+`useSyncExternalStore(subscribe, getSnapshot, getServerSnapshot)` reads an
+external store and updates its subscribers synchronously when the store notifies
+them. `subscribe` must return an unsubscribe function. Keep object snapshots
+immutable and cached until the value changes; comparisons use `Object.is`.
+`getServerSnapshot` is required for SSR/static generation and hydration, with
+the same initial value on server and browser. SSR never subscribes. Hydration
+starts with that server value and then catches up to the current browser store.
+
+## `useState(initial)` — local component state
+
+Zeb React `useState`. Use for UI-only state (open/closed toggle, selected tab, etc.):
+
+```tsx
+import { useState } from "zeb/react";
 
 const [open, setOpen] = useState(false);
 const [text, setText] = useState("");
@@ -55,7 +89,7 @@ Runs **on the client after mount**. Never runs during SSR. Use for:
 - Fetching data after initial render
 
 ```tsx
-import { useEffect } from "zeb";
+import { useEffect } from "zeb/react";
 
 useEffect(() => {
   const id = setInterval(() => setState(s => s + 1), 1000);
@@ -68,7 +102,7 @@ useEffect(() => {
 ## `useRef(initial)` — DOM reference / stable mutable value
 
 ```tsx
-import { useRef, useEffect } from "zeb";
+import { useRef, useEffect } from "zeb/react";
 
 const containerRef = useRef<HTMLDivElement>(null);
 
@@ -106,7 +140,7 @@ Examples: `<Button>`, `<Card>`, `<Dialog>`, `<Dropdown>`, `<Tooltip>`, `<Badge>`
 ### Object form (most common)
 
 ```tsx
-import { usePageState } from "zeb";
+import { usePageState } from "zeb/react";
 
 const state = usePageState(input.state ?? { count: 0, items: [], title: "Page" });
 
@@ -119,7 +153,7 @@ state.items = [...state.items, newItem];
 ### Keyed form (isolate one field)
 
 ```tsx
-import { usePageState } from "zeb";
+import { usePageState } from "zeb/react";
 
 const [count, setCount] = usePageState("count", 0);
 const [title, setTitle] = usePageState("title", "Hello");
@@ -144,14 +178,14 @@ For **static pages** (no interactive state needed), skip `usePageState` and read
 
 ---
 
-## `useNavigate()` — programmatic SPA navigation
+## `useRouter()` — programmatic SPA navigation
 
 Returns a function. Works on client only (no-op during SSR).
 
 ```tsx
-import { useNavigate } from "zeb";
+import { useRouter } from "zeb/react";
 
-const navigate = useNavigate();
+const navigate = useRouter().push;
 
 async function handleSubmit(e) {
   e.preventDefault();
@@ -167,7 +201,7 @@ async function handleSubmit(e) {
 Renders as a plain `<a>` during SSR (SEO-friendly), activates client-side routing on hydration.
 
 ```tsx
-import { Link, cx } from "zeb";
+import { Link, cx } from "zeb/react";
 
 <Link href="/posts/1" className="underline hover:text-accent">Read post</Link>
 <Link href="/admin" className={cx("px-4 py-2 rounded", isActive && "bg-surface-2")}>Admin</Link>
@@ -178,7 +212,7 @@ import { Link, cx } from "zeb";
 ## `cx(...classes)` — conditional class names
 
 ```tsx
-import { cx } from "zeb";
+import { cx } from "zeb/react";
 
 <div className={cx("rounded p-4", isActive && "ring-2 ring-accent")}>
 
@@ -195,7 +229,7 @@ import { cx } from "zeb";
 ## `tv(config)` — variant map builder
 
 ```tsx
-import { tv } from "zeb";
+import { tv } from "zeb/react";
 
 const badge = tv({
   base: "inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium",
@@ -218,3 +252,41 @@ const badge = tv({
 ```
 
 See **`help_docs topic=tailwind`** for the full `tw-variants` explanation.
+
+## `usePathname()` — the current path
+
+```tsx
+import { usePathname, Link, cx } from "zeb/react";
+
+const pathname = usePathname();
+<Link href="/settings" className={cx("tab", pathname === "/settings" && "tab-active")}>
+  Settings
+</Link>
+```
+
+Returns a string. It subscribes, so it stays correct after a `Link` click, which
+changes the URL without reloading the page — reading `window.location.pathname`
+directly would keep showing the previous path.
+
+During server rendering it returns the route the request arrived on, so the
+server and the first browser render agree.
+
+## `useSearchParams()` — the query string
+
+```tsx
+import { useSearchParams } from "zeb/react";
+
+// URL: /posts?tag=travel&page=2
+const params = useSearchParams();
+params.get("tag");   // "travel"
+params.get("page");  // "2"
+```
+
+Returns a `URLSearchParams`, read-only, and subscribes the same way. To *write*
+search params, navigate:
+
+```tsx
+const router = useRouter();
+router.replace(`${pathname}?tag=food`);
+```
+

@@ -1,20 +1,18 @@
 import ProjectStudioShell from "@/pages/project-studio/components/shell";
 import { loadEditorRuntime } from "@/pages/project-studio/pipelines/registry/components/pipeline-editor/template-editor-runtime";
-import { cx, Link, useEffect, useState, useRef, useNavigate } from "zeb";
+import { cx, Link, useEffect, useState, useRef, useRouter } from "zeb/react";
 import { StudioTabNav, StudioTabLink } from "@/components/ui/studio-tab-nav";
 import { useSplitPane } from "zeb/use";
 import Button from "@/components/ui/button";
 import Badge from "@/components/ui/badge";
 import Input from "@/components/ui/input";
+import ConfirmDialog from "@/components/ui/confirm-dialog";
 import PipelineEditor from "@/pages/project-studio/pipelines/registry/components/pipeline-editor/index";
 import { Select, SelectOption } from "@/components/ui/select";
 import DropdownMenu from "@/components/ui/dropdown-menu";
 import DropdownMenuItem from "@/components/ui/dropdown-menu-item";
 
-import {
-  PipelineIcon, FolderIcon, FileKindIcon, StatusDot, TrashIcon, PlusIcon, DownloadIcon, DocIcon, SearchIcon,
-} from "@/pages/project-studio/pipelines/registry/components/editor-icons";
-import { useFileSearchOptional } from "@/pages/project-studio/components/file-search-context";
+import { PipelineIcon, FolderIcon, StatusDot, TrashIcon, PlusIcon, DownloadIcon } from "@/pages/project-studio/pipelines/registry/components/editor-icons";
 import { LockIcon, LockOpenIcon } from "@/pages/project-studio/components/icons";
 import {
   pipelineNavLastSegment, expandFolderPaths, getDirectChildFolders, peSanitizeSegment, peNormalizeVirtualPath, peEmptyPipelineDocument,
@@ -23,205 +21,14 @@ import { RegistryInstallCatalog } from "@/pages/project-studio/pipelines/registr
 import { notifyStudioRepoChanged } from "@/pages/project-studio/components/studio-chrome-bridge";
 import { subscribeEditorPreferences } from "@/pages/project-studio/components/editor-preferences";
 import { loadEditorCompletionCatalog, refreshEditorCompletionCatalog } from "@/pages/project-studio/components/editor-catalog";
-import ConfirmDialog from "@/components/ui/confirm-dialog";
 import ScriptPromptDialog from "@/pages/project-studio/pipelines/registry/components/script-prompt-dialog";
+import AssetManager from "@/pages/project-studio/pipelines/registry/components/asset-manager";
+import SidebarSearchButton from "@/pages/project-studio/pipelines/registry/components/sidebar-search-button";
+import FileKindIcon from "@/components/ui/file-kind-icon";
+import RepoTree from "@/components/ui/repo-tree";
+import { navigate } from "@/pages/project-studio/components/studio-shell-behavior";
+import { parentFolderOf } from "@/components/lib/repo-tree";
 
-// ── Asset Manager ─────────────────────────────────────────────────────────────
-
-function formatAssetBytes(bytes) {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
-}
-
-function AssetManager({ api, subfolder = "" }: { api: string; subfolder?: string }) {
-  const listUrl = subfolder ? `${api}?subfolder=${encodeURIComponent(subfolder)}` : api;
-  const uploadUrl = subfolder ? `${api}?subfolder=${encodeURIComponent(subfolder)}` : api;
-  const deleteBase = subfolder ? `${api}/${encodeURIComponent(subfolder)}` : api;
-
-  const [files, setFiles] = useState([] as any[]);
-  const [loading, setLoading] = useState(true);
-  const [uploading, setUploading] = useState(false);
-  const [errorMsg, setErrorMsg] = useState(null as string | null);
-  const [copied, setCopied] = useState(null as string | null);
-  const [pendingDelete, setPendingDelete] = useState(null as string | null);
-
-  async function apiJson(url, options: any = {}) {
-    const res = await fetch(url, {
-      headers: { Accept: "application/json", ...(options.body ? { "Content-Type": "application/json" } : {}) },
-      ...options,
-    });
-    if (res.status === 401) { window.location.href = "/login"; return null; }
-    const payload = await res.json().catch(() => null);
-    if (!res.ok) throw new Error(payload?.error || `${res.status} ${res.statusText}`);
-    return payload;
-  }
-
-  async function loadFiles() {
-    setLoading(true);
-    setErrorMsg(null);
-    try {
-      const resp = await apiJson(listUrl);
-      setFiles(Array.isArray(resp?.files) ? resp.files : []);
-    } catch (err: any) {
-      setErrorMsg(String(err?.message || err));
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  useEffect(() => { loadFiles(); }, []);
-
-  async function processFiles(fileList) {
-    if (!fileList || fileList.length === 0) return;
-    setUploading(true);
-    setErrorMsg(null);
-    const errors: string[] = [];
-    for (let i = 0; i < fileList.length; i++) {
-      const file = fileList[i];
-      const fd = new FormData();
-      fd.append("file", file);
-      try {
-        const res = await fetch(uploadUrl, { method: "POST", body: fd });
-        const payload = await res.json().catch(() => null);
-        if (!res.ok) throw new Error(payload?.error || `${res.status}`);
-      } catch (err: any) {
-        errors.push(`${file.name}: ${err?.message || String(err)}`);
-      }
-    }
-    if (errors.length > 0) setErrorMsg(errors.join(" | "));
-    await loadFiles();
-    setUploading(false);
-  }
-
-
-  async function handleDelete(name: string) {
-    setErrorMsg(null);
-    try {
-      await apiJson(`${deleteBase}/${encodeURIComponent(name)}`, { method: "DELETE" });
-      setFiles((prev) => prev.filter((f) => f.name !== name));
-    } catch (err: any) {
-      setErrorMsg(String(err?.message || err));
-    }
-  }
-
-  function handleCopyUrl(url: string) {
-    const abs = `${window.location.protocol}//${window.location.host}${url}`;
-    navigator.clipboard.writeText(abs).catch(() => {});
-    setCopied(url);
-    setTimeout(() => setCopied(null), 2000);
-  }
-
-  const totalSize = files.reduce((sum, f) => sum + (f.size_bytes ?? 0), 0);
-  const totalSizeStr = formatAssetBytes(totalSize);
-  const fileCountLabel = files.length !== 1 ? "s" : "";
-
-  return (
-    <div className="flex flex-col flex-1 min-h-0 overflow-auto">
-      <div className="pipeline-editor-toolbar">
-        <div className="pipeline-editor-toolbar-main">
-          <p className="pipeline-editor-title">assets/</p>
-          <p className="pipeline-editor-subtitle">
-            {loading ? "Loading…" : `${files.length} file${fileCountLabel} · ${totalSizeStr}`}
-          </p>
-        </div>
-        <div className="pipeline-editor-toolbar-actions">
-          <Button as="label" variant="primary" size="xs" className="cursor-pointer" disabled={uploading}>
-            {uploading ? "Uploading…" : "Upload"}
-            <input
-              type="file"
-              multiple
-              className="sr-only"
-              onChange={(e) => processFiles((e.target as HTMLInputElement).files)}
-            />
-          </Button>
-        </div>
-      </div>
-
-      {errorMsg ? (
-        <p className="px-3 py-2 text-[0.72rem] text-red-300">{errorMsg}</p>
-      ) : null}
-
-      {!loading && files.length === 0 ? (
-        <div className="flex flex-col items-center justify-center flex-1 gap-2 text-body-soft">
-          <p className="text-[0.82rem]">No assets yet.</p>
-          <p className="text-[0.75rem]">Click <strong>Upload</strong> to add files.</p>
-        </div>
-      ) : (
-        <div className="px-3 py-3">
-          <table className="w-full text-[0.78rem]">
-            <thead>
-              <tr className="text-left text-body-soft text-[0.68rem] uppercase tracking-wide border-b border-border">
-                <th className="pb-[0.4rem] font-medium">Name</th>
-                <th className="pb-[0.4rem] font-medium text-right">Size</th>
-                <th className="pb-[0.4rem] font-medium text-right">Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              {files.map((file) => {
-                const fileSizeStr = formatAssetBytes(file.size_bytes);
-                return (
-                <tr key={file.name} className="border-b border-border-soft hover:bg-surface-2 transition-colors">
-                  <td className="py-[0.45rem] font-mono text-[0.74rem] text-body truncate max-w-[22rem]">{file.name}</td>
-                  <td className="py-[0.45rem] text-right text-body-soft tabular-nums">{fileSizeStr}</td>
-                  <td className="py-[0.45rem] text-right">
-                    <div className="flex items-center justify-end gap-1">
-                      <Button variant="ghost" size="xs" onClick={() => handleCopyUrl(file.url)}>
-                        {copied === file.url ? "Copied!" : "Copy URL"}
-                      </Button>
-                      <Button variant="ghost" size="xs" className="text-red-400" onClick={() => setPendingDelete(file.name)}>
-                        Delete
-                      </Button>
-                    </div>
-                  </td>
-                </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
-      )}
-    <ConfirmDialog
-      open={pendingDelete !== null}
-      onClose={() => setPendingDelete(null)}
-      onConfirm={() => { if (pendingDelete) handleDelete(pendingDelete); }}
-      title="Delete asset"
-      message={pendingDelete ? `Delete "${pendingDelete}"? This cannot be undone.` : ""}
-      confirmLabel="Delete"
-      variant="destructive"
-    />
-    </div>
-  );
-}
-
-// Sub-component: safe to call useFileSearch() here because it renders inside FileSearchProvider
-// (as part of ProjectStudioShell's children tree, after the provider is established).
-function SidebarSearchButton({ editorBase, nav }) {
-  const fileSearch = useFileSearchOptional();
-  if (!fileSearch) return null;
-  return (
-    <Button
-      size="sm"
-      variant="ghost"
-      title="Find file (⌘K)"
-      onClick={() =>
-        fileSearch.openFileSearch({
-          onSelect: (relPath) => {
-            const parts = relPath.split("/");
-            const dir = parts.slice(0, -1).join("/");
-            const type = relPath.endsWith(".zf.json") ? "pipeline" : "template";
-            nav(`${editorBase}?type=${type}&path=${encodeURIComponent(dir)}&file=${encodeURIComponent(relPath)}`);
-          },
-        })
-      }
-      className="flex items-center gap-1.5"
-    >
-      <SearchIcon />
-    </Button>
-  );
-}
-
-// Unified pipelines registry + folder / template / doc / pipeline editors (studio).
 export default function UnifiedRegistryEditor(input) {
   const editorBase = String(input?.editor_base ?? "");
   const editorType = String(input?.editor_type ?? "folder");
@@ -241,13 +48,151 @@ export default function UnifiedRegistryEditor(input) {
   const scopeFolders = Array.isArray(sidebar?.scope_folders) ? sidebar.scope_folders : [];
   const sidebarPipelines = Array.isArray(sidebar?.pipelines) ? sidebar.pipelines : [];
   const sidebarTemplateFiles = Array.isArray(sidebar?.template_files) ? sidebar.template_files : [];
-  const currentPath = String(sidebar?.scope_path ?? "/");
-  const isAssets = isFolder && (currentPath === "/static" || currentPath.startsWith("/static/"));
-  const assetsSubfolder = currentPath.startsWith("/static/") ? currentPath.slice("/static/".length) : "";
+  const scopePath = String(sidebar?.scope_path ?? "/");
+  // Where a create lands. The scope this page was opened at, unless the reader
+  // right-clicked a different folder in the tree and said "here".
+  const [createTarget, setCreateTarget] = useState(null as string | null);
+  const currentPath = createTarget ?? scopePath;
+  // What the tree shows as current: the file this editor has open, unless the
+  // reader has since picked a folder to work in.
+  const editingRelPath = String(
+    input?.template?.rel_path ?? input?.pipeline?.file_rel_path ?? "",
+  );
+  const [pickedFolder, setPickedFolder] = useState(null as string | null);
+  const treeSelection = pickedFolder ?? editingRelPath;
+  // Bumped after a write so the tree re-reads the folders already on screen.
+  const [treeRefreshToken, setTreeRefreshToken] = useState(0);
+  const [renaming, setRenaming] = useState(null as any);
+  const [renameInput, setRenameInput] = useState("");
+
+  /**
+   * A row in the tree was clicked.
+   *
+   * A file opens. A folder — or the repository root — becomes the place the
+   * next thing is made, which is what the New button and the row menus mean by
+   * "here".
+   */
+  function handleTreeSelect(item: any) {
+    if (item?.kind === "folder" || item?.kind === "root") {
+      const folder = String(item.rel_path || "");
+      setPickedFolder(folder);
+      setCreateTarget(folder ? `/${folder}` : "/");
+      return;
+    }
+    const relPath = String(item?.rel_path ?? item ?? "");
+    if (!relPath) return;
+    setPickedFolder(null);
+    const parent = parentFolderOf(relPath);
+    const type = relPath.endsWith(".zf.json") ? "pipeline" : "file";
+    navigate(
+      `${editorBase}?type=${type}&path=${encodeURIComponent(parent ? `/${parent}` : "/")}&file=${encodeURIComponent(relPath)}`,
+    );
+  }
+
+  /** Copies a file beside itself, so the reader can start from what is there. */
+  async function duplicateRepoFile(relPath: string) {
+    const dot = relPath.lastIndexOf(".");
+    const copy = dot > 0 ? `${relPath.slice(0, dot)}-copy${relPath.slice(dot)}` : `${relPath}-copy`;
+    try {
+      const res = await fetch(
+        `${projectApiBase}/repo/file?path=${encodeURIComponent(relPath)}`,
+      );
+      const body = await res.text();
+      const write = await fetch(`${projectApiBase}/repo/file?path=${encodeURIComponent(copy)}`, {
+        method: "PUT",
+        headers: { "Content-Type": "text/plain" },
+        body,
+      });
+      if (!write.ok) throw new Error(`Duplicate failed: ${write.status}`);
+      setTreeRefreshToken((n) => n + 1);
+    } catch (err: any) {
+      setCreateError(String(err?.message || err));
+    }
+  }
+
+  /**
+   * A row menu chose something to do to that row.
+   *
+   * Creating happens where the reader pointed, so the target is set before the
+   * dialog opens and cleared when it closes — otherwise the next create from
+   * the toolbar would silently inherit it.
+   */
+  function handleTreeAction(kind: string, item: any) {
+    const relPath = String(item?.rel_path ?? "");
+    const isFolderish = item?.kind === "folder" || item?.kind === "root";
+    const folder = isFolderish ? relPath : parentFolderOf(relPath);
+    setCreateError(null);
+
+    if (kind === "delete") {
+      setPendingDelete({
+        path: relPath,
+        name: item?.name ?? "",
+        isPipeline: relPath.endsWith(".zf.json"),
+        isFolder: item?.kind === "folder",
+        parentPath: `/${parentFolderOf(relPath)}`,
+      });
+      setDeleteInput("");
+      return;
+    }
+    if (kind === "rename") {
+      setRenaming(item);
+      setRenameInput(String(item?.name ?? ""));
+      return;
+    }
+    if (kind === "duplicate") {
+      duplicateRepoFile(relPath);
+      return;
+    }
+
+    if (kind === "open-folder") {
+      // The panel beside the tree already lists a folder — its folders, its
+      // pipelines and its files — which is exactly what the root shows. Opening
+      // a folder is that same view, pointed one level down.
+      navigate(`${editorBase}?path=${encodeURIComponent(folder ? `/${folder}` : "/")}`);
+      return;
+    }
+
+    setCreateTarget(folder ? `/${folder}` : "/");
+    setPickedFolder(folder);
+
+    if (kind === "add") {
+      // The hub install reads the same target, so what lands, lands here.
+      setInstallResult(null);
+      setInstallOpen(true);
+      if (!catalogLoaded) loadCatalog();
+      return;
+    }
+    if (kind === "new-file" && newFileDialogRef.current) newFileDialogRef.current.showModal();
+    if (kind === "new-folder" && newFolderDialogRef.current) newFolderDialogRef.current.showModal();
+    if (kind === "new-pipeline" && newPipelineDialogRef.current) newPipelineDialogRef.current.showModal();
+  }
+
+  /** Renames in place: a move inside the same parent. */
+  async function confirmRename() {
+    const from = String(renaming?.rel_path ?? "");
+    const name = renameInput.trim();
+    if (!from || !name) return;
+    const parent = parentFolderOf(from);
+    const to = parent ? `${parent}/${name}` : name;
+    try {
+      await requestJson(`${projectApiBase}/repo/move`, {
+        method: "POST",
+        body: JSON.stringify({ from_path: from, to_path: to }),
+      });
+      setRenaming(null);
+      setTreeRefreshToken((n) => n + 1);
+      if (from === editingRelPath) handleTreeSelect({ rel_path: to, kind: "file" });
+    } catch (err: any) {
+      setCreateError(String(err?.message || err));
+    }
+  }
+
+  const isAssets = isFolder && (scopePath === "/static" || scopePath.startsWith("/static/"));
+  const assetsSubfolder = scopePath.startsWith("/static/") ? scopePath.slice("/static/".length) : "";
   const expandedFolders = expandFolderPaths(scopeFolders, editorBase);
-  const directChildFolders = getDirectChildFolders(expandedFolders, currentPath);
+  const directChildFolders = getDirectChildFolders(expandedFolders, scopePath);
   const listingChildFolders = Array.isArray(sidebar?.child_folders) ? sidebar.child_folders : [];
-  const isRoot = currentPath === "/";
+  const isRoot = scopePath === "/";
   const SPECIAL = new Set(["assets", "styles", "docs"]);
   const SPECIAL_ORDER = ["docs", "styles", "assets"];
   const normalFolders = directChildFolders.filter(f =>
@@ -434,7 +379,7 @@ export default function UnifiedRegistryEditor(input) {
   const [createError, setCreateError] = useState(null as string | null);
 
   // ── Install catalog state ──────────────────────────────────────────────────
-  const nav = useNavigate();
+  const nav = useRouter().push;
   const [installOpen, setInstallOpen] = useState(false);
   const [catalogData, setCatalogData] = useState([] as any[]);
   const [catalogLoaded, setCatalogLoaded] = useState(false);
@@ -792,6 +737,7 @@ export default function UnifiedRegistryEditor(input) {
         method: "POST",
         body: JSON.stringify({ file_rel_path: fileRelPath, title, description: "", trigger_kind: triggerKind, source }),
       });
+      setTreeRefreshToken((n) => n + 1);
       const id = payload?.meta?.file_rel_path;
       if (id) {
         const path = payload?.meta?.virtual_path || virtualPath;
@@ -802,6 +748,7 @@ export default function UnifiedRegistryEditor(input) {
       setCreateError(String(err?.message || err));
     } finally {
       setCreating(false);
+      setCreateTarget(null);
     }
   }
 
@@ -851,12 +798,14 @@ export default function UnifiedRegistryEditor(input) {
         const data = await resp.json().catch(() => ({}));
         throw new Error(data?.error?.message ?? `Create failed: ${resp.status}`);
       }
+      setTreeRefreshToken((n) => n + 1);
       nav(`${editorBase}?type=file&path=${encodeURIComponent(currentPath)}&file=${encodeURIComponent(relPath)}`);
       if (newFileDialogRef.current) newFileDialogRef.current.close();
     } catch (err: any) {
       setCreateError(String(err?.message || err));
     } finally {
       setCreating(false);
+      setCreateTarget(null);
     }
   }
 
@@ -872,12 +821,14 @@ export default function UnifiedRegistryEditor(input) {
         method: "POST",
         body: JSON.stringify({ path: newFolderVPath.replace(/^\//, "") }),
       });
+      setTreeRefreshToken((n) => n + 1);
       nav(`${editorBase}?path=${encodeURIComponent(newFolderVPath)}`);
       if (newFolderDialogRef.current) newFolderDialogRef.current.close();
     } catch (err: any) {
       setCreateError(String(err?.message || err));
     } finally {
       setCreating(false);
+      setCreateTarget(null);
     }
   }
 
@@ -902,6 +853,7 @@ export default function UnifiedRegistryEditor(input) {
       setCreateError(String(err?.message || err));
     } finally {
       setCreating(false);
+      setCreateTarget(null);
     }
   }
 
@@ -961,6 +913,7 @@ export default function UnifiedRegistryEditor(input) {
         setDeleting(false);
         return;
       }
+      setTreeRefreshToken((n) => n + 1);
       setPendingDelete(null);
       setDeleteInput("");
       setDeleting(false);
@@ -1059,6 +1012,7 @@ export default function UnifiedRegistryEditor(input) {
                     label="Pipeline"
                     onClick={() => {
                       setCreateError(null);
+                      setCreateTarget(null);
                       if (newPipelineDialogRef.current) newPipelineDialogRef.current.showModal();
                     }}
                   />
@@ -1066,6 +1020,7 @@ export default function UnifiedRegistryEditor(input) {
                     label="Template file"
                     onClick={() => {
                       setCreateError(null);
+                      setCreateTarget(null);
                       if (newFileDialogRef.current) newFileDialogRef.current.showModal();
                     }}
                   />
@@ -1073,6 +1028,7 @@ export default function UnifiedRegistryEditor(input) {
                     label="Folder"
                     onClick={() => {
                       setCreateError(null);
+                      setCreateTarget(null);
                       if (newFolderDialogRef.current) newFolderDialogRef.current.showModal();
                     }}
                   />
@@ -1099,146 +1055,20 @@ export default function UnifiedRegistryEditor(input) {
 
             {/* Scrollable sidebar body — folder nav + pipelines + templates always together */}
             <div className="pipeline-editor-sidebar-body">
-              {/* Folder breadcrumbs + child folders */}
-              <div className="pipeline-editor-folder-nav">
-                <div className="pipeline-editor-folder-crumbs">
-                  {scopeHierarchy.map((seg, index) => (
-                    <span key={`crumb-${index}`} className="pipeline-editor-folder-crumb">
-                      {index > 0 ? <span className="pipeline-editor-crumb-sep">/</span> : null}
-                      <Link href={seg?.href ?? "#"} className="pipeline-editor-crumb-link">{seg?.name}</Link>
-                    </span>
-                  ))}
-                </div>
-                {normalFolders.map((folder, index) => (
-                  <Link
-                    key={`child-folder-${index}`}
-                    href={folder?.href ?? "#"}
-                    className="pipeline-editor-nav-row"
-                  >
-                    <svg viewBox="0 0 24 24" fill="none" className="pipeline-editor-nav-icon" aria-hidden="true">
-                      <path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z" />
-                    </svg>
-                    <span className="pipeline-editor-nav-label">{pipelineNavLastSegment(folder?.virtual_path)}/</span>
-                    <span className="pipeline-editor-nav-count">{folder?.count ?? 0}</span>
-                  </Link>
-                ))}
-                {physicalOnlyFolders.map((folder, index) => (
-                  <Link
-                    key={`physical-folder-${index}`}
-                    href={folder?.href ?? "#"}
-                    className="pipeline-editor-nav-row"
-                  >
-                    <svg viewBox="0 0 24 24" fill="none" className="pipeline-editor-nav-icon" aria-hidden="true">
-                      <path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z" />
-                    </svg>
-                    <span className="pipeline-editor-nav-label">{folder?.name}/</span>
-                    <span className="pipeline-editor-nav-count">{folder?.count ?? 0}</span>
-                  </Link>
-                ))}
-                {isRoot && specialFolders.length > 0 && (
-                  <>
-                    <div className="pipeline-editor-section-sep" />
-                    {specialFolders.map((folder, index) => (
-                      <Link
-                        key={`special-folder-${index}`}
-                        href={folder?.href ?? "#"}
-                        className={cx("pipeline-editor-nav-row", specialFolderEditorClass(folder?.name ?? ""))}
-                      >
-                        <svg viewBox="0 0 24 24" fill="none" className="pipeline-editor-nav-icon" aria-hidden="true">
-                          <path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z" />
-                        </svg>
-                        <span className="pipeline-editor-nav-label">{pipelineNavLastSegment(folder?.virtual_path)}/</span>
-                        <span className="pipeline-editor-nav-count">{folder?.count ?? 0}</span>
-                      </Link>
-                    ))}
-                  </>
-                )}
-              </div>
+              {/* The repository as a tree. Opening a folder is one request
+                  for that folder's children, kept afterwards — where this
+                  used to be a breadcrumb plus a link per child folder, and
+                  every folder click reloaded the page. */}
+              <RepoTree
+                owner={owner}
+                project={project}
+                rootLabel={input?.title || project || "repository"}
+                selected={treeSelection}
+                onSelect={handleTreeSelect}
+                onAction={handleTreeAction}
+                refreshToken={treeRefreshToken}
+              />
 
-              {/* Pipelines list */}
-              <div data-editor-pipeline-list="true">
-                {dynSidebarPipelines.map((item, index) => (
-                  <div key={`${item?.id ?? "p"}-${index}`} className="pipeline-editor-item-wrap">
-                    {(() => {
-                      const pipelineLocked = !!item?.is_locked;
-                      return (
-                        <>
-                    <Link
-                      href={item?.editor_href ?? "#"}
-                      className={cx("pipeline-editor-item", item?.is_selected ? "is-selected" : "")}
-                      data-editor-pipeline-id={item?.id ?? ""}
-                    >
-                      <div className="pipeline-editor-item-head">
-                        <div className="flex items-center gap-1.5">
-                          <PipelineIcon className="w-3.5 h-3.5 text-accent" />
-                          <StatusDot isActive={item?.is_active} hasDraft={item?.has_draft} />
-                          {item?.is_locked && <LockIcon className="w-3 h-3 text-dark-accent1 shrink-0" title="Locked — agents cannot access" />}
-                          <span className="pipeline-editor-item-name">{item?.name}</span>
-                        </div>
-                        <span className="pipeline-editor-item-status">{item?.status_label}</span>
-                      </div>
-                      <p className="pipeline-editor-item-meta">{item?.trigger_kind}</p>
-                    </Link>
-                    {renderDeleteAffordance({
-                      locked: pipelineLocked,
-                      title: `Delete ${item?.name ?? "pipeline"}`,
-                      onDelete: () => {
-                        setPendingDelete({ path: item?.id ?? "", name: item?.name ?? "", isPipeline: true });
-                        setDeleteInput("");
-                        setDeleteError(null);
-                      },
-                    })}
-                        </>
-                      );
-                    })()}
-                  </div>
-                ))}
-              </div>
-
-              {/* Templates section */}
-              {dynSidebarTemplates.length > 0 && (
-                <>
-                  <div className="pipeline-editor-section-head">Files</div>
-                  <div>
-                    {dynSidebarTemplates.map((file, index) => (
-                      <div key={`tpl-${file?.template_path ?? index}`} className="pipeline-editor-item-wrap">
-                        {(() => {
-                          const templateLocked = isFilePathLocked(file?.rel_path ?? "");
-                          return (
-                            <>
-                        <Link
-                          href={file?.editor_href ?? "#"}
-                          className={cx("pipeline-editor-item", file?.is_selected ? "is-selected" : "")}
-                        >
-                          <div className="pipeline-editor-item-head">
-                            <div className="flex items-center gap-1.5">
-                              <FileKindIcon name={file?.name ?? ""} />
-                              {isFilePathLocked(file?.rel_path ?? "") && <LockIcon className="w-3 h-3 text-dark-accent1 shrink-0" title="Locked — agents cannot access" />}
-                              <span className="pipeline-editor-item-name">{file?.name}</span>
-                            </div>
-                            {file?.git_status ? (
-                              <span className="pipeline-editor-item-status pipeline-editor-item-git">{file.git_status}</span>
-                            ) : null}
-                          </div>
-                          <p className="pipeline-editor-item-meta">{file?.kind}</p>
-                        </Link>
-                        {renderDeleteAffordance({
-                          locked: templateLocked,
-                          title: `Delete ${file?.name ?? "file"}`,
-                          onDelete: () => {
-                            setPendingDelete({ path: file?.rel_path ?? "", name: file?.name ?? "", isPipeline: false });
-                            setDeleteInput("");
-                            setDeleteError(null);
-                          },
-                        })}
-                            </>
-                          );
-                        })()}
-                      </div>
-                    ))}
-                  </div>
-                </>
-              )}
             </div>
           </aside>
 
@@ -1512,6 +1342,7 @@ export default function UnifiedRegistryEditor(input) {
                 graphuiSrc={pipeline?.graphui?.runtime_src ?? ""}
                 graphuiPackageLabel={pipeline?.graphui?.package_label ?? "Graph UI"}
                 projectDefaultMaxInvocations={Number(pipeline?.logging_defaults?.max_invocations ?? 20)}
+                projectDefaultTraceCapture={pipeline?.logging_defaults?.trace_capture}
                 onDeleteClick={pipeline?.selected_meta?.is_locked ? undefined : () => {
                   const pName = String(pipeline?.selected_meta?.name
                     ?? (pipeline?.selected_id ?? "").split("/").pop()?.replace(".zf.json", "")
@@ -1531,6 +1362,24 @@ export default function UnifiedRegistryEditor(input) {
               </div>
             )}
           </section>
+
+          {/* ── Rename (a move inside the same folder) ────────────────────── */}
+          <ConfirmDialog
+            open={!!renaming}
+            title={`Rename ${renaming?.name ?? ""}`}
+            message="The new name keeps it in the same folder."
+            confirmLabel="Rename"
+            confirmDisabled={!renameInput.trim() || renameInput.trim() === renaming?.name}
+            onClose={() => setRenaming(null)}
+            onConfirm={confirmRename}
+          >
+            <Input
+              className="mt-3"
+              value={renameInput}
+              placeholder={renaming?.name ?? ""}
+              onInput={(e) => setRenameInput(e.currentTarget.value)}
+            />
+          </ConfirmDialog>
 
           {/* ── Delete confirm dialog (global — works from any view) ──────── */}
           {pendingDelete && (

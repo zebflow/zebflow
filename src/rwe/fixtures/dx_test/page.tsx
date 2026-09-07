@@ -1,10 +1,10 @@
-import { useState, useEffect, useRef, useMemo, usePageState, useNavigate, Link } from "zeb";
+import { useState, useEffect, useRef, useMemo, usePageState, useRouter, Link } from "zeb/react";
 import Navbar from "@/components/navbar";
 import Counter from "@/components/counter";
 
 export default function DxTestPage(input: any) {
   const user = input?.user || "guest";
-  const navigate = useNavigate();
+  const navigate = useRouter().push;
   const [active, setActive] = useState(false);
   const headerRef = useRef<any>(null);
   const greeting = useMemo(() => `Hello, ${user}!`, [user]);

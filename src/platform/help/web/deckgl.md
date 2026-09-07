@@ -191,7 +191,7 @@ Available extensions: `PathStyleExtension`, `DataFilterExtension`, `BrushingExte
 ### 1. API-First: Data Loads After Fetch
 
 ```tsx
-import { useEffect, usePageState } from "zeb";
+import { useEffect, usePageState } from "zeb/react";
 
 const [points, setPoints] = usePageState("mapPoints", []);
 
@@ -212,7 +212,7 @@ the layers from the new data automatically.
 ### 2. Two-Way View State Sync
 
 ```tsx
-import { usePageState } from "zeb";
+import { usePageState } from "zeb/react";
 
 const [view, setView] = usePageState("mapView", {
   longitude: 0, latitude: 20, zoom: 2,
@@ -339,7 +339,7 @@ The `renderSubLayers: "bitmap"` shorthand tells the runtime to render tiles as `
 Use `createAnimationLoop` for smooth vehicle tracking, temporal simulations, and playback:
 
 ```tsx
-import { useEffect, useRef, useState, usePageState } from "zeb";
+import { useEffect, useRef, useState, usePageState } from "zeb/react";
 import DeckMap, { createAnimationLoop, interpolateAlongPath } from "zeb/deckgl";
 
 export default function FleetPlayback() {
@@ -402,7 +402,7 @@ export default function FleetPlayback() {
 Combine DeckMap with Zebflow's WebSocket pipelines for live fleet tracking:
 
 ```tsx
-import { useEffect, useState, usePageState } from "zeb";
+import { useEffect, useState, usePageState } from "zeb/react";
 import DeckMap from "zeb/deckgl";
 
 export default function LiveFleet() {
@@ -452,7 +452,7 @@ export default function LiveFleet() {
 ### 9. Multiple Synchronized Maps
 
 ```tsx
-import { usePageState } from "zeb";
+import { usePageState } from "zeb/react";
 
 const [view] = usePageState("sharedView", { longitude: 0, latitude: 0, zoom: 2 });
 
@@ -636,7 +636,7 @@ inst.setViewState({
 ## Full Example: Fleet Dashboard
 
 ```tsx
-import { useEffect, useRef, useState, usePageState } from "zeb";
+import { useEffect, useRef, useState, usePageState } from "zeb/react";
 import DeckMap, { haversine, colorRamp, createAnimationLoop } from "zeb/deckgl";
 
 export default function FleetDashboard() {

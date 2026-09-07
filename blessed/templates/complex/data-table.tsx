@@ -1,5 +1,5 @@
-import { cx } from "zeb";
-import { useState } from "zeb";
+import { cx } from "zeb/react";
+import { useState } from "zeb/react";
 import { useDebounce } from "zeb/use";
 
 interface ColumnDef<T = any> {

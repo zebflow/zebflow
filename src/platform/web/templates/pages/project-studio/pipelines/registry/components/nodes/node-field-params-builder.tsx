@@ -1,4 +1,4 @@
-import { useState, useEffect } from "zeb";
+import { useState, useEffect } from "zeb/react";
 import Field from "@/components/ui/field";
 import Input from "@/components/ui/input";
 import Button from "@/components/ui/button";

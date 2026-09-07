@@ -30,11 +30,28 @@ use crate::infra::io::path::{contained_rel_path, rel_path_escapes_root};
 use crate::platform::adapters::data::DataAdapter;
 use crate::platform::error::PlatformError;
 use crate::platform::model::{
-    CreateHubTokenRequest, CreateProjectRequest, HubAccessGrant, HubAssetGallery,
-    HubAssetGalleryImage, HubAssetMedia, HubAssetPackage, HubAssetVersion, HubAuthority,
-    HubPublisher, HubToken, PIPELINE_DEFINITION_EXTENSION, PlatformHubRepository,
-    PlatformServiceInstance, ProjectFileLayout, ProjectHubRepository,
-    ProjectRuntimeSelectionRequest, ResolvedProjectLayout, ZebflowJsonLayout, now_ts, slug_segment,
+    CreateHubTokenRequest,
+    CreateProjectRequest,
+    HubAccessGrant,
+    HubAssetGallery,
+    HubAssetGalleryImage,
+    HubAssetMedia,
+    HubAssetPackage,
+    HubAssetVersion,
+    HubAuthority,
+    HubPublisher,
+    HubToken,
+    PIPELINE_DEFINITION_EXTENSION,
+    PlatformHubRepository,
+    PlatformServiceInstance,
+    ProjectFileLayout,
+    ProjectHubRepository,
+    ProjectRuntimeSelectionRequest,
+    RepoTreeScope,
+    ResolvedProjectLayout,
+    ZebflowJsonLayout,
+    now_ts,
+    slug_segment,
     strip_dir_prefix,
 };
 use crate::platform::policy::package::{
@@ -2413,7 +2430,7 @@ impl HubService {
                     .collect())
             }
             "template_with_dependencies" => {
-                let listing = self.projects.list_repo_tree(&owner, &project)?;
+                let listing = self.projects.list_repo_tree(&owner, &project, &RepoTreeScope::all())?;
                 Ok(listing
                     .items
                     .into_iter()
@@ -5036,7 +5053,7 @@ impl HubService {
         layout: &ProjectFileLayout,
         source_ref: &str,
     ) -> Result<HubExportPreview, PlatformError> {
-        let listing = self.projects.list_repo_tree(owner, project)?;
+        let listing = self.projects.list_repo_tree(owner, project, &RepoTreeScope::all())?;
         let selected = listing
             .items
             .into_iter()

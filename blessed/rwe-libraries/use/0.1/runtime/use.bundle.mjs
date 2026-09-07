@@ -121,23 +121,11 @@ export function useLazyModule(loader) {
   return [mod, loading, error];
 }
 
-// ── useSearchParams ────────────────────────────────────────────────────────
-// Reads and writes URL search params via history.replaceState (no reload).
-// Returns [URLSearchParams, setter]. Setter accepts a string, URLSearchParams,
-// or an updater function (prev: URLSearchParams) => string | URLSearchParams.
-export function useSearchParams() {
-  const [params, setParamsState] = useState(() => new URLSearchParams(window.location.search));
-  const setParams = useCallback((updater) => {
-    setParamsState((prev) => {
-      const raw = typeof updater === 'function' ? updater(prev) : updater;
-      const next = raw instanceof URLSearchParams ? raw : new URLSearchParams(raw);
-      const qs = next.toString();
-      window.history.replaceState(null, '', window.location.pathname + (qs ? '?' + qs : ''));
-      return next;
-    });
-  }, []);
-  return [params, setParams];
-}
+// useSearchParams lives in zeb/react, with Next.js's read-only shape.
+// It used to be here too, returning [params, setter] — two hooks, one
+// name, and this one silently won at runtime. To write search params,
+// use the router: router.replace(path + '?' + params.toString()).
+
 
 // ── useSplitPane ───────────────────────────────────────────────────────────
 // Pointer-drag resizable split pane. Attach returned ref to the container.

@@ -1,5 +1,5 @@
-import { cx } from "zeb";
-import { useState } from "zeb";
+import { cx } from "zeb/react";
+import { useState } from "zeb/react";
 
 interface CalendarProps {
   selected?: Date;

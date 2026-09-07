@@ -1,3 +1,4 @@
+import { requestJson } from "@/components/lib/http";
 import ProjectStudioShell from "@/pages/project-studio/components/shell";
 import { StudioTable, StudioTd, StudioThead, StudioTh } from "@/components/ui/studio-data-table";
 import { StudioTabNav, StudioTabLink } from "@/components/ui/studio-tab-nav";
@@ -6,7 +7,7 @@ import Badge from "@/components/ui/badge";
 import Field from "@/components/ui/field";
 import Input from "@/components/ui/input";
 import DeckMap from "zeb/deckgl";
-import { useEffect, useState } from "zeb";
+import { useEffect, useState } from "zeb/react";
 
 export const page = {
   head: {
@@ -24,23 +25,6 @@ export function getPage(input) {
       description: input?.seo?.description ?? "",
     },
   };
-}
-
-function requestJson(url, options = {}) {
-  return fetch(url, {
-    headers: {
-      Accept: "application/json",
-      ...(options.body ? { "Content-Type": "application/json" } : {}),
-      ...(options.headers || {}),
-    },
-    ...options,
-  }).then(async (response) => {
-    const payload = await response.json().catch(() => null);
-    if (!response.ok) {
-      throw new Error(payload?.error || payload?.message || `${response.status} ${response.statusText}`);
-    }
-    return payload;
-  });
 }
 
 function formatNumber(n) {

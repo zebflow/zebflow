@@ -1,4 +1,4 @@
-import { cx } from "zeb";
+import { cx } from "zeb/react";
 
 /**
  * iOS-style toggle switch. Drop-in replacement for Checkbox when a

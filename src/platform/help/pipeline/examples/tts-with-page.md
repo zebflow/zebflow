@@ -122,7 +122,7 @@ return {
 ## Template — `pages/tts-demo.tsx`
 
 ```tsx
-import { useState } from "zeb";
+import { useState } from "zeb/react";
 
 export const page = {
   html: { lang: "en" },

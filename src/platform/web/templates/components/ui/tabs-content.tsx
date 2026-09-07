@@ -1,3 +1,5 @@
+import { cx } from "zeb/react";
+
 export default function TabsContent(props) {
   if (!props?.active) return null;
   return (

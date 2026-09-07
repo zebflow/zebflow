@@ -1,4 +1,4 @@
-import { cx, useEffect } from "zeb";
+import { cx, useEffect } from "zeb/react";
 
 function dialogSizeClass(size: string | undefined, className: any) {
   const classText = typeof className === "string" ? className : "";

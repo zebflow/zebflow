@@ -1,3 +1,5 @@
+import { cx } from "zeb/react";
+
 export function Separator(props) {
   const orientation = props?.orientation === "vertical" ? "w-px h-full" : "h-px w-full";
   return (

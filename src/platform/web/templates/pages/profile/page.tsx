@@ -1,4 +1,4 @@
-import { useState } from "zeb";
+import { useState } from "zeb/react";
 import ChromeHeader from "@/pages/home/components/chrome-header";
 import Button from "@/components/ui/button";
 import Card from "@/components/ui/card";

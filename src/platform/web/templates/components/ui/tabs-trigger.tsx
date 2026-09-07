@@ -1,3 +1,5 @@
+import { cx } from "zeb/react";
+
 export default function TabsTrigger(props) {
   return (
     <button

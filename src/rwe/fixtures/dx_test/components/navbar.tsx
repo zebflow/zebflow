@@ -1,9 +1,9 @@
-import { useState, useNavigate, Link } from "zeb";
+import { useState, useRouter, Link } from "zeb/react";
 
 interface NavbarProps { currentPath?: string; }
 
 export default function Navbar({ currentPath = "/" }: NavbarProps) {
-  const navigate = useNavigate();
+  const navigate = useRouter().push;
   const [open, setOpen] = useState(false);
 
   return (

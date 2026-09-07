@@ -269,6 +269,11 @@ Omitted fields use these v1 meanings:
 | `spec.rwe.minify_html` | `false` |
 | `spec.rwe.strict_mode` | `true` |
 | `spec.pipelines.logging.max_invocations` | Runtime default of 20 |
+| `spec.pipelines.logging.trace_capture.array_sample_count` | 6 elements per array; 0 disables array sampling |
+| `spec.pipelines.logging.trace_capture.max_string_chars` | 8192 Unicode characters per string |
+| `spec.pipelines.logging.trace_capture.max_depth` | 8 nested levels |
+| `spec.pipelines.logging.trace_capture.max_node_bytes` | 65536 captured config/input/output JSON bytes per node execution |
+| `spec.pipelines.logging.trace_capture.max_run_bytes` | 1048576 captured config/input/output JSON bytes per invocation |
 | `spec.pipelines.node_timeout_secs` | Runtime default of 30 seconds |
 | `spec.runtime.mode` | `shared` |
 | `spec.runtime.execution` | `resident` |
@@ -281,6 +286,26 @@ Omitted fields use these v1 meanings:
 
 Changing any default meaning is a contract-breaking change. A writer omits
 default values only when omission preserves these exact meanings.
+
+Trace capture limits govern stored node previews, independently of invocation
+count/age retention. They never shorten the live execution payload. Pipeline
+`metadata.settings.trace_capture` overrides individual fields; omitted fields
+inherit these project defaults. Setting the array count to zero disables only
+array sampling; the other bounds still apply. Configure project defaults in
+Settings → Logs and overrides in the pipeline settings panel.
+
+Byte budgets cover captured config/input/output JSON, including its ordinary
+sampling summaries. Budget-exhaustion markers, node IDs, timings, and error
+messages are outside the allowance; this is not a cap on the whole database
+record. Once exhausted, subsequent captures return an omission marker. Each
+invocation has its own budget, including separately invoked function pipelines;
+parent and child runs do not yet share a root-wide allowance.
+
+The logging settings API accepts `trace_capture` alongside `max_invocations`.
+Omitted top-level fields preserve existing settings. A supplied `trace_capture`
+object replaces that object's overrides; `trace_capture: null` resets it to
+engine defaults. Unknown fields, negative or fractional values, and values
+outside the supported limits are rejected before saving.
 
 ## Validation
 

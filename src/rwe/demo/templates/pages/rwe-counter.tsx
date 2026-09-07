@@ -1,4 +1,4 @@
-import { usePageState } from "zeb";
+import { usePageState } from "zeb/react";
 
 export default function Page(input) {
   const initialCount = Number(input?.initialCount || 0);

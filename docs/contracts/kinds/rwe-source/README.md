@@ -26,7 +26,7 @@ A page has **exactly one default export component**. Anything else is refused:
 `template must have one default export component`.
 
 ```tsx
-import { useState } from "zeb";
+import { useState } from "zeb/react";
 import Button from "@/components/ui/button";
 
 export default function Page() {
@@ -41,11 +41,18 @@ Four forms, and only four.
 
 | Form | Meaning |
 | --- | --- |
-| `"zeb"`, `"zeb/…"` | runtime-provided. Never a file, never bundled. Every file that uses a hook imports it here — there are no implicit globals |
+| `"zeb/react"`, `"zeb/…"` | runtime-provided. Never a file, never bundled. Every file that uses a hook imports it here — there are no implicit globals |
 | `"@/…"` | a project file, addressed from the template root |
 | `"npm:…"`, `"node:…"`, `"jsr:…"`, `"http://…"`, `"https://…"` | left alone; the compiler does not resolve them |
 | `"./…"`, `"../…"` | **refused** |
-| `"react"`, `"preact"`, and their submodules | **refused**, naming `"zeb"` — the runtime here is not React's |
+| `"react"`, `"preact"`, and their submodules | **refused**, naming `"zeb/react"` — the runtime here is not React's |
+
+`"zeb/react"` is the built-in core UI API: hooks, elements, context, refs,
+portals, `ErrorBoundary`, `useSyncExternalStore` and rendering functions. It supports named imports, aliases, default
+and namespace imports. Unsupported named exports are refused at compile time.
+It is available independently of optional library enablement. Zebflow helpers
+(`usePageState`, `useRouter`, `Link`, `cx`) remain in `"zeb/react"`; existing hook
+imports from `"zeb/react"` are still supported.
 
 ### Why relative imports are refused
 
@@ -77,7 +84,7 @@ These are engine constraints, not house style.
 - **No `document.*`, and no manual `render()`.** A page renders on the server
   first, where there is no DOM, and the runtime owns the single root. Reaching
   for either produces a page that works in one place and not the other.
-- **Every file imports its own hooks from `"zeb"`.** A component that uses a
+- **Every file imports its own hooks from `"zeb/react"`.** A component that uses a
   hook without importing it works only when something else happened to import
   it first.
 
@@ -87,7 +94,7 @@ write CSS at all. Those live in the project's own guidance, not here.
 ## What travels
 
 A distributed set carries the named file and every file it reaches through
-`"@/"`, recursively. `"zeb"` imports carry nothing; the runtime provides them.
+`"@/"`, recursively. `"zeb/react"` imports carry nothing; the runtime provides them.
 `npm:` and URL imports carry nothing and are the receiver's problem.
 
 ## Collisions
@@ -141,7 +148,7 @@ so `bg-[var(--color-surface)]` emits the rule.
 A page without exactly one default export. A relative import. An import
 escaping the template root. A hook used without an import in that file. An
 import from `react`, `react-dom`, `preact` or `preact/hooks` — the refusal names
-`"zeb"`, because this runtime is not React's and `usePageState`, `useNavigate`
+`"zeb/react"`, because this runtime is not React's and `usePageState`, `useRouter`
 and `cx` do not exist there.
 
 ## Open

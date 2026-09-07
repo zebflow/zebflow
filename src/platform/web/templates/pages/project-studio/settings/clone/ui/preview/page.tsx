@@ -1,4 +1,4 @@
-import { cx, useState, Link } from "zeb";
+import { cx, useState, Link } from "zeb/react";
 import ProjectStudioShell from "@/pages/project-studio/components/shell";
 import Input from "@/components/ui/input";
 import Button from "@/components/ui/button";

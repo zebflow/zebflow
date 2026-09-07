@@ -1,4 +1,4 @@
-import { useState, useEffect, useNavigate, cx } from "zeb";
+import { useState, useEffect, useRouter, cx } from "zeb/react";
 import { notifyStudioRepoChanged } from "@/pages/project-studio/components/studio-chrome-bridge";
 import Button from "@/components/ui/button";
 import Checkbox from "@/components/ui/checkbox";
@@ -20,7 +20,7 @@ export default function GitCommitDialog({
   redirectUrl,
   onClose,
 }: GitCommitDialogProps) {
-  const nav = useNavigate();
+  const nav = useRouter().push;
   const [checkedFiles, setCheckedFiles] = useState<Set<string>>(new Set());
   const [message, setMessage] = useState("");
   const [push, setPush] = useState(false);

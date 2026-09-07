@@ -1,4 +1,4 @@
-import { usePageState, useMemo } from "zeb";
+import { usePageState, useMemo } from "zeb/react";
 
 const FEATURES = [
   {

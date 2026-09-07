@@ -1,6 +1,7 @@
 //! Pipeline DSL executor — executes parsed verbs using platform services.
 
 use std::collections::{HashMap, HashSet};
+use crate::platform::model::RepoTreeScope;
 use std::sync::Arc;
 
 use serde_json::{Value, json};
@@ -268,7 +269,7 @@ impl DslExecutor {
                 match self
                     .platform
                     .projects
-                    .list_repo_tree(&self.owner, &self.project)
+                    .list_repo_tree(&self.owner, &self.project, &RepoTreeScope::all())
                 {
                     Ok(ws) => {
                         let mut out = DslOutput::new_ok();
@@ -290,7 +291,7 @@ impl DslExecutor {
                 match self
                     .platform
                     .projects
-                    .list_repo_tree(&self.owner, &self.project)
+                    .list_repo_tree(&self.owner, &self.project, &RepoTreeScope::all())
                 {
                     Ok(listing) => {
                         let mut out = DslOutput::new_ok();

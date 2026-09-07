@@ -259,7 +259,7 @@ fn strip_rwe_client_imports(source: &str) -> String {
             }
             // Strip "rwe" / "rwe-*" (hooks are globalThis globals) and
             // "zeb/*" (library exports are injected into globalThis by the outer script).
-            !(t.contains("from \"zeb\"")
+            !(t.contains("from \"zeb/react\"")
                 || t.contains("from 'zeb'")
                 || t.contains("from \"zeb/")
                 || t.contains("from 'zeb/"))
@@ -335,7 +335,7 @@ fn build_zeb_preamble(detected_libs: &[String], enabled_libraries: &[String]) ->
     // Use dynamic `await import(...)` — NOT static `import * as ...`.
     // Static imports are hoisted: the bundle would be evaluated before the outer
     // script body runs, so globalThis.createContext (etc.) wouldn't be set yet.
-    // Dynamic imports run in-order during script body execution, after the preact
+    // Dynamic imports run in-order during script body execution, after the Zeb React
     // globals have been installed above.
     let mut out = String::new();
     for lib in libs {
@@ -368,33 +368,17 @@ fn build_zeb_preamble(detected_libs: &[String], enabled_libraries: &[String]) ->
 
 fn build_client_module(client_source: &str, zeb_preamble: &str) -> String {
     let tool_js = TOOL_INIT;
-    const PREACT_BUNDLE: &str = "/assets/libraries/zeb/preact/0.1/runtime/preact.bundle.mjs";
-    let runtime_ready_source = strip_rwe_client_imports(client_source)
-        .replace(
-            "from \"npm:preact/jsx-runtime\"",
-            &format!("from \"{PREACT_BUNDLE}\""),
-        )
-        .replace(
-            "from 'npm:preact/jsx-runtime'",
-            &format!("from '{PREACT_BUNDLE}'"),
-        )
-        .replace(
-            "from \"npm:preact/hooks\"",
-            &format!("from \"{PREACT_BUNDLE}\""),
-        )
-        .replace(
-            "from 'npm:preact/hooks'",
-            &format!("from '{PREACT_BUNDLE}'"),
-        )
-        .replace("from \"npm:preact\"", &format!("from \"{PREACT_BUNDLE}\""))
-        .replace("from 'npm:preact'", &format!("from '{PREACT_BUNDLE}'"));
+    // No `npm:preact` rewriting. A template reaches the runtime through
+    // "zeb/react" and nothing else; there is no second spelling to translate.
+    let runtime_ready_source = strip_rwe_client_imports(client_source);
     let encoded = STANDARD.encode(runtime_ready_source.as_bytes());
     format!(
         "{tool_js}\n\
          import {{ h, Fragment, hydrate, render, createContext, createPortal, forwardRef, memo,\
            useCallback, useContext, useEffect, useId, useImperativeHandle,\
-           useLayoutEffect, useMemo, useReducer, useRef, useState }}\
-           from '/assets/libraries/zeb/preact/0.1/runtime/preact.bundle.mjs';\n\
+           useLayoutEffect, useMemo, useReducer, useRef, useState,\
+           useSyncExternalStore }}\
+           from '/assets/libraries/zeb/react/0.1/runtime/zeb_react.mjs';\n\
          const __RwePageStateContext = createContext(null);\n\
          function __rweUsePageState(keyOrInitial, defaultValue) {{\n\
            const isKeyed = typeof keyOrInitial === 'string';\n\
@@ -436,17 +420,79 @@ fn build_client_module(client_source: &str, zeb_preamble: &str) -> String {
          globalThis.useId = useId;\n\
          globalThis.useImperativeHandle = useImperativeHandle;\n\
          globalThis.useLayoutEffect = useLayoutEffect;\n\
+         globalThis.useSyncExternalStore = useSyncExternalStore;\n\
          globalThis.createContext = createContext;\n\
          globalThis.createPortal = createPortal;\n\
          globalThis.forwardRef = forwardRef;\n\
          globalThis.memo = memo;\n\
          globalThis.usePageState = __rweUsePageState;\n\
-         globalThis.useNavigate = function useNavigate() {{\n\
-           return function(href) {{\n\
+         // Where we are. Both subscribe rather than reading location once,\n\
+         // because Link swaps the page without a reload — a component that read\n\
+         // window.location directly would keep rendering the previous URL.\n\
+         // `rwe:nav` fires after a router navigation, `popstate` after Back.\n\
+         (function() {{\n\
+           var listeners = new Set();\n\
+           var announce = function() {{ listeners.forEach(function(fn) {{ fn(); }}); }};\n\
+           window.addEventListener('rwe:nav', announce);\n\
+           window.addEventListener('popstate', announce);\n\
+           var subscribe = function(fn) {{\n\
+             listeners.add(fn);\n\
+             return function() {{ listeners.delete(fn); }};\n\
+           }};\n\
+           globalThis.usePathname = function usePathname() {{\n\
+             return useSyncExternalStore(\n\
+               subscribe,\n\
+               function() {{ return window.location.pathname; }},\n\
+               function() {{ return (globalThis.ctx && globalThis.ctx.route) || '/'; }}\n\
+             );\n\
+           }};\n\
+           // The snapshot is the raw query string, not a URLSearchParams: the\n\
+           // hook compares snapshots by identity, and a fresh object every read\n\
+           // would re-render forever.\n\
+           globalThis.useSearchParams = function useSearchParams() {{\n\
+             var search = useSyncExternalStore(\n\
+               subscribe,\n\
+               function() {{ return window.location.search; }},\n\
+               function() {{\n\
+                 var q = (globalThis.ctx && globalThis.ctx.query) || {{}};\n\
+                 var p = new URLSearchParams();\n\
+                 for (var k in q) {{\n\
+                   if (Object.prototype.hasOwnProperty.call(q, k)) p.set(k, String(q[k]));\n\
+                 }}\n\
+                 var s = p.toString();\n\
+                 return s ? '?' + s : '';\n\
+               }}\n\
+             );\n\
+             return new URLSearchParams(search);\n\
+           }};\n\
+         }})();\n\
+         // Next.js App Router's shape: push/replace/back/forward/refresh/prefetch.\n\
+         // Deliberately no pathname or query — those belong to the legacy Pages\n\
+         // Router, and window.location already answers them without a hook.\n\
+         globalThis.useRouter = function useRouter() {{\n\
+           var go = function(href, mode) {{\n\
              if (typeof window.rweNavigate === 'function') {{\n\
-               window.rweNavigate(href);\n\
+               window.rweNavigate(href, mode);\n\
+             }} else if (mode === 'replace') {{\n\
+               window.location.replace(href);\n\
              }} else {{\n\
                window.location.href = href;\n\
+             }}\n\
+           }};\n\
+           return {{\n\
+             push: function(href) {{ go(href, 'push'); }},\n\
+             replace: function(href) {{ go(href, 'replace'); }},\n\
+             back: function() {{ history.back(); }},\n\
+             forward: function() {{ history.forward(); }},\n\
+             // Re-render where we already are, without recording a visit to it.\n\
+             refresh: function() {{\n\
+               go(window.location.pathname + window.location.search, 'none');\n\
+             }},\n\
+             // A hint, not a promise: warm the HTTP cache and ignore failures,\n\
+             // exactly as a prefetch that cannot help should behave.\n\
+             prefetch: function(href) {{\n\
+               try {{ fetch(href, {{ credentials: 'same-origin' }}).catch(function() {{}}); }}\n\
+               catch (e) {{}}\n\
              }}\n\
            }};\n\
          }};\n\
@@ -500,7 +546,7 @@ fn build_client_module(client_source: &str, zeb_preamble: &str) -> String {
                __bar.style.transition = 'opacity 0.15s ease';\n\
                __bar.style.opacity = '0';\n\
              }};\n\
-             window.rweNavigate = function(href) {{\n\
+             window.rweNavigate = function(href, mode) {{\n\
                __bStart();\n\
                fetch(href, {{ credentials: 'same-origin' }})\n\
                  .then(function(r) {{\n\
@@ -562,7 +608,11 @@ fn build_client_module(client_source: &str, zeb_preamble: &str) -> String {
                      }}\n\
                    }});\n\
                    document.title = doc.title;\n\
-                   history.pushState(null, '', href);\n\
+                   if (mode === 'replace') {{\n\
+                     history.replaceState(null, '', href);\n\
+                   }} else if (mode !== 'none') {{\n\
+                     history.pushState(null, '', href);\n\
+                   }}\n\
                    window.scrollTo(0, 0);\n\
                    Promise.all(__scriptPromises).then(function() {{\n\
                      window.dispatchEvent(new CustomEvent('rwe:nav', {{ detail: {{ url: href }} }}));\n\
@@ -572,7 +622,10 @@ fn build_client_module(client_source: &str, zeb_preamble: &str) -> String {
                  .catch(function() {{ __bFail(); window.location.href = href; }});\n\
              }};\n\
              window.addEventListener('popstate', function() {{\n\
-               window.rweNavigate(window.location.pathname + window.location.search);\n\
+               // The browser already moved us. Render the destination, but do\n\
+               // not push it — that turned every Back into a new entry and made\n\
+               // the stack impossible to walk out of.\n\
+               window.rweNavigate(window.location.pathname + window.location.search, 'none');\n\
              }});\n\
            }}\n\
          }})();\n\
@@ -650,7 +703,7 @@ fn build_client_module(client_source: &str, zeb_preamble: &str) -> String {
            const value = useMemo(() => ({{ ...(state || {{}}), setPageState }}), [state]);\n\
            /* Expose page-state bridge for external libraries (zeb/prosemirror, etc.).\n\
             * window.__rweSetPageState(patch) — call from any zeb/* bundle to patch\n\
-            * the Preact page state. useState setter is stable so this ref is safe.\n\
+            * the Zeb React page state. useState setter is stable so this ref is safe.\n\
             * window.__rwePageState — read-only snapshot; updated after every change.\n\
             * rwe:state:change event — dispatched on window after every state update;\n\
             * bundles listen here to react to page-driven content changes (e.g. swap\n\
@@ -712,6 +765,8 @@ fn stable_hash_u64(input: &str) -> u64 {
 /// - `manifest`    → `<link rel="manifest">`
 /// - `icons`       → array of `{ rel, href, type?, sizes? }` link tags
 ///                   (favicon 32×32, 16×16, apple-touch-icon, etc.)
+/// - `links`       → array of `{ rel, href, type?, sizes?, media?, crossorigin? }`
+///                   link tags — how a page declares a stylesheet it needs
 /// - `og`          → Open Graph `{ title, description, image, url, type, siteName, locale }`
 /// - `twitter`     → Twitter Card `{ card, title, description, image, site, creator }`
 /// - `extra`       → raw HTML string injected verbatim at end of `<head>` (trusted escape hatch)
@@ -809,6 +864,71 @@ fn build_document_shell(page_config: &Option<Value>, body_content: &str) -> Stri
                 }
             }
             tag.push('>');
+            head.push_str(&tag);
+        }
+    }
+
+    // links — [{ rel, href, type?, sizes?, media?, crossorigin? }]
+    //
+    // A page saying which stylesheet it needs. This was declared by six pages
+    // and read by nobody: the renderer knew `icons` and not `links`, so those
+    // stylesheets only ever arrived when something else — a scan of the
+    // rendered HTML for a marker class — happened to inject them. A page that
+    // drew its icons after hydration got no stylesheet at all, because there
+    // was nothing in the server output to scan for.
+    if let Some(links) = hd.and_then(|h| h.get("links")).and_then(Value::as_array) {
+        for link in links {
+            let href = link.get("href").and_then(Value::as_str).unwrap_or_default();
+            if href.is_empty() {
+                continue;
+            }
+            let rel = link
+                .get("rel")
+                .and_then(Value::as_str)
+                .unwrap_or("stylesheet");
+            let mut tag = format!(
+                "<link rel=\"{}\" href=\"{}\"",
+                escape_attr(rel),
+                escape_attr(href)
+            );
+            for attr in ["type", "sizes", "media", "crossorigin", "as"] {
+                if let Some(v) = link.get(attr).and_then(Value::as_str) {
+                    if !v.is_empty() {
+                        tag.push_str(&format!(" {}=\"{}\"", attr, escape_attr(v)));
+                    }
+                }
+            }
+            tag.push('>');
+            head.push_str(&tag);
+        }
+    }
+
+    // A page saying which script it needs. Same omission as `links` had: a page
+    // could declare a library and the tag never reached the document, so the
+    // component that waited for it simply never upgraded — silently, because
+    // nothing failed. `src` is required; a script with no source is not a
+    // script.
+    if let Some(scripts) = hd.and_then(|h| h.get("scripts")).and_then(Value::as_array) {
+        for script in scripts {
+            let src = script.get("src").and_then(Value::as_str).unwrap_or_default();
+            if src.is_empty() {
+                continue;
+            }
+            let mut tag = format!("<script src=\"{}\"", escape_attr(src));
+            for flag in ["defer", "async", "nomodule"] {
+                if script.get(flag).and_then(Value::as_bool).unwrap_or(false) {
+                    tag.push(' ');
+                    tag.push_str(flag);
+                }
+            }
+            for attr in ["type", "crossorigin", "integrity", "referrerpolicy"] {
+                if let Some(v) = script.get(attr).and_then(Value::as_str) {
+                    if !v.is_empty() {
+                        tag.push_str(&format!(" {}=\"{}\"", attr, escape_attr(v)));
+                    }
+                }
+            }
+            tag.push_str("></script>");
             head.push_str(&tag);
         }
     }
@@ -952,6 +1072,87 @@ mod tests {
     use crate::rwe::core::model::HydrateMode;
     use serde_json::json;
 
+    /// A page saying which stylesheet it needs must get it.
+    ///
+    /// Six pages declared `head.links` and the renderer read only `head.icons`,
+    /// so every one of those stylesheets was dropped. They appeared anyway when
+    /// a separate scan of the rendered HTML spotted a marker class — which
+    /// meant a page drawing its icons after hydration got nothing, because
+    /// there was no marker in the server output to find.
+    /// A page that declares a library and never gets the tag has no way to
+    /// know: the component waiting for the global simply stays in its
+    /// not-loaded branch forever.
+    #[test]
+    fn a_declared_script_reaches_the_head() {
+        let page = json!({
+            "head": {
+                "scripts": [
+                    { "src": "https://unpkg.com/leaflet@1.9.4/dist/leaflet.js", "defer": true },
+                    { "src": "/local.js", "type": "module" },
+                    { "src": "" },
+                    { "defer": true },
+                ]
+            }
+        });
+        let html = build_document_shell(&Some(page), "<div></div>");
+
+        assert!(
+            html.contains(
+                r#"<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" defer></script>"#
+            ),
+            "{html}"
+        );
+        assert!(
+            html.contains(r#"<script src="/local.js" type="module"></script>"#),
+            "{html}"
+        );
+        assert_eq!(
+            html.matches("<script src=").count(),
+            2,
+            "a script with no src is not a script: {html}"
+        );
+    }
+
+    #[test]
+    fn a_declared_stylesheet_reaches_the_head() {
+        let page = json!({
+            "head": {
+                "links": [
+                    { "rel": "stylesheet", "href": "/assets/platform/db-suite.css" },
+                    { "rel": "stylesheet", "href": "/icons.css", "media": "screen" },
+                    { "href": "/implicitly-a-stylesheet.css" },
+                    { "rel": "stylesheet", "href": "" },
+                ]
+            }
+        });
+        let html = build_document_shell(&Some(page), "<div></div>");
+
+        assert!(
+            html.contains(r#"<link rel="stylesheet" href="/assets/platform/db-suite.css">"#),
+            "{html}"
+        );
+        assert!(
+            html.contains(r#"<link rel="stylesheet" href="/icons.css" media="screen">"#),
+            "an optional attribute travels with it: {html}"
+        );
+        assert!(
+            html.contains(r#"<link rel="stylesheet" href="/implicitly-a-stylesheet.css">"#),
+            "a link without a rel is a stylesheet, the only kind a page declares: {html}"
+        );
+        assert_eq!(
+            html.matches("<link rel=\"stylesheet\"").count(),
+            3,
+            "an entry with no href is not a tag: {html}"
+        );
+    }
+
+    /// Declaring nothing adds nothing.
+    #[test]
+    fn a_page_without_links_gets_no_stylesheet_tags() {
+        let html = build_document_shell(&Some(json!({ "head": { "title": "x" } })), "<div></div>");
+        assert!(!html.contains("rel=\"stylesheet\""), "{html}");
+    }
+
     #[test]
     fn zeb_preamble_uses_codemirror_entry_module() {
         let preamble = build_zeb_preamble(&["zeb/codemirror".to_string()], &[]);
@@ -1030,5 +1231,91 @@ mod tests {
             module.contains("setAttribute('data-rwe-style'"),
             "expected imported style blocks to preserve identity during navigation, got {module}"
         );
+    }
+}
+
+#[cfg(test)]
+mod global_installation_tests {
+    /// Every `globalThis.<name> = ...` in a source, in the order written.
+    ///
+    /// Deliberately textual rather than parsed: these files are the runtime
+    /// preamble, assembled from string fragments and `format!`, so there is no
+    /// single AST to walk. The pattern is uniform enough that reading the text
+    /// is honest, and a name spelled some other way is a name this test does
+    /// not claim to cover.
+    fn installed_globals(source: &str) -> Vec<String> {
+        let mut names = Vec::new();
+        for (index, _) in source.match_indices("globalThis.") {
+            let rest = &source[index + "globalThis.".len()..];
+            let name: String = rest
+                .chars()
+                .take_while(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '$')
+                .collect();
+            if name.is_empty() {
+                continue;
+            }
+            // An assignment, not a read. `globalThis.ctx.route` and
+            // `typeof globalThis.L` are uses; only `= ` on the right declares.
+            let after = rest[name.len()..].trim_start();
+            if after.starts_with('=') && !after.starts_with("==") {
+                names.push(name);
+            }
+        }
+        names
+    }
+
+    /// Two assignments to one name is not an error anywhere — the later one
+    /// simply wins, silently, from wherever it happens to sit in the file.
+    ///
+    /// This is not hypothetical: `useSearchParams` was installed twice in the
+    /// SSR preamble with two different shapes, `URLSearchParams` and
+    /// `[params, setter]`. The one twenty lines further down won, and nothing
+    /// reported it. A component calling the hook got whichever the file
+    /// happened to end with.
+    fn assert_no_name_installed_twice(label: &str, source: &str) {
+        let names = installed_globals(source);
+        let mut seen = std::collections::HashMap::<String, usize>::new();
+        for name in &names {
+            *seen.entry(name.clone()).or_insert(0) += 1;
+        }
+        // Being assigned twice is only a bug when the second assignment throws
+        // the first away. `h` is deliberately wrapped — the original is saved
+        // (`var __orig = globalThis.h`) and the replacement calls through — and
+        // that is decoration, not a name collision. A capture of the previous
+        // value anywhere in the source is what separates the two.
+        let mut duplicates: Vec<_> = seen
+            .into_iter()
+            .filter(|(_, count)| *count > 1)
+            .filter(|(name, _)| !source.contains(&format!("= globalThis.{name};")))
+            .map(|(name, count)| format!("{name} ({count}x)"))
+            .collect();
+        duplicates.sort();
+
+        assert!(
+            duplicates.is_empty(),
+            "{label}: these names are installed onto globalThis more than once, \
+             so the last assignment silently wins: {}",
+            duplicates.join(", ")
+        );
+        assert!(
+            names.len() > 20,
+            "{label}: only {} globals found — the scan stopped matching, which \
+             would make this test pass by seeing nothing",
+            names.len()
+        );
+    }
+
+    #[test]
+    fn no_server_global_is_installed_twice() {
+        assert_no_name_installed_twice(
+            "zeb_ssr_init.js",
+            include_str!("../runtime/zeb_ssr_init.js"),
+        );
+    }
+
+    #[test]
+    fn no_browser_global_is_installed_twice() {
+        let module = super::build_client_module("export default function P() { return null; }", "");
+        assert_no_name_installed_twice("build_client_module", &module);
     }
 }

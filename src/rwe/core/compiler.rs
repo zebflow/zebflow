@@ -12,7 +12,7 @@ use super::error::EngineError;
 use super::model::{CompiledTemplate, HydrateMode, ImportEdge};
 use super::security;
 
-const JSX_PRELUDE: &str = "/** @jsxImportSource npm:preact */\n";
+const JSX_PRELUDE: &str = "/** @jsx h */\n";
 
 pub fn compile(source: &str, options: CompileOptions) -> Result<CompiledTemplate, EngineError> {
     // Wrap in catch_unwind — OXC parser can panic on pathological inputs.
@@ -171,9 +171,9 @@ fn relative_import_refusal(import: &str) -> EngineError {
 
 /// The specifiers a model reaches for out of habit, and what to say instead.
 ///
-/// Zebflow's runtime is not React's: `usePageState`, `useNavigate` and `cx` do
+/// Zebflow's runtime is not React's: `usePageState`, `useRouter` and `cx` do
 /// not exist there, so `from "react"` would promise semantics this engine does
-/// not have. The refusal names `"zeb"` for the same reason the relative-import
+/// not have. The refusal names `"zeb/react"` for the same reason the relative-import
 /// one names `@/` — an error that states the replacement is repaired in one
 /// step, and one that does not is repaired by guessing.
 fn runtime_import_refusal(import: &str) -> Option<EngineError> {
@@ -192,7 +192,7 @@ fn runtime_import_refusal(import: &str) -> Option<EngineError> {
             "RWE_IMPORT_NOT_ALLOWED",
             format!(
                 "import from '{import}' is not allowed; \
-                 hooks and helpers come from \"zeb\" — write `from \"zeb\"` instead"
+                 hooks and helpers come from \"zeb/react\" — write `from \"zeb/react\"` instead"
             ),
         )
     })
@@ -204,7 +204,12 @@ fn validate_import_allowlist(
 ) -> Result<(), EngineError> {
     for import in imports {
         if import == "zeb" {
-            continue;
+            return Err(EngineError::new(
+                "RWE_IMPORT_NOT_ALLOWED",
+                "import from 'zeb' is not allowed; hooks and helpers come from \"zeb/react\" \
+                 — write `from \"zeb/react\"` instead"
+                    .to_string(),
+            ));
         }
         if import.starts_with("zeb/") {
             continue;
@@ -230,7 +235,7 @@ fn validate_import_allowlist(
         return Err(EngineError::new(
             "RWE_IMPORT_NOT_ALLOWED",
             format!(
-                "import '{import}' is not allowed; valid imports are \"zeb\", \"zeb/*\", \"@/…\", and npm:/node:/jsr:/http(s): specifiers"
+                "import '{import}' is not allowed; valid imports are \"zeb/react\", \"zeb/*\", \"@/…\", and npm:/node:/jsr:/http(s): specifiers"
             ),
         ));
     }
@@ -255,8 +260,9 @@ const ZEB_HOOK_SYMBOLS: &[&str] = &[
     "useReducer",
     "useId",
     "useLayoutEffect",
+    "useSyncExternalStore",
     "usePageState",
-    "useNavigate",
+    "useRouter",
 ];
 
 const ZEB_EXCLUSIVE_SYMBOLS: &[&str] = &[
@@ -269,8 +275,9 @@ const ZEB_EXCLUSIVE_SYMBOLS: &[&str] = &[
     "useReducer",
     "useId",
     "useLayoutEffect",
+    "useSyncExternalStore",
     "usePageState",
-    "useNavigate",
+    "useRouter",
     "cx",
     "Link",
     "forwardRef",
@@ -371,9 +378,10 @@ fn validate_zeb_exclusive_symbols(program: &oxc_ast::ast::Program<'_>) -> Result
     for stmt in &program.body {
         if let Statement::ImportDeclaration(import) = stmt {
             let specifier = import.source.value.as_str();
-            // "zeb", "zeb/*", and absolute paths (resolved form of @/ and "zeb" after
-            // prepare_template_root rewrites them on disk) are all trusted.
-            if specifier == "zeb" || specifier.starts_with("zeb/") || specifier.starts_with('/') {
+            // Only zeb/react, and absolute paths (the resolved form of @/ after
+            // prepare_template_root rewrites them on disk). A sibling library
+            // exporting the word `memo` does not get to supply `memo`.
+            if specifier == super::zeb_react::SPECIFIER || specifier.starts_with('/') {
                 continue;
             }
             if let Some(specifiers) = &import.specifiers {
@@ -384,7 +392,7 @@ fn validate_zeb_exclusive_symbols(program: &oxc_ast::ast::Program<'_>) -> Result
                             return Err(EngineError::new(
                                 "RWE_IMPORT_ZEB_ONLY",
                                 format!(
-                                    "'{name}' must be imported from \"zeb\", not \"{specifier}\""
+                                    "'{name}' must be imported from \"zeb/react\", not \"{specifier}\""
                                 ),
                             ));
                         }
@@ -404,7 +412,7 @@ fn validate_zeb_hook_imports(source: &str) -> Result<(), EngineError> {
     Err(EngineError::new(
         "RWE_HOOK_NOT_IMPORTED",
         format!(
-            "'{first}' is used but not imported; add `import {{ {} }} from \"zeb\";` to this file",
+            "'{first}' is used but not imported; add `import {{ {} }} from \"zeb/react\";` to this file",
             missing.join(", ")
         ),
     ))
@@ -588,8 +596,8 @@ fn strip_runtime_imports(source: &str) -> String {
             }
             !trimmed.contains("from 'rwe'")
                 && !trimmed.contains("from \"rwe\"")
-                && !trimmed.contains("from 'zeb'")
-                && !trimmed.contains("from \"zeb\"")
+                && !trimmed.contains("from 'zeb/react'")
+                && !trimmed.contains("from \"zeb/react\"")
         })
         .collect::<Vec<_>>()
         .join("\n")
@@ -605,7 +613,15 @@ fn rewrite_imports(
     let mut out = Vec::new();
 
     for import in imports {
-        if import == "zeb" || import.starts_with("zeb/") {
+        if import == "zeb" {
+            return Err(EngineError::new(
+                "RWE_IMPORT_NOT_ALLOWED",
+                "import from 'zeb' is not allowed; hooks and helpers come from \"zeb/react\" \
+                 — write `from \"zeb/react\"` instead"
+                    .to_string(),
+            ));
+        }
+        if import.starts_with("zeb/") {
             continue;
         }
 
@@ -903,7 +919,7 @@ fn bundle_for_client(
     }
 
     // Strip filesystem imports + rwe imports from the main page source
-    let clean_main = strip_local_imports(page_source);
+    let clean_main = strip_local_imports(page_source)?;
 
     // Build: inlined components first, then main page
     let mut result = inlined_parts.join("\n\n");
@@ -994,7 +1010,7 @@ fn collect_inlined_module(
     let exported = collect_top_level_exported_names(&content);
 
     // Strip import lines on original content (import paths must be visible to the filter).
-    let stripped = strip_local_imports(&content);
+    let stripped = strip_local_imports(&content)?;
 
     // Mask string/template literal contents before line-based transforms.
     // This prevents code-like text inside strings (e.g. `import x from 'y'` inside a
@@ -1281,48 +1297,43 @@ fn prefix_module_locals(source: &str, prefix: &str, exported: &HashSet<String>) 
         return source.to_string();
     }
 
-    let mut result = source.to_string();
-    for name in &local_names {
-        result = replace_whole_word(&result, name, &format!("{prefix}{name}"));
-    }
-    result
-}
-
-/// Word-boundary string replacement — replaces `old` with `new` only when
-/// not adjacent to an identifier character (`[a-zA-Z0-9_$]`).
-fn replace_whole_word(source: &str, old: &str, new: &str) -> String {
-    let mut result = String::with_capacity(source.len() + new.len());
-    let mut i = 0;
-    while i < source.len() {
-        if source[i..].starts_with(old) {
-            let before_ok = i == 0
-                || !source[..i]
-                    .chars()
-                    .next_back()
-                    .map(is_ident_char)
-                    .unwrap_or(false);
-            let after_pos = i + old.len();
-            let after_ok = after_pos >= source.len()
-                || !source[after_pos..]
-                    .chars()
-                    .next()
-                    .map(is_ident_char)
-                    .unwrap_or(false);
-            if before_ok && after_ok {
-                result.push_str(new);
-                i += old.len();
-                continue;
-            }
+    // Rename bindings and their resolved references, never property names or
+    // shadowed parameters. In particular, importing useState must not rewrite
+    // React.useState to React.__c0_useState in an inlined component.
+    use oxc_ast::AstKind;
+    use oxc_span::GetSpan;
+    let semantic = oxc_semantic::SemanticBuilder::new()
+        .build(&parsed.program)
+        .semantic;
+    let scoping = semantic.scoping();
+    let mut edits = std::collections::BTreeMap::new();
+    for symbol in scoping.symbol_ids() {
+        let name = scoping.symbol_name(symbol);
+        if scoping.symbol_scope_id(symbol) != scoping.root_scope_id()
+            || !local_names.iter().any(|local| local == name)
+        {
+            continue;
         }
-        let ch = source[i..].chars().next().unwrap();
-        result.push(ch);
-        i += ch.len_utf8();
+        let renamed = format!("{prefix}{name}");
+        let span = scoping.symbol_span(symbol);
+        edits.insert((span.start, span.end), renamed.clone());
+        for reference in scoping.get_resolved_references(symbol) {
+            let node = semantic.nodes().get_node(reference.node_id());
+            let span = node.kind().span();
+            let replacement = match semantic.nodes().parent_kind(reference.node_id()) {
+                AstKind::ObjectProperty(property) if property.shorthand => {
+                    format!("{name}: {renamed}")
+                }
+                _ => renamed.clone(),
+            };
+            edits.insert((span.start, span.end), replacement);
+        }
+    }
+    let mut result = source.to_string();
+    for ((start, end), replacement) in edits.into_iter().rev() {
+        result.replace_range(start as usize..end as usize, &replacement);
     }
     result
-}
-
-fn is_ident_char(c: char) -> bool {
-    c.is_alphanumeric() || c == '_' || c == '$'
 }
 
 /// Check if a path points to the RWE runtime shim (e.g. ".../rwe.ts").
@@ -1349,7 +1360,7 @@ fn extract_rwe_import_names(source: &str) -> Vec<String> {
     for stmt in &parsed.program.body {
         if let Statement::ImportDeclaration(import) = stmt {
             let specifier = import.source.value.as_str();
-            if specifier == "zeb" || specifier.starts_with("zeb/") {
+            if specifier.starts_with("zeb/") {
                 if let Some(ref specifiers) = import.specifiers {
                     for s in specifiers {
                         match s {
@@ -1386,7 +1397,7 @@ fn extract_zeb_lib_specifiers(source: &str) -> Vec<String> {
     for stmt in &parsed.program.body {
         if let Statement::ImportDeclaration(import) = stmt {
             let specifier = import.source.value.as_str();
-            if specifier.starts_with("zeb/") {
+            if specifier.starts_with("zeb/") && specifier != super::zeb_react::SPECIFIER {
                 let s = specifier.to_string();
                 if !libs.contains(&s) {
                     libs.push(s);
@@ -1448,7 +1459,7 @@ fn extract_filesystem_import_paths(source: &str) -> Vec<String> {
 /// Remove all filesystem-path imports AND rwe imports from source using OXC AST.
 /// Handles multi-line imports correctly (OXC knows exact byte spans).
 /// Keeps: npm:, node:, jsr:, https: imports (handled by render.rs later).
-fn strip_local_imports(source: &str) -> String {
+fn strip_local_imports(source: &str) -> Result<String, EngineError> {
     let alloc = Allocator::default();
     let source_type = SourceType::default()
         .with_module(true)
@@ -1456,16 +1467,15 @@ fn strip_local_imports(source: &str) -> String {
         .with_typescript(true);
     let parsed = Parser::new(&alloc, source, source_type).parse();
     if parsed.panicked {
-        return source.to_string();
+        return Ok(source.to_string());
     }
 
     // Collect byte ranges of import declarations to remove.
-    let mut remove_ranges: Vec<(usize, usize)> = Vec::new();
+    let mut remove_ranges: Vec<(usize, usize, String)> = Vec::new();
     for stmt in &parsed.program.body {
         if let Statement::ImportDeclaration(import) = stmt {
             let specifier = import.source.value.as_str();
-            let should_strip =
-                specifier == "zeb" || specifier.starts_with("zeb/") || specifier.starts_with('/');
+            let should_strip = specifier.starts_with("zeb/") || specifier.starts_with('/');
             if should_strip {
                 let start = import.span.start as usize;
                 let mut end = import.span.end as usize;
@@ -1473,28 +1483,34 @@ fn strip_local_imports(source: &str) -> String {
                 if end < source.len() && source.as_bytes()[end] == b'\n' {
                     end += 1;
                 }
-                remove_ranges.push((start, end));
+                let replacement = if specifier == super::zeb_react::SPECIFIER {
+                    super::zeb_react::lower_import(import)?
+                } else {
+                    String::new()
+                };
+                remove_ranges.push((start, end, replacement));
             }
         }
     }
 
     if remove_ranges.is_empty() {
-        return source.to_string();
+        return Ok(source.to_string());
     }
 
     // Build result by copying everything except the removed ranges.
     let mut result = String::with_capacity(source.len());
     let mut cursor = 0;
-    for (start, end) in &remove_ranges {
+    for (start, end, replacement) in &remove_ranges {
         if *start > cursor {
             result.push_str(&source[cursor..*start]);
         }
+        result.push_str(replacement);
         cursor = *end;
     }
     if cursor < source.len() {
         result.push_str(&source[cursor..]);
     }
-    result
+    Ok(result)
 }
 
 #[cfg(test)]
@@ -1573,15 +1589,15 @@ export default function DemoPage() {
         fs::create_dir_all(&root).expect("create temp root");
 
         let file = root.join("page.tsx");
-        let source = r#"import { useState } from "zeb";
+        let source = r#"import { useState } from "zeb/react";
 export default function Page() { return <div />; }"#;
         fs::write(&file, source).expect("write source");
 
         crate::rwe::core::prepare_template_root(&root).expect("prepare template root");
         let rewritten = fs::read_to_string(&file).expect("read rewritten source");
         assert!(
-            rewritten.contains(r#"from "zeb""#),
-            "zeb imports must stay logical, got: {rewritten}"
+            rewritten.contains(r#"from "zeb/react""#),
+            "zeb/react imports must stay logical, got: {rewritten}"
         );
 
         let _ = fs::remove_dir_all(&root);
@@ -1666,20 +1682,20 @@ export default function Page() {
 
         assert_eq!(err.code, "RWE_HOOK_NOT_IMPORTED");
         assert!(err.message.contains("useState"), "{}", err.message);
-        assert!(err.message.contains("from \"zeb\""), "{}", err.message);
+        assert!(err.message.contains("from \"zeb/react\""), "{}", err.message);
 
         let _ = fs::remove_dir_all(&root);
     }
 
     #[test]
-    fn compile_accepts_a_hook_imported_from_zeb() {
+    fn compile_accepts_a_hook_imported_from_zeb_react() {
         let root = std::env::temp_dir().join(format!("rwe-hook-ok-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).expect("create root");
         let file = root.join("page.tsx");
         fs::write(
             &file,
-            "import { useState } from \"zeb\";\nexport default function Page() { const [n] = useState(0); return <div>{n}</div>; }\n",
+            "import { useState } from \"zeb/react\";\nexport default function Page() { const [n] = useState(0); return <div>{n}</div>; }\n",
         )
         .expect("write page");
 
@@ -1722,21 +1738,21 @@ export default function Page() {
         let _ = fs::remove_dir_all(&root);
     }
 
-    /// A model emits `from "react"` out of habit. The refusal names `"zeb"`,
+    /// A model emits `from "react"` out of habit. The refusal names `"zeb/react"`,
     /// because Zebflow's runtime is not React's — `usePageState` and
-    /// `useNavigate` do not exist there.
+    /// `useRouter` do not exist there.
     #[test]
-    fn compile_refuses_a_react_import_and_names_zeb() {
+    fn compile_refuses_a_react_import_and_names_zeb_react() {
         let root = std::env::temp_dir().join(format!("rwe-react-import-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).expect("create root");
 
         // Named hooks are caught by `validate_zeb_exclusive_symbols`, a default
-        // import only by the allowlist. Both must name `"zeb"`, which is the
+        // import only by the allowlist. Both must name `"zeb/react"`, which is the
         // guarantee worth holding — not which check happened to fire.
         for source in [
             "import { useState } from \"react\";",
-            "import { useState } from \"preact/hooks\";",
+            "import { useState } from \"zeb\";",
             "import ReactDOM from \"react-dom\";",
             "import Preact from \"preact\";",
         ] {
@@ -1761,7 +1777,7 @@ export default function Page() {
             .expect_err("a runtime import must be refused");
 
             assert!(
-                err.message.contains("\"zeb\""),
+                err.message.contains("\"zeb/react\""),
                 "the refusal must name the replacement, got: {}",
                 err.message
             );

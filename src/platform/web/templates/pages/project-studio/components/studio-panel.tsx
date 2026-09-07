@@ -1,4 +1,4 @@
-import { cx } from "zeb";
+import { cx } from "zeb/react";
 
 export function StudioPanel({ className, children }) {
   return (

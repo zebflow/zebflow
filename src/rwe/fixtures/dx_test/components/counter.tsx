@@ -1,4 +1,4 @@
-import { useState, useMemo, useRef } from "zeb";
+import { useState, useMemo, useRef } from "zeb/react";
 
 interface CounterProps { initial?: number; label?: string; }
 

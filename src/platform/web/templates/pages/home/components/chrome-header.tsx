@@ -1,4 +1,4 @@
-import { Link } from "zeb";
+import { Link } from "zeb/react";
 import Button from "@/components/ui/button";
 
 function ProfileIcon() {

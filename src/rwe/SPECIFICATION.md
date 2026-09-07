@@ -109,7 +109,7 @@ RWE operates in two distinct worlds that must stay coherent:
 │  Request → compile() → render_ssr() → HTML string           │
 │                                                              │
 │  Embedded V8 via deno_core (singleton JsRuntime thread)     │
-│  preact_ssr_init.js loaded ONCE — installs all globals      │
+│  zeb_ssr_init.js loaded ONCE — installs all globals      │
 └─────────────────────────────────────────────────────────────┘
 
 ┌─────────────────────────────────────────────────────────────┐
@@ -203,7 +203,7 @@ Source .tsx file (entry page)
          │
          ▼
 ┌──────────────────┐
-│ JSX_PRELUDE      │  Prepend `/** @jsxImportSource npm:preact */`
+│ JSX_PRELUDE      │  Prepend `/** @jsx h */`
 │  inject          │
 └────────┬─────────┘
          │
@@ -248,7 +248,7 @@ CompiledTemplate + vars (JSON)
         │         │
         │         ▼
         │    Embedded deno_core (singleton JsRuntime on dedicated thread)
-        │    ├── preact_ssr_init.js loaded ONCE at startup — installs globals:
+        │    ├── zeb_ssr_init.js loaded ONCE at startup — installs globals:
         │    │     h, Fragment, React, createElement,
         │    │     useState, useEffect, useLayoutEffect, useInsertionEffect,
         │    │     useRef, useMemo, useCallback, useContext, useReducer, useId,
@@ -275,7 +275,7 @@ CompiledTemplate + vars (JSON)
                   │
                   ▼
              Inline preamble injected (NO extra HTTP requests):
-             ├── import preact + hooks from esm.sh (pinned 10.28.4)
+             ├── import Zeb React + hooks from embedded zeb/react assets
              ├── globalThis.h, Fragment, React, cx
              ├── globalThis.useState, useEffect, useRef, useMemo
              ├── globalThis.usePageState = __rweUsePageState
@@ -320,7 +320,7 @@ static JS_CHANNEL: LazyLock<UnboundedSender<JsRequest>>
 
 - **Embedded deno_core** — V8 runs in-process, no external `deno` binary needed
 - **Single dedicated thread** — `JsRuntime` is `!Send`, lives on `rwe-js-runtime` thread
-- **Singleton runtime** — `preact_ssr_init.js` loaded once at startup; globals persist
+- **Singleton runtime** — `zeb_ssr_init.js` loaded once at startup; globals persist
 - **Side modules** — `load_side_es_module()` used (not main) so runtime can render multiple pages
 - **Custom op** — `op_rwe_store_result(json)` delivers rendered HTML from JS→Rust via thread-local slot
 - **Custom module loader** — `RweModuleLoader` resolves file:// URLs, transpiles TSX/TS on-the-fly via OXC
@@ -330,8 +330,9 @@ static JS_CHANNEL: LazyLock<UnboundedSender<JsRequest>>
 **Runtime files:**
 | File | Purpose | Used by |
 |------|---------|---------|
-| `runtime/preact_ssr_init.js` | Self-contained SSR globals + renderToString | Embedded deno_core (current) |
-| `runtime/ssr_worker.mjs` | External Deno subprocess worker (stdin/stdout JSON) | Legacy — not used by current engine |
+| `runtime/zeb_ssr_init.js` | Self-contained SSR globals + renderToString | Embedded deno_core (current) |
+| `runtime/zeb_react.js` | Shared first-party reconciler, hooks, and renderToString | Browser + embedded V8 |
+| `runtime/zeb_react.mjs` | ESM export adapter | Browser |
 
 ---
 
@@ -348,7 +349,7 @@ static JS_CHANNEL: LazyLock<UnboundedSender<JsRequest>>
 | Conditional rendering `{x && <Y/>}` | Standard JSX patterns | ✅ |
 | List rendering `.map((x) => <Item/>)` | Standard JSX patterns | ✅ |
 | Event handlers `onClick`, `onInput`, etc. | Standard JSX events | ✅ |
-| Preact internals hidden | Developer never imports from `npm:preact` directly | ✅ |
+| Zeb React runtime | Developer imports the public API from `zeb` | ✅ |
 
 ---
 
@@ -368,6 +369,8 @@ This works in **every file** — pages, components, layouts, behaviors. No excep
 | `useCallback` | Memoized callback function | ✅ |
 | `useContext` | Consume a React-style context | ✅ |
 | `useReducer` | Reducer-based state management | ✅ |
+| `useSyncExternalStore` | External subscriptions with SSR/hydration snapshots; import from `zeb/react` | ✅ |
+| `ErrorBoundary` | Zeb-specific fallback, retry and reset keys, including SSR; import from `zeb/react` | ✅ |
 | `useId` | Stable unique ID for SSR/client matching | ✅ |
 | `useImperativeHandle` | Customize ref handle (SSR no-op) | ✅ |
 | `createContext` | Create a React-style context | ✅ |
@@ -383,7 +386,7 @@ This works in **every file** — pages, components, layouts, behaviors. No excep
 `import { cx, useState } from "rwe"` is a **signal to the compiler**, not a real module import.
 
 - At **compile time**: `bundle_for_client()` calls `strip_local_imports()` which strips all `from "rwe"` lines from every inlined component. They never reach the runtime.
-- At **runtime**: all exported symbols are already installed as `globalThis.*` by the runtime — `preact_ssr_init.js` on the server, `build_client_module()` preamble on the client.
+- At **runtime**: all exported symbols are already installed as `globalThis.*` by the runtime — `zeb_ssr_init.js` on the server, `build_client_module()` preamble on the client.
 - **Type definitions**: `rwe.d.ts` + `tsconfig.json` path mapping — planned, enables IDE autocomplete. Not required for runtime to work.
 
 This pattern works in **every file** — pages, components, layouts. No exceptions.
@@ -623,8 +626,7 @@ Both events fire regardless of which tier is active.
 
 | Item | Reason |
 |------|--------|
-| Full React compatibility layer | We use Preact — 99% compatible, not 100% by design |
-| Generic VDOM reconciler | Preact handles this |
+| Full React compatibility layer | Zeb React implements the RWE function-component contract; concurrent rendering, Suspense and React package compatibility are outside this contract |
 | Plugin API | Too early — core model not stable yet |
 | Static site export (`build --ssg`) | Later milestone — don't confuse with SSR runtime |
 | Class components | Functional only |

@@ -1,4 +1,4 @@
-import { useState } from "zeb";
+import { useState } from "zeb/react";
 import Checkbox from "@/components/ui/checkbox";
 
 interface MultiCheckboxOption {

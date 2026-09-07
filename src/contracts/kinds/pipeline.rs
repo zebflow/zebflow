@@ -86,6 +86,10 @@ pub struct PipelineMetadataSpec {
 pub struct PipelineSettingsSpec {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub invocation_retention: Option<PipelineInvocationRetentionSpec>,
+    /// Log preview limits, resolved field by field over project defaults.
+    /// Array count zero retains all elements subject to independent byte/depth bounds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trace_capture: Option<crate::pipeline::trace_capture::TraceCaptureSettings>,
 }
 
 /// Optional invocation history bounds that override project defaults.
@@ -143,6 +147,19 @@ impl PipelineSpec {
                 "FW_PIPELINE_LIMIT",
                 format!("spec.edges exceeds the {MAX_PIPELINE_EDGES} edge limit"),
             ));
+        }
+
+        if let Some(capture) = self
+            .metadata
+            .as_ref()
+            .and_then(|metadata| metadata.settings.trace_capture.as_ref())
+        {
+            capture.validate().map_err(|message| {
+                ContractError::violation(
+                    "FW_PIPELINE_TRACE_CAPTURE",
+                    format!("spec.metadata.settings.trace_capture: {message}"),
+                )
+            })?;
         }
 
         if let Some(retention) = self
@@ -387,6 +404,7 @@ impl From<PipelineSettingsSpec> for PipelineGraphSettings {
     fn from(value: PipelineSettingsSpec) -> Self {
         Self {
             invocation_retention: value.invocation_retention.map(Into::into),
+            trace_capture: value.trace_capture,
         }
     }
 }
@@ -395,6 +413,7 @@ impl From<PipelineGraphSettings> for PipelineSettingsSpec {
     fn from(value: PipelineGraphSettings) -> Self {
         Self {
             invocation_retention: value.invocation_retention.map(Into::into),
+            trace_capture: value.trace_capture,
         }
     }
 }
@@ -532,6 +551,38 @@ mod tests {
             serde_json::to_value(document.spec).unwrap(),
             serde_json::to_value(encoded.spec).unwrap()
         );
+    }
+
+    #[test]
+    fn trace_capture_overrides_roundtrip_and_reject_invalid_limits() {
+        let mut value: Value = serde_json::from_slice(V1_COMPLETE).unwrap();
+        let capture = serde_json::json!({
+            "array_sample_count": 0,
+            "max_string_chars": 1024,
+            "max_depth": 4,
+            "max_node_bytes": 4096,
+            "max_run_bytes": 16384
+        });
+        value["spec"]["metadata"]["settings"]["trace_capture"] = capture.clone();
+        let decoded = decode_pipeline_graph(&serde_json::to_vec(&value).unwrap()).unwrap();
+        let encoded: Value =
+            serde_json::from_slice(&encode_pipeline_graph(decoded.spec).unwrap()).unwrap();
+        assert_eq!(
+            encoded["spec"]["metadata"]["settings"]["trace_capture"],
+            capture
+        );
+
+        for invalid in [
+            serde_json::json!({"array_sample_count": -1}),
+            serde_json::json!({"array_sample_count": 1.5}),
+            serde_json::json!({"max_depth": 0}),
+            serde_json::json!({"max_node_bytes": 0}),
+            serde_json::json!({"max_run_bytes": 0}),
+            serde_json::json!({"unknown": 1}),
+        ] {
+            value["spec"]["metadata"]["settings"]["trace_capture"] = invalid;
+            assert!(decode_pipeline_graph(&serde_json::to_vec(&value).unwrap()).is_err());
+        }
     }
 
     #[test]

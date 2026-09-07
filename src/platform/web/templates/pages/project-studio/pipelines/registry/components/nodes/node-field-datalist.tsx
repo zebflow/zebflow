@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, cx } from "zeb";
+import { useState, useRef, useEffect, cx } from "zeb/react";
 import Field from "@/components/ui/field";
 
 function normalizeOpt(opt: any) {

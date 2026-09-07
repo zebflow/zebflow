@@ -97,11 +97,10 @@ Everything the Open section owed is done:
   whose manifests changed reseed as `zebflow.{name}@0.1.1` beside the old
   `0.1.0`, because a coordinate already present is skipped, never rewritten.
 
-## Open
+## Internal runtime
 
-- `blessed/rwe-libraries/preact/` carries no `manifest.json`. It is seeded as
-  an `rwe_library` hub package (`zebflow.preact@0.1.0`), but installing it
-  would refuse at "no readable manifest.json" — and a truthful manifest cannot
-  be written for it today because it exports nothing a page imports; it is the
-  runtime itself. Either it gains a manifest with a real export surface or it
-  stops being an `rwe_library` package.
+Zeb React is embedded at `zeb/react/0.1/runtime/` and loaded automatically by
+RWE. It is not an installable `rwe_library` Hub package: it has no
+`package.yaml` and no user-selectable manifest. This replaces the former
+manifest-less `zebflow.preact` seed. Previously seeded packages are not deleted
+from existing stores by this source migration.

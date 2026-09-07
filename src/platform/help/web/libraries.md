@@ -32,7 +32,7 @@ Extra hooks beyond the core set. After enabling, import them from `"zeb/use"` in
 
 ```tsx
 // Import the hooks you use, in every file that uses them
-import { useState } from "zeb";
+import { useState } from "zeb/react";
 import { useDebounce, useClipboard } from "zeb/use";
 
 const [search, setSearch] = useState("");
@@ -103,7 +103,7 @@ Renders markdown to HTML with sanitisation (marked + DOMPurify).
 Or imperatively in `useEffect`:
 
 ```tsx
-import { useEffect, useRef } from "zeb";
+import { useEffect, useRef } from "zeb/react";
 
 const containerRef = useRef(null);
 useEffect(() => {
@@ -124,7 +124,7 @@ return <div ref={containerRef} />;
 Full CodeMirror 6 editor. Always load in `useEffect` (browser only).
 
 ```tsx
-import { useEffect, useRef } from "zeb";
+import { useEffect, useRef } from "zeb/react";
 
 const editorRef = useRef(null);
 
@@ -172,7 +172,7 @@ See also: `help_docs topic=zeb/prosemirror` for full config API and plugin docs.
 Full d3 v7 namespace plus a `useD3` Preact hook.
 
 ```tsx
-import { useEffect, useRef } from "zeb";
+import { useEffect, useRef } from "zeb/react";
 
 const chartRef = useRef(null);
 
@@ -209,7 +209,7 @@ return <div ref={ref} />;
 Three.js with scene helpers.
 
 ```tsx
-import { useEffect, useRef } from "zeb";
+import { useEffect, useRef } from "zeb/react";
 
 const canvasRef = useRef(null);
 
@@ -407,7 +407,7 @@ const tableNode = {
 ### Minimal complete example
 
 ```tsx
-import { useState, useCallback } from "zeb";
+import { useState, useCallback } from "zeb/react";
 import { createDocument } from "zeb/pdf";
 
 export default function PdfPage() {

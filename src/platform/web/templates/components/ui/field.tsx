@@ -1,4 +1,4 @@
-import { cx } from "zeb";
+import { cx } from "zeb/react";
 import Label from "@/components/ui/label";
 import HelpTooltip from "@/components/ui/help-tooltip";
 

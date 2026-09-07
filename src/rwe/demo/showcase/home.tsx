@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useMemo, usePageState, useNavigate, Link } from "zeb";
+import { useState, useEffect, useRef, useMemo, usePageState, useRouter, Link } from "zeb/react";
 
 // ─── Inline sub-components ─────────────────────────────────────────────────
 
@@ -60,8 +60,8 @@ export default function HomePage(input: any) {
   // usePageState — shared across all components in this page tree
   const { theme = "dark", setPageState } = usePageState({ theme: "dark" });
 
-  // useNavigate — SPA navigation
-  const navigate = useNavigate();
+  // useRouter — SPA navigation
+  const navigate = useRouter().push;
 
   // useEffect — runs after each count change (no-op in SSR)
   useEffect(() => {
@@ -81,7 +81,7 @@ export default function HomePage(input: any) {
           <p class="text-xs font-mono text-emerald-400 uppercase tracking-widest mb-1">Reactive Web Engine</p>
           <h1 class="text-3xl font-bold text-zinc-100 mb-2">{greeting}</h1>
           <p class="text-zinc-400 text-sm leading-relaxed">
-            Every spec feature. One page. useState · useEffect · useRef · useMemo · usePageState · useNavigate · Link
+            Every spec feature. One page. useState · useEffect · useRef · useMemo · usePageState · useRouter · Link
           </p>
         </div>
 
@@ -158,7 +158,7 @@ export default function HomePage(input: any) {
         {tab === "navigation" && (
           <div class="space-y-4">
 
-            <Card badge="useNavigate" title="SPA navigation via history API">
+            <Card badge="useRouter" title="SPA navigation via history API">
               <p class="text-zinc-400 text-sm leading-relaxed mb-4">
                 Returns a navigate function. SSR: no-op. Browser: pushes to history stack without a full reload.
               </p>

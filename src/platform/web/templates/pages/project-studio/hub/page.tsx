@@ -1,12 +1,23 @@
+import { requestJson } from "@/components/lib/http";
 import ProjectStudioShell from "@/pages/project-studio/components/shell";
 import { StudioTable, StudioTd, StudioThead, StudioTh } from "@/components/ui/studio-data-table";
 import { StudioTabNav, StudioTabLink } from "@/components/ui/studio-tab-nav";
 import Button from "@/components/ui/button";
 import Field from "@/components/ui/field";
+import { Select, SelectOption } from "@/components/ui/select";
+import CheckboxField from "@/components/ui/checkbox-field";
 import Input from "@/components/ui/input";
 import SqlReport from "@/components/package-review/sql-report";
 import { ViolationNotice, WarningNotice } from "@/components/package-review/findings";
-import { useEffect, useState } from "zeb";
+import { useEffect, useState } from "zeb/react";
+import { formatBytes } from "@/components/lib/format";
+import HubBrowser from "@/components/hub/hub-browser";
+import InstallFromFileDialog from "@/pages/project-studio/hub/components/install-from-file-dialog";
+import HubSourcesDialog from "@/pages/project-studio/hub/components/hub-sources-dialog";
+import { buildHubItems } from "@/components/hub/hub-items";
+import LibrariesPanel from "@/pages/project-studio/hub/components/libraries-panel";
+import NodeRegistryPanel from "@/pages/project-studio/hub/components/node-registry-panel";
+import DependenciesPanel from "@/pages/project-studio/hub/components/dependencies-panel";
 
 export const page = {
   head: {
@@ -52,26 +63,6 @@ function describeStatus(value) {
   return String(value);
 }
 
-function requestJson(url, options = {}) {
-  const isFormData = typeof FormData !== "undefined" && options.body instanceof FormData;
-  return fetch(url, {
-    headers: {
-      Accept: "application/json",
-      ...(options.body && !isFormData ? { "Content-Type": "application/json" } : {}),
-      ...(options.headers || {}),
-    },
-    ...options,
-  }).then(async (response) => {
-    const payload = await response.json().catch(() => null);
-    if (!response.ok) {
-      throw new Error(
-        describeStatus(payload?.error || payload?.message || `${response.status} ${response.statusText}`),
-      );
-    }
-    return payload;
-  });
-}
-
 function fmtTs(ts) {
   const n = Number(ts || 0);
   if (!n) return "-";
@@ -90,14 +81,6 @@ function slugify(input) {
 
 function sourceLabel(value) {
   return SOURCE_TYPES.find((item) => item.value === value)?.label || value;
-}
-
-function formatBytes(value) {
-  const n = Number(value || 0);
-  if (!Number.isFinite(n) || n <= 0) return "0 B";
-  if (n < 1024) return `${n} B`;
-  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
-  return `${(n / 1024 / 1024).toFixed(1)} MB`;
 }
 
 function blankProjectSource() {
@@ -152,6 +135,30 @@ export default function Page(input) {
   const tabFlags = input?.tab_flags ?? {};
   const api = input?.hub_api ?? {};
   const [packs, setPacks] = useState(Array.isArray(input?.assets) ? input.assets : []);
+  // Where an added package lands. Only add-kinds ask for it; install-kinds go to
+  // `data/` and have nowhere to choose.
+  const [hubReviewTargetFolder, setHubReviewTargetFolder] = useState("");
+  const [fromFileOpen, setFromFileOpen] = useState(false);
+  const [sourcesOpen, setSourcesOpen] = useState(false);
+  // The catalogue, this project's enabled libraries and the lock, merged — the
+  // same library must not appear as three rows under three names.
+  const browseItems = buildHubItems({
+    assets: packs,
+    libraries: input?.installed?.libraries_available,
+    lock: input?.installed?.dependencies?.status,
+  });
+
+  /**
+   * Acting on the selected package.
+   *
+   * Not wired to the install and add endpoints yet — this is the catalogue and
+   * its consequences; the verbs land next, together with the overwrite
+   * confirmation the review already has the file list for.
+   */
+  function onBrowseAct(item) {
+    // eslint-disable-next-line no-console
+    console.info("hub action requested", item?.package_id ?? item);
+  }
   const [myPacks, setMyPacks] = useState(Array.isArray(input?.my_assets) ? input.my_assets : []);
   const [hubSources, setHubSources] = useState([]);
   const [sourceForm, setSourceForm] = useState(blankProjectSource());
@@ -558,11 +565,21 @@ export default function Page(input) {
                 <div className="project-content-head">
                   <div>
                     <p className="project-content-title">Project Hub</p>
-                    <p className="project-content-copy">Add Hub packages into this project, or publish from this project with a scoped publisher token. Hub service enablement and office placement live in Home &gt; Hub. Added packages become editable project source; Hub does not track them as managed installs.</p>
+                    <p className="project-content-copy">Browse packages and add them to this project.</p>
                   </div>
-                  <Button type="button" variant="outline" onClick={() => refresh().then(() => showStatus("Refreshed")).catch((err) => showStatus(err?.message || err))}>
-                    Refresh
-                  </Button>
+                  <div className="flex items-center gap-2">
+                    {/* The rare paths, behind buttons: as permanent blocks they
+                        pushed the catalogue below the fold. */}
+                    <Button type="button" variant="outline" size="sm" onClick={() => setSourcesOpen(true)}>
+                      Sources
+                    </Button>
+                    <Button type="button" variant="outline" size="sm" onClick={() => setFromFileOpen(true)}>
+                      Install from file
+                    </Button>
+                    <Button type="button" variant="outline" size="sm" onClick={() => refresh().then(() => showStatus("Refreshed")).catch((err) => showStatus(err?.message || err))}>
+                      Refresh
+                    </Button>
+                  </div>
                 </div>
               </section>
 
@@ -574,7 +591,7 @@ export default function Page(input) {
                     </div>
                   ) : null}
 
-                  <section className="rounded-lg border border-ui-border bg-ui-bg p-4">
+                  <InstallFromFileDialog open={fromFileOpen} onClose={() => setFromFileOpen(false)}>
                     <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
                       <div>
                         <p className="project-content-subtitle">Node Bundle From File</p>
@@ -648,11 +665,11 @@ export default function Page(input) {
                         </p>
                       </div>
                     ) : null}
-                  </section>
+                  </InstallFromFileDialog>
 
                   {tabFlags?.packs ? (
                     <>
-                      <section className="rounded-lg border border-ui-border bg-ui-bg p-4">
+                      <HubSourcesDialog open={sourcesOpen} onClose={() => setSourcesOpen(false)}>
                         <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
                           <div>
                             <p className="project-content-subtitle">Hub Sources</p>
@@ -707,14 +724,11 @@ export default function Page(input) {
                               placeholder="Only for legacy project-coordinate Hub"
                             />
                           </Field>
-                          <label className="flex items-center gap-2 text-sm text-ui-text-soft">
-                            <input
-                              type="checkbox"
-                              checked={!!sourceForm.enabled}
-                              onChange={(e) => setSourceForm((prev) => ({ ...prev, enabled: e.currentTarget.checked }))}
-                            />
-                            <span>Enabled</span>
-                          </label>
+                          <CheckboxField
+                            label="Enabled"
+                            checked={sourceForm.enabled}
+                            onChange={(e) => setSourceForm((prev) => ({ ...prev, enabled: e.currentTarget.checked }))}
+                          />
                           <div className="flex items-center justify-end gap-2">
                             {editingSourceId ? <Button type="button" variant="outline" size="sm" onClick={resetSourceForm}>Cancel Edit</Button> : null}
                             <Button type="submit" size="sm" variant="primary">{editingSourceId ? "Save Source" : "Add Project Source"}</Button>
@@ -774,46 +788,20 @@ export default function Page(input) {
                             </div>
                           </div>
                         </div>
-                      </section>
+                      </HubSourcesDialog>
 
-                      <StudioTable>
-                        <StudioThead>
-                          <tr>
-                            <StudioTh>Package</StudioTh>
-                            <StudioTh>Kind</StudioTh>
-                            <StudioTh>Version</StudioTh>
-                            <StudioTh>Publisher</StudioTh>
-                            <StudioTh>Repository</StudioTh>
-                            <StudioTh>Visibility</StudioTh>
-                            <StudioTh>Action</StudioTh>
-                          </tr>
-                        </StudioThead>
-                        <tbody>
-                          {packs.map((item, index) => (
-                            <tr key={`${item?.package_id ?? "asset"}-${index}`}>
-                              <StudioTd>
-                                <div className="flex items-center gap-3">
-                                  {item?.image_url ? <img src={item.image_url} alt="" className="h-10 w-14 rounded-md object-cover border border-ui-border" /> : null}
-                                  <span>{item?.package_id}</span>
-                                </div>
-                              </StudioTd>
-                              <StudioTd>{item?.asset_kind}</StudioTd>
-                              <StudioTd>{item?.latest_version || "-"}</StudioTd>
-                              <StudioTd>{item?.publisher_display_name || item?.publisher_id || "-"}</StudioTd>
-                              <StudioTd>{item?.repository_title || "Local"}</StudioTd>
-                              <StudioTd>{item?.visibility}</StudioTd>
-                              <StudioTd>
-                                <Button type="button" variant="ghost" size="sm" onClick={() => addAsset(item)}>
-                                  Add
-                                </Button>
-                              </StudioTd>
-                            </tr>
-                          ))}
-                          {!packs.length ? (
-                            <tr><StudioTd colSpan={7}>No Hub packages yet.</StudioTd></tr>
-                          ) : null}
-                        </tbody>
-                      </StudioTable>
+                      <div className="flex flex-col rounded-lg border border-ui-border bg-ui-bg">
+                        <HubBrowser
+                          items={browseItems}
+                          owner={input?.owner}
+                          project={input?.project}
+                          initialState="available"
+                          destination={hubReviewTargetFolder}
+                          onDestinationChange={setHubReviewTargetFolder}
+                          busy={false}
+                          onAct={onBrowseAct}
+                        />
+                      </div>
                     </>
                   ) : null}
 
@@ -868,15 +856,14 @@ export default function Page(input) {
                           <p className="text-sm text-ui-text-soft">Pick the export scope first, then choose the specific item and review the final file tree.</p>
                         </div>
                         <Field label="Source type">
-                          <select
-                            className="w-full rounded-md border border-ui-border bg-ui-bg px-3 py-2"
+                          <Select
                             value={publishForm.source_type}
                             onChange={(e) => patchPublishForm({ source_type: e.target.value, source_ref: "" })}
                           >
                             {SOURCE_TYPES.map((item) => (
-                              <option key={item.value} value={item.value}>{item.label}</option>
+                              <SelectOption key={item.value} value={item.value} label={item.label} />
                             ))}
-                          </select>
+                          </Select>
                         </Field>
                         <div className="rounded-lg border border-ui-border bg-ui-bg-muted/30 px-3 py-2 text-sm text-ui-text-soft">
                           <span className="font-medium text-ui-text">{selectedType.label}:</span> {selectedType.note}
@@ -889,18 +876,19 @@ export default function Page(input) {
                           <p className="text-sm text-ui-text-soft">Only name, description, and path are shown here. The actual export set is resolved in the preview step below.</p>
                         </div>
                         <Field label="Selected item">
-                          <select
-                            className="w-full rounded-md border border-ui-border bg-ui-bg px-3 py-2"
+                          <Select
                             value={publishForm.source_ref}
                             onChange={(e) => patchPublishForm({ source_ref: e.target.value })}
                           >
-                            <option value="">Select item</option>
+                            <SelectOption value="" label="Select item" />
                             {publishSources.map((item, index) => (
-                              <option key={`${item?.source_ref ?? "src"}-${index}`} value={item?.source_ref}>
-                                {item?.name} · {item?.path}
-                              </option>
+                              <SelectOption
+                                key={`${item?.source_ref ?? "src"}-${index}`}
+                                value={item?.source_ref}
+                                label={`${item?.name} · ${item?.path}`}
+                              />
                             ))}
-                          </select>
+                          </Select>
                         </Field>
                         {selectedSource ? (
                           <div className="grid gap-3 md:grid-cols-3 rounded-lg border border-ui-border bg-ui-bg-muted/20 px-3 py-3 text-sm">
@@ -991,45 +979,37 @@ export default function Page(input) {
                               <p className="m-0 text-sm font-medium text-ui-text">Project bundle initialization</p>
                               <p className="m-0 mt-1 text-xs text-ui-text-soft">Choose the schema and runtime settings that the installed project should initialize from.</p>
                             </div>
-                            <label className={`flex items-start gap-2 text-sm ${sekejapSchemaAvailable ? "text-ui-text" : "text-ui-text-soft"}`}>
-                              <input
-                                type="checkbox"
-                                className="mt-1"
-                                checked={!!publishForm.include_sekejap_schema}
-                                disabled={!sekejapSchemaAvailable}
-                                onChange={(e) => patchPublishForm({ include_sekejap_schema: e.target.checked })}
-                              />
-                              <span>
-                                Include Sekejap schema
-                                <span className="block text-xs text-ui-text-soft">
-                                  {sekejapSchemaAvailable ? `${publishOptions?.sekejap_schema?.table_count || 0} managed table schema(s)` : "No Sekejap schema found in this project"}
-                                </span>
-                              </span>
-                            </label>
-                            <label className={`flex items-start gap-2 text-sm ${sqliteSchemaAvailable ? "text-ui-text" : "text-ui-text-soft"}`}>
-                              <input
-                                type="checkbox"
-                                className="mt-1"
-                                checked={!!publishForm.include_sqlite_schema}
-                                disabled={!sqliteSchemaAvailable}
-                                onChange={(e) => patchPublishForm({ include_sqlite_schema: e.target.checked })}
-                              />
-                              <span>
-                                Include SQLite schema
-                                <span className="block text-xs text-ui-text-soft">
-                                  {sqliteSchemaAvailable ? "Local SQLite DDL will be exported as schemas/sqlite/schema.sql" : "No SQLite schema found in local.db"}
-                                </span>
-                              </span>
-                            </label>
+                            <CheckboxField
+                              label="Include Sekejap schema"
+                              description={
+                                sekejapSchemaAvailable
+                                  ? `${publishOptions?.sekejap_schema?.table_count || 0} managed table schema(s)`
+                                  : "No Sekejap schema found in this project"
+                              }
+                              checked={publishForm.include_sekejap_schema}
+                              disabled={!sekejapSchemaAvailable}
+                              onChange={(e) => patchPublishForm({ include_sekejap_schema: e.target.checked })}
+                            />
+                            <CheckboxField
+                              label="Include SQLite schema"
+                              description={
+                                sqliteSchemaAvailable
+                                  ? "Local SQLite DDL will be exported as schemas/sqlite/schema.sql"
+                                  : "No SQLite schema found in local.db"
+                              }
+                              checked={publishForm.include_sqlite_schema}
+                              disabled={!sqliteSchemaAvailable}
+                              onChange={(e) => patchPublishForm({ include_sqlite_schema: e.target.checked })}
+                            />
                             <div className="space-y-2">
                               <div className="flex items-center justify-between gap-3">
                                 <div>
                                   <p className="m-0 text-xs font-medium uppercase tracking-wider text-ui-text-soft">Initial data</p>
                                   <p className="m-0 text-xs text-ui-text-soft">Selected SQL files execute during install after schemas are applied.</p>
                                 </div>
-                                <input
-                                  type="checkbox"
-                                  checked={!!publishForm.include_initial_data}
+                                <CheckboxField
+                                  label=""
+                                  checked={publishForm.include_initial_data}
                                   disabled={!initialDataAvailable}
                                   onChange={(e) => patchPublishForm({
                                     include_initial_data: e.target.checked,
@@ -1048,7 +1028,7 @@ export default function Page(input) {
                                           <code className="block truncate text-xs">{path}</code>
                                           <span className="block text-xs text-ui-text-soft">{item?.engine || "data"} · {item?.statement_count || 0} statement(s) · {formatBytes(item?.size_bytes || 0)}</span>
                                         </span>
-                                        <input type="checkbox" checked={checked} onChange={() => toggleInitialDataPath(path)} />
+                                        <CheckboxField label="" checked={checked} onChange={() => toggleInitialDataPath(path)} />
                                       </label>
                                     );
                                   })}
@@ -1070,7 +1050,7 @@ export default function Page(input) {
                                           <span className="block truncate">{name}</span>
                                           <span className="block text-xs text-ui-text-soft">{item?.version || "default"} · {item?.source || "offline"}</span>
                                         </span>
-                                        <input type="checkbox" checked={checked} onChange={() => togglePublishLibrary(name)} />
+                                        <CheckboxField label="" checked={checked} onChange={() => togglePublishLibrary(name)} />
                                       </label>
                                     );
                                   })}
@@ -1103,7 +1083,7 @@ export default function Page(input) {
                             <Input value={publishForm.image_file_path} onInput={(e) => patchPublishForm({ image_file_path: e.target.value })} placeholder="hub-media/cover.png" />
                             <div className="flex items-center gap-2">
                               <label className="inline-flex items-center">
-                                <input className="hidden" type="file" accept="image/png,image/jpeg,image/webp,image/gif" onChange={uploadCoverImage} disabled={imageUploadBusy} />
+                                <input className="sr-only" type="file" accept="image/png,image/jpeg,image/webp,image/gif" onChange={uploadCoverImage} disabled={imageUploadBusy} />
                                 <span className="zf-btn zf-btn-outline zf-btn-sm cursor-pointer">{imageUploadBusy ? "Uploading..." : "Upload image"}</span>
                               </label>
                               <span className="text-xs text-ui-text-soft">Uploaded images are stored in Files and normalized to WebP in the Hub package.</span>
@@ -1112,11 +1092,11 @@ export default function Page(input) {
                         </Field>
                         <div className="grid gap-3 md:grid-cols-2">
                           <Field label="Visibility">
-                            <select className="w-full rounded-md border border-ui-border bg-ui-bg px-3 py-2" value={publishForm.visibility} onChange={(e) => patchPublishForm({ visibility: e.target.value })}>
-                              <option value="private">private</option>
-                              <option value="public">public</option>
-                              <option value="unlisted">unlisted</option>
-                            </select>
+                            <Select value={publishForm.visibility} onChange={(e) => patchPublishForm({ visibility: e.target.value })}>
+                              <SelectOption value="private" label="private" />
+                              <SelectOption value="public" label="public" />
+                              <SelectOption value="unlisted" label="unlisted" />
+                            </Select>
                           </Field>
                           <Field label="Tags">
                             <Input value={publishForm.tags_csv} onInput={(e) => patchPublishForm({ tags_csv: e.target.value })} placeholder="ev, mobility, demo" />
@@ -1189,6 +1169,31 @@ export default function Page(input) {
                         ) : null}
                       </div>
                     </form>
+                  ) : null}
+
+                  {/* What this project has installed. These sit with the Hub
+                      because the Hub is where installing happens — the
+                      inventory used to live in Settings while the install
+                      button lived here. */}
+                  {tabFlags?.libraries ? (
+                    <LibrariesPanel
+                      items={input?.installed?.libraries_available ?? []}
+                      api={input?.installed?.libraries_api ?? ""}
+                    />
+                  ) : null}
+
+                  {tabFlags?.nodes ? (
+                    <NodeRegistryPanel
+                      groups={input?.installed?.node_groups ?? []}
+                      count={input?.installed?.node_count ?? 0}
+                    />
+                  ) : null}
+
+                  {tabFlags?.dependencies ? (
+                    <DependenciesPanel
+                      api={input?.installed?.dependencies?.api ?? ""}
+                      initialStatus={input?.installed?.dependencies?.status ?? {}}
+                    />
                   ) : null}
 
                 </div>

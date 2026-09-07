@@ -1,4 +1,4 @@
-import { cx } from "zeb";
+import { cx } from "zeb/react";
 
 /**
  * Textarea — styled multi-line text input that matches the Input component's

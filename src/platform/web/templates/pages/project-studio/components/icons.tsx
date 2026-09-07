@@ -1,3 +1,5 @@
+import { cx } from "zeb/react";
+
 /** SVG chrome for project studio shell (navbar, Git, MCP). */
 export function HomeIcon() {
   return (

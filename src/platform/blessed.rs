@@ -187,8 +187,13 @@ mod tests {
     #[test]
     fn every_blessed_package_carries_reserved_metadata_and_files() {
         let packages = blessed_packages().expect("blessed packages enumerate");
-        // 13 rwe libraries + 6 template sets.
-        assert_eq!(packages.len(), 19);
+        // 12 installable libraries + 6 template sets. Zeb React is internal.
+        assert_eq!(packages.len(), 18);
+        assert!(
+            !packages
+                .iter()
+                .any(|p| matches!(p.package_id.as_str(), "zebflow.preact" | "zebflow.react"))
+        );
         for package in &packages {
             assert!(
                 package.package_id.starts_with("zebflow."),

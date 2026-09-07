@@ -1,4 +1,4 @@
-import { useState } from "zeb";
+import { useState } from "zeb/react";
 
 export default function EngineShowcase() {
   const [showDocs, setShowDocs] = useState(true);

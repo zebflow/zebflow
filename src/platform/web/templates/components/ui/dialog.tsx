@@ -1,4 +1,4 @@
-import { useState } from "zeb";
+import { useState } from "zeb/react";
 
 /**
  * Dialog — controlled/uncontrolled open-state wrapper.

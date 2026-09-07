@@ -669,7 +669,7 @@ async fn route_dx_test(
 /// Builds a clean showcase router serving `/`, `/blog`, `/todo`.
 ///
 /// Each page is a self-contained TSX file demonstrating every RWE spec feature:
-/// useState, useEffect, useRef, useMemo, usePageState, useNavigate, Link.
+/// useState, useEffect, useRef, useMemo, usePageState, useRouter, Link.
 pub fn build_showcase_router() -> Result<Router, String> {
     let rwe: Arc<dyn ReactiveWebEngine> = Arc::new(RweReactiveWebEngine);
     let language: Arc<dyn LanguageEngine> = Arc::new(NoopLanguageEngine);

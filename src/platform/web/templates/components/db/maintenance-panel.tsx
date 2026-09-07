@@ -1,5 +1,6 @@
-import { cx } from "zeb";
+import { cx } from "zeb/react";
 import Button from "@/components/ui/button";
+import { formatBytes } from "@/components/lib/format";
 
 /**
  * Storage health and upkeep for engines that expose one.
@@ -7,20 +8,6 @@ import Button from "@/components/ui/button";
  * Declared by `capabilities.maintenance`. The panel reads a health report
  * and a delta; it does not know which engine produced them.
  */
-
-function formatBytes(value) {
-  const bytes = Number(value || 0);
-  if (!Number.isFinite(bytes) || bytes <= 0) return "0 B";
-  const units = ["B", "KB", "MB", "GB", "TB"];
-  let amount = bytes;
-  let unit = 0;
-  while (amount >= 1024 && unit < units.length - 1) {
-    amount /= 1024;
-    unit += 1;
-  }
-  const fixed = amount >= 100 || unit === 0 ? 0 : amount >= 10 ? 1 : 2;
-  return `${amount.toFixed(fixed)} ${units[unit]}`;
-}
 
 function maintenanceDelta(report, key) {
   if (!report?.before || !report?.after) return "";

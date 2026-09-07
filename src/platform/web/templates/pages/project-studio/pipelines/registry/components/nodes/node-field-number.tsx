@@ -1,4 +1,4 @@
-import { useState } from "zeb";
+import { useState } from "zeb/react";
 import Field from "@/components/ui/field";
 import Input from "@/components/ui/input";
 

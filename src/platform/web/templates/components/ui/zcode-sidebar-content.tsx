@@ -1,3 +1,5 @@
+import { cx } from "zeb/react";
+
 export default function ZCodeSidebarContent(props) {
   return (
     <div className={cx("flex-1 overflow-y-auto p-2", props?.className)}>

@@ -1,3 +1,5 @@
+import { cx } from "zeb/react";
+
 export default function ZCodeTab(props) {
   const activeClass = props?.active ? "bg-white text-gray-950 font-medium dark:bg-gray-950 dark:text-gray-50" : "text-gray-500";
   return (

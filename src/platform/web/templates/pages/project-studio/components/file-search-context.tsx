@@ -1,4 +1,5 @@
-import { createContext, useContext, useEffect, useRef, useState } from "zeb";
+import { repoTree } from "@/components/lib/repo-tree";
+import { createContext, useContext, useEffect, useRef, useState } from "zeb/react";
 import FileSearchDialog from "@/pages/project-studio/components/file-search-dialog";
 import type { FileItem } from "@/pages/project-studio/components/file-search-dialog";
 import { registerShortcut } from "@/pages/project-studio/components/keyboard-shortcuts";
@@ -25,19 +26,18 @@ export function FileSearchProvider({ children, owner, project }) {
   async function loadItems() {
     if (!owner || !project) return;
     try {
-      const [tmplResp, plResp] = await Promise.all([
-        fetch(`/api/projects/${owner}/${project}/repo`),
+      const [paths, plResp] = await Promise.all([
+        // Names to match against, and nothing else. This used to read the
+        // whole tree — every folder row, every field — and keep one of them.
+        repoTree(owner, project).paths(),
         fetch(`/api/projects/${owner}/${project}/pipelines?recursive=true`),
       ]);
-      const tmplData = tmplResp.ok ? await tmplResp.json() : {};
       const plData = plResp.ok ? await plResp.json() : {};
 
-      const templateItems: FileItem[] = (Array.isArray(tmplData?.items) ? tmplData.items : [])
-        .filter((item: any) => item?.kind !== "folder" && !!item?.rel_path)
-        .map((item: any) => ({
-          rel_path: String(item.rel_path),
-          name: String(item.name || item.rel_path),
-        }));
+      const templateItems: FileItem[] = paths.map((rel: string) => ({
+        rel_path: rel,
+        name: rel.split("/").pop() || rel,
+      }));
 
       const pipelineItems: FileItem[] = (Array.isArray(plData?.items) ? plData.items : [])
         .filter((item: any) => !!item?.meta?.file_rel_path)
@@ -48,7 +48,7 @@ export function FileSearchProvider({ children, owner, project }) {
 
       setItems([...templateItems, ...pipelineItems]);
     } catch {
-      // ignore
+      // The palette is a shortcut; failing to fill it must not break the page.
     }
   }
 

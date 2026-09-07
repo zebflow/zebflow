@@ -518,6 +518,18 @@ fn strip_private_auth_claims(mut payload: Value) -> Value {
 /// `ctx.auth`, `ctx.params`, `ctx.query` regardless of what upstream nodes
 /// did to the payload.
 fn inject_trigger_fields(mut state: Value, metadata: &Value) -> Value {
+    // The route the request arrived on. `usePathname` reads this during server
+    // rendering; without it the server has no idea what path it is rendering
+    // and the browser's `location.pathname` disagrees on the first client
+    // render — which is a hydration tear, not a cosmetic difference.
+    if let Some(route) = metadata.get("route").and_then(Value::as_str) {
+        if let Value::Object(ref mut map) = state {
+            if !map.contains_key("route") {
+                map.insert("route".to_string(), Value::String(route.to_string()));
+            }
+        }
+    }
+
     let Some(trigger) = metadata.get("trigger") else {
         return state;
     };

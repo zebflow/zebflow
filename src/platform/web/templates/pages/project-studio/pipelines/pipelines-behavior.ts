@@ -305,9 +305,11 @@ export function initPipelineRegistryBehavior() {
         return;
       }
       const data = await resp.json() as any;
-      const relPath: string = data?.file?.rel_path ?? "";
-      if (relPath) {
-        window.location.href = `/projects/${owner}/${project}/editor?type=file&file=${encodeURIComponent(relPath)}`;
+      // The path the server settled on, which may differ from the one asked
+      // for. Named apart from `relPath` above, which is the request.
+      const createdPath: string = data?.file?.rel_path ?? relPath;
+      if (createdPath) {
+        window.location.href = `/projects/${owner}/${project}/editor?type=file&file=${encodeURIComponent(createdPath)}`;
       } else {
         window.location.reload();
       }

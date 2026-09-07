@@ -150,7 +150,7 @@ read. A caller who cannot get in learns nothing about who is here.
 
 **The state is on disk, not in the command line.** "Joined" means
 `<data-root>/platform/office-join-token` exists — the same file membership
-itself reads — so restarting a joined office as plain `zeb` does not reopen the
+itself reads — so restarting a joined office as plain `zeb/react` does not reopen the
 local door. Starting in a different mode is not leaving, and leaving has its own
 command.
 

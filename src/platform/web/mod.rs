@@ -46,20 +46,48 @@ use crate::platform::error::PlatformError;
 use crate::platform::model::NodePackageManifest;
 use crate::platform::model::ResolvedProjectLayout;
 use crate::platform::model::{
-    ChangePasswordRequest, ClusterJoinTokenMintRequest, ClusterWorkerHeartbeatRequest,
-    ClusterWorkerRegisterRequest, ClusterWorkerRegisterResponse, CreateHubTokenRequest,
-    CreateProjectRequest, CreateSimpleTableRequest, CreateUserRequest, DeletePipelineRequest,
-    DescribeProjectDbConnectionRequest, ExecutePipelineRequest, GitCommitRequest,
-    IDENTITY_WRITE_ACTION_CREATED, IDENTITY_WRITE_ACTION_LINKED, LoginRequest,
-    McpSessionCreateRequest, McpSessionToggleRequest, PipelineExecuteTrigger,
-    PipelineInvocationEntry, PipelineLocateRequest, PlatformOfficeIdentityWrite,
-    PlatformOfficeLocalAuthorityEvent, ProjectAccessSubject, ProjectCapability,
-    ProjectOperationKind, ProjectTransferArtifactKind, QueryProjectDbConnectionRequest,
-    TemplateCompileRequest, TemplateCompileResponse, TemplateDiagnostic,
-    TestProjectDbConnectionRequest, UpdateSettingsSectionRequest, UpdateSimpleTableRequest,
-    UpdateUserSettingsRequest, UpsertPipelineDefinitionRequest,
-    UpsertProjectAssistantConfigRequest, UpsertProjectCredentialRequest,
-    UpsertProjectDbConnectionRequest, now_ts, slug_segment,
+    ChangePasswordRequest,
+    ClusterJoinTokenMintRequest,
+    ClusterWorkerHeartbeatRequest,
+    ClusterWorkerRegisterRequest,
+    ClusterWorkerRegisterResponse,
+    CreateHubTokenRequest,
+    CreateProjectRequest,
+    CreateSimpleTableRequest,
+    CreateUserRequest,
+    DeletePipelineRequest,
+    DescribeProjectDbConnectionRequest,
+    ExecutePipelineRequest,
+    GitCommitRequest,
+    IDENTITY_WRITE_ACTION_CREATED,
+    IDENTITY_WRITE_ACTION_LINKED,
+    LoginRequest,
+    McpSessionCreateRequest,
+    McpSessionToggleRequest,
+    PipelineExecuteTrigger,
+    PipelineInvocationEntry,
+    PipelineLocateRequest,
+    PlatformOfficeIdentityWrite,
+    PlatformOfficeLocalAuthorityEvent,
+    ProjectAccessSubject,
+    ProjectCapability,
+    ProjectOperationKind,
+    ProjectTransferArtifactKind,
+    QueryProjectDbConnectionRequest,
+    RepoTreeScope,
+    TemplateCompileRequest,
+    TemplateCompileResponse,
+    TemplateDiagnostic,
+    TestProjectDbConnectionRequest,
+    UpdateSettingsSectionRequest,
+    UpdateSimpleTableRequest,
+    UpdateUserSettingsRequest,
+    UpsertPipelineDefinitionRequest,
+    UpsertProjectAssistantConfigRequest,
+    UpsertProjectCredentialRequest,
+    UpsertProjectDbConnectionRequest,
+    now_ts,
+    slug_segment,
 };
 use crate::platform::sekejap;
 use crate::platform::services::PlatformService;
@@ -4961,7 +4989,7 @@ async fn render_project_pipelines_with_tab(
                         let docs_items = state
                             .platform
                             .projects
-                            .list_repo_tree(&owner, &project)
+                            .list_repo_tree(&owner, &project, &RepoTreeScope::all())
                             .map(|listing| listing.items)
                             .unwrap_or_default()
                             .into_iter()
@@ -5056,13 +5084,7 @@ async fn render_project_pipelines_with_tab(
                         Ok(config) => config,
                         Err(err) => return internal_error(err),
                     };
-                let pipeline_logging_defaults = json!({
-                    "max_invocations": project_config
-                        .configs
-                        .pipelines
-                        .logging
-                        .effective_max_invocations()
-                });
+                let pipeline_logging_defaults = pipeline_logging_defaults(&project_config);
 
                 let selected = wanted_id
                     .as_deref()
@@ -5154,7 +5176,7 @@ async fn render_project_pipelines_with_tab(
                 }
                 // Also count template files so folder badges reflect all items, not just pipelines.
                 // Skip .zf.json files — they are pipeline definitions already counted above.
-                if let Ok(workspace) = state.platform.projects.list_repo_tree(&owner, &project) {
+                if let Ok(workspace) = state.platform.projects.list_repo_tree(&owner, &project, &RepoTreeScope::all()) {
                     for item in &workspace.items {
                         if item.kind == "file" && !item.rel_path.ends_with(".zf.json") {
                             let parent = std::path::Path::new(&item.rel_path)
@@ -5285,7 +5307,9 @@ async fn render_project_pipelines_with_tab(
                         "invocations": format!("/api/projects/{owner}/{project}/pipelines/invocations"),
                         "nodes": format!("/api/projects/{owner}/{project}/nodes"),
                         "credentials": format!("/api/projects/{owner}/{project}/credentials"),
-                        "templates_workspace": format!("/api/projects/{owner}/{project}/templates/workspace"),
+                        // The repository tree. `/templates/workspace` was removed and this kept
+                // pointing at it, so both readers 404'd and silently showed nothing.
+                "templates_workspace": format!("/api/projects/{owner}/{project}/repo"),
                         "template_file": format!("/api/projects/{owner}/{project}/templates/file"),
                         "template_save": format!("/api/projects/{owner}/{project}/templates/file"),
                         "template_outline": format!("/api/projects/{owner}/{project}/templates/outline"),
@@ -5462,7 +5486,7 @@ async fn render_project_editor(
     // One tree over `repo/`. Every folder in the sidebar is a real directory,
     // so a `.md` beside `zebflow.yaml` is as reachable as one inside `docs/` --
     // which is what the extension allowlist has always permitted.
-    let repo_tree = match state.platform.projects.list_repo_tree(&owner, &project) {
+    let repo_tree = match state.platform.projects.list_repo_tree(&owner, &project, &RepoTreeScope::all()) {
         Ok(listing) => listing.items,
         Err(err) => return internal_error(err),
     };
@@ -5729,7 +5753,14 @@ async fn render_project_editor(
             })
             .collect::<Vec<_>>();
 
+        // The unified editor needs the same effective logging defaults as the
+        // legacy registry payload, including independently inherited capture fields.
+        let project_config = match state.platform.zebflow_cfg.read_or_default(&owner, &project) {
+            Ok(config) => config,
+            Err(err) => return internal_error(err),
+        };
         json!({
+            "logging_defaults": pipeline_logging_defaults(&project_config),
             "selected_id": file,
             "selected_meta": meta,
             "selected_source": source,
@@ -5748,7 +5779,9 @@ async fn render_project_editor(
                 "invocations": format!("/api/projects/{owner}/{project}/pipelines/invocations"),
                 "nodes": format!("/api/projects/{owner}/{project}/nodes"),
                 "credentials": format!("/api/projects/{owner}/{project}/credentials"),
-                "templates_workspace": format!("/api/projects/{owner}/{project}/templates/workspace"),
+                // The repository tree. `/templates/workspace` was removed and this kept
+                // pointing at it, so both readers 404'd and silently showed nothing.
+                "templates_workspace": format!("/api/projects/{owner}/{project}/repo"),
                 "template_file": format!("/api/projects/{owner}/{project}/templates/file"),
                 "template_save": format!("/api/projects/{owner}/{project}/templates/file"),
                 "template_outline": format!("/api/projects/{owner}/{project}/templates/outline"),
@@ -6025,6 +6058,11 @@ async fn project_hub_tab_page(
                     })
                 })
                 .collect::<Vec<_>>();
+            let installed = match installed_artifacts_payload(&state, &owner, &project) {
+                Ok(payload) => payload,
+                Err(err) => return internal_error(err),
+            };
+
             let input = json!({
                 "seo": {
                     "title": format!("{} - Hub", info.title),
@@ -6036,6 +6074,7 @@ async fn project_hub_tab_page(
                 "project_href": format!("/projects/{owner}/{project}"),
                 "nav": nav,
                 "hub_tabs": hub_tab_items(&owner, &project, tab),
+                "installed": installed,
                 "hub_producer": {
                     "enabled": true,
                 },
@@ -6043,6 +6082,9 @@ async fn project_hub_tab_page(
                     "packs": tab == "packs",
                     "my_packs": tab == "my-packs",
                     "publish": tab == "publish",
+                    "libraries": tab == "libraries",
+                    "nodes": tab == "nodes",
+                    "dependencies": tab == "dependencies",
                 },
                 "assets": assets,
                 "my_assets": my_assets,
@@ -6698,6 +6740,17 @@ async fn render_files_page(
                 (vec![], vec![], String::new())
             };
 
+            let zebflow_cfg = match state.platform.zebflow_cfg.read_or_default(&owner, &project) {
+                Ok(config) => config,
+                Err(err) => return internal_error(err),
+            };
+            // Already validated by the reader, so an unknown word never reaches
+            // the page.
+            let file_backend = match zebflow_cfg.configs.files.effective_backend() {
+                Ok(backend) => backend,
+                Err(err) => return internal_error(PlatformError::new(err.code, err.message)),
+            };
+
             let input = json!({
                 "seo": {
                     "title": format!("{} - Files", info.title),
@@ -6710,10 +6763,21 @@ async fn render_files_page(
                 "current_menu": "Files",
                 "active_tab": active_tab,
                 "selected_storage": selected_storage,
+                // Where this project's files actually live. Configured here
+                // rather than in Settings: it is a fact about the store you are
+                // looking at, and it was previously shown in a place you could
+                // not act on it from.
+                "storage": {
+                    "backend": file_backend.as_str(),
+                    "backend_label": file_backend.label(),
+                    "declared": zebflow_cfg.configs.files.backend.is_some(),
+                    "field": "spec.files.backend",
+                    "accepted": crate::zebfs::FILE_BACKENDS,
+                },
                 "storages": [
                     {
                         "name": "default",
-                        "backend": "ZebFS local",
+                        "backend": file_backend.label(),
                         "namespace": format!("{owner}/{project}"),
                         "tags": ["default"],
                         "open_href": format!("/projects/{owner}/{project}/files/default")
@@ -6863,6 +6927,17 @@ async fn render_settings_tab_page(
         Err(err) => return internal_error(err),
     }
 
+    // Libraries, nodes and dependencies moved to the Hub, which is where they
+    // are installed. Send the old address to the new one rather than quietly
+    // rendering General — a bookmark landing on the wrong page with no
+    // explanation is worse than either a redirect or a refusal.
+    if let Some(moved) = settings_tab_moved_to_hub(&raw_tab) {
+        return Redirect::to(&format!("/projects/{owner}/{project}/hub/{moved}")).into_response();
+    }
+    if let Some(moved) = settings_tab_moved_to_feature(&raw_tab) {
+        return Redirect::to(&format!("/projects/{owner}/{project}/{moved}")).into_response();
+    }
+
     let tab = normalize_settings_tab(&raw_tab);
     let tab_title = settings_tab_title(tab);
     let tab_subtitle = settings_tab_subtitle(tab);
@@ -6981,12 +7056,9 @@ async fn render_settings_tab_page(
                 "active_tab": tab,
                 "tab_flags": {
                     "general": tab == "general",
+                    "git": tab == "git",
                     "policy": tab == "policy",
                     "automatons": tab == "automatons",
-                    "libraries": tab == "libraries",
-                    "dependencies": tab == "dependencies",
-                    "nodes": tab == "nodes",
-                    "files": tab == "files",
                     "logs": tab == "logs"
                 },
                 "page_title": tab_title,
@@ -7093,15 +7165,33 @@ async fn render_settings_tab_page(
     }
 }
 
+/// Settings tabs that now live in the Hub, and where each went.
+fn settings_tab_moved_to_hub(raw: &str) -> Option<&'static str> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "libraries" => Some("libraries"),
+        "nodes" => Some("nodes"),
+        "dependencies" => Some("dependencies"),
+        _ => None,
+    }
+}
+
+/// Settings tabs that moved to the feature they configure.
+///
+/// `files` is the storage backend, which now sits with the Files page — a fact
+/// about the store you are looking at belongs where you are looking at it.
+fn settings_tab_moved_to_feature(raw: &str) -> Option<&'static str> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "files" => Some("files"),
+        _ => None,
+    }
+}
+
 fn normalize_settings_tab(raw: &str) -> &'static str {
     match raw.trim().to_ascii_lowercase().as_str() {
         "" | "general" => "general",
+        "git" => "git",
         "policy" => "policy",
         "automatons" => "automatons",
-        "libraries" => "libraries",
-        "dependencies" => "dependencies",
-        "nodes" => "nodes",
-        "files" => "files",
         "logs" => "logs",
         _ => "general",
     }
@@ -7109,12 +7199,9 @@ fn normalize_settings_tab(raw: &str) -> &'static str {
 
 fn settings_tab_title(tab: &str) -> &'static str {
     match tab {
+        "git" => "Git",
         "policy" => "Policy",
         "automatons" => "Automatons",
-        "libraries" => "Libraries",
-        "dependencies" => "Dependencies",
-        "nodes" => "Nodes",
-        "files" => "Files",
         "logs" => "Logs",
         _ => "General",
     }
@@ -7122,12 +7209,9 @@ fn settings_tab_title(tab: &str) -> &'static str {
 
 fn settings_tab_subtitle(tab: &str) -> &'static str {
     match tab {
+        "git" => "The remote this project pushes to, the branch it works on, and the health of its repository.",
         "policy" => "Capability boundaries, runtime constraints, and session controls.",
         "automatons" => "Assistant and automation runtime configuration per project.",
-        "libraries" => "Installed web libraries and runtime package contracts.",
-        "dependencies" => "Exact RWE library and node bundle resolutions stored in zeb.lock.",
-        "nodes" => "Live node contracts and script/tool availability.",
-        "files" => "The store this project keeps its own files in, and where it could move.",
         "logs" => "Project-owned invocation history, storage size, retention, and cleanup.",
         _ => "Core project defaults and shared runtime switches.",
     }
@@ -7137,12 +7221,9 @@ fn settings_tab_items(owner: &str, project: &str, active: &str) -> Vec<Value> {
     let base = format!("/projects/{owner}/{project}/settings");
     let entries = [
         ("general", "General"),
+        ("git", "Git"),
         ("policy", "Policy"),
         ("automatons", "Automatons"),
-        ("libraries", "Libraries"),
-        ("dependencies", "Dependencies"),
-        ("nodes", "Nodes"),
-        ("files", "Files"),
         ("logs", "Logs"),
     ];
     entries
@@ -7158,19 +7239,44 @@ fn settings_tab_items(owner: &str, project: &str, active: &str) -> Vec<Value> {
         .collect::<Vec<_>>()
 }
 
+/// Where the settings that are not here went.
+///
+/// Configuration that belongs to a feature now lives with that feature, but
+/// people will look in Settings first for a long time. These are signposts, not
+/// duplicates — each one points at the single place the thing is actually
+/// configured. (The card that used to sit here described connected services and
+/// linked to the libraries tab, which was neither.)
 fn settings_general_cards(owner: &str, project: &str) -> Vec<Value> {
     vec![
         json!({
-            "title":"Runtime Defaults",
-            "description":"Project-wide defaults for execution cadence, retries, and production activation flow.",
-            "href": format!("/projects/{owner}/{project}/settings/automatons"),
-            "tag":"Core"
+            "title": "Libraries",
+            "description": "Installed web libraries and their versions. Managed in the Hub, where installing happens.",
+            "href": format!("/projects/{owner}/{project}/hub/libraries"),
+            "tag": "Hub"
         }),
         json!({
-            "title":"Connected Services",
-            "description":"Credentials, DB connections, and tool-facing service contract usage.",
-            "href": format!("/projects/{owner}/{project}/settings/libraries"),
-            "tag":"Core"
+            "title": "Nodes",
+            "description": "Pipeline node contracts available to this project, and installing more.",
+            "href": format!("/projects/{owner}/{project}/hub/nodes"),
+            "tag": "Hub"
+        }),
+        json!({
+            "title": "Dependencies",
+            "description": "Exact library and node resolutions recorded in zeb.lock.",
+            "href": format!("/projects/{owner}/{project}/hub/dependencies"),
+            "tag": "Hub"
+        }),
+        json!({
+            "title": "File storage",
+            "description": "The backend this project keeps its files in. Shown with the files themselves.",
+            "href": format!("/projects/{owner}/{project}/files"),
+            "tag": "Files"
+        }),
+        json!({
+            "title": "Databases",
+            "description": "Connections, credentials, and the engines this project reads and writes.",
+            "href": format!("/projects/{owner}/{project}/db/connections"),
+            "tag": "Data"
         }),
     ]
 }
@@ -7411,24 +7517,91 @@ fn nav_classes(owner: &str, project: &str, main: &str, pipeline_sub: Option<&str
     })
 }
 
+/// What this project has installed: libraries, nodes, and the lock over them.
+///
+/// These three answer one question — "what is in this project that came from
+/// somewhere else" — and the Hub is where that question is asked, because the
+/// Hub is where the installing happens. Settings used to own all three, which
+/// meant the inventory lived in one place and the install button in another.
+fn installed_artifacts_payload(
+    state: &PlatformAppState,
+    owner: &str,
+    project: &str,
+) -> Result<Value, PlatformError> {
+    let (node_count, node_groups) = settings_nodes();
+
+    // Merge the embedded manifests with this project's enabled state.
+    let rwe_libs = state
+        .platform
+        .zebflow_cfg
+        .get_rwe_libraries(owner, project)
+        .unwrap_or_default();
+    let libraries_available = state
+        .platform
+        .library
+        .list()
+        .map(|m| {
+            let enabled_entry = rwe_libs.get(&m.name);
+            json!({
+                "name": m.name,
+                "description": m.description,
+                "packed_version": m.packed_version(),
+                "packed_kind": m.packed_kind(),
+                "enabled": enabled_entry.is_some(),
+                "installed_version": enabled_entry.map(|e| e.version.clone()),
+                "source": enabled_entry.map(|e| e.source.clone())
+            })
+        })
+        .collect::<Vec<_>>();
+    let dependency_status = state
+        .platform
+        .dependency_lock
+        .status(owner, project, &rwe_libs)?;
+
+    Ok(json!({
+        "libraries_available": libraries_available,
+        "libraries_api": format!("/api/projects/{owner}/{project}/rwe/libraries"),
+        "dependencies": {
+            "api": format!("/api/projects/{owner}/{project}/dependencies"),
+            "status": dependency_status
+        },
+        "node_count": node_count,
+        "node_groups": node_groups,
+        "nodes_install_api": format!("/api/projects/{owner}/{project}/nodes/install"),
+    }))
+}
+
 fn normalize_hub_tab(raw: &str) -> &'static str {
     match raw.trim() {
         "" | "packs" | "assets" => "packs",
         "my-packs" => "my-packs",
         "publish" => "publish",
+        "libraries" => "libraries",
+        "nodes" => "nodes",
+        "dependencies" => "dependencies",
         _ => "packs",
     }
 }
 
 fn hub_tab_items(owner: &str, project: &str, active: &str) -> Vec<Value> {
     let base = format!("/projects/{owner}/{project}/hub");
-    let tabs = vec!["packs", "my-packs", "publish"];
+    let tabs = vec![
+        "packs",
+        "my-packs",
+        "publish",
+        "libraries",
+        "nodes",
+        "dependencies",
+    ];
     tabs.into_iter()
         .map(|tab| {
             let label = match tab {
                 "packs" => "Browse",
                 "my-packs" => "Published",
                 "publish" => "Publish",
+                "libraries" => "Libraries",
+                "nodes" => "Nodes",
+                "dependencies" => "Dependencies",
                 _ => tab,
             };
             let href = if tab == "packs" {
@@ -13867,6 +14040,19 @@ struct RepoPathQuery {
     path: Option<String>,
 }
 
+/// Query for `GET /repo`.
+///
+/// `depth=1` is one folder's children, which is what a sidebar asks for as the
+/// reader opens it. Omitting `depth` walks the whole subtree, which is what the
+/// pipeline pages want. `fields=path` answers file paths and nothing else, for
+/// the quick-open palette.
+#[derive(Debug, Deserialize)]
+struct RepoTreeQuery {
+    path: Option<String>,
+    depth: Option<usize>,
+    fields: Option<String>,
+}
+
 #[derive(Debug, Deserialize)]
 struct RepoMoveRequest {
     from_path: String,
@@ -13942,6 +14128,7 @@ async fn api_repo_tree(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
     Path((owner, project)): Path<(String, String)>,
+    Query(query): Query<RepoTreeQuery>,
     uri: Uri,
 ) -> Response {
     if let Err(response) = require_project_api_capability(
@@ -13968,7 +14155,18 @@ async fn api_repo_tree(
             Err(err) => internal_error(err),
         };
     }
-    match state.platform.projects.list_repo_tree(&owner, &project) {
+    if query.fields.as_deref() == Some("path") {
+        return match state.platform.projects.list_repo_paths(&owner, &project) {
+            Ok(paths) => Json(serde_json::json!({ "paths": paths })).into_response(),
+            Err(err) => internal_error(err),
+        };
+    }
+
+    let scope = RepoTreeScope {
+        path: query.path.unwrap_or_default().trim_matches('/').to_string(),
+        depth: query.depth,
+    };
+    match state.platform.projects.list_repo_tree(&owner, &project, &scope) {
         Ok(listing) => Json(listing).into_response(),
         Err(err) => internal_error(err),
     }
@@ -16214,7 +16412,10 @@ async fn api_upsert_settings_section(
             }
         }
         "logging" => {
-            if let Err(response) = reject_unknown_settings_fields(&req.data, &["max_invocations"]) {
+            if let Err(response) = reject_unknown_settings_fields(
+                &req.data,
+                &["max_invocations", "trace_capture"],
+            ) {
                 return response;
             }
             let max_inv = match optional_bounded_settings_u64(&req.data, "max_invocations", 1, 1000)
@@ -16222,8 +16423,40 @@ async fn api_upsert_settings_section(
                 Ok(value) => value.map(|value| value as u32),
                 Err(response) => return response,
             };
+            // A present object replaces capture overrides; null resets them to
+            // engine defaults. An absent field preserves the existing setting.
+            let capture = match req.data.get("trace_capture") {
+                None => None,
+                Some(value) => {
+                    let parsed = serde_json::from_value::<Option<
+                        crate::pipeline::trace_capture::TraceCaptureSettings,
+                    >>(value.clone());
+                    match parsed.and_then(|capture| {
+                        if let Some(settings) = &capture {
+                            settings
+                                .validate()
+                                .map_err(<serde_json::Error as serde::de::Error>::custom)?;
+                        }
+                        Ok(capture)
+                    }) {
+                        Ok(capture) => Some(capture),
+                        Err(error) => {
+                            return (
+                                StatusCode::BAD_REQUEST,
+                                Json(json!({"ok": false, "error": format!("trace_capture: {error}")})),
+                            )
+                                .into_response();
+                        }
+                    }
+                }
+            };
             match state.platform.zebflow_cfg.update(&owner, &project, |cfg| {
-                cfg.configs.pipelines.logging.max_invocations = max_inv;
+                if req.data.get("max_invocations").is_some() {
+                    cfg.configs.pipelines.logging.max_invocations = max_inv;
+                }
+                if let Some(capture) = capture {
+                    cfg.configs.pipelines.logging.trace_capture = capture;
+                }
             }) {
                 Ok(cfg) => json!(cfg.configs.pipelines.logging),
                 Err(err) => return internal_error(err),
@@ -24247,6 +24480,16 @@ struct EffectivePipelineInvocationRetention {
     max_age_secs: Option<i64>,
 }
 
+/// Both registry/editor entry routes expose the same resolved logging defaults.
+/// These are display hints; execution resolves overrides from its own snapshot.
+fn pipeline_logging_defaults(config: &crate::platform::model::ZebflowJson) -> Value {
+    let logging = &config.configs.pipelines.logging;
+    json!({
+        "max_invocations": logging.effective_max_invocations(),
+        "trace_capture": logging.trace_capture.as_ref().cloned().unwrap_or_default().resolve(None),
+    })
+}
+
 fn resolve_invocation_retention(
     project_cfg: &crate::platform::model::ZebflowJson,
     graph: Option<&crate::pipeline::PipelineGraph>,
@@ -24715,7 +24958,18 @@ fn apply_zf_extras(
             HeaderName::from_bytes(k.as_bytes()),
             HeaderValue::from_str(v),
         ) {
-            resp.headers_mut().append(name, val);
+            // A header the pipeline declared replaces the one the response type
+            // picked for itself. Appending instead left an SVG served through
+            // `--message` carrying both `text/plain; charset=utf-8` and
+            // `image/svg+xml`, and the browser reads the first one it sees.
+            //
+            // `set-cookie` is the exception the HTTP spec makes: repetition is
+            // how you send more than one cookie, so those still stack.
+            if name == SET_COOKIE {
+                resp.headers_mut().append(name, val);
+            } else {
+                resp.headers_mut().insert(name, val);
+            }
         }
     }
 }
@@ -26429,9 +26683,21 @@ async fn api_preview_toggle(
     uri: Uri,
     Json(body): Json<PreviewToggleBody>,
 ) -> Response {
+    // Being logged in is not the same as being allowed near this project.
+    // Asking only `session_owner(...).is_none()` let any account toggle preview
+    // on another owner's private file and then read the rendered page, while
+    // every other project route refused them.
     let internal_cluster_call = is_controller_call(&state, &headers);
-    if !internal_cluster_call && session_owner(&state, &headers).is_none() {
-        return (StatusCode::UNAUTHORIZED, Json(json!({"ok": false}))).into_response();
+    if !internal_cluster_call {
+        if let Err(response) = require_project_api_capability(
+            &state,
+            &headers,
+            &owner,
+            &project,
+            ProjectCapability::TemplatesWrite,
+        ) {
+            return response;
+        }
     }
     let file = match sanitize_preview_file(&body.file) {
         Some(f) => f,
@@ -26481,9 +26747,21 @@ async fn api_preview_status(
     uri: Uri,
     Query(q): Query<PreviewQuery>,
 ) -> Response {
+    // Being logged in is not the same as being allowed near this project.
+    // Asking only `session_owner(...).is_none()` let any account toggle preview
+    // on another owner's private file and then read the rendered page, while
+    // every other project route refused them.
     let internal_cluster_call = is_controller_call(&state, &headers);
-    if !internal_cluster_call && session_owner(&state, &headers).is_none() {
-        return (StatusCode::UNAUTHORIZED, Json(json!({"active": false}))).into_response();
+    if !internal_cluster_call {
+        if let Err(response) = require_project_api_capability(
+            &state,
+            &headers,
+            &owner,
+            &project,
+            ProjectCapability::TemplatesRead,
+        ) {
+            return response;
+        }
     }
     if !internal_cluster_call {
         match maybe_forward_project_api_to_worker(
@@ -26525,9 +26803,25 @@ async fn preview_page(
     uri: Uri,
     Query(q): Query<PreviewQuery>,
 ) -> Response {
+    // Being logged in is not the same as being allowed near this project.
+    // Asking only `session_owner(...).is_none()` let any account toggle preview
+    // on another owner's private file and then read the rendered page, while
+    // every other project route refused them.
     let internal_cluster_call = is_controller_call(&state, &headers);
-    if !internal_cluster_call && session_owner(&state, &headers).is_none() {
-        return Redirect::to(LOGIN_PATH).into_response();
+    if !internal_cluster_call {
+        if session_owner(&state, &headers).is_none() {
+            // No session at all is a sign-in problem, not a refusal.
+            return Redirect::to(LOGIN_PATH).into_response();
+        }
+        if let Err(response) = require_project_api_capability(
+            &state,
+            &headers,
+            &owner,
+            &project,
+            ProjectCapability::TemplatesRead,
+        ) {
+            return response;
+        }
     }
 
     let file = match q.file.as_deref().and_then(sanitize_preview_file) {
@@ -26718,9 +27012,21 @@ async fn ws_preview_handler(
     ws: WebSocketUpgrade,
     uri: Uri,
 ) -> Response {
+    // Being logged in is not the same as being allowed near this project.
+    // Asking only `session_owner(...).is_none()` let any account toggle preview
+    // on another owner's private file and then read the rendered page, while
+    // every other project route refused them.
     let internal_cluster_call = is_controller_call(&state, &headers);
-    if !internal_cluster_call && session_owner(&state, &headers).is_none() {
-        return (StatusCode::UNAUTHORIZED, "unauthorized").into_response();
+    if !internal_cluster_call {
+        if let Err(response) = require_project_api_capability(
+            &state,
+            &headers,
+            &owner,
+            &project,
+            ProjectCapability::TemplatesRead,
+        ) {
+            return response;
+        }
     }
 
     if !internal_cluster_call {
@@ -27101,5 +27407,56 @@ mod webhook_sse_tests {
                 .unwrap()
                 .contains("connection refused")
         );
+    }
+}
+
+#[cfg(test)]
+mod response_header_tests {
+    use axum::response::IntoResponse;
+
+    use super::apply_zf_extras;
+
+    /// A pipeline that declares `content-type` means that content type, not a
+    /// second opinion alongside the one the body picked.
+    #[test]
+    fn a_declared_header_replaces_the_one_the_body_chose() {
+        let mut resp = (
+            axum::http::StatusCode::OK,
+            "<svg xmlns=\"http://www.w3.org/2000/svg\"/>".to_string(),
+        )
+            .into_response();
+        // What axum picks for a String body.
+        assert_eq!(resp.headers().get("content-type").unwrap(), "text/plain; charset=utf-8");
+
+        apply_zf_extras(
+            &mut resp,
+            &None,
+            &[("content-type".to_string(), "image/svg+xml".to_string())],
+        );
+
+        let seen: Vec<_> = resp.headers().get_all("content-type").iter().collect();
+        assert_eq!(seen.len(), 1, "one content-type, not two: {seen:?}");
+        assert_eq!(seen[0], "image/svg+xml");
+    }
+
+    /// Repetition is how HTTP sends more than one cookie, so these still stack.
+    #[test]
+    fn every_declared_cookie_survives() {
+        let mut resp = (axum::http::StatusCode::OK, "ok".to_string()).into_response();
+        apply_zf_extras(
+            &mut resp,
+            &Some("session=abc; Path=/".to_string()),
+            &[("set-cookie".to_string(), "theme=dark; Path=/".to_string())],
+        );
+
+        let seen: Vec<_> = resp
+            .headers()
+            .get_all("set-cookie")
+            .iter()
+            .map(|v| v.to_str().unwrap().to_string())
+            .collect();
+        assert_eq!(seen.len(), 2, "both cookies reach the browser: {seen:?}");
+        assert!(seen.iter().any(|c| c.starts_with("session=")));
+        assert!(seen.iter().any(|c| c.starts_with("theme=")));
     }
 }

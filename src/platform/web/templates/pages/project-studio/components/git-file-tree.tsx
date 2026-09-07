@@ -1,4 +1,4 @@
-import { cx } from "zeb";
+import { cx } from "zeb/react";
 import Checkbox from "@/components/ui/checkbox";
 
 function gitStatusChar(code) {

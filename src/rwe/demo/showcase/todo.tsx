@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect, useRef, usePageState, useNavigate, Link } from "zeb";
+import { useState, useMemo, useEffect, useRef, usePageState, useRouter, Link } from "zeb/react";
 
 // ─── Inline sub-components ────────────────────────────────────────────────
 
@@ -73,8 +73,8 @@ export default function TodoPage(input: any) {
   // usePageState — records the last added item, visible across all components
   const { lastAdded = "", setPageState } = usePageState({ lastAdded: "" });
 
-  // useNavigate
-  const navigate = useNavigate();
+  // useRouter
+  const navigate = useRouter().push;
 
   // useMemo — derived counts
   const activeCount = useMemo(() => todos.filter((t: any) => !t.completed).length, [todos]);
@@ -216,9 +216,9 @@ export default function TodoPage(input: any) {
           </button>
         )}
 
-        {/* useNavigate demo button */}
+        {/* useRouter demo button */}
         <div class="mt-8 pt-6 border-t border-zinc-800">
-          <p class="text-xs text-zinc-500 mb-3">Navigate with useNavigate:</p>
+          <p class="text-xs text-zinc-500 mb-3">Navigate with useRouter:</p>
           <div class="flex gap-2 mb-5">
             <button
               onClick={() => navigate("/")}

@@ -1,3 +1,5 @@
+import { cx } from "zeb/react";
+
 export function PipelineIcon({ className = "w-4 h-4" }) {
   return (
     <svg viewBox="0 0 24 24" fill="none" className={className} aria-hidden="true">
@@ -13,25 +15,6 @@ export function FolderIcon({ className = "w-4 h-4" }) {
   return (
     <svg viewBox="0 0 24 24" fill="none" className={className} aria-hidden="true">
       <path d="M3 7.5A1.5 1.5 0 014.5 6h4l1.5 2h9A1.5 1.5 0 0120.5 9.5v7A1.5 1.5 0 0119 18H4.5A1.5 1.5 0 013 16.5v-9z" stroke="currentColor" strokeWidth="1.7" strokeLinejoin="round"/>
-    </svg>
-  );
-}
-
-export function FileKindIcon({ name = "" }) {
-  const ext = (name.split(".").pop() ?? "").toLowerCase();
-  if (ext === "tsx" || ext === "jsx") {
-    return <i className="devicon-react-original colored text-[0.95rem] leading-none" aria-hidden="true" />;
-  }
-  if (ext === "ts") {
-    return <i className="devicon-typescript-plain colored text-[0.95rem] leading-none" aria-hidden="true" />;
-  }
-  if (ext === "css" || ext === "scss") {
-    return <i className="devicon-css3-plain colored text-[0.95rem] leading-none" aria-hidden="true" />;
-  }
-  return (
-    <svg viewBox="0 0 24 24" fill="none" className="w-4 h-4" aria-hidden="true">
-      <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z" stroke="currentColor" strokeWidth="1.6" strokeLinejoin="round"/>
-      <path d="M14 2v6h6" stroke="currentColor" strokeWidth="1.6" strokeLinejoin="round"/>
     </svg>
   );
 }

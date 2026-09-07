@@ -1,4 +1,4 @@
-import { useState, useCallback } from "zeb";
+import { useState, useCallback } from "zeb/react";
 
 // ── Student data ──────────────────────────────────────────────────────────────
 

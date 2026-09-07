@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "zeb";
+import { useState, useEffect, useRef } from "zeb/react";
 import { Dialog } from "@/components/ui/dialog";
 import DialogContent from "@/components/ui/dialog-content";
 

@@ -8,11 +8,11 @@ Zebflow serves HTML from **TSX files** in your project: the server renders them 
 
 ### Hooks — import them in every file that uses them
 
-`useState`, `useEffect`, `useRef`, `useMemo`, `useCallback`, `usePageState`, `useNavigate` and the rest come from `"zeb"`. There are no implicit globals: **every file that calls a hook imports it in that file**, entry pages and component files alike. A hook used without an import is refused at compile time.
+`useState`, `useEffect`, `useRef`, `useMemo`, `useCallback`, `usePageState`, `useRouter` and the rest come from `"zeb/react"`. There are no implicit globals: **every file that calls a hook imports it in that file**, entry pages and component files alike. A hook used without an import is refused at compile time.
 
 ```tsx
 // ✓ CORRECT — in every file that uses them
-import { useState, useEffect } from "zeb";
+import { useState, useEffect } from "zeb/react";
 
 const [open, setOpen] = useState(false);
 ```
@@ -24,8 +24,8 @@ const [open, setOpen] = useState(false);
 
 ```tsx
 // ✗ WRONG — NEVER do this
-import { useState } from "npm:preact/hooks";
-import { render } from "npm:preact";  // NEVER call render() manually
+import { useState } from "zeb/react";
+// RWE hydrates the page automatically; never call render() manually.
 ```
 
 ### Component imports — always use `@/` alias
@@ -47,7 +47,7 @@ A component file imports its own hooks. It is not covered by the entry page's im
 
 ```tsx
 // components/my-widget.tsx
-import { useState } from "zeb";
+import { useState } from "zeb/react";
 
 export default function MyWidget({ label }) {
   const [open, setOpen] = useState(false);
@@ -88,7 +88,7 @@ import { apiUrl, defaultPageSize } from "@/behavior/config";
 ```tsx
 // pages/my-page.tsx
 
-import { usePageState } from "zeb";
+import { usePageState } from "zeb/react";
 
 export default function MyPage(input: PageInput) {
   const state = usePageState(input.state ?? { count: 0, title: "Hello" });
@@ -164,7 +164,7 @@ Use **`className`**, not `class`.
 Returns a reactive Proxy. On server: renders with the initial snapshot. On client: live reactivity — mutations propagate to the DOM.
 
 ```tsx
-import { usePageState } from "zeb";
+import { usePageState } from "zeb/react";
 
 const state = usePageState(input.state ?? { count: 0, items: [] });
 state.count++;           // ← triggers DOM update on client
@@ -242,7 +242,7 @@ libraries.
 
 ## Further Reading
 
-- `help("web/hooks")` — useState, useEffect, usePageState, cx, useNavigate, Link, tv
+- `help("web/hooks")` — useState, useEffect, usePageState, cx, useRouter, Link, tv
 - `help("web/tailwind")` — semantic tokens, tw-variants, cx(), tv()
 - `help("web/libraries")` — zeb/* bundled add-ons: icons, markdown, codemirror, d3
 - `help("web/custom-scripts")` — create focused TypeScript modules through MCP

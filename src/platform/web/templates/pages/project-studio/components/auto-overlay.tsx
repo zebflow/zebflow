@@ -1,4 +1,4 @@
-import { useState, useEffect, cx } from "zeb";
+import { useState, useEffect, cx } from "zeb/react";
 import { subscribeOverlay, getOverlayState } from "@/pages/project-studio/components/studio-shell-behavior";
 
 export function AutoOverlay() {
