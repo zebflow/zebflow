@@ -16,10 +16,32 @@ const action = (page: any, label: RegExp) =>
  * on the next. "All" plus the Libraries chip is a question about the shelf, not
  * about what happened here yesterday.
  */
-async function openALibrary(page: any) {
+async function openALibrary(page: any, packageId?: string) {
   await visit(page, `${base}/hub`);
   await page.getByRole("button", { name: "All", exact: true }).click();
   await page.getByRole("button", { name: "Libraries", exact: true }).click();
+
+  // Re-opening a named package rather than "whichever is first". Installing one
+  // moves it between state filters, so `first()` after a reload is a different
+  // library and the assertion that follows is about the wrong row.
+  //
+  // The state has to be hunted for: "All" is a *kind* chip, not a state one —
+  // the states are In project / Available / Updatable / Problems and there is
+  // no "everything" among them. An installed package is simply not under
+  // Available, which is where the page opens.
+  if (packageId) {
+    const named = page.locator(`[data-hub-item="${packageId}"]`);
+    for (const state of ["In project", "Available", "Updatable", "Problems"]) {
+      await page.getByRole("button", { name: state, exact: true }).click();
+      if (await named.count()) break;
+    }
+    await expect(named).toBeVisible({ timeout: 20_000 });
+    await named.click();
+    await expect(action(page, /^(Install|Reinstall|Update)$/).first()).toBeVisible({
+      timeout: 20_000,
+    });
+    return packageId;
+  }
 
   // `data-hub-item` and `data-hub-kind` are the row's own hooks. Matching
   // rendered text failed here: the label starts with a kind glyph, so `^zeb/`
@@ -31,16 +53,34 @@ async function openALibrary(page: any) {
   const row = rows.first();
   const name = (await row.getAttribute("data-hub-item")) || "";
   await row.click();
+  // The detail pane is what every assertion below reads; returning before it
+  // has rendered is what made this spec race.
+  await expect(action(page, /^(Install|Reinstall|Update)$/).first()).toBeVisible({
+    timeout: 20_000,
+  });
   return name;
 }
 
-/** Leave the project as the spec found it. */
+/**
+ * Leave the project as the spec found it.
+ *
+ * Waits for the pane to settle before deciding. An instant `isVisible` check
+ * raced the render: it saw no Remove on a package that was in fact installed,
+ * clicked Install, got the overwrite dialog instead, and then waited for a
+ * button that a modal was covering. That failed one run in three and passed the
+ * rest, which is the worst kind of test.
+ */
 async function ensureNotInstalled(page: any) {
-  if (await action(page, /^Remove$/).isVisible().catch(() => false)) {
+  await expect(
+    action(page, /^(Install|Reinstall|Update)$/).first(),
+  ).toBeVisible({ timeout: 20_000 });
+
+  if (await action(page, /^Remove$/).isVisible()) {
     await action(page, /^Remove$/).click();
     await page.getByRole("button", { name: "Remove it" }).click();
-    await expect(action(page, /^Install$/)).toBeVisible({ timeout: 20_000 });
+    await expect(action(page, /^Install$/)).toBeVisible({ timeout: 25_000 });
   }
+  await expect(action(page, /^Remove$/)).toHaveCount(0);
 }
 
 test("the hub lists packages and says what each verb costs", async ({ page, consoleErrors }) => {
@@ -66,7 +106,7 @@ test("a library can be installed and removed again from the browser", async ({
   page,
   consoleErrors,
 }) => {
-  await openALibrary(page);
+  const packageId = await openALibrary(page);
   await ensureNotInstalled(page);
 
   await action(page, /^Install$/).click();
@@ -76,10 +116,10 @@ test("a library can be installed and removed again from the browser", async ({
   await expect(action(page, /^Reinstall$/)).toBeVisible({ timeout: 25_000 });
   await expect(action(page, /^Remove$/)).toBeVisible();
 
-  // Reload with an installed package in the initial dependency-lock payload.
-  // Removal must refresh that payload too; otherwise its stale entry changes
-  // the row back to installed even after the library-list refresh says absent.
-  await openALibrary(page);
+  // And it still knows after a reload, when the state comes from the
+  // server-rendered payload rather than a refetch. Re-opening the same package
+  // by name: installing changed where it sorts.
+  await openALibrary(page, packageId);
   await expect(action(page, /^Remove$/)).toBeVisible();
 
   // Removing deletes files, so it asks first.

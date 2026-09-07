@@ -68,6 +68,37 @@ impl ProjectMembershipService {
     }
 
     /// Create or update one project member and synchronize their policy bindings.
+    /// The role one person currently holds, for callers outside this service.
+    pub fn role_of_public(
+        &self,
+        owner: &str,
+        project: &str,
+        user_id: &str,
+    ) -> Result<ProjectAccessRolePreset, PlatformError> {
+        self.role_of(&slug_segment(owner), &slug_segment(project), &slug_segment(user_id))
+    }
+
+    /// The role one person currently holds in one project.
+    ///
+    /// The namespace owner is an Owner whether or not a member row says so —
+    /// the project is theirs, and `ensure_project_defaults` binds them without
+    /// creating a membership record.
+    fn role_of(
+        &self,
+        owner: &str,
+        project: &str,
+        user_id: &str,
+    ) -> Result<ProjectAccessRolePreset, PlatformError> {
+        if user_id == owner {
+            return Ok(ProjectAccessRolePreset::Owner);
+        }
+        Ok(self
+            .data
+            .get_project_member(owner, project, user_id)?
+            .map(|member| member.role_preset)
+            .unwrap_or(ProjectAccessRolePreset::Guest))
+    }
+
     pub fn upsert_member(
         &self,
         actor_user: &str,
@@ -106,6 +137,21 @@ impl ProjectMembershipService {
             return Err(PlatformError::new(
                 "PLATFORM_MEMBER_OWNER_ROLE_INVALID",
                 "project owner must keep the owner role preset",
+            ));
+        }
+
+        // Nobody hands out more than they hold. Without this, anyone who can
+        // edit members can promote themselves: `MembersWrite` belongs to
+        // Maintainer, and a Maintainer could mint an Owner and then be made one.
+        let actor_role = self.role_of(&owner, &project, &actor_user)?;
+        if !crate::platform::services::access::roles::can_grant(actor_role, req.role_preset) {
+            return Err(PlatformError::new(
+                "PLATFORM_MEMBER_ROLE_ABOVE_ACTOR",
+                format!(
+                    "a {} cannot grant the {} role",
+                    actor_role.title(),
+                    req.role_preset.title()
+                ),
             ));
         }
 
@@ -181,16 +227,27 @@ fn ensure_managed_role_policies(
     owner: &str,
     project: &str,
 ) -> Result<(), PlatformError> {
+    // `managed_role_policies` builds rows with an empty `project_id` — it takes
+    // an owner and a slug and has no way to know the id. Writing them through
+    // unchanged put an empty string into a column with a foreign key onto
+    // `projects(project_id)`, so every call failed with "FOREIGN KEY constraint
+    // failed" and no indication of which key. It never surfaced because nothing
+    // could reach `upsert_member`: the members routes did not exist.
+    let project_row = data.get_project(owner, project)?.ok_or_else(|| {
+        PlatformError::new(
+            "PLATFORM_PROJECT_MISSING",
+            format!("project '{owner}/{project}' not found"),
+        )
+    })?;
+    let existing = data.list_project_policies(owner, project)?;
     let now = now_ts();
-    for policy in managed_role_policies(owner, project, now) {
-        let created_at = data
-            .list_project_policies(owner, project)?
-            .into_iter()
+    for mut policy in managed_role_policies(owner, project, now) {
+        policy.project_id = project_row.project_id.clone();
+        policy.created_at = existing
+            .iter()
             .find(|row| row.policy_id == policy.policy_id)
             .map(|row| row.created_at)
             .unwrap_or(now);
-        let mut policy = policy;
-        policy.created_at = created_at;
         data.put_project_policy(&policy)?;
     }
     Ok(())

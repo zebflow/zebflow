@@ -988,6 +988,30 @@ pub async fn router(platform: Arc<PlatformService>) -> Router {
             get(api_list_hub_assets),
         )
         .route(
+            "/api/projects/{owner}/{project}/members",
+            get(api_list_project_members).post(api_upsert_project_member),
+        )
+        .route(
+            "/api/projects/{owner}/{project}/members/{user_id}",
+            delete(api_remove_project_member),
+        )
+        .route(
+            "/api/projects/{owner}/{project}/invites",
+            get(api_list_project_invites).post(api_create_project_invite),
+        )
+        .route(
+            "/api/projects/{owner}/{project}/invites/{invite_id}",
+            delete(api_revoke_project_invite),
+        )
+        // Answering is session-scoped: the invitee is not yet a member, so a
+        // project-scoped capability check would refuse the very person the
+        // invitation is for.
+        .route("/api/invites", get(api_list_my_invites))
+        .route(
+            "/api/invites/{owner}/{project}/{invite_id}/{answer}",
+            post(api_answer_my_invite),
+        )
+        .route(
             "/api/projects/{owner}/{project}/hub/access",
             get(api_list_project_hub_access),
         )
@@ -11727,24 +11751,24 @@ async fn api_delete_project(
     Path((owner, project)): Path<(String, String)>,
     Json(req): Json<DeleteProjectRequest>,
 ) -> Response {
-    // Must be authenticated as the project owner
-    let Some(session_owner) = session_owner(&state, &headers) else {
-        return (
-            StatusCode::UNAUTHORIZED,
-            Json(json!({"ok": false, "error": "Not authenticated"})),
-        )
-            .into_response();
-    };
+    // Deleting a project asks the policy system, like everything else.
+    //
+    // It used to compare the session's name against the namespace owner. That
+    // is outside the policy system entirely: no binding could grant it, no role
+    // could describe it, and it was the reason Owner and Maintainer resolved to
+    // the same capabilities — the one thing separating them was not a
+    // capability at all.
+    if let Err(response) = require_project_api_capability(
+        &state,
+        &headers,
+        &owner,
+        &project,
+        ProjectCapability::ProjectDelete,
+    ) {
+        return response;
+    }
     let owner_slug = crate::platform::model::slug_segment(&owner);
     let project_slug = crate::platform::model::slug_segment(&project);
-
-    if crate::platform::model::slug_segment(&session_owner) != owner_slug {
-        return (
-            StatusCode::FORBIDDEN,
-            Json(json!({"ok": false, "error": "Forbidden"})),
-        )
-            .into_response();
-    }
 
     // Confirm project name matches
     let confirmed_slug = crate::platform::model::slug_segment(&req.project_name);
@@ -21346,16 +21370,24 @@ async fn api_query_db_connection(
     headers: HeaderMap,
     Path((owner, project, connection_id)): Path<(String, String, String)>,
     uri: Uri,
-    Json(req): Json<QueryProjectDbConnectionRequest>,
+    Json(mut req): Json<QueryProjectDbConnectionRequest>,
 ) -> Response {
-    if let Err(response) = require_project_api_capability(
-        &state,
-        &headers,
-        &owner,
-        &project,
-        ProjectCapability::TablesRead,
-    ) {
+    // What the statement does decides which capability it needs. The request
+    // carries `read_only`, and taking the caller's word for it meant
+    // `{"sql": "DELETE FROM posts", "read_only": false}` ran for anyone who
+    // could read a table — the role ladder already separated Reporter from
+    // Maintainer, and this endpoint simply never asked.
+    let writes = crate::platform::db::statement::statement_writes(&req.sql);
+    let needed = crate::platform::db::statement::capability_for_statement(&req.sql);
+    if let Err(response) =
+        require_project_api_capability(&state, &headers, &owner, &project, needed)
+    {
         return response;
+    }
+    // A caller may ask for a stricter run than its capabilities require. It may
+    // not ask for a looser one, so the flag is narrowed rather than trusted.
+    if !writes {
+        req.read_only = Some(true);
     }
     match maybe_forward_project_json_to_worker(
         &state,
@@ -24844,6 +24876,294 @@ fn require_project_page_capability(
 /// project route, which made §8's "revocable for one office alone" false and
 /// §2's three verbs a fiction. [`is_controller_call`] answers `false` on a
 /// controller now, always.
+
+// ── Project membership and invitations ───────────────────────────────────────
+//
+// The services behind these have existed for a while and nothing could reach
+// them: `MembersRead` and `MembersWrite` guarded no route, so a project had
+// exactly one member — whoever created it — and no way to gain another.
+//
+// Joining is invited and accepted, never done to someone. A member's git
+// identity ends up on commits made in the project, so consent is the point
+// rather than a formality, and `invited_by` plus the accepted timestamp says
+// who asked and who agreed.
+
+async fn api_list_project_members(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((owner, project)): Path<(String, String)>,
+) -> Response {
+    if let Err(response) = require_project_api_capability(
+        &state,
+        &headers,
+        &owner,
+        &project,
+        ProjectCapability::MembersRead,
+    ) {
+        return response;
+    }
+    match state.platform.project_members.list_members(&owner, &project) {
+        Ok(items) => Json(json!({"ok": true, "items": items})).into_response(),
+        Err(err) => internal_error(err),
+    }
+}
+
+async fn api_upsert_project_member(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((owner, project)): Path<(String, String)>,
+    Json(req): Json<crate::platform::model::UpsertProjectMemberRequest>,
+) -> Response {
+    if let Err(response) = require_project_api_capability(
+        &state,
+        &headers,
+        &owner,
+        &project,
+        ProjectCapability::MembersWrite,
+    ) {
+        return response;
+    }
+    let Some(actor) = session_owner(&state, &headers) else {
+        return StatusCode::UNAUTHORIZED.into_response();
+    };
+    match state
+        .platform
+        .project_members
+        .upsert_member(&actor, &owner, &project, &req)
+    {
+        Ok(member) => Json(json!({"ok": true, "member": member})).into_response(),
+        Err(err) if err.code == "PLATFORM_MEMBER_ROLE_ABOVE_ACTOR" => (
+            StatusCode::FORBIDDEN,
+            Json(json!({"ok": false, "error": {"code": err.code, "message": err.message}})),
+        )
+            .into_response(),
+        Err(err) => internal_error(err),
+    }
+}
+
+async fn api_remove_project_member(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((owner, project, user_id)): Path<(String, String, String)>,
+) -> Response {
+    if let Err(response) = require_project_api_capability(
+        &state,
+        &headers,
+        &owner,
+        &project,
+        ProjectCapability::MembersWrite,
+    ) {
+        return response;
+    }
+    match state
+        .platform
+        .project_members
+        .remove_member(&owner, &project, &user_id)
+    {
+        Ok(()) => Json(json!({"ok": true})).into_response(),
+        Err(err) => internal_error(err),
+    }
+}
+
+async fn api_list_project_invites(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((owner, project)): Path<(String, String)>,
+) -> Response {
+    if let Err(response) = require_project_api_capability(
+        &state,
+        &headers,
+        &owner,
+        &project,
+        ProjectCapability::MembersRead,
+    ) {
+        return response;
+    }
+    match state.platform.project_invites.list_invites(&owner, &project) {
+        Ok(items) => Json(json!({"ok": true, "items": items})).into_response(),
+        Err(err) => internal_error(err),
+    }
+}
+
+async fn api_create_project_invite(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((owner, project)): Path<(String, String)>,
+    Json(req): Json<crate::platform::model::CreateProjectInviteRequest>,
+) -> Response {
+    if let Err(response) = require_project_api_capability(
+        &state,
+        &headers,
+        &owner,
+        &project,
+        ProjectCapability::MembersWrite,
+    ) {
+        return response;
+    }
+    let Some(actor) = session_owner(&state, &headers) else {
+        return StatusCode::UNAUTHORIZED.into_response();
+    };
+    // The ceiling applies to the invitation, not only to the membership it
+    // becomes — otherwise a Maintainer invites someone as Owner and the refusal
+    // arrives days later, at acceptance, addressed to the wrong person.
+    let actor_role = match state
+        .platform
+        .project_members
+        .role_of_public(&owner, &project, &actor)
+    {
+        Ok(role) => role,
+        Err(err) => return internal_error(err),
+    };
+    if !crate::platform::services::access::roles::can_grant(actor_role, req.role_preset) {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({"ok": false, "error": {
+                "code": "PLATFORM_MEMBER_ROLE_ABOVE_ACTOR",
+                "message": format!("a {} cannot invite someone as {}",
+                    actor_role.title(), req.role_preset.title())
+            }})),
+        )
+            .into_response();
+    }
+    match state
+        .platform
+        .project_invites
+        .create_invite(&actor, &owner, &project, &req)
+    {
+        Ok(invite) => Json(json!({"ok": true, "invite": invite})).into_response(),
+        Err(err) if err.code == "PLATFORM_INVITE_USER_MISSING" => (
+            StatusCode::NOT_FOUND,
+            Json(json!({"ok": false, "error": {"code": err.code, "message": err.message}})),
+        )
+            .into_response(),
+        Err(err) => internal_error(err),
+    }
+}
+
+async fn api_revoke_project_invite(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((owner, project, invite_id)): Path<(String, String, String)>,
+) -> Response {
+    if let Err(response) = require_project_api_capability(
+        &state,
+        &headers,
+        &owner,
+        &project,
+        ProjectCapability::MembersWrite,
+    ) {
+        return response;
+    }
+    match state
+        .platform
+        .project_invites
+        .revoke_invite(&owner, &project, &invite_id)
+    {
+        Ok(()) => Json(json!({"ok": true})).into_response(),
+        Err(err) => internal_error(err),
+    }
+}
+
+/// `GET /api/invites` — what this session has been asked to join.
+///
+/// Session-scoped, not project-scoped: someone deciding whether to join a
+/// project cannot be asked to prove they are already in it.
+async fn api_list_my_invites(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+) -> Response {
+    let Some(actor) = session_owner(&state, &headers) else {
+        return StatusCode::UNAUTHORIZED.into_response();
+    };
+    match state.platform.project_invites.list_invites_for_user(&actor) {
+        Ok(items) => Json(json!({"ok": true, "items": items})).into_response(),
+        Err(err) => internal_error(err),
+    }
+}
+
+async fn api_answer_my_invite(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((owner, project, invite_id, answer)): Path<(String, String, String, String)>,
+) -> Response {
+    let Some(actor) = session_owner(&state, &headers) else {
+        return StatusCode::UNAUTHORIZED.into_response();
+    };
+    let invites = &state.platform.project_invites;
+    // Declining is one step. Accepting is two — become a member, then record
+    // the answer — and they are done in that order deliberately.
+    //
+    // Marking the invite first is how the first version of this lost one: the
+    // membership write failed, the invite was already Accepted, and the person
+    // could neither join nor accept again. A member without a recorded answer
+    // is recoverable, because the invite still reads pending and accepting is
+    // idempotent. An accepted invite without a member is not.
+    if answer == "accept" {
+        let invite = match invites.peek_answerable(&actor, &owner, &project, &invite_id) {
+            Ok(invite) => invite,
+            Err(err) => return invite_answer_error(err),
+        };
+        let member_request = crate::platform::model::UpsertProjectMemberRequest {
+            user_id: invite.target_user.clone(),
+            role_preset: invite.role_preset,
+            custom_policy_ids: invite.custom_policy_ids.clone(),
+            mcp_capability_ceiling: invite.mcp_capability_ceiling.clone(),
+        };
+        let member = match state.platform.project_members.upsert_member(
+            &invite.invited_by,
+            &owner,
+            &project,
+            &member_request,
+        ) {
+            Ok(member) => member,
+            Err(err) => return internal_error(err),
+        };
+        return match invites.accept_invite(&actor, &owner, &project, &invite_id) {
+            Ok(invite) => {
+                Json(json!({"ok": true, "invite": invite, "member": member})).into_response()
+            }
+            Err(err) => internal_error(err),
+        };
+    }
+
+    let result = match answer.as_str() {
+        "decline" => invites.decline_invite(&actor, &owner, &project, &invite_id),
+        _ => return StatusCode::NOT_FOUND.into_response(),
+    };
+    let invite = match result {
+        Ok(invite) => invite,
+        Err(err) if err.code == "PLATFORM_INVITE_NOT_FOUND" => {
+            return StatusCode::NOT_FOUND.into_response();
+        }
+        Err(err)
+            if err.code == "PLATFORM_INVITE_NOT_PENDING"
+                || err.code == "PLATFORM_INVITE_EXPIRED" =>
+        {
+            return (
+                StatusCode::CONFLICT,
+                Json(json!({"ok": false, "error": {"code": err.code, "message": err.message}})),
+            )
+                .into_response();
+        }
+        Err(err) => return internal_error(err),
+    };
+
+    Json(json!({"ok": true, "invite": invite})).into_response()
+}
+
+/// The HTTP answer for a refusal to accept or decline.
+fn invite_answer_error(err: crate::platform::error::PlatformError) -> Response {
+    match &*err.code {
+        "PLATFORM_INVITE_NOT_FOUND" => StatusCode::NOT_FOUND.into_response(),
+        "PLATFORM_INVITE_NOT_PENDING" | "PLATFORM_INVITE_EXPIRED" => (
+            StatusCode::CONFLICT,
+            Json(json!({"ok": false, "error": {"code": err.code, "message": err.message}})),
+        )
+            .into_response(),
+        _ => internal_error(err),
+    }
+}
+
 fn require_project_api_capability(
     state: &PlatformAppState,
     headers: &HeaderMap,

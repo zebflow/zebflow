@@ -113,4 +113,120 @@ impl ProjectInviteService {
         self.data.put_project_invite(&invite)?;
         Ok(())
     }
+
+    /// Every pending invite addressed to one person, across all projects.
+    ///
+    /// This is what makes an invitation something a person answers rather than
+    /// something done to them: they can see what they have been asked to join
+    /// before they are in it.
+    pub fn list_invites_for_user(
+        &self,
+        target_user: &str,
+    ) -> Result<Vec<ProjectInvite>, PlatformError> {
+        let target_user = slug_segment(target_user);
+        let now = now_ts();
+        Ok(self
+            .data
+            .list_project_invites_for_user(&target_user)?
+            .into_iter()
+            .filter(|invite| invite.status == ProjectInviteStatus::Pending)
+            .filter(|invite| invite.expires_at.is_none_or(|at| at > now))
+            .collect())
+    }
+
+    /// Accept one invite, becoming a member.
+    ///
+    /// Only the person the invite names may accept it, and only while it is
+    /// pending and unexpired. Expiry is judged here rather than by a sweep, so
+    /// a lapsed invite is refused even if nothing has swept yet.
+    pub fn accept_invite(
+        &self,
+        actor_user: &str,
+        owner: &str,
+        project: &str,
+        invite_id: &str,
+    ) -> Result<ProjectInvite, PlatformError> {
+        let actor_user = slug_segment(actor_user);
+        let mut invite = self.answerable_invite(&actor_user, owner, project, invite_id)?;
+        invite.status = ProjectInviteStatus::Accepted;
+        invite.updated_at = now_ts();
+        self.data.put_project_invite(&invite)?;
+        Ok(invite)
+    }
+
+    /// Decline one invite. The record stays so the inviter can see the answer.
+    pub fn decline_invite(
+        &self,
+        actor_user: &str,
+        owner: &str,
+        project: &str,
+        invite_id: &str,
+    ) -> Result<ProjectInvite, PlatformError> {
+        let actor_user = slug_segment(actor_user);
+        let mut invite = self.answerable_invite(&actor_user, owner, project, invite_id)?;
+        invite.status = ProjectInviteStatus::Revoked;
+        invite.updated_at = now_ts();
+        self.data.put_project_invite(&invite)?;
+        Ok(invite)
+    }
+
+    /// The invite this actor may answer, without answering it.
+    ///
+    /// Lets a caller do the work an acceptance implies before recording that it
+    /// happened, so a failure halfway leaves the invite still answerable.
+    pub fn peek_answerable(
+        &self,
+        actor_user: &str,
+        owner: &str,
+        project: &str,
+        invite_id: &str,
+    ) -> Result<ProjectInvite, PlatformError> {
+        self.answerable_invite(&slug_segment(actor_user), owner, project, invite_id)
+    }
+
+    /// The invite this actor is allowed to answer right now, or why not.
+    fn answerable_invite(
+        &self,
+        actor_user: &str,
+        owner: &str,
+        project: &str,
+        invite_id: &str,
+    ) -> Result<ProjectInvite, PlatformError> {
+        let owner = slug_segment(owner);
+        let project = slug_segment(project);
+        let Some(invite) = self
+            .data
+            .get_project_invite(&owner, &project, invite_id.trim())?
+        else {
+            return Err(PlatformError::new(
+                "PLATFORM_INVITE_NOT_FOUND",
+                format!("invite '{}' not found", invite_id.trim()),
+            ));
+        };
+        // Not "forbidden": an invite addressed to someone else is not this
+        // person's to know about at all.
+        if invite.target_user != actor_user {
+            return Err(PlatformError::new(
+                "PLATFORM_INVITE_NOT_FOUND",
+                format!("invite '{}' not found", invite_id.trim()),
+            ));
+        }
+        if invite.status != ProjectInviteStatus::Pending {
+            return Err(PlatformError::new(
+                "PLATFORM_INVITE_NOT_PENDING",
+                format!(
+                    "invite '{}' was already {}",
+                    invite.invite_id,
+                    invite.status.key()
+                ),
+            ));
+        }
+        if invite.expires_at.is_some_and(|at| at <= now_ts()) {
+            return Err(PlatformError::new(
+                "PLATFORM_INVITE_EXPIRED",
+                format!("invite '{}' has expired", invite.invite_id),
+            ));
+        }
+        Ok(invite)
+    }
 }

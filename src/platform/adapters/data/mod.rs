@@ -432,6 +432,18 @@ pub trait DataAdapter: Send + Sync {
         owner: &str,
         project: &str,
     ) -> Result<Vec<ProjectInvite>, PlatformError>;
+    /// Every invite addressed to one person, across every project.
+    ///
+    /// A person needs to see what they have been asked to join before they are
+    /// in it, and they cannot ask project by project — they do not yet know
+    /// which projects exist.
+    fn list_project_invites_for_user(
+        &self,
+        target_user: &str,
+    ) -> Result<Vec<ProjectInvite>, PlatformError> {
+        let _ = target_user;
+        Ok(vec![])
+    }
     /// Delete one project invite.
     fn delete_project_invite(
         &self,

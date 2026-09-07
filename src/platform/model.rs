@@ -1116,6 +1116,14 @@ pub struct ProjectAssistantConfig {
 #[serde(rename_all = "snake_case")]
 pub enum ProjectCapability {
     ProjectRead,
+    /// Destroying the project itself.
+    ///
+    /// The one thing an Owner has that a Maintainer does not. Without it the
+    /// two roles resolved to exactly the same 29 capabilities, and deletion was
+    /// guarded by comparing the session's name to the namespace owner — a
+    /// string check outside the policy system, which no binding could grant and
+    /// no role could describe.
+    ProjectDelete,
     MembersRead,
     MembersWrite,
     CredentialsRead,
@@ -1151,6 +1159,7 @@ impl ProjectCapability {
     pub fn key(self) -> &'static str {
         match self {
             Self::ProjectRead => "project.read",
+            Self::ProjectDelete => "project.delete",
             Self::MembersRead => "members.read",
             Self::MembersWrite => "members.write",
             Self::CredentialsRead => "credentials.read",
@@ -1222,6 +1231,7 @@ impl ProjectCapability {
     pub fn all() -> Vec<Self> {
         vec![
             Self::ProjectRead,
+            Self::ProjectDelete,
             Self::MembersRead,
             Self::MembersWrite,
             Self::CredentialsRead,
@@ -1339,6 +1349,18 @@ pub enum ProjectInviteStatus {
     Accepted,
     Revoked,
     Expired,
+}
+
+impl ProjectInviteStatus {
+    /// Stable storage key, and what an error message calls this state.
+    pub fn key(self) -> &'static str {
+        match self {
+            Self::Pending => "pending",
+            Self::Accepted => "accepted",
+            Self::Revoked => "revoked",
+            Self::Expired => "expired",
+        }
+    }
 }
 
 /// One pending or historical invite row for project collaboration.
