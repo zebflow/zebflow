@@ -46,8 +46,14 @@ pub const EXPORTS: &[&str] = &[
 
 /// The helpers the platform installs as plain globals rather than onto the
 /// engine object, so an import of one lowers to a different expression.
-const PLATFORM_GLOBALS: &[&str] =
-    &["usePageState", "useRouter", "usePathname", "useSearchParams", "Link", "cx"];
+const PLATFORM_GLOBALS: &[&str] = &[
+    "usePageState",
+    "useRouter",
+    "usePathname",
+    "useSearchParams",
+    "Link",
+    "cx",
+];
 
 /// Preserve aliases, default imports and namespace imports when the bundler
 /// removes module declarations. Explicit declarations also let the component
@@ -73,9 +79,7 @@ pub fn lower_import(import: &ImportDeclaration<'_>) -> Result<String, EngineErro
                         if !EXPORTS.contains(&name) {
                             return Err(EngineError::new(
                                 "RWE_REACT_EXPORT",
-                                format!(
-                                    "'{name}' is not exported by zeb/react"
-                                ),
+                                format!("'{name}' is not exported by zeb/react"),
                             ));
                         }
                         // Quoted property access survives the inliner's local
@@ -88,8 +92,17 @@ pub fn lower_import(import: &ImportDeclaration<'_>) -> Result<String, EngineErro
                     }
                 }
                 ImportDeclarationSpecifier::ImportNamespaceSpecifier(_) => {
-                    "Object.freeze({ ...globalThis.__zebReact, default: globalThis.__zebReact })"
-                        .to_string()
+                    // A namespace contains every named export, including the
+                    // platform helpers installed outside the React engine.
+                    // Keep default identity identical to a default import.
+                    let helpers = PLATFORM_GLOBALS
+                        .iter()
+                        .map(|name| format!("\"{name}\": globalThis[\"{name}\"]"))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    format!(
+                        "Object.freeze({{ ...globalThis.__zebReact, {helpers}, default: globalThis.__zebReact }})"
+                    )
                 }
                 _ => "globalThis.__zebReact".to_string(),
             };

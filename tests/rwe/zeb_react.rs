@@ -84,7 +84,7 @@ export default function Counter() {
     let compiled = core::compile(
         r#"
 import { useState as state } from "zeb/react";
-import { usePageState } from "zeb";
+import { usePageState } from "zeb/react";
 import Counter from "@/counter";
 export default function Page() {
   const [n] = state(7);
@@ -120,7 +120,7 @@ export default function Page() {
 #[test]
 fn react_imports_reject_unsupported_named_exports_in_pages_and_components() {
     use zebflow::rwe::core::{self, CompileOptions};
-    for name in ["useTransition", "Suspense", "usePageState"] {
+    for name in ["useTransition", "Suspense", "useNavigate"] {
         let source = format!(
             "import {{ {name} }} from 'zeb/react'; export default function Page() {{ return <div />; }}"
         );
@@ -144,6 +144,162 @@ fn react_imports_reject_unsupported_named_exports_in_pages_and_components() {
     )
     .expect_err("unsupported component export");
     assert_eq!(error.code, "RWE_REACT_EXPORT");
+}
+
+#[test]
+fn react_platform_search_params_render_in_embedded_v8() {
+    use zebflow::rwe::core::{self, CompileOptions};
+    let compiled = core::compile(
+        r#"
+import { useSearchParams, usePathname } from 'zeb/react';
+export default function Page() {
+  const params = useSearchParams();
+  return <main><p>{usePathname()}:{params.get('q')}:{String(params.has('empty'))}:{String(params.get('missing') === null)}</p>
+    <b>{params.get(null)}:{params.get(4)}:{params.get(undefined)}</b></main>;
+}
+
+"#,
+        CompileOptions::default(),
+    )
+    .expect("compile search hooks");
+    let output = core::render(
+        &compiled,
+        &json!({ "route": "/articles", "query": {
+            "q": "café + tea", "empty": "", "null": "null-key", "4": "number-key", "undefined": "undefined-key"
+        } }),
+        &[],
+    )
+    .expect("render search hooks in embedded V8");
+    assert!(
+        output
+            .html
+            .contains("<p>/articles:café + tea:true:true</p>"),
+        "{}",
+        output.html
+    );
+    assert!(
+        output
+            .html
+            .contains("<b>null-key:number-key:undefined-key</b>"),
+        "{}",
+        output.html
+    );
+}
+
+#[test]
+fn react_platform_search_params_preserve_raw_query_semantics() {
+    use zebflow::rwe::core::{self, CompileOptions};
+    let compiled = core::compile(
+        r#"
+import { useSearchParams } from 'zeb/react';
+export default function Page() {
+  const params = useSearchParams();
+  const seen = [];
+  params.forEach((value, key, owner) => seen.push(key + ':' + value + ':' + (owner === params)));
+  const entries = [...params];
+  entries[0][1] = 'modified copy';
+  let readonly = false;
+  try { params.set('q', 'changed'); } catch (_) { readonly = true; }
+  return <main><p>{params.get('q')}|{params.getAll('tag').join(',')}|{params.get('bad')}|{params.get('literal')}|{params.size}</p>
+    <b>{String(params.has('tag', 'two'))}:{String(params.has('tag', 'absent'))}:{String(readonly)}</b>
+    <i>{[...params.keys()].join(',')}|{[...params.values()].length}|{seen.length}</i>
+    <code>{params.toString()}</code></main>;
+}
+"#,
+        CompileOptions::default(),
+    )
+    .expect("compile raw search hooks");
+    let output = core::render(
+        &compiled,
+        &json!({
+            "query": { "q": "must not override raw search" },
+            "search": "?q=caf%C3%A9+%2B+tea&tag=one&tag=two&bad=%FF&literal=%ZZ&empty="
+        }),
+        &[],
+    )
+    .expect("render raw search hooks");
+    assert!(
+        output.html.contains("<p>café + tea|one,two|�|%ZZ|6</p>"),
+        "{}",
+        output.html
+    );
+    assert!(
+        output.html.contains("<b>true:false:true</b>"),
+        "{}",
+        output.html
+    );
+    assert!(
+        output
+            .html
+            .contains("<i>q,tag,tag,bad,literal,empty|6|6</i>"),
+        "{}",
+        output.html
+    );
+    assert!(output.html.contains("q=caf%C3%A9+%2B+tea&amp;tag=one&amp;tag=two&amp;bad=%EF%BF%BD&amp;literal=%25ZZ&amp;empty="), "{}", output.html);
+    assert!(
+        output
+            .js
+            .contains("typeof globalThis.ctx.search === 'string'")
+    );
+}
+
+#[test]
+fn react_platform_pathname_uses_render_context_without_overwriting_payload() {
+    let engine = RweReactiveWebEngine;
+    let language = NoopLanguageEngine;
+    let source = TemplateSource {
+        id: "zeb-route-context".into(),
+        source_path: None,
+        markup: "import { usePathname } from 'zeb/react'; export default function Page() { return <p>{usePathname()}</p>; }".into(),
+    };
+    let compiled = engine
+        .compile_template(&source, &language, &ReactiveWebOptions::default())
+        .unwrap();
+    let context = RenderContext {
+        route: "/context-route".into(),
+        request_id: "zeb-route-context".into(),
+        metadata: json!({}),
+        enabled_libraries: vec![],
+    };
+    for (state, expected) in [
+        (json!({}), "/context-route"),
+        (json!({"route": "/explicit"}), "/explicit"),
+    ] {
+        let output = engine
+            .render(&compiled, state, &language, &context)
+            .unwrap();
+        assert!(
+            output.html.contains(&format!("<p>{expected}</p>")),
+            "{}",
+            output.html
+        );
+    }
+}
+
+#[test]
+fn react_platform_namespace_contains_all_named_helpers() {
+    use zebflow::rwe::core::{self, CompileOptions};
+    let compiled = core::compile(
+        r#"
+import * as Zeb from 'zeb/react';
+import React, { useRouter, usePathname, useSearchParams, usePageState, Link, cx } from 'zeb/react';
+export default function Page() {
+  const matches = Zeb.useRouter === useRouter && Zeb.usePathname === usePathname
+    && Zeb.useSearchParams === useSearchParams && Zeb.usePageState === usePageState
+    && Zeb.Link === Link && Zeb.cx === cx && Zeb.default === React;
+  return <p>{String(matches)}:{Zeb.usePathname()}</p>;
+}
+"#,
+        CompileOptions::default(),
+    )
+    .expect("compile platform namespace");
+    let output = core::render(&compiled, &json!({ "route": "/namespace" }), &[])
+        .expect("render platform namespace");
+    assert!(
+        output.html.contains("<p>true:/namespace</p>"),
+        "{}",
+        output.html
+    );
 }
 
 #[test]

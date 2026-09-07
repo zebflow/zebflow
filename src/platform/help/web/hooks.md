@@ -282,11 +282,14 @@ params.get("tag");   // "travel"
 params.get("page");  // "2"
 ```
 
-Returns a `URLSearchParams`, read-only, and subscribes the same way. To *write*
+Returns a read-only search-parameter view with `get`, `getAll`, `has`, `entries`,
+`keys`, `values`, `forEach`, `size`, iteration and `toString`, and subscribes the
+same way. Server rendering preserves repeated keys and decodes percent escapes
+and `+` from the original request query. Direct renderers can supply `search`
+or a decoded `query` object; only `search` preserves repeated keys. To *write*
 search params, navigate:
 
 ```tsx
 const router = useRouter();
 router.replace(`${pathname}?tag=food`);
 ```
-

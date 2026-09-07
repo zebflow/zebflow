@@ -144,6 +144,15 @@ impl ReactiveWebEngine for RweReactiveWebEngine {
                 )
             })?;
 
+        // Direct renderers (Studio, previews and standalone consumers) do not
+        // pass through the pipeline boundary that normally injects the route.
+        // Carry it into the shared SSR/hydration payload unless explicitly set.
+        let mut state = state;
+        if let Some(object) = state.as_object_mut() {
+            object
+                .entry("route")
+                .or_insert_with(|| Value::String(ctx.route.clone()));
+        }
         let rendered = crate::rwe::core::render(&rwe_compiled, &state, &ctx.enabled_libraries)
             .map_err(|err| {
                 ReactiveWebError::new("RWE_RENDER", format!("rwe render failed: {}", err.message))

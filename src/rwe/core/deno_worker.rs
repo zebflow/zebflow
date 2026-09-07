@@ -56,7 +56,31 @@ fn op_rwe_store_result(#[string] json: String) {
     RENDER_RESULT.with(|r| *r.borrow_mut() = Some(json));
 }
 
-deno_core::extension!(rwe_ops, ops = [op_rwe_store_result],);
+/// Build the read-only SSR search snapshot without assuming browser globals
+/// exist in a bare V8 isolate. Raw queries preserve duplicate keys and use the
+/// URL crate's form decoder (plus, percent escapes and malformed UTF-8).
+/// Decoded object entries remain a fallback for programmatic rendering.
+#[deno_core::op2]
+#[serde]
+fn op_rwe_search_params_snapshot(
+    #[string] raw_search: Option<String>,
+    #[serde] entries: Vec<(String, String)>,
+) -> serde_json::Value {
+    let entries = raw_search.map_or(entries, |raw| {
+        deno_core::url::form_urlencoded::parse(raw.strip_prefix('?').unwrap_or(&raw).as_bytes())
+            .into_owned()
+            .collect()
+    });
+    let encoded = deno_core::url::form_urlencoded::Serializer::new(String::new())
+        .extend_pairs(&entries)
+        .finish();
+    serde_json::json!({ "entries": entries, "encoded": encoded })
+}
+
+deno_core::extension!(
+    rwe_ops,
+    ops = [op_rwe_store_result, op_rwe_search_params_snapshot],
+);
 
 // ---------------------------------------------------------------------------
 // Public result types (unchanged interface)

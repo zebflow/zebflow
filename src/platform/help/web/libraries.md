@@ -21,7 +21,6 @@ Extra hooks beyond the core set. After enabling, import them from `"zeb/use"` in
 | `useTemporaryState` | `(initial, duration)` | State that auto-resets to `initial` after `duration` ms. |
 | `useWindowEvent` | `(event, handler)` | `window.addEventListener` with auto cleanup on unmount. |
 | `useLazyModule` | `(importFn)` | Dynamic import with loading state. Returns `[module, loading, error]`. |
-| `useSearchParams` | `()` | Read/write URL search params via `history.replaceState`. Returns `[URLSearchParams, setter]`. |
 | `useSplitPane` | `(options?)` | Pointer-drag resizable split pane. Attach returned ref to container. |
 | `useClickAway` | `(handler)` | Fires handler on click/touch outside the returned ref element. |
 | `useInterval` | `(fn, delay)` | `setInterval` with cleanup. Pass `null` to pause. |
@@ -30,7 +29,7 @@ Extra hooks beyond the core set. After enabling, import them from `"zeb/use"` in
 
 ```tsx
 // Import the hooks you use, in every file that uses them
-import { useState } from "zeb/react";
+import { useState, useSearchParams } from "zeb/react";
 import { useDebounce, useClipboard } from "zeb/use";
 
 const [search, setSearch] = useState("");
@@ -39,7 +38,8 @@ const debouncedSearch = useDebounce(search, 300);
 const { copy, copied } = useClipboard();
 <button onClick={() => copy(state.apiKey)}>{copied ? "Copied!" : "Copy"}</button>
 
-const [params, setParams] = useSearchParams();
+// URL hooks belong to zeb/react; navigate with useRouter to change the query.
+const params = useSearchParams();
 const page = Number(params.get("page") ?? "1");
 ```
 

@@ -106,16 +106,60 @@
 
   function useSearchParams() {
     var ctx = globalThis.ctx || {};
-    var params = new URLSearchParams();
+    var entries = [];
     var query = ctx.query;
     if (query && typeof query === "object") {
       for (var key in query) {
         if (Object.prototype.hasOwnProperty.call(query, key)) {
-          params.set(key, String(query[key]));
+          entries.push([key, String(query[key])]);
         }
       }
     }
-    return params;
+    // deno_core installs no browser URLSearchParams. Keep this a local,
+    // read-only query view rather than installing a partial web API globally.
+    // Rust's URL implementation owns decoding and canonical form encoding.
+    var snapshot = Deno.core.ops.op_rwe_search_params_snapshot(
+      typeof ctx.search === "string" ? ctx.search : null,
+      entries
+    );
+    var pairs = snapshot.entries;
+    var scalarString = function(value) {
+      if (typeof value === "symbol") throw new TypeError("Cannot convert a Symbol value to a string");
+      return String(value).toWellFormed();
+    };
+    var readonly = function() { throw new TypeError("Search params are read-only; use router.push or router.replace."); };
+    var view = {
+      get: function(name) {
+        name = scalarString(name);
+        for (var pair of pairs) if (pair[0] === name) return pair[1];
+        return null;
+      },
+      getAll: function(name) {
+        name = scalarString(name);
+        return pairs.filter(function(pair) { return pair[0] === name; }).map(function(pair) { return pair[1]; });
+      },
+      has: function(name, value) {
+        name = scalarString(name);
+        var matchValue = value !== undefined;
+        if (matchValue) value = scalarString(value);
+        return pairs.some(function(pair) { return pair[0] === name && (!matchValue || pair[1] === value); });
+      },
+      entries: function() { return pairs.map(function(pair) { return pair.slice(); })[Symbol.iterator](); },
+      keys: function() { return pairs.map(function(pair) { return pair[0]; })[Symbol.iterator](); },
+      values: function() { return pairs.map(function(pair) { return pair[1]; })[Symbol.iterator](); },
+      forEach: function(callback, thisArg) {
+        if (typeof callback !== "function") throw new TypeError("Search params callback must be a function");
+        pairs.forEach(function(pair) { callback.call(thisArg, pair[1], pair[0], view); });
+      },
+      toString: function() { return snapshot.encoded; },
+      size: pairs.length,
+      append: readonly,
+      delete: readonly,
+      set: readonly,
+      sort: readonly,
+    };
+    view[Symbol.iterator] = view.entries;
+    return Object.freeze(view);
   }
 
   // The server has no history and nobody clicking, so every method is a

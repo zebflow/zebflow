@@ -8,6 +8,7 @@
 //! `input.files` as FileRef metadata.
 
 pub(crate) mod embedded;
+mod webhook_url;
 
 use std::collections::HashMap;
 use std::convert::Infallible;
@@ -621,6 +622,10 @@ pub async fn router(platform: Arc<PlatformService>) -> Router {
         )
         .route(
             "/api/internal/runtime/webhook/{owner}/{project}",
+            any(api_internal_runtime_webhook_root),
+        )
+        .route(
+            "/api/internal/runtime/webhook/{owner}/{project}/",
             any(api_internal_runtime_webhook_root),
         )
         .route(
@@ -4120,9 +4125,6 @@ async fn forward_runtime_execute_to_worker(
 
 async fn forward_runtime_webhook_to_worker(
     state: &PlatformAppState,
-    owner: &str,
-    project: &str,
-    tail: &str,
     method: &Method,
     uri: &Uri,
     headers: &HeaderMap,
@@ -4140,21 +4142,11 @@ async fn forward_runtime_webhook_to_worker(
             )
         })?;
     let token = cluster_call_header_for_office(state, worker_office_id(&worker))?;
-    let mut url = format!(
-        "{}/api/internal/runtime/webhook/{}/{}",
+    let url = format!(
+        "{}{}",
         worker.base_url.trim_end_matches('/'),
-        owner,
-        project
+        webhook_url::worker_path_and_query(uri)?
     );
-    let tail = tail.trim_matches('/');
-    if !tail.is_empty() {
-        url.push('/');
-        url.push_str(tail);
-    }
-    if let Some(query) = uri.query() {
-        url.push('?');
-        url.push_str(query);
-    }
     let reqwest_method =
         reqwest::Method::from_bytes(method.as_str().as_bytes()).map_err(|err| {
             PlatformError::new(
@@ -22140,7 +22132,7 @@ async fn public_webhook_ingress(
         if placement.target == ProjectRuntimePlacementTarget::Worker {
             if let Some(worker_id) = placement.worker_id.as_deref() {
                 return match forward_runtime_webhook_to_worker(
-                    &state, &owner, &project, &tail, &method, &uri, &headers, &body, worker_id,
+                    &state, &method, &uri, &headers, &body, worker_id,
                 )
                 .await
                 {
@@ -22270,7 +22262,7 @@ async fn public_webhook_ingress(
         if placement.target == ProjectRuntimePlacementTarget::Worker {
             if let Some(worker_id) = placement.worker_id.as_deref() {
                 return match forward_runtime_webhook_to_worker(
-                    &state, &owner, &project, &tail, &method, &uri, &headers, &body, worker_id,
+                    &state, &method, &uri, &headers, &body, worker_id,
                 )
                 .await
                 {
@@ -22355,6 +22347,11 @@ async fn public_webhook_ingress(
         "auth": input.get("auth").cloned().unwrap_or(Value::Null),
         "params": input.get("params").cloned().unwrap_or(json!({})),
         "query": input.get("query").cloned().unwrap_or(json!({})),
+        // Preserve the original query for SSR URL hooks; the legacy query map
+        // cannot represent repeated keys or distinguish encoded values.
+        "search": uri.query().map(|query| format!("?{query}")).unwrap_or_default(),
+        // Page URL context is separate from the pipeline's relative route.
+        "pathname": webhook_url::pathname(&uri),
         "headers": safe_headers(&headers),
     });
 

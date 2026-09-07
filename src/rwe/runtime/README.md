@@ -7,7 +7,7 @@ Zebflow page state, navigation stubs, island metadata and library placeholders.
 There is no Preact bundle, npm install, CDN request or build step for this engine.
 
 The Rust compiler transforms TSX into `h` / `Fragment` calls using OXC. Template
-authors import core APIs from `zeb/react`; existing `zeb` hook imports remain compatible. Generated browser modules import the
+authors import APIs from `zeb/react`; the old `zeb` specifier is refused. Generated browser modules import the
 embedded `/assets/libraries/zeb/react/0.1/runtime/zeb_react.mjs` adapter. Static
 exports copy the adapter and its adjacent `.js` implementation together. The
 runtime is internal infrastructure, not an installable Hub library.
@@ -16,7 +16,7 @@ runtime is internal infrastructure, not an installable Hub library.
 
 ```tsx
 import { useState, useEffect, useRef } from "zeb/react";
-import { usePageState, useNavigate, Link, cx } from "zeb";
+import { usePageState, useRouter, usePathname, useSearchParams, Link, cx } from "zeb/react";
 ```
 
 `zeb/react` supports named imports, aliases, default imports (`import React
@@ -24,8 +24,9 @@ from "zeb/react"`) and namespace imports (`import * as React from "zeb/react"`).
 It is always available, regardless of enabled optional libraries. The compiler
 binds these imports to the same engine instance on server and browser; it
 refuses unsupported named exports. `src/rwe/core/zeb_react.rs` defines this
-import contract. Zebflow-specific page state, navigation and class-name helpers
-remain in `zeb`.
+import contract. Namespace imports include every named export, including the
+platform helpers. The default export remains the core React engine; namespace
+`default` has the same identity as a default import.
 
 | Category | Exports from `zeb/react` |
 | --- | --- |
@@ -39,6 +40,17 @@ remain in `zeb`.
 | Portals | `createPortal` |
 | Low-level rendering | `render`, `hydrate`, `renderToString` |
 | JSX compiler helpers | `jsx`, `jsxs`, `jsxDEV` |
+| Page and navigation | `usePageState`, `useRouter`, `usePathname`, `useSearchParams`, `Link`, `cx` |
+
+`usePathname` reads the explicit page route, falling back to `RenderContext.route`
+for direct rendering. `useSearchParams` reads the raw `search` snapshot when
+present, preserving repeated query keys and standard form decoding. Direct
+renderers can supply a decoded `query` object as a fallback; an object cannot
+represent duplicate keys. SSR exposes a read-only query view with `get`,
+`getAll`, `has`, `entries`, `keys`, `values`, `forEach`, `size`, iteration and
+`toString`. Its parser and serializer use Rust's existing URL implementation,
+without requiring browser globals in embedded V8. Read query parameters through
+those methods rather than checking for a browser `URLSearchParams` instance.
 
 RWE mounts and hydrates template pages automatically. Low-level rendering
 functions are for integrations that own their own DOM container; normal page

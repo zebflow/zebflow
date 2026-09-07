@@ -515,14 +515,20 @@ fn strip_private_auth_claims(mut payload: Value) -> Value {
 }
 
 /// Inject trigger-context fields into state so templates always have
-/// `ctx.auth`, `ctx.params`, `ctx.query` regardless of what upstream nodes
-/// did to the payload.
+/// `ctx.auth`, `ctx.params`, `ctx.query` and raw URL context regardless of what
+/// upstream nodes did to the payload. Explicit page routes take precedence;
+/// otherwise the browser pathname wins over the pipeline-relative route.
 fn inject_trigger_fields(mut state: Value, metadata: &Value) -> Value {
     // The route the request arrived on. `usePathname` reads this during server
     // rendering; without it the server has no idea what path it is rendering
     // and the browser's `location.pathname` disagrees on the first client
     // render — which is a hydration tear, not a cosmetic difference.
-    if let Some(route) = metadata.get("route").and_then(Value::as_str) {
+    let route = metadata
+        .get("trigger")
+        .and_then(|trigger| trigger.get("pathname"))
+        .and_then(Value::as_str)
+        .or_else(|| metadata.get("route").and_then(Value::as_str));
+    if let Some(route) = route {
         if let Value::Object(ref mut map) = state {
             if !map.contains_key("route") {
                 map.insert("route".to_string(), Value::String(route.to_string()));
@@ -537,8 +543,10 @@ fn inject_trigger_fields(mut state: Value, metadata: &Value) -> Value {
         return state;
     };
 
-    // params / query / headers: inject only when absent in state
-    for key in &["params", "query", "headers"] {
+    // Preserve raw search separately from the legacy query object, including
+    // repeated parameters and percent escapes needed by SSR URL hooks.
+    // Explicit page-state fields retain their existing precedence.
+    for key in &["params", "query", "search", "headers"] {
         if !map.contains_key(*key) {
             if let Some(v) = trigger.get(*key) {
                 map.insert(key.to_string(), v.clone());
@@ -646,6 +654,21 @@ mod tests {
     }
 
     #[test]
+    fn page_route_uses_browser_path_without_changing_pipeline_route() {
+        let metadata = json!({
+            "route": "/probe",
+            "trigger": {"pathname": "/wh/owner/project/probe"}
+        });
+        let injected = super::inject_trigger_fields(json!({}), &metadata);
+        assert_eq!(injected["route"], "/wh/owner/project/probe");
+        assert_eq!(metadata["route"], "/probe");
+        let explicit = super::inject_trigger_fields(json!({"route": "/custom"}), &metadata);
+        assert_eq!(explicit["route"], "/custom");
+        let fallback = super::inject_trigger_fields(json!({}), &json!({"route": "/preview"}));
+        assert_eq!(fallback["route"], "/preview");
+    }
+
+    #[test]
     fn render_boundary_injects_trigger_fields_and_filters_auth_claims() {
         let state = json!({
             "title": "Hello",
@@ -656,6 +679,7 @@ mod tests {
             "trigger": {
                 "params": { "slug": "from-trigger" },
                 "query": { "page": "1" },
+                "search": "?page=1&tag=one&tag=two",
                 "headers": { "x-request-id": "req-123" },
                 "auth": {
                     "sub": "user-1",
@@ -669,6 +693,7 @@ mod tests {
         let injected = super::inject_trigger_fields(state, &metadata);
         assert_eq!(injected["params"]["slug"], "keep-existing");
         assert_eq!(injected["query"]["page"], "1");
+        assert_eq!(injected["search"], "?page=1&tag=one&tag=two");
         assert_eq!(injected["headers"]["x-request-id"], "req-123");
         assert_eq!(injected["auth"]["secret"], "internal-only");
 

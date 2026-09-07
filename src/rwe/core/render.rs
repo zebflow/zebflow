@@ -453,6 +453,7 @@ fn build_client_module(client_source: &str, zeb_preamble: &str) -> String {
                subscribe,\n\
                function() {{ return window.location.search; }},\n\
                function() {{\n\
+                 if (globalThis.ctx && typeof globalThis.ctx.search === 'string') return globalThis.ctx.search;\n\
                  var q = (globalThis.ctx && globalThis.ctx.query) || {{}};\n\
                  var p = new URLSearchParams();\n\
                  for (var k in q) {{\n\
@@ -462,7 +463,17 @@ fn build_client_module(client_source: &str, zeb_preamble: &str) -> String {
                  return s ? '?' + s : '';\n\
                }}\n\
              );\n\
-             return new URLSearchParams(search);\n\
+             // Stable identity matters for effects that depend on params.\n\
+             // Expose the same read-only contract as the embedded SSR view.\n\
+             return useMemo(function() {{\n\
+               var params = new URLSearchParams(search);\n\
+               var readonly = function() {{ throw new TypeError('Search params are read-only; use router.push or router.replace.'); }};\n\
+               Object.defineProperties(params, {{\n\
+                 append: {{ value: readonly }}, delete: {{ value: readonly }},\n\
+                 set: {{ value: readonly }}, sort: {{ value: readonly }}\n\
+               }});\n\
+               return Object.freeze(params);\n\
+             }}, [search]);\n\
            }};\n\
          }})();\n\
          // Next.js App Router's shape: push/replace/back/forward/refresh/prefetch.\n\
