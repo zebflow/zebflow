@@ -269,3 +269,27 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod contract_tests {
+    use super::*;
+
+    /// The counts written into `docs/contracts/kinds/project-access/README.md`.
+    ///
+    /// A contract quoting numbers nobody checks drifts from the code the first
+    /// time a rung gains a capability, and then reads as authoritative while
+    /// being wrong.
+    #[test]
+    fn the_contract_quotes_the_real_role_sizes() {
+        let sizes: Vec<usize> = ROLE_LADDER
+            .iter()
+            .map(|role| role_capabilities(*role).len())
+            .collect();
+        assert_eq!(
+            sizes,
+            vec![6, 8, 20, 29, 30],
+            "guest/reporter/developer/maintainer/owner sizes changed — update \
+             docs/contracts/kinds/project-access/README.md to match"
+        );
+    }
+}

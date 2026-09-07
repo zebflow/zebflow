@@ -1,4 +1,5 @@
 import { Link, useState } from "zeb/react";
+import PendingInvitations from "@/pages/home/components/pending-invitations";
 import ChromeHeader from "@/pages/home/components/chrome-header";
 import Button from "@/components/ui/button";
 import Input from "@/components/ui/input";
@@ -250,6 +251,10 @@ export default function Page(input) {
           </header>
 
           <div className="my-8 h-px bg-ui-border" />
+
+          {/* Above the project list, because an invitation is about a project
+              that is not in that list yet. */}
+          <PendingInvitations />
 
           <section className="grid gap-5 md:grid-cols-2 lg:grid-cols-3">
             {projects.map((item, index) => (

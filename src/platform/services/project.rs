@@ -324,11 +324,33 @@ impl ProjectService {
     }
 
     /// Lists projects by owner, populating title from zebflow.yaml.
+    /// Every project this person can open: the ones they own, and the ones they
+    /// were invited into.
+    ///
+    /// Ownership alone used to be the whole answer, so accepting an invitation
+    /// left the project reachable by URL and absent from the only page that
+    /// lists projects — a membership nobody could find.
     pub fn list_projects(&self, owner: &str) -> Result<Vec<PlatformProject>, PlatformError> {
         let mut projects = self.data.list_projects(owner)?;
+        let owned: std::collections::BTreeSet<(String, String)> = projects
+            .iter()
+            .map(|p| (p.owner.clone(), p.project.clone()))
+            .collect();
+
+        for membership in self.data.list_project_memberships(owner)? {
+            let key = (membership.owner.clone(), membership.project.clone());
+            if owned.contains(&key) {
+                continue;
+            }
+            if let Some(project) = self.data.get_project(&membership.owner, &membership.project)? {
+                projects.push(project);
+            }
+        }
+
         for p in &mut projects {
             p.title = self.zebflow_cfg.get_project_title(&p.owner, &p.project)?;
         }
+        projects.sort_by(|a, b| (&a.owner, &a.project).cmp(&(&b.owner, &b.project)));
         Ok(projects)
     }
 

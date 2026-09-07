@@ -410,6 +410,19 @@ pub trait DataAdapter: Send + Sync {
         owner: &str,
         project: &str,
     ) -> Result<Vec<ProjectMember>, PlatformError>;
+    /// Every project one person is a member of, across all owners.
+    ///
+    /// A member needs to find the project they joined. Listing by namespace
+    /// answers "what do you own", which is a different question and left an
+    /// accepted invitation invisible: the project was reachable by URL and
+    /// absent from the only page that lists projects.
+    fn list_project_memberships(
+        &self,
+        user_id: &str,
+    ) -> Result<Vec<ProjectMember>, PlatformError> {
+        let _ = user_id;
+        Ok(vec![])
+    }
     /// Delete one explicit project member row.
     fn delete_project_member(
         &self,

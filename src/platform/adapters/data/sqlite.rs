@@ -5403,6 +5403,40 @@ impl DataAdapter for SqliteDataAdapter {
         Ok(())
     }
 
+    fn list_project_memberships(
+        &self,
+        user_id: &str,
+    ) -> Result<Vec<ProjectMember>, PlatformError> {
+        // Finds the projects first, then reuses `list_project_members` for the
+        // rows, so the twelve-column mapping stays in one place.
+        let scopes: Vec<(String, String)> = {
+            let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+            let mut stmt = conn
+                .prepare(
+                    "SELECT DISTINCT owner, project FROM project_members WHERE user_id = ?1",
+                )
+                .map_err(Self::qe)?;
+            let rows = stmt
+                .query_map(params![user_id], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })
+                .map_err(Self::qe)?
+                .filter_map(|row| row.ok())
+                .collect();
+            rows
+        };
+
+        let mut out = Vec::new();
+        for (owner, project) in scopes {
+            out.extend(
+                self.list_project_members(&owner, &project)?
+                    .into_iter()
+                    .filter(|member| member.user_id == user_id),
+            );
+        }
+        Ok(out)
+    }
+
     fn list_project_members(
         &self,
         owner: &str,

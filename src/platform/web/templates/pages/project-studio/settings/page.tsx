@@ -11,6 +11,7 @@ import DistributionPanel from "@/pages/project-studio/settings/components/distri
 import RuntimeDefaultsPanel from "@/pages/project-studio/settings/components/runtime-defaults-panel";
 import RwePanel from "@/pages/project-studio/settings/components/rwe-panel";
 import GitPanel from "@/pages/project-studio/settings/components/git-panel";
+import MembersPanel from "@/pages/project-studio/settings/components/members-panel";
 import LoggingPanel from "@/pages/project-studio/settings/components/logging-panel";
 
 export const page = {
@@ -140,6 +141,18 @@ export default function Page(input) {
                       repairApi={input?.git?.repair_api ?? ""}
                     />
                     <GitBranchPanel owner={input.owner} project={input.project} />
+                  </div>
+                </section>
+              ) : null}
+
+              {tabFlags?.members ? (
+                <section className="project-content-section">
+                  <div className="project-content-body">
+                    <MembersPanel
+                      membersApi={input?.members?.members_api ?? ""}
+                      invitesApi={input?.members?.invites_api ?? ""}
+                      grantableRoles={input?.members?.grantable_roles ?? []}
+                    />
                   </div>
                 </section>
               ) : null}

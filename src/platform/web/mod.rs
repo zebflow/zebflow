@@ -7128,6 +7128,7 @@ async fn render_settings_tab_page(
                 "tab_flags": {
                     "general": tab == "general",
                     "git": tab == "git",
+                    "members": tab == "members",
                     "policy": tab == "policy",
                     "automatons": tab == "automatons",
                     "logs": tab == "logs"
@@ -7171,6 +7172,15 @@ async fn render_settings_tab_page(
                     "api": format!("/api/projects/{owner}/{project}/settings/logging"),
                     "invocations_api": format!("/api/projects/{owner}/{project}/settings/logs/invocations"),
                     "config": zebflow_cfg.configs.pipelines.logging
+                },
+                "members": {
+                    "members_api": format!("/api/projects/{owner}/{project}/members"),
+                    "invites_api": format!("/api/projects/{owner}/{project}/invites"),
+                    // Which roles this session may hand out. The ceiling is
+                    // enforced server-side either way; offering a role the
+                    // reader cannot grant only invites a refusal they could
+                    // have been spared.
+                    "grantable_roles": grantable_role_options(&state, &headers, &owner, &project),
                 },
                 "git": {
                     "remote_api": format!("/api/projects/{owner}/{project}/git/remote"),
@@ -7261,6 +7271,7 @@ fn normalize_settings_tab(raw: &str) -> &'static str {
     match raw.trim().to_ascii_lowercase().as_str() {
         "" | "general" => "general",
         "git" => "git",
+        "members" => "members",
         "policy" => "policy",
         "automatons" => "automatons",
         "logs" => "logs",
@@ -7268,9 +7279,37 @@ fn normalize_settings_tab(raw: &str) -> &'static str {
     }
 }
 
+
+/// The roles this session may grant in one project, weakest first.
+///
+/// Mirrors the server-side ceiling rather than replacing it: `upsert_member`
+/// and `create_invite` both refuse a role above the actor's own. This exists so
+/// the dropdown does not offer a choice that will be refused.
+fn grantable_role_options(
+    state: &PlatformAppState,
+    headers: &HeaderMap,
+    owner: &str,
+    project: &str,
+) -> Vec<Value> {
+    let Some(actor) = session_owner(state, headers) else {
+        return Vec::new();
+    };
+    let actor_role = state
+        .platform
+        .project_members
+        .role_of_public(owner, project, &actor)
+        .unwrap_or(crate::platform::model::ProjectAccessRolePreset::Guest);
+    crate::platform::services::access::roles::ROLE_LADDER
+        .iter()
+        .filter(|role| crate::platform::services::access::roles::can_grant(actor_role, **role))
+        .map(|role| json!({ "key": role.key(), "title": role.title() }))
+        .collect()
+}
+
 fn settings_tab_title(tab: &str) -> &'static str {
     match tab {
         "git" => "Git",
+        "members" => "Members",
         "policy" => "Policy",
         "automatons" => "Automatons",
         "logs" => "Logs",
@@ -7281,6 +7320,7 @@ fn settings_tab_title(tab: &str) -> &'static str {
 fn settings_tab_subtitle(tab: &str) -> &'static str {
     match tab {
         "git" => "The remote this project pushes to, the branch it works on, and the health of its repository.",
+        "members" => "Who works on this project, what each of them may do, and who has been invited.",
         "policy" => "Capability boundaries, runtime constraints, and session controls.",
         "automatons" => "Assistant and automation runtime configuration per project.",
         "logs" => "Project-owned invocation history, storage size, retention, and cleanup.",
@@ -7293,6 +7333,7 @@ fn settings_tab_items(owner: &str, project: &str, active: &str) -> Vec<Value> {
     let entries = [
         ("general", "General"),
         ("git", "Git"),
+        ("members", "Members"),
         ("policy", "Policy"),
         ("automatons", "Automatons"),
         ("logs", "Logs"),

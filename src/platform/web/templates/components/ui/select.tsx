@@ -50,6 +50,11 @@ export function Select(props) {
     <div className={cx("relative group", props?.className)}>
       <select
         ref={ref}
+        // Without this a `Field` label's `htmlFor` points at nothing, and a
+        // select that looks labelled in the markup is announced as unlabelled —
+        // worse than carrying no label, because the markup says otherwise.
+        // Every Field-wrapped select in the platform was in that state.
+        id={props?.id}
         name={props?.name}
         required={Boolean(props?.required)}
         disabled={Boolean(props?.disabled)}
