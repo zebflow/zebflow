@@ -76,6 +76,12 @@ test("a library can be installed and removed again from the browser", async ({
   await expect(action(page, /^Reinstall$/)).toBeVisible({ timeout: 25_000 });
   await expect(action(page, /^Remove$/)).toBeVisible();
 
+  // Reload with an installed package in the initial dependency-lock payload.
+  // Removal must refresh that payload too; otherwise its stale entry changes
+  // the row back to installed even after the library-list refresh says absent.
+  await openALibrary(page);
+  await expect(action(page, /^Remove$/)).toBeVisible();
+
   // Removing deletes files, so it asks first.
   await action(page, /^Remove$/).click();
   await expect(page.getByText(/Remove this package from the project\?/i)).toBeVisible();

@@ -14,7 +14,7 @@ import { formatBytes } from "@/components/lib/format";
 import HubBrowser from "@/components/hub/hub-browser";
 import InstallFromFileDialog from "@/pages/project-studio/hub/components/install-from-file-dialog";
 import HubSourcesDialog from "@/pages/project-studio/hub/components/hub-sources-dialog";
-import { buildHubItems } from "@/components/hub/hub-items";
+import { useHubInventory } from "@/components/hub/use-hub-inventory";
 import { needsDestination, verbOf } from "@/components/hub/hub-kinds";
 import ConfirmDialog from "@/components/ui/confirm-dialog";
 import LibrariesPanel from "@/pages/project-studio/hub/components/libraries-panel";
@@ -142,16 +142,7 @@ export default function Page(input) {
   const [hubReviewTargetFolder, setHubReviewTargetFolder] = useState("");
   const [fromFileOpen, setFromFileOpen] = useState(false);
   const [sourcesOpen, setSourcesOpen] = useState(false);
-  // The catalogue, this project's enabled libraries and the lock, merged — the
-  // same library must not appear as three rows under three names.
-  const [installedLibraries, setInstalledLibraries] = useState(
-    Array.isArray(input?.installed?.libraries_available) ? input.installed.libraries_available : [],
-  );
-  const browseItems = buildHubItems({
-    assets: packs,
-    libraries: installedLibraries,
-    lock: input?.installed?.dependencies?.status,
-  });
+  const { browseItems, refreshInventory } = useHubInventory(packs, input?.installed, api);
 
   // What an add would overwrite, held while the reader decides. Null means
   // nothing is being asked.
@@ -359,17 +350,12 @@ export default function Page(input) {
       requestJson(api.assets),
       requestJson(api.my_assets),
       api.access ? requestJson(api.access) : Promise.resolve(null),
-      // Whether this project has a library is not in the catalogue — it is in
-      // the project. Leaving it out of the refresh meant a row still read
-      // "available" straight after being installed, and the Remove action,
-      // which only an installed package has, never appeared.
-      api.libraries ? requestJson(api.libraries) : Promise.resolve(null),
+      refreshInventory(),
     ];
-    const [assetsRes, myRes, sourceRes, libsRes] = await Promise.all(tasks);
+    const [assetsRes, myRes, sourceRes] = await Promise.all(tasks);
     setPacks(Array.isArray(assetsRes?.items) ? assetsRes.items : []);
     setMyPacks(Array.isArray(myRes?.items) ? myRes.items : []);
     setHubSources(Array.isArray(sourceRes?.repositories) ? sourceRes.repositories : []);
-    if (Array.isArray(libsRes)) setInstalledLibraries(libsRes);
   }
 
   async function refreshPublishSources(sourceType) {

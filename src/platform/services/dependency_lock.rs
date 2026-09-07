@@ -1081,6 +1081,9 @@ impl DependencyLockService {
     /// Only what this project installed is removed. The package directory is
     /// derived from the lock entry's own path, and a library enabled without an
     /// install has no directory to delete — so nothing is guessed from a name.
+    /// Shared package bytes survive until their last lock reference is removed.
+    /// Symlinked install directories are refused before changing requested or
+    /// locked state.
     pub fn remove_rwe_library(
         &self,
         configuration: &ProjectConfigurationService,
@@ -1092,14 +1095,33 @@ impl DependencyLockService {
         let lock = self.update_lock(&path);
         let _guard = lock.lock().unwrap_or_else(|error| error.into_inner());
         let previous = self.read_unlocked(&path, project)?;
-        let installed_dir = previous
-            .rwe
-            .libraries
-            .get(name)
-            .and_then(|entry| self.installed_package_dir(owner, project, &entry.entry));
+        let mut installed_dir = match previous.rwe.libraries.get(name) {
+            Some(entry) => self.installed_package_dir(owner, project, &entry.entry)?,
+            None => None,
+        };
 
         let mut next = previous.clone();
         next.rwe.libraries.remove(name);
+        if let Some(dir) = &installed_dir {
+            let package = dir.file_name().expect("validated package directory");
+            // Lock entries always use '/', including on Windows.
+            let prefix = format!("rwe-libraries/{}/", package.to_string_lossy());
+            // Aliases and other locked entries may share an installed package.
+            // Removing one request does not transfer ownership of their bytes.
+            let still_referenced = next
+                .rwe
+                .libraries
+                .values()
+                .any(|entry| entry.entry.starts_with(&prefix))
+                || next
+                    .nodes
+                    .bundles
+                    .values()
+                    .any(|entry| entry.entry.starts_with(&prefix));
+            if still_referenced {
+                installed_dir = None;
+            }
+        }
         let result = configuration.update_fallible(owner, project, |config| {
             config.configs.rwe.libraries.remove(name);
             self.write_unlocked(&path, project, &next)
@@ -1107,8 +1129,9 @@ impl DependencyLockService {
         self.finish_coordinated_update(&path, project, &previous, result)?;
 
         // The lock is the record, so it is updated first and the bytes follow.
-        // A failure here leaves files with no lock entry, which `repair` can
-        // see and a stale lock entry pointing at deleted bytes could not.
+        // A failure here leaves untracked files. Repair only visits locked
+        // entries, so report their exact location instead of claiming it can
+        // discover these orphans. Reinstalling restores a tracked removal path.
         if let Some(dir) = installed_dir
             && dir.is_dir()
         {
@@ -1125,23 +1148,57 @@ impl DependencyLockService {
         Ok(())
     }
 
-    /// The installed package directory a lock entry lives inside, if any.
+    /// Resolve only managed RWE package directories before mutating metadata.
     ///
-    /// An entry reads `rwe-libraries/{package}/0.1/runtime/bundle.mjs`; the
-    /// package is the first two segments. Anything shorter was not written by
-    /// an install and has no directory of its own to remove.
-    fn installed_package_dir(&self, owner: &str, project: &str, entry: &str) -> Option<PathBuf> {
-        let mut segments = entry.split('/');
-        let kind = segments.next()?;
-        let package = segments.next()?;
-        if kind.is_empty() || package.is_empty() || segments.next().is_none() {
-            return None;
+    /// A normalized lock path proves lexical containment, not filesystem
+    /// containment: an intermediate symlink can redirect `remove_dir_all`.
+    /// Refuse symlinks at each installed-tree component. Missing package bytes
+    /// are already removed; non-package entries have no owned directory.
+    /// This check does not make external concurrent filesystem swaps atomic.
+    fn installed_package_dir(
+        &self,
+        owner: &str,
+        project: &str,
+        entry: &str,
+    ) -> Result<Option<PathBuf>, PlatformError> {
+        let parts = entry.split('/').collect::<Vec<_>>();
+        if parts.len() < 3
+            || parts[0] != "rwe-libraries"
+            || parts
+                .iter()
+                .any(|part| part.is_empty() || matches!(*part, "." | "..") || part.contains('\\'))
+        {
+            return Ok(None);
         }
         let root = self.node_root(owner, project);
-        let dir = root.join(kind).join(package);
-        // A lock is a repository file someone can edit. A traversing entry must
-        // not turn a removal into a delete somewhere else on the machine.
-        dir.starts_with(&root).then_some(dir)
+        let kind = root.join(parts[0]);
+        let dir = kind.join(parts[1]);
+        for component in [&root, &kind, &dir] {
+            match std::fs::symlink_metadata(component) {
+                Ok(metadata) if metadata.file_type().is_symlink() => {
+                    return Err(PlatformError::new(
+                        "ZEB_LOCK_REMOVE_PATH",
+                        format!(
+                            "refusing library removal through symlink '{}'",
+                            component.display()
+                        ),
+                    ));
+                }
+                Ok(metadata) if !metadata.is_dir() => return Ok(None),
+                Ok(_) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+                Err(error) => {
+                    return Err(PlatformError::new(
+                        "ZEB_LOCK_REMOVE_PATH",
+                        format!(
+                            "cannot inspect installed path '{}': {error}",
+                            component.display()
+                        ),
+                    ));
+                }
+            }
+        }
+        Ok(Some(dir))
     }
 
     fn finish_coordinated_update(
@@ -1922,7 +1979,13 @@ mod tests {
             .write("owner", "project", &DependencyLockSpec::default())
             .unwrap();
         service
-            .enable_rwe_library(&configuration, "owner", "project", "zeb/example", entry('a'))
+            .enable_rwe_library(
+                &configuration,
+                "owner",
+                "project",
+                "zeb/example",
+                entry('a'),
+            )
             .unwrap();
 
         // Stand in for what an install writes: the package directory the lock
@@ -1950,6 +2013,107 @@ mod tests {
         assert!(
             package_dir.parent().unwrap().is_dir(),
             "only this package is removed — rwe-libraries/ itself stays for the others"
+        );
+    }
+
+    #[test]
+    fn removal_preserves_package_bytes_while_another_library_references_them() {
+        let root = tempfile::tempdir().unwrap();
+        let users = root.path().join("users");
+        let configuration = ProjectConfigurationService::new(users.clone());
+        configuration
+            .ensure_initialized("owner", "project", "Project")
+            .unwrap();
+        let service = DependencyLockService::new(users);
+        service
+            .enable_rwe_library(
+                &configuration,
+                "owner",
+                "project",
+                "zeb/example",
+                entry('a'),
+            )
+            .unwrap();
+        service
+            .enable_rwe_library(&configuration, "owner", "project", "zeb/alias", entry('a'))
+            .unwrap();
+        let package_dir = service
+            .node_root("owner", "project")
+            .join("rwe-libraries/zebflow.example");
+        std::fs::create_dir_all(package_dir.join("dist")).unwrap();
+        std::fs::write(package_dir.join("dist/main.mjs"), b"bundle").unwrap();
+        service
+            .remove_rwe_library(&configuration, "owner", "project", "zeb/example")
+            .unwrap();
+        assert!(
+            package_dir.join("dist/main.mjs").is_file(),
+            "the remaining alias must keep its installed bytes"
+        );
+        assert!(
+            service
+                .read("owner", "project")
+                .unwrap()
+                .rwe
+                .libraries
+                .contains_key("zeb/alias")
+        );
+        service
+            .remove_rwe_library(&configuration, "owner", "project", "zeb/alias")
+            .unwrap();
+        assert!(!package_dir.exists(), "the last reference owns cleanup");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn removal_refuses_symlinked_install_ancestors_before_changing_the_lock() {
+        let root = tempfile::tempdir().unwrap();
+        let users = root.path().join("users");
+        let configuration = ProjectConfigurationService::new(users.clone());
+        configuration
+            .ensure_initialized("owner", "project", "Project")
+            .unwrap();
+        let service = DependencyLockService::new(users);
+        service
+            .enable_rwe_library(
+                &configuration,
+                "owner",
+                "project",
+                "zeb/example",
+                entry('a'),
+            )
+            .unwrap();
+        let outside = root.path().join("outside");
+        std::fs::create_dir_all(outside.join("zebflow.example")).unwrap();
+        std::fs::write(
+            outside.join("zebflow.example/keep.txt"),
+            b"not installed here",
+        )
+        .unwrap();
+        let hub = service.node_root("owner", "project");
+        std::fs::create_dir_all(&hub).unwrap();
+        std::os::unix::fs::symlink(&outside, hub.join("rwe-libraries")).unwrap();
+        let result = service.remove_rwe_library(&configuration, "owner", "project", "zeb/example");
+        assert!(
+            outside.join("zebflow.example/keep.txt").is_file(),
+            "a lexical prefix cannot establish containment through a symlink"
+        );
+        assert!(result.is_err(), "unsafe deletion must be refused");
+        assert!(
+            service
+                .read("owner", "project")
+                .unwrap()
+                .rwe
+                .libraries
+                .contains_key("zeb/example")
+        );
+        assert!(
+            configuration
+                .read_or_default("owner", "project")
+                .unwrap()
+                .configs
+                .rwe
+                .libraries
+                .contains_key("zeb/example")
         );
     }
 
