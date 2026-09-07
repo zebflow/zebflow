@@ -1,6 +1,6 @@
 # Publish metadata for the blessed local-hub seed.
 # The seeder publishes this package as the reserved `zebflow` publisher.
 id: zebflow.threejs
-version: 0.1.1
+version: 0.1.2
 title: zeb/threejs
 description: "Three.js for RWE templates \u2014 full 3D API + Canvas component, hooks (useThree, useFrame), and OrbitControls."

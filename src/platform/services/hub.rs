@@ -12123,6 +12123,136 @@ mod tests {
         assert_eq!(unchanged.created_at, deckgl.created_at);
     }
 
+    /// An existing instance keeps its immutable pre-license release when a
+    /// newer binary seeds corrected package bytes under a fresh coordinate.
+    #[test]
+    fn blessed_upgrade_publishes_licensed_bytes_without_rewriting_old_release() {
+        let (root, platform) = hub_publish_fixture("Blessed Upgrade");
+        let package_id = "zebflow.codemirror";
+        let carried = crate::platform::blessed::blessed_packages().unwrap();
+        for package in carried
+            .iter()
+            .filter(|package| package.asset_kind == "rwe_library")
+        {
+            assert_ne!(
+                package.version, "0.1.1",
+                "{} must not reuse the pre-license coordinate",
+                package.package_id
+            );
+        }
+        let current = carried
+            .into_iter()
+            .find(|package| package.package_id == package_id)
+            .unwrap();
+        let current_version = current.version.clone();
+
+        // A separate catalog stands in for an instance before this upgrade.
+        // Its project services still use the fixture, so the real installer is
+        // exercised without touching any running instance or project directory.
+        let local_data = crate::platform::adapters::data::build_hub_data_adapter(
+            crate::platform::model::DataAdapterKind::Sqlite,
+            &root.path().join("upgrade-hub.db"),
+        )
+        .unwrap();
+        let hub = HubService::new(
+            platform.hub.control_data.clone(),
+            local_data.clone(),
+            crate::platform::model::DataAdapterKind::Sqlite,
+            platform.hub.projects.clone(),
+            platform.hub.node_registry.clone(),
+            platform.hub.dependency_lock.clone(),
+            root.path().to_path_buf(),
+        );
+        let authority = hub.ensure_store_authority().unwrap();
+        let publisher = hub.ensure_reserved_publisher().unwrap();
+        let mut old_package = platform
+            .hub
+            .local_store
+            .data
+            .get_hub_asset_package(package_id)
+            .unwrap()
+            .unwrap();
+        old_package.authority_id = authority.authority_id;
+        old_package.publisher_pk = publisher.publisher_pk;
+        let mut old = platform
+            .hub
+            .local_store
+            .data
+            .get_hub_asset_version(package_id, &current_version)
+            .unwrap()
+            .unwrap();
+
+        let mut old_spec: HubPackageSpec = serde_json::from_value(old.manifest.clone()).unwrap();
+        old_spec.files = current
+            .files
+            .iter()
+            .filter(|file| file.rel_path != "LICENSE")
+            .map(|file| {
+                if file.rel_path == "manifest.json" {
+                    let mut manifest: Value = serde_json::from_slice(file.bytes).unwrap();
+                    manifest["spec"].as_object_mut().unwrap().remove("license");
+                    hub_entry_from_bytes(&file.rel_path, &serde_json::to_vec(&manifest).unwrap())
+                } else {
+                    hub_entry_from_bytes(&file.rel_path, file.bytes)
+                }
+            })
+            .collect();
+        // Restore a historical store snapshot directly: today's publish gate
+        // correctly refuses this missing-license manifest.
+        let old_bytes = encode_hub_artifact(package_id, "0.1.1", &old_spec, "TEST").unwrap();
+        old.version = "0.1.1".into();
+        old.artifact_rel_path = hub.local_store.artifact_rel(package_id, &old.version);
+        old.artifact_sha256 = sha256_hex(&old_bytes);
+        old.manifest = serde_json::to_value(old_spec).unwrap();
+        let old_path = root.path().join(&old.artifact_rel_path);
+        std::fs::create_dir_all(old_path.parent().unwrap()).unwrap();
+        std::fs::write(&old_path, &old_bytes).unwrap();
+        local_data.put_hub_asset_package(&old_package).unwrap();
+        local_data.put_hub_asset_version(&old).unwrap();
+        let failure = hub
+            .install_asset("superadmin", "default", package_id, "0.1.1", "")
+            .expect_err("old missing-license package is rejected");
+        assert!(failure.message.contains("license"), "{failure}");
+
+        let report = hub.seed_blessed_catalog().unwrap();
+        assert!(report.errors.is_empty(), "{:?}", report.errors);
+        assert!(
+            report
+                .published
+                .contains(&format!("{package_id}@{current_version}"))
+        );
+        assert_eq!(
+            local_data
+                .get_hub_asset_version(package_id, "0.1.1")
+                .unwrap(),
+            Some(old)
+        );
+        assert_eq!(std::fs::read(&old_path).unwrap(), old_bytes);
+        assert_eq!(
+            hub.list_asset_versions(package_id).unwrap()[0].version,
+            current_version,
+            "the upgraded shelf offers the new release first"
+        );
+        hub.install_asset("superadmin", "default", package_id, &current_version, "")
+            .expect("new licensed release installs on the upgraded instance");
+        let installed = root
+            .path()
+            .join("users/superadmin/default/data/hub/rwe-libraries/zebflow.codemirror");
+        assert!(installed.join("LICENSE").is_file());
+        let manifest: Value =
+            serde_json::from_slice(&std::fs::read(installed.join("manifest.json")).unwrap())
+                .unwrap();
+        assert_eq!(manifest["spec"]["license"]["spdx"], "MIT");
+        let lock = platform
+            .dependency_lock
+            .read("superadmin", "default")
+            .unwrap();
+        assert_eq!(
+            lock.rwe.libraries["zeb/codemirror"].source_id,
+            format!("{package_id}@{current_version}")
+        );
+    }
+
     /// `zebflow.*` is the seeder's namespace: the public publish surface
     /// refuses the reserved publisher no matter who authenticated.
     #[test]

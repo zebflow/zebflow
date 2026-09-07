@@ -1,6 +1,6 @@
 # Publish metadata for the blessed local-hub seed.
 # The seeder publishes this package as the reserved `zebflow` publisher.
 id: zebflow.markdown
-version: 0.1.1
+version: 0.1.2
 title: zeb/markdown
 description: "Markdown rendering for RWE templates using marked + DOMPurify. Includes Markdown component."

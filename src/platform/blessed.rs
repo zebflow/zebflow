@@ -184,6 +184,41 @@ pub fn blessed_packages() -> Result<Vec<BlessedPackage>, PlatformError> {
 mod tests {
     use super::*;
 
+    /// The seeder packages embedded bytes, not arbitrary files sitting next to
+    /// them in the source tree. Required license notices must survive that edge.
+    #[test]
+    fn every_blessed_library_embeds_its_declared_license_notices() {
+        for package in blessed_rwe_library_packages().expect("blessed libraries") {
+            let manifest = package
+                .files
+                .iter()
+                .find(|file| file.rel_path == "manifest.json")
+                .expect("every library has a manifest");
+            let document = crate::contracts::decode_contract::<
+                crate::contracts::kinds::RweLibraryManifestContract,
+            >(manifest.bytes)
+            .expect("valid library manifest");
+            for notice in &document.spec.license.notices {
+                assert!(
+                    package
+                        .files
+                        .iter()
+                        .any(|file| file.rel_path == *notice && !file.bytes.is_empty()),
+                    "{} declares notice {notice}, but the seeded package omits its bytes",
+                    package.package_id
+                );
+            }
+            if package.package_id == "zebflow.deckgl" {
+                assert!(
+                    package
+                        .files
+                        .iter()
+                        .any(|file| file.rel_path == "MODIFICATIONS")
+                );
+            }
+        }
+    }
+
     #[test]
     fn every_blessed_package_carries_reserved_metadata_and_files() {
         let packages = blessed_packages().expect("blessed packages enumerate");

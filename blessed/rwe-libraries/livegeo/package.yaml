@@ -1,6 +1,6 @@
 # Publish metadata for the blessed local-hub seed.
 # The seeder publishes this package as the reserved `zebflow` publisher.
 id: zebflow.livegeo
-version: 0.1.1
+version: 0.1.2
 title: zeb/livegeo
 description: "Frontend hooks for live geospatial interactivity: playback, track playback, smoothing, and map follow."

@@ -1,6 +1,6 @@
 # Publish metadata for the blessed local-hub seed.
 # The seeder publishes this package as the reserved `zebflow` publisher.
 id: zebflow.prosemirror
-version: 0.1.1
+version: 0.1.2
 title: zeb/prosemirror
 description: "ProseMirror 1.41 rich text editor for RWE templates. Two-way stateKey reactive bridge, SPA/API-first MutationObserver auto-mount, extensible toolbar system, built-in doodle/photo/link plugins, instance registry via window.__zebProse."

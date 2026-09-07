@@ -1,6 +1,6 @@
 # Publish metadata for the blessed local-hub seed.
 # The seeder publishes this package as the reserved `zebflow` publisher.
 id: zebflow.pdf
-version: 0.1.1
+version: 0.1.2
 title: zeb/pdf
 description: "Browser-native PDF generation. Zero dependencies. Build structured PDFs from an IR tree: text flow, tables, columns, floats, headers/footers, multi-page layout with auto page-break."

@@ -23,6 +23,17 @@ const LARGE_FILE_THRESHOLD_BYTES: usize = 5 * 1024 * 1024;
 /// Why bytes already in hand are still not something the review can read.
 const UNREADABLE_NOT_TEXT: &str = "the bytes are not UTF-8 text";
 
+/// Conventional notice files carried by bundled libraries. This is an exact
+/// name allowance, not an extension wildcard: `LICENSE.exe` remains refused.
+/// Their bytes must be readable text before the ordinary extension rule is
+/// bypassed, so missing artifacts and binary files cannot borrow these names.
+fn is_package_notice_path(rel_path: &str) -> bool {
+    matches!(
+        rel_path.rsplit('/').next(),
+        Some("LICENSE" | "LICENSE.marked" | "LICENSE.dompurify" | "MODIFICATIONS")
+    )
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PackagePolicyEntry {
     rel_path: String,
@@ -53,9 +64,9 @@ impl PackagePolicyEntry {
     /// writes something, and that is the same fact whether the bytes never
     /// arrived or arrived as binary.
     ///
-    /// Being unreadable refuses nothing on its own. The scan escalates it only
-    /// where those bytes were going to be read as a pipeline, which is why a
-    /// package carrying an icon or a font still installs.
+    /// Being unreadable refuses nothing on its own. The scan escalates it for
+    /// a pipeline or a notice that must carry readable text; ordinary binary
+    /// assets such as icons and fonts still install.
     pub fn from_bytes(
         rel_path: impl Into<String>,
         kind: impl Into<String>,
@@ -255,9 +266,20 @@ pub fn review_package_entries(
     }
 
     for entry in entries {
-        // The one finding here that needs neither the bytes nor a guess: a path
-        // either ends in a file type this project accepts or it does not.
-        if !options.bundle_internal_paths
+        if is_package_notice_path(&entry.rel_path) {
+            if !entry.unreadable.is_empty()
+                || entry.content.trim().is_empty()
+                || entry
+                    .content
+                    .chars()
+                    .any(|ch| ch.is_control() && !matches!(ch, '\n' | '\r' | '\t'))
+            {
+                violations.push(format!(
+                    "{}: a package notice must contain readable, nonempty UTF-8 text without binary control characters",
+                    entry.rel_path
+                ));
+            }
+        } else if !options.bundle_internal_paths
             && let Some(refused) = layout.refused_file_type(&entry.rel_path)
         {
             violations.push(format!(
@@ -1211,6 +1233,80 @@ TRUNCATE TABLE tags;
 
         assert!(review.violations.is_empty(), "{:?}", review.violations);
         assert!(review.is_installable());
+    }
+
+    #[test]
+    fn conventional_package_notices_install_only_as_readable_text() {
+        let layout = ResolvedProjectLayout::platform_default();
+        let notice = b"Copyright contributors\nPermission is granted.\n";
+        for name in [
+            "LICENSE",
+            "LICENSE.marked",
+            "LICENSE.dompurify",
+            "MODIFICATIONS",
+        ] {
+            let entries = [PackagePolicyEntry::from_bytes(
+                format!("library/{name}"),
+                "file",
+                notice.len(),
+                notice,
+            )];
+            for publish_mode in [false, true] {
+                let review = review_package_entries(
+                    &layout,
+                    &entries,
+                    Vec::new(),
+                    PackageReviewOptions {
+                        publish_mode,
+                        ..Default::default()
+                    },
+                );
+                assert!(review.is_installable(), "{name}: {:?}", review.violations);
+            }
+        }
+        for bytes in [
+            b"".as_slice(),
+            b"\xff\xfe".as_slice(),
+            b"text\0binary".as_slice(),
+        ] {
+            let review = review_package_entries(
+                &layout,
+                &[PackagePolicyEntry::from_bytes(
+                    "LICENSE",
+                    "file",
+                    bytes.len(),
+                    bytes,
+                )],
+                Vec::new(),
+                PackageReviewOptions::default(),
+            );
+            assert!(!review.is_installable(), "a notice must be readable text");
+        }
+        let unresolved = review_package_entries(
+            &layout,
+            &[PackagePolicyEntry::unresolved(
+                "LICENSE",
+                "file",
+                20,
+                "artifact unavailable",
+            )],
+            Vec::new(),
+            PackageReviewOptions::default(),
+        );
+        assert!(!unresolved.is_installable());
+        for refused in [
+            "LICENSE.exe",
+            "LICENSE.sh",
+            "LICENSE.unrecognized",
+            "MODIFICATIONS.exe",
+            "Makefile",
+            ".env",
+        ] {
+            assert!(
+                !review_with(&layout, &[refused]).is_installable(),
+                "{refused}"
+            );
+        }
     }
 
     /// A name with no suffix is refused as an unnamed type, which is how

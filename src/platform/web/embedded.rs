@@ -806,6 +806,60 @@ pub const PLATFORM_LIBRARY_ASSETS: &[EmbeddedAsset] = &[
         path: "zeb/use/package.yaml",
         bytes: include_bytes!("../../../blessed/rwe-libraries/use/package.yaml"),
     },
+    // Notices are package content: seeding enumerates this table, not the
+    // filesystem. A declared notice must travel with the installed package.
+    EmbeddedAsset {
+        path: "zeb/codemirror/LICENSE",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/codemirror/LICENSE"),
+    },
+    EmbeddedAsset {
+        path: "zeb/d3/LICENSE",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/d3/LICENSE"),
+    },
+    EmbeddedAsset {
+        path: "zeb/deckgl/LICENSE",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/deckgl/LICENSE"),
+    },
+    EmbeddedAsset {
+        path: "zeb/deckgl/MODIFICATIONS",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/deckgl/MODIFICATIONS"),
+    },
+    EmbeddedAsset {
+        path: "zeb/graphui/LICENSE",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/graphui/LICENSE"),
+    },
+    EmbeddedAsset {
+        path: "zeb/livegeo/LICENSE",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/livegeo/LICENSE"),
+    },
+    EmbeddedAsset {
+        path: "zeb/markdown/LICENSE.marked",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/markdown/LICENSE.marked"),
+    },
+    EmbeddedAsset {
+        path: "zeb/markdown/LICENSE.dompurify",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/markdown/LICENSE.dompurify"),
+    },
+    EmbeddedAsset {
+        path: "zeb/pdf/LICENSE",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/pdf/LICENSE"),
+    },
+    EmbeddedAsset {
+        path: "zeb/prosemirror/LICENSE",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/prosemirror/LICENSE"),
+    },
+    EmbeddedAsset {
+        path: "zeb/threejs/LICENSE",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/threejs/LICENSE"),
+    },
+    EmbeddedAsset {
+        path: "zeb/threejs-vrm/LICENSE",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/threejs-vrm/LICENSE"),
+    },
+    EmbeddedAsset {
+        path: "zeb/use/LICENSE",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/use/LICENSE"),
+    },
 ];
 
 /// Bytes for the Studio's own pages.
