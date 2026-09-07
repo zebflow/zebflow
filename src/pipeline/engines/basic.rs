@@ -48,7 +48,7 @@ use crate::pipeline::nodes::basic::{
     ws_sync_state, ws_trigger,
 };
 use crate::pipeline::nodes::{NodeExecutionInput, NodeExecutionOutput, NodeHandler};
-use crate::pipeline::trace_capture::TraceCapture;
+use crate::pipeline::trace_capture::{TraceCapture, redact_literal_secrets};
 #[cfg(test)]
 use crate::pipeline::trace_capture::TraceCaptureSettings;
 use crate::platform::services::CredentialService;
@@ -519,14 +519,7 @@ fn trace_config_snapshot(value: &Value) -> Option<Value> {
 }
 
 fn redact_string(value: &str, tokens: &[String]) -> String {
-    let mut out = value.to_string();
-    for token in tokens {
-        if token.is_empty() {
-            continue;
-        }
-        out = out.replace(token, "••••••");
-    }
-    out
+    redact_literal_secrets(value, tokens)
 }
 
 fn redact_json_value(
@@ -3361,6 +3354,25 @@ mod tests {
             widened.grants_network(),
             "an operator's platform patch is what the guard must read"
         );
+    }
+
+    #[test]
+    fn private_redact_masks_overlaps_without_applying_log_limits_to_execution() {
+        let tail = "retained execution text ".repeat(1024);
+        let mut payload = json!({
+            "__zf_private_redact": ["", "abc", "bcdef"],
+            "__zf_private_redact_except_paths": ["response.body"],
+            "message": format!("abcdef {tail}"),
+            "nested": ["abcdef"],
+            "response": {"body": "abcdef"}
+        });
+        let tokens = take_private_redact_tokens(&mut payload);
+        let exceptions = take_private_redact_except_paths(&mut payload);
+        let redacted = redact_json_value(&payload, &tokens, &exceptions, &[]);
+        assert_eq!(redacted["message"], format!("•••••• {tail}"));
+        assert_eq!(redacted["nested"][0], "••••••");
+        assert_eq!(redacted["response"]["body"], "abcdef");
+        assert!(redacted["message"].as_str().unwrap().len() > 8192);
     }
 
     #[test]

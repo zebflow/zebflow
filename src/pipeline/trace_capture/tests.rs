@@ -98,6 +98,113 @@ fn shortening_repeated_secrets_never_exposes_a_cut_token_prefix() {
 }
 
 #[test]
+fn overlapping_declared_secrets_are_masked_independently_of_token_order() {
+    for tokens in [json!(["abc", "bcdef"]), json!(["bcdef", "abc"])] {
+        let captured = capture_with(
+            TraceCaptureSettings::default(),
+            &json!({"__zf_private_trace_redact": tokens, "message": "before abcdef after"}),
+        );
+        assert_eq!(captured["message"], "before •••••• after");
+    }
+}
+
+#[test]
+fn overlapping_secret_chains_and_unicode_do_not_leave_fragments() {
+    for (tokens, text) in [
+        (json!(["abc", "cde", "efg"]), "abcdefg"),
+        (json!(["aba"]), "ababa"),
+        (json!(["é界", "界雪"]), "é界雪"),
+    ] {
+        let captured = capture_with(
+            TraceCaptureSettings::default(),
+            &json!({"__zf_private_trace_redact": tokens, "message": text}),
+        );
+        assert_eq!(captured["message"], "••••••", "{text}");
+    }
+}
+
+#[test]
+fn overlapping_secret_mask_respects_preview_limits_and_exceptions() {
+    let captured = capture_with(
+        TraceCaptureSettings {
+            max_string_chars: Some(4),
+            ..Default::default()
+        },
+        &json!({
+            "__zf_private_trace_redact": ["abc", "bcdef"],
+            "__zf_private_redact_except_paths": ["visible"],
+            "message": "abcdef tail",
+            "visible": "abcdef"
+        }),
+    );
+    assert_eq!(captured["message"]["preview"], "••••");
+    assert_eq!(captured["visible"]["preview"], "abcd");
+}
+
+#[test]
+fn overlap_projection_matches_an_independent_interval_union() {
+    fn reference(text: &str, tokens: &[&str]) -> String {
+        let mut ranges = Vec::new();
+        for (start, _) in text.char_indices() {
+            for token in tokens {
+                if text[start..].starts_with(token) {
+                    ranges.push((start, start + token.len()));
+                }
+            }
+        }
+        ranges.sort_unstable();
+        let mut merged: Vec<(usize, usize)> = Vec::new();
+        for (start, end) in ranges {
+            if let Some(last) = merged.last_mut()
+                && start < last.1
+            {
+                last.1 = last.1.max(end);
+            } else {
+                merged.push((start, end));
+            }
+        }
+        let mut output = String::new();
+        let mut cursor = 0;
+        for (start, end) in merged {
+            output.push_str(&text[cursor..start]);
+            output.push_str("••••••");
+            cursor = end;
+        }
+        output.push_str(&text[cursor..]);
+        output
+    }
+
+    let patterns = [
+        "a", "b", "aa", "ab", "ba", "bb", "aaa", "aab", "aba", "abb", "baa", "bab", "bba", "bbb",
+    ];
+    for length in 0..=6 {
+        for bits in 0..(1 << length) {
+            let text: String = (0..length)
+                .map(|bit| if bits & (1 << bit) == 0 { 'a' } else { 'b' })
+                .collect();
+            for first in patterns {
+                for second in patterns {
+                    let tokens = [first, second];
+                    let (actual, truncated) = redacted_preview(&text, &tokens, 100);
+                    assert_eq!(actual, reference(&text, &tokens), "{text:?} {tokens:?}");
+                    assert!(!truncated);
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn long_self_overlapping_secret_keeps_only_the_unrelated_tail() {
+    let secret = "ab".repeat(4096);
+    let text = format!("{} visible", secret.repeat(4));
+    assert_eq!(
+        redacted_preview(&text, &[&secret], 100),
+        ("•••••• visible".into(), false)
+    );
+}
+
+#[test]
 fn huge_secret_and_unicode_boundary_are_redacted_without_token_fragments() {
     let secret = "界".repeat(100_000);
     let captured = capture_with(

@@ -436,9 +436,23 @@ impl Serialize for View<'_> {
     }
 }
 
+/// Redact declared literal secrets throughout an execution string using the
+/// same overlap policy as trace previews. No capture limit applies: unrelated
+/// text is retained in full. Empty tokens are ignored, as in the node contract.
+pub(crate) fn redact_literal_secrets(text: &str, tokens: &[String]) -> String {
+    let tokens: Vec<_> = tokens
+        .iter()
+        .map(String::as_str)
+        .filter(|token| !token.is_empty())
+        .collect();
+    redacted_preview(text, &tokens, usize::MAX).0
+}
+
 /// Walk the original string so truncation can never expose the prefix of a
 /// secret cut by the preview boundary. Retain at most `cap` output characters;
 /// token matches consume borrowed input without copying the token or its tail.
+/// Overlapping occurrences form one masked range, independently of token order:
+/// declaring `abc` and `bcdef` masks all of `abcdef`, including the shared tail.
 fn redacted_preview(text: &str, tokens: &[&str], cap: usize) -> (String, bool) {
     if tokens.is_empty() {
         let end = text
@@ -457,7 +471,7 @@ fn redacted_preview(text: &str, tokens: &[&str], cap: usize) -> (String, bool) {
             .filter(|token| rest.starts_with(**token))
             .max_by_key(|token| token.len())
         {
-            rest = &rest[token.len()..];
+            rest = &rest[overlapping_secret_end(rest, tokens, token.len())..];
             let mask_chars = (cap - written).min(6);
             for _ in 0..mask_chars {
                 output.push('•');
@@ -471,6 +485,37 @@ fn redacted_preview(text: &str, tokens: &[&str], cap: usize) -> (String, bool) {
         }
     }
     (output, !rest.is_empty())
+}
+
+/// Extend a known secret prefix through the union of overlapping occurrences.
+/// Only matches crossing the current boundary can extend it, so each search
+/// borrows at most a two-token-width window. Searching from its end skips
+/// redundant interior matches in long repeated secrets without allocating an
+/// occurrence list. Adjacent occurrences remain separate masks.
+fn overlapping_secret_end(text: &str, tokens: &[&str], mut end: usize) -> usize {
+    loop {
+        let previous = end;
+        for token in tokens {
+            // A one-byte token cannot overlap and extend another byte range.
+            if token.len() <= 1 {
+                continue;
+            }
+            let mut start = end.saturating_sub(token.len() - 1);
+            while !text.is_char_boundary(start) {
+                start += 1;
+            }
+            let mut limit = end.saturating_add(token.len() - 1).min(text.len());
+            while !text.is_char_boundary(limit) {
+                limit -= 1;
+            }
+            if let Some(offset) = text[start..limit].rfind(token) {
+                end = end.max(start + offset + token.len());
+            }
+        }
+        if end == previous || end == text.len() {
+            return end;
+        }
+    }
 }
 
 fn sample_count(len: usize, limits: &TraceCaptureLimits) -> usize {

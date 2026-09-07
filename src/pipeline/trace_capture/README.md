@@ -34,7 +34,9 @@ earlier than its configured payload-depth limit.
    the payload, but remains linear in its size.
 2. Serialize a borrowed view that samples arrays, limits nesting/strings, and
    masks secrets. Secret matching reads the original string so shortening cannot
-   expose a token cut at a preview boundary. Sensitive ancestors stay masked.
+   expose a token cut at a preview boundary. Overlapping declared secrets are
+   masked as one range regardless of token order (for example `abc` and `bcdef`
+   hide all of `abcdef`). Sensitive ancestors stay masked.
 3. Stop serialization when its capped byte buffer would overflow. Replace that
    entire capture with a budget marker and consume its attempted allowance.
    Later captures in the same exhausted node/run also return budget markers.
@@ -59,6 +61,10 @@ Run `cargo test --lib trace_capture` for capture/contract/engine regressions and
 `cargo test --lib trace_capture_benchmark -- --ignored --nocapture` for a local
 capture-only comparison with the previous clone/redact/summarize implementation.
 The legacy implementation is test-only and is not shipped in the runtime path.
+It retains the old clone/redact/summarize structure but now shares the corrected
+literal-secret matcher with execution and capture; it is not a frozen copy of
+the old sequential replacement bug. Historical benchmark source hashes identify
+the exact implementation used for earlier measurements.
 The benchmark includes a disabled-capture baseline, small payloads, 10,000-row
 payloads, and 30 repeated node captures. It reports time and serialized bytes.
 Use `--release` for optimized measurements; debug timings are diagnostic only.
