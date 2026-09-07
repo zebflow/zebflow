@@ -7,7 +7,7 @@ export const page = {
   head: {
     links: [
       { rel: "stylesheet", href: "/assets/platform/db-connections.css" },
-      { rel: "stylesheet", href: "/assets/libraries/zeb/icons/0.1/runtime/devicons.css" },
+      { rel: "stylesheet", href: "/assets/platform/devicons.css" },
     ],
   },
   html: {

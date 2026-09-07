@@ -5,8 +5,6 @@ Bundled add-on libraries for Zebflow templates. Enable under **Settings → Libr
 Each library provides a pre-built JavaScript bundle served from `/assets/libraries/zeb/{lib}/{version}/`.
 
 Most browser-only libraries should be loaded via dynamic `import()` inside `useEffect()`.
-`zeb/icons` is the exception: import it explicitly at module top-level with `import "zeb/icons";`.
-
 
 ---
 
@@ -62,12 +60,9 @@ Use `Tool.geo` for cross-runtime math like `routeProgress`, `interpolateRoute`, 
 
 ---
 
-## zeb/icons — SVG Icon Components
-
 Lucide icon components. After enabling, you must still import the bundle explicitly:
 
 ```tsx
-import "zeb/icons";
 
 // Then use the icon components directly
 <Search className="w-4 h-4" />
@@ -467,8 +462,6 @@ export default function PdfPage() {
 ## Critical rule: load browser-only bundles inside `useEffect`
 
 For browser-only bundles like `zeb/d3`, `zeb/codemirror`, `zeb/markdown`, and `zeb/threejs`, never import the raw runtime asset at module top-level — they reference browser APIs unavailable during SSR.
-
-`zeb/icons` does not use this raw runtime-asset pattern. Use `import "zeb/icons";` instead.
 
 ```tsx
 // ✗ WRONG — crashes SSR

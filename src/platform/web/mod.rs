@@ -100,7 +100,10 @@ use crate::rwe::{
     resolve_engine_or_default,
 };
 use crate::version::APP_VERSION;
-use embedded::{PLATFORM_TEMPLATE_ASSETS, platform_library_asset, platform_node_icon_asset};
+use embedded::{
+    PLATFORM_TEMPLATE_ASSETS, hub_catalogue_asset, platform_library_asset,
+    platform_node_icon_asset,
+};
 use crate::platform::db::sql_ddl::SqlDialect;
 
 /// Platform login path — used for unauthenticated page redirects and frontend 401 handling.
@@ -125,11 +128,15 @@ const BRAND_FAVICON_32_PNG: &[u8] = include_bytes!("assets/branding/favicon-32.p
 const BRAND_APPLE_TOUCH_ICON_PNG: &[u8] = include_bytes!("assets/branding/apple-touch-icon.png");
 /// Global tokens + shared UI; studio rules are concatenated from `pages/project-studio/styles.css` (one HTTP stylesheet).
 const PLATFORM_MAIN_CSS: &str = concat!(
+    include_str!("templates/styles/fonts.css"),
+    "\n\n",
     include_str!("templates/styles/main.css"),
     "\n\n",
     include_str!("templates/pages/project-studio/styles.css"),
 );
 const PLATFORM_DB_SUITE_CSS: &str = include_str!("templates/styles/db-suite.css");
+/// Technology marks for the database pages, inlined as data URIs.
+const PLATFORM_DEVICONS_CSS: &str = include_str!("templates/styles/devicons.css");
 const PLATFORM_DB_CONNECTIONS_CSS: &str = include_str!("templates/styles/db-connections.css");
 
 fn header_first_value<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
@@ -407,7 +414,7 @@ pub async fn router(platform: Arc<PlatformService>) -> Router {
         .route("/favicon-32.png", get(favicon_32_asset))
         .route("/apple-touch-icon.png", get(apple_touch_icon_asset))
         .route("/assets/branding/{asset}", get(branding_asset))
-        .route("/assets/platform/{asset}", get(platform_asset))
+        .route("/assets/platform/{*asset}", get(platform_asset))
         .route("/assets/node-icons/{*path}", get(node_icon_asset))
         .route("/assets/rwe/scripts/{hash}", get(rwe_script_asset))
         .route(
@@ -1594,7 +1601,7 @@ fn render_page(
     }
     // Any page that uses devicon- classes gets the icon font CSS injected.
     if html.contains("devicon-") {
-        html = ensure_stylesheet_link(html, "/assets/libraries/zeb/icons/0.1/runtime/devicons.css");
+        html = ensure_stylesheet_link(html, "/assets/platform/devicons.css");
     }
 
     let final_html = externalize_rwe_scripts(state, html.as_str(), &out.compiled_scripts, None)?;
@@ -2037,6 +2044,27 @@ async fn favicon_32_asset() -> Response {
     asset_response("image/png", BRAND_FAVICON_32_PNG)
 }
 
+
+
+
+// Vendored web fonts. Embedded rather than read from disk so an install that
+// never had a network still draws in the faces the Studio was designed in.
+// One file per family and subset — they are variable fonts, so each carries
+// every weight.
+const FONT_HANKENGROTESK_CYRILLIC_EXT_WOFF2: &[u8] = include_bytes!("templates/styles/fonts/HankenGrotesk-cyrillic-ext.woff2");
+const FONT_HANKENGROTESK_LATIN_EXT_WOFF2: &[u8] = include_bytes!("templates/styles/fonts/HankenGrotesk-latin-ext.woff2");
+const FONT_HANKENGROTESK_LATIN_WOFF2: &[u8] = include_bytes!("templates/styles/fonts/HankenGrotesk-latin.woff2");
+const FONT_HANKENGROTESK_VIETNAMESE_WOFF2: &[u8] = include_bytes!("templates/styles/fonts/HankenGrotesk-vietnamese.woff2");
+const FONT_JETBRAINSMONO_CYRILLIC_EXT_WOFF2: &[u8] = include_bytes!("templates/styles/fonts/JetBrainsMono-cyrillic-ext.woff2");
+const FONT_JETBRAINSMONO_CYRILLIC_WOFF2: &[u8] = include_bytes!("templates/styles/fonts/JetBrainsMono-cyrillic.woff2");
+const FONT_JETBRAINSMONO_GREEK_WOFF2: &[u8] = include_bytes!("templates/styles/fonts/JetBrainsMono-greek.woff2");
+const FONT_JETBRAINSMONO_LATIN_EXT_WOFF2: &[u8] = include_bytes!("templates/styles/fonts/JetBrainsMono-latin-ext.woff2");
+const FONT_JETBRAINSMONO_LATIN_WOFF2: &[u8] = include_bytes!("templates/styles/fonts/JetBrainsMono-latin.woff2");
+const FONT_JETBRAINSMONO_VIETNAMESE_WOFF2: &[u8] = include_bytes!("templates/styles/fonts/JetBrainsMono-vietnamese.woff2");
+const FONT_SPACEGROTESK_LATIN_EXT_WOFF2: &[u8] = include_bytes!("templates/styles/fonts/SpaceGrotesk-latin-ext.woff2");
+const FONT_SPACEGROTESK_LATIN_WOFF2: &[u8] = include_bytes!("templates/styles/fonts/SpaceGrotesk-latin.woff2");
+const FONT_SPACEGROTESK_VIETNAMESE_WOFF2: &[u8] = include_bytes!("templates/styles/fonts/SpaceGrotesk-vietnamese.woff2");
+
 async fn apple_touch_icon_asset() -> Response {
     asset_response("image/png", BRAND_APPLE_TOUCH_ICON_PNG)
 }
@@ -2047,6 +2075,7 @@ async fn platform_asset(Path(asset): Path<String>) -> Response {
     match asset.as_str() {
         "main.css" => {
             let css = [
+                fs::read_to_string(format!("{TEMPLATE_SOURCE_DIR}/styles/fonts.css")),
                 fs::read_to_string(format!("{TEMPLATE_SOURCE_DIR}/styles/main.css")),
                 fs::read_to_string(format!(
                     "{TEMPLATE_SOURCE_DIR}/pages/project-studio/styles.css"
@@ -2071,6 +2100,19 @@ async fn platform_asset(Path(asset): Path<String>) -> Response {
     }
 
     match asset.as_str() {
+        "fonts/HankenGrotesk-cyrillic-ext.woff2" => asset_response("font/woff2", FONT_HANKENGROTESK_CYRILLIC_EXT_WOFF2),
+        "fonts/HankenGrotesk-latin-ext.woff2" => asset_response("font/woff2", FONT_HANKENGROTESK_LATIN_EXT_WOFF2),
+        "fonts/HankenGrotesk-latin.woff2" => asset_response("font/woff2", FONT_HANKENGROTESK_LATIN_WOFF2),
+        "fonts/HankenGrotesk-vietnamese.woff2" => asset_response("font/woff2", FONT_HANKENGROTESK_VIETNAMESE_WOFF2),
+        "fonts/JetBrainsMono-cyrillic-ext.woff2" => asset_response("font/woff2", FONT_JETBRAINSMONO_CYRILLIC_EXT_WOFF2),
+        "fonts/JetBrainsMono-cyrillic.woff2" => asset_response("font/woff2", FONT_JETBRAINSMONO_CYRILLIC_WOFF2),
+        "fonts/JetBrainsMono-greek.woff2" => asset_response("font/woff2", FONT_JETBRAINSMONO_GREEK_WOFF2),
+        "fonts/JetBrainsMono-latin-ext.woff2" => asset_response("font/woff2", FONT_JETBRAINSMONO_LATIN_EXT_WOFF2),
+        "fonts/JetBrainsMono-latin.woff2" => asset_response("font/woff2", FONT_JETBRAINSMONO_LATIN_WOFF2),
+        "fonts/JetBrainsMono-vietnamese.woff2" => asset_response("font/woff2", FONT_JETBRAINSMONO_VIETNAMESE_WOFF2),
+        "fonts/SpaceGrotesk-latin-ext.woff2" => asset_response("font/woff2", FONT_SPACEGROTESK_LATIN_EXT_WOFF2),
+        "fonts/SpaceGrotesk-latin.woff2" => asset_response("font/woff2", FONT_SPACEGROTESK_LATIN_WOFF2),
+        "fonts/SpaceGrotesk-vietnamese.woff2" => asset_response("font/woff2", FONT_SPACEGROTESK_VIETNAMESE_WOFF2),
         "main.css" => asset_response("text/css; charset=utf-8", PLATFORM_MAIN_CSS.as_bytes()),
         "db-suite.css" => {
             asset_response("text/css; charset=utf-8", PLATFORM_DB_SUITE_CSS.as_bytes())
@@ -2079,6 +2121,9 @@ async fn platform_asset(Path(asset): Path<String>) -> Response {
             "text/css; charset=utf-8",
             PLATFORM_DB_CONNECTIONS_CSS.as_bytes(),
         ),
+        "devicons.css" => {
+            asset_response("text/css; charset=utf-8", PLATFORM_DEVICONS_CSS.as_bytes())
+        }
         _ => (StatusCode::NOT_FOUND, "asset not found").into_response(),
     }
 }
@@ -2166,7 +2211,11 @@ async fn project_scoped_library_asset(
             }
         }
     }
-    match platform_library_asset(&normalized) {
+    // Not installed: answer with the hub's catalogue copy, which is what an
+    // install would have given this project. The Studio's vendored copies are
+    // deliberately not consulted here — they are the platform's pin, not a
+    // default for somebody else's project.
+    match hub_catalogue_asset(&normalized) {
         Some(bytes) => asset_response(content_type_for_path(FsPath::new(&normalized)), bytes),
         None => (StatusCode::NOT_FOUND, "asset not found").into_response(),
     }
@@ -7670,6 +7719,14 @@ fn hub_asset_rows(
                 .hub
                 .list_asset_versions(&package.package_id)?
         });
+        // Every version retracted means nothing here can be installed. The row
+        // stays in the store so its coordinates remain taken, but a shelf that
+        // offers a package with no installable release is offering nothing:
+        // `zebflow.icons` was listed, and `review` described the files an
+        // install would write, after the package had left the build entirely.
+        if latest_version.is_empty() {
+            continue;
+        }
         let (summary, gallery) = hub_package_gallery_projection(&package);
         rows.push(json!({
             "package_id": package.package_id,
@@ -7999,11 +8056,11 @@ fn content_type_for_path(path: &FsPath) -> &'static str {
 fn db_connection_icon_class(database_kind: &str) -> &'static str {
     match database_kind {
         "postgresql" => "devicon-postgresql-plain colored",
-        "mysql" => "devicon-mysql-plain colored",
+        "mysql" => "devicon-mysql-original colored",
         "sqlite" => "devicon-sqlite-plain colored",
         "redis" => "devicon-redis-plain colored",
         "mongodb" => "devicon-mongodb-plain colored",
-        "qdrant" => "devicon-vectorlogozone-plain",
+        "qdrant" => "zf-icon-default-db",
         _ => "zf-icon-default-db",
     }
 }
@@ -14201,6 +14258,30 @@ async fn api_repo_read(
     }
 }
 
+/// Drop any compiled page whose bundle inlined this file.
+///
+/// The compiler flattens every component a page imports into one bundle, so a
+/// page keeps serving its old copy of a component until the entry holding it is
+/// evicted. MCP's `template_write` has always done this; the repo file API never
+/// did, so writing a component through `PUT /repo/file` left the browser served
+/// from cache indefinitely — not until a timeout, but until someone restarted
+/// the server or pressed Clear Template Cache.
+///
+/// Silent on failure by design: a path that resolves to nothing was not a
+/// template, and refusing the write over it would be worse than the stale entry.
+fn evict_cached_pages_for(state: &PlatformAppState, owner: &str, project: &str, rel_path: &str) {
+    if let Ok(abs) = state
+        .platform
+        .projects
+        .resolve_template_abs_path(owner, project, rel_path)
+    {
+        crate::pipeline::engines::basic::evict_template_cache_by_path(
+            &state.template_cache,
+            &abs.to_string_lossy(),
+        );
+    }
+}
+
 async fn api_repo_write(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
@@ -14227,7 +14308,10 @@ async fn api_repo_write(
         .projects
         .write_repo_file(&owner, &project, &path, &content)
     {
-        Ok(payload) => Json(json!({"ok": true, "file": payload})).into_response(),
+        Ok(payload) => {
+            evict_cached_pages_for(&state, &owner, &project, &path);
+            Json(json!({"ok": true, "file": payload})).into_response()
+        }
         Err(err) => internal_error(err),
     }
 }
@@ -14256,7 +14340,10 @@ async fn api_repo_delete(
         .projects
         .delete_repo_entry(&owner, &project, &path)
     {
-        Ok(()) => Json(json!({"ok": true})).into_response(),
+        Ok(()) => {
+            evict_cached_pages_for(&state, &owner, &project, &path);
+            Json(json!({"ok": true})).into_response()
+        }
         Err(err) => internal_error(err),
     }
 }
@@ -27458,5 +27545,90 @@ mod response_header_tests {
         assert_eq!(seen.len(), 2, "both cookies reach the browser: {seen:?}");
         assert!(seen.iter().any(|c| c.starts_with("session=")));
         assert!(seen.iter().any(|c| c.starts_with("theme=")));
+    }
+}
+
+#[cfg(test)]
+mod offline_tests {
+    /// Nothing the Studio serves may send the browser to another host.
+    ///
+    /// Zebflow is meant to run on a machine with no route to the internet — a
+    /// Raspberry Pi on a bench, an air-gapped server. Every remote asset breaks
+    /// that quietly: the page still answers 200, the browser waits, and the
+    /// user gets a Studio drawn in fallback fonts with no database logos.
+    ///
+    /// Three were found this way. `styles/main.css` opened with an @import of
+    /// fonts.googleapis.com, on every page, blocking first paint. `devicons.css`
+    /// looked vendored and was a 942-byte file whose second line @imported
+    /// jsdelivr. Both are now local.
+    ///
+    /// Comments are stripped before scanning, so a URL may still be *named* in
+    /// prose explaining why it is gone.
+    #[test]
+    fn no_platform_stylesheet_sends_the_browser_to_another_host() {
+        let sheets = [
+            ("styles/main.css", include_str!("templates/styles/main.css")),
+            ("styles/fonts.css", include_str!("templates/styles/fonts.css")),
+            ("styles/db-suite.css", include_str!("templates/styles/db-suite.css")),
+            (
+                "styles/db-connections.css",
+                include_str!("templates/styles/db-connections.css"),
+            ),
+            (
+                "project-studio/styles.css",
+                include_str!("templates/pages/project-studio/styles.css"),
+            ),
+        ];
+        for (name, css) in sheets {
+            let code = strip_css_comments(css);
+            let remote: Vec<_> = code
+                .match_indices("http")
+                .map(|(i, _)| {
+                    code[i..].chars().take(60).collect::<String>()
+                })
+                .filter(|s| s.starts_with("http://") || s.starts_with("https://"))
+                .collect();
+            assert!(
+                remote.is_empty(),
+                "{name} points the browser at another host: {remote:?}"
+            );
+        }
+    }
+
+    /// The font faces the Studio asks for must all be on this machine.
+    #[test]
+    fn every_font_face_names_a_file_that_ships() {
+        let css = include_str!("templates/styles/fonts.css");
+        let mut named = 0;
+        for (index, _) in css.match_indices("url(/assets/platform/fonts/") {
+            let rest = &css[index + "url(/assets/platform/fonts/".len()..];
+            let file: String = rest.chars().take_while(|c| *c != ')').collect();
+            let path = format!("{}/templates/styles/fonts/{file}", env!("CARGO_MANIFEST_DIR"));
+            let path = path.replace("/templates/", "/src/platform/web/templates/");
+            assert!(
+                std::path::Path::new(&path).is_file(),
+                "fonts.css names '{file}', which is not in the package"
+            );
+            named += 1;
+        }
+        assert!(named >= 13, "only {named} font files referenced — the scan stopped matching");
+    }
+
+    fn strip_css_comments(css: &str) -> String {
+        let mut out = String::with_capacity(css.len());
+        let bytes = css.as_bytes();
+        let mut i = 0;
+        while i < bytes.len() {
+            if bytes[i..].starts_with(b"/*") {
+                match css[i + 2..].find("*/") {
+                    Some(end) => i += 2 + end + 2,
+                    None => break,
+                }
+            } else {
+                out.push(bytes[i] as char);
+                i += 1;
+            }
+        }
+        out
     }
 }

@@ -49,7 +49,6 @@ Library surfaces:
 - `zeb/d3`
 - `zeb/deckgl`
 - `zeb/graphui`
-- `zeb/icons`
 - `zeb/livegeo`
 - `zeb/markdown`
 - `zeb/pdf`

@@ -21,6 +21,16 @@
         "integrity": "sha256:4a111103bd960382671abe753cd13eed9e9cdce208064840e9ec53116a487b1f",
         "note": "Three.js r0.171 + @pixiv/three-vrm 3.x via esbuild. Build: cd /tmp/zeb-threejs-vrm-build && npm install && node_modules/.bin/esbuild entry.mjs --bundle --format=esm --minify --outfile=threejs-vrm.bundle.mjs"
       }
+    },
+    "license": {
+      "spdx": "MIT",
+      "holders": [
+        "pixiv Inc."
+      ],
+      "notices": [
+        "LICENSE"
+      ],
+      "modified": false
     }
   }
 }

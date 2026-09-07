@@ -24,6 +24,16 @@
         "integrity": "sha256:a615e39ff6b7c38549d71b7ba6b196a8110ef63883f69b717956ac02d73c3269",
         "note": "Full d3 v7 bundle via esbuild. Build: cd /tmp/zeb-d3-build && npm install && node_modules/.bin/esbuild entry.mjs --bundle --format=esm --minify --outfile=d3.bundle.mjs"
       }
+    },
+    "license": {
+      "spdx": "ISC",
+      "holders": [
+        "Mike Bostock"
+      ],
+      "notices": [
+        "LICENSE"
+      ],
+      "modified": false
     }
   }
 }

@@ -1,0 +1,38 @@
+{
+  "name": "zeb/markdown",
+  "version": "0.1",
+  "kind": "web-library",
+  "trust": "official",
+  "description": "Markdown rendering bridge using marked + DOMPurify with a safe Preact wrapper component.",
+  "source": {
+    "provider": "zebflow",
+    "package": "marked+dompurify",
+    "package_version": "marked@15+dompurify@3",
+    "packed_version": "full-0.1",
+    "packed_kind": "full",
+    "entry": "runtime/markdown.bundle.mjs"
+  },
+  "registry": {
+    "kind": "github-releases",
+    "repo": "zebflow/libraries",
+    "asset_pattern": "zeb-markdown-{version}.bundle.mjs"
+  },
+  "exports": {
+    "raw": [
+      "renderMarkdown",
+      "marked",
+      "DOMPurify"
+    ],
+    "wrappers": [
+      "Markdown"
+    ]
+  },
+  "runtime": {
+    "format": "esm",
+    "entry": "runtime/markdown.bundle.mjs"
+  },
+  "editor": {
+    "keywords": "keywords.json",
+    "exports": "exports.json"
+  }
+}

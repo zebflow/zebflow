@@ -1115,7 +1115,7 @@ mod tests {
             "import { h } from '/assets/libraries/zeb/react/0.1/runtime/zeb_react.mjs';",
             "const mod = await import('/assets/libraries/zeb/codemirror/0.1/runtime/entry.mjs');",
             "</script>",
-            "<link rel=\"stylesheet\" href=\"/assets/libraries/zeb/icons/0.1/runtime/devicons.css\">",
+            "<link rel=\"stylesheet\" href=\"/assets/platform/devicons.css\">",
             "<img srcset=\"/static/superadmin/default/images/cover.png 1x, /static/superadmin/default/images/cover@2x.png 2x\">"
         );
 
@@ -1137,7 +1137,6 @@ mod tests {
 
         assert!(rewritten.contains("../../_assets/libraries/zeb/react/0.1/runtime/zeb_react.mjs"));
         assert!(rewritten.contains("../../_assets/libraries/zeb/codemirror/0.1/runtime/entry.mjs"));
-        assert!(rewritten.contains("../../_assets/libraries/zeb/icons/0.1/runtime/devicons.css"));
         assert!(rewritten.contains("../../_assets/project/icons/favicon.ico"));
         assert!(rewritten.contains("../../_assets/project/styles/base.css"));
         assert!(rewritten.contains("../../_assets/project/images/cover.png 1x"));
@@ -1164,7 +1163,7 @@ mod tests {
         );
         assert!(
             temp.path()
-                .join("_assets/libraries/zeb/icons/0.1/runtime/devicons.css")
+                .join("_assets/platform/devicons.css")
                 .is_file()
         );
         assert!(

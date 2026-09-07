@@ -213,33 +213,6 @@
   };
 
   // ---------------------------------------------------------------------------
-  // zeb/icons SSR stubs — icon components render null during SSR
-  // ---------------------------------------------------------------------------
-  (function() {
-    var __nullIcon = function() { return null; };
-    var __icons = [
-      'ChevronLeft','ChevronRight','ChevronDown','ChevronUp',
-      'ChevronsLeft','ChevronsRight','ChevronsUpDown',
-      'ArrowLeft','ArrowRight','ArrowUp','ArrowDown',
-      'Plus','Minus','X','Check','Search','Filter','RefreshCw','Pencil',
-      'Trash2','Copy','Clipboard','Save','Download','Upload','ExternalLink',
-      'Undo2','Redo2',
-      'Eye','EyeOff','Lock','Unlock','Settings','Menu',
-      'MoreHorizontal','MoreVertical','Maximize2','Minimize2',
-      'PanelLeft','PanelRight','SidebarOpen','SidebarClose',
-      'AlertCircle','AlertTriangle','Info','CheckCircle','CheckCircle2','XCircle','Loader2',
-      'Database','TableIcon','Columns2','BarChart2','PieChart','TrendingUp','TrendingDown',
-      'File','FileText','Folder','FolderOpen','Code2','Terminal',
-      'User','Users','KeyRound','LogIn','LogOut',
-      'Globe','Package','Zap','Star','Layers','LayoutGrid','ListIcon',
-      'Cpu','Cloud','Wifi','Bell','BellOff','Tag','Bookmark','Hash','Slash','Sparkles'
-    ];
-    for (var i = 0; i < __icons.length; i++) {
-      globalThis[__icons[i]] = __nullIcon;
-    }
-  })();
-
-  // ---------------------------------------------------------------------------
   // zeb/prosemirror SSR stubs — ProseEditor renders a placeholder div
   // ---------------------------------------------------------------------------
   globalThis.mountProseEditor = function() { return Promise.resolve(null); };
@@ -268,7 +241,8 @@
   };
 
   // ---------------------------------------------------------------------------
-  // zeb/icons devicons helpers — no-ops during SSR
+  // Devicon helpers — no-ops during SSR. The marks are a platform
+  // stylesheet now; these remain so a template calling them still renders.
   // ---------------------------------------------------------------------------
   globalThis.ensureDevicons = function() {};
   globalThis.dbKindIconClass = function() { return ""; };

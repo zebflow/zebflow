@@ -1,0 +1,46 @@
+{
+  "name": "zeb/deckgl",
+  "version": "0.1",
+  "kind": "web-library",
+  "trust": "official",
+  "description": "Deck.gl 9.x for geospatial and large-scale data visualisation. 25+ layer types (basic, aggregation, geo, mesh), extensions, tooltip, utilities (haversine, bearing, colorRamp, interpolateAlongPath, createAnimationLoop). All bundled offline.",
+  "source": {
+    "provider": "zebflow",
+    "package": "deck.gl",
+    "package_version": "9.x",
+    "packed_version": "full-9.x",
+    "packed_kind": "full",
+    "entry": "runtime/deckgl.patched.mjs"
+  },
+  "registry": {
+    "kind": "github-releases",
+    "repo": "zebflow/libraries",
+    "asset_pattern": "zeb-deckgl-{version}.bundle.mjs"
+  },
+  "exports": {
+    "raw": [
+      "ensureDeck",
+      "createDeckMapRuntime",
+      "mountDeckMap",
+      "buildLayer",
+      "buildLayers",
+      "deckgl",
+      "haversine",
+      "bearing",
+      "colorRamp",
+      "interpolateAlongPath",
+      "createAnimationLoop"
+    ],
+    "wrappers": [
+      "DeckMap"
+    ]
+  },
+  "runtime": {
+    "format": "esm",
+    "entry": "runtime/deckgl.patched.mjs"
+  },
+  "editor": {
+    "keywords": "keywords.json",
+    "exports": "exports.json"
+  }
+}

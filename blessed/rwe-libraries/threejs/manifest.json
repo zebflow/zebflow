@@ -117,6 +117,16 @@
         "size_bytes": 755048,
         "integrity": "sha256:9c1e385bc9918e55ca7214dd995efbfc73bff14806ba13ee5c3f6ffcb4761eae"
       }
+    },
+    "license": {
+      "spdx": "MIT",
+      "holders": [
+        "three.js authors"
+      ],
+      "notices": [
+        "LICENSE"
+      ],
+      "modified": false
     }
   }
 }

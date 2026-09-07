@@ -314,7 +314,6 @@ fn zeb_bundle_url(lib: &str) -> Option<&'static str> {
         }
         "zeb/use" => Some("/assets/libraries/zeb/use/0.1/runtime/use.bundle.mjs"),
         "zeb/livegeo" => Some("/assets/libraries/zeb/livegeo/0.1/runtime/livegeo.bundle.mjs"),
-        "zeb/icons" => Some("/assets/libraries/zeb/icons/0.1/runtime/icons.bundle.mjs"),
         "zeb/pdf" => Some("/assets/libraries/zeb/pdf/0.1/runtime/pdf.bundle.mjs"),
         _ => None,
     }

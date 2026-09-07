@@ -1,4 +1,5 @@
-@import url("https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;500;600&family=JetBrains+Mono:wght@400;500;600&family=Space+Grotesk:wght@400;500;600;700&display=swap");
+/* Fonts are vendored — see styles/fonts.css, concatenated into this
+ * stylesheet by platform_asset(). Nothing here reaches the network. */
 
 :root {
   /* Zebflow design direction: Melbourne gray-blue + signal orange. */

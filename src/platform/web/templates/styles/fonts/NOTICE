@@ -1,0 +1,13 @@
+Fonts bundled with Zebflow
+==========================
+
+All three are licensed under the SIL Open Font License, Version 1.1.
+The licence text is in OFL.txt.
+
+  Hanken Grotesk   Copyright (c) 2015-2021 Alfredo Marco Pradil
+  JetBrains Mono   Copyright (c) 2020 JetBrains s.r.o.
+  Space Grotesk    Copyright (c) 2020 Florian Karsten
+
+The .woff2 files here are the subsets Google Fonts serves, downloaded and
+vendored so a Zebflow install with no route to the internet renders the same
+as one with. They are unmodified.

@@ -77,7 +77,6 @@ fn compile_inner(source: &str, options: CompileOptions) -> Result<CompiledTempla
         &imports,
         options.template_root.as_deref(),
     )?;
-    validate_zeb_icons_requirements(&bundled_client, &detected_zeb_libs)?;
     let transformed_client = format!("{}{}", JSX_PRELUDE, bundled_client);
     let mut dependency_paths = server_deps;
     dependency_paths.extend(client_deps);
@@ -286,92 +285,6 @@ const ZEB_EXCLUSIVE_SYMBOLS: &[&str] = &[
     "Fragment",
 ];
 
-const ZEB_ICON_COMPONENTS: &[&str] = &[
-    "ChevronLeft",
-    "ChevronRight",
-    "ChevronDown",
-    "ChevronUp",
-    "ChevronsLeft",
-    "ChevronsRight",
-    "ChevronsUpDown",
-    "ArrowLeft",
-    "ArrowRight",
-    "ArrowUp",
-    "ArrowDown",
-    "Plus",
-    "Minus",
-    "X",
-    "Check",
-    "Search",
-    "Filter",
-    "RefreshCw",
-    "Pencil",
-    "Trash2",
-    "Copy",
-    "Clipboard",
-    "Save",
-    "Download",
-    "Upload",
-    "ExternalLink",
-    "Undo2",
-    "Redo2",
-    "Eye",
-    "EyeOff",
-    "Lock",
-    "Unlock",
-    "Settings",
-    "Menu",
-    "MoreHorizontal",
-    "MoreVertical",
-    "Maximize2",
-    "Minimize2",
-    "PanelLeft",
-    "PanelRight",
-    "SidebarOpen",
-    "SidebarClose",
-    "AlertCircle",
-    "AlertTriangle",
-    "Info",
-    "CheckCircle",
-    "CheckCircle2",
-    "XCircle",
-    "Loader2",
-    "Database",
-    "TableIcon",
-    "Columns2",
-    "BarChart2",
-    "PieChart",
-    "TrendingUp",
-    "TrendingDown",
-    "File",
-    "FileText",
-    "Folder",
-    "FolderOpen",
-    "Code2",
-    "Terminal",
-    "User",
-    "Users",
-    "KeyRound",
-    "LogIn",
-    "LogOut",
-    "Globe",
-    "Package",
-    "Zap",
-    "Star",
-    "Layers",
-    "LayoutGrid",
-    "ListIcon",
-    "Cpu",
-    "Cloud",
-    "Wifi",
-    "Bell",
-    "BellOff",
-    "Tag",
-    "Bookmark",
-    "Hash",
-    "Slash",
-    "Sparkles",
-];
 
 fn validate_zeb_exclusive_symbols(program: &oxc_ast::ast::Program<'_>) -> Result<(), EngineError> {
     use oxc_ast::ast::ImportDeclarationSpecifier;
@@ -418,63 +331,7 @@ fn validate_zeb_hook_imports(source: &str) -> Result<(), EngineError> {
     ))
 }
 
-fn validate_zeb_icons_requirements(
-    source: &str,
-    detected_zeb_libs: &[String],
-) -> Result<(), EngineError> {
-    if detected_zeb_libs.iter().any(|lib| lib == "zeb/icons") {
-        return Ok(());
-    }
 
-    let used_icons = find_unbound_zeb_icon_components(source);
-    if used_icons.is_empty() {
-        return Ok(());
-    }
-
-    let sample = used_icons
-        .iter()
-        .take(3)
-        .cloned()
-        .collect::<Vec<_>>()
-        .join(", ");
-    let suffix = if used_icons.len() > 3 { ", ..." } else { "" };
-    let plural = if used_icons.len() > 1 {
-        "icon components"
-    } else {
-        "icon component"
-    };
-
-    Err(EngineError::new(
-        "RWE_IMPORT_ZEB_ICONS_REQUIRED",
-        format!(
-            "{plural} {sample}{suffix} require `import \"zeb/icons\"`; add `import \"zeb/icons\";` at module top-level"
-        ),
-    ))
-}
-
-fn find_unbound_zeb_icon_components(source: &str) -> Vec<String> {
-    let alloc = Allocator::default();
-    let source_type = SourceType::default()
-        .with_module(true)
-        .with_jsx(true)
-        .with_typescript(true);
-    let parsed = Parser::new(&alloc, source, source_type).parse();
-    if parsed.panicked {
-        return Vec::new();
-    }
-
-    let declared = collect_top_level_declared_names(&parsed.program);
-    let (masked, _) = super::js_masker::mask(source);
-    let used_names = collect_possible_jsx_component_names(&masked);
-
-    let mut used = used_names
-        .into_iter()
-        .filter(|name| ZEB_ICON_COMPONENTS.contains(&name.as_str()) && !declared.contains(name))
-        .collect::<Vec<_>>();
-    used.sort();
-    used.dedup();
-    used
-}
 
 /// Zeb hooks called in a file that never imported them.
 ///
@@ -546,44 +403,6 @@ fn is_called_in(source: &str, name: &str) -> bool {
     false
 }
 
-fn collect_possible_jsx_component_names(source: &str) -> Vec<String> {
-    let mut names = Vec::new();
-    let mut i = 0;
-
-    while i < source.len() {
-        let ch = source[i..]
-            .chars()
-            .next()
-            .expect("source slice should contain one char");
-        if ch == '<' {
-            let start = i + ch.len_utf8();
-            if start < source.len() {
-                let next = source[start..]
-                    .chars()
-                    .next()
-                    .expect("jsx candidate slice should contain one char");
-                if next.is_ascii_uppercase() {
-                    let mut end = start + next.len_utf8();
-                    while end < source.len() {
-                        let tail = source[end..]
-                            .chars()
-                            .next()
-                            .expect("identifier tail slice should contain one char");
-                        if tail.is_ascii_alphanumeric() || tail == '_' {
-                            end += tail.len_utf8();
-                        } else {
-                            break;
-                        }
-                    }
-                    names.push(source[start..end].to_string());
-                }
-            }
-        }
-        i += ch.len_utf8();
-    }
-
-    names
-}
 
 #[allow(dead_code)]
 fn strip_runtime_imports(source: &str) -> String {
@@ -1382,7 +1201,7 @@ fn extract_rwe_import_names(source: &str) -> Vec<String> {
     names
 }
 
-/// Extract all `zeb/*` library specifiers (e.g. `"zeb/use"`, `"zeb/icons"`) from import declarations.
+/// Extract all `zeb/*` library specifiers (e.g. `"zeb/use"`, `"zeb/d3"`) from import declarations.
 fn extract_zeb_lib_specifiers(source: &str) -> Vec<String> {
     let alloc = Allocator::default();
     let source_type = SourceType::default()
@@ -1539,44 +1358,6 @@ export default function DemoPage() {
                 .iter()
                 .any(|lib| lib == "zeb/codemirror"),
             "expected zeb/codemirror to be detected, got {:?}",
-            compiled.detected_zeb_libs
-        );
-    }
-
-    #[test]
-    fn compile_rejects_icons_without_explicit_import() {
-        let source = r#"
-export default function DemoPage() {
-  return <Page><CheckCircle className="w-4 h-4" /></Page>;
-}
-"#;
-
-        let err = compile(source, CompileOptions::default()).expect_err("compile should fail");
-        assert_eq!(err.code, "RWE_IMPORT_ZEB_ICONS_REQUIRED");
-        assert!(
-            err.message.contains("import \"zeb/icons\""),
-            "expected explicit import guidance, got {:?}",
-            err.message
-        );
-    }
-
-    #[test]
-    fn compile_allows_icons_with_explicit_import() {
-        let source = r#"
-import "zeb/icons";
-
-export default function DemoPage() {
-  return <Page><CheckCircle className="w-4 h-4" /></Page>;
-}
-"#;
-
-        let compiled = compile(source, CompileOptions::default()).expect("compile should succeed");
-        assert!(
-            compiled
-                .detected_zeb_libs
-                .iter()
-                .any(|lib| lib == "zeb/icons"),
-            "expected zeb/icons to be detected, got {:?}",
             compiled.detected_zeb_libs
         );
     }

@@ -1,0 +1,30 @@
+Modifications to deck.gl as redistributed by Zebflow
+====================================================
+
+What is here
+------------
+
+  0.1/runtime/deckgl.bundle.mjs    an upstream deck.gl build
+  0.1/runtime/deckgl.patched.mjs   Zebflow's wrapper, which imports the above
+
+The file named "patched" is a Zebflow wrapper around the bundle, not an edit of
+deck.gl's source. It adds layer construction from a declarative spec, tooltip
+handling, and instance bookkeeping. deck.gl's own code is imported, not altered.
+
+Network behaviour left as upstream ships it
+-------------------------------------------
+
+The bundle carries three CDN references, all upstream defaults:
+
+  https://unpkg.com/@loaders.gl/...    worker bundles for binary formats
+  https://unpkg.com/webgl-debug@2.0.1  only when WebGL debug mode is enabled
+  https://cdn.jsdelivr.net/npm/spectorjs  only when the debug-spectorjs flag is set
+
+None is reached by the Studio. It uses PathLayer, PolygonLayer,
+ScatterplotLayer and TileLayer, which take plain arrays and GeoJSON and parse
+in-thread. The loaders.gl CDN is a fallback for formats none of those need.
+
+This is dormant, not removed. A future layer taking a binary format would fetch
+from unpkg, and would fail on a machine with no network. If that day comes, the
+fix is to vendor the needed @loaders.gl worker and point loaders.gl at it —
+not to discover it in the field.

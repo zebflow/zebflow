@@ -28,6 +28,16 @@
         "size_bytes": 243123,
         "integrity": "sha256:28a43aaa4ac81840f3afd4b758341c056a97da5d9a40973213b62c50864cab51"
       }
+    },
+    "license": {
+      "spdx": "MIT",
+      "holders": [
+        "Marijn Haverbeke and others"
+      ],
+      "notices": [
+        "LICENSE"
+      ],
+      "modified": false
     }
   }
 }

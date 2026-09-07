@@ -187,8 +187,15 @@ mod tests {
     #[test]
     fn every_blessed_package_carries_reserved_metadata_and_files() {
         let packages = blessed_packages().expect("blessed packages enumerate");
-        // 12 installable libraries + 6 template sets. Zeb React is internal.
-        assert_eq!(packages.len(), 18);
+        // 11 installable libraries + 6 template sets.
+        //
+        // Zeb React is not among them and has no package here at all: it is the
+        // engine every template imports, not something a project chooses to
+        // install. It used to sit in blessed/rwe-libraries/react/ with only a
+        // library.json, excluded from the hub purely because it lacked a
+        // manifest.json — an exclusion by missing file, which the next person to
+        // notice would have "fixed" by adding one.
+        assert_eq!(packages.len(), 17);
         assert!(
             !packages
                 .iter()

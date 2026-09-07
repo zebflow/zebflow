@@ -36,7 +36,7 @@ function dbKindIconClass(kind) {
     return "devicon-postgresql-plain colored";
   }
   if (value === "mysql") {
-    return "devicon-mysql-plain colored";
+    return "devicon-mysql-original colored";
   }
   if (value === "sqlite") {
     return "devicon-sqlite-plain colored";
@@ -48,7 +48,7 @@ function dbKindIconClass(kind) {
     return "devicon-mongodb-plain colored";
   }
   if (value === "qdrant") {
-    return "devicon-vectorlogozone-plain";
+    return "zf-icon-default-db";
   }
   if (value === "sekejap") {
     return "zf-icon-sjtable";

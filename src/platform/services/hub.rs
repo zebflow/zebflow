@@ -335,6 +335,8 @@ pub struct HubSeedReport {
     pub skipped: Vec<String>,
     /// Coordinates that failed a gate, with the refusal.
     pub errors: Vec<String>,
+    /// Coordinates retired this boot because the shelf no longer carries them.
+    pub retired: Vec<String>,
 }
 
 /// One carried package entry from in-memory bytes, read exactly the way
@@ -2891,7 +2893,65 @@ impl HubService {
                     .push(format!("{coordinate}: {}", error.message)),
             }
         }
+        self.retire_departed_blessed_packages(&mut report)?;
         Ok(report)
+    }
+
+    /// Retire shelf entries for packages the binary no longer carries.
+    ///
+    /// Seeding only ever added. A package removed from `blessed/` kept its row
+    /// and stayed on the shelf, so the hub offered `zebflow.icons` and
+    /// `zebflow.preact` long after both were deleted — `review` even listed the
+    /// files an install would write, and the install then failed on bytes
+    /// cached before the manifest contract changed.
+    ///
+    /// Retired rather than deleted, because the data layer deliberately offers
+    /// no delete: freeing `package@version` would let it be published again
+    /// with different content, and a lockfile pinning the old digest would
+    /// report a tampered dependency. A retracted row is hidden from every
+    /// listing and refused by install, so the shelf reads the same as if the
+    /// entry were gone — while the coordinate stays spoken for.
+    fn retire_departed_blessed_packages(
+        &self,
+        report: &mut HubSeedReport,
+    ) -> Result<(), PlatformError> {
+        let carried: std::collections::BTreeSet<String> =
+            crate::platform::blessed::blessed_packages()?
+                .into_iter()
+                .map(|package| package.package_id)
+                .collect();
+
+        for package in self.local_store.data.list_hub_asset_packages()? {
+            // Only the reserved publisher's own shelf. A package someone
+            // published here is theirs, and its presence says nothing about
+            // what this binary carries.
+            if !package.package_id.starts_with("zebflow.") || carried.contains(&package.package_id)
+            {
+                continue;
+            }
+            for version in self
+                .local_store
+                .data
+                .list_hub_asset_versions(&package.package_id)?
+            {
+                if version.retracted_at.is_some() {
+                    continue;
+                }
+                let coordinate = format!("{}@{}", package.package_id, version.version);
+                match self.local_store.data.retract_hub_asset_version(
+                    &package.package_id,
+                    &version.version,
+                    now_ts(),
+                    "no longer carried by this Zebflow build",
+                ) {
+                    Ok(()) => report.retired.push(coordinate),
+                    Err(error) => report
+                        .errors
+                        .push(format!("{coordinate}: {}", error.message)),
+                }
+            }
+        }
+        Ok(())
     }
 
     /// The reserved `zebflow` publisher row, created once and then left alone.
@@ -11943,6 +12003,98 @@ mod tests {
     /// publish nothing and skip every coordinate — immutability makes the
     /// republish refuse anyway, and the seeder treats "already present" as the
     /// skip rather than the error.
+
+    /// The version the binary currently carries for one blessed package.
+    ///
+    /// Read rather than written down: releases are immutable, so any change to
+    /// a package's bytes arrives as a version bump, and a test that pinned the
+    /// old number would fail for the bump rather than for the behaviour it
+    /// meant to check.
+    fn blessed_version(package_id: &str) -> String {
+        crate::platform::blessed::blessed_packages()
+            .expect("blessed packages enumerate")
+            .into_iter()
+            .find(|package| package.package_id == package_id)
+            .unwrap_or_else(|| panic!("{package_id} is carried by this build"))
+            .version
+    }
+
+
+    /// A package the binary stops carrying leaves the shelf.
+    ///
+    /// Seeding only ever added, so removing a package from `blessed/` left its
+    /// row behind and the hub kept offering it. `zebflow.icons` was on the
+    /// shelf, and `review` listed the files it would install, after the package
+    /// had been deleted from the tree.
+    #[test]
+    fn a_package_the_build_no_longer_carries_leaves_the_shelf() {
+        let (_root, platform) = hub_publish_fixture("Departed Package");
+
+        // Stand in for a package that used to ship and no longer does, published
+        // under the reserved publisher exactly as seeding would have left it.
+        let carried = platform
+            .hub
+            .local_store
+            .data
+            .get_hub_asset_version("zebflow.deckgl", &blessed_version("zebflow.deckgl"))
+            .expect("lookup")
+            .expect("deckgl is seeded");
+        let mut departed = carried.clone();
+        departed.package_id = "zebflow.gone".to_string();
+        departed.version = "0.1.0".to_string();
+        let mut package_row = platform
+            .hub
+            .local_store
+            .data
+            .get_hub_asset_package("zebflow.deckgl")
+            .expect("lookup")
+            .expect("deckgl has a package row");
+        package_row.package_id = "zebflow.gone".to_string();
+        package_row.package_pk = "pkg-zebflow-gone".to_string();
+        departed.package_pk = package_row.package_pk.clone();
+        platform
+            .hub
+            .local_store
+            .data
+            .put_hub_asset_package(&package_row)
+            .expect("package row");
+        platform
+            .hub
+            .local_store
+            .data
+            .put_hub_asset_version(&departed)
+            .expect("version row");
+
+        let report = platform.hub.seed_blessed_catalog().expect("reseed");
+        assert!(
+            report.retired.contains(&"zebflow.gone@0.1.0".to_string()),
+            "expected the departed package to be retired, got {:?}",
+            report.retired
+        );
+
+        let row = platform
+            .hub
+            .local_store
+            .data
+            .get_hub_asset_version("zebflow.gone", "0.1.0")
+            .expect("lookup")
+            .expect("the row is kept, so the coordinate stays taken");
+        assert!(
+            row.retracted_at.is_some(),
+            "retired means retracted, not deleted"
+        );
+
+        // And a package the build still carries is untouched.
+        let still_here = platform
+            .hub
+            .local_store
+            .data
+            .get_hub_asset_version("zebflow.deckgl", &blessed_version("zebflow.deckgl"))
+            .expect("lookup")
+            .expect("deckgl is still carried");
+        assert!(still_here.retracted_at.is_none(), "deckgl must stay on the shelf");
+    }
+
     #[test]
     fn the_blessed_seed_is_idempotent_across_boots() {
         let (_root, platform) = hub_publish_fixture("Blessed Seed");
@@ -11950,7 +12102,7 @@ mod tests {
             .hub
             .local_store
             .data
-            .get_hub_asset_version("zebflow.deckgl", "0.1.1")
+            .get_hub_asset_version("zebflow.deckgl", &blessed_version("zebflow.deckgl"))
             .expect("version lookup")
             .expect("the first boot seeded deckgl");
         let report = platform
@@ -11959,12 +12111,12 @@ mod tests {
             .expect("second seed run");
         assert!(report.published.is_empty(), "{:?}", report.published);
         assert!(report.errors.is_empty(), "{:?}", report.errors);
-        assert!(report.skipped.contains(&"zebflow.deckgl@0.1.1".to_string()));
+        assert!(report.skipped.contains(&format!("zebflow.deckgl@{}", blessed_version("zebflow.deckgl"))));
         let unchanged = platform
             .hub
             .local_store
             .data
-            .get_hub_asset_version("zebflow.deckgl", "0.1.1")
+            .get_hub_asset_version("zebflow.deckgl", &blessed_version("zebflow.deckgl"))
             .expect("version lookup")
             .expect("still present");
         assert_eq!(unchanged.artifact_sha256, deckgl.artifact_sha256);
@@ -12012,7 +12164,13 @@ mod tests {
 
         let result = platform
             .hub
-            .install_asset("superadmin", "default", "zebflow.deckgl", "0.1.1", "")
+            .install_asset(
+                "superadmin",
+                "default",
+                "zebflow.deckgl",
+                &blessed_version("zebflow.deckgl"),
+                "",
+            )
             .expect("deckgl installs from the seeded local hub");
         assert_eq!(result.asset_kind, HUB_ASSET_KIND_RWE_LIBRARY);
         assert_eq!(result.install_root, "rwe-libraries/zebflow.deckgl");
@@ -12037,7 +12195,10 @@ mod tests {
             entry.source,
             crate::contracts::kinds::DependencyLockSource::HubLocal
         );
-        assert_eq!(entry.source_id, "zebflow.deckgl@0.1.1");
+        assert_eq!(
+            entry.source_id,
+            format!("zebflow.deckgl@{}", blessed_version("zebflow.deckgl"))
+        );
         assert_eq!(
             entry.entry,
             "rwe-libraries/zebflow.deckgl/0.1/runtime/deckgl.bundle.mjs"

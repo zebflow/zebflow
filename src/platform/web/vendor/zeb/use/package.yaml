@@ -1,0 +1,6 @@
+# Publish metadata for the blessed local-hub seed.
+# The seeder publishes this package as the reserved `zebflow` publisher.
+id: zebflow.use
+version: 0.1.1
+title: zeb/use
+description: "RWE hooks collection. useDebounce, useThrottle, useLocalStorage, useClipboard, useTemporaryState, useWindowEvent, useLazyModule, useSearchParams, useSplitPane, useClickAway, useInterval, useGeolocation, useTree."

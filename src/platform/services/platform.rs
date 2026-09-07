@@ -348,6 +348,9 @@ impl PlatformService {
                 if !report.published.is_empty() {
                     println!("hub: seeded {}", report.published.join(", "));
                 }
+                if !report.retired.is_empty() {
+                    println!("hub: retired {}", report.retired.join(", "));
+                }
                 for error in &report.errors {
                     eprintln!("⚠ hub seed: {error}");
                 }

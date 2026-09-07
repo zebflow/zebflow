@@ -26,7 +26,6 @@ Examples:
 - `zeb/deckgl`
 - `zeb/pdf`
 - `zeb/markdown`
-- `zeb/icons`
 
 These are meant to be the first-class frontend layer inside Zebflow projects.
 

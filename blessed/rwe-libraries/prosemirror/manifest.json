@@ -21,6 +21,16 @@
         "integrity": "sha256:28a43aaa4ac81840f3afd4b758341c056a97da5d9a40973213b62c50864cab51",
         "note": "All PM packages bundled inline via esbuild. No CDN fetches at runtime. Build: cd /tmp/zeb-pm-build && npm install && node_modules/.bin/esbuild entry.mjs --bundle --format=esm --minify --outfile=prosemirror.bundle.mjs"
       }
+    },
+    "license": {
+      "spdx": "MIT",
+      "holders": [
+        "Marijn Haverbeke and others"
+      ],
+      "notices": [
+        "LICENSE"
+      ],
+      "modified": false
     }
   }
 }

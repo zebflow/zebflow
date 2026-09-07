@@ -1,8 +1,0 @@
-{
-  "name": "zeb/react",
-  "version": "0.1",
-  "kind": "runtime",
-  "trust": "official",
-  "description": "Zeb React — first-party, dependency-free SSR and browser runtime",
-  "runtime": { "format": "esm", "entry": "runtime/zeb_react.mjs" }
-}

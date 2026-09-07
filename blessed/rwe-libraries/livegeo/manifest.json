@@ -21,6 +21,16 @@
         "size_bytes": 7578,
         "integrity": "sha256:f472a6a3cae4d1683fc6df0392bfa4087eeea9df98e4bc8923be7b1c07896b17"
       }
+    },
+    "license": {
+      "spdx": "MIT",
+      "holders": [
+        "Zebflow"
+      ],
+      "notices": [
+        "LICENSE"
+      ],
+      "modified": false
     }
   }
 }

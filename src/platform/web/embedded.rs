@@ -13,13 +13,181 @@ const BRAND_FAVICON_ICO: &[u8] = include_bytes!("assets/branding/favicon.ico");
 const BRAND_FAVICON_16_PNG: &[u8] = include_bytes!("assets/branding/favicon-16.png");
 const BRAND_FAVICON_32_PNG: &[u8] = include_bytes!("assets/branding/favicon-32.png");
 const BRAND_APPLE_TOUCH_ICON_PNG: &[u8] = include_bytes!("assets/branding/apple-touch-icon.png");
+// Kept in step with the same concat in `mod.rs`. The two drifted once already:
+// this copy was missing fonts.css, so a static export shipped stylesheets whose
+// @font-face rules had gone missing and rendered in a fallback face.
 const PLATFORM_MAIN_CSS: &str = concat!(
+    include_str!("templates/styles/fonts.css"),
+    "\n\n",
     include_str!("templates/styles/main.css"),
     "\n\n",
     include_str!("templates/pages/project-studio/styles.css"),
 );
 const PLATFORM_DB_SUITE_CSS: &str = include_str!("templates/styles/db-suite.css");
 const PLATFORM_DB_CONNECTIONS_CSS: &str = include_str!("templates/styles/db-connections.css");
+const PLATFORM_DEVICONS_CSS: &str = include_str!("templates/styles/devicons.css");
+
+const FONT_HANKENGROTESK_CYRILLIC_EXT_WOFF2: &[u8] = include_bytes!("templates/styles/fonts/HankenGrotesk-cyrillic-ext.woff2");
+const FONT_HANKENGROTESK_LATIN_EXT_WOFF2: &[u8] = include_bytes!("templates/styles/fonts/HankenGrotesk-latin-ext.woff2");
+const FONT_HANKENGROTESK_LATIN_WOFF2: &[u8] = include_bytes!("templates/styles/fonts/HankenGrotesk-latin.woff2");
+const FONT_HANKENGROTESK_VIETNAMESE_WOFF2: &[u8] = include_bytes!("templates/styles/fonts/HankenGrotesk-vietnamese.woff2");
+const FONT_JETBRAINSMONO_CYRILLIC_EXT_WOFF2: &[u8] = include_bytes!("templates/styles/fonts/JetBrainsMono-cyrillic-ext.woff2");
+const FONT_JETBRAINSMONO_CYRILLIC_WOFF2: &[u8] = include_bytes!("templates/styles/fonts/JetBrainsMono-cyrillic.woff2");
+const FONT_JETBRAINSMONO_GREEK_WOFF2: &[u8] = include_bytes!("templates/styles/fonts/JetBrainsMono-greek.woff2");
+const FONT_JETBRAINSMONO_LATIN_EXT_WOFF2: &[u8] = include_bytes!("templates/styles/fonts/JetBrainsMono-latin-ext.woff2");
+const FONT_JETBRAINSMONO_LATIN_WOFF2: &[u8] = include_bytes!("templates/styles/fonts/JetBrainsMono-latin.woff2");
+const FONT_JETBRAINSMONO_VIETNAMESE_WOFF2: &[u8] = include_bytes!("templates/styles/fonts/JetBrainsMono-vietnamese.woff2");
+const FONT_SPACEGROTESK_LATIN_EXT_WOFF2: &[u8] = include_bytes!("templates/styles/fonts/SpaceGrotesk-latin-ext.woff2");
+const FONT_SPACEGROTESK_LATIN_WOFF2: &[u8] = include_bytes!("templates/styles/fonts/SpaceGrotesk-latin.woff2");
+const FONT_SPACEGROTESK_VIETNAMESE_WOFF2: &[u8] = include_bytes!("templates/styles/fonts/SpaceGrotesk-vietnamese.woff2");
+
+
+/// The libraries the Studio's own pages load.
+///
+/// A separate copy from `PLATFORM_LIBRARY_ASSETS` on purpose. That list is the
+/// hub's catalogue — the bytes a project installs — and the Studio used to read
+/// straight out of it. So editing a blessed package silently changed the
+/// Studio, and removing one broke the build: deleting
+/// `blessed/rwe-libraries/icons/` failed compilation with `couldn't read …
+/// include_bytes!`, which is a hub decision reaching into the platform.
+///
+/// These are copies under `src/platform/web/vendor/`. The hub is free to bump,
+/// patch or drop a package without the Studio moving underneath it, and the
+/// Studio pins what it was tested against.
+pub const PLATFORM_VENDOR_ASSETS: &[EmbeddedAsset] = &[
+    EmbeddedAsset {
+        path: "zeb/codemirror/0.1/exports.json",
+        bytes: include_bytes!("vendor/zeb/codemirror/0.1/exports.json"),
+    },
+    EmbeddedAsset {
+        path: "zeb/codemirror/0.1/keywords.json",
+        bytes: include_bytes!("vendor/zeb/codemirror/0.1/keywords.json"),
+    },
+    EmbeddedAsset {
+        path: "zeb/codemirror/0.1/library.json",
+        bytes: include_bytes!("vendor/zeb/codemirror/0.1/library.json"),
+    },
+    EmbeddedAsset {
+        path: "zeb/codemirror/0.1/runtime/codemirror.bundle.mjs",
+        bytes: include_bytes!("vendor/zeb/codemirror/0.1/runtime/codemirror.bundle.mjs"),
+    },
+    EmbeddedAsset {
+        path: "zeb/codemirror/0.1/runtime/entry.mjs",
+        bytes: include_bytes!("vendor/zeb/codemirror/0.1/runtime/entry.mjs"),
+    },
+    EmbeddedAsset {
+        path: "zeb/codemirror/0.1/wrappers/CodeEditor.tsx",
+        bytes: include_bytes!("vendor/zeb/codemirror/0.1/wrappers/CodeEditor.tsx"),
+    },
+    EmbeddedAsset {
+        path: "zeb/codemirror/manifest.json",
+        bytes: include_bytes!("vendor/zeb/codemirror/manifest.json"),
+    },
+    EmbeddedAsset {
+        path: "zeb/codemirror/package.yaml",
+        bytes: include_bytes!("vendor/zeb/codemirror/package.yaml"),
+    },
+    EmbeddedAsset {
+        path: "zeb/deckgl/0.1/exports.json",
+        bytes: include_bytes!("vendor/zeb/deckgl/0.1/exports.json"),
+    },
+    EmbeddedAsset {
+        path: "zeb/deckgl/0.1/keywords.json",
+        bytes: include_bytes!("vendor/zeb/deckgl/0.1/keywords.json"),
+    },
+    EmbeddedAsset {
+        path: "zeb/deckgl/0.1/library.json",
+        bytes: include_bytes!("vendor/zeb/deckgl/0.1/library.json"),
+    },
+    EmbeddedAsset {
+        path: "zeb/deckgl/0.1/runtime/deckgl.bundle.mjs",
+        bytes: include_bytes!("vendor/zeb/deckgl/0.1/runtime/deckgl.bundle.mjs"),
+    },
+    EmbeddedAsset {
+        path: "zeb/deckgl/0.1/runtime/deckgl.patched.mjs",
+        bytes: include_bytes!("vendor/zeb/deckgl/0.1/runtime/deckgl.patched.mjs"),
+    },
+    EmbeddedAsset {
+        path: "zeb/deckgl/0.1/wrappers/DeckMap.tsx",
+        bytes: include_bytes!("vendor/zeb/deckgl/0.1/wrappers/DeckMap.tsx"),
+    },
+    EmbeddedAsset {
+        path: "zeb/deckgl/manifest.json",
+        bytes: include_bytes!("vendor/zeb/deckgl/manifest.json"),
+    },
+    EmbeddedAsset {
+        path: "zeb/deckgl/package.yaml",
+        bytes: include_bytes!("vendor/zeb/deckgl/package.yaml"),
+    },
+    EmbeddedAsset {
+        path: "zeb/markdown/0.1/exports.json",
+        bytes: include_bytes!("vendor/zeb/markdown/0.1/exports.json"),
+    },
+    EmbeddedAsset {
+        path: "zeb/markdown/0.1/keywords.json",
+        bytes: include_bytes!("vendor/zeb/markdown/0.1/keywords.json"),
+    },
+    EmbeddedAsset {
+        path: "zeb/markdown/0.1/library.json",
+        bytes: include_bytes!("vendor/zeb/markdown/0.1/library.json"),
+    },
+    EmbeddedAsset {
+        path: "zeb/markdown/0.1/runtime/markdown.bundle.mjs",
+        bytes: include_bytes!("vendor/zeb/markdown/0.1/runtime/markdown.bundle.mjs"),
+    },
+    EmbeddedAsset {
+        path: "zeb/markdown/0.1/wrappers/Markdown.tsx",
+        bytes: include_bytes!("vendor/zeb/markdown/0.1/wrappers/Markdown.tsx"),
+    },
+    EmbeddedAsset {
+        path: "zeb/markdown/manifest.json",
+        bytes: include_bytes!("vendor/zeb/markdown/manifest.json"),
+    },
+    EmbeddedAsset {
+        path: "zeb/markdown/package.yaml",
+        bytes: include_bytes!("vendor/zeb/markdown/package.yaml"),
+    },
+    EmbeddedAsset {
+        path: "zeb/pdf/0.1/library.json",
+        bytes: include_bytes!("vendor/zeb/pdf/0.1/library.json"),
+    },
+    EmbeddedAsset {
+        path: "zeb/pdf/0.1/runtime/pdf.bundle.mjs",
+        bytes: include_bytes!("vendor/zeb/pdf/0.1/runtime/pdf.bundle.mjs"),
+    },
+    EmbeddedAsset {
+        path: "zeb/pdf/manifest.json",
+        bytes: include_bytes!("vendor/zeb/pdf/manifest.json"),
+    },
+    EmbeddedAsset {
+        path: "zeb/pdf/package.yaml",
+        bytes: include_bytes!("vendor/zeb/pdf/package.yaml"),
+    },
+    EmbeddedAsset {
+        path: "zeb/use/0.1/exports.json",
+        bytes: include_bytes!("vendor/zeb/use/0.1/exports.json"),
+    },
+    EmbeddedAsset {
+        path: "zeb/use/0.1/keywords.json",
+        bytes: include_bytes!("vendor/zeb/use/0.1/keywords.json"),
+    },
+    EmbeddedAsset {
+        path: "zeb/use/0.1/library.json",
+        bytes: include_bytes!("vendor/zeb/use/0.1/library.json"),
+    },
+    EmbeddedAsset {
+        path: "zeb/use/0.1/runtime/use.bundle.mjs",
+        bytes: include_bytes!("vendor/zeb/use/0.1/runtime/use.bundle.mjs"),
+    },
+    EmbeddedAsset {
+        path: "zeb/use/manifest.json",
+        bytes: include_bytes!("vendor/zeb/use/manifest.json"),
+    },
+    EmbeddedAsset {
+        path: "zeb/use/package.yaml",
+        bytes: include_bytes!("vendor/zeb/use/package.yaml"),
+    },
+];
 
 pub const PLATFORM_NODE_ICON_ASSETS: &[EmbeddedAsset] = &[
     EmbeddedAsset {
@@ -422,10 +590,6 @@ pub const PLATFORM_LIBRARY_ASSETS: &[EmbeddedAsset] = &[
         bytes: include_bytes!("../../../blessed/rwe-libraries/graphui/manifest.json"),
     },
     EmbeddedAsset {
-        path: "zeb/icons/manifest.json",
-        bytes: include_bytes!("../../../blessed/rwe-libraries/icons/manifest.json"),
-    },
-    EmbeddedAsset {
         path: "zeb/markdown/manifest.json",
         bytes: include_bytes!("../../../blessed/rwe-libraries/markdown/manifest.json"),
     },
@@ -548,26 +712,6 @@ pub const PLATFORM_LIBRARY_ASSETS: &[EmbeddedAsset] = &[
         ),
     },
     EmbeddedAsset {
-        path: "zeb/icons/0.1/library.json",
-        bytes: include_bytes!("../../../blessed/rwe-libraries/icons/0.1/library.json"),
-    },
-    EmbeddedAsset {
-        path: "zeb/icons/0.1/exports.json",
-        bytes: include_bytes!("../../../blessed/rwe-libraries/icons/0.1/exports.json"),
-    },
-    EmbeddedAsset {
-        path: "zeb/icons/0.1/keywords.json",
-        bytes: include_bytes!("../../../blessed/rwe-libraries/icons/0.1/keywords.json"),
-    },
-    EmbeddedAsset {
-        path: "zeb/icons/0.1/runtime/icons.bundle.mjs",
-        bytes: include_bytes!("../../../blessed/rwe-libraries/icons/0.1/runtime/icons.bundle.mjs"),
-    },
-    EmbeddedAsset {
-        path: "zeb/icons/0.1/runtime/devicons.css",
-        bytes: include_bytes!("../../../blessed/rwe-libraries/icons/0.1/runtime/devicons.css"),
-    },
-    EmbeddedAsset {
         path: "zeb/prosemirror/manifest.json",
         bytes: include_bytes!("../../../blessed/rwe-libraries/prosemirror/manifest.json"),
     },
@@ -595,10 +739,9 @@ pub const PLATFORM_LIBRARY_ASSETS: &[EmbeddedAsset] = &[
             "../../../blessed/rwe-libraries/prosemirror/0.1/wrappers/ProseEditor.tsx"
         ),
     },
-    EmbeddedAsset {
-        path: "zeb/react/0.1/library.json",
-        bytes: include_bytes!("../../../blessed/rwe-libraries/react/0.1/library.json"),
-    },
+    // No library.json for zeb/react. The other entries here describe packages a
+    // project installs; the engine is not one, and a manifest beside these would
+    // read as though it were.
     EmbeddedAsset {
         path: "zeb/react/0.1/runtime/zeb_react.js",
         bytes: include_bytes!("../../rwe/runtime/zeb_react.js"),
@@ -636,10 +779,6 @@ pub const PLATFORM_LIBRARY_ASSETS: &[EmbeddedAsset] = &[
         bytes: include_bytes!("../../../blessed/rwe-libraries/graphui/package.yaml"),
     },
     EmbeddedAsset {
-        path: "zeb/icons/package.yaml",
-        bytes: include_bytes!("../../../blessed/rwe-libraries/icons/package.yaml"),
-    },
-    EmbeddedAsset {
         path: "zeb/livegeo/package.yaml",
         bytes: include_bytes!("../../../blessed/rwe-libraries/livegeo/package.yaml"),
     },
@@ -669,7 +808,26 @@ pub const PLATFORM_LIBRARY_ASSETS: &[EmbeddedAsset] = &[
     },
 ];
 
+/// Bytes for the Studio's own pages.
+///
+/// Reads the platform's vendored copies first, and only falls back to the hub
+/// catalogue for a library the platform does not vendor. The fallback exists so
+/// a page reaching for something outside the vendored five still answers rather
+/// than 404ing; it is not the path the Studio is expected to take.
 pub fn platform_library_asset(path: &str) -> Option<&'static [u8]> {
+    let normalized = path.trim_start_matches('/').replace('\\', "/");
+    PLATFORM_VENDOR_ASSETS
+        .iter()
+        .chain(PLATFORM_LIBRARY_ASSETS.iter())
+        .find(|asset| asset.path == normalized)
+        .map(|asset| asset.bytes)
+}
+
+/// Bytes for a project that has not installed the library itself.
+///
+/// Always the hub catalogue: an un-installed project should see the version the
+/// hub would have given it, not whichever copy the Studio happens to pin.
+pub fn hub_catalogue_asset(path: &str) -> Option<&'static [u8]> {
     let normalized = path.trim_start_matches('/').replace('\\', "/");
     PLATFORM_LIBRARY_ASSETS
         .iter()
@@ -689,6 +847,100 @@ pub fn platform_public_asset(path: &str) -> Option<&'static [u8]> {
         "platform/main.css" => Some(PLATFORM_MAIN_CSS.as_bytes()),
         "platform/db-suite.css" => Some(PLATFORM_DB_SUITE_CSS.as_bytes()),
         "platform/db-connections.css" => Some(PLATFORM_DB_CONNECTIONS_CSS.as_bytes()),
+        "platform/devicons.css" => Some(PLATFORM_DEVICONS_CSS.as_bytes()),
+        "platform/fonts/HankenGrotesk-cyrillic-ext.woff2" => Some(FONT_HANKENGROTESK_CYRILLIC_EXT_WOFF2),
+        "platform/fonts/HankenGrotesk-latin-ext.woff2" => Some(FONT_HANKENGROTESK_LATIN_EXT_WOFF2),
+        "platform/fonts/HankenGrotesk-latin.woff2" => Some(FONT_HANKENGROTESK_LATIN_WOFF2),
+        "platform/fonts/HankenGrotesk-vietnamese.woff2" => Some(FONT_HANKENGROTESK_VIETNAMESE_WOFF2),
+        "platform/fonts/JetBrainsMono-cyrillic-ext.woff2" => Some(FONT_JETBRAINSMONO_CYRILLIC_EXT_WOFF2),
+        "platform/fonts/JetBrainsMono-cyrillic.woff2" => Some(FONT_JETBRAINSMONO_CYRILLIC_WOFF2),
+        "platform/fonts/JetBrainsMono-greek.woff2" => Some(FONT_JETBRAINSMONO_GREEK_WOFF2),
+        "platform/fonts/JetBrainsMono-latin-ext.woff2" => Some(FONT_JETBRAINSMONO_LATIN_EXT_WOFF2),
+        "platform/fonts/JetBrainsMono-latin.woff2" => Some(FONT_JETBRAINSMONO_LATIN_WOFF2),
+        "platform/fonts/JetBrainsMono-vietnamese.woff2" => Some(FONT_JETBRAINSMONO_VIETNAMESE_WOFF2),
+        "platform/fonts/SpaceGrotesk-latin-ext.woff2" => Some(FONT_SPACEGROTESK_LATIN_EXT_WOFF2),
+        "platform/fonts/SpaceGrotesk-latin.woff2" => Some(FONT_SPACEGROTESK_LATIN_WOFF2),
+        "platform/fonts/SpaceGrotesk-vietnamese.woff2" => Some(FONT_SPACEGROTESK_VIETNAMESE_WOFF2),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod vendor_tests {
+    use super::*;
+
+    /// The Studio vendors every library its own pages import.
+    ///
+    /// If a page reaches for one that is not vendored, the lookup silently
+    /// falls back to the hub catalogue and the coupling is back — quietly, and
+    /// only for that library.
+    #[test]
+    fn the_studio_vendors_every_library_its_pages_import() {
+        let templates = concat!(env!("CARGO_MANIFEST_DIR"), "/src/platform/web/templates");
+        let mut imported = std::collections::BTreeSet::new();
+        collect_zeb_imports(std::path::Path::new(templates), &mut imported);
+
+        for library in &imported {
+            let prefix = format!("{library}/");
+            let vendored = PLATFORM_VENDOR_ASSETS
+                .iter()
+                .any(|asset| asset.path.starts_with(&prefix));
+            assert!(
+                vendored,
+                "the Studio imports '{library}' but does not vendor it, so it would \
+                 fall back to the hub catalogue and move whenever the hub does"
+            );
+        }
+        assert!(
+            imported.len() >= 3,
+            "only {} zeb libraries found in templates — the scan stopped matching",
+            imported.len()
+        );
+    }
+
+    /// Nothing the Studio serves is read out of the hub's directory.
+    #[test]
+    fn no_vendored_byte_is_read_from_the_blessed_tree() {
+        let source = include_str!("embedded.rs");
+        let start = source
+            .find("pub const PLATFORM_VENDOR_ASSETS")
+            .expect("the vendor list exists");
+        let end = source[start..].find("\n];").expect("the vendor list ends") + start;
+        let list = &source[start..end];
+        assert!(
+            !list.contains("blessed/"),
+            "the vendor list reaches into blessed/, which is the coupling it exists to remove"
+        );
+    }
+
+    fn collect_zeb_imports(dir: &std::path::Path, out: &mut std::collections::BTreeSet<String>) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                collect_zeb_imports(&path, out);
+                continue;
+            }
+            let is_source = path
+                .extension()
+                .and_then(|e| e.to_str())
+                .is_some_and(|e| matches!(e, "tsx" | "ts"));
+            if !is_source {
+                continue;
+            }
+            let Ok(text) = std::fs::read_to_string(&path) else {
+                continue;
+            };
+            for (index, _) in text.match_indices("from \"zeb/") {
+                let rest = &text[index + "from \"".len()..];
+                let name: String = rest.chars().take_while(|c| *c != '"').collect();
+                // zeb/react is the engine, served from the platform's own runtime.
+                if name != "zeb/react" && !name.is_empty() {
+                    out.insert(name);
+                }
+            }
+        }
     }
 }
