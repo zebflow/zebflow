@@ -885,8 +885,8 @@ pub async fn router(platform: Arc<PlatformService>) -> Router {
             post(api_enable_rwe_library),
         )
         .route(
-            "/api/projects/{owner}/{project}/rwe/libraries/disable",
-            delete(api_disable_rwe_library),
+            "/api/projects/{owner}/{project}/rwe/libraries/remove",
+            delete(api_remove_rwe_library),
         )
         .route(
             "/api/projects/{owner}/{project}/dependencies",
@@ -6158,6 +6158,10 @@ async fn project_hub_tab_page(
                     "node_bundle_install": format!("/api/projects/{owner}/{project}/nodes/install"),
                     // Repairing a package whose bytes no longer match the lock.
                     "dependencies": format!("/api/projects/{owner}/{project}/dependencies"),
+                    // Undoing an install: the lock entry and the bytes.
+                    "libraries_remove": format!("/api/projects/{owner}/{project}/rwe/libraries/remove"),
+                    // Which libraries this project actually has, re-read after a write.
+                    "libraries": format!("/api/projects/{owner}/{project}/rwe/libraries"),
                 }
             });
             match render_page(&state, "platform-project-hub", &route, input) {
@@ -17057,19 +17061,19 @@ async fn api_enable_rwe_library(
     }
 }
 
-/// Query params for `DELETE /api/projects/{owner}/{project}/rwe/libraries/disable`.
+/// Query params for `DELETE /api/projects/{owner}/{project}/rwe/libraries/remove`.
 #[derive(serde::Deserialize)]
-struct DisableRweLibraryQuery {
+struct RemoveRweLibraryQuery {
     name: String,
 }
 
-/// `DELETE /api/projects/{owner}/{project}/rwe/libraries/disable?name=zeb%2Fthreejs`
-async fn api_disable_rwe_library(
+/// `DELETE /api/projects/{owner}/{project}/rwe/libraries/remove?name=zeb%2Fthreejs`
+async fn api_remove_rwe_library(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
     Path((owner, project)): Path<(String, String)>,
     uri: Uri,
-    Query(params): Query<DisableRweLibraryQuery>,
+    Query(params): Query<RemoveRweLibraryQuery>,
 ) -> Response {
     if let Err(response) = require_project_api_capability(
         &state,
@@ -17102,7 +17106,7 @@ async fn api_disable_rwe_library(
         )
             .into_response();
     }
-    if let Err(err) = state.platform.dependency_lock.disable_rwe_library(
+    if let Err(err) = state.platform.dependency_lock.remove_rwe_library(
         state.platform.zebflow_cfg.as_ref(),
         &owner,
         &project,
@@ -17117,7 +17121,7 @@ async fn api_disable_rwe_library(
         actor_user.as_deref(),
         &owner,
         &project,
-        &format!("chore(rwe): disable library {}", params.name.trim()),
+        &format!("chore(rwe): remove library {}", params.name.trim()),
     );
     Json(json!({"ok": true})).into_response()
 }

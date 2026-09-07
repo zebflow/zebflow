@@ -144,9 +144,12 @@ export default function Page(input) {
   const [sourcesOpen, setSourcesOpen] = useState(false);
   // The catalogue, this project's enabled libraries and the lock, merged — the
   // same library must not appear as three rows under three names.
+  const [installedLibraries, setInstalledLibraries] = useState(
+    Array.isArray(input?.installed?.libraries_available) ? input.installed.libraries_available : [],
+  );
   const browseItems = buildHubItems({
     assets: packs,
-    libraries: input?.installed?.libraries_available,
+    libraries: installedLibraries,
     lock: input?.installed?.dependencies?.status,
   });
 
@@ -166,6 +169,10 @@ export default function Page(input) {
   async function onBrowseAct(item) {
     if (item?.repair_all) {
       await repairDependencies();
+      return;
+    }
+    if (item?.intent === "remove") {
+      await removeLibrary(item);
       return;
     }
     const packageId = item?.package_id;
@@ -225,6 +232,40 @@ export default function Page(input) {
     showStatus(
       `${packageId}@${version} — ${result.files_written || 0} file(s) into ${result.install_root || "the project"}`,
     );
+  }
+
+  // What a removal would delete, held while the reader decides.
+  const [removePrompt, setRemovePrompt] = useState(null);
+
+  async function removeLibrary(item) {
+    setRemovePrompt(item);
+  }
+
+  async function commitRemove(item) {
+    const name = libraryNameOf(item);
+    showStatus(`Removing ${name}...`);
+    try {
+      await requestJson(`${api.libraries_remove}?name=${encodeURIComponent(name)}`, {
+        method: "DELETE",
+      });
+      await refresh();
+      showStatus(`Removed ${name} — its lock entry and its files are gone.`);
+    } catch (err) {
+      showStatus(err?.message || err);
+    }
+  }
+
+  /**
+   * The name the lock knows a library by.
+   *
+   * The hub calls it `zebflow.use`; the lock and every template import call it
+   * `zeb/use`. Removal is addressed by the second, so a package id has to be
+   * translated back before it is sent.
+   */
+  function libraryNameOf(item) {
+    if (item?.name?.startsWith("zeb/")) return item.name;
+    const id = String(item?.package_id ?? "");
+    return id.startsWith("zebflow.") ? `zeb/${id.slice("zebflow.".length)}` : id;
   }
 
   async function repairDependencies() {
@@ -318,11 +359,17 @@ export default function Page(input) {
       requestJson(api.assets),
       requestJson(api.my_assets),
       api.access ? requestJson(api.access) : Promise.resolve(null),
+      // Whether this project has a library is not in the catalogue — it is in
+      // the project. Leaving it out of the refresh meant a row still read
+      // "available" straight after being installed, and the Remove action,
+      // which only an installed package has, never appeared.
+      api.libraries ? requestJson(api.libraries) : Promise.resolve(null),
     ];
-    const [assetsRes, myRes, sourceRes] = await Promise.all(tasks);
+    const [assetsRes, myRes, sourceRes, libsRes] = await Promise.all(tasks);
     setPacks(Array.isArray(assetsRes?.items) ? assetsRes.items : []);
     setMyPacks(Array.isArray(myRes?.items) ? myRes.items : []);
     setHubSources(Array.isArray(sourceRes?.repositories) ? sourceRes.repositories : []);
+    if (Array.isArray(libsRes)) setInstalledLibraries(libsRes);
   }
 
   async function refreshPublishSources(sourceType) {
@@ -673,6 +720,33 @@ export default function Page(input) {
                   ) : null}
 
                   <ConfirmDialog
+        open={!!removePrompt}
+        onClose={() => setRemovePrompt(null)}
+        onConfirm={async () => {
+          const pending = removePrompt;
+          setRemovePrompt(null);
+          if (!pending) return;
+          setBrowseBusy(true);
+          try {
+            await commitRemove(pending);
+          } finally {
+            setBrowseBusy(false);
+          }
+        }}
+        title="Remove this package from the project?"
+        confirmLabel="Remove it"
+        cancelLabel="Cancel"
+        variant="destructive"
+        busy={browseBusy}
+      >
+        <p className="text-[0.8rem] text-body-soft">
+          <span className="font-mono">{libraryNameOf(removePrompt)}</span> is deleted from{" "}
+          <code className="font-mono">zeb.lock</code> and its installed files are removed. Any
+          template importing it stops working until it is installed again.
+        </p>
+      </ConfirmDialog>
+
+      <ConfirmDialog
         open={!!overwritePrompt}
         onClose={() => setOverwritePrompt(null)}
         onConfirm={async () => {

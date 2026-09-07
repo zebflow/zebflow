@@ -104,8 +104,31 @@ export default function HubItemDetail({ item, owner, project, destination, onDes
       {/* The action sits with what it acts on, not pinned to the bottom of a
           tall pane where it reads as belonging to nothing. */}
       <div className="flex items-center justify-end gap-2 border-t border-border pt-3">
+        {/* Only an installed managed package can be removed. An added one was
+            copied into the repository and became the writer's own file — the
+            hub has no claim on it, which is the whole difference between the
+            two verbs. */}
+        {item.installed && verb === "install" ? (
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            disabled={busy}
+            onClick={() => onAct({ ...item, intent: "remove" })}
+          >
+            Remove
+          </Button>
+        ) : null}
         <Button type="button" size="sm" disabled={busy} onClick={() => onAct(item)}>
-          {busy ? "Working…" : verb === "add" ? "Add to project" : "Install"}
+          {busy
+            ? "Working…"
+            : verb === "add"
+              ? "Add to project"
+              : item.installed
+                ? item.updatable
+                  ? "Update"
+                  : "Reinstall"
+                : "Install"}
         </Button>
       </div>
     </div>

@@ -1068,8 +1068,20 @@ impl DependencyLockService {
         self.finish_coordinated_update(&path, project, &previous, result)
     }
 
-    /// Disables one RWE library while keeping requested and resolved state aligned.
-    pub fn disable_rwe_library(
+    /// Removes one RWE library: its lock entry, its requested state, and the
+    /// bytes an install put on disk.
+    ///
+    /// The bytes are the part that used to be left behind. Installing wrote a
+    /// package under `data/hub/`, and removing it only forgot the lock entry —
+    /// so the files stayed, tracked by nothing, and the only way to be rid of
+    /// them was to delete the directory by hand. An install that cannot be
+    /// undone is not managed, which is the one thing `install` promises that
+    /// `add` does not (`distribution.md` §1).
+    ///
+    /// Only what this project installed is removed. The package directory is
+    /// derived from the lock entry's own path, and a library enabled without an
+    /// install has no directory to delete — so nothing is guessed from a name.
+    pub fn remove_rwe_library(
         &self,
         configuration: &ProjectConfigurationService,
         owner: &str,
@@ -1080,13 +1092,56 @@ impl DependencyLockService {
         let lock = self.update_lock(&path);
         let _guard = lock.lock().unwrap_or_else(|error| error.into_inner());
         let previous = self.read_unlocked(&path, project)?;
+        let installed_dir = previous
+            .rwe
+            .libraries
+            .get(name)
+            .and_then(|entry| self.installed_package_dir(owner, project, &entry.entry));
+
         let mut next = previous.clone();
         next.rwe.libraries.remove(name);
         let result = configuration.update_fallible(owner, project, |config| {
             config.configs.rwe.libraries.remove(name);
             self.write_unlocked(&path, project, &next)
         });
-        self.finish_coordinated_update(&path, project, &previous, result)
+        self.finish_coordinated_update(&path, project, &previous, result)?;
+
+        // The lock is the record, so it is updated first and the bytes follow.
+        // A failure here leaves files with no lock entry, which `repair` can
+        // see and a stale lock entry pointing at deleted bytes could not.
+        if let Some(dir) = installed_dir
+            && dir.is_dir()
+        {
+            std::fs::remove_dir_all(&dir).map_err(|error| {
+                PlatformError::new(
+                    "ZEB_LOCK_REMOVE_FILES",
+                    format!(
+                        "'{name}' was removed from the lock but its files at {} could not be deleted: {error}",
+                        dir.display()
+                    ),
+                )
+            })?;
+        }
+        Ok(())
+    }
+
+    /// The installed package directory a lock entry lives inside, if any.
+    ///
+    /// An entry reads `rwe-libraries/{package}/0.1/runtime/bundle.mjs`; the
+    /// package is the first two segments. Anything shorter was not written by
+    /// an install and has no directory of its own to remove.
+    fn installed_package_dir(&self, owner: &str, project: &str, entry: &str) -> Option<PathBuf> {
+        let mut segments = entry.split('/');
+        let kind = segments.next()?;
+        let package = segments.next()?;
+        if kind.is_empty() || package.is_empty() || segments.next().is_none() {
+            return None;
+        }
+        let root = self.node_root(owner, project);
+        let dir = root.join(kind).join(package);
+        // A lock is a repository file someone can edit. A traversing entry must
+        // not turn a removal into a delete somewhere else on the machine.
+        dir.starts_with(&root).then_some(dir)
     }
 
     fn finish_coordinated_update(
@@ -1848,6 +1903,112 @@ mod tests {
         assert_eq!(std::fs::read(&path).unwrap(), legacy);
     }
 
+    /// Removing a library takes its bytes with it.
+    ///
+    /// It used to take only the lock entry. The files an install wrote stayed
+    /// under `data/hub/` with nothing tracking them, and the only way to be rid
+    /// of them was `rm -rf` — which is what I had to do to my own test installs
+    /// before this existed.
+    #[test]
+    fn removing_a_library_deletes_the_files_the_install_wrote() {
+        let root = tempfile::tempdir().unwrap();
+        let users = root.path().join("users");
+        let configuration = ProjectConfigurationService::new(users.clone());
+        configuration
+            .ensure_initialized("owner", "project", "Project")
+            .unwrap();
+        let service = DependencyLockService::new(users.clone());
+        service
+            .write("owner", "project", &DependencyLockSpec::default())
+            .unwrap();
+        service
+            .enable_rwe_library(&configuration, "owner", "project", "zeb/example", entry('a'))
+            .unwrap();
+
+        // Stand in for what an install writes: the package directory the lock
+        // entry points inside.
+        let package_dir = users
+            .join("owner")
+            .join("project")
+            .join("data")
+            .join("hub")
+            .join("rwe-libraries")
+            .join("zebflow.example");
+        std::fs::create_dir_all(package_dir.join("dist")).unwrap();
+        std::fs::write(package_dir.join("dist").join("main.mjs"), b"bundle").unwrap();
+        std::fs::write(package_dir.join("manifest.json"), b"{}").unwrap();
+        assert!(package_dir.is_dir());
+
+        service
+            .remove_rwe_library(&configuration, "owner", "project", "zeb/example")
+            .unwrap();
+
+        assert!(
+            !package_dir.exists(),
+            "the installed package directory must be gone, not just its lock entry"
+        );
+        assert!(
+            package_dir.parent().unwrap().is_dir(),
+            "only this package is removed — rwe-libraries/ itself stays for the others"
+        );
+    }
+
+    /// A hand-edited lock must not turn removal into a delete elsewhere.
+    ///
+    /// `enable_rwe_library` refuses a traversing entry outright — the lock
+    /// contract requires a normalized relative path — so this writes the file
+    /// directly, which is what an editor or a bad merge would do. Whether the
+    /// reader refuses it or the removal declines to follow it, nothing outside
+    /// the project may be touched.
+    #[test]
+    fn removal_never_reaches_outside_the_installed_tree() {
+        let root = tempfile::tempdir().unwrap();
+        let users = root.path().join("users");
+        let configuration = ProjectConfigurationService::new(users.clone());
+        configuration
+            .ensure_initialized("owner", "project", "Project")
+            .unwrap();
+        let service = DependencyLockService::new(users.clone());
+
+        let outside = root.path().join("escape");
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(outside.join("main.mjs"), b"not ours").unwrap();
+
+        let lock_path = users
+            .join("owner")
+            .join("project")
+            .join("repo")
+            .join(DEPENDENCY_LOCK_FILE);
+        std::fs::create_dir_all(lock_path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &lock_path,
+            br#"{
+  "apiVersion": "zebflow.com/v1",
+  "kind": "DependencyLock",
+  "metadata": { "name": "project" },
+  "spec": {
+    "rwe": { "libraries": { "zeb/escape": {
+      "version": "1.0.0",
+      "source": "hub.local",
+      "source_id": "zebflow.escape@1.0.0",
+      "entry": "../../../../escape/main.mjs",
+      "integrity": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    } } },
+    "nodes": {}
+  }
+}"#,
+        )
+        .unwrap();
+
+        // Either outcome is acceptable; deleting the file is not.
+        let _ = service.remove_rwe_library(&configuration, "owner", "project", "zeb/escape");
+
+        assert!(
+            outside.join("main.mjs").is_file(),
+            "a traversing lock entry must never delete anything outside the project"
+        );
+    }
+
     #[test]
     fn coordinated_enablement_updates_configuration_and_lock() {
         let root = tempfile::tempdir().unwrap();
@@ -1886,7 +2047,7 @@ mod tests {
         );
 
         service
-            .disable_rwe_library(&configuration, "owner", "project", "zeb/example")
+            .remove_rwe_library(&configuration, "owner", "project", "zeb/example")
             .unwrap();
         assert!(
             configuration

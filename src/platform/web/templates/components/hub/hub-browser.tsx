@@ -56,7 +56,13 @@ export default function HubBrowser({ items, owner, project, initialState, destin
       (!kind || item?.asset_kind === kind) &&
       matchesSearch(item, search),
   );
-  const selected = visible.find((item) => item?.package_id === selectedId) || visible[0] || null;
+  // The reader's choice survives a filter that stops matching it. Installing a
+  // package moves it out of "Available", and looking only at `visible` meant
+  // the pane silently switched to an unrelated package the moment the install
+  // finished — so the Remove action, which had just become available, appeared
+  // to be missing.
+  const selected =
+    all.find((item) => item?.package_id === selectedId) || visible[0] || null;
   const problemCount = all.filter((item) => item?.status && item.status !== "resolved").length;
 
   return (
