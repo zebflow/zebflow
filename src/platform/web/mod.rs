@@ -6156,6 +6156,8 @@ async fn project_hub_tab_page(
                     "repositories": format!("/api/projects/{owner}/{project}/hub/repositories"),
                     "node_bundle_review": format!("/api/projects/{owner}/{project}/nodes/install/review"),
                     "node_bundle_install": format!("/api/projects/{owner}/{project}/nodes/install"),
+                    // Repairing a package whose bytes no longer match the lock.
+                    "dependencies": format!("/api/projects/{owner}/{project}/dependencies"),
                 }
             });
             match render_page(&state, "platform-project-hub", &route, input) {

@@ -66,8 +66,10 @@ export default function HubItemRow({ item, selected, onSelect }) {
         <span className="shrink-0 text-[0.66rem] font-medium text-dark-accent4" title={problem}>
           {problem === "missing" ? "missing" : "digest"}
         </span>
-      ) : item?.latest_version ? (
-        <span className="shrink-0 font-mono text-[0.66rem] text-body-soft">{item.latest_version}</span>
+      ) : item?.packed_version || item?.latest_version ? (
+        <span className="shrink-0 font-mono text-[0.66rem] text-body-soft">
+          {item.packed_version || item.latest_version}
+        </span>
       ) : null}
     </button>
   );

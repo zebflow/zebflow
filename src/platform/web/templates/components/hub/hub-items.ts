@@ -54,7 +54,14 @@ export function buildHubItems({ assets, libraries, lock }) {
       }),
       title: existing?.title || lib?.name,
       summary: existing?.summary || lib?.description,
-      latest_version: available || existing?.latest_version,
+      // Two different version namespaces meet here and must not be merged.
+      // `latest_version` is the catalogue coordinate an install is addressed by
+      // — `0.1.1`. `packed_version` is the library's own build label — `r183`,
+      // `full-9.x` — which is what a reader recognises. Overwriting the first
+      // with the second sent `POST .../zebflow.use/full-0.1/review`, and the
+      // hub answered 404 because no such version exists.
+      latest_version: existing?.latest_version || available,
+      packed_version: available || existing?.packed_version,
       installed: !!lib?.enabled,
       installed_version: installedVersion,
       updatable: !!lib?.enabled && !!available && !!installedVersion && installedVersion !== available,

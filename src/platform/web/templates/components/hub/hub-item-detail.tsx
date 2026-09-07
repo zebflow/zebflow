@@ -45,7 +45,7 @@ export default function HubItemDetail({ item, owner, project, destination, onDes
 
       <div className="flex flex-col gap-1.5 border-t border-border pt-3">
         <Fact label="Kind">{kind.label}</Fact>
-        <Fact label="Version">{item.latest_version || "—"}</Fact>
+        <Fact label="Version">{item.packed_version || item.latest_version || "—"}</Fact>
         <Fact label="From">{item.repository_title || "Local"}</Fact>
         <Fact label="Publisher">{item.publisher_display_name || item.publisher_id || "—"}</Fact>
       </div>

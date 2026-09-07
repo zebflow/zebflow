@@ -15,6 +15,8 @@ import HubBrowser from "@/components/hub/hub-browser";
 import InstallFromFileDialog from "@/pages/project-studio/hub/components/install-from-file-dialog";
 import HubSourcesDialog from "@/pages/project-studio/hub/components/hub-sources-dialog";
 import { buildHubItems } from "@/components/hub/hub-items";
+import { needsDestination, verbOf } from "@/components/hub/hub-kinds";
+import ConfirmDialog from "@/components/ui/confirm-dialog";
 import LibrariesPanel from "@/pages/project-studio/hub/components/libraries-panel";
 import NodeRegistryPanel from "@/pages/project-studio/hub/components/node-registry-panel";
 import DependenciesPanel from "@/pages/project-studio/hub/components/dependencies-panel";
@@ -148,16 +150,95 @@ export default function Page(input) {
     lock: input?.installed?.dependencies?.status,
   });
 
+  // What an add would overwrite, held while the reader decides. Null means
+  // nothing is being asked.
+  const [overwritePrompt, setOverwritePrompt] = useState(null);
+  const [browseBusy, setBrowseBusy] = useState(false);
+
   /**
    * Acting on the selected package.
    *
-   * Not wired to the install and add endpoints yet — this is the catalogue and
-   * its consequences; the verbs land next, together with the overwrite
-   * confirmation the review already has the file list for.
+   * Reviews before it writes. The review already knows which files an add would
+   * replace, and replacing a file someone wrote is the one part of this that
+   * cannot be undone — so it is the one part worth stopping for. Everything
+   * else proceeds without a question.
    */
-  function onBrowseAct(item) {
-    // eslint-disable-next-line no-console
-    console.info("hub action requested", item?.package_id ?? item);
+  async function onBrowseAct(item) {
+    if (item?.repair_all) {
+      await repairDependencies();
+      return;
+    }
+    const packageId = item?.package_id;
+    const version = item?.latest_version;
+    if (!packageId || !version) {
+      showStatus("That package has no installable version.");
+      return;
+    }
+
+    // Only add-kinds land in the repository, so only they have somewhere to
+    // choose. Install-kinds go to `data/` and the folder is meaningless.
+    const folder = needsDestination(item?.asset_kind) ? hubReviewTargetFolder : "";
+
+    setBrowseBusy(true);
+    try {
+      const review = await requestJson(reviewUrl(item), {
+        method: "POST",
+        body: JSON.stringify({ target_folder: folder }),
+      });
+      const overwritten = review?.review?.files_overwritten ?? [];
+      if (overwritten.length) {
+        setOverwritePrompt({ item, folder, files: overwritten });
+        return;
+      }
+      await commitAdd(item, folder);
+    } catch (err) {
+      showStatus(err?.message || err);
+    } finally {
+      setBrowseBusy(false);
+    }
+  }
+
+  function reviewUrl(item) {
+    const packageId = encodeURIComponent(item?.package_id);
+    const version = encodeURIComponent(item?.latest_version);
+    return item?.source === "remote"
+      ? `${api.repositories}/${encodeURIComponent(item.repository_id)}/packs/${packageId}/${version}/review`
+      : `${api.assets}/${packageId}/${version}/review`;
+  }
+
+  /** The write itself, after the reader has seen what it costs. */
+  async function commitAdd(item, folder) {
+    const packageId = item?.package_id;
+    const version = item?.latest_version;
+    const verb = verbOf(item?.asset_kind) === "add" ? "Adding" : "Installing";
+    showStatus(`${verb} ${packageId}@${version}...`);
+    const url = item?.source === "remote"
+      ? `${api.repositories}/${encodeURIComponent(item.repository_id)}/packs/${encodeURIComponent(packageId)}/${encodeURIComponent(version)}/add`
+      : `${api.assets}/${encodeURIComponent(packageId)}/${encodeURIComponent(version)}/add`;
+    const payload = await requestJson(url, {
+      method: "POST",
+      body: JSON.stringify({ target_folder: folder }),
+    });
+    const result = payload?.result || {};
+    // The row must now say "in project", which it only learns by re-reading.
+    await refresh();
+    showStatus(
+      `${packageId}@${version} — ${result.files_written || 0} file(s) into ${result.install_root || "the project"}`,
+    );
+  }
+
+  async function repairDependencies() {
+    setBrowseBusy(true);
+    showStatus("Repairing packages that no longer match zeb.lock...");
+    try {
+      await requestJson(api.dependencies, { method: "POST", body: "{}" });
+      await refresh();
+      showStatus("Repair finished.");
+    } catch (err) {
+      showStatus(err?.message || err);
+    } finally {
+      setBrowseBusy(false);
+    }
   }
   const [myPacks, setMyPacks] = useState(Array.isArray(input?.my_assets) ? input.my_assets : []);
   const [hubSources, setHubSources] = useState([]);
@@ -591,7 +672,43 @@ export default function Page(input) {
                     </div>
                   ) : null}
 
-                  <InstallFromFileDialog open={fromFileOpen} onClose={() => setFromFileOpen(false)}>
+                  <ConfirmDialog
+        open={!!overwritePrompt}
+        onClose={() => setOverwritePrompt(null)}
+        onConfirm={async () => {
+          const pending = overwritePrompt;
+          setOverwritePrompt(null);
+          if (!pending) return;
+          setBrowseBusy(true);
+          try {
+            await commitAdd(pending.item, pending.folder);
+          } catch (err) {
+            showStatus(err?.message || err);
+          } finally {
+            setBrowseBusy(false);
+          }
+        }}
+        title="Replace files already in this project?"
+        confirmLabel="Replace them"
+        cancelLabel="Cancel"
+        variant="destructive"
+        busy={browseBusy}
+      >
+        <p className="text-[0.8rem] text-body-soft">
+          Adding <span className="font-mono">{overwritePrompt?.item?.package_id}</span> writes over
+          {" "}{overwritePrompt?.files?.length} file(s) that already exist here. What is in them now
+          is lost.
+        </p>
+        <ul className="mt-3 flex flex-col gap-1">
+          {(overwritePrompt?.files ?? []).map((file) => (
+            <li key={file} className="font-mono text-[0.72rem] text-body-soft">
+              {file}
+            </li>
+          ))}
+        </ul>
+      </ConfirmDialog>
+
+      <InstallFromFileDialog open={fromFileOpen} onClose={() => setFromFileOpen(false)}>
                     <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
                       <div>
                         <p className="project-content-subtitle">Node Bundle From File</p>
@@ -798,7 +915,7 @@ export default function Page(input) {
                           initialState="available"
                           destination={hubReviewTargetFolder}
                           onDestinationChange={setHubReviewTargetFolder}
-                          busy={false}
+                          busy={browseBusy}
                           onAct={onBrowseAct}
                         />
                       </div>
