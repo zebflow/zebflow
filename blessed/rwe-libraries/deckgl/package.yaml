@@ -1,6 +1,6 @@
 # Publish metadata for the blessed local-hub seed.
 # The seeder publishes this package as the reserved `zebflow` publisher.
 id: zebflow.deckgl
-version: 0.1.2
+version: 0.1.3
 title: zeb/deckgl
 description: "Deck.gl 9.x runtime for geospatial and large-scale data visualisation. Fully offline \u2014 @deck.gl/core + layers + aggregation + geo + mesh + extensions bundled inline. 25+ layer types, tooltip, utilities (haversine, bearing, colorRamp, animation)."

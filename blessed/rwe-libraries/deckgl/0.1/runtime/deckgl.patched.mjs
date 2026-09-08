@@ -27,6 +27,23 @@ function withoutUndefined(object) {
   );
 }
 
+/**
+ * Zebflow runs offline. loaders.gl's worker path fetches its worker bundles
+ * from unpkg at runtime, so any layer parsing a binary format (MVT above all —
+ * the mapserver serves it) would dial the network the first time someone used
+ * it on a machine that has none. `worker: false` makes every loader parse
+ * in-thread, which needs no fetch and produces the same result.
+ *
+ * A spec may still say `loadOptions: { worker: true }` and take the upstream
+ * behaviour knowingly; only the default changes. Formats whose *decoder* is a
+ * wasm blob (draco, basis) are not covered by this switch and stay documented
+ * in MODIFICATIONS as needing vendoring before a layer uses them.
+ */
+function withOfflineLoadOptions(cfg) {
+  if (!isObject(cfg)) return cfg;
+  return { ...cfg, loadOptions: { worker: false, ...(cfg.loadOptions || {}) } };
+}
+
 function resolveFeatureAccessor(spec, fallback) {
   if (typeof spec === "function") return spec;
   if (Array.isArray(spec)) return () => spec;
@@ -350,7 +367,8 @@ function buildIconLayer(cfg) {
   ];
 }
 
-function patchedBuildLayer(cfg) {
+function patchedBuildLayer(rawCfg) {
+  const cfg = withOfflineLoadOptions(rawCfg);
   if (!cfg || !cfg.type) return null;
   if (cfg.type === "GeoJsonLayer") return buildGeoJsonLayers(cfg);
   if (cfg.type === "TripsLayer") return buildTripsLayer(cfg);
@@ -377,10 +395,10 @@ function patchRuntimeRegistry() {
   runtime.deck = {
     ...originalDeck,
     GeoJsonLayer: deckNamespace.GeoJsonLayer || function GeoJsonLayerAdapter(props) {
-      return buildGeoJsonLayers(props);
+      return buildGeoJsonLayers(withOfflineLoadOptions(props));
     },
     TripsLayer: deckNamespace.TripsLayer || function TripsLayerAdapter(props) {
-      return buildTripsLayer(props);
+      return buildTripsLayer(withOfflineLoadOptions(props));
     },
   };
   window.__zebDeck = runtime;
