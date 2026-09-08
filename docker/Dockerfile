@@ -11,17 +11,16 @@ WORKDIR /app
 
 # ── Stage 2: dependency planner ────────────────────────────────────────────
 # Reads the full source tree to produce recipe.json (the dep manifest).
-# Only re-runs if Cargo.toml / Cargo.lock / build.rs / libraries change.
+# Only re-runs if Cargo.toml / Cargo.lock / build.rs / blessed change.
 FROM chef AS planner
 COPY Cargo.toml Cargo.lock build.rs ./
-COPY libraries ./libraries
-COPY composites ./composites
+COPY blessed ./blessed
 COPY src ./src
 RUN cargo chef prepare --recipe-path recipe.json
 
 # ── Stage 3: build dependencies (cached) + app ────────────────────────────
 FROM chef AS builder
-COPY libraries ./libraries
+COPY blessed ./blessed
 COPY --from=planner /app/recipe.json recipe.json
 
 # Cook: builds ALL dependencies only.
@@ -38,7 +37,6 @@ RUN cargo chef cook --release --recipe-path recipe.json
 
 # Now copy source and build only the application code (fast after cache hit).
 COPY Cargo.toml Cargo.lock build.rs ./
-COPY composites ./composites
 COPY src ./src
 ARG BUILD_VERSION
 RUN BUILD_VERSION=${BUILD_VERSION} cargo build --release --bin zebflow
