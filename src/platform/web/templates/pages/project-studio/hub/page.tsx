@@ -17,7 +17,6 @@ import HubSourcesDialog from "@/pages/project-studio/hub/components/hub-sources-
 import { useHubInventory } from "@/components/hub/use-hub-inventory";
 import { needsDestination, verbOf } from "@/components/hub/hub-kinds";
 import ConfirmDialog from "@/components/ui/confirm-dialog";
-import LibrariesPanel from "@/pages/project-studio/hub/components/libraries-panel";
 import NodeRegistryPanel from "@/pages/project-studio/hub/components/node-registry-panel";
 import DependenciesPanel from "@/pages/project-studio/hub/components/dependencies-panel";
 
@@ -1352,13 +1351,6 @@ export default function Page(input) {
                       because the Hub is where installing happens — the
                       inventory used to live in Settings while the install
                       button lived here. */}
-                  {tabFlags?.libraries ? (
-                    <LibrariesPanel
-                      items={input?.installed?.libraries_available ?? []}
-                      api={input?.installed?.libraries_api ?? ""}
-                    />
-                  ) : null}
-
                   {tabFlags?.nodes ? (
                     <NodeRegistryPanel
                       groups={input?.installed?.node_groups ?? []}

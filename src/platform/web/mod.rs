@@ -6158,7 +6158,6 @@ async fn project_hub_tab_page(
                     "packs": tab == "packs",
                     "my_packs": tab == "my-packs",
                     "publish": tab == "publish",
-                    "libraries": tab == "libraries",
                     "nodes": tab == "nodes",
                     "dependencies": tab == "dependencies",
                 },
@@ -7014,7 +7013,12 @@ async fn render_settings_tab_page(
     // rendering General — a bookmark landing on the wrong page with no
     // explanation is worse than either a redirect or a refusal.
     if let Some(moved) = settings_tab_moved_to_hub(&raw_tab) {
-        return Redirect::to(&format!("/projects/{owner}/{project}/hub/{moved}")).into_response();
+        let target = if moved.is_empty() {
+            format!("/projects/{owner}/{project}/hub")
+        } else {
+            format!("/projects/{owner}/{project}/hub/{moved}")
+        };
+        return Redirect::to(&target).into_response();
     }
     if let Some(moved) = settings_tab_moved_to_feature(&raw_tab) {
         return Redirect::to(&format!("/projects/{owner}/{project}/{moved}")).into_response();
@@ -7036,40 +7040,6 @@ async fn render_settings_tab_page(
             let tabs = settings_tab_items(&owner, &project, tab);
             let general_cards = settings_general_cards(&owner, &project);
             let policy_cards = settings_policy_cards();
-            let (node_count, node_groups) = settings_nodes();
-
-            // Build library list: merge embedded manifests with per-project enabled state.
-            let rwe_libs = state
-                .platform
-                .zebflow_cfg
-                .get_rwe_libraries(&owner, &project)
-                .unwrap_or_default();
-            let libraries_available = state
-                .platform
-                .library
-                .list()
-                .map(|m| {
-                    let enabled_entry = rwe_libs.get(&m.name);
-                    json!({
-                        "name": m.name,
-                        "description": m.description,
-                        "packed_version": m.packed_version(),
-                        "packed_kind": m.packed_kind(),
-                        "enabled": enabled_entry.is_some(),
-                        "installed_version": enabled_entry.map(|e| e.version.clone()),
-                        "source": enabled_entry.map(|e| e.source.clone())
-                    })
-                })
-                .collect::<Vec<_>>();
-            let libraries_api = format!("/api/projects/{owner}/{project}/rwe/libraries");
-            let dependency_status = match state
-                .platform
-                .dependency_lock
-                .status(&owner, &project, &rwe_libs)
-            {
-                Ok(report) => report,
-                Err(err) => return internal_error(err),
-            };
 
             let assistant_config = match state
                 .platform
@@ -7148,14 +7118,6 @@ async fn render_settings_tab_page(
                 "page_subtitle": tab_subtitle,
                 "cards_general": general_cards,
                 "cards_policy": policy_cards,
-                "libraries_available": libraries_available,
-                "libraries_api": libraries_api,
-                "dependencies": {
-                    "api": format!("/api/projects/{owner}/{project}/dependencies"),
-                    "status": dependency_status
-                },
-                "node_count": node_count,
-                "node_groups": node_groups,
                 "assistant": {
                     "api": {
                         "config": format!("/api/projects/{owner}/{project}/assistant/config")
@@ -7260,7 +7222,10 @@ async fn render_settings_tab_page(
 /// Settings tabs that now live in the Hub, and where each went.
 fn settings_tab_moved_to_hub(raw: &str) -> Option<&'static str> {
     match raw.trim().to_ascii_lowercase().as_str() {
-        "libraries" => Some("libraries"),
+        // Libraries went twice: first to a hub tab, then into the catalogue
+        // itself — a library is a package, so it is browsed, installed and
+        // removed where every other package is.
+        "libraries" => Some(""),
         "nodes" => Some("nodes"),
         "dependencies" => Some("dependencies"),
         _ => None,
@@ -7373,8 +7338,8 @@ fn settings_general_cards(owner: &str, project: &str) -> Vec<Value> {
     vec![
         json!({
             "title": "Libraries",
-            "description": "Installed web libraries and their versions. Managed in the Hub, where installing happens.",
-            "href": format!("/projects/{owner}/{project}/hub/libraries"),
+            "description": "Web libraries are hub packages: browse, install and remove them in the catalogue.",
+            "href": format!("/projects/{owner}/{project}/hub"),
             "tag": "Hub"
         }),
         json!({
@@ -7699,30 +7664,24 @@ fn normalize_hub_tab(raw: &str) -> &'static str {
         "" | "packs" | "assets" => "packs",
         "my-packs" => "my-packs",
         "publish" => "publish",
-        "libraries" => "libraries",
         "nodes" => "nodes",
         "dependencies" => "dependencies",
+        // "libraries" is deliberately absent: the tab was a second front-end
+        // for the same install the Browse rows perform, still speaking the
+        // retired `zeb/*` names. Old addresses fall through to Browse.
         _ => "packs",
     }
 }
 
 fn hub_tab_items(owner: &str, project: &str, active: &str) -> Vec<Value> {
     let base = format!("/projects/{owner}/{project}/hub");
-    let tabs = vec![
-        "packs",
-        "my-packs",
-        "publish",
-        "libraries",
-        "nodes",
-        "dependencies",
-    ];
+    let tabs = vec!["packs", "my-packs", "publish", "nodes", "dependencies"];
     tabs.into_iter()
         .map(|tab| {
             let label = match tab {
                 "packs" => "Browse",
                 "my-packs" => "Published",
                 "publish" => "Publish",
-                "libraries" => "Libraries",
                 "nodes" => "Nodes",
                 "dependencies" => "Dependencies",
                 _ => tab,

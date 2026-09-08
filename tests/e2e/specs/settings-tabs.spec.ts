@@ -19,12 +19,15 @@ const TABS = [
 ];
 
 /**
- * Libraries, nodes and dependencies moved to the Hub — the place they are
- * installed from. Settings kept signposts, and the old addresses redirect
- * rather than quietly rendering General.
+ * Nodes and dependencies moved to the Hub — the place they are installed
+ * from. Settings kept signposts, and the old addresses redirect rather than
+ * quietly rendering General.
+ *
+ * Libraries went further: a library is a hub package, so it has no tab at all
+ * — it is browsed, installed and removed in the catalogue like everything
+ * else. Both of its old addresses land on Browse (tested below).
  */
 const MOVED_TO_HUB = [
-  { name: "libraries", shows: /zeb\/codemirror/ },
   { name: "nodes", shows: /Node/i },
   { name: "dependencies", shows: /Dependency Lock/i },
 ];
@@ -117,4 +120,24 @@ test("general signposts the configuration that lives elsewhere", async ({ page }
   for (const label of ["Libraries", "Nodes", "Dependencies", "File storage", "Databases"]) {
     await expect(signposts.getByText(label, { exact: true })).toBeVisible();
   }
+});
+
+/**
+ * A library is a package, so it has no tab of its own. Both old addresses —
+ * the hub tab and the settings tab it had before that — land on the
+ * catalogue, where the install actually happens.
+ */
+test("the libraries tab is gone: its addresses land on the catalogue", async ({
+  page,
+  consoleErrors,
+}) => {
+  await visit(page, `/projects/${OWNER}/${PROJECT}/hub/libraries`);
+  await expect(page.locator("[data-hub-item]").first()).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByRole("link", { name: "Libraries", exact: true })).toHaveCount(0);
+
+  await page.goto(`/projects/${OWNER}/${PROJECT}/settings/libraries`);
+  await expect(page).toHaveURL(/\/hub$/, { timeout: 10_000 });
+
+  expect(await page.content()).not.toContain("RWE component error");
+  expect(consoleErrors).toEqual([]);
 });
