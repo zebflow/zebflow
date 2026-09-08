@@ -657,6 +657,17 @@ pub struct PipelineGraph {
     pub nodes: Vec<PipelineNode>,
     /// All directed edges connecting output pins to input pins.
     pub edges: Vec<PipelineEdge>,
+    /// Free-standing annotations drawn on the canvas.
+    ///
+    /// Deliberately a sibling of `nodes` rather than a node kind: a note has no
+    /// pins, no config, and never runs, so keeping it out of `nodes` means no
+    /// executor learns to skip it and no edge can point at one. `nodes` stays
+    /// exactly what it was — the things that execute.
+    ///
+    /// They exist so a pipeline that arrives from the hub can explain itself:
+    /// which credential to create, which node to change, what the flow does.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub notes: Vec<PipelineNote>,
 }
 
 impl PipelineGraph {
@@ -760,6 +771,35 @@ pub struct PipelineNode {
     /// a typed `Config` struct at engine build time.
     #[serde(default)]
     pub config: Value,
+}
+
+/// One annotation on the canvas. Presentation only — never executed, never
+/// reachable by an edge, and carried through read and write untouched.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PipelineNote {
+    /// Unique id within this graph, so an editor can move one note without
+    /// rewriting the rest.
+    pub id: String,
+    /// The note's body. Markdown, rendered by the editor.
+    #[serde(default)]
+    pub text: String,
+    /// Canvas position, in the same space node positions use.
+    #[serde(default)]
+    pub x: f64,
+    #[serde(default)]
+    pub y: f64,
+    /// Drawn size. An editor may grow a note to fit its text, but the stored
+    /// size is what reopens.
+    #[serde(default)]
+    pub width: f64,
+    #[serde(default)]
+    pub height: f64,
+    /// A colour name the editor maps to its palette, e.g. `"amber"`. Free text
+    /// rather than an enum: a note nobody can read is a cosmetic problem, and
+    /// refusing to open a pipeline over an unknown colour is not.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub color: String,
 }
 
 /// A directed connection from one node's output pin to another node's input pin.

@@ -706,6 +706,7 @@ export default function LyricPage(input) {
             id: "generate-lyric".to_string(),
             description: None,
             metadata: None,
+            notes: Vec::new(),
             entry_nodes: vec!["gen".to_string()],
             nodes: vec![PipelineNode {
                 id: "gen".to_string(),
@@ -897,6 +898,7 @@ export default function LyricPage(input) {
             id: "generate-one-lyric".to_string(),
             description: None,
             metadata: None,
+            notes: Vec::new(),
             entry_nodes: vec!["gen".to_string()],
             nodes: vec![PipelineNode {
                 id: "gen".to_string(),

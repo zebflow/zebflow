@@ -35,7 +35,7 @@ use crate::pipeline::model::{
 };
 use crate::pipeline::nodes::basic::file_ref::{BACKEND_ZEBFS, FILE_REF_TYPE, LIFECYCLE_DURABLE};
 use crate::pipeline::nodes::basic::{
-    agent, ai_tts, auth_token_create, browser_run, crypto, mail_send, fs_compress, fs_decompress, fs_object,
+    agent, ai_tts, auth_token_create, browser_run, concept, crypto, mail_send, fs_compress, fs_decompress, fs_object,
     fs_pdf_convert, fs_save, fs_thumbnail, function_call, geo_convert, geo_inspect, http_request,
     kv_del, kv_exists, kv_expire, kv_get, kv_incr, kv_publish, kv_set, logic, mapserver_crud,
     pg_query, script, sekejap_insert, sekejap_query, sqlite_mutate, sqlite_query, table_convert,
@@ -1423,6 +1423,11 @@ impl BasicPipelineEngine {
                     credentials.clone(),
                 )?))
             }
+            concept::NODE_KIND => Ok(NodeDispatch::Concept(concept::Node::new(
+                serde_json::from_value(node.config.clone()).map_err(|err| {
+                    PipelineError::new("FW_NODE_CONCEPT_CONFIG", err.to_string())
+                })?,
+            ))),
             mail_send::NODE_KIND => {
                 let Some(credentials) = &self.credentials else {
                     return Err(PipelineError::new(
@@ -2720,6 +2725,7 @@ impl PipelineEngine for BasicPipelineEngine {
                         node.execute_many_async(input_for_exec).await
                     }
                     NodeDispatch::MailSend(node) => node.execute_many_async(input_for_exec).await,
+                    NodeDispatch::Concept(node) => node.execute_many_async(input_for_exec).await,
                     NodeDispatch::WebError(node) => node.execute_many_async(input_for_exec).await,
                     NodeDispatch::WsTrigger(node) => node.execute_many_async(input_for_exec).await,
                     NodeDispatch::WsSyncState(node) => {
@@ -4286,6 +4292,7 @@ mod tests {
             id: "table-query-ui-rows".to_string(),
             description: None,
             metadata: None,
+            notes: Vec::new(),
             entry_nodes: Vec::new(),
             nodes: vec![
                 PipelineNode {
@@ -4712,6 +4719,7 @@ enum NodeDispatch {
     LogicRetry(logic::retry::Node),
     AuthTokenCreate(auth_token_create::Node),
     MailSend(mail_send::Node),
+    Concept(concept::Node),
     WebError(weberror::Node),
     WsTrigger(ws_trigger::Node),
     WsSyncState(ws_sync_state::Node),

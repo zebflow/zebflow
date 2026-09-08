@@ -1,6 +1,7 @@
 # Pipeline
 
-Status: **Frozen** on 2026-08-15
+Status: **Frozen** on 2026-08-15. Amended 2026-09-09 to add optional
+`spec.notes`; see [Version Rules](#version-rules).
 
 `Pipeline` is the portable source definition for one executable Zebflow graph.
 It is stored in the project repository, can be moved through Git or Hub
@@ -85,6 +86,14 @@ package. Hub package versions and digests belong to `HubPackage`.
         "to_node": "respond",
         "to_pin": "in"
       }
+    ],
+    "notes": [
+      {
+        "id": "note1",
+        "text": "Create the `oauth2` credential before running this.",
+        "x": 120, "y": 40, "width": 320, "height": 140,
+        "color": "amber"
+      }
     ]
   }
 }
@@ -136,6 +145,23 @@ and validate those instance pins.
 
 Cycles are valid. Zebflow pipelines are directed graphs, not limited to DAGs.
 The engine applies its bounded execution rules at runtime.
+
+### `spec.notes`
+
+Free-standing annotations drawn on the canvas. Presentation only.
+
+| Field | Rule |
+| --- | --- |
+| `id` | non-empty, unique among notes; may repeat a node id without collision |
+| `text` | markdown, rendered by the editor; empty is legal |
+| `x`, `y`, `width`, `height` | canvas geometry, same space node positions use; all default to `0` |
+| `color` | a palette name the editor resolves, e.g. `amber`. Free text rather than a closed set, because a note drawn in the wrong colour is a cosmetic problem and refusing to open a pipeline over one is not |
+
+A note never executes, never appears in an edge, and never affects a run. The
+reason they exist is distribution: a pipeline installed from a hub must be able
+to say which credential to create and which node to change, on the canvas where
+the reader already is. Unknown fields inside a note are refused like every other
+structural object.
 
 ## Frozen Defaults
 
@@ -241,6 +267,18 @@ For `zebflow.com/v1`:
 No pre-v1 pipeline format is accepted by the normal reader. A future migration
 must use a separate explicit converter, preserve the old source until the new
 source reopens successfully, and never run during an ordinary pipeline hit.
+
+Until first release, `zebflow.com/v1` may be amended in place, and every
+amendment is recorded below with its date. A converter is not written for a
+document that never existed. After first release this section closes and the
+rules above apply literally: the schema stops being a draft and starts being a
+promise.
+
+### Amendments
+
+| Date | Change | Why it was safe |
+| --- | --- | --- |
+| 2026-09-09 | Added `spec.notes` | Optional, defaults to empty, and omitted on write when empty -- so a pipeline that never had notes is not modified by being opened and saved, and the golden fixture still round-trips without drift. No existing field changed meaning. It is a sibling of `nodes` rather than a kind inside it, so nothing that executes changed: a note has no pins, no config, cannot be reached by an edge, and no executor learns to skip it. Notes share the id namespace with nothing -- an id may repeat between a note and a node, because they are different collections. The one break is forward: a pipeline carrying notes is refused by a binary older than this amendment, which is the accepted cost before first release. |
 
 ## Freeze Evidence
 

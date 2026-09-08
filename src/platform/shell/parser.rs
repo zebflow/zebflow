@@ -1009,6 +1009,7 @@ fn build_graph_mode(
         entry_nodes,
         nodes,
         edges,
+        notes: Vec::new(),
     };
     auto_tidy_pipeline_graph(&mut graph);
     Ok(graph)
@@ -2136,6 +2137,7 @@ fn build_pipe_mode(
         entry_nodes,
         nodes,
         edges,
+        notes: Vec::new(),
     };
     auto_tidy_pipeline_graph(&mut graph);
     Ok(graph)

@@ -68,6 +68,31 @@ pub struct PipelineSpec {
     pub entry_nodes: Vec<String>,
     pub nodes: Vec<PipelineNodeSpec>,
     pub edges: Vec<PipelineEdgeSpec>,
+    /// Canvas annotations. Presentation only: they never execute and no edge
+    /// may reach them, so they are a sibling of `nodes` rather than a kind
+    /// inside it. Absent in every pipeline written before they existed, hence
+    /// `default`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub notes: Vec<PipelineNoteSpec>,
+}
+
+/// One canvas annotation, carried verbatim between reader and writer.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct PipelineNoteSpec {
+    pub id: String,
+    #[serde(default)]
+    pub text: String,
+    #[serde(default)]
+    pub x: f64,
+    #[serde(default)]
+    pub y: f64,
+    #[serde(default)]
+    pub width: f64,
+    #[serde(default)]
+    pub height: f64,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub color: String,
 }
 
 /// Mutable source controls that belong to one pipeline definition.
@@ -365,6 +390,7 @@ impl From<PipelineSpec> for PipelineGraph {
             entry_nodes: value.entry_nodes,
             nodes: value.nodes.into_iter().map(Into::into).collect(),
             edges: value.edges.into_iter().map(Into::into).collect(),
+            notes: value.notes.into_iter().map(Into::into).collect(),
         }
     }
 }
@@ -378,6 +404,35 @@ impl From<PipelineGraph> for PipelineSpec {
             entry_nodes: value.entry_nodes,
             nodes: value.nodes.into_iter().map(Into::into).collect(),
             edges: value.edges.into_iter().map(Into::into).collect(),
+            notes: value.notes.into_iter().map(Into::into).collect(),
+        }
+    }
+}
+
+impl From<PipelineNoteSpec> for crate::pipeline::model::PipelineNote {
+    fn from(value: PipelineNoteSpec) -> Self {
+        Self {
+            id: value.id,
+            text: value.text,
+            x: value.x,
+            y: value.y,
+            width: value.width,
+            height: value.height,
+            color: value.color,
+        }
+    }
+}
+
+impl From<crate::pipeline::model::PipelineNote> for PipelineNoteSpec {
+    fn from(value: crate::pipeline::model::PipelineNote) -> Self {
+        Self {
+            id: value.id,
+            text: value.text,
+            x: value.x,
+            y: value.y,
+            width: value.width,
+            height: value.height,
+            color: value.color,
         }
     }
 }
@@ -643,5 +698,92 @@ mod tests {
         }"#;
         let graph = decode_pipeline_graph(source).expect("default config").spec;
         assert_eq!(graph.nodes[0].config, serde_json::json!({}));
+    }
+
+    /// A note survives the round trip byte for byte.
+    ///
+    /// The whole point of notes is that a pipeline arriving from the hub can
+    /// explain itself. A reader that silently dropped them would leave every
+    /// installed pack mute after its first save.
+    #[test]
+    fn a_note_is_carried_through_read_and_write_unchanged() {
+        let source = br#"{
+          "apiVersion":"zebflow.com/v1",
+          "kind":"Pipeline",
+          "metadata":{"name":"annotated"},
+          "spec":{"id":"annotated","nodes":[{
+            "id":"trigger","kind":"n.trigger.manual","output_pins":["out"]
+          }],"edges":[],"notes":[{
+            "id":"note1","text":"Create the oauth2 credential first.",
+            "x":120.0,"y":40.0,"width":320.0,"height":140.0,"color":"amber"
+          }]}
+        }"#;
+        let spec = decode_pipeline_graph(source).expect("annotated pipeline").spec;
+        assert_eq!(spec.notes.len(), 1);
+        assert_eq!(spec.notes[0].id, "note1");
+        assert_eq!(spec.notes[0].text, "Create the oauth2 credential first.");
+        assert_eq!(spec.notes[0].width, 320.0);
+        assert_eq!(spec.notes[0].color, "amber");
+
+        // Out to the portable spec and back — the trip every save makes.
+        let returned: PipelineSpec = spec.clone().into();
+        assert_eq!(returned.notes.len(), 1);
+        let back: crate::pipeline::model::PipelineGraph = returned.clone().into();
+        assert_eq!(back.notes[0].id, "note1");
+        assert_eq!(back.notes[0].text, "Create the oauth2 credential first.");
+        assert_eq!(back.notes[0].height, 140.0);
+        assert_eq!(back.notes[0].color, "amber");
+    }
+
+    /// Notes are not nodes: nothing may point at one, and nothing runs it.
+    #[test]
+    fn a_note_is_invisible_to_the_graph_that_executes() {
+        let source = br#"{
+          "apiVersion":"zebflow.com/v1",
+          "kind":"Pipeline",
+          "metadata":{"name":"invisible"},
+          "spec":{"id":"invisible","nodes":[{
+            "id":"trigger","kind":"n.trigger.manual","output_pins":["out"]
+          }],"edges":[],"notes":[{"id":"trigger","text":"same id as a node, deliberately"}]}
+        }"#;
+        let spec = decode_pipeline_graph(source).expect("note beside a node").spec;
+        // A note sharing an id with a node is not a collision, because they are
+        // different collections — the note cannot be reached by an edge and the
+        // node cannot be drawn as a note.
+        assert_eq!(spec.nodes.len(), 1);
+        assert_eq!(spec.notes.len(), 1);
+        assert!(validate_pipeline_activation(&spec).is_ok());
+    }
+
+    /// A pipeline written before notes existed still reads.
+    #[test]
+    fn a_pipeline_without_notes_defaults_to_none_and_writes_none_back() {
+        let source = br#"{
+          "apiVersion":"zebflow.com/v1",
+          "kind":"Pipeline",
+          "metadata":{"name":"plain"},
+          "spec":{"id":"plain","nodes":[{
+            "id":"trigger","kind":"n.trigger.manual","output_pins":["out"]
+          }],"edges":[]}
+        }"#;
+        let spec = decode_pipeline_graph(source).expect("plain pipeline").spec;
+        assert!(spec.notes.is_empty());
+        // And it is not written back as an empty array — a file that never had
+        // notes should not grow a field by being opened.
+        let encoded = serde_json::to_string(&spec).expect("encode");
+        assert!(!encoded.contains("notes"), "{encoded}");
+    }
+
+    /// An unknown field inside a note is refused, like every structural object.
+    #[test]
+    fn a_note_with_an_unknown_field_is_refused() {
+        let source = br#"{
+          "apiVersion":"zebflow.com/v1",
+          "kind":"Pipeline",
+          "metadata":{"name":"bad-note"},
+          "spec":{"id":"bad-note","nodes":[],"edges":[],
+            "notes":[{"id":"n1","text":"hi","font":"comic sans"}]}
+        }"#;
+        assert!(decode_pipeline_graph(source).is_err());
     }
 }

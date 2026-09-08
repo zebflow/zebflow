@@ -1866,6 +1866,7 @@ mod tests {
             id: "generate-docs".to_string(),
             description: None,
             metadata: None,
+            notes: Vec::new(),
             entry_nodes: vec!["gen".to_string()],
             nodes: vec![PipelineNode {
                 id: "gen".to_string(),

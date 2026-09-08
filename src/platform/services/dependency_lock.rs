@@ -2427,6 +2427,7 @@ mod tests {
             id: "missing-node".to_string(),
             description: None,
             metadata: None,
+            notes: Vec::new(),
             entry_nodes: vec!["custom".to_string()],
             nodes: vec![PipelineNode {
                 id: "custom".to_string(),

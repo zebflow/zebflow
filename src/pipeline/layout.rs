@@ -308,6 +308,7 @@ mod tests {
                     to_pin: "in".to_string(),
                 },
             ],
+            notes: Vec::new(),
         };
 
         auto_tidy_pipeline_graph(&mut graph);
