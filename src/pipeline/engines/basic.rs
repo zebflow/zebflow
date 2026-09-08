@@ -35,7 +35,7 @@ use crate::pipeline::model::{
 };
 use crate::pipeline::nodes::basic::file_ref::{BACKEND_ZEBFS, FILE_REF_TYPE, LIFECYCLE_DURABLE};
 use crate::pipeline::nodes::basic::{
-    agent, ai_tts, auth_token_create, browser_run, crypto, fs_compress, fs_decompress, fs_object,
+    agent, ai_tts, auth_token_create, browser_run, crypto, mail_send, fs_compress, fs_decompress, fs_object,
     fs_pdf_convert, fs_save, fs_thumbnail, function_call, geo_convert, geo_inspect, http_request,
     kv_del, kv_exists, kv_expire, kv_get, kv_incr, kv_publish, kv_set, logic, mapserver_crud,
     pg_query, script, sekejap_insert, sekejap_query, sqlite_mutate, sqlite_query, table_convert,
@@ -1423,6 +1423,20 @@ impl BasicPipelineEngine {
                     credentials.clone(),
                 )?))
             }
+            mail_send::NODE_KIND => {
+                let Some(credentials) = &self.credentials else {
+                    return Err(PipelineError::new(
+                        "FW_NODE_MAIL_UNAVAILABLE",
+                        "credential service is not configured on this framework engine",
+                    ));
+                };
+                Ok(NodeDispatch::MailSend(mail_send::Node::new(
+                    serde_json::from_value(node.config.clone()).map_err(|err| {
+                        PipelineError::new("FW_NODE_MAIL_CONFIG", err.to_string())
+                    })?,
+                    credentials.clone(),
+                )?))
+            }
             weberror::NODE_KIND => Ok(NodeDispatch::WebError(weberror::Node::new(
                 serde_json::from_value(node.config.clone()).map_err(|err| {
                     PipelineError::new("FW_NODE_WEBERROR_CONFIG", err.to_string())
@@ -2705,6 +2719,7 @@ impl PipelineEngine for BasicPipelineEngine {
                     NodeDispatch::AuthTokenCreate(node) => {
                         node.execute_many_async(input_for_exec).await
                     }
+                    NodeDispatch::MailSend(node) => node.execute_many_async(input_for_exec).await,
                     NodeDispatch::WebError(node) => node.execute_many_async(input_for_exec).await,
                     NodeDispatch::WsTrigger(node) => node.execute_many_async(input_for_exec).await,
                     NodeDispatch::WsSyncState(node) => {
@@ -4696,6 +4711,7 @@ enum NodeDispatch {
     LogicReduce(logic::reduce::Node),
     LogicRetry(logic::retry::Node),
     AuthTokenCreate(auth_token_create::Node),
+    MailSend(mail_send::Node),
     WebError(weberror::Node),
     WsTrigger(ws_trigger::Node),
     WsSyncState(ws_sync_state::Node),

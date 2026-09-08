@@ -29,6 +29,7 @@ use crate::pipeline::NodeDefinition;
 pub mod agent;
 pub mod ai_tts;
 pub mod auth_token_create;
+pub mod mail_send;
 pub mod browser_run;
 pub mod crypto;
 pub mod file_ref;
@@ -76,6 +77,7 @@ pub fn builtin_node_definitions() -> Vec<NodeDefinition> {
         agent::definition(),
         ai_tts::definition(),
         auth_token_create::definition(),
+        mail_send::definition(),
         browser_run::definition(),
         fs_compress::definition(),
         fs_decompress::definition(),

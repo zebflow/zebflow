@@ -749,6 +749,21 @@ pub fn builtin_credential_types() -> Vec<CredentialTypeDef> {
             ..Default::default()
         },
         CredentialTypeDef {
+            kind: "smtp".into(),
+            title: "SMTP".into(),
+            description: "Outgoing mail submission — a relay account, not a mail server."
+                .into(),
+            fields: vec![
+                F { help: Some("SMTP relay hostname, e.g. smtp.fastmail.com.".into()), ..f("host", "Host") },
+                F { placeholder: Some("587".into()), help: Some("587 = STARTTLS submission (default), 465 = implicit TLS.".into()), ..f("port", "Port") },
+                F { help: Some("Relay login username.".into()), ..f("user", "User") },
+                F { full_width: true, help: Some("Relay login password or app password.".into()), ..fp("password", "Password") },
+                F { placeholder: Some("Zebflow <no-reply@example.com>".into()), full_width: true, help: Some("Default From address; a send may override it.".into()), ..f("from", "From") },
+                F { placeholder: Some("starttls".into()), help: Some("starttls (default), tls, starttls-insecure (encrypted, certificate unchecked — a self-hosted server without a signed certificate yet, on a private network only), or none (a localhost test sink).".into()), ..f("tls", "TLS Mode") },
+            ],
+            ..Default::default()
+        },
+        CredentialTypeDef {
             kind: "custom".into(),
             title: "Custom".into(),
             description: "Freeform JSON secret for custom integrations.".into(),

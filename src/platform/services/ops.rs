@@ -310,6 +310,12 @@ impl PlatformOps {
                 doc("guide/credential-encryption"),
                 vec![],
             ),
+            section(
+                "sending-mail",
+                "Sending Mail",
+                doc("guide/sending-mail"),
+                vec![],
+            ),
         ]
     }
 
