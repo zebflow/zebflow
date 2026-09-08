@@ -693,7 +693,7 @@ impl SqliteDataAdapter {
     /// accepts its own older shape: a credential cannot be regenerated, so
     /// refusing one would destroy something the operator cannot replace. Every
     /// write re-emits it as ciphertext, and
-    /// `POST /api/admin/credentials/reencrypt` converts the rest in one call.
+    /// `POST /api/platform/credentials/reencrypt` converts the rest in one call.
     fn open_secret_json(&self, stored: &str) -> Result<Value, PlatformError> {
         let parsed = serde_json::from_str::<Value>(stored).unwrap_or(Value::Null);
         let Some(text) = parsed.as_str() else {

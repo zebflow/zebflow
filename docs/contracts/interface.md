@@ -219,7 +219,7 @@ variable is a misconfiguration, and treating it as a value is how a blank
 advertise URL used to disable office registration without saying so.
 
 **The controller holds no cluster variable of its own.** It mints one token per
-office (`POST /api/cluster/join-tokens`, superadmin) and verifies each against
+office (`POST /api/platform/cluster/join-tokens`, superadmin) and verifies each against
 the record that mint created, which is what makes one office revocable on its
 own (`offices.md` §8). The token also carries the controller's Ed25519
 verification key, which is the office's whole basis for believing a
@@ -255,7 +255,7 @@ neither, because one of them opens this instance's credentials and the other
 does not. A key that is absent while the catalog records key generations is also
 a refusal, and never a regeneration — a credential cannot be regenerated, so a
 new key over the old one would make every one of them permanently unreadable.
-Rotating and re-keying are `POST /api/admin/credentials/{rotate,rekey}` and not
+Rotating and re-keying are `POST /api/platform/credentials/{rotate,rekey}` and not
 CLI commands, because the contract makes both operations online and §3's Group 3
 and the `admin` noun are for the offline case.
 
@@ -467,6 +467,37 @@ The UI is a rendering of this vocabulary over the same HTTP API. It does not
 shell out to the CLI: that would make process spawning, argument escaping, and
 output parsing into a permanent dependency between two surfaces that only need
 to agree on words.
+
+### 6a. API scopes
+
+**The path names the resource's scope; the guard names the audience.** The two
+are never conflated: a prefix that promised "superadmin" would become a lie the
+day a capability like `users.manage` reaches a non-superadmin role, while a
+scope is a fact about the resource that survives every authorization change.
+GitLab and Kubernetes reached the same rule; GitHub Enterprise's `/admin/*` is
+the counterexample that shows the cost.
+
+```text
+/api/platform/*                      the instance: roster, db console,
+                                     credential keyring, cluster, office
+                                     identity, hub service and catalogue
+/api/users/{owner}/*                 one person's own space
+/api/projects/{owner}/{project}/*    one project, capability-guarded
+/api/hub/remote/*                    a peer hub, token-authenticated
+/api/internal/*                      cluster machinery, not people
+```
+
+Rules, each with a test behind it
+(`smoke::instance_scope_is_one_prefix_and_never_answers_an_anonymous_caller`):
+
+- There is no `/api/admin`, `/api/cluster`, or `/api/office` prefix. The old
+  spellings answer `404`, not a redirect — a route that exists under two names
+  is a guard that has to be checked twice.
+- Nothing under `/api/platform` answers an anonymous caller. Mixed *audience*
+  under the prefix is correct (any user browses the hub catalogue; only a
+  superadmin configures its service) — anonymous is not an audience.
+- The one exception outside its scope: `POST /api/office/vouch`, redeemed by a
+  browser that has no session yet. The vouch in the body is the credential.
 
 ## 7. What `zeb install` expands to
 
@@ -691,7 +722,7 @@ set, branch list, branch checkout.
 
 **`instance` — 10 uncovered.** `GET /api/meta`, `GET /api/system/info`, the four
 admin database routes (collection list, query, node read, node delete),
-`GET /api/cluster/workers`, and the three office join-token routes added
+`GET /api/platform/cluster/workers`, and the three office join-token routes added
 2026-08-30 — list, mint, revoke (`offices.md` §8). `zeb status` reports the
 client's stored context and reads `/health`; it reports nothing an instance
 knows about itself. The join-token three are deliberately API-only: Group 1 is

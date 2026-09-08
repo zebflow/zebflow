@@ -336,7 +336,7 @@ impl ClusterJoinTokenService {
                     "CLUSTER_JOIN_TOKEN_UNKNOWN",
                     format!(
                         "no join token has been minted for office '{office_id}'. \
-                     Mint one on the controller (POST /api/cluster/join-tokens)."
+                     Mint one on the controller (POST /api/platform/cluster/join-tokens)."
                     ),
                 )
             })?;
@@ -347,7 +347,7 @@ impl ClusterJoinTokenService {
                 format!(
                     "the join token presented for office '{office_id}' does not match the one \
                      issued to it. Mint a replacement on the controller \
-                     (POST /api/cluster/join-tokens with \"rotate\": true)."
+                     (POST /api/platform/cluster/join-tokens with \"rotate\": true)."
                 ),
             ));
         }
@@ -359,7 +359,7 @@ impl ClusterJoinTokenService {
                 format!(
                     "the join token for office '{office_id}' is revoked. \
                      Mint a replacement on the controller \
-                     (POST /api/cluster/join-tokens with \"rotate\": true)."
+                     (POST /api/platform/cluster/join-tokens with \"rotate\": true)."
                 ),
             ));
         }
@@ -374,7 +374,7 @@ impl ClusterJoinTokenService {
                     "the join token for office '{office_id}' was revoked or rotated while this \
                      request was being verified, so it is not the token in force. Present the \
                      current token, or mint a replacement on the controller \
-                     (POST /api/cluster/join-tokens with \"rotate\": true)."
+                     (POST /api/platform/cluster/join-tokens with \"rotate\": true)."
                 ),
             ));
         }
@@ -408,7 +408,7 @@ impl ClusterJoinTokenService {
                 "CLUSTER_JOIN_TOKEN_UNKNOWN",
                 format!(
                     "no join token has been minted for office '{office_id}', so this controller \
-                     cannot prove itself to it. Mint one (POST /api/cluster/join-tokens)."
+                     cannot prove itself to it. Mint one (POST /api/platform/cluster/join-tokens)."
                 ),
             )
         })?;
@@ -471,7 +471,7 @@ impl ClusterJoinTokenService {
                 format!(
                     "no join token has been minted for office '{office_id}', so this controller \
                      holds nothing that office would accept a vouch under. Mint one \
-                     (POST /api/cluster/join-tokens)."
+                     (POST /api/platform/cluster/join-tokens)."
                 ),
             )
         })?;

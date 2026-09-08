@@ -514,28 +514,28 @@ pub async fn router(platform: Arc<PlatformService>) -> Router {
         .route("/api/meta", get(api_meta))
         .route("/api/system/info", get(api_system_info))
         .route(
-            "/api/admin/db/collections",
+            "/api/platform/db/collections",
             get(api_admin_db_list_collections),
         )
-        .route("/api/admin/db/query", post(api_admin_db_query))
+        .route("/api/platform/db/query", post(api_admin_db_query))
         .route(
-            "/api/admin/db/node/{slug}",
+            "/api/platform/db/node/{slug}",
             get(api_admin_db_get_node).delete(api_admin_db_delete_node),
         )
         .route(
-            "/api/admin/credentials/keyring",
+            "/api/platform/credentials/keyring",
             get(api_admin_credential_keyring),
         )
         .route(
-            "/api/admin/credentials/rotate",
+            "/api/platform/credentials/rotate",
             post(api_admin_credential_rotate),
         )
         .route(
-            "/api/admin/credentials/rekey",
+            "/api/platform/credentials/rekey",
             post(api_admin_credential_rekey),
         )
         .route(
-            "/api/admin/credentials/reencrypt",
+            "/api/platform/credentials/reencrypt",
             post(api_admin_credential_reencrypt),
         )
         .route(
@@ -573,20 +573,20 @@ pub async fn router(platform: Arc<PlatformService>) -> Router {
         .route("/api/platform/users/{owner}", delete(api_delete_user))
         .route("/api/profile", get(api_get_profile).put(api_update_profile))
         .route("/api/profile/password", post(api_change_password))
-        .route("/api/cluster/workers", get(api_cluster_workers))
+        .route("/api/platform/cluster/workers", get(api_cluster_workers))
         .route(
-            "/api/cluster/join-tokens",
+            "/api/platform/cluster/join-tokens",
             get(api_cluster_join_tokens).post(api_cluster_mint_join_token),
         )
         .route(
-            "/api/cluster/join-tokens/{office_id}/revoke",
+            "/api/platform/cluster/join-tokens/{office_id}/revoke",
             post(api_cluster_revoke_join_token),
         )
         // `offices.md` §2's third verb. The controller mints; the office
         // spends. The two halves are registered on one router because one
         // binary is both roles, and each half refuses in the role it is not.
         .route(
-            "/api/cluster/offices/{office_id}/vouch",
+            "/api/platform/cluster/offices/{office_id}/vouch",
             post(api_cluster_mint_office_vouch),
         )
         .route(
@@ -594,9 +594,12 @@ pub async fn router(platform: Arc<PlatformService>) -> Router {
             get(cluster_open_office_redirect),
         )
         .route("/office/vouch", get(office_vouch_redeem))
+        // Deliberately NOT under /api/platform: redemption is called by a
+        // browser that has no session yet — the vouch in the body is the whole
+        // credential. Everything under the instance scope requires a session.
         .route("/api/office/vouch", post(api_office_vouch_redeem))
         .route(
-            "/api/office/identity-writes",
+            "/api/platform/office/identity-writes",
             get(api_office_identity_writes),
         )
         // `offices.md` §6's record, read by the office's own operator, and the
@@ -605,11 +608,11 @@ pub async fn router(platform: Arc<PlatformService>) -> Router {
         // different instances: "what happened here" and "what did my offices
         // tell me".
         .route(
-            "/api/office/local-authority",
+            "/api/platform/office/local-authority",
             get(api_office_local_authority),
         )
         .route(
-            "/api/cluster/office-break-glass",
+            "/api/platform/cluster/office-break-glass",
             get(api_cluster_office_break_glass),
         )
         .route(
@@ -9050,7 +9053,7 @@ async fn api_admin_credential_rotate(
             "keyring": report,
             "note": concat!(
                 "New writes use the new generation. Nothing was re-encrypted; earlier ",
-                "generations stay for reads. POST /api/admin/credentials/reencrypt when you ",
+                "generations stay for reads. POST /api/platform/credentials/reencrypt when you ",
                 "want an older one to stop being needed."
             )
         }))
@@ -10422,7 +10425,7 @@ fn require_registering_office(
                     "message": format!(
                         "this join token was issued to office '{}', but the request registers \
                          office '{}'. Mint a token for '{}' on the controller \
-                         (POST /api/cluster/join-tokens).",
+                         (POST /api/platform/cluster/join-tokens).",
                         verified.office_id, claimed, claimed
                     )
                 }
@@ -10550,7 +10553,7 @@ fn cluster_join_token_error(err: PlatformError) -> Response {
         .into_response()
 }
 
-/// `POST /api/cluster/offices/{office_id}/vouch` — mint one (controller).
+/// `POST /api/platform/cluster/offices/{office_id}/vouch` — mint one (controller).
 ///
 /// The vouch names the *session owner*, never a value from the request. An
 /// operator minting a vouch for an arbitrary identity would be impersonation
@@ -10763,7 +10766,7 @@ async fn api_office_vouch_redeem(
     }
 }
 
-/// `GET /api/office/identity-writes` — `offices.md` §8's log, read locally.
+/// `GET /api/platform/office/identity-writes` — `offices.md` §8's log, read locally.
 ///
 /// Gated on this office's *own* superadmin session, not on a controller
 /// header. That is the term's whole point: the record of what the controller
@@ -10782,7 +10785,7 @@ async fn api_office_identity_writes(
     }
 }
 
-/// `GET /api/office/local-authority` — `offices.md` §6's record, read locally.
+/// `GET /api/platform/office/local-authority` — `offices.md` §6's record, read locally.
 ///
 /// Gated on this office's *own* superadmin, exactly like the identity-write
 /// log beside it, and for a stronger version of the same reason: the record of
@@ -10824,7 +10827,7 @@ async fn api_office_local_authority(
     }
 }
 
-/// `GET /api/cluster/office-break-glass` — what this controller has been told.
+/// `GET /api/platform/cluster/office-break-glass` — what this controller has been told.
 ///
 /// The controller's copy is deliberately read-only and deliberately partial: it
 /// holds what offices managed to report, which is not the same set as what

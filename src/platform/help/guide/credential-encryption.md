@@ -80,7 +80,7 @@ and it re-encrypts nothing.
 
 ```bash
 curl -H "Cookie: zebflow_session=superadmin" \
-  -X POST http://localhost:10610/api/admin/credentials/rotate
+  -X POST http://localhost:10610/api/platform/credentials/rotate
 ```
 
 **Re-encrypt** is the separate sweep that rewrites every stored credential under
@@ -89,7 +89,7 @@ needed — rotation alone never does that.
 
 ```bash
 curl -H "Cookie: zebflow_session=superadmin" \
-  -X POST http://localhost:10610/api/admin/credentials/reencrypt
+  -X POST http://localhost:10610/api/platform/credentials/reencrypt
 ```
 
 **Rekey** replaces the instance key file. The data keys are re-wrapped under the
@@ -98,7 +98,7 @@ Back up the new file afterwards: the old one no longer opens anything.
 
 ```bash
 curl -H "Cookie: zebflow_session=superadmin" \
-  -X POST http://localhost:10610/api/admin/credentials/rekey
+  -X POST http://localhost:10610/api/platform/credentials/rekey
 ```
 
 Rekey is refused when the key comes from `ZEBFLOW_CREDENTIAL_KEY`, because the
@@ -108,7 +108,7 @@ instance does not own the file it would rewrite.
 
 ```bash
 curl -H "Cookie: zebflow_session=superadmin" \
-  http://localhost:10610/api/admin/credentials/keyring
+  http://localhost:10610/api/platform/credentials/keyring
 ```
 
 ## Credentials written before this release

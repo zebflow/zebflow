@@ -108,8 +108,8 @@ PUT  /api/projects/{o}/{p}/assistant/config — update assistant config
 ## Admin DB (superadmin only)
 
 ```
-GET    /api/admin/db/collections            — list collections with counts
-POST   /api/admin/db/query                  — run raw SekejapQL pipeline
-GET    /api/admin/db/node/{slug}            — get node by slug
-DELETE /api/admin/db/node/{slug}            — delete node by slug
+GET    /api/platform/db/collections            — list collections with counts
+POST   /api/platform/db/query                  — run raw SekejapQL pipeline
+GET    /api/platform/db/node/{slug}            — get node by slug
+DELETE /api/platform/db/node/{slug}            — delete node by slug
 ```

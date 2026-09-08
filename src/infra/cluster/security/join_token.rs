@@ -198,7 +198,7 @@ impl std::fmt::Display for JoinTokenError {
         write!(
             f,
             "invalid cluster join token: {detail}. Mint one on the controller \
-             (POST /api/cluster/join-tokens with an office id) and give it to this office as \
+             (POST /api/platform/cluster/join-tokens with an office id) and give it to this office as \
              ZEBFLOW_CLUSTER_JOIN_TOKEN"
         )
     }
@@ -725,7 +725,7 @@ mod tests {
             message.contains("Mint one on the controller"),
             "refusal must name the action: {message}"
         );
-        assert!(message.contains("/api/cluster/join-tokens"), "{message}");
+        assert!(message.contains("/api/platform/cluster/join-tokens"), "{message}");
     }
 
     #[test]

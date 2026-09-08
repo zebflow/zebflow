@@ -525,7 +525,7 @@ pub struct PlatformOfficeJoinToken {
     /// `sha256(secret)`, hex. Never the secret, and never serialised.
     ///
     /// `skip_serializing` because this struct is both the stored row and the
-    /// shape returned by `GET /api/cluster/join-tokens` and by the mint
+    /// shape returned by `GET /api/platform/cluster/join-tokens` and by the mint
     /// response. The digest used to travel in both, which put an office's
     /// stored material into HTTP responses, browser memory, and every proxy log
     /// on the way. It no longer keys anything a forger could use — the

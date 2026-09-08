@@ -265,7 +265,7 @@ async fn rotation_and_rekey_are_online_and_leave_every_credential_readable() {
     let keyring = call(
         &app,
         "GET",
-        "/api/admin/credentials/keyring",
+        "/api/platform/credentials/keyring",
         &cookie,
         Value::Null,
     )
@@ -281,7 +281,7 @@ async fn rotation_and_rekey_are_online_and_leave_every_credential_readable() {
     let rotated = call(
         &app,
         "POST",
-        "/api/admin/credentials/rotate",
+        "/api/platform/credentials/rotate",
         &cookie,
         Value::Null,
     )
@@ -316,7 +316,7 @@ async fn rotation_and_rekey_are_online_and_leave_every_credential_readable() {
     let sweep = call(
         &app,
         "POST",
-        "/api/admin/credentials/reencrypt",
+        "/api/platform/credentials/reencrypt",
         &cookie,
         Value::Null,
     )
@@ -340,7 +340,7 @@ async fn rotation_and_rekey_are_online_and_leave_every_credential_readable() {
     call(
         &app,
         "POST",
-        "/api/admin/credentials/rekey",
+        "/api/platform/credentials/rekey",
         &cookie,
         Value::Null,
     )
@@ -362,10 +362,10 @@ async fn rotation_and_rekey_are_online_and_leave_every_credential_readable() {
 
     // Nothing here is reachable without being superadmin.
     for uri in [
-        "/api/admin/credentials/keyring",
-        "/api/admin/credentials/rotate",
-        "/api/admin/credentials/rekey",
-        "/api/admin/credentials/reencrypt",
+        "/api/platform/credentials/keyring",
+        "/api/platform/credentials/rotate",
+        "/api/platform/credentials/rekey",
+        "/api/platform/credentials/reencrypt",
     ] {
         let method = if uri.ends_with("keyring") {
             "GET"

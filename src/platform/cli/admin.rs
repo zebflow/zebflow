@@ -207,7 +207,7 @@ async fn run_break_glass(args: &[String]) -> Result<(), io::Error> {
         super::program()
     );
     println!(
-        "Recorded locally as {} and readable at GET /api/office/local-authority by this \
+        "Recorded locally as {} and readable at GET /api/platform/office/local-authority by this \
          office's own superadmin. It is reported to the controller on the next successful \
          registration; until then it stays here, and if this office never reconnects it stays \
          here for good.",

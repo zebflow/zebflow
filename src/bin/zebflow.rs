@@ -185,7 +185,7 @@ because they are what you run when the server will not start):
                same act and printed once. The office stays joined -- this
                changes who may open the door, not who the office belongs to.
                The use is recorded locally, readable at
-               GET /api/office/local-authority, and reported to the controller
+               GET /api/platform/office/local-authority, and reported to the controller
                on the next successful registration.
   {zeb} admin detach
                Leave the controller. The office keeps its projects, data,
@@ -236,7 +236,7 @@ Environment - first-boot bootstrap (server state created on first start; not CLI
 Environment - cluster membership (controller and office):
   ZEBFLOW_CLUSTER_JOIN_TOKEN         This office's own join token, shaped
                                      zfjoin2:<office_id>:<controller_verify_key>:<secret>, minted
-                                     on the controller (POST /api/cluster/join-tokens); required
+                                     on the controller (POST /api/platform/cluster/join-tokens); required
                                      by office for its first join only. It is then stored at
                                      <data-dir>/platform/office-join-token (0600) and read from
                                      there, so a joined office restarts with this unset. A

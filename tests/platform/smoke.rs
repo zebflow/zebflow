@@ -256,7 +256,7 @@ async fn a_join_token_is_per_office_revocable_and_proves_both_directions() {
         app.clone()
             .oneshot(
                 Request::builder()
-                    .uri("/api/cluster/join-tokens")
+                    .uri("/api/platform/cluster/join-tokens")
                     .header(header::COOKIE, &cookie)
                     .body(Body::empty())
                     .expect("request"),
@@ -403,7 +403,7 @@ async fn a_join_token_is_per_office_revocable_and_proves_both_directions() {
         .clone()
         .oneshot(
             Request::builder()
-                .uri("/api/cluster/join-tokens/office-a/revoke")
+                .uri("/api/platform/cluster/join-tokens/office-a/revoke")
                 .method("POST")
                 .header(header::COOKIE, &cookie)
                 .body(Body::empty())
@@ -657,7 +657,7 @@ async fn a_controller_vouch_opens_an_office_once_and_is_logged_there() {
             .clone()
             .oneshot(
                 Request::builder()
-                    .uri("/api/office/identity-writes")
+                    .uri("/api/platform/office/identity-writes")
                     .header(header::COOKIE, &office_session)
                     .body(Body::empty())
                     .expect("request"),
@@ -700,7 +700,7 @@ async fn a_controller_vouch_opens_an_office_once_and_is_logged_there() {
         .clone()
         .oneshot(
             Request::builder()
-                .uri("/api/cluster/join-tokens/office-a/revoke")
+                .uri("/api/platform/cluster/join-tokens/office-a/revoke")
                 .method("POST")
                 .header(header::COOKIE, &controller_cookie)
                 .body(Body::empty())
@@ -882,7 +882,7 @@ async fn mint_join_token_at(
         .clone()
         .oneshot(
             Request::builder()
-                .uri("/api/cluster/join-tokens")
+                .uri("/api/platform/cluster/join-tokens")
                 .method("POST")
                 .header(header::COOKIE, cookie)
                 .header(header::CONTENT_TYPE, "application/json")
@@ -905,7 +905,7 @@ async fn mint_vouch(app: &axum::Router, cookie: &str, office_id: &str) -> (Statu
         .clone()
         .oneshot(
             Request::builder()
-                .uri(format!("/api/cluster/offices/{office_id}/vouch"))
+                .uri(format!("/api/platform/cluster/offices/{office_id}/vouch"))
                 .method("POST")
                 .header(header::COOKIE, cookie)
                 .body(Body::empty())
@@ -985,7 +985,7 @@ async fn mint_join_token(
         .clone()
         .oneshot(
             Request::builder()
-                .uri("/api/cluster/join-tokens")
+                .uri("/api/platform/cluster/join-tokens")
                 .method("POST")
                 .header(header::COOKIE, cookie)
                 .header(header::CONTENT_TYPE, "application/json")
@@ -5179,7 +5179,7 @@ async fn a_joined_office_refuses_local_login_and_opens_for_its_controller() {
     let cookie = cookie.expect("the office issues its own session");
 
     // And that session is a real one: it reads the office's own state.
-    let (status, state) = get_json(&office_app, "/api/office/local-authority", &cookie).await;
+    let (status, state) = get_json(&office_app, "/api/platform/office/local-authority", &cookie).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(state["joined"], json!(true));
     assert_eq!(state["office_id"], json!("office-a"));
@@ -5256,7 +5256,7 @@ async fn break_glass_re_enables_local_login_without_a_controller_and_is_reported
     // --- (d) recorded locally, read by this office's own operator -----------
     let office_cookie = login_cookie(office_app.clone(), "superadmin", "test-pass").await;
     let (status, state) =
-        get_json(&office_app, "/api/office/local-authority", &office_cookie).await;
+        get_json(&office_app, "/api/platform/office/local-authority", &office_cookie).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(state["joined"], json!(true));
     assert_eq!(state["local_login_allowed"], json!(true));
@@ -5291,7 +5291,7 @@ async fn break_glass_re_enables_local_login_without_a_controller_and_is_reported
 
     let (status, seen) = get_json(
         &controller_app,
-        "/api/cluster/office-break-glass",
+        "/api/platform/cluster/office-break-glass",
         &controller_cookie,
     )
     .await;
@@ -5433,7 +5433,7 @@ async fn detach_keeps_everything_and_a_vouched_account_never_becomes_a_local_doo
     // The record of both acts survives, and the detach is not queued for a
     // report it can no longer authenticate.
     let cookie = login_cookie(detached_app.clone(), "superadmin", "test-pass").await;
-    let (status, state) = get_json(&detached_app, "/api/office/local-authority", &cookie).await;
+    let (status, state) = get_json(&detached_app, "/api/platform/office/local-authority", &cookie).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(state["joined"], json!(false));
     assert_eq!(state["local_login_allowed"], json!(true));
@@ -5618,7 +5618,7 @@ async fn an_office_join_token_is_not_a_project_credential_on_its_controller() {
 ///
 /// The original exploit: every controller-to-office proof was an `HMAC` keyed by
 /// `sha256(secret)` — exactly the value the controller stores, and exactly the
-/// value that used to come back from `GET /api/cluster/join-tokens` and from the
+/// value that used to come back from `GET /api/platform/cluster/join-tokens` and from the
 /// mint response. Verifier equalled forger. A reviewer minted a vouch for an
 /// identity the office had never held and got a `superadmin` account created,
 /// then forged the controller-call header and walked past the office's project
@@ -5727,7 +5727,7 @@ async fn the_material_a_controller_stores_forges_nothing_at_its_office() {
             .clone()
             .oneshot(
                 Request::builder()
-                    .uri("/api/office/identity-writes")
+                    .uri("/api/platform/office/identity-writes")
                     .header(header::COOKIE, &office_cookie)
                     .body(Body::empty())
                     .expect("request"),
@@ -6665,4 +6665,75 @@ async fn a_deleted_user_leaves_no_footprint_and_takes_no_hostages() {
     );
     let (_, roster) = send(&app, "GET", "/api/platform/users", Some(&admin), None).await;
     assert!(!names(&roster).contains(&"mallory".to_string()));
+}
+
+/// The instance scope is one prefix, and it never answers an anonymous caller.
+///
+/// `/api/platform/*` is where instance resources live — the roster, the db
+/// console, the credential keyring, the cluster, the office identity, the hub
+/// service. The old spellings (`/api/admin`, `/api/cluster`, `/api/office`)
+/// are gone, not aliased: a route that exists under two names is a guard that
+/// has to be checked twice. The one deliberate exception is
+/// `POST /api/office/vouch`, called by a browser that has no session yet.
+#[tokio::test]
+async fn instance_scope_is_one_prefix_and_never_answers_an_anonymous_caller() {
+    let mut config = PlatformConfig::default();
+    config.data_root = temp_test_dir("instance-scope-prefix");
+    config.default_password = "test-pass".to_string();
+    let app = build_router(config).await.expect("platform router");
+
+    async fn status_of(app: &axum::Router, method: &str, uri: &str) -> StatusCode {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(uri)
+                    .method(method)
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        response.status()
+    }
+
+    // The old spellings no longer exist.
+    for (method, uri) in [
+        ("GET", "/api/users"),
+        ("GET", "/api/admin/db/collections"),
+        ("POST", "/api/admin/db/query"),
+        ("GET", "/api/admin/credentials/keyring"),
+        ("GET", "/api/cluster/workers"),
+        ("GET", "/api/cluster/join-tokens"),
+        ("GET", "/api/cluster/office-break-glass"),
+        ("GET", "/api/office/identity-writes"),
+        ("GET", "/api/office/local-authority"),
+    ] {
+        assert_eq!(
+            status_of(&app, method, uri).await,
+            StatusCode::NOT_FOUND,
+            "{method} {uri} should be gone, not aliased"
+        );
+    }
+
+    // The new spellings exist and refuse a caller with no session. 401, not
+    // 404: the resource is real, the caller is nobody.
+    for (method, uri) in [
+        ("GET", "/api/platform/users"),
+        ("GET", "/api/platform/db/collections"),
+        ("GET", "/api/platform/credentials/keyring"),
+        ("GET", "/api/platform/cluster/workers"),
+        ("GET", "/api/platform/cluster/join-tokens"),
+        ("GET", "/api/platform/cluster/office-break-glass"),
+        ("GET", "/api/platform/office/identity-writes"),
+        ("GET", "/api/platform/office/local-authority"),
+        ("GET", "/api/platform/hub/service"),
+        ("GET", "/api/platform/hub/assets"),
+    ] {
+        assert_eq!(
+            status_of(&app, method, uri).await,
+            StatusCode::UNAUTHORIZED,
+            "{method} {uri} answered an anonymous caller"
+        );
+    }
 }

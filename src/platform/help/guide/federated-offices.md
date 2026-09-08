@@ -44,7 +44,7 @@ controller stores about an office forges nothing either.
 
 ```bash
 curl -H "Cookie: zebflow_session=superadmin" \
-  -X POST http://controller:10610/api/cluster/join-tokens \
+  -X POST http://controller:10610/api/platform/cluster/join-tokens \
   -H "Content-Type: application/json" \
   -d '{"office_id":"office-a","label":"Office A","note":"sg-1 rack 4"}'
 ```
@@ -62,7 +62,7 @@ never the stored digest):
 
 ```bash
 curl -H "Cookie: zebflow_session=superadmin" \
-  http://controller:10610/api/cluster/join-tokens
+  http://controller:10610/api/platform/cluster/join-tokens
 ```
 
 ### Give it to the office
@@ -113,7 +113,7 @@ proxy log — could mint a vouch naming any identity at any office.
 
 ```bash
 curl -H "Cookie: zebflow_session=superadmin" \
-  -X POST http://controller:10610/api/cluster/join-tokens/office-a/revoke
+  -X POST http://controller:10610/api/platform/cluster/join-tokens/office-a/revoke
 ```
 
 That office's next register or heartbeat is refused with
@@ -182,7 +182,7 @@ A break-glass is recorded in the office's own catalog and never expires there:
 
 ```bash
 curl -H "Cookie: zebflow_session=superadmin" \
-  http://office-a:10610/api/office/local-authority
+  http://office-a:10610/api/platform/office/local-authority
 ```
 
 which also answers the state question — `joined`, `local_login_allowed`, and
@@ -193,7 +193,7 @@ where it lands at:
 
 ```bash
 curl -H "Cookie: zebflow_session=superadmin" \
-  http://controller:10610/api/cluster/office-break-glass
+  http://controller:10610/api/platform/cluster/office-break-glass
 ```
 
 The office re-sends anything still unacknowledged on every registration cycle,
@@ -267,7 +267,7 @@ seconds; if you need an office shut out now and cannot reach it, rotate.
 
 ```bash
 curl -H "Cookie: zebflow_session=superadmin" \
-  -X POST http://controller:10610/api/cluster/offices/office-a/vouch
+  -X POST http://controller:10610/api/platform/cluster/offices/office-a/vouch
 ```
 
 The response carries the vouch and a `redeem_url` on that office. The vouch
@@ -308,7 +308,7 @@ without bound.
 
 ```bash
 curl -H "Cookie: zebflow_session=superadmin" \
-  -X POST http://controller:10610/api/cluster/join-tokens/office-a/revoke
+  -X POST http://controller:10610/api/platform/cluster/join-tokens/office-a/revoke
 ```
 
 The next mint for that office is refused with `CLUSTER_JOIN_TOKEN_REVOKED` —
@@ -331,7 +331,7 @@ can read it, with the controller uninvolved:
 
 ```bash
 curl -H "Cookie: zebflow_session=superadmin" \
-  http://office-a:10610/api/office/identity-writes
+  http://office-a:10610/api/platform/office/identity-writes
 ```
 
 Each row records the owner, whether it was `created` or `linked` to an account
