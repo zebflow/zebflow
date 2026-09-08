@@ -2,7 +2,7 @@
 //!
 //! The counter starts at 0 if the key doesn't exist.
 //! Non-integer values are reset to 0 before applying the increment.
-//! Replaces the payload with `{ [out_key]: new_value }`.
+//! Merges `{ [out_key]: new_value }` into the flowing payload.
 //!
 //! # Config flags
 //!
@@ -45,7 +45,7 @@ pub fn definition() -> NodeDefinition {
         description:
             "Atomically increment (or decrement with a negative amount) an integer counter \
             in the per-project KV store. Counter starts at 0 if the key is missing. \
-            Replaces the payload with { [out_key]: new_value }. \
+            Merges { [out_key]: new_value } into the flowing payload. \
             Use --durable to target durable (disk-backed) storage instead of ephemeral. \
             Use $trigger or $nodes references for upstream data."
                 .to_string(),
@@ -158,6 +158,33 @@ impl Node {
     }
 }
 
+
+/// The read result joins the flowing payload instead of erasing it.
+///
+/// `n.kv.set` keeps the payload it was handed; a `get` that threw everything
+/// away made the pair asymmetric, and the Google-login callback had to reach
+/// backwards with `ctx.nodes` to recover a value one read had destroyed. A
+/// reader now behaves like a reader: everything that arrived is still there,
+/// plus the value under `out_key` (which wins any name collision — asking for
+/// a key called `code` means you want the stored one).
+///
+/// A non-object payload (a bare string or array flowing through) has nothing
+/// to merge into, so it is replaced by `{ [out_key]: value }` exactly as
+/// before.
+fn merge_into_payload(
+    payload: serde_json::Value,
+    out_key: &str,
+    value: serde_json::Value,
+) -> serde_json::Value {
+    match payload {
+        serde_json::Value::Object(mut map) => {
+            map.insert(out_key.to_string(), value);
+            serde_json::Value::Object(map)
+        }
+        _ => serde_json::json!({ out_key: value }),
+    }
+}
+
 #[async_trait]
 impl NodeHandler for Node {
     fn kind(&self) -> &'static str {
@@ -221,7 +248,7 @@ impl NodeHandler for Node {
         );
         Ok(NodeExecutionOutput {
             output_pins: vec![OUTPUT_PIN_OUT.to_string()],
-            payload: json!({ out_key: new_val }),
+            payload: merge_into_payload(input.payload, &out_key, json!(new_val)),
             trace: vec![trace],
         })
     }

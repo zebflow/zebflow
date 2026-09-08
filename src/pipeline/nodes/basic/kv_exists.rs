@@ -1,6 +1,6 @@
 //! `n.kv.exists` — check whether a key exists in the per-project KV store.
 //!
-//! Replaces the payload with `{ [out_key]: boolean }` (default out_key: "exists").
+//! Merges `{ [out_key]: boolean }` into the flowing payload (default out_key: "exists").
 //! Useful for cache-check patterns before expensive lookups.
 //!
 //! # Config flags
@@ -41,7 +41,7 @@ pub fn definition() -> NodeDefinition {
         capabilities: vec![NodeCapability::Database],
         title: "KV Exists".to_string(),
         description: "Check whether a key exists and is not expired in the per-project \
-            KV store. Replaces the payload with { [out_key]: boolean } (default out_key: \"exists\"). \
+            KV store. Merges { [out_key]: boolean } into the flowing payload (default out_key: \"exists\"). \
             Useful for cache-hit checks before expensive DB queries or API calls. \
             Use --durable to check durable (disk-backed) storage instead of ephemeral. \
             Use $trigger or $nodes references for upstream data."
@@ -49,7 +49,7 @@ pub fn definition() -> NodeDefinition {
         input_schema: json!({ "type": "object" }),
         output_schema: json!({
             "type": "object",
-            "description": "Fresh object with boolean result under out_key. Replaces entire payload."
+            "description": "The incoming payload with the boolean merged in under out_key."
         }),
         input_pins: vec![INPUT_PIN_IN.to_string()],
         output_pins: vec![OUTPUT_PIN_OUT.to_string()],
@@ -118,6 +118,33 @@ impl Node {
     }
 }
 
+
+/// The read result joins the flowing payload instead of erasing it.
+///
+/// `n.kv.set` keeps the payload it was handed; a `get` that threw everything
+/// away made the pair asymmetric, and the Google-login callback had to reach
+/// backwards with `ctx.nodes` to recover a value one read had destroyed. A
+/// reader now behaves like a reader: everything that arrived is still there,
+/// plus the value under `out_key` (which wins any name collision — asking for
+/// a key called `code` means you want the stored one).
+///
+/// A non-object payload (a bare string or array flowing through) has nothing
+/// to merge into, so it is replaced by `{ [out_key]: value }` exactly as
+/// before.
+fn merge_into_payload(
+    payload: serde_json::Value,
+    out_key: &str,
+    value: serde_json::Value,
+) -> serde_json::Value {
+    match payload {
+        serde_json::Value::Object(mut map) => {
+            map.insert(out_key.to_string(), value);
+            serde_json::Value::Object(map)
+        }
+        _ => serde_json::json!({ out_key: value }),
+    }
+}
+
 #[async_trait]
 impl NodeHandler for Node {
     fn kind(&self) -> &'static str {
@@ -175,7 +202,7 @@ impl NodeHandler for Node {
         );
         Ok(NodeExecutionOutput {
             output_pins: vec![OUTPUT_PIN_OUT.to_string()],
-            payload: json!({ out_key: exists }),
+            payload: merge_into_payload(input.payload, &out_key, json!(exists)),
             trace: vec![trace],
         })
     }

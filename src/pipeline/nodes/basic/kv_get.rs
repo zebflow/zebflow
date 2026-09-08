@@ -1,6 +1,6 @@
 //! `n.kv.get` — retrieve a value from the project-scoped KV store.
 //!
-//! Replaces the payload with `{ [out_key]: value }`.
+//! Merges `{ [out_key]: value }` into the flowing payload.
 //! Use `$trigger` or `$nodes` references for upstream data.
 //!
 //! # Config flags
@@ -42,13 +42,13 @@ pub fn definition() -> NodeDefinition {
         title: "KV Get".to_string(),
         description: "Read a value from the project-scoped KV store. \
             Ephemeral by default, use --durable for persistence across restarts. \
-            Replaces the payload with { [out_key]: value }. \
+            Merges { [out_key]: value } into the flowing payload. \
             Use --out-key to control the output key name (defaults to the storage key). \
             Use --default to supply a fallback JSON value when the key is missing or expired. \
             Use $trigger or $nodes references for upstream data."
             .to_string(),
         input_schema: json!({ "type": "object" }),
-        output_schema: json!({ "type": "object", "description": "Fresh object with the retrieved value under out_key. Replaces entire payload." }),
+        output_schema: json!({ "type": "object", "description": "The incoming payload with the retrieved value merged in under out_key." }),
         input_pins: vec![INPUT_PIN_IN.to_string()],
         output_pins: vec![OUTPUT_PIN_OUT.to_string()],
         script_available: false,
@@ -152,6 +152,33 @@ impl Node {
     }
 }
 
+
+/// The read result joins the flowing payload instead of erasing it.
+///
+/// `n.kv.set` keeps the payload it was handed; a `get` that threw everything
+/// away made the pair asymmetric, and the Google-login callback had to reach
+/// backwards with `ctx.nodes` to recover a value one read had destroyed. A
+/// reader now behaves like a reader: everything that arrived is still there,
+/// plus the value under `out_key` (which wins any name collision — asking for
+/// a key called `code` means you want the stored one).
+///
+/// A non-object payload (a bare string or array flowing through) has nothing
+/// to merge into, so it is replaced by `{ [out_key]: value }` exactly as
+/// before.
+fn merge_into_payload(
+    payload: serde_json::Value,
+    out_key: &str,
+    value: serde_json::Value,
+) -> serde_json::Value {
+    match payload {
+        serde_json::Value::Object(mut map) => {
+            map.insert(out_key.to_string(), value);
+            serde_json::Value::Object(map)
+        }
+        _ => serde_json::json!({ out_key: value }),
+    }
+}
+
 #[async_trait]
 impl NodeHandler for Node {
     fn kind(&self) -> &'static str {
@@ -213,8 +240,49 @@ impl NodeHandler for Node {
         );
         Ok(NodeExecutionOutput {
             output_pins: vec![OUTPUT_PIN_OUT.to_string()],
-            payload: json!({ out_key: value }),
+            payload: merge_into_payload(input.payload, &out_key, value),
             trace: vec![trace],
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::merge_into_payload;
+    use serde_json::json;
+
+    /// The read joins the payload; it does not erase what was flowing.
+    ///
+    /// This is the manner fix the Google-login callback demanded: before it,
+    /// `kv.get` destroyed the authorization code that arrived two nodes
+    /// earlier, and the pipeline had to reach backwards with `ctx.nodes` to
+    /// recover its own data.
+    #[test]
+    fn a_read_keeps_the_payload_it_was_handed() {
+        let out = merge_into_payload(
+            json!({ "code": "4/0AY", "state": "f381" }),
+            "state_record",
+            json!("stored"),
+        );
+        assert_eq!(
+            out,
+            json!({ "code": "4/0AY", "state": "f381", "state_record": "stored" })
+        );
+    }
+
+    /// Asking for a key that already exists in the payload means you want the
+    /// stored one — the read wins the collision.
+    #[test]
+    fn the_stored_value_wins_a_name_collision() {
+        let out = merge_into_payload(json!({ "code": "from-upstream" }), "code", json!("stored"));
+        assert_eq!(out, json!({ "code": "stored" }));
+    }
+
+    /// A bare string or array has nothing to merge into, so the old behaviour
+    /// holds for it.
+    #[test]
+    fn a_non_object_payload_is_replaced_as_before() {
+        let out = merge_into_payload(json!("just a string"), "value", json!(42));
+        assert_eq!(out, json!({ "value": 42 }));
     }
 }
