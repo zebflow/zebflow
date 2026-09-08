@@ -31,6 +31,20 @@ pub trait DataAdapter: Send + Sync {
     fn put_user(&self, user: &StoredUser) -> Result<(), PlatformError>;
     /// List users.
     fn list_users(&self) -> Result<Vec<PlatformUser>, PlatformError>;
+    /// Delete one user and every row that belongs to the person rather than
+    /// to one of their projects: memberships they hold in other people's
+    /// projects, invitations addressed to them, hub grants pointing at them,
+    /// their platform-level hub repositories, their MCP sessions, and their
+    /// local auth. The caller must have transferred or deleted every project
+    /// they own first — a surviving project keeps its foreign key onto the
+    /// user row, and this method fails rather than orphaning it.
+    fn delete_user(&self, owner: &str, user_id: &str) -> Result<(), PlatformError> {
+        let _ = (owner, user_id);
+        Err(PlatformError::new(
+            "PLATFORM_ADAPTER_UNAVAILABLE",
+            "user deletion is not supported by this adapter",
+        ))
+    }
     /// Get one project.
     fn get_project(
         &self,

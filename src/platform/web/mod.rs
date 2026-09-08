@@ -562,7 +562,15 @@ pub async fn router(platform: Arc<PlatformService>) -> Router {
             "/api/projects/{owner}/{project}/nodes/icon/{kind}",
             get(api_node_icon),
         )
-        .route("/api/users", get(api_list_users).post(api_create_user))
+        // The roster is an instance resource — it lives under the instance
+        // scope, not beside `/api/users/{owner}/…`, which is one person's own
+        // space. Same shape as GitLab's: the path names the resource, the
+        // guard names the audience.
+        .route(
+            "/api/platform/users",
+            get(api_list_users).post(api_create_user),
+        )
+        .route("/api/platform/users/{owner}", delete(api_delete_user))
         .route("/api/profile", get(api_get_profile).put(api_update_profile))
         .route("/api/profile/password", post(api_change_password))
         .route("/api/cluster/workers", get(api_cluster_workers))
@@ -9174,6 +9182,258 @@ async fn api_create_user(
             .into_response(),
         Err(err) => internal_error(err),
     }
+}
+
+/// Request body for `DELETE /api/platform/users/{owner}`.
+#[derive(serde::Deserialize)]
+struct DeleteUserRequest {
+    /// Must exactly match the user slug as a confirmation.
+    username: String,
+    /// The *caller's* password — re-verified before deletion.
+    password: String,
+    /// Where the deleted user's projects go. `None` purges them instead,
+    /// project by project, with every refusal `delete_project` makes.
+    #[serde(default)]
+    successor: Option<String>,
+}
+
+/// `DELETE /api/platform/users/{owner}` — removes a person from the instance.
+///
+/// n8n's shape: you cannot delete a person without deciding what happens to
+/// what they owned. `successor` transfers every project through the same
+/// machinery as the transfer-owner route; `null` purges them, and purging
+/// refuses any project that other people are members of — deletion is never
+/// the path by which someone else's work disappears.
+///
+/// Refusals, each a distinct answer:
+/// - not superadmin → 403; wrong typed-back name → 400; wrong password → 401
+/// - deleting yourself → 400. One rule, and it guarantees a superadmin
+///   survives every deletion: the caller.
+/// - published hub versions → 409 naming the packages. `package@version` is
+///   immutable and someone else's `zeb.lock` points at it, so the publisher
+///   record has to outlive the person. Transfer the publisher first.
+/// - purge of a project with other members → 409. Transfer instead.
+/// - purge of a project hosting a hub authority → 409, from `delete_project`.
+async fn api_delete_user(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path(owner): Path<String>,
+    Json(req): Json<DeleteUserRequest>,
+) -> Response {
+    if let Err(response) = require_superadmin(&state, &headers) {
+        return response;
+    }
+    let Some(caller) = session_owner(&state, &headers) else {
+        return StatusCode::UNAUTHORIZED.into_response();
+    };
+    let target = crate::platform::model::slug_segment(&owner);
+    let confirmed = crate::platform::model::slug_segment(&req.username);
+    if confirmed != target || target.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"ok": false, "error": "Username does not match"})),
+        )
+            .into_response();
+    }
+    if caller == target {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "ok": false,
+                "error": "You cannot delete your own account. Another superadmin has to do it.",
+            })),
+        )
+            .into_response();
+    }
+    match state.platform.users.authenticate(&caller, &req.password) {
+        Ok(true) => {}
+        Ok(false) => {
+            return (
+                StatusCode::UNAUTHORIZED,
+                Json(json!({"ok": false, "error": "Incorrect password"})),
+            )
+                .into_response();
+        }
+        Err(e) => return internal_error(e),
+    }
+    let target_user = match state.platform.data.get_user_auth(&target) {
+        Ok(Some(user)) => user,
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(json!({"ok": false, "error": "User not found"})),
+            )
+                .into_response();
+        }
+        Err(e) => return internal_error(e),
+    };
+    let target_user_id = target_user.profile.user_id.clone();
+
+    // A published version is immutable and other installations point at it,
+    // so its publisher record must outlive the publisher.
+    match state.platform.data.list_hub_asset_packages() {
+        Ok(packages) => {
+            let published: Vec<String> = packages
+                .into_iter()
+                .filter(|p| p.publisher_owner == target)
+                .map(|p| p.package_id)
+                .collect();
+            if !published.is_empty() {
+                return (
+                    StatusCode::CONFLICT,
+                    Json(json!({
+                        "ok": false,
+                        "error": format!(
+                            "{target} published hub packages that other installations depend on: \
+                             {}. Transfer the publisher identity first.",
+                            published.join(", ")
+                        ),
+                        "packages": published,
+                    })),
+                )
+                    .into_response();
+            }
+        }
+        Err(e) => return internal_error(e),
+    }
+
+    let owned = match state.platform.data.list_projects(&target) {
+        Ok(projects) => projects,
+        Err(e) => return internal_error(e),
+    };
+
+    if let Some(successor) = req.successor.as_deref() {
+        let successor = crate::platform::model::slug_segment(successor);
+        if successor == target || successor.is_empty() {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"ok": false, "error": "successor must be a different user"})),
+            )
+                .into_response();
+        }
+        for project in &owned {
+            if let Err(err) = state.platform.projects.transfer_project_owner(
+                &target,
+                &project.project,
+                &successor,
+            ) {
+                let status = match err.code {
+                    "PLATFORM_TRANSFER_CONFLICT" => StatusCode::CONFLICT,
+                    "PLATFORM_TRANSFER_INVALID" => StatusCode::BAD_REQUEST,
+                    _ => return internal_error(err),
+                };
+                return (
+                    status,
+                    Json(json!({
+                        "ok": false,
+                        "error": format!("transferring {}: {}", project.project, err.message),
+                    })),
+                )
+                    .into_response();
+            }
+            let _ = state
+                .platform
+                .pipeline_runtime
+                .refresh_project(&successor, &project.project);
+            let _ = state
+                .platform
+                .mcp_sessions
+                .revoke_for_project(&target, &project.project);
+        }
+    } else {
+        // Purging: refuse first, delete second, so a refusal halfway through
+        // never leaves the account half-gone.
+        for project in &owned {
+            match state
+                .platform
+                .data
+                .list_project_members(&target, &project.project)
+            {
+                Ok(members) => {
+                    if members.iter().any(|m| m.user_id != target) {
+                        return (
+                            StatusCode::CONFLICT,
+                            Json(json!({
+                                "ok": false,
+                                "error": format!(
+                                    "project {} has other members; transfer it with \
+                                     `successor` instead of purging their work",
+                                    project.project
+                                ),
+                            })),
+                        )
+                            .into_response();
+                    }
+                }
+                Err(e) => return internal_error(e),
+            }
+        }
+        for project in &owned {
+            if let Err(e) = state
+                .platform
+                .data
+                .delete_project(&target, &project.project)
+            {
+                if e.code == "PLATFORM_PROJECT_HOSTS_HUB_AUTHORITY" {
+                    return (
+                        StatusCode::CONFLICT,
+                        Json(json!({"ok": false, "error": e.message})),
+                    )
+                        .into_response();
+                }
+                return internal_error(e);
+            }
+            let project_root = state
+                .platform
+                .config
+                .data_root
+                .join("users")
+                .join(&target)
+                .join(&project.project);
+            if project_root.exists() {
+                if let Err(e) = std::fs::remove_dir_all(&project_root) {
+                    eprintln!("WARN: Failed to remove project dir {project_root:?}: {e}");
+                }
+            }
+            let _ = state
+                .platform
+                .mcp_sessions
+                .revoke_for_project(&target, &project.project);
+        }
+    }
+
+    if let Err(e) = state.platform.data.delete_user(&target, &target_user_id) {
+        return internal_error(e);
+    }
+
+    // Their directory goes too. Transferred projects have already moved out,
+    // purged ones are already deleted — what remains is an empty shell that
+    // would otherwise read as a half-deleted account forever.
+    let user_root = state.platform.config.data_root.join("users").join(&target);
+    if user_root.exists() {
+        if let Err(e) = std::fs::remove_dir_all(&user_root) {
+            eprintln!("WARN: Failed to remove user dir {user_root:?}: {e}");
+        }
+    }
+
+    // Their live browser sessions die with the account.
+    state
+        .sessions
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .retain(|_, session| session.owner != target);
+    // Transferred projects moved on disk, and template cache dependency paths
+    // are absolute, so they point into the old owner's directory.
+    if let Ok(mut cache) = state.template_cache.write() {
+        cache.clear();
+    }
+
+    Json(json!({
+        "ok": true,
+        "projects": owned.len(),
+        "resolution": if req.successor.is_some() { "transferred" } else { "purged" },
+    }))
+    .into_response()
 }
 
 async fn api_get_profile(State(state): State<PlatformAppState>, headers: HeaderMap) -> Response {

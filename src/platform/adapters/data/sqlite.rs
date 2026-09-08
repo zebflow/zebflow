@@ -329,9 +329,6 @@ CREATE TABLE IF NOT EXISTS project_members (
         ON DELETE RESTRICT,
     FOREIGN KEY (member_user_id) REFERENCES users(user_id)
         ON UPDATE CASCADE
-        ON DELETE RESTRICT,
-    FOREIGN KEY (created_by_user_id) REFERENCES users(user_id)
-        ON UPDATE CASCADE
         ON DELETE RESTRICT
 );
 CREATE TABLE IF NOT EXISTS project_invites (
@@ -820,7 +817,7 @@ impl SqliteDataAdapter {
         Ok(exists)
     }
 
-    fn migrations() -> [MigrationDef; 20] {
+    fn migrations() -> [MigrationDef; 21] {
         [
             MigrationDef {
                 version: 1,
@@ -921,6 +918,11 @@ impl SqliteDataAdapter {
                 version: 20,
                 name: "credential_keys",
                 apply: Self::apply_migration_0020_credential_keys,
+            },
+            MigrationDef {
+                version: 21,
+                name: "member_provenance_is_history_not_reference",
+                apply: Self::apply_migration_0021_member_provenance_is_history_not_reference,
             },
         ]
     }
@@ -2879,6 +2881,74 @@ CREATE INDEX IF NOT EXISTS idx_platform_service_instances_host
         .map_err(|e| PlatformError::new("PLATFORM_SQLITE_SCHEMA", e.to_string()))
     }
 
+    /// `created_by_user_id` loses its foreign key onto `users`.
+    ///
+    /// The column records who created a membership — provenance, not a live
+    /// reference. With `ON DELETE RESTRICT` it chained the creator to
+    /// existence: a maintainer who invited one person into someone else's
+    /// project could never be deleted, blocked by a row about a member who is
+    /// not them. `member_user_id` keeps its RESTRICT — that one names the
+    /// person the row is *about*, and it is the safety net that makes
+    /// `delete_user` fail loudly if a membership survives the sweep.
+    fn apply_migration_0021_member_provenance_is_history_not_reference(
+        tx: &Transaction<'_>,
+    ) -> Result<(), PlatformError> {
+        Self::rebuild_table(
+            tx,
+            "project_members",
+            "
+CREATE TABLE project_members (
+    project_id              TEXT NOT NULL DEFAULT '',
+    owner                   TEXT NOT NULL,
+    project                 TEXT NOT NULL,
+    user_id                 TEXT NOT NULL,
+    member_user_id          TEXT NOT NULL DEFAULT '',
+    role_preset             TEXT NOT NULL DEFAULT 'reporter',
+    custom_policy_ids_json  TEXT NOT NULL DEFAULT '[]',
+    mcp_capabilities_json   TEXT NOT NULL DEFAULT '[]',
+    created_by              TEXT NOT NULL DEFAULT '',
+    created_by_user_id      TEXT NOT NULL DEFAULT '',
+    created_at              INTEGER NOT NULL DEFAULT 0,
+    updated_at              INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (owner, project, user_id),
+    FOREIGN KEY (project_id) REFERENCES projects(project_id)
+        ON UPDATE CASCADE
+        ON DELETE RESTRICT,
+    FOREIGN KEY (member_user_id) REFERENCES users(user_id)
+        ON UPDATE CASCADE
+        ON DELETE RESTRICT
+)",
+            &[
+                "project_id",
+                "owner",
+                "project",
+                "user_id",
+                "member_user_id",
+                "role_preset",
+                "custom_policy_ids_json",
+                "mcp_capabilities_json",
+                "created_by",
+                "created_by_user_id",
+                "created_at",
+                "updated_at",
+            ],
+        )?;
+        // The rename-rebuild drops every index on the table; put back the four
+        // that earlier migrations created.
+        tx.execute_batch(
+            "CREATE INDEX IF NOT EXISTS idx_project_members_project_id
+                 ON project_members(project_id, user_id);
+             CREATE UNIQUE INDEX IF NOT EXISTS idx_project_members_project_user
+                 ON project_members(project_id, user_id);
+             CREATE UNIQUE INDEX IF NOT EXISTS idx_project_members_project_member_user_id
+                 ON project_members(project_id, member_user_id);
+             CREATE INDEX IF NOT EXISTS idx_project_members_member_user_id
+                 ON project_members(member_user_id);",
+        )
+        .map_err(Self::qe)?;
+        Ok(())
+    }
+
     fn ensure_table_column<C>(
         conn: &C,
         table: &str,
@@ -3396,6 +3466,59 @@ impl DataAdapter for SqliteDataAdapter {
             .filter_map(|r| r.ok())
             .collect();
         Ok(users)
+    }
+
+    fn delete_user(&self, owner: &str, user_id: &str) -> Result<(), PlatformError> {
+        let mut conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let tx = conn
+            .transaction_with_behavior(TransactionBehavior::Exclusive)
+            .map_err(Self::qe)?;
+
+        // Rows about the person, not about one of their projects. Their own
+        // projects' rows are already gone — the caller transferred or deleted
+        // every project first — so what is left is their footprint in other
+        // people's space and their platform-level belongings.
+        tx.execute(
+            "DELETE FROM project_members WHERE member_user_id = ?1",
+            params![user_id],
+        )
+        .map_err(Self::qe)?;
+        tx.execute(
+            "DELETE FROM project_invites WHERE target_user = ?1",
+            params![owner],
+        )
+        .map_err(Self::qe)?;
+        tx.execute(
+            "DELETE FROM hub_access_grants WHERE source_owner = ?1 OR target_owner = ?1",
+            params![owner],
+        )
+        .map_err(Self::qe)?;
+        tx.execute(
+            "DELETE FROM platform_hub_repositories WHERE owner = ?1",
+            params![owner],
+        )
+        .map_err(Self::qe)?;
+        tx.execute("DELETE FROM mcp_sessions WHERE owner = ?1", params![owner])
+            .map_err(Self::qe)?;
+        tx.execute(
+            "DELETE FROM user_local_auth WHERE user_id = ?1",
+            params![user_id],
+        )
+        .map_err(Self::qe)?;
+
+        // The users row goes last, so every remaining foreign key onto
+        // users(user_id) verifies the sweep: a surviving project or
+        // membership makes this DELETE fail loudly instead of orphaning rows.
+        let deleted = tx
+            .execute("DELETE FROM users WHERE owner = ?1", params![owner])
+            .map_err(Self::qe)?;
+        if deleted == 0 {
+            return Err(PlatformError::new(
+                "PLATFORM_USER_NOT_FOUND",
+                "no such user",
+            ));
+        }
+        tx.commit().map_err(Self::qe)
     }
 
     // ──────────────────────── Projects ────────────────────────

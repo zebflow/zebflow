@@ -4,18 +4,15 @@ import { BASE_URL, OWNER, PASSWORD, PROJECT } from "../config";
 const base = `/projects/${OWNER}/${PROJECT}`;
 
 /**
- * A second person, created for this spec and reused across its runs.
- *
- * Zebflow has no route to delete a user, so a fresh name per run would leave a
- * new account on the instance every time. One stable name, created if absent,
- * is the honest trade until that route exists.
+ * A second person, created for this spec and deleted by its final test, so a
+ * run leaves the instance the way it found it.
  */
 const GUEST = "e2e-member";
 const GUEST_PASSWORD = "e2e-member-password-1";
 
 /** Create the guest account if this instance does not have it yet. */
 async function ensureGuestExists(request: any) {
-  const response = await request.post(`${BASE_URL}/api/users`, {
+  const response = await request.post(`${BASE_URL}/api/platform/users`, {
     data: {
       owner: GUEST,
       password: GUEST_PASSWORD,
@@ -137,4 +134,34 @@ test("an invitation can be declined", async ({ page, browser, request }) => {
   // Declining is an answer, so the invitation stops waiting for one.
   await visit(page, `${base}/settings/members`);
   await expect(page.locator(`[data-member="${GUEST}"]`)).toHaveCount(0);
+});
+
+/**
+ * The guest is deleted at the end, which is both the cleanup and the proof:
+ * an account that can be created has to be an account that can be removed,
+ * and its login has to die with it.
+ */
+test("the guest account can be deleted, and their login dies with it", async ({
+  browser,
+  request,
+}) => {
+  await ensureGuestExists(request);
+  await ensureNotAMember(request);
+
+  const response = await request.delete(
+    `${BASE_URL}/api/platform/users/${GUEST}`,
+    { data: { username: GUEST, password: PASSWORD } },
+  );
+  expect(response.status()).toBe(200);
+
+  const guestContext = await browser.newContext();
+  const guest = await guestContext.newPage();
+  await guest.goto(`${BASE_URL}/login`);
+  await guest.getByRole("textbox").first().fill(GUEST);
+  await guest.locator('input[type="password"]').fill(GUEST_PASSWORD);
+  await guest.getByRole("button", { name: /log ?in|sign ?in/i }).first().click();
+
+  // No account, no session: still on the login page, not /home.
+  await expect(guest).not.toHaveURL(/\/home/, { timeout: 10_000 });
+  await guestContext.close();
 });

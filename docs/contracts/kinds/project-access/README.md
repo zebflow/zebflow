@@ -112,6 +112,54 @@ a member, so a project capability check would refuse the very person the
 invitation is for. An invite addressed to someone else answers `404`, not
 `403` — it is not that person's to know about.
 
+## The account itself
+
+```
+GET    /api/platform/users                       superadmin      the roster
+POST   /api/platform/users                       superadmin      create
+DELETE /api/platform/users/{owner}               superadmin      delete
+```
+
+The roster is an instance resource, so it lives under the instance scope —
+`/api/users/{owner}/…` is one person's own space, and the two must not share
+a prefix. The path names the resource; the guard names the audience.
+
+Deleting a person requires deciding what happens to what they owned (n8n's
+shape). The body carries the target's name typed back, the **caller's**
+password, and a `successor`:
+
+- `successor: "name"` — every owned project transfers whole, through the same
+  machinery as `transfer/owner`.
+- `successor` absent — projects are purged, with two refusals: a project other
+  people are members of (`409`, transfer instead — deletion is never the path
+  by which someone else's work disappears) and a project hosting a hub
+  authority (`409`, from `delete_project`).
+
+Refused outright:
+
+- deleting yourself (`400`). One rule, and it guarantees a superadmin survives
+  every deletion: the caller.
+- a person with published hub versions (`409`, naming the packages).
+  `package@version` is immutable and other installations' `zeb.lock` files
+  point at it, so the publisher record outlives the publisher.
+
+What deletion sweeps: memberships they hold in other people's projects,
+invitations addressed to them, hub grants naming them, their platform-level
+hub repositories, their MCP sessions, their live browser sessions, their
+local auth, and their directory on disk. The `users` row goes last inside one
+transaction, so every remaining foreign key verifies the sweep — a surviving
+reference fails the delete loudly instead of orphaning rows.
+
+One schema consequence: `project_members.created_by_user_id` is provenance,
+not a live reference, and carries no foreign key (migration 0021). With
+`ON DELETE RESTRICT` it chained the creator to existence — a maintainer who
+invited one person into someone else's project could never be deleted.
+`member_user_id` keeps its RESTRICT: that column names who the row is
+*about*, and it is the safety net behind the sweep.
+
+Evidence: `smoke::a_deleted_user_leaves_no_footprint_and_takes_no_hostages`,
+`members.spec.ts` ("the guest account can be deleted…").
+
 ## Deliberately absent
 
 - **No deny rule.** Permissions are additive, as in Kubernetes RBAC. AWS's

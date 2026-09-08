@@ -945,7 +945,7 @@ async fn create_user(app: &axum::Router, cookie: &str, owner: &str) {
         .clone()
         .oneshot(
             Request::builder()
-                .uri("/api/users")
+                .uri("/api/platform/users")
                 .method("POST")
                 .header(header::COOKIE, cookie)
                 .header(header::CONTENT_TYPE, "application/json")
@@ -3192,7 +3192,7 @@ async fn private_project_files_require_project_capability() {
         .clone()
         .oneshot(
             Request::builder()
-                .uri("/api/users")
+                .uri("/api/platform/users")
                 .method("POST")
                 .header(header::COOKIE, &superadmin_cookie)
                 .header(header::CONTENT_TYPE, "application/json")
@@ -5879,7 +5879,7 @@ async fn registering_a_pipeline_always_requires_the_write_capability() {
         .clone()
         .oneshot(
             Request::builder()
-                .uri("/api/users")
+                .uri("/api/platform/users")
                 .method("POST")
                 .header(header::COOKIE, &superadmin_cookie)
                 .header(header::CONTENT_TYPE, "application/json")
@@ -6292,7 +6292,7 @@ async fn preview_refuses_a_subject_without_project_capabilities() {
         .clone()
         .oneshot(
             Request::builder()
-                .uri("/api/users")
+                .uri("/api/platform/users")
                 .method("POST")
                 .header(header::COOKIE, &owner_cookie)
                 .header(header::CONTENT_TYPE, "application/json")
@@ -6379,4 +6379,290 @@ async fn preview_refuses_a_subject_without_project_capabilities() {
         StatusCode::OK,
         "the owner still reads their own preview state"
     );
+}
+
+/// One person's whole lifecycle: created, working, entangled with other
+/// people's projects — and then deleted, with every refusal checked on the
+/// way and no footprint left at the end.
+#[tokio::test]
+async fn a_deleted_user_leaves_no_footprint_and_takes_no_hostages() {
+    let mut config = PlatformConfig::default();
+    config.data_root = temp_test_dir("user-delete-lifecycle");
+    config.default_password = "test-pass".to_string();
+    let data_root = config.data_root.clone();
+    let app = build_router(config).await.expect("platform router");
+
+    async fn send(
+        app: &axum::Router,
+        method: &str,
+        uri: &str,
+        cookie: Option<&str>,
+        body: Option<Value>,
+    ) -> (StatusCode, Value) {
+        let mut builder = Request::builder().uri(uri).method(method);
+        if let Some(cookie) = cookie {
+            builder = builder.header(header::COOKIE, cookie);
+        }
+        let request = match body {
+            Some(body) => builder
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(body.to_string())),
+            None => builder.body(Body::empty()),
+        }
+        .expect("request");
+        let response = app.clone().oneshot(request).await.expect("response");
+        let status = response.status();
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        let json = serde_json::from_slice(&body).unwrap_or(Value::Null);
+        (status, json)
+    }
+
+    let admin = login_cookie(app.clone(), "superadmin", "test-pass").await;
+
+    // Two people join the instance through the roster, at its instance-scope
+    // address.
+    for owner in ["sari", "dana"] {
+        let (status, _) = send(
+            &app,
+            "POST",
+            "/api/platform/users",
+            Some(&admin),
+            Some(json!({"owner": owner, "password": format!("{owner}-pass"), "role": "member"})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "creating {owner}");
+    }
+    let (status, roster) = send(&app, "GET", "/api/platform/users", Some(&admin), None).await;
+    assert_eq!(status, StatusCode::OK);
+    let names = |v: &Value| -> Vec<String> {
+        v["items"]
+            .as_array()
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(|u| u["owner"].as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    assert!(names(&roster).contains(&"sari".to_string()));
+
+    // Sari builds something of her own and joins something of superadmin's.
+    let sari = login_cookie(app.clone(), "sari", "sari-pass").await;
+    let (status, _) = send(
+        &app,
+        "POST",
+        "/api/users/sari/projects",
+        Some(&sari),
+        Some(json!({"project": "shop"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "sari creates shop");
+
+    let (status, invite) = send(
+        &app,
+        "POST",
+        "/api/projects/superadmin/default/invites",
+        Some(&admin),
+        Some(json!({"target_user": "sari", "role_preset": "reporter"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "inviting sari: {invite}");
+    let invite_id = invite["invite"]["invite_id"].as_str().expect("invite id");
+    let (status, _) = send(
+        &app,
+        "POST",
+        &format!("/api/invites/superadmin/default/{invite_id}/accept"),
+        Some(&sari),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "sari accepts");
+
+    // The refusals, each a distinct answer.
+    let (status, _) = send(
+        &app,
+        "DELETE",
+        "/api/platform/users/superadmin",
+        Some(&admin),
+        Some(json!({"username": "superadmin", "password": "test-pass"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "self-deletion is refused");
+
+    let (status, _) = send(
+        &app,
+        "DELETE",
+        "/api/platform/users/sari",
+        Some(&admin),
+        Some(json!({"username": "wrong-name", "password": "test-pass"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "typed-back name must match");
+
+    let (status, _) = send(
+        &app,
+        "DELETE",
+        "/api/platform/users/sari",
+        Some(&admin),
+        Some(json!({"username": "sari", "password": "wrong-pass"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "caller's password is re-verified");
+
+    let (status, _) = send(
+        &app,
+        "DELETE",
+        "/api/platform/users/dana",
+        Some(&sari),
+        Some(json!({"username": "dana", "password": "sari-pass"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "only a superadmin deletes users");
+
+    // Dana joins sari's shop, so purging sari would take a project someone
+    // else works in. That is refused: deletion is never the path by which
+    // another person's work disappears.
+    let (status, invite) = send(
+        &app,
+        "POST",
+        "/api/projects/sari/shop/invites",
+        Some(&sari),
+        Some(json!({"target_user": "dana", "role_preset": "reporter"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "sari invites dana: {invite}");
+    let invite_id = invite["invite"]["invite_id"].as_str().expect("invite id");
+    let dana = login_cookie(app.clone(), "dana", "dana-pass").await;
+    let (status, _) = send(
+        &app,
+        "POST",
+        &format!("/api/invites/sari/shop/{invite_id}/accept"),
+        Some(&dana),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "dana accepts");
+
+    let (status, refusal) = send(
+        &app,
+        "DELETE",
+        "/api/platform/users/sari",
+        Some(&admin),
+        Some(json!({"username": "sari", "password": "test-pass"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "purge with other members: {refusal}");
+
+    // With a successor, the same request succeeds: the shop transfers whole.
+    let (status, done) = send(
+        &app,
+        "DELETE",
+        "/api/platform/users/sari",
+        Some(&admin),
+        Some(json!({"username": "sari", "password": "test-pass", "successor": "dana"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "transfer-delete: {done}");
+    assert_eq!(done["resolution"], "transferred");
+
+    // No roster entry, no login, no live session, no membership, no files.
+    let (_, roster) = send(&app, "GET", "/api/platform/users", Some(&admin), None).await;
+    assert!(!names(&roster).contains(&"sari".to_string()), "roster still lists sari");
+
+    let dead_login = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/login")
+                .method("POST")
+                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                .body(Body::from("identifier=sari&password=sari-pass"))
+                .expect("request"),
+        )
+        .await
+        .expect("login response");
+    assert_ne!(dead_login.status(), StatusCode::SEE_OTHER, "sari can still log in");
+
+    let (status, _) = send(&app, "GET", "/api/profile", Some(&sari), None).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "sari's old session still answers");
+
+    let (_, members) = send(
+        &app,
+        "GET",
+        "/api/projects/superadmin/default/members",
+        Some(&admin),
+        None,
+    )
+    .await;
+    let member_names: Vec<String> = members["items"]
+        .as_array()
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|m| m["user_id"].as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default();
+    assert!(!member_names.iter().any(|m| m == "sari"), "sari's membership survived");
+
+    let (_, danas) = send(&app, "GET", "/api/users/dana/projects", Some(&admin), None).await;
+    let dana_projects: Vec<String> = danas["items"]
+        .as_array()
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|p| p["project"].as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default();
+    assert!(dana_projects.iter().any(|p| p == "shop"), "shop did not reach dana: {danas}");
+    assert!(
+        data_root.join("users").join("dana").join("shop").exists(),
+        "shop's files did not move"
+    );
+    assert!(
+        !data_root.join("users").join("sari").join("shop").exists(),
+        "sari's shop directory survived"
+    );
+
+    // And the purge path, for someone whose work entangles nobody.
+    let (status, _) = send(
+        &app,
+        "POST",
+        "/api/platform/users",
+        Some(&admin),
+        Some(json!({"owner": "mallory", "password": "mallory-pass", "role": "member"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let mallory = login_cookie(app.clone(), "mallory", "mallory-pass").await;
+    let (status, _) = send(
+        &app,
+        "POST",
+        "/api/users/mallory/projects",
+        Some(&mallory),
+        Some(json!({"project": "junk"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let (status, done) = send(
+        &app,
+        "DELETE",
+        "/api/platform/users/mallory",
+        Some(&admin),
+        Some(json!({"username": "mallory", "password": "test-pass"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "purge-delete: {done}");
+    assert_eq!(done["resolution"], "purged");
+    assert!(
+        !data_root.join("users").join("mallory").exists(),
+        "mallory's directory survived the purge"
+    );
+    let (_, roster) = send(&app, "GET", "/api/platform/users", Some(&admin), None).await;
+    assert!(!names(&roster).contains(&"mallory".to_string()));
 }
