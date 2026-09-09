@@ -28,7 +28,7 @@ use super::file_ref::zebfs_rel_path;
 use super::table_convert::{
     TableFormat, collect_columns, encode_rows, parse_format, record_batch_to_rows,
 };
-use super::util::{eval_deno_expr, metadata_scope, resolve_array_values, resolve_query_binding};
+use super::util::{eval_deno_expr, metadata_scope};
 
 pub const NODE_KIND: &str = "n.table.query";
 pub const INPUT_PIN_IN: &str = "in";
@@ -90,23 +90,9 @@ pub fn definition() -> NodeDefinition {
                 required: false,
             },
             DslFlag {
-                flag: "--query-expr".to_string(),
-                config_key: "query_expr".to_string(),
-                description: "JS expression returning the SQL query string. Overrides --query at runtime.".to_string(),
-                kind: DslFlagKind::Scalar,
-                required: false,
-            },
-            DslFlag {
-                flag: "--params-path".to_string(),
-                config_key: "params_path".to_string(),
-                description: "Dot-notation path into upstream payload for $1/$2 bind params.".to_string(),
-                kind: DslFlagKind::Scalar,
-                required: false,
-            },
-            DslFlag {
-                flag: "--params-expr".to_string(),
-                config_key: "params_expr".to_string(),
-                description: "Deno expression returning an array of bind params, for example [$trigger.params.slug].".to_string(),
+                flag: "--params".to_string(),
+                config_key: "params".to_string(),
+                description: "Bind values for $1, $2, … — a literal or {{ expr }}. A whole {{ }} carries its typed value, so \"{{ [$trigger.params.slug] }}\" is a real array.".to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
             },
@@ -180,26 +166,10 @@ pub fn definition() -> NodeDefinition {
                 ..Default::default()
             },
             NodeFieldDef {
-                name: "query_expr".to_string(),
-                label: "Query Expr".to_string(),
-                field_type: NodeFieldType::Textarea,
-                rows: Some(3),
-                help: Some("JS expression returning SQL query string. Overrides the query editor above.".to_string()),
-                ..Default::default()
-            },
-            NodeFieldDef {
-                name: "params_path".to_string(),
-                label: "Params Path".to_string(),
+                name: "params".to_string(),
+                label: "Params".to_string(),
                 field_type: NodeFieldType::Text,
-                help: Some("Dot-notation path returning one value or an array for $1/$2 params.".to_string()),
-                ..Default::default()
-            },
-            NodeFieldDef {
-                name: "params_expr".to_string(),
-                label: "Params Expr".to_string(),
-                field_type: NodeFieldType::Textarea,
-                rows: Some(3),
-                help: Some("Deno expression returning an array of bind params.".to_string()),
+                help: Some("Bind values for $1, $2, … — a literal or {{ expr }}.".to_string()),
                 ..Default::default()
             },
             NodeFieldDef {
@@ -253,11 +223,7 @@ pub fn definition() -> NodeDefinition {
             ] },
             LayoutItem::Field("sources".to_string()),
             LayoutItem::Field("query".to_string()),
-            LayoutItem::Field("query_expr".to_string()),
-            LayoutItem::Row { row: vec![
-                LayoutItem::Field("params_path".to_string()),
-                LayoutItem::Field("params_expr".to_string()),
-            ] },
+            LayoutItem::Field("params".to_string()),
             LayoutItem::Row { row: vec![
                 LayoutItem::Field("to_path".to_string()),
                 LayoutItem::Field("to_format".to_string()),
@@ -305,12 +271,9 @@ pub struct Config {
     pub sources: Vec<SourceBindingConfig>,
     #[serde(default, alias = "sql")]
     pub query: String,
+    /// Bind values for `$1`, `$2`, … A whole `{{ }}` carries its typed value.
     #[serde(default)]
-    pub query_expr: Option<String>,
-    #[serde(default)]
-    pub params_path: Option<String>,
-    #[serde(default)]
-    pub params_expr: Option<String>,
+    pub params: Value,
     #[serde(default)]
     pub to_path: Option<String>,
     #[serde(default)]
@@ -329,9 +292,7 @@ impl Default for Config {
             engine: default_engine(),
             sources: Vec::new(),
             query: String::new(),
-            query_expr: None,
-            params_path: None,
-            params_expr: None,
+            params: Value::Null,
             to_path: None,
             to_format: None,
             to_json: false,
@@ -348,6 +309,8 @@ fn default_engine() -> String {
 pub struct Node {
     config: Config,
     platform: Arc<PlatformService>,
+    /// Still needed: `--from "$expr as alias"` evaluates a source expression,
+    /// which is a different mechanism from the retired --params-expr twin.
     language: Arc<dyn LanguageEngine>,
 }
 
@@ -363,31 +326,12 @@ impl Node {
                 "config.sources must include at least one --from binding",
             ));
         }
-        if config.query.trim().is_empty()
-            && config
-                .query_expr
-                .as_deref()
-                .map(str::trim)
-                .unwrap_or_default()
-                .is_empty()
-        {
+        // One flag per thing now, so "set one or the other" has nothing left
+        // to adjudicate.
+        if config.query.trim().is_empty() {
             return Err(PipelineError::new(
                 "FW_NODE_TABLE_QUERY_CONFIG",
-                "config.query must not be empty (set query or query_expr)",
-            ));
-        }
-        if !config.query.trim().is_empty()
-            && config
-                .query_expr
-                .as_deref()
-                .map(str::trim)
-                .unwrap_or_default()
-                .len()
-                > 0
-        {
-            return Err(PipelineError::new(
-                "FW_NODE_TABLE_QUERY_CONFIG",
-                "set either query or query_expr, not both",
+                "config.query must not be empty",
             ));
         }
         Ok(Self {
@@ -417,16 +361,10 @@ impl NodeHandler for Node {
         input: NodeExecutionInput,
     ) -> Result<NodeExecutionOutput, PipelineError> {
         normalize_engine(&self.config.engine)?;
-        let raw_sql = resolve_query_binding(
-            self.language.as_ref(),
-            &input.payload,
-            &input.metadata,
-            self.config.query_expr.as_deref(),
-            &self.config.query,
-            "FW_NODE_TABLE_QUERY_SQL",
-        )?;
+        // Arrives final — `{{ }}` resolved engine-side before this ran.
+        let raw_sql = self.config.query.trim().to_string();
         let sql = normalize_select_sql(&raw_sql)?;
-        let params = resolve_params(&self.config, &self.language, &input)?;
+        let params = resolve_params(&self.config);
         if non_empty(self.config.to_path.as_deref()).is_none() && !self.config.to_json {
             return Err(PipelineError::new(
                 "FW_NODE_TABLE_QUERY",
@@ -767,22 +705,14 @@ async fn execute_geodatafusion_query(
         .map_err(|err| PipelineError::new("FW_NODE_TABLE_QUERY_EXECUTE", err.to_string()))
 }
 
-fn resolve_params(
-    config: &Config,
-    language: &Arc<dyn LanguageEngine>,
-    input: &NodeExecutionInput,
-) -> Result<Vec<Value>, PipelineError> {
-    if let Some(expr) = non_empty(config.params_expr.as_deref()) {
-        let evaluated = eval_deno_expr(language.as_ref(), expr, &input.payload, &input.metadata)?;
-        return Ok(match evaluated {
-            Value::Array(items) => items,
-            other => vec![other],
-        });
+/// Bind values arrive final: a whole `{{ }}` is a real array; anything else
+/// binds as one parameter.
+fn resolve_params(config: &Config) -> Vec<Value> {
+    match config.params.clone() {
+        Value::Null => Vec::new(),
+        Value::Array(items) => items,
+        other => vec![other],
     }
-    Ok(resolve_array_values(
-        &input.payload,
-        config.params_path.as_deref(),
-    ))
 }
 
 fn normalize_select_sql(sql: &str) -> Result<String, PipelineError> {

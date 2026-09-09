@@ -4153,7 +4153,7 @@ mod tests {
 
         let dsl = r#"
 [a] trigger.manual
-[b] table.query --from "datasets/posts.csv as posts" --from "datasets/authors.csv as authors" --params-expr "[$input.post_id]" --to-json --preview 1 --query "select p.id, p.title, a.name from posts p join authors a on p.author_id = a.id where p.id = $1"
+[b] table.query --from "datasets/posts.csv as posts" --from "datasets/authors.csv as authors" --params "{{ [input.post_id] }}" --to-json --preview 1 --query "select p.id, p.title, a.name from posts p join authors a on p.author_id = a.id where p.id = $1"
 
 [a] -> [b]
 "#;
@@ -4310,7 +4310,7 @@ mod tests {
                             { "source": "datasets/posts.csv", "alias": "posts" }
                         ],
                         "query": "select * from posts where id = $1",
-                        "params_expr": "[$input.post_id]",
+                        "params": "{{ [input.post_id] }}",
                         "to_json": true,
                         "preview": 1
                     }),
