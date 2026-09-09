@@ -60,7 +60,7 @@ Create a `jwt_signing_key` credential in the Credentials UI. Fields:
 
 ```
 | trigger.webhook --path /auth/login --method POST
-| pg.query --credential main-db --params-expr "[input.username]" \
+| pg.query --credential main-db --params "{{ [input.username] }}" \
     -- "SELECT id::text, username, role FROM users WHERE username = $1 LIMIT 1"
 | script -- "const user = input.rows?.[0]; if (!user) return { ok: false, error: 'invalid credentials', __status: 401 }; return { id: user.id, username: user.username, roles: [user.role] }"
 | auth.token.create --credential my-jwt --claim sub={{ input.id }} --claim username={{ input.username }}:public --claim roles={{ input.roles }}:public --expires-in 86400
@@ -81,7 +81,7 @@ Create a `jwt_signing_key` credential in the Credentials UI. Fields:
 ```
 | trigger.webhook --path /auth/register --method POST
 | script -- "const { username, email, password } = input; if (!username || !email || !password) return { error: 'all fields required', __status: 400 }; if (password.length < 8) return { error: 'password too short', __status: 400 }; return { username, email, password_hash: btoa(password + 'salt'), role: 'user' }"
-| pg.query --credential main-db --params-expr "[input.username, input.email, input.password_hash, input.role]" \
+| pg.query --credential main-db --params "{{ [input.username, input.email, input.password_hash, input.role] }}" \
     -- "INSERT INTO users (username, email, password_hash, role, created_at) VALUES ($1, $2, $3, $4, NOW()) RETURNING id::text"
 | web.response --location /auth/login?registered=1
 ```
@@ -97,7 +97,7 @@ Create a `jwt_signing_key` credential in the Credentials UI. Fields:
 
 ```
 | trigger.webhook --path /dashboard --method GET --auth-type jwt --auth-credential my-jwt
-| pg.query --credential main-db --params-path /auth/sub \
+| pg.query --credential main-db --params "{{ input.auth.sub }}" \
     -- "SELECT id::text, username, email, role FROM users WHERE id = $1::uuid"
 | script -- "const u = input.rows?.[0]; return { user: u }"
 | web.response --template pages/dashboard.tsx

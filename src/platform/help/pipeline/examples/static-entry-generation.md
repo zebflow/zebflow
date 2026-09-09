@@ -79,8 +79,8 @@ return {
 "
 | web.static.generate \
     --template pages/static-entry-page.tsx \
-    --output-path "collections/{{ $input.collection.slug }}/{{ $input.entry.slug }}/index.html" \
-    --route "/collections/{{ $input.collection.slug }}/{{ $input.entry.slug }}" \
+    --output-path "collections/{{ input.collection.slug }}/{{ input.entry.slug }}/index.html" \
+    --route "/collections/{{ input.collection.slug }}/{{ input.entry.slug }}" \
     --on-conflict overwrite
 ```
 
@@ -100,7 +100,7 @@ This is a more realistic content-backed version:
 
 ```zf
 | trigger.function --params '{"entry_id": {"type": "string", "description": "Entry UUID"}}'
-| pg.query --credential content-db --params-expr "{{ [$input.entry_id] }}" -- "
+| pg.query --credential content-db --params "{{ [input.entry_id] }}" -- "
 SELECT
   e.entry_id::text AS entry_id,
   e.slug AS entry_slug,
@@ -136,7 +136,7 @@ return {
 "
 | web.static.generate \
     --template pages/static-entry-page.tsx \
-    --output-path "collections/{{ $input.collection.slug }}/{{ $input.entry.slug }}/index.html"
+    --output-path "collections/{{ input.collection.slug }}/{{ input.entry.slug }}/index.html"
 ```
 
 ---

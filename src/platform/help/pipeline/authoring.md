@@ -85,7 +85,7 @@ Every saved pipeline is a canonical `Pipeline` document. Its executable `Pipelin
         "config": {
           "credential_id": "main-db",
           "query": "SELECT * FROM users WHERE identifier = $1",
-          "params_path": "identifier"
+          "params": "{{ input.identifier }}"
         }
       },
       {
@@ -213,16 +213,12 @@ Key config fields and their DSL flag equivalents:
 
 | Node | Config key | DSL flag | Description |
 |---|---|---|---|
-| `n.pg.query` | `credential_id` | `--credential` | PostgreSQL credential ID |
-| `n.pg.query` | `query` | `-- <sql>` (body) | SQL query |
-| `n.pg.query` | `params_path` | `--params-path` | Dot-notation path into upstream payload for `$1`/`$2` binds. e.g. `"identifier"` |
-| `n.pg.query` | `params_expr` | `--params-expr` | JS expression returning array of bind params. e.g. `"[input.id, input.name]"` |
-| `n.sekejap.query` | `query` | `-- <sql>` (body) | Sekejap SQL query |
-| `n.sekejap.query` | `params_path` | `--params-path` | Dot-notation path into upstream payload for `$1`/`$2` binds. e.g. `"params.id"` |
-| `n.sekejap.query` | `params_expr` | `--params-expr` | JS expression returning array of bind params. e.g. `"[$trigger.body.slug, $trigger.body.title]"` |
-| `n.sekejap.query` | `query_expr` | `--query-expr` | JS expression returning the SQL string at runtime |
-| `n.table.convert` | `from_path` | `--from` | ZebFS object path to read, e.g. `uploads/data.csv` |
-| `n.table.convert` | `from_expr` | `--from-expr` | JS expression returning upstream rows, e.g. `"$input.rows"` |
+| `n.pg.query` | `credential_id` | `--credential` | PostgreSQL credential ID; literal or `{{ expr }}`, e.g. `--credential "{{ input.cred_id }}"` |
+| `n.pg.query` | `query` | `-- <sql>` (body) | SQL query; literal or `{{ expr }}` for a computed query string, e.g. `--query "{{ expr }}"` |
+| `n.pg.query` | `params` | `--params` | Bind params for `$1`/`$2`: dot path, e.g. `--params "{{ input.identifier }}"`, or array expr, e.g. `--params "{{ [input.id, input.name] }}"` |
+| `n.sekejap.query` | `query` | `-- <sql>` (body) | Sekejap SQL query; literal or `{{ expr }}` for a computed query string |
+| `n.sekejap.query` | `params` | `--params` | Bind params for `$1`/`$2`: dot path, e.g. `--params "{{ input.params.id }}"`, or array expr, e.g. `--params "{{ [$trigger.body.slug, $trigger.body.title] }}"` |
+| `n.table.convert` | `from` | `--from` | ZebFS object path, literal or `{{ expr }}` returning upstream rows, e.g. `uploads/data.csv` or `--from "{{ input.rows }}"` |
 | `n.table.convert` | `from_format` | `--from-format` | Source format: `csv`, `json`, `ndjson`, or `parquet`; inferred from path when possible |
 | `n.table.convert` | `to_path` | `--to` | ZebFS object path to write |
 | `n.table.convert` | `to_format` | `--to-format` | Target format: `csv`, `json`, `ndjson`, or `parquet`; inferred from path when possible |
@@ -230,8 +226,7 @@ Key config fields and their DSL flag equivalents:
 | `n.table.query` | `sources` | `--from` | Repeated list of source bindings, each `<path-or-expr> as <alias>` |
 | `n.table.query` | `query` | `--query` or `-- <sql>` | Read-only GeoDataFusion SQL query |
 | `n.table.query` | `engine` | `--engine` | Query engine. Only supported value: `geodatafusion` |
-| `n.table.query` | `params_path` | `--params-path` | Dot-notation path into upstream payload for `$1`/`$2` binds |
-| `n.table.query` | `params_expr` | `--params-expr` | JS expression returning array of bind params |
+| `n.table.query` | `params` | `--params` | Bind params for `$1`/`$2`: dot path, e.g. `--params "{{ input.some.path }}"`, or array expr, e.g. `--params "{{ [a, b] }}"` |
 | `n.table.query` | `to_path` | `--to` | Optional ZebFS object path to write query rows |
 | `n.table.query` | `to_format` | `--format` | Output format: `csv`, `json`, `ndjson`, or `parquet`; inferred from `--to` when possible |
 | `n.table.query` | `to_json` | `--to-json` | Emit rows under `table.data` for downstream nodes |

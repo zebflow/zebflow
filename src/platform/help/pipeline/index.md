@@ -223,7 +223,7 @@ pipeline_activate  file_rel_path="pages/blog-home.zf.json"
 
 ```
 | trigger.webhook --path /dashboard --method GET --auth-type jwt --auth-credential my-jwt
-| pg.query --credential main-db -- "SELECT id, name FROM users WHERE id = $1" --params-expr "[ctx.trigger.auth.sub]"
+| pg.query --credential main-db -- "SELECT id, name FROM users WHERE id = $1" --params "{{ [ctx.trigger.auth.sub] }}"
 | web.response --template pages/dashboard.tsx
 ```
 
@@ -270,7 +270,7 @@ Any string field in a node's config can contain `{{ js_expr }}` placeholders res
 
 ```zf
 # Path param → SQL param (whole-field expr → native array type)
-| pg.query --params-expr "{{ [$trigger.params.id] }}"
+| pg.query --params "{{ [$trigger.params.id] }}"
 
 # Dynamic URL from upstream output (interpolated expr → string)
 | http.request --url "https://api.example.com/{{ $nodes.userQuery.rows[0].slug }}"

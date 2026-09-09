@@ -66,7 +66,7 @@ return {
   slug: String(input.slug || Date.now())
 };
 "
-[c] ai.tts --provider piper --credential narrator-tts --text-expr "$input.text" --output-path-expr "'audio/tts-' + $input.slug + '.wav'" --return both
+[c] ai.tts --provider piper --credential narrator-tts --text "{{ input.text }}" --output-path "{{ 'audio/tts-' + input.slug + '.wav' }}" --return both
 [d] web.response
 
 [a] -> [b]

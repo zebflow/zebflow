@@ -48,7 +48,7 @@ If `auth_redirect` / `auth_forbidden_redirect` are not set, auth failure returns
 
 ```
 | trigger.webhook --path /auth/login --method POST
-| pg.query --credential my-pg --params-expr "[input.identifier]" \
+| pg.query --credential my-pg --params "{{ [input.identifier] }}" \
     -- "SELECT player_id::text, fullname, role FROM app.player WHERE identifier = $1 AND is_active = true"
 | script -- "const user = input.rows?.[0]; if (!user) return { ok: false, error: 'invalid credentials', __status: 401 }; return { player_id: user.player_id, name: user.fullname, roles: [user.role] }"
 | auth.token.create --credential my-jwt --claim sub={{ input.player_id }} --claim name={{ input.name }}:public --claim roles={{ input.roles }}:public --expires-in 86400
@@ -59,7 +59,7 @@ If `auth_redirect` / `auth_forbidden_redirect` are not set, auth failure returns
 
 ```
 | trigger.webhook --path /dashboard --method GET --auth-type jwt --auth-credential my-jwt
-| pg.query --credential my-pg --params-path /auth/sub \
+| pg.query --credential my-pg --params "{{ input.auth.sub }}" \
     -- "SELECT player_id::text, fullname, email FROM app.player WHERE player_id = $1::uuid"
 | script -- "const user = input.rows?.[0]; return { user }"
 | web.response --template pages/dashboard.tsx
@@ -97,7 +97,7 @@ Role mismatch → credential `auth_forbidden_redirect` fires (browser) or 403 JS
 
 - `trigger.webhook --auth-type jwt --auth-credential <id>` — auto-verify JWT; `input.auth` = decoded claims
 - `trigger.webhook --auth-required-role <roles>` — role check; comma-separated list from credential `auth_roles`
-- `pg.query --params-expr` — look up user by identifier or sub claim
+- `pg.query --params` — look up user by identifier or sub claim, e.g. `--params "{{ [input.identifier] }}"` or `--params "{{ input.auth.sub }}"`
 - `auth.token.create --claim key={{ input.field }}` — sign JWT; output `{{ input.access_token }}`. Add `:public` suffix (e.g. `--claim name={{ input.name }}:public`) to expose that claim in the browser via `ctx.auth`. `sub` and other private claims stay server-only.
 - `web.response --set-cookie` — set HttpOnly cookie in response
 - `web.response --location` — redirect

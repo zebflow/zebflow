@@ -44,9 +44,9 @@ Branching logic lives in `logic.*` nodes — edges are pure structural wiring, n
 register classify-ingest --path /webhooks \
   [a] trigger.webhook --path /ingest --method POST \
   [b] logic.match --expr "$input.type" --cases normal,urgent --default unknown \
-  [c] sekejap.query --params-expr "[$input.id, $input.data]" --read-only false -- "INSERT INTO normal_queue (id, data) VALUES ($1, $2)" \
+  [c] sekejap.query --params "{{ [input.id, input.data] }}" --read-only false -- "INSERT INTO normal_queue (id, data) VALUES ($1, $2)" \
   [d] http.request --url https://alerts.api/send --method POST \
-  [e] sekejap.query --params-expr "[$input.id, $input.data]" --read-only false -- "INSERT INTO unknown_queue (id, data) VALUES ($1, $2)" \
+  [e] sekejap.query --params "{{ [input.id, input.data] }}" --read-only false -- "INSERT INTO unknown_queue (id, data) VALUES ($1, $2)" \
   [a] -> [b] \
   [b]:normal  -> [c] \
   [b]:urgent  -> [d] \
@@ -117,8 +117,8 @@ The engine resolves them **before** the node runs, in a hermetically sandboxed D
 
 | Variable          | Contents                                                        |
 |-------------------|-----------------------------------------------------------------|
-| `$input`          | The current payload flowing into this node                      |
-| `$input.field`    | Specific field from the upstream node's output                  |
+| `input`           | The current payload flowing into this node                      |
+| `input.field`     | Specific field from the upstream node's output                  |
 | `$trigger.auth`   | Verified JWT claims from the original request (full claims, not filtered) |
 | `$trigger.params` | URL path params (`:id`, `:slug`, etc.)                          |
 | `$trigger.query`  | Query string params (`?page=2` etc.)                            |
@@ -145,7 +145,7 @@ A tight op budget (`maxOps: 500`) prevents runaway computation.
 # Use path param in a Postgres query
 | trigger.webhook --path /users/:id --method GET
 | pg.query --credential main-db \
-    --params-expr "{{ [$trigger.params.id] }}" \
+    --params "{{ [$trigger.params.id] }}" \
     -- "SELECT * FROM users WHERE id = $1"
 
 # Build a URL from upstream node output
@@ -153,7 +153,7 @@ A tight op budget (`maxOps: 500`) prevents runaway computation.
 
 # Pass upstream data as JSON body
 | http.request --url https://notify.svc/send --method POST \
-    --body-expr "{{ { userId: $trigger.auth.sub, data: $input } }}"
+    --body "{{ { userId: $trigger.auth.sub, data: input } }}"
 
 # Conditional auth redirect
 | script -- "return { target: $trigger.query.next || '/dashboard' }"
@@ -319,13 +319,13 @@ run | pg.query --credential main-db -- "SELECT count(*) FROM users"
 
 run \
   | http.request --url https://example.com --method GET \
-  | sekejap.query --params-expr "[$input.id, $input.status]" --read-only false -- "INSERT INTO results (id, status) VALUES ($1, $2)"
+  | sekejap.query --params "{{ [input.id, input.status] }}" --read-only false -- "INSERT INTO results (id, status) VALUES ($1, $2)"
 
 # Graph mode
 run \
   [a] http.request --url https://example.com --method GET \
   [b] logic.if --expr "input.status >= 400" \
-  [c] sekejap.query --params-expr "[$input.id, $input.status]" --read-only false -- "INSERT INTO errors (id, status) VALUES ($1, $2)" \
+  [c] sekejap.query --params "{{ [input.id, input.status] }}" --read-only false -- "INSERT INTO errors (id, status) VALUES ($1, $2)" \
   [a] -> [b] \
   [b]:true -> [c]
 
@@ -411,11 +411,11 @@ n.logic.match --help            # same
 | `web.response` | `n.web.response` | `--template <pages/name>` (no `.tsx`), `--status`, `--location`, `--message`, `--body <{{ input.path }}>`, `--set-cookie`, `--header <key=value>`, `--load-scripts <urls>` |
 | `web.static.generate` | `n.web.static.generate` | `--template <pages/name.tsx> --output-path <path> [--route <url>] [--on-conflict overwrite\|skip\|error]` — render a TSX page once and write the generated HTML into Zebflow FS; output `{ generated: { status, path, url, route, template, bytes } }` |
 | `http.request` | `n.http.request` | `--url <url> --method <GET\|POST> [--timeout-ms <ms>] [--header <key=value> ...] [--merge-input]` |
-| `sekejap.query` | `n.sekejap.query` | `[--params-path <dot.path>] [--params-expr <js-expr>] [--query-expr <js-expr>] -- "SELECT ... WHERE id = $1"` — raw Sekejap SQL with `$1`/`$2` bind params; output `{ rows: [...] }` |
-| `pg.query` | `n.pg.query` | `--credential <credential-slug>` (**credential slug** from `get credentials`, kind=postgres) `[--params-path <dot.path>] [--params-expr <js-expr>] [--credential-expr <js-expr>] [--query-expr <js-expr>]` + `-- <sql>` |
+| `sekejap.query` | `n.sekejap.query` | `[--params <literal-or-{{ expr }}>] [--query <literal-or-{{ expr }}>] -- "SELECT ... WHERE id = $1"` — raw Sekejap SQL with `$1`/`$2` bind params; output `{ rows: [...] }` |
+| `pg.query` | `n.pg.query` | `--credential <credential-slug-or-{{ expr }}>` (**credential slug** from `get credentials`, kind=postgres) `[--params <literal-or-{{ expr }}>] [--query <literal-or-{{ expr }}>]` + `-- <sql>` |
 | `auth.token.create` | `n.auth.token.create` | `--credential <jwt_key_id> [--expires-in <secs>] [--claim key={{ input.field }} ...] [--issuer <iss>] [--audience <aud>]` — append `:public` to a claim value to expose it in the browser via `ctx.auth` (e.g. `--claim name={{ input.fullname }}:public`). Use `--claim roles={{ input.roles }}:public` where `roles` is an array — role-based access control always uses the `roles` array claim. Claims without `:public` are signed but never reach the browser DOM. Secure by default — `ctx.auth` is `null` unless at least one claim is marked public. |
-| `table.convert` | `n.table.convert` | `(--from <path> \| --from-expr <expr>) [--from-format csv\|json\|ndjson\|parquet] [--to <path>] [--to-format csv\|json\|ndjson\|parquet] [--to-json] [--preview <n>] [--limit <n>]` — converts CSV/JSON/NDJSON/Parquet between ZebFS and downstream row JSON. |
-| `table.query` | `n.table.query` | `--from "<path-or-expr> as <alias>" ... --query "<select>" [--engine geodatafusion] [--params-path <dot.path>] [--params-expr <js-expr>] [--to <path>] [--format csv\|json\|ndjson\|parquet] [--to-json] [--preview <n>] [--limit <n>]` — runs GeoDataFusion SQL over CSV/JSON/NDJSON/Parquet ZebFS objects or upstream row expressions. |
+| `table.convert` | `n.table.convert` | `--from <path\|FileRef\|inline-rows\|{{ expr }}> [--from-format csv\|json\|ndjson\|parquet] [--to <path>] [--to-format csv\|json\|ndjson\|parquet] [--to-json] [--preview <n>] [--limit <n>]` — converts CSV/JSON/NDJSON/Parquet between ZebFS and downstream row JSON. |
+| `table.query` | `n.table.query` | `--from "<path-or-expr> as <alias>" ... --query "<select>" [--engine geodatafusion] [--params <literal-or-{{ expr }}>] [--to <path>] [--format csv\|json\|ndjson\|parquet] [--to-json] [--preview <n>] [--limit <n>]` — runs GeoDataFusion SQL over CSV/JSON/NDJSON/Parquet ZebFS objects or upstream row expressions. |
 | `fs.list` | `n.fs.list` | `[--path <prefix> \| --prefix <prefix>]` — list immediate children under a ZebFS prefix; output `{ fs: { operation, path, count, entries } }`. |
 | `fs.head` | `n.fs.head` | `--path <object-or-prefix>` — read object/prefix metadata without reading content. |
 | `fs.get` | `n.fs.get` | `--path <object> [--encoding text\|base64]` — read one object; default text requires UTF-8, base64 is for binary objects. |
@@ -427,7 +427,7 @@ n.logic.match --help            # same
 | `fs.save` | `n.fs.save` | `[--field <name>] [--path <object-path>] [--folder <subdir>] [--allowed-kinds <images,pdf,csv,json,glb,audio,video>] [--max-size <mb>] [--filename <name>]` — validates/promotes an uploaded FileRef or legacy upload object to Zebflow FS; output `{ saved: { path, url, original_name, content_type, size } }`. |
 | `fs.thumbnail` | `n.fs.thumbnail` | `[--width <px>] [--height <px>] [--fit cover|contain|fill] [--format jpg|png|webp] [--quality <1-100>] [--folder <subdir>] [--source-key <dot.path>] [--delete-source] [--filename <name>]` — reads a FileRef or object path from `saved.path` by default, resizes/re-encodes it, writes thumbnail to Zebflow FS; replaces the payload with `{ thumbnail: FileRef + { width, height, format } }`. |
 | `ai.zebtune` | `n.ai.zebtune` | `--budget <n> --output <mode>` |
-| `ai.tts` | `n.ai.tts` | `--provider piper --credential <tts_credential_id> --text-expr <expr> [--output-path <path.wav> \| --output-path-expr <expr>] [--return file\|blob\|both] [--speaker <id>] [--speed <factor>] [--volume <factor>] [--lipsync none\|basic\|timed_words\|audio_guided] [--lipsync-expr <expr>]` — synthesize speech from text. First stable provider is local Piper. Credential secret must reference `model_file` and `config_file` under Zebflow FS; `espeak_data_dir` is an optional override. When lipsync is enabled the output also includes `word_timings` and `lipsync { metadata, cues }`. |
+| `ai.tts` | `n.ai.tts` | `--provider piper --credential <tts_credential_id> --text <literal-or-{{ expr }}> [--output-path <literal-or-{{ expr }}>] [--return file\|blob\|both] [--speaker <id>] [--speed <factor>] [--volume <factor>] [--lipsync <literal-or-{{ expr }}>]` — synthesize speech from text. First stable provider is local Piper. Credential secret must reference `model_file` and `config_file` under Zebflow FS; `espeak_data_dir` is an optional override. When lipsync is enabled the output also includes `word_timings` and `lipsync { metadata, cues }`. |
 | `trigger.ws` | `n.trigger.ws` | `--event <name> --room <id>` |
 | `trigger.kv.subscribe` | `n.trigger.kv.subscribe` | `--channel <name>` — subscribes to a project KV pub/sub channel; fires whenever `kv.publish` sends to that channel |
 | `ws.emit` | `n.ws.emit` | `--event <name> --to <all\|session\|others> --payload <literal-or-expr> [--room <id>]` — `--room` static or `{{ expr }}`; when `--room` is set this node works after **any** trigger type, not just `trigger.ws` |
@@ -451,22 +451,22 @@ n.logic.match --help            # same
 | sekejap.query -- "SELECT id, title FROM posts LIMIT 20"
 
 # SELECT — with one bound value from a dot path
-| sekejap.query --params-path auth.sub -- "SELECT * FROM orders WHERE user_id = $1 LIMIT 10"
+| sekejap.query --params "{{ input.auth.sub }}" -- "SELECT * FROM orders WHERE user_id = $1 LIMIT 10"
 
 # SELECT — with multiple bound values from JS
-| sekejap.query --params-expr "[$trigger.params.id, $trigger.query.status]" -- "SELECT * FROM orders WHERE user_id = $1 AND status = $2 LIMIT 10"
+| sekejap.query --params "{{ [$trigger.params.id, $trigger.query.status] }}" -- "SELECT * FROM orders WHERE user_id = $1 AND status = $2 LIMIT 10"
 
 # SELECT — graph traversal
-| sekejap.query --params-path params.id -- "SELECT id FROM cases TRAVERSE FORWARD caused_by TO causes HOPS 3 WHERE id = $1"
+| sekejap.query --params "{{ input.params.id }}" -- "SELECT id FROM cases TRAVERSE FORWARD caused_by TO causes HOPS 3 WHERE id = $1"
 
 # INSERT
-| sekejap.query --params-expr "[$input.id, $input.title]" --read-only false -- "INSERT INTO tasks (id, title, done) VALUES ($1, $2, false)"
+| sekejap.query --params "{{ [input.id, input.title] }}" --read-only false -- "INSERT INTO tasks (id, title, done) VALUES ($1, $2, false)"
 
 # UPDATE
-| sekejap.query --params-path params.id --read-only false -- "UPDATE tasks SET done = true WHERE id = $1"
+| sekejap.query --params "{{ input.params.id }}" --read-only false -- "UPDATE tasks SET done = true WHERE id = $1"
 
 # DELETE
-| sekejap.query --params-path params.id --read-only false -- "DELETE FROM tasks WHERE id = $1"
+| sekejap.query --params "{{ input.params.id }}" --read-only false -- "DELETE FROM tasks WHERE id = $1"
 
 # CREATE COLLECTION (schema definition)
 | sekejap.query --read-only false -- "CREATE COLLECTION tasks (id STRING INDEX hash, title STRING, done BOOLEAN)"
@@ -482,13 +482,13 @@ Reads table-like data either from a ZebFS object path or from an upstream expres
 
 # Upstream query rows to NDJSON object
 | sekejap.query -- "SELECT id, title FROM posts"
-| table.convert --from-expr "$input.rows" --to exports/posts.ndjson
+| table.convert --from "{{ input.rows }}" --to exports/posts.ndjson
 
 # JSON object to CSV object
 | table.convert --from data/posts.json --to exports/posts.csv
 
 # Upstream rows to Parquet object
-| table.convert --from-expr "$input.rows" --to exports/posts.parquet
+| table.convert --from "{{ input.rows }}" --to exports/posts.parquet
 ```
 
 ### `n.table.query` — multi-source table SQL
@@ -508,7 +508,7 @@ or a row-producing expression such as `$input.rows`.
 # Bind parameters with GeoDataFusion placeholders
 | table.query \
     --from "datasets/posts.csv as posts" \
-    --params-expr "[$trigger.params.id]" \
+    --params "{{ [$trigger.params.id] }}" \
     --to-json \
     --query "select * from posts where id = $1"
 
@@ -598,14 +598,14 @@ register upload-file --path /api \
 register upload-avatar --path /api \
   | trigger.webhook --path /avatar --method POST --auth-type jwt --auth-credential my-jwt \
   | fs.save --field avatar --folder avatars --allowed-kinds images --max-size 5 \
-  | sekejap.query --params-expr "[$input.saved.url, $trigger.auth.sub]" --read-only false -- "UPDATE users SET avatar_url = $1 WHERE id = $2" \
+  | sekejap.query --params "{{ [input.saved.url, $trigger.auth.sub] }}" --read-only false -- "UPDATE users SET avatar_url = $1 WHERE id = $2" \
   | web.response
 
 # Save PDF, store reference in DB
 register upload-document --path /api \
   | trigger.webhook --path /documents --method POST --auth-type jwt --auth-credential my-jwt \
   | fs.save --field document --folder documents --allowed-kinds pdf --max-size 20 \
-  | sekejap.query --params-expr "[$input.saved.path, $input.saved.url, $input.saved.original_name]" --read-only false -- "INSERT INTO documents (id, url, name) VALUES ($1, $2, $3)" \
+  | sekejap.query --params "{{ [input.saved.path, input.saved.url, input.saved.original_name] }}" --read-only false -- "INSERT INTO documents (id, url, name) VALUES ($1, $2, $3)" \
   | web.response
 
 # Deterministic filename — always saves as avatars/profile-photo.jpg (overwrites on re-upload)
@@ -655,7 +655,7 @@ register generate-lyric --path /ops \
   | script -- "return { artist_slug: 'iwan-fals', song_slug: 'bento', artist_name: 'Iwan Fals', song_title: 'Bento' }" \
   | web.static.generate \
       --template pages/lyric.tsx \
-      --output-path "artists/{{ $input.artist_slug }}/{{ $input.song_slug }}/lyric.html"
+      --output-path "artists/{{ input.artist_slug }}/{{ input.song_slug }}/lyric.html"
 
 # Stop if the generated file already exists
 register generate-preview --path /ops \
@@ -663,7 +663,7 @@ register generate-preview --path /ops \
   | script -- "return { slug: 'draft-song' }" \
   | web.static.generate \
       --template pages/lyric-preview.tsx \
-      --output-path "previews/{{ $input.slug }}.html" \
+      --output-path "previews/{{ input.slug }}.html" \
       --on-conflict error
 
 # Override ctx.route so the template renders canonical links differently from its saved file path
@@ -672,8 +672,8 @@ register generate-canonical-page --path /ops \
   | script -- "return { artist_slug: 'iwan-fals', song_slug: 'bento' }" \
   | web.static.generate \
       --template pages/lyric.tsx \
-      --route "/lyrics/{{ $input.artist_slug }}/{{ $input.song_slug }}" \
-      --output-path "artists/{{ $input.artist_slug }}/{{ $input.song_slug }}/lyric.html"
+      --route "/lyrics/{{ input.artist_slug }}/{{ input.song_slug }}" \
+      --output-path "artists/{{ input.artist_slug }}/{{ input.song_slug }}/lyric.html"
 ```
 
 ### `n.fs.thumbnail` — image resizing and compression
@@ -707,7 +707,7 @@ register upload-avatar -- \
   | trigger.webhook --path /upload/avatar --method POST \
   | fs.thumbnail --source-key files.photo --width 200 --height 200 --fit cover --format jpg --quality 80 \
                   --folder avatars --delete-source \
-  | sekejap.query --params-expr "[$input.thumbnail.ref, $trigger.auth.sub]" --read-only false -- "UPDATE users SET avatar_ref = $1 WHERE id = $2" \
+  | sekejap.query --params "{{ [input.thumbnail.ref, $trigger.auth.sub] }}" --read-only false -- "UPDATE users SET avatar_ref = $1 WHERE id = $2" \
   | web.response
 
 # Thumbnail existing file in files/
@@ -741,7 +741,7 @@ All `--key` and `--channel` flags support `{{ expr }}` template expressions.
 | kv.get --key "cache:{{ $trigger.params.slug }}" --out-key cached --default null
 
 # Check if key exists without consuming it
-| kv.exists --key "lock:{{ $input.task_id }}" --out-key is_locked
+| kv.exists --key "lock:{{ input.task_id }}" --out-key is_locked
 
 # Delete a key
 | kv.del --key "session:{{ $trigger.auth.sub }}"
@@ -756,7 +756,7 @@ All `--key` and `--channel` flags support `{{ expr }}` template expressions.
 | kv.incr --key "clicks:{{ $trigger.params.button }}" --out-key total
 
 # Decrement
-| kv.incr --key "slots:{{ $input.event_id }}" --amount -1 --out-key remaining
+| kv.incr --key "slots:{{ input.event_id }}" --amount -1 --out-key remaining
 ```
 
 #### Pub/sub
@@ -764,12 +764,12 @@ All `--key` and `--channel` flags support `{{ expr }}` template expressions.
 ```zf
 # Publisher pipeline (triggered by webhook, schedule, etc.)
 | trigger.webhook --path /api/events --method POST
-| kv.publish --channel "events:{{ $input.type }}" --payload "{{ input }}"
+| kv.publish --channel "events:{{ input.type }}" --payload "{{ input }}"
 
 # Subscriber pipeline (triggered by publisher)
 | trigger.kv.subscribe --channel "events:order.created"
 | script -- "return { event: input.message, received_at: Date.now() }"
-| sekejap.query --params-expr "[$input.event.id, $input.event]" --read-only false -- "INSERT INTO processed_events (id, data) VALUES ($1, $2)"
+| sekejap.query --params "{{ [input.event.id, input.event] }}" --read-only false -- "INSERT INTO processed_events (id, data) VALUES ($1, $2)"
 ```
 
 Output payload of `n.trigger.kv.subscribe`:
@@ -789,7 +789,7 @@ Output payload of `n.trigger.kv.subscribe`:
 ```zf
 # Push update to a WS room from a webhook
 | trigger.webhook --path /api/board/:room_id --method POST
-| sekejap.query --params-path params.room_id --read-only false -- "UPDATE boards SET updated_at = NOW() WHERE id = $1"
+| sekejap.query --params "{{ input.params.room_id }}" --read-only false -- "UPDATE boards SET updated_at = NOW() WHERE id = $1"
 | ws.emit --event board.updated --to all --room "{{ $trigger.params.room_id }}" --payload "{{ input }}"
 ```
 
@@ -975,7 +975,7 @@ register event-router --path /webhooks \
   [c] script --lang js -- "return handleCreate(input);" \
   [d] script --lang js -- "return handleUpdate(input);" \
   [e] script --lang js -- "return handleDelete(input);" \
-  [f] sekejap.query --params-expr "[$input.id, $input.type]" --read-only false -- "INSERT INTO unknown_events (id, type) VALUES ($1, $2)" \
+  [f] sekejap.query --params "{{ [input.id, input.type] }}" --read-only false -- "INSERT INTO unknown_events (id, type) VALUES ($1, $2)" \
   [a] -> [b] \
   [b]:create  -> [c] \
   [b]:update  -> [d] \
@@ -1080,7 +1080,7 @@ register retry-job --path /jobs \
        -- "const n=(input.attempts||0)+1; return {...doWork(input), attempts:n};" \
   [c] logic.match --expr "$input.status" --cases done,failed --default retry \
   [d] script --lang js -- "return { result: input };" \
-  [e] sekejap.query --params-expr "[$input.id, $input.attempts]" --read-only false -- "INSERT INTO failures (id, attempts) VALUES ($1, $2)" \
+  [e] sekejap.query --params "{{ [input.id, input.attempts] }}" --read-only false -- "INSERT INTO failures (id, attempts) VALUES ($1, $2)" \
   [f] logic.if --expr "$input.attempts < 5" \
   [a] -> [b] \
   [b] -> [c] \

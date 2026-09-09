@@ -237,7 +237,7 @@ export default function Dashboard(input) {
 | web.response --location "/users/{{ $trigger.params.id }}/{{ $nodes.lookup.rows[0].slug }}"
 
 # Set a cookie whose value comes from auth.token.create output
-| web.response --set-cookie "name=session,value={{ $input.access_token }},http-only,max-age=86400"
+| web.response --set-cookie "name=session,value={{ input.access_token }},http-only,max-age=86400"
 
 # Inject a custom header with the authenticated user's ID
 | web.response --header "X-User-Id={{ $trigger.auth.sub }}"

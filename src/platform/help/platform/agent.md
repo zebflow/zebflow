@@ -188,8 +188,8 @@ Suitable for: blog posts, user tables, AI memory, vector embeddings, event graph
 **Pipeline node (DSL):**
 ```
 | n.sekejap.query -- "SELECT _key, title FROM posts LIMIT 20"
-| n.sekejap.query --params-path params.id -- "SELECT _key, title FROM posts WHERE _key = $1"
-| n.sekejap.query --params-expr "[$trigger.body.slug, $trigger.body.title]" -- "INSERT INTO posts (_key, title) VALUES ($1, $2)"
+| n.sekejap.query --params "{{ input.params.id }}" -- "SELECT _key, title FROM posts WHERE _key = $1"
+| n.sekejap.query --params "{{ [$trigger.body.slug, $trigger.body.title] }}" -- "INSERT INTO posts (_key, title) VALUES ($1, $2)"
 ```
 
 **Direct query (run_db_query / connection_describe):**

@@ -50,7 +50,7 @@ return (
 
 ```
 | trigger.webhook --path /programmes/:unit_id --method GET
-| pg.query --credential my-pg --params-path params.unit_id \
+| pg.query --credential my-pg --params "{{ input.params.unit_id }}" \
     -- "SELECT unit_id::text, code, title, description FROM academic.academic_unit WHERE unit_id = $1::uuid AND is_active = true"
 | script -- "const r = input.rows?.[0]; if (!r) return { notfound: true }; return r"
 | web.response --template pages/programme-detail.tsx --status 404
@@ -83,7 +83,7 @@ export default function Page(input) {
 
 ```
 | trigger.webhook --path /programmes --method GET
-| pg.query --credential my-pg --params-expr "[input.query.faculty_id ?? null]" \
+| pg.query --credential my-pg --params "{{ [input.query.faculty_id ?? null] }}" \
     -- "SELECT unit_id::text, code, title->>'id' as title FROM academic.academic_unit WHERE unit_type = 'programme' AND ($1::uuid IS NULL OR parent_unit_id = $1::uuid) ORDER BY code"
 | web.response --template pages/programmes.tsx
 ```
@@ -93,7 +93,7 @@ export default function Page(input) {
 ## Nodes Used
 
 - `trigger.webhook` — GET endpoint; path params in `input.params.<name>`, query string in `input.query.<name>`
-- `pg.query` — fetch data; `--params-path params.unit_id` binds `:unit_id` as `$1`
+- `pg.query` — fetch data; `--params "{{ input.params.unit_id }}"` binds `:unit_id` as `$1`
 - `script` — 404 guard, data transform
 - `web.response` — renders TSX template; upstream output = `input` in template; supports `--status`, `--set-cookie`, `--header`
 

@@ -35,7 +35,7 @@ Scheduled pipelines that invoke an AI agent (zebtune) to analyze data, generate 
 | sekejap.query --table ai_summaries --op scan
 | script -- "const yesterday = input.filter(s => s.generated_at > Date.now() - 86400000); return { summaries: yesterday, date: new Date().toISOString().slice(0,10) }"
 | zebtune --prompt "Generate a daily operations report from these hourly summaries. Include: executive summary, key metrics, trends, recommendations. Format as markdown." --input_path /summaries
-| http.request --url "{{env.REPORT_WEBHOOK_URL}}" --method POST --body_path /
+| http.request --url "{{env.REPORT_WEBHOOK_URL}}" --method POST --body "{{ input }}"
 ```
 
 ### queue-classifier — AI classify and route
