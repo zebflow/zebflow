@@ -10,7 +10,7 @@
 //! | Field | Type | Required | Description |
 //! |---|---|---|---|
 //! | `function` | string | yes | Slug of the function pipeline to call |
-//! | `input_path` | string | no | JSON Pointer into payload to use as function input |
+//! | `input_value` | any | no | What the function receives — a literal or `{{ expr }}`. Omit to pass the whole payload |
 //! | `input` | string | no | Static JSON input (overrides input_path when set) |
 //!
 //! # DSL
@@ -45,12 +45,12 @@ pub const NODE_KIND: &str = "n.function.call";
 pub struct Config {
     /// Slug of the function pipeline to call (matches `PipelineMeta.name`).
     pub function: Option<String>,
-    /// JSON Pointer into the flowing payload to use as function input.
-    /// Empty string = use entire payload. Ignored when `input` is set.
+    /// What the called function receives — a literal or `{{ expr }}`,
+    /// arriving final. Null = the whole payload. Ignored when `input` is set.
     #[serde(default)]
-    pub input_path: String,
+    pub input_value: serde_json::Value,
     /// Static JSON input string passed directly to the function pipeline.
-    /// When non-empty, takes priority over `input_path`.
+    /// When non-empty, takes priority over `input_value`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub input: Option<String>,
 }
@@ -84,7 +84,7 @@ pub fn definition() -> NodeDefinition {
                     "type": "string",
                     "description": "Slug of the function pipeline to call."
                 },
-                "input_path": {
+                "input_value": {
                     "type": "string",
                     "description": "JSON Pointer into the flowing payload to use as function input. Ignored when input is set."
                 },
@@ -103,8 +103,8 @@ pub fn definition() -> NodeDefinition {
                 required: true,
             },
             DslFlag {
-                flag: "--input-path".to_string(),
-                config_key: "input_path".to_string(),
+                flag: "--input-value".to_string(),
+                config_key: "input_value".to_string(),
                 description: "JSON Pointer into the flowing payload to extract as function input. Ignored when --input is set.".to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
@@ -128,7 +128,7 @@ pub fn definition() -> NodeDefinition {
                 ..Default::default()
             },
             NodeFieldDef {
-                name: "input_path".to_string(),
+                name: "input_value".to_string(),
                 label: "Payload Input Path".to_string(),
                 field_type: NodeFieldType::Text,
                 placeholder: Some("/user  (leave empty for full payload)".to_string()),
@@ -144,11 +144,24 @@ pub fn definition() -> NodeDefinition {
     }
 }
 
-fn extract_payload_input(input_path: &str, payload: serde_json::Value) -> serde_json::Value {
-    if input_path.is_empty() {
+/// What the called function receives.
+///
+/// `input_value` arrives final — a whole `{{ }}` carries its typed value
+/// (NodeIO §Value resolution). Null means "not set", so the whole payload
+/// goes, which is the old empty-path default.
+///
+/// The pointer this replaces had a trap worth naming: a path that matched
+/// nothing fell back to the *entire payload*, so a typo silently handed the
+/// function everything instead of the one field it asked for. An expression
+/// that matches nothing is null, and null is visible.
+fn extract_payload_input(
+    input_value: &serde_json::Value,
+    payload: serde_json::Value,
+) -> serde_json::Value {
+    if input_value.is_null() {
         payload
     } else {
-        payload.pointer(input_path).cloned().unwrap_or(payload)
+        input_value.clone()
     }
 }
 
@@ -209,12 +222,12 @@ impl NodeHandler for Node {
         let call_input = if let Some(raw) = self.config.input.as_deref() {
             let trimmed = raw.trim();
             if trimmed.is_empty() {
-                extract_payload_input(&self.config.input_path, payload)
+                extract_payload_input(&self.config.input_value, payload)
             } else {
                 serde_json::from_str(trimmed).unwrap_or(payload)
             }
         } else {
-            extract_payload_input(&self.config.input_path, payload)
+            extract_payload_input(&self.config.input_value, payload)
         };
 
         match platform

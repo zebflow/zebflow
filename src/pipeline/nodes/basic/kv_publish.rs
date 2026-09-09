@@ -53,7 +53,7 @@ pub fn definition() -> NodeDefinition {
             "required": ["channel"],
             "properties": {
                 "channel": { "type": "string", "description": "Channel name. Supports {{ expr }}." },
-                "payload_path": { "type": "string", "description": "JSON pointer to extract the message body. Empty = whole payload." },
+                "payload": { "description": "What to publish — a literal or {{ expr }}. Omit to publish the whole payload." },
             }
         }),
         dsl_flags: vec![
@@ -65,16 +65,16 @@ pub fn definition() -> NodeDefinition {
                 required: true,
             },
             DslFlag {
-                flag: "--payload-path".to_string(),
-                config_key: "payload_path".to_string(),
-                description: "JSON pointer to extract message body. Empty = whole payload.".to_string(),
+                flag: "--payload".to_string(),
+                config_key: "payload".to_string(),
+                description: "What to publish — a literal or {{ expr }}. Omit to publish the whole payload.".to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
             },
         ],
         fields: vec![
             NodeFieldDef { name: "channel".to_string(), label: "Channel".to_string(), field_type: NodeFieldType::Text, help: Some("Channel name. Supports {{ expr }}.".to_string()), ..Default::default() },
-            NodeFieldDef { name: "payload_path".to_string(), label: "Payload Path".to_string(), field_type: NodeFieldType::Text, help: Some("JSON pointer to extract message body. Empty = whole payload.".to_string()), ..Default::default() },
+            NodeFieldDef { name: "payload".to_string(), label: "Payload Path".to_string(), field_type: NodeFieldType::Text, help: Some("What to publish — a literal or {{ expr }}. Omit to publish the whole payload.".to_string()), ..Default::default() },
         ],
         layout: vec![],
         ai_tool: Default::default(),
@@ -87,7 +87,7 @@ pub struct Config {
     #[serde(default)]
     pub channel: String,
     #[serde(default)]
-    pub payload_path: String,
+    pub payload: Value,
 }
 
 pub struct Node {
@@ -136,15 +136,13 @@ impl NodeHandler for Node {
             ));
         }
 
-        let message = if self.config.payload_path.is_empty() {
+        // The value arrives final — a whole `{{ }}` carries its typed
+        // value (NodeIO §Value resolution). Null means "not set", so the
+        // whole payload is stored, matching the old empty-path default.
+        let message = if self.config.payload.is_null() {
             input.payload.clone()
         } else {
-            let ptr = if self.config.payload_path.starts_with('/') {
-                self.config.payload_path.clone()
-            } else {
-                format!("/{}", self.config.payload_path)
-            };
-            input.payload.pointer(&ptr).cloned().unwrap_or(Value::Null)
+            self.config.payload.clone()
         };
 
         let receivers = self

@@ -320,7 +320,7 @@ impl NodeHandler for Node {
             .config
             .set_cookie
             .as_deref()
-            .and_then(|spec| parse_cookie_spec(spec, &input.payload));
+            .and_then(parse_cookie_spec);
 
         let body = self
             .config
@@ -362,7 +362,7 @@ impl NodeHandler for Node {
 /// Parse a cookie spec string into a JSON object with resolved values.
 ///
 /// Format: `name=session,value={{ input.token }},http-only,max-age=86400,secure,same-site=Strict,path=/`
-pub fn parse_cookie_spec(spec: &str, payload: &Value) -> Option<Value> {
+pub fn parse_cookie_spec(spec: &str) -> Option<Value> {
     let mut name = String::new();
     let mut value = String::new();
     let mut max_age: i64 = 900;

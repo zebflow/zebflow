@@ -152,9 +152,9 @@ pub fn definition() -> NodeDefinition {
         config_schema: Default::default(),
         dsl_flags: vec![
             DslFlag { flag: "--op".to_string(), config_key: "op".to_string(), description: "Cryptographic operation: sha256, sha512, bcrypt_hash, bcrypt_verify, argon2_hash, argon2_verify, hmac_sha256, base64_encode, base64_decode, random_hex.".to_string(), kind: DslFlagKind::Scalar, required: true },
-            DslFlag { flag: "--input-path".to_string(), config_key: "input_path".to_string(), description: "JSON pointer for primary input value (default: payload.input).".to_string(), kind: DslFlagKind::Scalar, required: false },
-            DslFlag { flag: "--hash-path".to_string(), config_key: "hash_path".to_string(), description: "JSON pointer for stored hash for verify operations (default: payload.hash).".to_string(), kind: DslFlagKind::Scalar, required: false },
-            DslFlag { flag: "--key-path".to_string(), config_key: "key_path".to_string(), description: "JSON pointer for HMAC secret key (default: payload.key).".to_string(), kind: DslFlagKind::Scalar, required: false },
+            DslFlag { flag: "--input".to_string(), config_key: "input".to_string(), description: "The value to operate on — a literal or {{ expr }}. Omit to read payload.input.".to_string(), kind: DslFlagKind::Scalar, required: false },
+            DslFlag { flag: "--hash".to_string(), config_key: "hash".to_string(), description: "The stored hash to verify against — a literal or {{ expr }}. Omit to read payload.hash.".to_string(), kind: DslFlagKind::Scalar, required: false },
+            DslFlag { flag: "--key".to_string(), config_key: "key".to_string(), description: "The HMAC secret — a literal or {{ expr }}. Omit to read payload.key.".to_string(), kind: DslFlagKind::Scalar, required: false },
             DslFlag { flag: "--cost".to_string(), config_key: "cost".to_string(), description: "bcrypt cost factor 4-31 (default 12).".to_string(), kind: DslFlagKind::Scalar, required: false },
             DslFlag { flag: "--length".to_string(), config_key: "length".to_string(), description: "Random byte count for random_hex (default 32).".to_string(), kind: DslFlagKind::Scalar, required: false },
         ],
@@ -173,17 +173,17 @@ pub fn definition() -> NodeDefinition {
                     SelectOptionDef { value: "base64_decode".to_string(), label: "Base64 decode".to_string() },
                     SelectOptionDef { value: "random_hex".to_string(), label: "Random hex token".to_string() },
                 ], help: Some("Cryptographic operation to perform. Verify operations route to true/false pins.".to_string()), ..Default::default() },
-                NodeFieldDef { name: "input_path".to_string(), label: "Input Path".to_string(), field_type: NodeFieldType::Text, help: Some("JSON pointer for the primary input value. Empty reads payload.input.".to_string()), ..Default::default() },
-                NodeFieldDef { name: "hash_path".to_string(), label: "Hash Path (verify)".to_string(), field_type: NodeFieldType::Text, help: Some("JSON pointer for the stored hash used by verify operations. Empty reads payload.hash.".to_string()), ..Default::default() },
-                NodeFieldDef { name: "key_path".to_string(), label: "Key Path (HMAC)".to_string(), field_type: NodeFieldType::Text, help: Some("JSON pointer for the HMAC secret key. Empty reads payload.key.".to_string()), ..Default::default() },
+                NodeFieldDef { name: "input".to_string(), label: "Input Path".to_string(), field_type: NodeFieldType::Text, help: Some("JSON pointer for the primary input value. Empty reads payload.input.".to_string()), ..Default::default() },
+                NodeFieldDef { name: "hash".to_string(), label: "Hash Path (verify)".to_string(), field_type: NodeFieldType::Text, help: Some("JSON pointer for the stored hash used by verify operations. Empty reads payload.hash.".to_string()), ..Default::default() },
+                NodeFieldDef { name: "key".to_string(), label: "Key Path (HMAC)".to_string(), field_type: NodeFieldType::Text, help: Some("JSON pointer for the HMAC secret key. Empty reads payload.key.".to_string()), ..Default::default() },
                 NodeFieldDef { name: "cost".to_string(), label: "Cost (bcrypt)".to_string(), field_type: NodeFieldType::Text, help: Some("bcrypt cost factor from 4 to 31. Defaults to 12.".to_string()), ..Default::default() },
                 NodeFieldDef { name: "length".to_string(), label: "Length (random_hex)".to_string(), field_type: NodeFieldType::Text, help: Some("Random byte count for random_hex output. Defaults to 32.".to_string()), ..Default::default() },
             ]
         },
         layout: vec![
             LayoutItem::Field("op".to_string()),
-            LayoutItem::Row { row: vec![LayoutItem::Field("input_path".to_string()), LayoutItem::Field("hash_path".to_string())] },
-            LayoutItem::Row { row: vec![LayoutItem::Field("key_path".to_string()), LayoutItem::Field("cost".to_string())] },
+            LayoutItem::Row { row: vec![LayoutItem::Field("input".to_string()), LayoutItem::Field("hash".to_string())] },
+            LayoutItem::Row { row: vec![LayoutItem::Field("key".to_string()), LayoutItem::Field("cost".to_string())] },
             LayoutItem::Field("length".to_string()),
         ],
         ai_tool: Default::default(),
@@ -206,19 +206,19 @@ pub struct Config {
     /// Empty (default) → reads `payload["input"]`.
     /// Example: `"/body"` — use `payload.body` as the input.
     #[serde(default)]
-    pub input_path: String,
+    pub input: String,
 
     /// JSON pointer into the payload for the stored hash (verify ops only).
     ///
     /// Empty (default) → reads `payload["hash"]`.
     #[serde(default)]
-    pub hash_path: String,
+    pub hash: String,
 
     /// JSON pointer into the payload for the HMAC secret key (`hmac_sha256` only).
     ///
     /// Empty (default) → reads `payload["key"]`.
     #[serde(default)]
-    pub key_path: String,
+    pub key: String,
 
     /// bcrypt cost factor (default `12`, range 4–31).
     ///
@@ -280,17 +280,14 @@ impl Node {
 ///
 /// If `path` is empty, falls back to `payload[fallback_key]`.
 /// Returns `""` if neither is found or the value is not a string.
-fn extract_str<'a>(payload: &'a Value, path: &str, fallback_key: &str) -> &'a str {
-    if !path.is_empty() {
-        let ptr = if path.starts_with('/') {
-            path.to_string()
-        } else {
-            format!("/{}", path)
-        };
-        return payload
-            .pointer(&ptr)
-            .and_then(Value::as_str)
-            .unwrap_or_default();
+/// The string a crypto operation works on.
+///
+/// `configured` arrives final — a literal or a resolved `{{ expr }}`
+/// (NodeIO §Value resolution). Empty means "not set", so the payload's
+/// conventional key is used, which is the old empty-path default.
+fn extract_str<'a>(payload: &'a Value, configured: &'a str, fallback_key: &str) -> &'a str {
+    if !configured.is_empty() {
+        return configured;
     }
     payload
         .get(fallback_key)
@@ -326,7 +323,7 @@ impl NodeHandler for Node {
         match self.config.op.as_str() {
             // ── sha256 ────────────────────────────────────────────────────────
             "sha256" => {
-                let input_val = extract_str(&payload, &self.config.input_path, "input").to_string();
+                let input_val = extract_str(&payload, &self.config.input, "input").to_string();
                 let mut h = Sha256::new();
                 h.update(input_val.as_bytes());
                 let result = hex::encode(h.finalize());
@@ -339,7 +336,7 @@ impl NodeHandler for Node {
 
             // ── sha512 ────────────────────────────────────────────────────────
             "sha512" => {
-                let input_val = extract_str(&payload, &self.config.input_path, "input").to_string();
+                let input_val = extract_str(&payload, &self.config.input, "input").to_string();
                 let mut h = Sha512::new();
                 h.update(input_val.as_bytes());
                 let result = hex::encode(h.finalize());
@@ -352,7 +349,7 @@ impl NodeHandler for Node {
 
             // ── bcrypt_hash ───────────────────────────────────────────────────
             "bcrypt_hash" => {
-                let input_val = extract_str(&payload, &self.config.input_path, "input").to_string();
+                let input_val = extract_str(&payload, &self.config.input, "input").to_string();
                 let cost = self.config.cost.unwrap_or(12);
                 let result = tokio::task::spawn_blocking(move || {
                     bcrypt::hash(&input_val, cost).map_err(|e| e.to_string())
@@ -369,8 +366,8 @@ impl NodeHandler for Node {
 
             // ── bcrypt_verify ─────────────────────────────────────────────────
             "bcrypt_verify" => {
-                let plaintext = extract_str(&payload, &self.config.input_path, "input").to_string();
-                let stored = extract_str(&payload, &self.config.hash_path, "hash").to_string();
+                let plaintext = extract_str(&payload, &self.config.input, "input").to_string();
+                let stored = extract_str(&payload, &self.config.hash, "hash").to_string();
                 let is_valid = tokio::task::spawn_blocking(move || {
                     bcrypt::verify(&plaintext, &stored).unwrap_or(false)
                 })
@@ -390,7 +387,7 @@ impl NodeHandler for Node {
 
             // ── argon2_hash ───────────────────────────────────────────────────
             "argon2_hash" => {
-                let input_val = extract_str(&payload, &self.config.input_path, "input").to_string();
+                let input_val = extract_str(&payload, &self.config.input, "input").to_string();
                 let result = tokio::task::spawn_blocking(move || {
                     use argon2::{
                         Argon2,
@@ -414,8 +411,8 @@ impl NodeHandler for Node {
 
             // ── argon2_verify ─────────────────────────────────────────────────
             "argon2_verify" => {
-                let plaintext = extract_str(&payload, &self.config.input_path, "input").to_string();
-                let stored = extract_str(&payload, &self.config.hash_path, "hash").to_string();
+                let plaintext = extract_str(&payload, &self.config.input, "input").to_string();
+                let stored = extract_str(&payload, &self.config.hash, "hash").to_string();
                 let is_valid = tokio::task::spawn_blocking(move || {
                     use argon2::{
                         Argon2,
@@ -445,8 +442,8 @@ impl NodeHandler for Node {
 
             // ── hmac_sha256 ───────────────────────────────────────────────────
             "hmac_sha256" => {
-                let input_val = extract_str(&payload, &self.config.input_path, "input").to_string();
-                let key_val = extract_str(&payload, &self.config.key_path, "key").to_string();
+                let input_val = extract_str(&payload, &self.config.input, "input").to_string();
+                let key_val = extract_str(&payload, &self.config.key, "key").to_string();
                 type HmacSha256 = Hmac<Sha256>;
                 let mut mac = HmacSha256::new_from_slice(key_val.as_bytes())
                     .map_err(|e| PipelineError::new("FW_NODE_CRYPTO_HMAC_KEY", e.to_string()))?;
@@ -461,7 +458,7 @@ impl NodeHandler for Node {
 
             // ── base64_encode ─────────────────────────────────────────────────
             "base64_encode" => {
-                let input_val = extract_str(&payload, &self.config.input_path, "input").to_string();
+                let input_val = extract_str(&payload, &self.config.input, "input").to_string();
                 let result = general_purpose::STANDARD.encode(input_val.as_bytes());
                 Ok(NodeExecutionOutput {
                     output_pins: vec![OUTPUT_PIN_OUT.to_string()],
@@ -472,7 +469,7 @@ impl NodeHandler for Node {
 
             // ── base64_decode ─────────────────────────────────────────────────
             "base64_decode" => {
-                let input_val = extract_str(&payload, &self.config.input_path, "input").to_string();
+                let input_val = extract_str(&payload, &self.config.input, "input").to_string();
                 let bytes = general_purpose::STANDARD
                     .decode(input_val.as_bytes())
                     .map_err(|e| {

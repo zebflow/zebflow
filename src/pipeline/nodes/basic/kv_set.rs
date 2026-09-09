@@ -54,7 +54,7 @@ pub fn definition() -> NodeDefinition {
             "required": ["key"],
             "properties": {
                 "key": { "type": "string", "description": "Storage key. Supports {{ expr }}." },
-                "value_path": { "type": "string", "description": "JSON pointer into payload (e.g. /user/name). Empty = whole payload." },
+                "value": { "description": "What to store — a literal or {{ expr }}. Omit to store the whole payload." },
                 "ttl": { "type": "number", "description": "TTL in seconds. 0 = no expiry." },
             }
         }),
@@ -67,8 +67,8 @@ pub fn definition() -> NodeDefinition {
                 required: true,
             },
             DslFlag {
-                flag: "--value-path".to_string(),
-                config_key: "value_path".to_string(),
+                flag: "--value".to_string(),
+                config_key: "value".to_string(),
                 description: "JSON pointer into payload to store. Empty = whole payload."
                     .to_string(),
                 kind: DslFlagKind::Scalar,
@@ -99,7 +99,7 @@ pub fn definition() -> NodeDefinition {
                 ..Default::default()
             },
             NodeFieldDef {
-                name: "value_path".to_string(),
+                name: "value".to_string(),
                 label: "Value Path".to_string(),
                 field_type: NodeFieldType::Text,
                 help: Some(
@@ -136,7 +136,7 @@ pub struct Config {
     #[serde(default)]
     pub key: String,
     #[serde(default)]
-    pub value_path: String,
+    pub value: Value,
     #[serde(default)]
     pub ttl: Option<u64>,
     #[serde(default)]
@@ -189,15 +189,13 @@ impl NodeHandler for Node {
             ));
         }
 
-        let value = if self.config.value_path.is_empty() {
+        // The value arrives final — a whole `{{ }}` carries its typed
+        // value (NodeIO §Value resolution). Null means "not set", so the
+        // whole payload is stored, matching the old empty-path default.
+        let value = if self.config.value.is_null() {
             input.payload.clone()
         } else {
-            let ptr = if self.config.value_path.starts_with('/') {
-                self.config.value_path.clone()
-            } else {
-                format!("/{}", self.config.value_path)
-            };
-            input.payload.pointer(&ptr).cloned().unwrap_or(Value::Null)
+            self.config.value.clone()
         };
 
         let ttl = self.config.ttl.filter(|&t| t > 0);

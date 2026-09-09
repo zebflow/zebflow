@@ -430,15 +430,15 @@ n.logic.match --help            # same
 | `ai.tts` | `n.ai.tts` | `--provider piper --credential <tts_credential_id> --text-expr <expr> [--output-path <path.wav> \| --output-path-expr <expr>] [--return file\|blob\|both] [--speaker <id>] [--speed <factor>] [--volume <factor>] [--lipsync none\|basic\|timed_words\|audio_guided] [--lipsync-expr <expr>]` — synthesize speech from text. First stable provider is local Piper. Credential secret must reference `model_file` and `config_file` under Zebflow FS; `espeak_data_dir` is an optional override. When lipsync is enabled the output also includes `word_timings` and `lipsync { metadata, cues }`. |
 | `trigger.ws` | `n.trigger.ws` | `--event <name> --room <id>` |
 | `trigger.kv.subscribe` | `n.trigger.kv.subscribe` | `--channel <name>` — subscribes to a project KV pub/sub channel; fires whenever `kv.publish` sends to that channel |
-| `ws.emit` | `n.ws.emit` | `--event <name> --to <all\|session\|others> --payload-path <ptr> [--room <id>]` — `--room` static or `{{ expr }}`; when `--room` is set this node works after **any** trigger type, not just `trigger.ws` |
-| `ws.sync_state` | `n.ws.sync_state` | `--op <set\|merge\|delete> --path <ptr> --value-path <ptr> --room <id>` |
-| `kv.set` | `n.kv.set` | `--key <k> --value-path <ptr> [--ttl <secs>] [--durable]` — write value from payload path into per-project KV; optional TTL in seconds |
+| `ws.emit` | `n.ws.emit` | `--event <name> --to <all\|session\|others> --payload <literal-or-expr> [--room <id>]` — `--room` static or `{{ expr }}`; when `--room` is set this node works after **any** trigger type, not just `trigger.ws` |
+| `ws.sync_state` | `n.ws.sync_state` | `--op <set\|merge\|delete> --path <ptr> --value <literal-or-expr> --room <id>` |
+| `kv.set` | `n.kv.set` | `--key <k> --value <literal-or-expr> [--ttl <secs>] [--durable]` — write a value into per-project KV; optional TTL in seconds |
 | `kv.get` | `n.kv.get` | `--key <k> [--out-key <k>] [--default <json>] [--durable]` — read key from KV store; replaces the payload with `{ [out_key]: value }`; `--default` used when key is missing/expired |
 | `kv.exists` | `n.kv.exists` | `--key <k> [--out-key <k>] [--durable]` — replaces the payload with `{ [out_key]: boolean }` (default key `exists`); does not consume the value |
 | `kv.del` | `n.kv.del` | `--key <k> [--durable]` — delete key from KV store; payload passes through unchanged |
 | `kv.expire` | `n.kv.expire` | `--key <k> [--ttl <secs>] [--durable]` — update TTL on an existing key without changing its value; `--ttl 0` removes expiry (persist forever) |
 | `kv.incr` | `n.kv.incr` | `--key <k> [--amount <n>] [--out-key <k>] [--durable]` — atomically increment (negative to decrement) integer counter; starts at 0 if missing; replaces the payload with `{ [out_key]: new_value }` |
-| `kv.publish` | `n.kv.publish` | `--channel <name> [--message-path <ptr>]` — publish a message to a project KV pub/sub channel; triggers all active `n.trigger.kv.subscribe` pipelines on that channel |
+| `kv.publish` | `n.kv.publish` | `--channel <name> [--payload <literal-or-expr>]` — publish a message to a project KV pub/sub channel; triggers all active `n.trigger.kv.subscribe` pipelines on that channel |
 | `ms.publish` | `n.ms.publish` | `--name <id> --path <http_path> --source-path <zebfs_path> [--source-kind geojson_file\|geojson_artifact\|geoparquet] [--bbox-required] [--max-features <n>] [--allowed-properties <csv>] [--min-zoom <n>] [--max-zoom <n>] [--build-artifact]` — publish or update a map layer in the project registry |
 | `ms.unpublish` | `n.ms.unpublish` | `--name <id>` — remove a map layer from the registry |
 | `ms.get` | `n.ms.get` | `--name <id>` — get metadata for a published layer |
@@ -735,7 +735,7 @@ All `--key` and `--channel` flags support `{{ expr }}` template expressions.
 
 ```zf
 # Write a value from payload into the store
-| kv.set --key "session:{{ $trigger.auth.sub }}" --value-path /session_data --ttl 3600
+| kv.set --key "session:{{ $trigger.auth.sub }}" --value "{{ input.session_data }}" --ttl 3600
 
 # Read a value back (replaces payload with { cached: <value> })
 | kv.get --key "cache:{{ $trigger.params.slug }}" --out-key cached --default null
@@ -764,7 +764,7 @@ All `--key` and `--channel` flags support `{{ expr }}` template expressions.
 ```zf
 # Publisher pipeline (triggered by webhook, schedule, etc.)
 | trigger.webhook --path /api/events --method POST
-| kv.publish --channel "events:{{ $input.type }}" --message-path /
+| kv.publish --channel "events:{{ $input.type }}" --payload "{{ input }}"
 
 # Subscriber pipeline (triggered by publisher)
 | trigger.kv.subscribe --channel "events:order.created"
@@ -790,7 +790,7 @@ Output payload of `n.trigger.kv.subscribe`:
 # Push update to a WS room from a webhook
 | trigger.webhook --path /api/board/:room_id --method POST
 | sekejap.query --params-path params.room_id --read-only false -- "UPDATE boards SET updated_at = NOW() WHERE id = $1"
-| ws.emit --event board.updated --to all --room "{{ $trigger.params.room_id }}" --payload-path /
+| ws.emit --event board.updated --to all --room "{{ $trigger.params.room_id }}" --payload "{{ input }}"
 ```
 
 Without `--room`, `ws.emit` reads `room_id` from the payload (set by `trigger.ws`).

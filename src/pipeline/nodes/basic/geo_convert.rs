@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use super::file_ref::zebfs_rel_path_or_string;
-use super::util::{metadata_scope, resolve_path};
+use super::util::metadata_scope;
 use crate::pipeline::model::NodeCapability;
 use crate::pipeline::{
     NodeDefinition, PipelineError,
@@ -33,7 +33,7 @@ pub struct Config {
     #[serde(default)]
     pub input: String,
     #[serde(default)]
-    pub input_expr: String,
+    pub input_value: serde_json::Value,
     #[serde(default)]
     pub output: String,
     #[serde(default)]
@@ -50,7 +50,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             input: String::new(),
-            input_expr: String::new(),
+            input_value: serde_json::Value::Null,
             output: String::new(),
             layer: String::new(),
             to_crs: String::new(),
@@ -102,8 +102,8 @@ pub fn definition() -> NodeDefinition {
                 required: false,
             },
             DslFlag {
-                flag: "--input-expr".to_string(),
-                config_key: "input_expr".to_string(),
+                flag: "--input-value".to_string(),
+                config_key: "input_value".to_string(),
                 description: "Dot-path into upstream payload resolving to the input path"
                     .to_string(),
                 kind: DslFlagKind::Scalar,
@@ -156,7 +156,7 @@ pub fn definition() -> NodeDefinition {
                 ..Default::default()
             },
             NodeFieldDef {
-                name: "input_expr".to_string(),
+                name: "input_value".to_string(),
                 label: "Input Expression".to_string(),
                 field_type: NodeFieldType::Text,
                 help: Some(
@@ -208,7 +208,7 @@ pub fn definition() -> NodeDefinition {
             LayoutItem::Col {
                 col: vec![
                     LayoutItem::Field("input".to_string()),
-                    LayoutItem::Field("input_expr".to_string()),
+                    LayoutItem::Field("input_value".to_string()),
                     LayoutItem::Field("output".to_string()),
                 ],
             },
@@ -263,7 +263,7 @@ impl NodeHandler for Node {
     ) -> Result<NodeExecutionOutput, PipelineError> {
         let (owner, project, ..) = metadata_scope(&input.metadata)?;
 
-        let input_rel = resolve_input_path(&self.config, &input.payload)?;
+        let input_rel = resolve_input_path(&self.config)?;
         let output_rel = sanitize_rel_path(self.config.output.trim());
 
         if output_rel.is_empty() {
@@ -356,30 +356,30 @@ impl NodeHandler for Node {
 
 fn resolve_input_path(
     config: &Config,
-    payload: &serde_json::Value,
 ) -> Result<String, PipelineError> {
     if !config.input.trim().is_empty() {
         return Ok(sanitize_rel_path(config.input.trim()));
     }
-    if !config.input_expr.trim().is_empty() {
-        let val = resolve_path(payload, config.input_expr.trim())
-            .map(zebfs_rel_path_or_string)
-            .transpose()?
-            .flatten()
-            .ok_or_else(|| {
-                PipelineError::new(
-                    "FW_NODE_GEO_CONVERT",
-                    format!(
-                        "input path not found at payload key '{}' — set --input or --input-expr",
-                        config.input_expr
-                    ),
-                )
-            })?;
+    // Arrives final — a literal or a resolved `{{ expr }}`. The flag was
+    // `--input-expr` and resolved a dot-path, which was neither an expression
+    // nor a path anyone could guess. It stays typed rather than a string
+    // because a FileRef is a legal answer: `{{ input.saved }}` hands this the
+    // whole reference and the path is read out of it.
+    if !config.input_value.is_null() {
+        let val = zebfs_rel_path_or_string(&config.input_value)?.ok_or_else(|| {
+            PipelineError::new(
+                "FW_NODE_GEO_CONVERT",
+                format!(
+                    "--input-value is not a path or a FileRef: {}",
+                    config.input_value
+                ),
+            )
+        })?;
         return Ok(sanitize_rel_path(&val));
     }
     Err(PipelineError::new(
         "FW_NODE_GEO_CONVERT",
-        "no input path configured — set --input or --input-expr",
+        "no input path configured — set --input or --input-value",
     ))
 }
 
@@ -415,9 +415,17 @@ mod tests {
     use super::{Config, resolve_input_path};
 
     #[test]
-    fn input_expr_accepts_file_ref_payload() {
+    fn input_value_accepts_a_file_ref() {
         let config = Config {
-            input_expr: "source".to_string(),
+            input_value: json!({
+                "__zf_type": "file_ref",
+                "backend": "zebfs",
+                "ref": "tmp/runs/r/files/data.geojson",
+                "sha256": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "mime": "application/geo+json",
+                "size": 1,
+                "lifecycle": "temporary"
+            }),
             output: "out/data.parquet".to_string(),
             ..Default::default()
         };
@@ -434,7 +442,7 @@ mod tests {
         });
 
         assert_eq!(
-            resolve_input_path(&config, &payload).expect("input path"),
+            resolve_input_path(&config).expect("input path"),
             "tmp/runs/r/files/data.geojson"
         );
     }

@@ -2043,7 +2043,7 @@ impl PipelineEngine for BasicPipelineEngine {
                             let cookie = config
                                 .set_cookie
                                 .as_deref()
-                                .and_then(|s| web_response::parse_cookie_spec(s, &input.payload));
+                                .and_then(web_response::parse_cookie_spec);
                             let headers = config.headers.clone();
 
                             let template_id = config.template.clone().unwrap_or_default();

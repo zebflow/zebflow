@@ -119,7 +119,7 @@ pub fn definition() -> NodeDefinition {
                     "enum": ["all", "session", "others"],
                     "description": "Recipient targeting. all = everyone, session = sender only, others = all except sender. Default: all."
                 },
-                "payload_path": {
+                "payload": {
                     "type": "string",
                     "description": "JSON pointer into the payload to extract the emit body. Empty = whole payload (or payload.payload if present)."
                 },
@@ -145,9 +145,9 @@ pub fn definition() -> NodeDefinition {
                 required: false,
             },
             DslFlag {
-                flag: "--payload-path".to_string(),
-                config_key: "payload_path".to_string(),
-                description: "JSON pointer into payload to extract the emit body. Empty = whole payload.".to_string(),
+                flag: "--payload".to_string(),
+                config_key: "payload".to_string(),
+                description: "What to emit — a literal or {{ expr }}. Omit to emit the whole payload.".to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
             },
@@ -168,13 +168,13 @@ pub fn definition() -> NodeDefinition {
                     SelectOptionDef { value: "room".to_string(), label: "Room — broadcast to all members".to_string() },
                     SelectOptionDef { value: "sender".to_string(), label: "Sender — reply to triggering socket only".to_string() },
                 ], help: Some("Choose whether to broadcast to the room or reply only to the triggering sender.".to_string()), ..Default::default() },
-                NodeFieldDef { name: "payload_path".to_string(), label: "Payload Path".to_string(), field_type: NodeFieldType::Text, help: Some("JSON pointer to emit as event payload. Empty emits the whole input payload.".to_string()), ..Default::default() },
+                NodeFieldDef { name: "payload".to_string(), label: "Payload Path".to_string(), field_type: NodeFieldType::Text, help: Some("What to emit — a literal or {{ expr }}. Omit to emit the whole payload.".to_string()), ..Default::default() },
             ]
         },
         layout: vec![
             LayoutItem::Field("event".to_string()),
             LayoutItem::Row { row: vec![LayoutItem::Field("room".to_string()), LayoutItem::Field("to".to_string())] },
-            LayoutItem::Field("payload_path".to_string()),
+            LayoutItem::Field("payload".to_string()),
         ],
         ai_tool: Default::default(),
         ..Default::default()
@@ -205,7 +205,7 @@ pub struct Config {
     /// Empty (default) — use the whole payload (or `payload.payload` if present).
     /// Example: `"/data"` — emit only `payload.data` to clients.
     #[serde(default)]
-    pub payload_path: String,
+    pub payload: Value,
 
     /// Static room id override.
     ///
@@ -291,20 +291,17 @@ impl NodeHandler for Node {
             _ => EmitTarget::All,
         };
 
-        // Extract the emit body from the payload.
-        let emit_payload = if self.config.payload_path.is_empty() {
+        // The emit body arrives final — a whole `{{ }}` carries its typed
+        // value. Null means "not set": fall back to the payload's own
+        // `payload` field, then to the whole payload, as before.
+        let emit_payload = if self.config.payload.is_null() {
             input
                 .payload
                 .get("payload")
                 .cloned()
                 .unwrap_or_else(|| input.payload.clone())
         } else {
-            let ptr = if self.config.payload_path.starts_with('/') {
-                self.config.payload_path.clone()
-            } else {
-                format!("/{}", self.config.payload_path)
-            };
-            input.payload.pointer(&ptr).cloned().unwrap_or(Value::Null)
+            self.config.payload.clone()
         };
 
         let event = if self.config.event.is_empty() {

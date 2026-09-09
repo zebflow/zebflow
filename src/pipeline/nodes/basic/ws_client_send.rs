@@ -57,7 +57,7 @@ pub fn definition() -> NodeDefinition {
             "required": ["connection"],
             "properties": {
                 "connection": { "type": "string", "description": "Connection reference: 'pipeline/path:node_id' for cross-pipeline, or just node_id for same pipeline." },
-                "message_path": { "type": "string", "description": "JSON pointer into payload to extract the message. Empty = whole payload." }
+                "message": { "description": "What to send — a literal or {{ expr }}. Omit to send the whole payload." }
             }
         }),
         dsl_flags: vec![
@@ -69,9 +69,9 @@ pub fn definition() -> NodeDefinition {
                 required: true,
             },
             DslFlag {
-                flag: "--message-path".to_string(),
-                config_key: "message_path".to_string(),
-                description: "JSON pointer into payload to extract the message body.".to_string(),
+                flag: "--message".to_string(),
+                config_key: "message".to_string(),
+                description: "What to send — a literal or {{ expr }}. Omit to send the whole payload.".to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
             },
@@ -85,10 +85,10 @@ pub fn definition() -> NodeDefinition {
                 ..Default::default()
             },
             NodeFieldDef {
-                name: "message_path".to_string(),
+                name: "message".to_string(),
                 label: "Message Path".to_string(),
                 field_type: NodeFieldType::Text,
-                help: Some("JSON pointer into payload. Empty = whole payload.".to_string()),
+                help: Some("What to send — a literal or {{ expr }}. Omit to send the whole payload.".to_string()),
                 ..Default::default()
             },
         ],
@@ -105,7 +105,7 @@ pub struct Config {
     pub connection: String,
     /// JSON pointer into the payload to extract the message body.
     #[serde(default)]
-    pub message_path: String,
+    pub message: Value,
 }
 
 pub struct Node {
@@ -153,15 +153,13 @@ impl NodeHandler for Node {
             .unwrap_or_default();
 
         // Extract the message from the payload.
-        let message = if self.config.message_path.is_empty() {
+        // The value arrives final — a whole `{{ }}` carries its typed
+        // value (NodeIO §Value resolution). Null means "not set", so the
+        // whole payload is stored, matching the old empty-path default.
+        let message = if self.config.message.is_null() {
             input.payload.clone()
         } else {
-            let ptr = if self.config.message_path.starts_with('/') {
-                self.config.message_path.clone()
-            } else {
-                format!("/{}", self.config.message_path)
-            };
-            input.payload.pointer(&ptr).cloned().unwrap_or(Value::Null)
+            self.config.message.clone()
         };
 
         let message_str = match &message {

@@ -116,7 +116,7 @@ pub fn definition() -> NodeDefinition {
                     "type": "string",
                     "description": "JSON-pointer destination path. Supports {key} placeholders resolved from payload. Examples: /counter, /players/{session_id}. Empty = root."
                 },
-                "value_path": {
+                "value": {
                     "type": "string",
                     "description": "JSON pointer into the incoming payload to extract the value to write. Empty = use the whole payload (or payload.payload if present)."
                 },
@@ -146,9 +146,9 @@ pub fn definition() -> NodeDefinition {
                 required: false,
             },
             DslFlag {
-                flag: "--value-path".to_string(),
-                config_key: "value_path".to_string(),
-                description: "JSON pointer into the payload to extract the value. Empty = whole payload.".to_string(),
+                flag: "--value".to_string(),
+                config_key: "value".to_string(),
+                description: "What to write — a literal or {{ expr }}. Omit to write the whole payload.".to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
             },
@@ -178,14 +178,14 @@ pub fn definition() -> NodeDefinition {
                     SelectOptionDef { value: "clear".to_string(), label: "Clear — wipe entire state".to_string() },
                 ], help: Some("State mutation operation to apply before optional broadcast.".to_string()), ..Default::default() },
                 NodeFieldDef { name: "path".to_string(), label: "State Path".to_string(), field_type: NodeFieldType::Text, help: Some("Dot-separated key path in shared state.".to_string()), ..Default::default() },
-                NodeFieldDef { name: "value_path".to_string(), label: "Value Path".to_string(), field_type: NodeFieldType::Text, help: Some("Payload path to read the value from.".to_string()), ..Default::default() },
+                NodeFieldDef { name: "value".to_string(), label: "Value Path".to_string(), field_type: NodeFieldType::Text, help: Some("Payload path to read the value from.".to_string()), ..Default::default() },
                 NodeFieldDef { name: "silent".to_string(), label: "Silent (no broadcast)".to_string(), field_type: NodeFieldType::Checkbox, help: Some("Update server-side without broadcasting.".to_string()), ..Default::default() },
             ]
         },
         layout: vec![
             LayoutItem::Field("room".to_string()),
             LayoutItem::Row { row: vec![LayoutItem::Field("op".to_string()), LayoutItem::Field("path".to_string())] },
-            LayoutItem::Row { row: vec![LayoutItem::Field("value_path".to_string()), LayoutItem::Field("silent".to_string())] },
+            LayoutItem::Row { row: vec![LayoutItem::Field("value".to_string()), LayoutItem::Field("silent".to_string())] },
         ],
         ai_tool: Default::default(),
         ..Default::default()
@@ -218,7 +218,7 @@ pub struct Config {
     /// Empty (default) — use the entire incoming payload as the value.
     /// Example: `"/position"` — write only `payload.position` into `path`.
     #[serde(default)]
-    pub value_path: String,
+    pub value: Value,
 
     /// Static room id override.
     ///
@@ -312,20 +312,17 @@ impl NodeHandler for Node {
             let value = if matches!(op, StateOp::Delete) {
                 None
             } else {
-                let base = if self.config.value_path.is_empty() {
-                    // No value_path — use the whole payload (or its inner .payload if present).
+                // The value arrives final — a whole `{{ }}` carries its
+                // typed value. Null means "not set": the whole payload (or
+                // its inner `payload` field), as before.
+                let base = if self.config.value.is_null() {
                     input
                         .payload
                         .get("payload")
                         .cloned()
                         .unwrap_or_else(|| input.payload.clone())
                 } else {
-                    let ptr = if self.config.value_path.starts_with('/') {
-                        self.config.value_path.clone()
-                    } else {
-                        format!("/{}", self.config.value_path)
-                    };
-                    input.payload.pointer(&ptr).cloned().unwrap_or(Value::Null)
+                    self.config.value.clone()
                 };
                 Some(base)
             };
