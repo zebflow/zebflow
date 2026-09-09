@@ -19,7 +19,7 @@ use crate::language::model::{
 };
 
 use super::config::{DenoSandboxConfig, DenoSandboxConfigPatch, apply_patch, normalize_limits};
-use super::instrument::{forbid_patterns, inject_loop_guards};
+use super::analyze::{ScriptPolicy, compile_body};
 use super::runner::run_compiled_script;
 
 const TOOL_INIT: &str = include_str!("../../../language/runtime/tool_init.js");
@@ -111,17 +111,24 @@ impl DenoSandboxEngine {
             ));
         }
 
-        forbid_patterns(source, &cfg).map_err(|e| {
-            LanguageError::new("LANG_DENO_POLICY", format!("policy violation: {e}"))
-        })?;
-
-        let body = if cfg.danger_zone.disable_loop_guards {
-            source.to_string()
-        } else {
-            inject_loop_guards(source)
+        // Parsed once, by a real parser: policy and instrumentation both come
+        // from the AST, so a banned name inside a string is data and a loop
+        // inside a regex literal is not a loop. See `analyze`.
+        let policy = ScriptPolicy {
+            allow_dynamic_code: cfg.danger_zone.allow_dynamic_code,
+            allow_import: cfg.danger_zone.allow_import,
+            allow_timers: cfg.danger_zone.allow_timers,
+            inject_guards: !cfg.danger_zone.disable_loop_guards,
         };
-
-        let fn_source = format!("async function(input, n, ctx) {{\n{body}\n}}");
+        let fn_source = compile_body(source, policy).map_err(|d| {
+            LanguageError::new(
+                match d.code {
+                    "SCRIPT_SYNTAX" => "LANG_DENO_SYNTAX",
+                    _ => "LANG_DENO_POLICY",
+                },
+                format!("policy violation: {d}"),
+            )
+        })?;
         let module_source = format!("{TOOL_INIT}\nexport default {fn_source}\n");
 
         let mut hasher = DefaultHasher::new();

@@ -15,6 +15,9 @@ use crate::contracts::kinds::{
 };
 use crate::infra::io::durable::{atomic_write, durable_remove_file};
 use crate::infra::io::path::{contained_rel_path, rel_path_escapes_root};
+use serde_json::Value;
+
+use crate::language::{ScriptPolicy, compile_body};
 use crate::pipeline::PipelineGraph;
 use crate::platform::adapters::data::DataAdapter;
 use crate::platform::adapters::file::FileAdapter;
@@ -167,7 +170,63 @@ fn parse_and_validate_pipeline_source(source: &str) -> Result<PipelineGraph, Pla
 fn parse_and_validate_pipeline_source_for_save(
     source: &str,
 ) -> Result<PipelineGraph, PlatformError> {
-    parse_pipeline_source(source)
+    let graph = parse_pipeline_source(source)?;
+    validate_script_bodies(&graph)?;
+    Ok(graph)
+}
+
+/// Refuses a pipeline whose script nodes cannot compile, at save rather than
+/// at run.
+///
+/// The sandbox parses every script body anyway; doing it here means an author
+/// — a person in the editor or an agent calling `pipeline_register` — gets a
+/// line number back instead of a node that saves cleanly and fails in
+/// production.
+///
+/// Two things are deliberately NOT checked here, because they are not
+/// decidable at save time:
+///   * `source_expr`, whose script is produced by a `{{ }}` at run time;
+///   * anything about termination, allocation, or backtracking, which is the
+///     host watchdog's job.
+fn validate_script_bodies(graph: &PipelineGraph) -> Result<(), PlatformError> {
+    for node in &graph.nodes {
+        if node.kind != "n.script" {
+            continue;
+        }
+        let language = node
+            .config
+            .get("language")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        if !matches!(language, "" | "js" | "javascript") {
+            continue;
+        }
+        let Some(body) = node.config.get("source").and_then(Value::as_str) else {
+            continue;
+        };
+        if body.trim().is_empty() {
+            continue;
+        }
+        // Save-time policy is the platform default, which is currently the
+        // only policy that exists: nothing in the repo constructs an engine
+        // with a widened danger zone. If project-level widening is ever
+        // wired up, this must resolve that project's policy instead —
+        // otherwise a project permitted to use `eval` could run it but never
+        // save it.
+        let policy = ScriptPolicy {
+            allow_dynamic_code: false,
+            allow_import: false,
+            allow_timers: false,
+            inject_guards: false,
+        };
+        if let Err(diagnostic) = compile_body(body, policy) {
+            return Err(PlatformError::new(
+                "PLATFORM_PIPELINE_SCRIPT_INVALID",
+                format!("node `{}`: {diagnostic}", node.id),
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn parse_pipeline_source(source: &str) -> Result<PipelineGraph, PlatformError> {
@@ -4462,5 +4521,83 @@ mod tests {
             !recovery_dir.is_dir() || std::fs::read_dir(&recovery_dir).unwrap().next().is_none(),
             "a refused migration writes nothing"
         );
+    }
+}
+
+#[cfg(test)]
+mod script_save_validation_tests {
+    use super::*;
+
+    /// Built by deserialization so these tests exercise the same shape the
+    /// save path actually receives.
+    fn graph_with_config(config: serde_json::Value) -> PipelineGraph {
+        serde_json::from_value(serde_json::json!({
+            "id": "test",
+            "nodes": [{ "id": "s1", "kind": "n.script", "config": config }],
+            "edges": []
+        }))
+        .expect("test graph must deserialize")
+    }
+
+    fn graph_with_script(source: &str) -> PipelineGraph {
+        graph_with_config(serde_json::json!({ "language": "js", "source": source }))
+    }
+
+    #[test]
+    fn a_syntax_error_is_refused_at_save_with_a_line_number() {
+        let err = validate_script_bodies(&graph_with_script("return {a:;"))
+            .expect_err("a script that cannot parse must not save");
+        assert_eq!(err.code, "PLATFORM_PIPELINE_SCRIPT_INVALID");
+        assert!(err.message.contains("node `s1`"), "{}", err.message);
+        assert!(err.message.contains("line"), "{}", err.message);
+    }
+
+    /// The defect that defeated the runtime fix: a local binding captures the
+    /// injected guard. It is decidable here, so it is refused here.
+    #[test]
+    fn shadowing_the_runtime_tick_is_refused_at_save() {
+        let err = validate_script_bodies(&graph_with_script(
+            "var __tj_tick = function(){}; while(true){} return 1;",
+        ))
+        .expect_err("shadowing the op-budget tick must not save");
+        assert!(err.message.contains("__tj_tick"), "{}", err.message);
+    }
+
+    #[test]
+    fn assigning_the_tick_through_globalthis_is_refused_at_save() {
+        let err = validate_script_bodies(&graph_with_script(
+            "globalThis.__tj_tick = function(){}; return 1;",
+        ))
+        .expect_err("assigning the tick must not save");
+        assert!(err.message.contains("__tj_tick"), "{}", err.message);
+    }
+
+    /// A banned word in ordinary data is data. The old substring scanner
+    /// refused this, which broke honest pipelines.
+    #[test]
+    fn prose_containing_banned_words_still_saves() {
+        validate_script_bodies(&graph_with_script(
+            "return { help: 'import the CSV, and never call eval() yourself' };",
+        ))
+        .expect("prose mentioning import/eval is data, not code");
+    }
+
+    /// Source produced by `{{ }}` at run time cannot be parsed at save. It must
+    /// not be rejected for being absent, and it stays the run-time path's job.
+    #[test]
+    fn a_run_time_generated_source_is_not_refused_for_being_absent() {
+        let graph = graph_with_config(
+            serde_json::json!({ "language": "js", "source_expr": "{{ input.code }}" }),
+        );
+        validate_script_bodies(&graph).expect("a source_expr node has nothing to check at save");
+    }
+
+    #[test]
+    fn a_valid_script_saves_unchanged() {
+        validate_script_bodies(&graph_with_script(
+            "const rows = input.rows.filter(r => r.ok); \
+             for (const r of rows) { r.seen = true; } return { rows };",
+        ))
+        .expect("an ordinary script must save");
     }
 }

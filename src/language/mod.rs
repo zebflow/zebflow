@@ -11,7 +11,8 @@ pub mod model;
 pub mod registry;
 
 pub use engines::{
-    CompiledDenoSandboxScript, DenoSandboxAllowList, DenoSandboxAllowListPatch, DenoSandboxConfig,
+    CompiledDenoSandboxScript, DenoSandboxAllowList, ScriptDiagnostic, ScriptPolicy,
+    compile_body, DenoSandboxAllowListPatch, DenoSandboxConfig,
     DenoSandboxConfigPatch, DenoSandboxDangerZone, DenoSandboxDangerZonePatch, DenoSandboxEngine,
     NoopLanguageEngine,
 };
