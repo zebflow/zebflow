@@ -1260,7 +1260,6 @@ impl BasicPipelineEngine {
                         PipelineError::new("FW_NODE_SQLITE_MUTATE_CONFIG", err.to_string())
                     })?,
                     data_root.clone(),
-                    self.language.clone(),
                 )?))
             }
             browser_run::NODE_KIND => {
