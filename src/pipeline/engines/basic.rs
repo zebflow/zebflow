@@ -1579,7 +1579,6 @@ impl BasicPipelineEngine {
                 Ok(NodeDispatch::TableConvert(table_convert::Node::new(
                     config,
                     platform.clone(),
-                    self.language.clone(),
                 )?))
             }
             fs_compress::NODE_KIND => {
@@ -4073,7 +4072,7 @@ mod tests {
 
         let dsl = r#"
 [a] trigger.manual
-[b] table.convert --from-expr "$input.rows" --to datasets/posts.parquet
+[b] table.convert --from "{{ input.rows }}" --to datasets/posts.parquet
 [c] table.convert --from datasets/posts.parquet --to-json --preview 2
 
 [a] -> [b]

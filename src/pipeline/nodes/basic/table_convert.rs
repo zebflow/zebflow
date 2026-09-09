@@ -28,8 +28,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
 use super::file_ref::zebfs_rel_path;
-use super::util::{eval_deno_expr, metadata_scope};
-use crate::language::LanguageEngine;
+use super::util::metadata_scope;
 use crate::pipeline::model::NodeCapability;
 use crate::pipeline::{
     NodeDefinition, PipelineError,
@@ -46,12 +45,12 @@ const MAX_MATERIALIZED_OBJECT_BYTES: u64 = 128 * 1024 * 1024;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Config {
-    /// ZebFS object path to read from.
+    /// Where the table comes from — a literal or `{{ expr }}`, arriving final.
+    /// Typed, because three shapes are all legal answers: a ZebFS path string,
+    /// a FileRef (`{{ input.saved }}`), or the rows themselves
+    /// (`{{ input.rows }}`).
     #[serde(default)]
-    pub from_path: Option<String>,
-    /// Deno expression that returns rows or a table-shaped object from upstream payload.
-    #[serde(default)]
-    pub from_expr: Option<String>,
+    pub from: Value,
     /// Source format: csv, json, ndjson, parquet. Inferred from path when omitted.
     #[serde(default)]
     pub from_format: Option<String>,
@@ -114,21 +113,13 @@ pub fn definition() -> NodeDefinition {
         dsl_flags: vec![
             DslFlag {
                 flag: "--from".to_string(),
-                config_key: "from_path".to_string(),
-                description: "ZebFS object path to read from, for example uploads/data.csv."
+                config_key: "from".to_string(),
+                description: "Where the table comes from — a ZebFS path, or {{ expr }} giving a FileRef or the rows themselves."
                     .to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
             },
-            DslFlag {
-                flag: "--from-expr".to_string(),
-                config_key: "from_expr".to_string(),
-                description:
-                    "Deno expression returning rows from upstream payload, for example $input.rows."
-                        .to_string(),
-                kind: DslFlagKind::Scalar,
-                required: false,
-            },
+
             DslFlag {
                 flag: "--from-format".to_string(),
                 config_key: "from_format".to_string(),
@@ -179,24 +170,12 @@ pub fn definition() -> NodeDefinition {
         ],
         fields: vec![
             NodeFieldDef {
-                name: "from_path".to_string(),
+                name: "from".to_string(),
                 label: "From path".to_string(),
                 field_type: NodeFieldType::Text,
                 placeholder: Some("uploads/data.csv".to_string()),
                 help: Some(
                     "ZebFS object path. Leave empty when using From expression.".to_string(),
-                ),
-                span: Some("half".to_string()),
-                ..Default::default()
-            },
-            NodeFieldDef {
-                name: "from_expr".to_string(),
-                label: "From expression".to_string(),
-                field_type: NodeFieldType::Text,
-                placeholder: Some("$input.rows".to_string()),
-                help: Some(
-                    "Deno expression for upstream rows. Leave empty when using From path."
-                        .to_string(),
                 ),
                 span: Some("half".to_string()),
                 ..Default::default()
@@ -259,8 +238,7 @@ pub fn definition() -> NodeDefinition {
         layout: vec![
             LayoutItem::Row {
                 row: vec![
-                    LayoutItem::Field("from_path".to_string()),
-                    LayoutItem::Field("from_expr".to_string()),
+                    LayoutItem::Field("from".to_string()),
                 ],
             },
             LayoutItem::Row {
@@ -321,19 +299,16 @@ fn format_options(include_auto: bool) -> Vec<SelectOptionDef> {
 pub struct Node {
     config: Config,
     platform: Arc<PlatformService>,
-    language: Arc<dyn LanguageEngine>,
 }
 
 impl Node {
     pub fn new(
         config: Config,
         platform: Arc<PlatformService>,
-        language: Arc<dyn LanguageEngine>,
     ) -> Result<Self, PipelineError> {
         Ok(Self {
             config,
             platform,
-            language,
         })
     }
 }
@@ -372,13 +347,13 @@ impl NodeHandler for Node {
         }
 
         if let Some(output) = self
-            .try_streaming_file_conversion(&input, &zebfs, owner, project)
+            .try_streaming_file_conversion(&zebfs, owner, project)
             .await?
         {
             return Ok(output);
         }
 
-        let source = self.read_source(&input, &zebfs)?;
+        let source = self.read_source(&zebfs)?;
         let from_format = source.format;
         let mut rows = rows_from_source(source.value, from_format)?;
         if let Some(limit) = self.config.limit {
@@ -450,78 +425,60 @@ enum SourceValue {
 impl Node {
     fn read_source(
         &self,
-        input: &NodeExecutionInput,
         zebfs: &LocalZebFs,
     ) -> Result<SourceData, PipelineError> {
-        let from_path = non_empty(self.config.from_path.as_deref());
-        let from_expr = non_empty(self.config.from_expr.as_deref());
-        match (from_path, from_expr) {
-            (Some(_), Some(_)) => Err(PipelineError::new(
+        // `--from` arrives final and is typed, so its shape says what it is:
+        // a string is a ZebFS path, a FileRef names one, and anything else is
+        // the rows themselves. Two flags used to encode that distinction and
+        // needed a rule refusing both at once.
+        if self.config.from.is_null() {
+            return Err(PipelineError::new(
                 "FW_NODE_TABLE_CONVERT",
-                "use either --from or --from-expr, not both",
-            )),
-            (Some(path), None) => {
-                let rel_path = normalize_object_path(path)
-                    .map_err(|err| PipelineError::new("FW_NODE_TABLE_CONVERT", err.to_string()))?;
-                let format = normalize_format(
-                    self.config.from_format.as_deref(),
-                    Some(&rel_path),
-                    "source",
-                )?;
-                ensure_materialization_safe(zebfs, &rel_path)?;
-                let object = zebfs
-                    .get(&rel_path)
-                    .map_err(|err| PipelineError::new("FW_NODE_TABLE_CONVERT", err.to_string()))?;
-                Ok(SourceData {
-                    label: rel_path,
-                    value: SourceValue::Bytes(object.bytes),
-                    format,
-                })
-            }
-            (None, Some(expr)) => {
-                let value = eval_deno_expr(
-                    self.language.as_ref(),
-                    expr,
-                    &input.payload,
-                    &input.metadata,
-                )?;
-                if let Some(path) = zebfs_rel_path(&value)? {
-                    let rel_path = normalize_object_path(&path).map_err(|err| {
-                        PipelineError::new("FW_NODE_TABLE_CONVERT", err.to_string())
-                    })?;
-                    let format = normalize_format(
-                        self.config.from_format.as_deref(),
-                        Some(&rel_path),
-                        "source",
-                    )?;
-                    ensure_materialization_safe(zebfs, &rel_path)?;
-                    let object = zebfs.get(&rel_path).map_err(|err| {
-                        PipelineError::new("FW_NODE_TABLE_CONVERT", err.to_string())
-                    })?;
-                    return Ok(SourceData {
-                        label: rel_path,
-                        value: SourceValue::Bytes(object.bytes),
-                        format,
-                    });
-                }
-                let format = normalize_format(self.config.from_format.as_deref(), None, "source")
-                    .or_else(|_| infer_json_source_format(&value))?;
-                Ok(SourceData {
-                    label: "expr".to_string(),
-                    value: SourceValue::Json(value),
-                    format,
-                })
-            }
-            (None, None) => Err(PipelineError::new(
-                "FW_NODE_TABLE_CONVERT",
-                "set --from for a ZebFS object or --from-expr for upstream rows",
-            )),
+                "set --from to a ZebFS path, a FileRef, or rows",
+            ));
         }
+        if let Some(path) = self.config.from.as_str() {
+            let rel_path = normalize_object_path(path)
+                .map_err(|err| PipelineError::new("FW_NODE_TABLE_CONVERT", err.to_string()))?;
+            let format =
+                normalize_format(self.config.from_format.as_deref(), Some(&rel_path), "source")?;
+            ensure_materialization_safe(zebfs, &rel_path)?;
+            let object = zebfs
+                .get(&rel_path)
+                .map_err(|err| PipelineError::new("FW_NODE_TABLE_CONVERT", err.to_string()))?;
+            return Ok(SourceData {
+                label: rel_path,
+                value: SourceValue::Bytes(object.bytes),
+                format,
+            });
+        }
+        let value = self.config.from.clone();
+        if let Some(path) = zebfs_rel_path(&value)? {
+            let rel_path = normalize_object_path(&path)
+                .map_err(|err| PipelineError::new("FW_NODE_TABLE_CONVERT", err.to_string()))?;
+            let format =
+                normalize_format(self.config.from_format.as_deref(), Some(&rel_path), "source")?;
+            ensure_materialization_safe(zebfs, &rel_path)?;
+            let object = zebfs
+                .get(&rel_path)
+                .map_err(|err| PipelineError::new("FW_NODE_TABLE_CONVERT", err.to_string()))?;
+            return Ok(SourceData {
+                label: rel_path,
+                value: SourceValue::Bytes(object.bytes),
+                format,
+            });
+        }
+        let format = normalize_format(self.config.from_format.as_deref(), None, "source")
+            .or_else(|_| infer_json_source_format(&value))?;
+        Ok(SourceData {
+            label: "from".to_string(),
+            value: SourceValue::Json(value),
+            format,
+        })
     }
 
     async fn try_streaming_file_conversion(
         &self,
-        input: &NodeExecutionInput,
         zebfs: &LocalZebFs,
         owner: &str,
         project: &str,
@@ -532,7 +489,7 @@ impl Node {
         let Some(to_path) = non_empty(self.config.to_path.as_deref()) else {
             return Ok(None);
         };
-        let Some(source_path) = self.resolve_streaming_source_path(input)? else {
+        let Some(source_path) = self.resolve_streaming_source_path()? else {
             return Ok(None);
         };
 
@@ -586,32 +543,19 @@ impl Node {
         }))
     }
 
-    fn resolve_streaming_source_path(
-        &self,
-        input: &NodeExecutionInput,
-    ) -> Result<Option<String>, PipelineError> {
-        let from_path = non_empty(self.config.from_path.as_deref());
-        let from_expr = non_empty(self.config.from_expr.as_deref());
-        match (from_path, from_expr) {
-            (Some(_), Some(_)) => Err(PipelineError::new(
+    fn resolve_streaming_source_path(&self) -> Result<Option<String>, PipelineError> {
+        // Same shape dispatch as read_source: a string is already the path,
+        // a FileRef names one, rows have none.
+        if self.config.from.is_null() {
+            return Err(PipelineError::new(
                 "FW_NODE_TABLE_CONVERT",
-                "use either --from or --from-expr, not both",
-            )),
-            (Some(path), None) => Ok(Some(path.to_string())),
-            (None, Some(expr)) => {
-                let value = eval_deno_expr(
-                    self.language.as_ref(),
-                    expr,
-                    &input.payload,
-                    &input.metadata,
-                )?;
-                zebfs_rel_path(&value)
-            }
-            (None, None) => Err(PipelineError::new(
-                "FW_NODE_TABLE_CONVERT",
-                "set --from for a ZebFS object or --from-expr for upstream rows",
-            )),
+                "set --from to a ZebFS path, a FileRef, or rows",
+            ));
         }
+        if let Some(path) = self.config.from.as_str() {
+            return Ok(Some(path.to_string()));
+        }
+        zebfs_rel_path(&self.config.from)
     }
 }
 
