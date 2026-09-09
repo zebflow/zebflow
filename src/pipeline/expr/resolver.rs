@@ -99,14 +99,22 @@ pub fn resolve_config_expressions(
          var $nodes = __scope.$nodes || {};\n\
          var $placeholder = __scope.$placeholder || {};\n",
     );
+    // Each expression evaluates into its own slot so one failure does not abort
+    // the batch — but the failure is *kept*, not discarded. An empty catch here
+    // turned every throwing expression into `null`, which the pipeline then
+    // wrote onward as if it were the author's intended value: a typo in
+    // `{{ input.custmer.id }}` inserted null and reported success.
     for (i, expr) in exprs.iter().enumerate() {
-        body.push_str(&format!("var _e{i} = null;\n"));
-        body.push_str(&format!("try {{ _e{i} = ({expr}); }} catch (_zfe) {{}}\n"));
+        body.push_str(&format!("var _e{i} = null; var _x{i} = null;\n"));
+        body.push_str(&format!(
+            "try {{ _e{i} = ({expr}); }} catch (_zfe) {{ _x{i} = String((_zfe && _zfe.message) || _zfe); }}\n"
+        ));
     }
     body.push_str("return {\n");
     for (i, _) in exprs.iter().enumerate() {
+        body.push_str(&format!("  \"e{i}\": _e{i},\n"));
         let comma = if i + 1 < exprs.len() { "," } else { "" };
-        body.push_str(&format!("  \"e{i}\": _e{i}{comma}\n"));
+        body.push_str(&format!("  \"x{i}\": _x{i}{comma}\n"));
     }
     body.push_str("};\n");
 
@@ -168,12 +176,48 @@ pub fn resolve_config_expressions(
 
     let run_output = language
         .run(&compiled, scope_input, &expr_ctx)
-        .map_err(|e| PipelineError::new("FW_EXPR_RUN", e.to_string()))?;
+        .map_err(|e| {
+            // FW_EXPR_RUN is Refused, which is right for an expression that
+            // misbehaved and wrong for a worker that died — that mistake made
+            // genuine infrastructure faults permanently unretryable.
+            PipelineError::new(
+                crate::pipeline::error_class::wrapper_for(
+                    &e.code,
+                    "FW_EXPR_RUN",
+                    "FW_EXPR_ENGINE",
+                ),
+                e.to_string(),
+            )
+        })?;
 
     let result_map = match run_output.value {
         Value::Object(m) => m,
         _ => return Ok(config), // Unexpected result shape — leave config unchanged.
     };
+
+    // An expression that threw is the author's mistake, and it is reported as
+    // one. Silently substituting null makes a wrong pipeline look like a
+    // working one, which is the most expensive failure mode a platform has.
+    // Authors who genuinely want a missing value write `?.` or `??`, both of
+    // which the sandbox supports.
+    for (i, expr) in exprs.iter().enumerate() {
+        let Some(message) = result_map.get(&format!("x{i}")).and_then(Value::as_str) else {
+            continue;
+        };
+        let where_used = fields
+            .iter()
+            .find(|f| {
+                f.segments
+                    .iter()
+                    .any(|seg| matches!(seg, Segment::Expr(e) if e == expr))
+            })
+            .map(|f| f.ptr.clone())
+            .unwrap_or_default();
+        return Err(PipelineError::new(
+            "FW_EXPR_EVAL",
+            format!("expression {{{{ {expr} }}}} at config{where_used} failed: {message}"),
+        ));
+    }
 
     // Substitute evaluation results back into the config.
     for field in &fields {

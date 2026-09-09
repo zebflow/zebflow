@@ -69,6 +69,8 @@ pub const ERROR_CLASS_REGISTRY: &[(&str, ErrorClass)] = &[
     ("FW_EXEC_EDGE", ErrorClass::Refused),
     ("FW_EXEC_NODE", ErrorClass::Failed),
     ("FW_EXPR_COMPILE", ErrorClass::Refused),
+    ("FW_EXPR_EVAL", ErrorClass::Refused),
+    ("FW_EXPR_ENGINE", ErrorClass::Failed),
     ("FW_EXPR_PARSE", ErrorClass::Refused),
     ("FW_EXPR_RUN", ErrorClass::Refused),
     ("FW_FILE_REF", ErrorClass::Failed),
@@ -232,6 +234,7 @@ pub const ERROR_CLASS_REGISTRY: &[(&str, ErrorClass)] = &[
     ("FW_NODE_SCRIPT_CONFIG", ErrorClass::Refused),
     ("FW_NODE_SCRIPT_INPUT_PIN", ErrorClass::Refused),
     ("FW_NODE_SCRIPT_PARSE", ErrorClass::Refused),
+    ("FW_NODE_SCRIPT_REJECTED", ErrorClass::Refused),
     ("FW_NODE_SCRIPT_RUN", ErrorClass::Failed),
     ("FW_NODE_SEKEJAP_INSERT", ErrorClass::Failed),
     ("FW_NODE_SEKEJAP_INSERT_CONFIG", ErrorClass::Refused),
@@ -319,9 +322,46 @@ pub const ERROR_CLASS_REGISTRY: &[(&str, ErrorClass)] = &[
     ("FW_WS_CLIENT_SEND", ErrorClass::Failed),
     ("FW_WS_EMIT_NO_ROOM", ErrorClass::Failed),
     ("FW_WS_SYNC_STATE_NO_ROOM", ErrorClass::Failed),
+
+    // The language namespace. These were emitted for as long as the sandbox
+    // has existed and registered nowhere, because the coverage test below only
+    // scanned for `"FW_`. An unregistered code defaults to Failed, so a policy
+    // violation that cannot possibly succeed on a second attempt was being
+    // handed to logic.retry as though the world had merely hiccuped.
+    ("LANG_DENO_SYNTAX", ErrorClass::Refused),
+    ("LANG_DENO_POLICY", ErrorClass::Refused),
+    ("LANG_DENO_SOURCE_TOO_LARGE", ErrorClass::Refused),
+    ("LANG_DENO_RUN_PATCH", ErrorClass::Refused),
+    // A script that threw, timed out, or exhausted its budget. Kept Failed:
+    // the cause is not distinguishable here today, and treating a contended
+    // timeout as permanent would be the more expensive mistake. Splitting this
+    // into typed causes is tracked work.
+    ("LANG_DENO_RUN", ErrorClass::Failed),
+    ("LANG_DENO_COMPILE_INPUT", ErrorClass::Failed),
+    ("LANG_DENO_COMPILE_ENCODE", ErrorClass::Failed),
+    ("LANG_DENO_ARTIFACT_DECODE", ErrorClass::Failed),
+    // The noop engine, found by widening the scan above — nobody had looked
+    // for these either.
+    ("LANG_PARSE_TPJSON", ErrorClass::Refused),
+    ("LANG_COMPILE", ErrorClass::Failed),
+    ("LANG_RUN_DECODE", ErrorClass::Failed),
 ];
 
 /// The class of one code. Unregistered codes are `Failed` — see module docs.
+/// Picks a pipeline error code that preserves the class of a language error.
+///
+/// The seam between the language engine and the pipeline used to flatten every
+/// cause into one wrapper: `FW_NODE_SCRIPT_COMPILE` is `Failed`, so a syntax
+/// error — which cannot possibly succeed on a second attempt — was handed to
+/// `logic.retry` as a transient fault. Passing the cause's own class through
+/// keeps `refused` meaning what the NodeIO contract says it means.
+pub fn wrapper_for(language_code: &str, refused: &'static str, failed: &'static str) -> &'static str {
+    match class_of(language_code) {
+        ErrorClass::Refused => refused,
+        ErrorClass::Failed => failed,
+    }
+}
+
 pub fn class_of(code: &str) -> ErrorClass {
     ERROR_CLASS_REGISTRY
         .iter()
@@ -366,8 +406,14 @@ mod tests {
                 {
                     let text = std::fs::read_to_string(&path).expect("read file");
                     let bytes = text.as_bytes();
+                    // Both namespaces. Scanning only `"FW_` is why eight
+                    // `LANG_DENO_*` codes went unregistered for the whole life
+                    // of the sandbox while this test stayed green — the module
+                    // header promised that an unregistered code fails the
+                    // build, and that promise covered one prefix.
+                    for prefix in ["\"FW_", "\"LANG_"] {
                     let mut i = 0;
-                    while let Some(pos) = text[i..].find("\"FW_") {
+                    while let Some(pos) = text[i..].find(prefix) {
                         let start = i + pos + 1;
                         let mut end = start;
                         while end < bytes.len()
@@ -385,6 +431,7 @@ mod tests {
                             missing.push(format!("{code} ({})", path.display()));
                         }
                         i = end;
+                    }
                     }
                 }
             }

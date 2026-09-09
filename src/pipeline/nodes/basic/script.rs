@@ -231,8 +231,14 @@ impl Node {
                 },
             )
             .map_err(|err| {
+                // A script the author wrote wrongly stays refused; only a real
+                // compiler fault is a failure worth retrying.
                 PipelineError::new(
-                    "FW_NODE_SCRIPT_COMPILE",
+                    crate::pipeline::error_class::wrapper_for(
+                        &err.code,
+                        "FW_NODE_SCRIPT_REJECTED",
+                        "FW_NODE_SCRIPT_COMPILE",
+                    ),
                     format!("node '{}': {}", node_id, err),
                 )
             })?;
@@ -306,8 +312,15 @@ impl NodeHandler for Node {
                     },
                 )
                 .map_err(|err| {
+                    // The `source_expr` path: this compiles at run time, so it
+                    // is the one that actually reaches logic.retry. A policy
+                    // violation here was being retried for the full budget.
                     PipelineError::new(
-                        "FW_NODE_SCRIPT_COMPILE",
+                        crate::pipeline::error_class::wrapper_for(
+                            &err.code,
+                            "FW_NODE_SCRIPT_REJECTED",
+                            "FW_NODE_SCRIPT_COMPILE",
+                        ),
                         format!("node '{}': {}", self.node_id, err),
                     )
                 })?;

@@ -25976,6 +25976,24 @@ fn internal_error(err: PlatformError) -> Response {
         | "HUB_TOKEN_SCOPE_INVALID"
         | "HUB_PUBLISH_EMPTY" => StatusCode::BAD_REQUEST,
         "HUB_ARTIFACT_TOO_LARGE" => StatusCode::PAYLOAD_TOO_LARGE,
+        // A pipeline the author wrote wrongly is a 4xx, and saying 500 tells
+        // them the server broke and invites a retry that must fail identically.
+        // This is the transport half of the refused/failed split in the NodeIO
+        // contract: refused is the caller's to fix, failed is ours.
+        "PLATFORM_PIPELINE_INVALID"
+        | "PLATFORM_PIPELINE_PARSE"
+        | "PLATFORM_PIPELINE_SCRIPT_INVALID"
+        | "PLATFORM_PIPELINE_PATH"
+        | "PLATFORM_PIPELINE_ID_MISSING"
+        | "PLATFORM_PIPELINE_META_INJECTED"
+        | "PLATFORM_PIPELINE_TRIGGER_MISMATCH"
+        | "PLATFORM_PIPELINE_REGISTRY_SCOPE_INVALID" => StatusCode::BAD_REQUEST,
+        // Someone else already owns that webhook path: a conflict with existing
+        // state rather than a malformed request.
+        "PLATFORM_PIPELINE_WEBHOOK_CONFLICT" => StatusCode::CONFLICT,
+        "PLATFORM_PIPELINE_MISSING" | "PLATFORM_PIPELINE_ACTIVE_SNAPSHOT_MISSING" => {
+            StatusCode::NOT_FOUND
+        }
         _ => StatusCode::INTERNAL_SERVER_ERROR,
     };
     (

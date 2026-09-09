@@ -839,7 +839,11 @@ pub(crate) fn run_in_pool(work: ScriptWork) -> Result<Value, String> {
         return Err("DenoSandboxError: worker pool is empty".into());
     }
     let idx = POOL_COUNTER.fetch_add(1, Ordering::Relaxed) % pool.len();
-    let timeout = Duration::from_millis(work.config.timeout_ms.saturating_add(1_000));
+    // ONE absolute deadline for the whole request. Queue wait and reply wait
+    // previously each got the full budget, so a caller could wait twice what
+    // it asked for before hearing anything.
+    let budget = Duration::from_millis(work.config.timeout_ms.saturating_add(1_000));
+    let deadline = std::time::Instant::now() + budget;
     let (reply_tx, reply_rx) = std::sync::mpsc::sync_channel::<Result<Value, String>>(1);
     // A blocking send would park this thread indefinitely once a worker's
     // queue fills — and `run_in_pool` is reached from async code, so that
@@ -848,7 +852,7 @@ pub(crate) fn run_in_pool(work: ScriptWork) -> Result<Value, String> {
         work,
         reply: reply_tx,
     };
-    let dispatch_deadline = std::time::Instant::now() + timeout;
+
     loop {
         match pool[idx].try_send(item) {
             Ok(()) => break,
@@ -856,7 +860,7 @@ pub(crate) fn run_in_pool(work: ScriptWork) -> Result<Value, String> {
                 return Err("DenoSandboxError: worker channel disconnected".to_string());
             }
             Err(std::sync::mpsc::TrySendError::Full(returned)) => {
-                if std::time::Instant::now() >= dispatch_deadline {
+                if std::time::Instant::now() >= deadline {
                     return Err("DenoSandboxError: sandbox queue full".to_string());
                 }
                 item = returned;
@@ -864,7 +868,8 @@ pub(crate) fn run_in_pool(work: ScriptWork) -> Result<Value, String> {
             }
         }
     }
-    reply_rx.recv_timeout(timeout).map_err(|err| match err {
+    let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+    reply_rx.recv_timeout(remaining).map_err(|err| match err {
         std::sync::mpsc::RecvTimeoutError::Timeout => {
             "DenoSandboxError: worker reply timeout".to_string()
         }
