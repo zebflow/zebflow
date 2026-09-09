@@ -477,11 +477,13 @@ pub fn parse_node_config(
             match dsl_flag.kind {
                 DslFlagKind::Scalar => {
                     let val = tokens.get(i + 1).cloned().unwrap_or_default();
+                    reject_unquoted_expression(&flag_str, &val)?;
                     config.insert(dsl_flag.config_key.clone(), coerce_scalar_value(&val));
                     i += 2;
                 }
                 DslFlagKind::CommaSeparatedList | DslFlagKind::RepeatedList => {
                     let val = tokens.get(i + 1).cloned().unwrap_or_default();
+                    reject_unquoted_expression(&flag_str, &val)?;
                     push_list_flag_value(&mut config, &mut list_modes, dsl_flag, &val)?;
                     i += 2;
                 }
@@ -491,6 +493,7 @@ pub fn parse_node_config(
                 }
                 DslFlagKind::KeyValuePairs => {
                     let raw = tokens.get(i + 1).cloned().unwrap_or_default();
+                    reject_unquoted_expression(&flag_str, &raw)?;
                     let (k, v) = if let Some(eq) = raw.find('=') {
                         (raw[..eq].trim().to_string(), raw[eq + 1..].to_string())
                     } else {
@@ -671,6 +674,26 @@ fn schema_property_for_type(type_spec: &str) -> Result<Value, String> {
 /// Parse flags for patch operations without DslFlag validation.
 /// Used only by `parse_patch` where node kind is not known at parse time.
 /// Validation against DslFlags happens later in the executor.
+/// Refuse a flag value that is the opening of an unquoted `{{ expr }}`.
+///
+/// The tokenizer splits on spaces outside quotes, so `--to {{ input.email }}`
+/// arrives as four tokens and the flag silently receives `{{`. That is the one
+/// mistake everybody makes with this syntax, and left alone it produces a
+/// pipeline that parses, activates, and then behaves wrongly — the config it
+/// stored says `{{`, which resolves to nothing.
+///
+/// One rule closes it: a value that opens an expression must also close it.
+fn reject_unquoted_expression(flag: &str, value: &str) -> Result<(), String> {
+    let trimmed = value.trim();
+    if trimmed.starts_with("{{") && !trimmed.ends_with("}}") {
+        return Err(format!(
+            "`{flag} {trimmed}` looks like an unquoted expression — the value was cut at the \
+             first space. Quote the whole thing: {flag} \"{{{{ … }}}}\""
+        ));
+    }
+    Ok(())
+}
+
 fn parse_flags_for_patch(tokens: &[String], cmd: &str) -> (HashMap<String, Value>, Option<String>) {
     let mut flags: HashMap<String, Value> = HashMap::new();
     let mut body: Option<String> = None;
@@ -2141,4 +2164,96 @@ fn build_pipe_mode(
     };
     auto_tidy_pipeline_graph(&mut graph);
     Ok(graph)
+}
+
+#[cfg(test)]
+mod quoting_tests {
+    use super::*;
+
+    /// A realistic graph: branching, an error path, expressions in several
+    /// flag kinds, quoted and bare values side by side. This is the shape the
+    /// guard has to survive — a one-line pipeline proves nothing about a
+    /// pipeline anyone writes.
+    const COMPLEX: &str = r#"
+[t] trigger.webhook --path /orders --method POST
+[k] n.kv.get --key "order:{{ input.query.id }}" --out-key order
+[c] logic.if --expr "input.order !== null"
+[m] n.mail.send --credential relay --to "{{ input.order.email }}" --subject "Order {{ input.query.id }}" --text "Thank you."
+[f] n.kv.set --key "seen:{{ input.query.id }}" --value "{{ input.order }}" --ttl 600
+[w] web.response --status 200 --message "ok"
+[e] web.response --status 404 --message "no such order"
+
+[t] -> [k]
+[k] -> [c]
+[c]:true -> [m]
+[m] -> [f]
+[f] -> [w]
+[c]:false -> [e]
+"#;
+
+    #[test]
+    fn a_complex_graph_of_quoted_expressions_parses_whole() {
+        let graph = build_pipeline_graph("complex-quoting", COMPLEX).expect("graph parses");
+        assert_eq!(graph.nodes.len(), 7, "every node survived");
+        assert_eq!(graph.edges.len(), 6, "every edge survived");
+
+        let by_id = |id: &str| {
+            graph
+                .nodes
+                .iter()
+                .find(|n| n.id == id)
+                .unwrap_or_else(|| panic!("node {id} missing"))
+        };
+
+        // Expressions reached their config intact — spaces and all.
+        assert_eq!(
+            by_id("k").config["key"], "order:{{ input.query.id }}",
+            "an interpolated key kept its expression"
+        );
+        assert_eq!(
+            by_id("m").config["to"], "{{ input.order.email }}",
+            "a whole-field expression kept its braces"
+        );
+        assert_eq!(
+            by_id("m").config["subject"], "Order {{ input.query.id }}",
+            "text around an expression survived tokenizing"
+        );
+        assert_eq!(
+            by_id("f").config["value"], "{{ input.order }}",
+            "the migrated --value flag carries an expression"
+        );
+        // Bare literals still work with no quotes at all.
+        assert_eq!(by_id("t").config["path"], "/orders");
+        assert_eq!(by_id("w").config["status"], 200);
+    }
+
+    /// The mistake everyone makes: the expression is not quoted, so the
+    /// tokenizer cuts it at the first space. It must be refused, not stored.
+    #[test]
+    fn an_unquoted_expression_is_refused_with_advice() {
+        let dsl = r#"
+[t] trigger.manual
+[m] n.mail.send --credential relay --to {{ input.email }} --subject hi --text hi
+
+[t] -> [m]
+"#;
+        let err = build_pipeline_graph("unquoted", dsl).expect_err("must refuse");
+        assert!(err.contains("unquoted expression"), "{err}");
+        assert!(err.contains("Quote the whole thing"), "{err}");
+    }
+
+    /// An expression with no inner spaces needs no quotes — the shell rule,
+    /// unchanged — so the guard must not refuse it.
+    #[test]
+    fn a_spaceless_expression_needs_no_quotes() {
+        let dsl = r#"
+[t] trigger.manual
+[k] n.kv.get --key {{input.id}} --out-key found
+
+[t] -> [k]
+"#;
+        let graph = build_pipeline_graph("spaceless", dsl).expect("graph parses");
+        let k = graph.nodes.iter().find(|n| n.id == "k").expect("node k");
+        assert_eq!(k.config["key"], "{{input.id}}");
+    }
 }
