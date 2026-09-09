@@ -18,8 +18,7 @@ use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use super::util::{eval_deno_expr, metadata_scope};
-use crate::language::LanguageEngine;
+use super::util::metadata_scope;
 use crate::pipeline::PipelineError;
 use crate::pipeline::model::NodeCapability;
 use crate::pipeline::model::{
@@ -126,9 +125,17 @@ pub enum ReturnMode {
 #[serde(rename_all = "snake_case")]
 pub enum LipSyncMode {
     None,
+    // The short aliases used to be reachable only through the retired
+    // --lipsync-expr, which parsed them by hand. Declaring them here keeps
+    // them working and makes them available on the literal flag for the first
+    // time.
+    #[serde(alias = "word_to_vowel")]
     Basic,
+    #[serde(alias = "timed")]
     TimedWords,
+    #[serde(alias = "audio")]
     AudioGuided,
+    #[serde(alias = "segmented")]
     AudioSegmented,
 }
 
@@ -149,11 +156,13 @@ pub struct Config {
     #[serde(default = "default_provider")]
     pub provider: String,
     pub credential_id: String,
-    pub text_expr: String,
+    /// What to say — a literal or `{{ expr }}`, arriving final. Until this
+    /// migration there was no literal form at all: even fixed words had to be
+    /// written as a quoted JS string.
+    pub text: String,
     #[serde(default)]
     pub output_path: Option<String>,
-    #[serde(default)]
-    pub output_path_expr: Option<String>,
+
     #[serde(default = "default_return_mode")]
     pub return_mode: ReturnMode,
     #[serde(default)]
@@ -164,8 +173,7 @@ pub struct Config {
     pub volume: f32,
     #[serde(default = "default_lipsync_mode")]
     pub lipsync_mode: LipSyncMode,
-    #[serde(default)]
-    pub lipsync_expr: Option<String>,
+
 }
 
 impl Default for Config {
@@ -173,15 +181,15 @@ impl Default for Config {
         Self {
             provider: default_provider(),
             credential_id: String::new(),
-            text_expr: String::new(),
+            text: String::new(),
             output_path: None,
-            output_path_expr: None,
+
             return_mode: default_return_mode(),
             speaker: None,
             speed: default_speed(),
             volume: default_volume(),
             lipsync_mode: default_lipsync_mode(),
-            lipsync_expr: None,
+
         }
     }
 }
@@ -265,8 +273,8 @@ pub fn definition() -> NodeDefinition {
                 required: true,
             },
             DslFlag {
-                flag: "--text-expr".to_string(),
-                config_key: "text_expr".to_string(),
+                flag: "--text".to_string(),
+                config_key: "text".to_string(),
                 description: "Expression that resolves to the text to synthesize.".to_string(),
                 kind: DslFlagKind::Scalar,
                 required: true,
@@ -275,13 +283,6 @@ pub fn definition() -> NodeDefinition {
                 flag: "--output-path".to_string(),
                 config_key: "output_path".to_string(),
                 description: "Zebflow FS output object path, for example audio/demo.wav.".to_string(),
-                kind: DslFlagKind::Scalar,
-                required: false,
-            },
-            DslFlag {
-                flag: "--output-path-expr".to_string(),
-                config_key: "output_path_expr".to_string(),
-                description: "Expression that resolves to the Zebflow FS output object path.".to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
             },
@@ -317,13 +318,6 @@ pub fn definition() -> NodeDefinition {
                 flag: "--lipsync".to_string(),
                 config_key: "lipsync_mode".to_string(),
                 description: "Optional lipsync mode: none, basic, timed_words, audio_guided, or audio_segmented.".to_string(),
-                kind: DslFlagKind::Scalar,
-                required: false,
-            },
-            DslFlag {
-                flag: "--lipsync-expr".to_string(),
-                config_key: "lipsync_expr".to_string(),
-                description: "Expression alternative for lipsync mode. Overrides --lipsync when set.".to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
             },
@@ -371,14 +365,6 @@ pub fn definition() -> NodeDefinition {
                 ..Default::default()
             },
             NodeFieldDef {
-                name: "output_path_expr".to_string(),
-                label: "Output Path Expr".to_string(),
-                field_type: NodeFieldType::Text,
-                placeholder: Some("'audio/' + $input.slug + '.wav'".to_string()),
-                help: Some("Expression alternative to Output Path. Overrides output_path when set.".to_string()),
-                ..Default::default()
-            },
-            NodeFieldDef {
                 name: "speaker".to_string(),
                 label: "Speaker".to_string(),
                 field_type: NodeFieldType::Number,
@@ -417,15 +403,7 @@ pub fn definition() -> NodeDefinition {
                 ..Default::default()
             },
             NodeFieldDef {
-                name: "lipsync_expr".to_string(),
-                label: "Lipsync Expr".to_string(),
-                field_type: NodeFieldType::Text,
-                placeholder: Some("$input.lipsync_method || 'none'".to_string()),
-                help: Some("Expression alternative for lipsync mode. Overrides Lipsync when set.".to_string()),
-                ..Default::default()
-            },
-            NodeFieldDef {
-                name: "text_expr".to_string(),
+                name: "text".to_string(),
                 label: "Text Expr".to_string(),
                 field_type: NodeFieldType::Textarea,
                 rows: Some(4),
@@ -448,7 +426,6 @@ pub fn definition() -> NodeDefinition {
                     LayoutItem::Field("output_path".to_string()),
                 ],
             },
-            LayoutItem::Field("output_path_expr".to_string()),
             LayoutItem::Row {
                 row: vec![
                     LayoutItem::Field("speaker".to_string()),
@@ -459,10 +436,9 @@ pub fn definition() -> NodeDefinition {
             LayoutItem::Row {
                 row: vec![
                     LayoutItem::Field("lipsync_mode".to_string()),
-                    LayoutItem::Field("lipsync_expr".to_string()),
                 ],
             },
-            LayoutItem::Field("text_expr".to_string()),
+            LayoutItem::Field("text".to_string()),
         ],
         ..Default::default()
     }
@@ -472,7 +448,6 @@ pub struct Node {
     config: Config,
     credentials: Option<Arc<CredentialService>>,
     platform: Option<Arc<PlatformService>>,
-    language: Arc<dyn LanguageEngine>,
 }
 
 impl Node {
@@ -480,13 +455,11 @@ impl Node {
         config: Config,
         credentials: Option<Arc<CredentialService>>,
         platform: Option<Arc<PlatformService>>,
-        language: Arc<dyn LanguageEngine>,
     ) -> Self {
         Self {
             config,
             credentials,
             platform,
-            language,
         }
     }
 }
@@ -535,13 +508,15 @@ impl NodeHandler for Node {
             ));
         }
 
-        let text_value = eval_deno_expr(
-            self.language.as_ref(),
-            &self.config.text_expr,
-            &input.payload,
-            &input.metadata,
-        )?;
-        let text = value_as_non_empty_string("text_expr", &text_value)?;
+        // Arrives final — `{{ }}` resolved engine-side before this ran. There
+        // is now a literal form: `--text "Welcome to Researchsite"`.
+        let text = self.config.text.trim().to_string();
+        if text.is_empty() {
+            return Err(PipelineError::new(
+                "AI_TTS_TEXT",
+                "config.text must not be empty",
+            ));
+        }
 
         let credential_id = self.config.credential_id.trim();
         if credential_id.is_empty() {
@@ -632,13 +607,8 @@ impl NodeHandler for Node {
             .map(|value| i32::try_from(value).ok())
             .flatten();
         let length_scale = speed_to_length_scale(self.config.speed)?;
-        let lipsync_mode = resolve_lipsync_mode(
-            self.config.lipsync_expr.as_deref(),
-            self.config.lipsync_mode,
-            &input.payload,
-            &input.metadata,
-            self.language.as_ref(),
-        )?;
+        // The mode arrives final — a literal or a resolved `{{ }}`.
+        let lipsync_mode = self.config.lipsync_mode;
 
         let bridge_result = run_piper_bridge(&PiperBridgeRequest {
             model_path: model_abs,
@@ -667,13 +637,7 @@ impl NodeHandler for Node {
         let needs_blob = matches!(self.config.return_mode, ReturnMode::Blob | ReturnMode::Both);
 
         let (file_rel_path, file_url) = if needs_file {
-            let output_rel = resolve_output_rel_path(
-                self.config.output_path.as_deref(),
-                self.config.output_path_expr.as_deref(),
-                &input.payload,
-                &input.metadata,
-                self.language.as_ref(),
-            )?;
+            let output_rel = resolve_output_rel_path(self.config.output_path.as_deref())?;
             let final_rel = normalize_audio_output_rel_path(&output_rel)?;
             let abs_path = layout.files_dir.join(&final_rel);
             if let Some(parent) = abs_path.parent() {
@@ -820,52 +784,9 @@ fn speed_to_length_scale(speed: f32) -> Result<Option<f32>, PipelineError> {
     }
 }
 
-fn value_as_non_empty_string(field: &str, value: &Value) -> Result<String, PipelineError> {
-    match value {
-        Value::String(text) if !text.trim().is_empty() => Ok(text.trim().to_string()),
-        _ => Err(PipelineError::new(
-            "AI_TTS_TEXT",
-            format!("{field} must resolve to a non-empty string"),
-        )),
-    }
-}
 
-fn parse_lipsync_mode(raw: &str) -> Result<LipSyncMode, PipelineError> {
-    match raw.trim().to_lowercase().as_str() {
-        "" | "none" => Ok(LipSyncMode::None),
-        "basic" | "word_to_vowel" => Ok(LipSyncMode::Basic),
-        "timed_words" | "timed" => Ok(LipSyncMode::TimedWords),
-        "audio_guided" | "audio" => Ok(LipSyncMode::AudioGuided),
-        "audio_segmented" | "segmented" => Ok(LipSyncMode::AudioSegmented),
-        other => Err(PipelineError::new(
-            "AI_TTS_LIPSYNC",
-            format!(
-                "unsupported lipsync mode '{other}' — expected none, basic, timed_words, audio_guided, or audio_segmented"
-            ),
-        )),
-    }
-}
 
-fn resolve_lipsync_mode(
-    lipsync_expr: Option<&str>,
-    fallback: LipSyncMode,
-    input: &Value,
-    metadata: &Value,
-    language: &dyn crate::language::LanguageEngine,
-) -> Result<LipSyncMode, PipelineError> {
-    let Some(expr) = lipsync_expr.map(str::trim).filter(|expr| !expr.is_empty()) else {
-        return Ok(fallback);
-    };
-    let value = eval_deno_expr(language, expr, input, metadata)?;
-    match value {
-        Value::String(raw) => parse_lipsync_mode(&raw),
-        Value::Null => Ok(fallback),
-        _ => Err(PipelineError::new(
-            "AI_TTS_LIPSYNC",
-            "lipsync_expr must resolve to a string or null",
-        )),
-    }
-}
+
 
 fn build_lipsync_payload(
     mode: LipSyncMode,
@@ -1502,24 +1423,13 @@ fn fallback_viseme(word: &str) -> &'static str {
     }
 }
 
-fn resolve_output_rel_path(
-    output_path: Option<&str>,
-    output_path_expr: Option<&str>,
-    input: &Value,
-    metadata: &Value,
-    language: &dyn crate::language::LanguageEngine,
-) -> Result<String, PipelineError> {
-    if let Some(expr) = output_path_expr
-        .map(str::trim)
-        .filter(|expr| !expr.is_empty())
-    {
-        let value = eval_deno_expr(language, expr, input, metadata)?;
-        return value_as_non_empty_string("output_path_expr", &value);
-    }
+/// Where the audio is written. Arrives final — a literal or a resolved
+/// `{{ expr }}`.
+fn resolve_output_rel_path(output_path: Option<&str>) -> Result<String, PipelineError> {
     let Some(path) = output_path.map(str::trim).filter(|path| !path.is_empty()) else {
         return Err(PipelineError::new(
             "AI_TTS_OUTPUT_PATH",
-            "output_path or output_path_expr is required when return mode writes a file",
+            "output_path is required when the return mode writes a file",
         ));
     };
     Ok(path.to_string())
@@ -1588,7 +1498,7 @@ mod tests {
     use super::{
         Config, LipSyncMode, Node, ReturnMode, WordTiming, basic_word_timings,
         build_audio_segmented_cues, expand_audio_guided_cues_for_word,
-        normalize_audio_output_rel_path, parse_lipsync_mode, reconcile_word_boundaries,
+        normalize_audio_output_rel_path, reconcile_word_boundaries,
         speed_to_length_scale, split_word_into_viseme_segments, tokenize_words,
         weighted_word_timings,
     };
@@ -1640,26 +1550,19 @@ mod tests {
         assert!(speed_to_length_scale(0.0).is_err());
     }
 
+    /// The short aliases survive the retirement of --lipsync-expr, because
+    /// they now live on the enum and reach the literal flag through serde.
     #[test]
-    fn parse_lipsync_modes_accepts_aliases() {
-        assert_eq!(parse_lipsync_mode("none").expect("mode"), LipSyncMode::None);
-        assert_eq!(
-            parse_lipsync_mode("word_to_vowel").expect("mode"),
-            LipSyncMode::Basic
-        );
-        assert_eq!(
-            parse_lipsync_mode("timed").expect("mode"),
-            LipSyncMode::TimedWords
-        );
-        assert_eq!(
-            parse_lipsync_mode("audio").expect("mode"),
-            LipSyncMode::AudioGuided
-        );
-        assert_eq!(
-            parse_lipsync_mode("segmented").expect("mode"),
-            LipSyncMode::AudioSegmented
-        );
-        assert!(parse_lipsync_mode("nope").is_err());
+    fn lipsync_mode_accepts_its_aliases_through_config() {
+        let parse = |raw: &str| {
+            serde_json::from_value::<LipSyncMode>(serde_json::json!(raw)).expect("mode")
+        };
+        assert_eq!(parse("none"), LipSyncMode::None);
+        assert_eq!(parse("word_to_vowel"), LipSyncMode::Basic);
+        assert_eq!(parse("basic"), LipSyncMode::Basic);
+        assert_eq!(parse("timed"), LipSyncMode::TimedWords);
+        assert_eq!(parse("audio"), LipSyncMode::AudioGuided);
+        assert_eq!(parse("segmented"), LipSyncMode::AudioSegmented);
     }
 
     #[test]
@@ -1821,19 +1724,18 @@ mod tests {
             Config {
                 provider: "piper".to_string(),
                 credential_id: "narrator-tts".to_string(),
-                text_expr: "'Halo, ini Narrator dari node n.ai.tts Zebflow.'".to_string(),
+                text: "Halo, ini Narrator dari node n.ai.tts Zebflow.".to_string(),
                 output_path: Some("audio/narrator-node-smoke.wav".to_string()),
-                output_path_expr: None,
+    
                 return_mode: ReturnMode::Both,
                 speaker: None,
                 speed: 1.0,
                 volume: 1.0,
                 lipsync_mode: LipSyncMode::Basic,
-                lipsync_expr: None,
+    
             },
             Some(platform.credentials.clone()),
             Some(platform.clone()),
-            Arc::new(DenoSandboxEngine::default()),
         );
 
         let out = node
@@ -1949,19 +1851,18 @@ mod tests {
             Config {
                 provider: "piper".to_string(),
                 credential_id: "narrator-tts".to_string(),
-                text_expr: "'Warmup untuk benchmark lipsync Zebflow.'".to_string(),
+                text: "Warmup untuk benchmark lipsync Zebflow.".to_string(),
                 output_path: None,
-                output_path_expr: None,
+    
                 return_mode: ReturnMode::Blob,
                 speaker: None,
                 speed: 1.0,
                 volume: 1.0,
                 lipsync_mode: LipSyncMode::None,
-                lipsync_expr: None,
+    
             },
             Some(platform.credentials.clone()),
             Some(platform.clone()),
-            Arc::new(DenoSandboxEngine::default()),
         );
         let _ = warmup
             .execute_async(NodeExecutionInput {
@@ -1989,19 +1890,18 @@ mod tests {
                     Config {
                         provider: "piper".to_string(),
                         credential_id: "narrator-tts".to_string(),
-                        text_expr: format!("{sentence:?}"),
+                        text: sentence.to_string(),
                         output_path: None,
-                        output_path_expr: None,
+            
                         return_mode: ReturnMode::Blob,
                         speaker: None,
                         speed: 1.0,
                         volume: 1.0,
                         lipsync_mode: mode,
-                        lipsync_expr: None,
+            
                     },
                     Some(platform.credentials.clone()),
                     Some(platform.clone()),
-                    Arc::new(DenoSandboxEngine::default()),
                 );
 
                 let started = Instant::now();

@@ -1366,7 +1366,6 @@ impl BasicPipelineEngine {
                     config,
                     self.credentials.clone(),
                     self.platform.clone(),
-                    self.language.clone(),
                 )))
             }
             logic::if_::NODE_KIND => Ok(NodeDispatch::LogicIf(logic::if_::Node::new(
