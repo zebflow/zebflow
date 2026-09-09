@@ -84,13 +84,20 @@ pub fn resolve_config_expressions(
     // abort the batch.  Flat try/catch (no IIFEs) avoids any interaction with loop-guard
     // instrumentation.
     let mut body = String::from(
-        "var $input = input.$input;\n\
-         var $item = input.$item;\n\
-         var $index = input.$index;\n\
-         var $count = input.$count;\n\
-         var $trigger = input.$trigger || null;\n\
-         var $nodes = input.$nodes || {};\n\
-         var $placeholder = input.$placeholder || {};\n",
+        // The scope object arrives as `input`; alias it first so the payload
+        // can take that name. `input` is what every doc, every example and
+        // the script node call the payload — binding only `$input` was why
+        // `{{ input.field }}` silently evaluated to undefined everywhere it
+        // was used as a whole value.
+        "var __scope = input;\n\
+         var input = __scope.$input;\n\
+         var $input = input;\n\
+         var $item = __scope.$item;\n\
+         var $index = __scope.$index;\n\
+         var $count = __scope.$count;\n\
+         var $trigger = __scope.$trigger || null;\n\
+         var $nodes = __scope.$nodes || {};\n\
+         var $placeholder = __scope.$placeholder || {};\n",
     );
     for (i, expr) in exprs.iter().enumerate() {
         body.push_str(&format!("var _e{i} = null;\n"));

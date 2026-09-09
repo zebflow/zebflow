@@ -2035,15 +2035,8 @@ impl PipelineEngine for BasicPipelineEngine {
                                 format!("node '{node_id}' --template set but markup not loaded"),
                             ))
                         } else {
-                            // Resolve response envelope from config + input
-                            let location = config.location.as_deref().map(|loc| {
-                                if loc.starts_with("$.") || loc == "$" {
-                                    web_response::resolve_json_path_string(&input.payload, loc)
-                                        .unwrap_or_else(|| loc.to_string())
-                                } else {
-                                    loc.to_string()
-                                }
-                            });
+                            // Location arrives final — {{ }} resolved above.
+                            let location = config.location.clone();
                             let status = config
                                 .status
                                 .or_else(|| if location.is_some() { Some(302) } else { None });
@@ -4609,6 +4602,44 @@ mod tests {
             .expect("execute");
 
         assert_eq!(out.value["total"], 32);
+    }
+
+
+    /// The one resolution mechanism must reach the response node like any
+    /// other: a whole {{ }} in --message or --location is the typed value.
+    #[tokio::test]
+    async fn a_web_response_config_is_resolved_like_any_other_node() {
+        let dsl = r#"
+[a] trigger.manual
+[b] script -- "return { u: 'hello-from-expr' };"
+[c] web.response --message "{{ input.u }}"
+
+[a] -> [b]
+[b] -> [c]
+"#;
+        let graph = build_pipeline_graph("web-response-expr-test", dsl).expect("graph");
+        let engine = BasicPipelineEngine::default();
+        let out = engine
+            .execute_async(
+                &graph,
+                &PipelineContext {
+                    owner: "test".to_string(),
+                    project: "test".to_string(),
+                    pipeline: "web-response-expr-test".to_string(),
+                    request_id: "req-wr".to_string(),
+                    route: String::new(),
+                    input: json!({}),
+                    trigger: None,
+                    placeholder: None,
+                },
+            )
+            .await
+            .expect("execute");
+        assert_eq!(
+            out.value["__zf_response"]["message"], "hello-from-expr",
+            "resolved message did not reach the envelope: {}",
+            out.value
+        );
     }
 
     #[tokio::test]
