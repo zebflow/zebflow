@@ -239,8 +239,8 @@ Key config fields and their DSL flag equivalents:
 | `n.table.query` | `limit` | `--limit` | Maximum rows materialized from the query result |
 | `n.script` | `source` | `-- <code>` (body) | Script source code |
 | `n.web.response` | `template` | `--template` | TSX path relative to `templates/`, e.g. `pages/home.tsx` (`.tsx` extension optional) |
-| `n.web.response` | `location` | `--location` | Redirect URL; supports `$.field` for dynamic resolution from payload |
-| `n.web.response` | `set_cookie` | `--set-cookie` | Cookie spec string: `name=X,value=$.token,http-only,max-age=86400` |
+| `n.web.response` | `location` | `--location` | Redirect URL; supports `{{ input.field }}` for dynamic resolution from payload |
+| `n.web.response` | `set_cookie` | `--set-cookie` | Cookie spec string: `name=X,value={{ input.token }},http-only,max-age=86400` |
 | `n.web.response` | `status` | `--status` | HTTP status code |
 | `n.web.static.generate` | `template` | `--template` | TSX path relative to the project pipeline workspace, e.g. `pages/lyric.tsx` |
 | `n.web.static.generate` | `output_path` | `--output-path` | Zebflow FS object path; supports `{{ expr }}` |

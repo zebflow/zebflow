@@ -8,12 +8,13 @@
 //!
 //! | Use | DSL |
 //! |---|---|
-//! | Activation email | `\| n.mail.send --credential relay --to $.email --subject "Activate your account" --text $.body` |
+//! | Activation email | `\| n.mail.send --credential relay --to "{{ input.email }}" --subject "Activate your account" --text "{{ input.body }}"` |
 //! | Fixed recipient | `\| n.mail.send --credential relay --to ops@example.com --subject "Backup done" --text "ok"` |
 //!
 //! `--to`, `--subject`, `--text`, `--html`, `--from` and `--reply-to` each
-//! accept either a literal or a `$.path` into the flowing payload, the same
-//! convention `n.auth.token.create` uses for claims.
+//! take a literal or `{{ expr }}` — the one resolution mechanism
+//! (`docs/contracts/kinds/node-io`): `--to "{{ input.email }}"`. The engine
+//! resolves before this node runs, so the config that arrives here is final.
 //!
 //! The output carries what was sent and to whom — never the credential.
 
@@ -47,8 +48,7 @@ pub fn definition() -> NodeDefinition {
         capabilities: vec![NodeCapability::Credential],
         title: "Send Mail".to_string(),
         description: "Sends one email through a stored smtp credential's relay. \
-                      to/subject/text/html accept literals or $.path values from \
-                      the payload. Submission only — deliverability (SPF, DKIM, \
+                      to/subject/text/html take a literal or {{ expr }}. Submission only — deliverability (SPF, DKIM, \
                       reputation) is the relay's job."
             .to_string(),
         input_schema: json!({
@@ -71,10 +71,10 @@ pub fn definition() -> NodeDefinition {
             "type": "object",
             "properties": {
                 "credential_id": { "type": "string", "description": "ID of the smtp credential." },
-                "to":       { "type": "string", "description": "Recipient — literal address or $.path." },
-                "subject":  { "type": "string", "description": "Subject — literal or $.path." },
-                "text":     { "type": "string", "description": "Plain-text body — literal or $.path." },
-                "html":     { "type": "string", "description": "HTML body — literal or $.path. With text, sent as multipart/alternative." },
+                "to":       { "type": "string", "description": "Recipient — literal address or {{ expr }}." },
+                "subject":  { "type": "string", "description": "Subject — literal or {{ expr }}." },
+                "text":     { "type": "string", "description": "Plain-text body — literal or {{ expr }}." },
+                "html":     { "type": "string", "description": "HTML body — literal or {{ expr }}. With text, sent as multipart/alternative." },
                 "from":     { "type": "string", "description": "Override the credential's From." },
                 "reply_to": { "type": "string", "description": "Reply-To address." }
             }
@@ -90,28 +90,28 @@ pub fn definition() -> NodeDefinition {
             crate::pipeline::model::DslFlag {
                 flag: "--to".to_string(),
                 config_key: "to".to_string(),
-                description: "Recipient address — literal or $.path into the payload.".to_string(),
+                description: "Recipient address — literal or {{ expr }}.".to_string(),
                 kind: crate::pipeline::model::DslFlagKind::Scalar,
                 required: true,
             },
             crate::pipeline::model::DslFlag {
                 flag: "--subject".to_string(),
                 config_key: "subject".to_string(),
-                description: "Subject line — literal or $.path.".to_string(),
+                description: "Subject line — literal or {{ expr }}.".to_string(),
                 kind: crate::pipeline::model::DslFlagKind::Scalar,
                 required: true,
             },
             crate::pipeline::model::DslFlag {
                 flag: "--text".to_string(),
                 config_key: "text".to_string(),
-                description: "Plain-text body — literal or $.path.".to_string(),
+                description: "Plain-text body — literal or {{ expr }}.".to_string(),
                 kind: crate::pipeline::model::DslFlagKind::Scalar,
                 required: false,
             },
             crate::pipeline::model::DslFlag {
                 flag: "--html".to_string(),
                 config_key: "html".to_string(),
-                description: "HTML body — literal or $.path. Given both, the mail is multipart/alternative.".to_string(),
+                description: "HTML body — literal or {{ expr }}. Given both, the mail is multipart/alternative.".to_string(),
                 kind: crate::pipeline::model::DslFlagKind::Scalar,
                 required: false,
             },
@@ -134,12 +134,12 @@ pub fn definition() -> NodeDefinition {
             use crate::pipeline::model::{NodeFieldDef, NodeFieldType};
             vec![
                 NodeFieldDef { name: "credential_id".to_string(), label: "SMTP Credential".to_string(), field_type: NodeFieldType::Text, help: Some("Credential of kind smtp naming the relay.".to_string()), ..Default::default() },
-                NodeFieldDef { name: "to".to_string(), label: "To".to_string(), field_type: NodeFieldType::Text, help: Some("Literal address or $.path into the payload.".to_string()), ..Default::default() },
-                NodeFieldDef { name: "subject".to_string(), label: "Subject".to_string(), field_type: NodeFieldType::Text, help: Some("Literal or $.path.".to_string()), ..Default::default() },
-                NodeFieldDef { name: "text".to_string(), label: "Text Body".to_string(), field_type: NodeFieldType::Textarea, help: Some("Plain-text body — literal or $.path.".to_string()), ..Default::default() },
+                NodeFieldDef { name: "to".to_string(), label: "To".to_string(), field_type: NodeFieldType::Text, help: Some("Literal address or {{ expr }}.".to_string()), ..Default::default() },
+                NodeFieldDef { name: "subject".to_string(), label: "Subject".to_string(), field_type: NodeFieldType::Text, help: Some("Literal or {{ expr }}.".to_string()), ..Default::default() },
+                NodeFieldDef { name: "text".to_string(), label: "Text Body".to_string(), field_type: NodeFieldType::Textarea, help: Some("Plain-text body — literal or {{ expr }}.".to_string()), ..Default::default() },
                 NodeFieldDef { name: "html".to_string(), label: "HTML Body".to_string(), field_type: NodeFieldType::Textarea, help: Some("HTML body — with a text body, sent as multipart/alternative.".to_string()), ..Default::default() },
                 NodeFieldDef { name: "from".to_string(), label: "From".to_string(), field_type: NodeFieldType::Text, help: Some("Overrides the credential's From address.".to_string()), ..Default::default() },
-                NodeFieldDef { name: "reply_to".to_string(), label: "Reply-To".to_string(), field_type: NodeFieldType::Text, help: Some("Where replies should go when that is not the From address — literal or $.path.".to_string()), ..Default::default() },
+                NodeFieldDef { name: "reply_to".to_string(), label: "Reply-To".to_string(), field_type: NodeFieldType::Text, help: Some("Where replies should go when that is not the From address — literal or {{ expr }}.".to_string()), ..Default::default() },
             ]
         },
         layout: vec![
@@ -191,21 +191,6 @@ impl Node {
             config,
             credentials,
         })
-    }
-}
-
-/// `$.path` resolves into the payload; anything else is the literal itself.
-/// Same convention as `n.auth.token.create` claims.
-fn resolve(expr: &str, payload: &Value) -> String {
-    if let Some(pointer) = expr.strip_prefix("$.") {
-        let ptr = format!("/{}", pointer.replace('.', "/"));
-        match payload.pointer(&ptr) {
-            Some(Value::String(s)) => s.clone(),
-            Some(other) => other.to_string(),
-            None => String::new(),
-        }
-    } else {
-        expr.to_string()
     }
 }
 
@@ -278,39 +263,24 @@ impl NodeHandler for Node {
         };
 
         // --- Resolve the message from config + payload ---
-        let to_raw = resolve(&self.config.to, &input.payload);
+        let to_raw = self.config.to.clone();
         let to = parse_mailbox(&to_raw, "recipient")?;
         let from_raw = self
             .config
             .from
-            .as_deref()
-            .map(|expr| resolve(expr, &input.payload))
+            .clone()
             .filter(|s| !s.trim().is_empty())
             .unwrap_or_else(|| secret_str(secret, "from").to_string());
         let from = parse_mailbox(&from_raw, "from")?;
-        let subject = resolve(&self.config.subject, &input.payload);
-        let text = self
-            .config
-            .text
-            .as_deref()
-            .map(|expr| resolve(expr, &input.payload));
-        let html = self
-            .config
-            .html
-            .as_deref()
-            .map(|expr| resolve(expr, &input.payload));
+        let subject = self.config.subject.clone();
+        let text = self.config.text.clone();
+        let html = self.config.html.clone();
 
         let mut builder = Message::builder()
             .from(from)
             .to(to.clone())
             .subject(subject.clone());
-        if let Some(reply_to) = self
-            .config
-            .reply_to
-            .as_deref()
-            .map(|expr| resolve(expr, &input.payload))
-            .filter(|s| !s.trim().is_empty())
-        {
+        if let Some(reply_to) = self.config.reply_to.clone().filter(|s| !s.trim().is_empty()) {
             builder = builder.reply_to(parse_mailbox(&reply_to, "reply-to")?);
         }
         let message = match (text, html) {
@@ -415,7 +385,7 @@ mod tests {
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
     use tokio::net::TcpListener;
 
-    use super::{Config, Node, resolve};
+    use super::{Config, Node};
     use crate::pipeline::nodes::{NodeExecutionInput, NodeHandler};
     use crate::platform::model::{PlatformConfig, UpsertProjectCredentialRequest};
     use crate::platform::services::PlatformService;
@@ -478,17 +448,6 @@ mod tests {
         (port, handle)
     }
 
-    #[test]
-    fn a_dollar_path_reads_the_payload_and_a_literal_stays_itself() {
-        let payload = json!({ "email": "sari@example.test", "deep": { "name": "Sari" } });
-        assert_eq!(resolve("$.email", &payload), "sari@example.test");
-        assert_eq!(resolve("$.deep.name", &payload), "Sari");
-        assert_eq!(resolve("ops@example.test", &payload), "ops@example.test");
-        // A path that resolves to nothing is empty, not the literal — otherwise
-        // a typo'd path would be mailed as an address.
-        assert_eq!(resolve("$.missing", &payload), "");
-    }
-
     #[tokio::test]
     async fn the_node_speaks_smtp_and_the_relay_receives_the_message() {
         let (port, sink) = smtp_sink().await;
@@ -519,9 +478,12 @@ mod tests {
         let node = Node::new(
             Config {
                 credential_id: "relay".to_string(),
-                to: "$.email".to_string(),
+                // Literals here: {{ }} resolution is the engine's job, done
+                // before a node runs, and tested at the engine layer. A node
+                // test sees what a node sees — final config.
+                to: "sari@example.test".to_string(),
                 subject: "Activate your account".to_string(),
-                text: Some("$.body".to_string()),
+                text: Some("Welcome to researchsite.".to_string()),
                 ..Default::default()
             },
             platform.credentials.clone(),
@@ -532,7 +494,7 @@ mod tests {
             .execute_async(NodeExecutionInput {
                 node_id: "mail".to_string(),
                 input_pin: "in".to_string(),
-                payload: json!({ "email": "sari@example.test", "body": "Welcome to researchsite." }),
+                payload: json!({}),
                 metadata: json!({
                     "owner": "superadmin",
                     "project": "default",
@@ -555,7 +517,7 @@ mod tests {
         );
         assert!(
             transcript.contains("RCPT TO:<sari@example.test>"),
-            "the $.email path did not reach the envelope: {transcript}"
+            "the recipient did not reach the envelope: {transcript}"
         );
         assert!(
             transcript.contains("Welcome to researchsite."),
@@ -642,7 +604,7 @@ mod tests {
         let node = Node::new(
             Config {
                 credential_id: "relay".to_string(),
-                to: "$.email".to_string(),
+                to: "not an address".to_string(),
                 subject: "hi".to_string(),
                 text: Some("hi".to_string()),
                 ..Default::default()
@@ -655,7 +617,7 @@ mod tests {
             .execute_async(NodeExecutionInput {
                 node_id: "mail".to_string(),
                 input_pin: "in".to_string(),
-                payload: json!({ "email": "not an address" }),
+                payload: json!({}),
                 metadata: json!({
                     "owner": "superadmin",
                     "project": "default",

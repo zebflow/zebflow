@@ -68,8 +68,8 @@ A public blog with paginated listing and post detail pages, plus a JWT-protected
 ```
 | trigger.webhook --path /auth/login --method POST
 | script -- "const { username, password } = input; if (username === 'admin' && password === process.env.ADMIN_PASSWORD) { return { user: username, roles: ['admin'] }; } return { error: 'invalid credentials', __status: 401 }"
-| auth.token.create --credential my-jwt --claim sub=$.user --claim roles=$.roles:public --expires-in 86400
-| web.response --location /admin --set-cookie name=session,value=$.access_token,http-only,max-age=86400,path=/
+| auth.token.create --credential my-jwt --claim sub={{ input.user }} --claim roles={{ input.roles }}:public --expires-in 86400
+| web.response --location /admin --set-cookie name=session,value={{ input.access_token }},http-only,max-age=86400,path=/
 ```
 
 ---

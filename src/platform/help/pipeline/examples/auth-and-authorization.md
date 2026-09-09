@@ -63,8 +63,8 @@ Create a `jwt_signing_key` credential in the Credentials UI. Fields:
 | pg.query --credential main-db --params-expr "[input.username]" \
     -- "SELECT id::text, username, role FROM users WHERE username = $1 LIMIT 1"
 | script -- "const user = input.rows?.[0]; if (!user) return { ok: false, error: 'invalid credentials', __status: 401 }; return { id: user.id, username: user.username, roles: [user.role] }"
-| auth.token.create --credential my-jwt --claim sub=$.id --claim username=$.username:public --claim roles=$.roles:public --expires-in 86400
-| web.response --location /dashboard --set-cookie name=session,value=$.access_token,http-only,max-age=86400,path=/
+| auth.token.create --credential my-jwt --claim sub={{ input.id }} --claim username={{ input.username }}:public --claim roles={{ input.roles }}:public --expires-in 86400
+| web.response --location /dashboard --set-cookie name=session,value={{ input.access_token }},http-only,max-age=86400,path=/
 ```
 
 > **Note:** `roles` must be an array in the JWT claim — wrap a single DB `role` string with `[user.role]`. If your schema already returns an array (junction table, `text[]` column), use it directly.
@@ -122,7 +122,7 @@ Role mismatch → `auth_forbidden_redirect` fires (browser) or 403 JSON (fetch).
 - `trigger.webhook --auth-type jwt --auth-credential <id>` — auto-verify JWT; `input.auth` = decoded claims
 - `trigger.webhook --auth-required-role <roles>` — comma-separated roles; checks against JWT `roles` array claim. Empty = any authenticated user.
 - `pg.query` — user lookup and insert
-- `auth.token.create --claim key=$.field` — sign JWT; output `$.access_token`. Append `:public` to expose that claim in the browser via `ctx.auth` (e.g. `--claim role=$.role:public`). Private claims like `sub` never reach the browser DOM.
+- `auth.token.create --claim key={{ input.field }}` — sign JWT; output `{{ input.access_token }}`. Append `:public` to expose that claim in the browser via `ctx.auth` (e.g. `--claim role={{ input.role }}:public`). Private claims like `sub` never reach the browser DOM.
 - `web.response --set-cookie` — set HttpOnly session cookie
 - `web.response --location` — redirect after login/logout/register
 - `web.response --template` — render protected pages

@@ -70,9 +70,9 @@ JWT claims are **private by default**. Only claims explicitly marked `:public` i
 
 ```zf
 | auth.token.create --credential my-jwt \
-    --claim sub=$.id \
-    --claim name=$.fullname:public \   ← visible as ctx.auth.name
-    --claim role=$.role:public         ← visible as ctx.auth.role
+    --claim sub={{ input.id }} \
+    --claim name={{ input.fullname }}:public \   ← visible as ctx.auth.name
+    --claim role={{ input.role }}:public         ← visible as ctx.auth.role
     # sub is signed but never reaches the browser
 ```
 

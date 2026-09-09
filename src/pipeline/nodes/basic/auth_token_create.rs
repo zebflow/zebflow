@@ -26,7 +26,7 @@ pub fn definition() -> NodeDefinition {
         kind: NODE_KIND.to_string(),
         capabilities: vec![NodeCapability::Credential],
         title: "Create Auth Token".to_string(),
-        description: "Signs a JWT access token from input data using a stored jwt_signing_key credential. Supports HS256 and RS256 algorithms. Claims marked with `:public` (e.g. `--claim name=$.fullname:public`) are the only ones exposed in the browser via `ctx.auth`; all others remain server-only.".to_string(),
+        description: "Signs a JWT access token from input data using a stored jwt_signing_key credential. Supports HS256 and RS256 algorithms. Claims marked with `:public` (e.g. `--claim \"name={{ input.fullname }}:public\"`) are the only ones exposed in the browser via `ctx.auth`; all others remain server-only.".to_string(),
         input_schema: json!({
             "type": "object",
             "description": "Input payload for claim extraction."
@@ -49,7 +49,7 @@ pub fn definition() -> NodeDefinition {
         "properties": {
             "credential_id": { "type": "string", "description": "ID of the jwt_signing_key credential." },
             "expires_in": { "type": "integer", "description": "Token lifetime in seconds (default 900)." },
-            "claims": { "type": "object", "description": "Map of claim_name → value. Append `:public` to expose a claim in the browser (e.g. `name=$.fullname:public`). Claims without `:public` are signed into the JWT but never reach the browser DOM." },
+            "claims": { "type": "object", "description": "Map of claim_name → value. A value is a literal or {{ expr }}. Append `:public` to expose a claim in the browser. Claims without `:public` are signed into the JWT but never reach the browser DOM." },
             "issuer": { "type": "string" },
             "audience": { "type": "string" }
         }
@@ -72,7 +72,7 @@ pub fn definition() -> NodeDefinition {
             crate::pipeline::model::DslFlag {
                 flag: "--claim".to_string(),
                 config_key: "claims".to_string(),
-                description: "Map a JWT claim from the input payload. Repeat for each claim. Format: claim_name=$.field_path or claim_name=literal. Append :public to expose the claim in the browser via ctx.auth (e.g. --claim name=$.fullname:public). Claims without :public are signed but never reach the browser DOM. e.g. --claim sub=$.id --claim name=$.fullname:public --claim role=$.role:public".to_string(),
+                description: "Map a JWT claim from the input payload. Repeat for each claim. Format: claim_name={{ expr }} or claim_name=literal. Append :public to expose the claim in the browser via ctx.auth (e.g. --claim \"name={{ input.fullname }}:public\"). Claims without :public are signed but never reach the browser DOM. e.g. --claim \"sub={{ input.id }}\" --claim \"name={{ input.fullname }}:public\"".to_string(),
                 kind: crate::pipeline::model::DslFlagKind::KeyValuePairs,
                 required: false,
             },
@@ -98,7 +98,7 @@ pub fn definition() -> NodeDefinition {
                 NodeFieldDef { name: "expires_in".to_string(), label: "Expires In (seconds)".to_string(), field_type: NodeFieldType::Text, placeholder: Some("900".to_string()), help: Some("Token lifetime in seconds. Defaults to 900 when omitted.".to_string()), ..Default::default() },
                 NodeFieldDef { name: "issuer".to_string(), label: "Issuer (iss)".to_string(), field_type: NodeFieldType::Text, help: Some("Optional JWT issuer claim written as iss.".to_string()), ..Default::default() },
                 NodeFieldDef { name: "audience".to_string(), label: "Audience (aud)".to_string(), field_type: NodeFieldType::Text, help: Some("Optional JWT audience claim written as aud.".to_string()), ..Default::default() },
-                NodeFieldDef { name: "claims".to_string(), label: "Claims".to_string(), field_type: NodeFieldType::ClaimsPairs, help: Some("Map claim name → $.field_path or literal. Toggle \"Public\" to expose that claim in the browser via ctx.auth. Private claims (no toggle) are signed into the JWT but never reach the browser DOM.".to_string()), ..Default::default() },
+                NodeFieldDef { name: "claims".to_string(), label: "Claims".to_string(), field_type: NodeFieldType::ClaimsPairs, help: Some("Map claim name → literal or {{ expr }}. Toggle \"Public\" to expose that claim in the browser via ctx.auth. Private claims (no toggle) are signed into the JWT but never reach the browser DOM.".to_string()), ..Default::default() },
             ]
         },
         layout: vec![
@@ -119,7 +119,7 @@ pub struct Config {
     /// Token lifetime in seconds (default 900).
     #[serde(default)]
     pub expires_in: Option<i64>,
-    /// Map of claim_name → JSON pointer path (`$.field`) or literal value.
+    /// Map of claim_name → literal or `{{ expr }}` (resolved engine-side).
     #[serde(default)]
     pub claims: Map<String, Value>,
     /// Optional JWT issuer (`iss`).
@@ -150,15 +150,10 @@ impl Node {
     }
 }
 
-/// Resolves a claim value: strings starting with `$.` are treated as JSON pointer paths
-/// into the input payload; everything else is used as a literal.
-fn resolve_claim(val: &Value, payload: &Value) -> Value {
-    if let Value::String(expr) = val {
-        if let Some(pointer) = expr.strip_prefix("$.") {
-            let ptr = format!("/{}", pointer.replace('.', "/"));
-            return payload.pointer(&ptr).cloned().unwrap_or(Value::Null);
-        }
-    }
+/// A claim value arrives final: `{{ expr }}` resolution already happened
+/// engine-side before this node ran (`docs/contracts/kinds/node-io`), so a
+/// value here is the value — the old `$.path` convention is retired.
+fn resolve_claim(val: &Value, _payload: &Value) -> Value {
     val.clone()
 }
 

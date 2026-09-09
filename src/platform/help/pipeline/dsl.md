@@ -76,7 +76,7 @@ Both modes compile to the same JSON graph model.
 | List, compact | `--auth-required-role admin,lecturer` | `["admin","lecturer"]` array |
 | List, repeated | `--from "posts.csv as posts" --from "authors.csv as authors"` | `["posts.csv as posts","authors.csv as authors"]` array |
 | Bool | `--http-only` | `true` (no value consumed) |
-| Key-value pairs | `--claim name=$.name --claim roles=$.roles` | `{"name":"$.name","roles":"$.roles"}` object |
+| Key-value pairs | `--claim name={{ input.name }} --claim roles={{ input.roles }}` | `{"name":"{{ input.name }}","roles":"{{ input.roles }}"}` object |
 
 Key-value pairs (`--claim`, `--header`, `--set-cookie`) repeat the **same flag with a different key** each time — each occurrence adds one entry to a map.
 List flags repeat **values for the same key**. Every list flag accepts either compact comma form (`--cases create,update`) or repeated form (`--cases create --cases update`).
@@ -408,12 +408,12 @@ n.logic.match --help            # same
 | `trigger.schedule` | `n.trigger.schedule` | `--cron <expr> --timezone <tz>` |
 | `trigger.manual` | `n.trigger.manual` | _(none)_ |
 | `script` | `n.script` | `--lang <js\|ts>` or `-- <code>` |
-| `web.response` | `n.web.response` | `--template <pages/name>` (no `.tsx`), `--status`, `--location`, `--message`, `--body <$.path>`, `--set-cookie`, `--header <key=value>`, `--load-scripts <urls>` |
+| `web.response` | `n.web.response` | `--template <pages/name>` (no `.tsx`), `--status`, `--location`, `--message`, `--body <{{ input.path }}>`, `--set-cookie`, `--header <key=value>`, `--load-scripts <urls>` |
 | `web.static.generate` | `n.web.static.generate` | `--template <pages/name.tsx> --output-path <path> [--route <url>] [--on-conflict overwrite\|skip\|error]` — render a TSX page once and write the generated HTML into Zebflow FS; output `{ generated: { status, path, url, route, template, bytes } }` |
 | `http.request` | `n.http.request` | `--url <url> --method <GET\|POST> [--timeout-ms <ms>] [--header <key=value> ...] [--merge-input]` |
 | `sekejap.query` | `n.sekejap.query` | `[--params-path <dot.path>] [--params-expr <js-expr>] [--query-expr <js-expr>] -- "SELECT ... WHERE id = $1"` — raw Sekejap SQL with `$1`/`$2` bind params; output `{ rows: [...] }` |
 | `pg.query` | `n.pg.query` | `--credential <credential-slug>` (**credential slug** from `get credentials`, kind=postgres) `[--params-path <dot.path>] [--params-expr <js-expr>] [--credential-expr <js-expr>] [--query-expr <js-expr>]` + `-- <sql>` |
-| `auth.token.create` | `n.auth.token.create` | `--credential <jwt_key_id> [--expires-in <secs>] [--claim key=$.field ...] [--issuer <iss>] [--audience <aud>]` — append `:public` to a claim value to expose it in the browser via `ctx.auth` (e.g. `--claim name=$.fullname:public`). Use `--claim roles=$.roles:public` where `roles` is an array — role-based access control always uses the `roles` array claim. Claims without `:public` are signed but never reach the browser DOM. Secure by default — `ctx.auth` is `null` unless at least one claim is marked public. |
+| `auth.token.create` | `n.auth.token.create` | `--credential <jwt_key_id> [--expires-in <secs>] [--claim key={{ input.field }} ...] [--issuer <iss>] [--audience <aud>]` — append `:public` to a claim value to expose it in the browser via `ctx.auth` (e.g. `--claim name={{ input.fullname }}:public`). Use `--claim roles={{ input.roles }}:public` where `roles` is an array — role-based access control always uses the `roles` array claim. Claims without `:public` are signed but never reach the browser DOM. Secure by default — `ctx.auth` is `null` unless at least one claim is marked public. |
 | `table.convert` | `n.table.convert` | `(--from <path> \| --from-expr <expr>) [--from-format csv\|json\|ndjson\|parquet] [--to <path>] [--to-format csv\|json\|ndjson\|parquet] [--to-json] [--preview <n>] [--limit <n>]` — converts CSV/JSON/NDJSON/Parquet between ZebFS and downstream row JSON. |
 | `table.query` | `n.table.query` | `--from "<path-or-expr> as <alias>" ... --query "<select>" [--engine geodatafusion] [--params-path <dot.path>] [--params-expr <js-expr>] [--to <path>] [--format csv\|json\|ndjson\|parquet] [--to-json] [--preview <n>] [--limit <n>]` — runs GeoDataFusion SQL over CSV/JSON/NDJSON/Parquet ZebFS objects or upstream row expressions. |
 | `fs.list` | `n.fs.list` | `[--path <prefix> \| --prefix <prefix>]` — list immediate children under a ZebFS prefix; output `{ fs: { operation, path, count, entries } }`. |

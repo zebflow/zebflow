@@ -44,17 +44,17 @@ never appears in a pipeline definition, a trace, or the node's output.
 ```
 register pipelines/account/activate --
   | trigger.webhook --path /account/activate --method POST
-  | n.sekejap.query --collection users --filter "email = $.email"
+  | n.sekejap.query --collection users --filter "email = {{ input.email }}"
   | n.mail.send --credential relay
-                --to $.email
+                --to {{ input.email }}
                 --subject "Activate your Researchsite account"
-                --text $.message
+                --text {{ input.message }}
   | web.response
 ```
 
 `--to`, `--subject`, `--text`, `--html`, `--from` and `--reply-to` each take
-either a literal or a `$.path` into the flowing payload — the same convention
-`n.auth.token.create` uses for claims. `$.deep.name` reads a nested field; a
+either a literal or a `{{ input.path }}` into the flowing payload — the same convention
+`n.auth.token.create` uses for claims. `{{ input.deep.name }}` reads a nested field; a
 path that matches nothing resolves to empty rather than to the literal text,
 so a typo cannot be posted as an address.
 

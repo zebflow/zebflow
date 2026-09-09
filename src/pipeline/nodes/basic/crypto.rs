@@ -58,13 +58,13 @@
 //! ```text
 //! | n.trigger.webhook --path /auth/register --method POST
 //! | n.crypto --op bcrypt_hash
-//! | n.pg.query --credential main-db -- "INSERT INTO users (email, pw_hash) VALUES ($.email, $.result)"
+//! | n.pg.query --credential main-db -- "INSERT INTO users (email, pw_hash) VALUES ({{ input.email }}, {{ input.result }})"
 //! ```
 //!
 //! **User login — verify password and issue JWT:**
 //! ```text
 //! | n.trigger.webhook --path /auth/login --method POST
-//! | n.pg.query --credential main-db -- "SELECT pw_hash AS hash FROM users WHERE email = $.email"
+//! | n.pg.query --credential main-db -- "SELECT pw_hash AS hash FROM users WHERE email = {{ input.email }}"
 //! | n.crypto --op bcrypt_verify
 //! | [true]  → n.auth.token.create --credential jwt-key
 //! | [false] → n.script -- "return { _status: 401, error: 'Invalid credentials' }"
@@ -81,7 +81,7 @@
 //! ```text
 //! | n.trigger.webhook --path /auth/session --method POST
 //! | n.crypto --op random_hex --length 32
-//! | n.pg.query --credential main-db -- "INSERT INTO sessions (token, user_id) VALUES ($.result, $.user_id)"
+//! | n.pg.query --credential main-db -- "INSERT INTO sessions (token, user_id) VALUES ({{ input.result }}, {{ input.user_id }})"
 //! ```
 
 use async_trait::async_trait;

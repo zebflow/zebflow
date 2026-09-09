@@ -9,21 +9,21 @@
 //! | Intent | DSL |
 //! |---|---|
 //! | Serve pipeline output as JSON | `\| web.response` |
-//! | Serve specific field as JSON | `\| web.response --body $.rows` |
+//! | Serve specific field as JSON | `\| web.response --body "{{ input.rows }}"` |
 //! | Render HTML page | `\| web.response --template pages/home.tsx` |
 //! | Redirect | `\| web.response --location /somewhere` |
 //! | Error with message | `\| web.response --status 403 --message "Access denied"` |
 //! | Error page | `\| web.response --template pages/404.tsx --status 404` |
-//! | Set session cookie | `\| web.response --template pages/home.tsx --set-cookie name=session,value=$.token,http-only` |
+//! | Set session cookie | `\| web.response --template pages/home.tsx --set-cookie "name=session,value={{ input.token }},http-only"` |
 //!
 //! # Cookie spec format (`--set-cookie`)
 //!
 //! Comma-separated key=value pairs (or boolean flags):
 //! ```text
-//! name=session,value=$.token,http-only,max-age=86400,secure,same-site=Strict,path=/
+//! name=session,value={{ input.token }},http-only,max-age=86400,secure,same-site=Strict,path=/
 //! ```
 //! - `name=<NAME>` — cookie name (required)
-//! - `value=<PATH>` — cookie value; `$.field` resolves from upstream payload
+//! - `value=<VALUE>` — cookie value; a literal or `{{ expr }}` (resolved engine-side before this node runs)
 //! - `http-only` — sets HttpOnly flag
 //! - `secure` — sets Secure flag
 //! - `max-age=<SECS>` — Max-Age directive (default 900)
@@ -75,7 +75,7 @@ pub fn definition() -> NodeDefinition {
                 "status":      { "type": "integer", "description": "HTTP status code." },
                 "location":    { "type": "string",  "description": "Redirect URL." },
                 "message":     { "type": "string",  "description": "Plain text body." },
-                "body_path":   { "type": "string",  "description": "JSON path into payload for body." },
+                "body":        { "description": "Response body — literal or {{ expr }}; a whole {{ }} carries its typed value (object, array)." },
                 "set_cookie":  { "type": "string",  "description": "Cookie spec string." },
                 "headers":     { "type": "object",  "description": "Extra response headers." },
                 "load_scripts":{ "type": "string",  "description": "External scripts (template mode)." }
@@ -117,9 +117,9 @@ pub fn definition() -> NodeDefinition {
             },
             DslFlag {
                 flag: "--body".to_string(),
-                config_key: "body_path".to_string(),
+                config_key: "body".to_string(),
                 description:
-                    "JSON path into the pipeline payload to use as the response body, e.g. $.rows."
+                    "Response body — literal or {{ expr }}, e.g. \"{{ input.rows }}\" to answer with that value."
                         .to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
@@ -128,7 +128,7 @@ pub fn definition() -> NodeDefinition {
                 flag: "--set-cookie".to_string(),
                 config_key: "set_cookie".to_string(),
                 description:
-                    "Cookie spec: name=NAME,value=$.path,http-only,max-age=SECS,secure,same-site=Lax"
+                    "Cookie spec: name=NAME,value={{ expr }},http-only,max-age=SECS,secure,same-site=Lax"
                         .to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
@@ -179,10 +179,10 @@ pub fn definition() -> NodeDefinition {
                     ..Default::default()
                 },
                 NodeFieldDef {
-                    name: "body_path".to_string(),
+                    name: "body".to_string(),
                     label: "Body Path".to_string(),
                     field_type: NodeFieldType::Text,
-                    placeholder: Some("$.rows".to_string()),
+                    placeholder: Some("{{ input.rows }}".to_string()),
                     help: Some("JSON path into the pipeline payload to serve as response body (JSON mode only).".to_string()),
                     ..Default::default()
                 },
@@ -198,7 +198,7 @@ pub fn definition() -> NodeDefinition {
                     name: "set_cookie".to_string(),
                     label: "Set-Cookie".to_string(),
                     field_type: NodeFieldType::Text,
-                    placeholder: Some("name=session,value=$.token,http-only,max-age=86400".to_string()),
+                    placeholder: Some("name=session,value={{ input.token }},http-only,max-age=86400".to_string()),
                     help: Some("Cookie specification string for a Set-Cookie header.".to_string()),
                     ..Default::default()
                 },
@@ -230,7 +230,7 @@ pub fn definition() -> NodeDefinition {
             LayoutItem::Row {
                 row: vec![
                     LayoutItem::Field("message".to_string()),
-                    LayoutItem::Field("body_path".to_string()),
+                    LayoutItem::Field("body".to_string()),
                 ],
             },
             LayoutItem::Field("set_cookie".to_string()),
@@ -262,9 +262,9 @@ pub struct Config {
     /// Plain-text response body.
     #[serde(default)]
     pub message: Option<String>,
-    /// JSON path into payload to use as response body (e.g. `$.rows`).
+    /// The response body — arrives final (a whole `{{ }}` is its typed value).
     #[serde(default)]
-    pub body_path: Option<String>,
+    pub body: Option<Value>,
     /// Cookie spec string (see module docs for format).
     #[serde(default)]
     pub set_cookie: Option<String>,
@@ -307,14 +307,9 @@ impl NodeHandler for Node {
         &self,
         input: NodeExecutionInput,
     ) -> Result<NodeExecutionOutput, PipelineError> {
-        // Resolve location — supports $.field references into the payload.
-        let location = self.config.location.as_deref().map(|loc| {
-            if loc.starts_with("$.") || loc == "$" {
-                resolve_json_path_string(&input.payload, loc).unwrap_or_else(|| loc.to_string())
-            } else {
-                loc.to_string()
-            }
-        });
+        // Location arrives final: {{ }} resolution happened engine-side
+        // before this node ran (docs/contracts/kinds/node-io).
+        let location = self.config.location.clone();
 
         let status = self
             .config
@@ -329,9 +324,8 @@ impl NodeHandler for Node {
 
         let body = self
             .config
-            .body_path
-            .as_deref()
-            .and_then(|p| resolve_json_path(&input.payload, p))
+            .body
+            .clone()
             .or_else(|| {
                 if self.config.template.is_none()
                     && location.is_none()
@@ -367,7 +361,7 @@ impl NodeHandler for Node {
 
 /// Parse a cookie spec string into a JSON object with resolved values.
 ///
-/// Format: `name=session,value=$.token,http-only,max-age=86400,secure,same-site=Strict,path=/`
+/// Format: `name=session,value={{ input.token }},http-only,max-age=86400,secure,same-site=Strict,path=/`
 pub fn parse_cookie_spec(spec: &str, payload: &Value) -> Option<Value> {
     let mut name = String::new();
     let mut value = String::new();
@@ -382,11 +376,9 @@ pub fn parse_cookie_spec(spec: &str, payload: &Value) -> Option<Value> {
         if let Some(v) = part.strip_prefix("name=") {
             name = v.to_string();
         } else if let Some(v) = part.strip_prefix("value=") {
-            value = if v.starts_with("$.") || v == "$" {
-                resolve_json_path_string(payload, v).unwrap_or_default()
-            } else {
-                v.to_string()
-            };
+            // The spec string arrives with {{ }} already interpolated
+            // engine-side, so the value here is the value.
+            value = v.to_string();
         } else if let Some(v) = part.strip_prefix("max-age=") {
             max_age = v.parse().unwrap_or(900);
         } else if let Some(v) = part.strip_prefix("same-site=") {
@@ -417,35 +409,6 @@ pub fn parse_cookie_spec(spec: &str, payload: &Value) -> Option<Value> {
     }))
 }
 
-/// Resolve a `$.field.sub` path against a JSON value, returning a string.
-pub fn resolve_json_path_string(payload: &Value, path: &str) -> Option<String> {
-    resolve_json_path(payload, path).map(|v| {
-        v.as_str()
-            .map(str::to_string)
-            .unwrap_or_else(|| v.to_string())
-    })
-}
-
-/// Resolve a `$.field.sub` path against a JSON value.
-pub fn resolve_json_path(payload: &Value, path: &str) -> Option<Value> {
-    let stripped = if let Some(s) = path.strip_prefix("$.") {
-        s
-    } else if path == "$" {
-        return Some(payload.clone());
-    } else {
-        path
-    };
-
-    if stripped.is_empty() {
-        return Some(payload.clone());
-    }
-
-    let mut current = payload;
-    for segment in stripped.split('.') {
-        current = current.get(segment)?;
-    }
-    Some(current.clone())
-}
 
 // ── Internal page compile/render ─────────────────────────────────────────────
 // Used by BasicPipelineEngine for the template rendering path.
