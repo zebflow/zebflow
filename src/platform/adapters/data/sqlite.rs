@@ -8023,6 +8023,8 @@ mod tests {
                 input: json!({"in": true}),
                 output: json!({"out": true}),
                 error: None,
+                status: "ok".to_string(),
+                error_code: None,
             }],
         };
 

@@ -157,11 +157,33 @@ impl NodeHandler for Node {
             .and_then(Value::as_u64)
             .unwrap_or(1) as usize;
 
-        let trace = vec![
+        let mut trace = vec![
             format!("node_kind={NODE_KIND}"),
             format!("attempt={attempt}"),
             format!("max_attempts={}", self.config.max_attempts),
         ];
+
+        // A refusal is the caller's fault — a bad address, a wrong credential
+        // kind, config that cannot work. Running it again changes nothing, so
+        // the attempt budget is not spent on it: straight to the failed pin,
+        // with the reason in the trace. Only `failed`-class errors (the world's
+        // fault — a relay down, a timeout) are worth another try.
+        let error_code = input
+            .payload
+            .get("error")
+            .and_then(|e| e.get("code"))
+            .and_then(Value::as_str);
+        if let Some(code) = error_code {
+            use crate::pipeline::error_class::{ErrorClass, class_of};
+            if class_of(code) == ErrorClass::Refused {
+                trace.push(format!("refused: {code} — retrying cannot help"));
+                return Ok(NodeExecutionOutput {
+                    output_pins: vec![OUTPUT_PIN_FAILED.to_string()],
+                    payload: input.payload,
+                    trace,
+                });
+            }
+        }
 
         if attempt < self.config.max_attempts {
             if let Some(delay_ms) = self.config.delay_ms.filter(|delay| *delay > 0) {
@@ -179,5 +201,56 @@ impl NodeHandler for Node {
             payload: input.payload,
             trace,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn run(node: &Node, payload: serde_json::Value) -> NodeExecutionOutput {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime")
+            .block_on(node.execute_async(NodeExecutionInput {
+                node_id: "r".to_string(),
+                input_pin: INPUT_PIN_IN.to_string(),
+                payload,
+                metadata: json!({}),
+                bus: None,
+            }))
+            .expect("retry node never errors")
+    }
+
+    /// A relay being down is worth another try.
+    #[test]
+    fn a_failed_class_error_is_retried() {
+        let node = Node::new(Config { max_attempts: 3, delay_ms: None }).expect("node");
+        let out = run(&node, json!({
+            "input": { "email": "sari@example.test" },
+            "error": { "code": "FW_NODE_MAIL_SEND", "message": "relay unreachable" },
+            "__zf_retry": { "attempt": 1 }
+        }));
+        assert_eq!(out.output_pins, vec![OUTPUT_PIN_RETRY.to_string()]);
+    }
+
+    /// A bad address is the caller's fault. Retrying cannot help, so the
+    /// attempt budget is not spent discovering that three times.
+    #[test]
+    fn a_refused_class_error_goes_straight_to_failed() {
+        let node = Node::new(Config { max_attempts: 3, delay_ms: None }).expect("node");
+        let out = run(&node, json!({
+            "input": { "email": "not an address" },
+            "error": { "code": "FW_NODE_MAIL_ADDRESS", "message": "not a mailbox" },
+            "__zf_retry": { "attempt": 1 }
+        }));
+        assert_eq!(out.output_pins, vec![OUTPUT_PIN_FAILED.to_string()]);
+        assert!(
+            out.trace.iter().any(|t| t.contains("retrying cannot help")),
+            "{:?}",
+            out.trace
+        );
     }
 }

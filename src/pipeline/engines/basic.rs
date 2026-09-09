@@ -2857,6 +2857,11 @@ impl PipelineEngine for BasicPipelineEngine {
                         input: trace_input,
                         output: node_output_value,
                         error: None,
+                        // Ran and emitted nothing — a match with no case, a
+                        // filter that filtered everything. Not an error; grey
+                        // in a run view where six green dots would lie.
+                        status: if outs.is_empty() { "skip" } else { "ok" }.to_string(),
+                        error_code: None,
                     });
                     outs
                 }
@@ -2869,6 +2874,10 @@ impl PipelineEngine for BasicPipelineEngine {
                         input: trace_capture.capture(&input_snapshot),
                         output: Value::Null,
                         error: Some(e.message.clone()),
+                        status: crate::pipeline::error_class::class_of(e.code)
+                            .as_status_word()
+                            .to_string(),
+                        error_code: Some(e.code.to_string()),
                     });
                     // Attribute error to the failing node if not already set.
                     if e.node_id.is_none() {

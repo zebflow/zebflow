@@ -9,6 +9,7 @@
 //! This module does not embed script VM internals or template rendering logic.
 
 pub mod engines;
+pub mod error_class;
 pub mod expr;
 pub mod interface;
 pub mod layout;

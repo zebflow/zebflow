@@ -1475,6 +1475,19 @@ pub struct NodeTraceEntry {
     /// Set if this node threw a `PipelineError`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// NodeIO status word: `ok`, `skip` (ran, deliberately emitted nothing),
+    /// `refused` (caller's fault), or `failed` (world's fault). Records
+    /// written before the word existed read as `ok`, which is what they
+    /// meant.
+    #[serde(default = "default_trace_status")]
+    pub status: String,
+    /// The registered error code, when status is refused/failed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error_code: Option<String>,
+}
+
+fn default_trace_status() -> String {
+    "ok".to_string()
 }
 
 /// Final output of a completed pipeline execution.
