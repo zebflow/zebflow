@@ -1231,7 +1231,6 @@ impl BasicPipelineEngine {
                         PipelineError::new("FW_NODE_SEKEJAP_QUERY_CONFIG", err.to_string())
                     })?,
                     data_root.clone(),
-                    self.language.clone(),
                 )?))
             }
             sekejap_insert::NODE_KIND => {

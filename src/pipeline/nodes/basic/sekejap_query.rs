@@ -1,14 +1,12 @@
 //! Sekejap query node — SQL against the project's embedded Sekejap store.
 
 use std::path::PathBuf;
-use std::sync::Arc;
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use super::util::{eval_deno_expr, metadata_scope, resolve_array_values};
-use crate::language::LanguageEngine;
+use super::util::metadata_scope;
 use crate::pipeline::model::NodeCapability;
 use crate::pipeline::model::{DslFlag, DslFlagKind, LayoutItem, NodeFieldDef, NodeFieldType};
 use crate::pipeline::{
@@ -71,23 +69,9 @@ pub fn definition() -> NodeDefinition {
                 required: false,
             },
             DslFlag {
-                flag: "--params-path".to_string(),
-                config_key: "params_path".to_string(),
-                description: "Dot-notation path into upstream payload for $1/$2 bind params. e.g. 'body' or 'identifier'. If value is an array each element maps to $1/$2/...".to_string(),
-                kind: DslFlagKind::Scalar,
-                required: false,
-            },
-            DslFlag {
-                flag: "--params-expr".to_string(),
-                config_key: "params_expr".to_string(),
-                description: "JS expression returning an array of bind params, evaluated against input. e.g. '[$trigger.params.slug]'.".to_string(),
-                kind: DslFlagKind::Scalar,
-                required: false,
-            },
-            DslFlag {
-                flag: "--query-expr".to_string(),
-                config_key: "query_expr".to_string(),
-                description: "JS expression returning the Sekejap SQL query string. Overrides the body SQL at runtime.".to_string(),
+                flag: "--params".to_string(),
+                config_key: "params".to_string(),
+                description: "Bind values for $1, $2, … — a literal or {{ expr }}. A whole {{ }} carries its typed value, so \"{{ [$trigger.params.slug] }}\" is a real array.".to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
             },
@@ -107,26 +91,10 @@ pub fn definition() -> NodeDefinition {
                 ..Default::default()
             },
             NodeFieldDef {
-                name: "params_path".to_string(),
-                label: "Params Path".to_string(),
+                name: "params".to_string(),
+                label: "Params".to_string(),
                 field_type: NodeFieldType::Text,
-                help: Some("Dot-notation path into upstream payload for $1/$2 bind params. e.g. body or identifier.".to_string()),
-                ..Default::default()
-            },
-            NodeFieldDef {
-                name: "params_expr".to_string(),
-                label: "Params Expr".to_string(),
-                field_type: NodeFieldType::Textarea,
-                rows: Some(3),
-                help: Some("JS expression returning array of bind params. e.g. [$trigger.params.slug]. Overrides params_path.".to_string()),
-                ..Default::default()
-            },
-            NodeFieldDef {
-                name: "query_expr".to_string(),
-                label: "Query Expr".to_string(),
-                field_type: NodeFieldType::Textarea,
-                rows: Some(3),
-                help: Some("JS expression returning SQL query string. Overrides the query editor above.".to_string()),
+                help: Some("Bind values for $1, $2, … — a literal or {{ expr }}.".to_string()),
                 ..Default::default()
             },
             NodeFieldDef {
@@ -149,9 +117,7 @@ pub fn definition() -> NodeDefinition {
         ],
         layout: vec![
             LayoutItem::Field("query".to_string()),
-            LayoutItem::Field("params_path".to_string()),
-            LayoutItem::Field("params_expr".to_string()),
-            LayoutItem::Field("query_expr".to_string()),
+            LayoutItem::Field("params".to_string()),
             LayoutItem::Row {
                 row: vec![
                     LayoutItem::Field("limit".to_string()),
@@ -163,15 +129,13 @@ pub fn definition() -> NodeDefinition {
             registered: true,
             tool_name: "sekejap_query".to_string(),
             tool_description:
-                "Execute SQL against the project's embedded Sekejap store. Args: query or query_expr (required), params_path or params_expr for $1/$2 binds, limit (optional), read_only (optional)."
+                "Execute SQL against the project's embedded Sekejap store. Args: query (required), params for $1/$2 binds, limit (optional), read_only (optional)."
                     .to_string(),
             tool_input_schema: json!({
                 "type": "object",
                 "properties": {
                     "query": { "type": "string", "description": "Sekejap SQL query" },
-                    "query_expr": { "type": "string", "description": "JS expression returning the Sekejap SQL query string" },
-                    "params_path": { "type": "string", "description": "Dot-notation path into upstream payload for $1/$2 bind params" },
-                    "params_expr": { "type": "string", "description": "JS expression returning an array of bind params" },
+                    "params": { "description": "Bind values for $1, $2, … — a literal or {{ expr }}" },
                     "limit": { "type": "integer", "description": "Maximum rows to return" },
                     "read_only": { "type": "boolean", "description": "Reject write statements when true" }
                 }
@@ -185,12 +149,9 @@ pub fn definition() -> NodeDefinition {
 pub struct Config {
     #[serde(default)]
     pub query: String,
+    /// Bind values for `$1`, `$2`, … A whole `{{ }}` carries its typed value.
     #[serde(default)]
-    pub query_expr: Option<String>,
-    #[serde(default)]
-    pub params_path: Option<String>,
-    #[serde(default)]
-    pub params_expr: Option<String>,
+    pub params: Value,
     #[serde(default = "default_limit")]
     pub limit: usize,
     #[serde(default)]
@@ -204,46 +165,24 @@ fn default_limit() -> usize {
 pub struct Node {
     config: Config,
     data_root: PathBuf,
-    language: Arc<dyn LanguageEngine>,
 }
 
 impl Node {
     pub fn new(
         config: Config,
         data_root: PathBuf,
-        language: Arc<dyn LanguageEngine>,
     ) -> Result<Self, PipelineError> {
-        if config.query.trim().is_empty()
-            && config
-                .query_expr
-                .as_deref()
-                .map(str::trim)
-                .unwrap_or_default()
-                .is_empty()
-        {
+        // One flag per thing now, so "set one or the other" has nothing left
+        // to adjudicate.
+        if config.query.trim().is_empty() {
             return Err(PipelineError::new(
                 "FW_NODE_SEKEJAP_QUERY_CONFIG",
-                "config.query must not be empty (set query or query_expr)",
-            ));
-        }
-        if !config.query.trim().is_empty()
-            && config
-                .query_expr
-                .as_deref()
-                .map(str::trim)
-                .unwrap_or_default()
-                .len()
-                > 0
-        {
-            return Err(PipelineError::new(
-                "FW_NODE_SEKEJAP_QUERY_CONFIG",
-                "set either query or query_expr, not both",
+                "config.query must not be empty",
             ));
         }
         Ok(Self {
             config,
             data_root,
-            language,
         })
     }
 }
@@ -267,53 +206,19 @@ impl NodeHandler for Node {
         input: NodeExecutionInput,
     ) -> Result<NodeExecutionOutput, PipelineError> {
         let (owner, project, _pipeline, _request_id) = metadata_scope(&input.metadata)?;
-        let query = if let Some(expr) = self.config.query_expr.as_deref() {
-            let value = eval_deno_expr(
-                self.language.as_ref(),
-                expr,
-                &input.payload,
-                &input.metadata,
-            )?;
-            value.as_str().map(ToString::to_string).ok_or_else(|| {
-                PipelineError::new(
-                    "FW_NODE_SEKEJAP_QUERY_BINDING",
-                    "query_expr must return string",
-                )
-            })?
-        } else {
-            self.config.query.trim().to_string()
-        };
+        // Arrives final — `{{ }}` resolved engine-side before this ran.
+        let query = self.config.query.trim().to_string();
         if query.trim().is_empty() {
             return Err(PipelineError::new(
                 "FW_NODE_SEKEJAP_QUERY",
                 "query must not be empty — use: -- \"SELECT ...\"",
             ));
         }
-        if let Some(path) = self.config.params_path.as_deref()
-            && path.starts_with('/')
-        {
-            return Err(PipelineError::new(
-                "SEKEJAP_QUERY_PARAMS_PATH_SYNTAX",
-                format!(
-                    "params_path uses dot notation, not JSON pointer. Use '{}' not '{}'",
-                    &path[1..].replace('/', "."),
-                    path
-                ),
-            ));
-        }
-        let param_values: Vec<Value> = if let Some(expr) = self.config.params_expr.as_deref() {
-            let evaluated = eval_deno_expr(
-                self.language.as_ref(),
-                expr,
-                &input.payload,
-                &input.metadata,
-            )?;
-            match evaluated {
-                Value::Array(items) => items,
-                other => vec![other],
-            }
-        } else {
-            resolve_array_values(&input.payload, self.config.params_path.as_deref())
+        // Bind values arrive final: a whole `{{ }}` is a real array.
+        let param_values: Vec<Value> = match self.config.params.clone() {
+            Value::Null => Vec::new(),
+            Value::Array(items) => items,
+            other => vec![other],
         };
 
         let data_root = self.data_root.clone();
