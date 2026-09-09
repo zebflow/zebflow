@@ -65,9 +65,6 @@ pub fn resolve_path<'a>(root: &'a Value, path: &str) -> Option<&'a Value> {
     Some(current)
 }
 
-pub fn resolve_path_cloned(root: &Value, path: Option<&str>) -> Option<Value> {
-    path.and_then(|p| resolve_path(root, p).cloned())
-}
 
 
 pub fn eval_deno_expr(

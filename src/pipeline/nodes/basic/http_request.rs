@@ -30,7 +30,7 @@ use crate::pipeline::{
 use crate::platform::services::CredentialService;
 use crate::platform::services::PlatformService;
 
-use super::util::{eval_deno_expr, metadata_scope, resolve_path_cloned};
+use super::util::{eval_deno_expr, metadata_scope};
 use crate::pipeline::model::{DslFlag, DslFlagKind, LayoutItem};
 
 pub const NODE_KIND: &str = "n.http.request";
@@ -74,13 +74,9 @@ pub fn definition() -> NodeDefinition {
             DslFlag { flag: "--credential".to_string(), config_key: "credential_id".to_string(), description: "Optional credential for HTTP auth. secure_request: template-driven. oauth2: auto-refresh Bearer token.".to_string(), kind: DslFlagKind::Scalar, required: false },
             DslFlag { flag: "--bind".to_string(), config_key: "request_bindings".to_string(), description: "Binding expression for one secure_request variable. Repeatable: --bind USER_ID=input.player_id".to_string(), kind: DslFlagKind::KeyValuePairs, required: false },
             DslFlag { flag: "--url".to_string(), config_key: "url".to_string(), description: "Target URL for the HTTP request.".to_string(), kind: DslFlagKind::Scalar, required: false },
-            DslFlag { flag: "--url-expr".to_string(), config_key: "url_expr".to_string(), description: "JS expression returning the target URL. Evaluated against input payload at runtime.".to_string(), kind: DslFlagKind::Scalar, required: false },
             DslFlag { flag: "--method".to_string(), config_key: "method".to_string(), description: "HTTP method: GET (default), POST, PUT, PATCH, DELETE.".to_string(), kind: DslFlagKind::Scalar, required: false },
-            DslFlag { flag: "--method-expr".to_string(), config_key: "method_expr".to_string(), description: "JS expression returning the HTTP method.".to_string(), kind: DslFlagKind::Scalar, required: false },
-            DslFlag { flag: "--body-path".to_string(), config_key: "body_path".to_string(), description: "Dot-notation path into input payload whose value is sent as the request body.".to_string(), kind: DslFlagKind::Scalar, required: false },
-            DslFlag { flag: "--body-expr".to_string(), config_key: "body_expr".to_string(), description: "JS expression returning the request body value. Evaluated against input payload.".to_string(), kind: DslFlagKind::Scalar, required: false },
+            DslFlag { flag: "--body".to_string(), config_key: "body".to_string(), description: "Request body — a literal or {{ expr }}. A whole {{ }} carries its typed value, so an object stays an object.".to_string(), kind: DslFlagKind::Scalar, required: false },
             DslFlag { flag: "--header".to_string(), config_key: "headers".to_string(), description: "Static request header. Repeat for each header. Format: Header-Name=value. e.g. --header Content-Type=application/json".to_string(), kind: DslFlagKind::KeyValuePairs, required: false },
-            DslFlag { flag: "--headers-expr".to_string(), config_key: "headers_expr".to_string(), description: "JS expression returning an object of request headers. Evaluated against input payload.".to_string(), kind: DslFlagKind::Scalar, required: false },
             DslFlag { flag: "--timeout-ms".to_string(), config_key: "timeout_ms".to_string(), description: "Request timeout in milliseconds (default 10000, max 120000).".to_string(), kind: DslFlagKind::Scalar, required: false },
             DslFlag { flag: "--response-type".to_string(), config_key: "response_type".to_string(), description: "How to read the response: json (default, parses body as JSON), text (raw string), bytes (stores body as FileRef).".to_string(), kind: DslFlagKind::Scalar, required: false },
             DslFlag { flag: "--body-type".to_string(), config_key: "body_type".to_string(), description: "How to send the request body: json (default), text (raw string), form-data (multipart with FileRef/__zf_bytes support).".to_string(), kind: DslFlagKind::Scalar, required: false },
@@ -90,8 +86,8 @@ pub fn definition() -> NodeDefinition {
             vec![
                 NodeFieldDef { name: "credential_id".to_string(), label: "Request Profile".to_string(), field_type: NodeFieldType::Select, data_source: Some(crate::pipeline::model::NodeFieldDataSource::CredentialsHttpAuth), help: Some("Credential for HTTP authentication. secure_request: template-driven request. oauth2: Bearer token auto-refresh.".to_string()), ..Default::default() },
                 NodeFieldDef { name: "request_bindings".to_string(), label: "Profile Bindings".to_string(), field_type: NodeFieldType::SecureRequestBindings, help: Some("JS expressions for the variables declared by the selected secure_request profile. Example: input.player_id or ctx.nodes.n3.unit.code".to_string()), span: Some("full".to_string()), ..Default::default() },
-                NodeFieldDef { name: "url".to_string(), label: "URL".to_string(), field_type: NodeFieldType::Text, help: Some("Fallback URL when url_expr is empty.".to_string()), default_value: Some(serde_json::json!("https://example.com")), ..Default::default() },
-                NodeFieldDef { name: "method".to_string(), label: "Method".to_string(), field_type: NodeFieldType::Select, options: vec!["GET","POST","PUT","PATCH","DELETE"].iter().map(|m| SelectOptionDef { value: m.to_string(), label: m.to_string() }).collect(), help: Some("Fallback HTTP method when method_expr is empty.".to_string()), ..Default::default() },
+                NodeFieldDef { name: "url".to_string(), label: "URL".to_string(), field_type: NodeFieldType::Text, help: Some("Target URL — a literal or {{ expr }}.".to_string()), default_value: Some(serde_json::json!("https://example.com")), ..Default::default() },
+                NodeFieldDef { name: "method".to_string(), label: "Method".to_string(), field_type: NodeFieldType::Select, options: vec!["GET","POST","PUT","PATCH","DELETE"].iter().map(|m| SelectOptionDef { value: m.to_string(), label: m.to_string() }).collect(), help: Some("HTTP method — a literal or {{ expr }}.".to_string()), ..Default::default() },
                 NodeFieldDef { name: "timeout_ms".to_string(), label: "Timeout (ms)".to_string(), field_type: NodeFieldType::Text, help: Some("Request timeout in milliseconds.".to_string()), ..Default::default() },
                 NodeFieldDef {
                     name: "response_type".to_string(),
@@ -119,12 +115,8 @@ pub fn definition() -> NodeDefinition {
                     default_value: Some(json!("json")),
                     ..Default::default()
                 },
-                NodeFieldDef { name: "headers".to_string(), label: "Static Headers".to_string(), field_type: NodeFieldType::KeyValuePairs, help: Some("Static request headers. Overridden by headers_expr if set.".to_string()), ..Default::default() },
-                NodeFieldDef { name: "url_expr".to_string(), label: "URL Expr".to_string(), field_type: NodeFieldType::Textarea, rows: Some(3), help: Some("Optional JS expression returning string URL.".to_string()), ..Default::default() },
-                NodeFieldDef { name: "method_expr".to_string(), label: "Method Expr".to_string(), field_type: NodeFieldType::Textarea, rows: Some(3), help: Some("Optional JS expression returning string method.".to_string()), ..Default::default() },
-                NodeFieldDef { name: "body_path".to_string(), label: "Body Path".to_string(), field_type: NodeFieldType::Text, help: Some("Payload path used as request body when body_expr is empty.".to_string()), ..Default::default() },
-                NodeFieldDef { name: "headers_expr".to_string(), label: "Headers Expr".to_string(), field_type: NodeFieldType::Textarea, rows: Some(4), help: Some("JS expression returning header object. Overrides static headers.".to_string()), ..Default::default() },
-                NodeFieldDef { name: "body_expr".to_string(), label: "Body Expr".to_string(), field_type: NodeFieldType::Textarea, rows: Some(4), help: Some("JS expression returning request body value.".to_string()), ..Default::default() },
+                NodeFieldDef { name: "headers".to_string(), label: "Static Headers".to_string(), field_type: NodeFieldType::KeyValuePairs, help: Some("Request headers. Each value may be a literal or {{ expr }}.".to_string()), ..Default::default() },
+                NodeFieldDef { name: "body".to_string(), label: "Body".to_string(), field_type: NodeFieldType::Textarea, help: Some("Request body — a literal or {{ expr }}. A whole {{ }} carries its typed value.".to_string()), ..Default::default() },
             ]
         },
         layout: vec![
@@ -134,11 +126,7 @@ pub fn definition() -> NodeDefinition {
             LayoutItem::Row { row: vec![LayoutItem::Field("response_type".to_string()), LayoutItem::Field("body_type".to_string())] },
             LayoutItem::Field("url".to_string()),
             LayoutItem::Field("headers".to_string()),
-            LayoutItem::Field("body_path".to_string()),
-            LayoutItem::Field("url_expr".to_string()),
-            LayoutItem::Field("method_expr".to_string()),
-            LayoutItem::Field("headers_expr".to_string()),
-            LayoutItem::Field("body_expr".to_string()),
+            LayoutItem::Field("body".to_string()),
         ],
         ai_tool: crate::pipeline::model::NodeAiToolDefinition {
             registered: true,
@@ -173,18 +161,12 @@ pub struct Config {
     pub method: String,
     #[serde(default)]
     pub headers: BTreeMap<String, String>,
+    /// The request body — a literal or `{{ expr }}`, arriving final. A whole
+    /// `{{ }}` carries its typed value, so an object stays an object.
     #[serde(default)]
-    pub body_path: Option<String>,
+    pub body: Value,
     #[serde(default)]
     pub timeout_ms: Option<u64>,
-    #[serde(default)]
-    pub url_expr: Option<String>,
-    #[serde(default)]
-    pub method_expr: Option<String>,
-    #[serde(default)]
-    pub headers_expr: Option<String>,
-    #[serde(default)]
-    pub body_expr: Option<String>,
     /// How to read the response: "json" (default), "text", "bytes".
     #[serde(default = "default_response_type")]
     pub response_type: String,
@@ -201,12 +183,8 @@ impl Default for Config {
             url: String::new(),
             method: default_method(),
             headers: BTreeMap::new(),
-            body_path: None,
+            body: Value::Null,
             timeout_ms: None,
-            url_expr: None,
-            method_expr: None,
-            headers_expr: None,
-            body_expr: None,
             response_type: default_response_type(),
             body_type: default_body_type(),
         }
@@ -299,13 +277,10 @@ impl Node {
             .map(str::trim)
             .unwrap_or_default()
             .is_empty();
-        let url_expr_empty = config
-            .url_expr
-            .as_deref()
-            .map(str::trim)
-            .unwrap_or_default()
-            .is_empty();
-        if url.is_empty() && url_expr_empty && !has_credential {
+        // `--url` may be a literal or a `{{ expr }}`; either way it is a
+        // non-empty string here, because resolution happens before the node
+        // is built. A credential can supply the URL instead.
+        if url.is_empty() && !has_credential {
             return Err(PipelineError::new(
                 "FW_NODE_HTTP_REQUEST_CONFIG",
                 "config.url or config.credential_id must not be empty",
@@ -397,52 +372,23 @@ impl NodeHandler for Node {
                             PipelineError::new("FW_NODE_HTTP_REQUEST_OAUTH2", err.to_string())
                         })?;
                     // Resolve URL/method/headers/body from node config (not from credential template).
-                    let url = resolve_http_string_binding(
-                        self.language.as_ref(),
-                        &input.payload,
-                        &input.metadata,
-                        self.config.url_expr.as_deref(),
-                        &self.config.url,
-                        "url",
-                    )?;
+                    // Arrives final — `{{ }}` resolved engine-side before this ran.
+            let url = self.config.url.trim().to_string();
                     if !url.starts_with("http://") && !url.starts_with("https://") {
                         return Err(PipelineError::new(
                             "FW_NODE_HTTP_REQUEST_CONFIG",
                             "resolved url must start with http:// or https://",
                         ));
                     }
-                    let method = resolve_http_string_binding(
-                        self.language.as_ref(),
-                        &input.payload,
-                        &input.metadata,
-                        self.config.method_expr.as_deref(),
-                        &self.config.method,
-                        "method",
-                    )?
-                    .to_uppercase();
-                    let mut headers = if let Some(expr) = self.config.headers_expr.as_deref() {
-                        let value = eval_deno_expr(
-                            self.language.as_ref(),
-                            expr,
-                            &input.payload,
-                            &input.metadata,
-                        )?;
-                        parse_headers(value)?
-                    } else {
-                        self.config.headers.clone()
-                    };
+                    let method = self.config.method.trim().to_uppercase();
+                    let mut headers = self.config.headers.clone();
                     // Inject Bearer token as Authorization header.
                     headers.insert("Authorization".to_string(), format!("Bearer {token}"));
-                    let body_value = if let Some(expr) = self.config.body_expr.as_deref() {
-                        Some(eval_deno_expr(
-                            self.language.as_ref(),
-                            expr,
-                            &input.payload,
-                            &input.metadata,
-                        )?)
-                    } else {
-                        resolve_path_cloned(&input.payload, self.config.body_path.as_deref())
-                    };
+                    // The body arrives final; null means "no body".
+            let body_value = match self.config.body.clone() {
+                Value::Null => None,
+                other => Some(other),
+            };
                     PreparedRequest {
                         visible_url: url.clone(),
                         url,
@@ -466,49 +412,20 @@ impl NodeHandler for Node {
                 }
             }
         } else {
-            let url = resolve_http_string_binding(
-                self.language.as_ref(),
-                &input.payload,
-                &input.metadata,
-                self.config.url_expr.as_deref(),
-                &self.config.url,
-                "url",
-            )?;
+            // Arrives final — `{{ }}` resolved engine-side before this ran.
+            let url = self.config.url.trim().to_string();
             if !url.starts_with("http://") && !url.starts_with("https://") {
                 return Err(PipelineError::new(
                     "FW_NODE_HTTP_REQUEST_CONFIG",
                     "resolved url must start with http:// or https://",
                 ));
             }
-            let method = resolve_http_string_binding(
-                self.language.as_ref(),
-                &input.payload,
-                &input.metadata,
-                self.config.method_expr.as_deref(),
-                &self.config.method,
-                "method",
-            )?
-            .to_uppercase();
-            let headers = if let Some(expr) = self.config.headers_expr.as_deref() {
-                let value = eval_deno_expr(
-                    self.language.as_ref(),
-                    expr,
-                    &input.payload,
-                    &input.metadata,
-                )?;
-                parse_headers(value)?
-            } else {
-                self.config.headers.clone()
-            };
-            let body_value = if let Some(expr) = self.config.body_expr.as_deref() {
-                Some(eval_deno_expr(
-                    self.language.as_ref(),
-                    expr,
-                    &input.payload,
-                    &input.metadata,
-                )?)
-            } else {
-                resolve_path_cloned(&input.payload, self.config.body_path.as_deref())
+            let method = self.config.method.trim().to_uppercase();
+            let headers = self.config.headers.clone();
+            // The body arrives final; null means "no body".
+            let body_value = match self.config.body.clone() {
+                Value::Null => None,
+                other => Some(other),
             };
             PreparedRequest {
                 visible_url: url.clone(),
@@ -856,32 +773,6 @@ fn derive_filename_from_mime(mime: &str) -> String {
     format!("download.{ext}")
 }
 
-fn resolve_http_string_binding(
-    language: &dyn LanguageEngine,
-    input: &Value,
-    metadata: &Value,
-    expr: Option<&str>,
-    fallback: &str,
-    field: &str,
-) -> Result<String, PipelineError> {
-    if let Some(expr) = expr {
-        let value = eval_deno_expr(language, expr, input, metadata)?;
-        return value.as_str().map(ToString::to_string).ok_or_else(|| {
-            PipelineError::new(
-                "FW_NODE_HTTP_REQUEST_BINDING",
-                format!("binding expression for '{field}' must return string"),
-            )
-        });
-    }
-    let out = fallback.trim();
-    if out.is_empty() {
-        return Err(PipelineError::new(
-            "FW_NODE_HTTP_REQUEST_BINDING",
-            format!("resolved '{field}' must not be empty"),
-        ));
-    }
-    Ok(out.to_string())
-}
 
 fn build_request_from_secure_credential(
     credential_id: &str,
@@ -1105,25 +996,6 @@ fn render_secure_request_template(template: &str, tokens: &BTreeMap<String, Stri
     out
 }
 
-fn parse_headers(value: Value) -> Result<BTreeMap<String, String>, PipelineError> {
-    let mut out = BTreeMap::new();
-    let Value::Object(map) = value else {
-        return Err(PipelineError::new(
-            "FW_NODE_HTTP_REQUEST_BINDING",
-            "headers_expr must return object",
-        ));
-    };
-    for (k, v) in map {
-        let Some(s) = v.as_str() else {
-            return Err(PipelineError::new(
-                "FW_NODE_HTTP_REQUEST_BINDING",
-                "headers_expr values must be strings",
-            ));
-        };
-        out.insert(k, s.to_string());
-    }
-    Ok(out)
-}
 
 #[cfg(test)]
 mod tests {
