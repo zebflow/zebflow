@@ -1217,7 +1217,6 @@ impl BasicPipelineEngine {
                         PipelineError::new("FW_NODE_SQLITE_QUERY_CONFIG", err.to_string())
                     })?,
                     data_root.clone(),
-                    self.language.clone(),
                 )?))
             }
             sekejap_query::NODE_KIND => {

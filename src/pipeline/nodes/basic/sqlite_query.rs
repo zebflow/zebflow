@@ -1,15 +1,13 @@
 //! SQLite query node — SELECT against the project's embedded SQLite database.
 
 use std::path::PathBuf;
-use std::sync::Arc;
 
 use async_trait::async_trait;
 use rusqlite::types::ValueRef;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use super::util::{eval_deno_expr, metadata_scope, resolve_array_values, resolve_query_binding};
-use crate::language::LanguageEngine;
+use super::util::metadata_scope;
 use crate::pipeline::model::NodeCapability;
 use crate::pipeline::model::{DslFlag, DslFlagKind, LayoutItem, NodeFieldDef, NodeFieldType};
 use crate::pipeline::{
@@ -54,31 +52,24 @@ pub fn definition() -> NodeDefinition {
                 required: false,
             },
             DslFlag {
-                flag: "--query-expr".to_string(),
-                config_key: "query_expr".to_string(),
+                flag: "--params".to_string(),
+                config_key: "params".to_string(),
                 description:
-                    "JS expression returning the SQL query string. Overrides --query at runtime."
+                    "Bind values for ?1, ?2, … — a literal or {{ expr }}. A whole {{ }} carries \
+                     its typed value, so \"{{ [input.id, 10] }}\" is a real array."
                         .to_string(),
-                kind: DslFlagKind::Scalar,
-                required: false,
-            },
-            DslFlag {
-                flag: "--params-path".to_string(),
-                config_key: "params_path".to_string(),
-                description: "Dot-notation path into upstream payload for $1/$2 bind params."
-                    .to_string(),
-                kind: DslFlagKind::Scalar,
-                required: false,
-            },
-            DslFlag {
-                flag: "--params-expr".to_string(),
-                config_key: "params_expr".to_string(),
-                description: "JS expression returning an array of bind params.".to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
             },
         ],
         fields: vec![
+            NodeFieldDef {
+                name: "params".to_string(),
+                label: "Params".to_string(),
+                field_type: NodeFieldType::Text,
+                help: Some("Bind values for ?1, ?2, … — a literal or {{ expr }}.".to_string()),
+                ..Default::default()
+            },
             NodeFieldDef {
                 name: "query".to_string(),
                 label: "Query".to_string(),
@@ -93,44 +84,10 @@ pub fn definition() -> NodeDefinition {
                 default_value: Some(json!("SELECT id\nFROM items\nLIMIT 20")),
                 ..Default::default()
             },
-            NodeFieldDef {
-                name: "query_expr".to_string(),
-                label: "Query Expr".to_string(),
-                field_type: NodeFieldType::Textarea,
-                rows: Some(3),
-                help: Some(
-                    "JS expression returning SQL query string. Overrides the query editor above."
-                        .to_string(),
-                ),
-                ..Default::default()
-            },
-            NodeFieldDef {
-                name: "params_path".to_string(),
-                label: "Params Path".to_string(),
-                field_type: NodeFieldType::Text,
-                help: Some(
-                    "Dot-notation path into upstream payload for $1/$2 bind params.".to_string(),
-                ),
-                ..Default::default()
-            },
-            NodeFieldDef {
-                name: "params_expr".to_string(),
-                label: "Params Expr".to_string(),
-                field_type: NodeFieldType::Textarea,
-                rows: Some(3),
-                help: Some("JS expression returning array of bind params.".to_string()),
-                ..Default::default()
-            },
         ],
         layout: vec![
             LayoutItem::Field("query".to_string()),
-            LayoutItem::Field("query_expr".to_string()),
-            LayoutItem::Row {
-                row: vec![
-                    LayoutItem::Field("params_path".to_string()),
-                    LayoutItem::Field("params_expr".to_string()),
-                ],
-            },
+            LayoutItem::Field("params".to_string()),
         ],
         ai_tool: crate::pipeline::model::NodeAiToolDefinition {
             registered: true,
@@ -155,58 +112,33 @@ pub fn definition() -> NodeDefinition {
 pub struct Config {
     #[serde(default, alias = "sql")]
     pub query: String,
+    /// Bind values for `?1`, `?2`, … A whole `{{ }}` carries its typed value,
+    /// so `--params "{{ [input.id, 10] }}"` is a real array; anything else
+    /// binds as one parameter.
     #[serde(default)]
-    pub query_expr: Option<String>,
-    #[serde(default)]
-    pub params_path: Option<String>,
-    #[serde(default)]
-    pub params_expr: Option<String>,
+    pub params: Value,
 }
 
 pub struct Node {
     config: Config,
     data_root: PathBuf,
-    language: Arc<dyn LanguageEngine>,
 }
 
 impl Node {
     pub fn new(
         config: Config,
         data_root: PathBuf,
-        language: Arc<dyn LanguageEngine>,
     ) -> Result<Self, PipelineError> {
-        if config.query.trim().is_empty()
-            && config
-                .query_expr
-                .as_deref()
-                .map(str::trim)
-                .unwrap_or_default()
-                .is_empty()
-        {
+        // One flag per thing now, so there is no "set one or the other" left
+        // to adjudicate. A `{{ }}` resolving to empty is caught at run time,
+        // where the resolved value is known.
+        if config.query.trim().is_empty() {
             return Err(PipelineError::new(
                 "FW_NODE_SQLITE_QUERY_CONFIG",
-                "config.query must not be empty (set query or query_expr)",
+                "config.query must not be empty",
             ));
         }
-        if !config.query.trim().is_empty()
-            && config
-                .query_expr
-                .as_deref()
-                .map(str::trim)
-                .unwrap_or_default()
-                .len()
-                > 0
-        {
-            return Err(PipelineError::new(
-                "FW_NODE_SQLITE_QUERY_CONFIG",
-                "set either query or query_expr, not both",
-            ));
-        }
-        Ok(Self {
-            config,
-            data_root,
-            language,
-        })
+        Ok(Self { config, data_root })
     }
 }
 
@@ -237,27 +169,21 @@ impl NodeHandler for Node {
         input: NodeExecutionInput,
     ) -> Result<NodeExecutionOutput, PipelineError> {
         let (owner, project, _pipeline, _request_id) = metadata_scope(&input.metadata)?;
-        let sql = resolve_query_binding(
-            self.language.as_ref(),
-            &input.payload,
-            &input.metadata,
-            self.config.query_expr.as_deref(),
-            &self.config.query,
-            "FW_NODE_SQLITE_QUERY",
-        )?;
-        let param_values: Vec<Value> = if let Some(expr) = self.config.params_expr.as_deref() {
-            let evaluated = eval_deno_expr(
-                self.language.as_ref(),
-                expr,
-                &input.payload,
-                &input.metadata,
-            )?;
-            match evaluated {
-                Value::Array(items) => items,
-                other => vec![other],
-            }
-        } else {
-            resolve_array_values(&input.payload, self.config.params_path.as_deref())
+        // Both arrive final — `{{ }}` resolved engine-side before this node
+        // ran (NodeIO §Value resolution).
+        let sql = self.config.query.trim().to_string();
+        if sql.is_empty() {
+            return Err(PipelineError::new(
+                "FW_NODE_SQLITE_QUERY",
+                "query must not be empty",
+            ));
+        }
+        // A whole `{{ }}` carries its typed value, so an array stays an array
+        // and anything else binds as one parameter.
+        let param_values: Vec<Value> = match self.config.params.clone() {
+            Value::Null => Vec::new(),
+            Value::Array(items) => items,
+            other => vec![other],
         };
         crate::platform::sqlite_schema::ensure_local_db_migrated(&self.data_root, owner, project)
             .map_err(|err| PipelineError::new("FW_NODE_SQLITE_QUERY_MIGRATE", err.message))?;
