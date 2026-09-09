@@ -6,7 +6,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use sqlx::{Column, Row, postgres::PgConnectOptions, postgres::PgRow};
 
-use crate::language::LanguageEngine;
 use crate::pipeline::model::NodeCapability;
 use crate::pipeline::{
     NodeDefinition, PipelineError,
@@ -14,7 +13,7 @@ use crate::pipeline::{
 };
 use crate::platform::services::CredentialService;
 
-use super::util::{eval_deno_expr, metadata_scope, resolve_array_values};
+use super::util::metadata_scope;
 use crate::pipeline::model::{DslFlag, DslFlagKind, LayoutItem};
 
 pub const NODE_KIND: &str = "n.pg.query";
@@ -46,10 +45,6 @@ pub fn definition() -> NodeDefinition {
         config_schema: Default::default(),
         dsl_flags: vec![
             DslFlag { flag: "--credential".to_string(), config_key: "credential_id".to_string(), description: "Credential ID of the PostgreSQL connection to use.".to_string(), kind: DslFlagKind::Scalar, required: true },
-            DslFlag { flag: "--params-path".to_string(), config_key: "params_path".to_string(), description: "Dot-notation path into upstream payload for $1/$2 bind params. e.g. 'body' or 'identifier'. If value is an array each element maps to $1/$2/...".to_string(), kind: DslFlagKind::Scalar, required: false },
-            DslFlag { flag: "--params-expr".to_string(), config_key: "params_expr".to_string(), description: "JS expression returning an array of bind params, evaluated against input. e.g. '[input.identifier, input.password]'.".to_string(), kind: DslFlagKind::Scalar, required: false },
-            DslFlag { flag: "--credential-expr".to_string(), config_key: "credential_id_expr".to_string(), description: "JS expression returning the credential ID to use. Overrides --credential at runtime.".to_string(), kind: DslFlagKind::Scalar, required: false },
-            DslFlag { flag: "--query-expr".to_string(), config_key: "query_expr".to_string(), description: "JS expression returning the SQL query string. Overrides the body SQL at runtime.".to_string(), kind: DslFlagKind::Scalar, required: false },
         ],
         fields: {
             use crate::pipeline::model::{NodeFieldDef, NodeFieldType, NodeFieldDataSource, SidebarSection, SidebarItem};
@@ -80,19 +75,11 @@ pub fn definition() -> NodeDefinition {
                     ],
                     ..Default::default()
                 },
-                NodeFieldDef { name: "params_path".to_string(), label: "Params Path".to_string(), field_type: NodeFieldType::Text, help: Some("Dot-notation path into upstream payload for $1/$2 bind params. e.g. body or identifier.".to_string()), ..Default::default() },
-                NodeFieldDef { name: "params_expr".to_string(), label: "Params Expr".to_string(), field_type: NodeFieldType::Textarea, rows: Some(3), help: Some("JS expression returning array of bind params. e.g. [input.user_id, input.role]. Overrides params_path.".to_string()), ..Default::default() },
-                NodeFieldDef { name: "credential_id_expr".to_string(), label: "Credential Expr".to_string(), field_type: NodeFieldType::Textarea, rows: Some(3), help: Some("JS expression returning credential ID at runtime. Overrides the credential selector above.".to_string()), ..Default::default() },
-                NodeFieldDef { name: "query_expr".to_string(), label: "Query Expr".to_string(), field_type: NodeFieldType::Textarea, rows: Some(3), help: Some("JS expression returning SQL query string. Overrides the query editor above.".to_string()), ..Default::default() },
             ]
         },
         layout: vec![
             LayoutItem::Field("credential_id".to_string()),
             LayoutItem::Field("query".to_string()),
-            LayoutItem::Field("params_path".to_string()),
-            LayoutItem::Field("params_expr".to_string()),
-            LayoutItem::Field("credential_id_expr".to_string()),
-            LayoutItem::Field("query_expr".to_string()),
         ],
         ai_tool: crate::pipeline::model::NodeAiToolDefinition {
             registered: true,
@@ -112,74 +99,45 @@ pub fn definition() -> NodeDefinition {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Config {
+    /// The credential slug — a literal or `{{ expr }}`, arriving final.
     pub credential_id: String,
+    /// The SQL — a literal or `{{ expr }}`, arriving final.
     pub query: String,
+    /// Bind values for `$1`, `$2`, … A whole `{{ }}` carries its typed value,
+    /// so `--params "{{ [input.id, 10] }}"` is a real array. A single value is
+    /// wrapped into a one-element list.
     #[serde(default)]
-    pub params_path: Option<String>,
-    #[serde(default)]
-    pub credential_id_expr: Option<String>,
-    #[serde(default)]
-    pub query_expr: Option<String>,
-    #[serde(default)]
-    pub params_expr: Option<String>,
+    pub params: Value,
 }
 
 pub struct Node {
     config: Config,
     credentials: Arc<CredentialService>,
-    language: Arc<dyn LanguageEngine>,
 }
 
 impl Node {
     pub fn new(
         config: Config,
         credentials: Arc<CredentialService>,
-        language: Arc<dyn LanguageEngine>,
     ) -> Result<Self, PipelineError> {
-        if config.credential_id.trim().is_empty()
-            && config
-                .credential_id_expr
-                .as_deref()
-                .map(str::trim)
-                .unwrap_or_default()
-                .is_empty()
-        {
+        // One flag each now, so "set one or the other, not both" has nothing
+        // left to adjudicate. A `{{ }}` that resolves to empty is caught at
+        // run time, where the resolved value is known.
+        if config.credential_id.trim().is_empty() {
             return Err(PipelineError::new(
                 "FW_NODE_PG_CONFIG",
                 "config.credential_id must not be empty",
             ));
         }
-        if config.query.trim().is_empty()
-            && config
-                .query_expr
-                .as_deref()
-                .map(str::trim)
-                .unwrap_or_default()
-                .is_empty()
-        {
+        if config.query.trim().is_empty() {
             return Err(PipelineError::new(
                 "FW_NODE_PG_CONFIG",
-                "config.query must not be empty (set query or query_expr)",
-            ));
-        }
-        if !config.query.trim().is_empty()
-            && config
-                .query_expr
-                .as_deref()
-                .map(str::trim)
-                .unwrap_or_default()
-                .len()
-                > 0
-        {
-            return Err(PipelineError::new(
-                "FW_NODE_PG_CONFIG",
-                "set either query or query_expr, not both",
+                "config.query must not be empty",
             ));
         }
         Ok(Self {
             config,
             credentials,
-            language,
         })
     }
 }
@@ -201,22 +159,11 @@ impl NodeHandler for Node {
         input: NodeExecutionInput,
     ) -> Result<NodeExecutionOutput, PipelineError> {
         let (owner, project, _pipeline, _request_id) = metadata_scope(&input.metadata)?;
-        let credential_id = resolve_string_binding(
-            &self.language,
-            &input.payload,
-            &input.metadata,
-            self.config.credential_id_expr.as_deref(),
-            &self.config.credential_id,
-            "credential_id",
-        )?;
-        let query = resolve_string_binding(
-            &self.language,
-            &input.payload,
-            &input.metadata,
-            self.config.query_expr.as_deref(),
-            &self.config.query,
-            "query",
-        )?;
+        // Both arrive final: `{{ }}` resolved engine-side before this node
+        // ran (NodeIO §Value resolution), so a literal is a literal and an
+        // expression already became its value.
+        let credential_id = require_non_empty(&self.config.credential_id, "credential_id")?;
+        let query = require_non_empty(&self.config.query, "query")?;
         let credential = self
             .credentials
             .get_project_credential(owner, project, &credential_id)
@@ -238,34 +185,12 @@ impl NodeHandler for Node {
         }
         let connect_options = build_postgres_connect_options(&credential.secret)?;
 
-        // Guard: params_path uses dot notation (e.g. "body.id"), NOT JSON pointer ("/body/id").
-        if let Some(path) = self.config.params_path.as_deref() {
-            if path.starts_with('/') {
-                return Err(PipelineError::new(
-                    "PG_QUERY_PARAMS_PATH_SYNTAX",
-                    format!(
-                        "params_path uses dot notation, not JSON pointer. \
-                         Use '{}' not '{}'",
-                        &path[1..].replace('/', "."),
-                        path
-                    ),
-                ));
-            }
-        }
-
-        let param_values = if let Some(expr) = self.config.params_expr.as_deref() {
-            let evaluated = eval_deno_expr(
-                self.language.as_ref(),
-                expr,
-                &input.payload,
-                &input.metadata,
-            )?;
-            match evaluated {
-                Value::Array(items) => items,
-                other => vec![other],
-            }
-        } else {
-            resolve_array_values(&input.payload, self.config.params_path.as_deref())
+        // Bind values arrive final. A whole `{{ }}` carries its typed value,
+        // so an array stays an array; anything else binds as one parameter.
+        let param_values = match self.config.params.clone() {
+            Value::Null => Vec::new(),
+            Value::Array(items) => items,
+            other => vec![other],
         };
 
         let pool = sqlx::postgres::PgPoolOptions::new()
@@ -309,24 +234,9 @@ impl NodeHandler for Node {
     }
 }
 
-fn resolve_string_binding(
-    language: &Arc<dyn LanguageEngine>,
-    input: &Value,
-    metadata: &Value,
-    expr: Option<&str>,
-    fallback: &str,
-    field: &str,
-) -> Result<String, PipelineError> {
-    if let Some(expr) = expr {
-        let value = eval_deno_expr(language.as_ref(), expr, input, metadata)?;
-        return value.as_str().map(ToString::to_string).ok_or_else(|| {
-            PipelineError::new(
-                "FW_NODE_PG_BINDING",
-                format!("binding expression for '{field}' must return string"),
-            )
-        });
-    }
-    let out = fallback.trim();
+/// A required string field, after resolution.
+fn require_non_empty(value: &str, field: &str) -> Result<String, PipelineError> {
+    let out = value.trim();
     if out.is_empty() {
         return Err(PipelineError::new(
             "FW_NODE_PG_BINDING",

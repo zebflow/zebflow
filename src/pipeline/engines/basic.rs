@@ -1290,7 +1290,6 @@ impl BasicPipelineEngine {
                     serde_json::from_value(node.config.clone())
                         .map_err(|err| PipelineError::new("FW_NODE_PG_CONFIG", err.to_string()))?,
                     credentials.clone(),
-                    self.language.clone(),
                 )?))
             }
             table_query::NODE_KIND => {
