@@ -1962,7 +1962,14 @@ impl PipelineEngine for BasicPipelineEngine {
                 &self.language,
             )?;
             trace_capture.begin_node();
-            let base_trace_config = trace_capture.config(&effective_config);
+            // Captured before the node runs, because the error path needs it and
+            // the outcome is not known yet. At `on-error` a successful node
+            // drops it below; at `none` it is never taken at all.
+            let base_trace_config = if trace_capture.records_any_payload() {
+                trace_capture.config(&effective_config)
+            } else {
+                None
+            };
             let dispatch = if effective_config == node.config {
                 // No expressions resolved — use original node directly (common fast path).
                 self.build_node(node)?
@@ -2799,7 +2806,14 @@ impl PipelineEngine for BasicPipelineEngine {
             let outputs = match exec_result {
                 Ok(mut outs) => {
                     let mut processed_payloads: Vec<Value> = Vec::new();
-                    let trace_input = trace_capture.capture(&input_snapshot);
+                    // Skipped entirely below `full`: not capturing is cheaper
+                    // than capturing and discarding, which is the point on a
+                    // device.
+                    let trace_input = if trace_capture.records_successful_payloads() {
+                        trace_capture.capture(&input_snapshot)
+                    } else {
+                        Value::Null
+                    };
 
                     for out in &mut outs {
                         out.payload = materialize_node_output_files(
@@ -2839,10 +2853,18 @@ impl PipelineEngine for BasicPipelineEngine {
                     node_trace.push(NodeTraceEntry {
                         node_id: trace_node_id.clone(),
                         node_kind: trace_node_kind.clone(),
-                        config: redacted_config,
+                        config: if trace_capture.records_successful_payloads() {
+                            redacted_config
+                        } else {
+                            None
+                        },
                         duration_ms: node_start.elapsed().as_millis() as u64,
                         input: trace_input,
-                        output: node_output_value,
+                        output: if trace_capture.records_successful_payloads() {
+                            node_output_value
+                        } else {
+                            Value::Null
+                        },
                         error: None,
                         // Ran and emitted nothing — a match with no case, a
                         // filter that filtered everything. Not an error; grey
@@ -2858,7 +2880,11 @@ impl PipelineEngine for BasicPipelineEngine {
                         node_kind: trace_node_kind.clone(),
                         config: base_trace_config,
                         duration_ms: node_start.elapsed().as_millis() as u64,
-                        input: trace_capture.capture(&input_snapshot),
+                        input: if trace_capture.records_any_payload() {
+                            trace_capture.capture(&input_snapshot)
+                        } else {
+                            Value::Null
+                        },
                         output: Value::Null,
                         error: Some(e.message.clone()),
                         status: crate::pipeline::error_class::class_of(e.code)
@@ -3119,6 +3145,11 @@ mod tests {
         graph.metadata = Some(PipelineGraphMetadata {
             settings: PipelineGraphSettings {
                 trace_capture: Some(TraceCaptureSettings {
+                    // This test is about what capture *does* to a payload, so
+                    // it asks for the level that records one. The default is
+                    // on-error, which deliberately records nothing for a node
+                    // that succeeded.
+                    level: Some(crate::pipeline::trace_capture::CaptureLevel::Full),
                     array_sample_count: Some(1),
                     ..Default::default()
                 }),
@@ -3163,6 +3194,120 @@ mod tests {
         assert_eq!(
             full.node_trace[0].input["rows"].as_array().unwrap().len(),
             100
+        );
+    }
+
+    /// Capture levels decide what a run records — `kinds/invocation-record`
+    /// § Capture Level. Asserted against a canary that would be plainly visible
+    /// in a payload if the level kept it.
+    #[tokio::test]
+    async fn capture_levels_decide_what_a_run_records() {
+        use crate::pipeline::model::{PipelineGraphMetadata, PipelineGraphSettings};
+        use crate::pipeline::trace_capture::{CaptureLevel, TraceCaptureSettings};
+
+        async fn run_at(level: CaptureLevel, body: &str) -> crate::pipeline::model::PipelineOutput {
+            let mut graph = build_pipeline_graph(
+                "levels",
+                &format!("[a] trigger.manual\n[b] script -- \"{body}\"\n[a] -> [b]\n"),
+            )
+            .expect("graph");
+            graph.metadata = Some(PipelineGraphMetadata {
+                settings: PipelineGraphSettings {
+                    trace_capture: Some(TraceCaptureSettings {
+                        level: Some(level),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                },
+                ..Default::default()
+            });
+            let ctx = PipelineContext {
+                owner: "test".into(),
+                project: "test".into(),
+                pipeline: "levels".into(),
+                request_id: "levels-test".into(),
+                route: String::new(),
+                input: json!({ "canary": "CANARY-IN-INPUT" }),
+                trigger: None,
+                placeholder: None,
+            };
+            BasicPipelineEngine::default()
+                .execute_async(&graph, &ctx)
+                .await
+                .expect("execution")
+        }
+
+        let ok_body = "return { seen: input.canary };";
+
+        // full — everything is there.
+        let out = run_at(CaptureLevel::Full, ok_body).await;
+        let text = serde_json::to_string(&out.node_trace).unwrap();
+        assert!(text.contains("CANARY-IN-INPUT"), "full must record payloads");
+
+        // on-error — a node that succeeded records nothing, but the run still
+        // returns its real value: a level shapes the record, never the run.
+        let out = run_at(CaptureLevel::OnError, ok_body).await;
+        let text = serde_json::to_string(&out.node_trace).unwrap();
+        assert!(
+            !text.contains("CANARY-IN-INPUT"),
+            "on-error must not record a successful node's payload: {text}"
+        );
+        assert_eq!(out.value, json!({ "seen": "CANARY-IN-INPUT" }));
+        assert!(
+            out.node_trace.iter().all(|t| t.status == "ok"),
+            "status must survive at on-error"
+        );
+
+        // none — nothing, even when a node fails.
+        let out = run_at(CaptureLevel::None, ok_body).await;
+        let text = serde_json::to_string(&out.node_trace).unwrap();
+        assert!(!text.contains("CANARY-IN-INPUT"), "none must record nothing");
+        assert!(
+            !out.node_trace.is_empty(),
+            "none still records that the nodes ran"
+        );
+    }
+
+    /// The point of `on-error`: the run that fails is the one you can read.
+    #[tokio::test]
+    async fn on_error_records_the_node_that_failed() {
+        use crate::pipeline::model::{PipelineGraphMetadata, PipelineGraphSettings};
+        use crate::pipeline::trace_capture::{CaptureLevel, TraceCaptureSettings};
+
+        let mut graph = build_pipeline_graph(
+            "levels-fail",
+            "[a] trigger.manual\n[b] script -- \"throw new Error('boom');\"\n[a] -> [b]\n",
+        )
+        .expect("graph");
+        graph.metadata = Some(PipelineGraphMetadata {
+            settings: PipelineGraphSettings {
+                trace_capture: Some(TraceCaptureSettings {
+                    level: Some(CaptureLevel::OnError),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+        let ctx = PipelineContext {
+            owner: "test".into(),
+            project: "test".into(),
+            pipeline: "levels-fail".into(),
+            request_id: "levels-fail-test".into(),
+            route: String::new(),
+            input: json!({ "canary": "CANARY-IN-INPUT" }),
+            trigger: None,
+            placeholder: None,
+        };
+        let result = BasicPipelineEngine::default().execute_async(&graph, &ctx).await;
+        let trace = match &result {
+            Ok(out) => out.node_trace.clone(),
+            Err(e) => e.node_trace.clone(),
+        };
+        let text = serde_json::to_string(&trace).unwrap();
+        assert!(
+            text.contains("CANARY-IN-INPUT"),
+            "on-error must record the failing node's input: {text}"
         );
     }
 
@@ -4482,7 +4627,19 @@ mod tests {
 [a] -> [b]
 "#;
 
-        let graph = build_pipeline_graph("logic-foreach-test", dsl).expect("graph");
+        let mut graph = build_pipeline_graph("logic-foreach-test", dsl).expect("graph");
+        // Asserts on the foreach node's recorded output, so it needs the level
+        // that records a successful node. Default is on-error.
+        graph.metadata = Some(crate::pipeline::model::PipelineGraphMetadata {
+            settings: crate::pipeline::model::PipelineGraphSettings {
+                trace_capture: Some(crate::pipeline::trace_capture::TraceCaptureSettings {
+                    level: Some(crate::pipeline::trace_capture::CaptureLevel::Full),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+            ..Default::default()
+        });
         let engine = BasicPipelineEngine::default();
         let out = engine
             .execute_async(

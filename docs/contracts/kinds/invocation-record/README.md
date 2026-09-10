@@ -1,6 +1,6 @@
 # InvocationRecord
 
-Status: **review** — spec settled 2026-08-29; secret handling re-decided and the code caught up 2026-09-01; capture levels added 2026-09-10 and not yet implemented. The entries under Open are open, not owed.
+Status: **review** — spec settled 2026-08-29; secret handling re-decided and the code caught up 2026-09-01; capture levels added and implemented 2026-09-10; rule 3 (a credential registered by value where it resolves) is contracted and not yet implemented — today it rests on rule 2 name matching. The entries under Open are open, not owed.
 
 One row per pipeline run: when it ran, how long it took, whether it worked, and
 what each node received and returned. This is a project's run history.
@@ -119,6 +119,12 @@ pipeline running.
 
 Rule 3 holds underneath all of it. `full` on every node still shows no
 credential value.
+
+Implemented 2026-09-10 for the levels themselves; rule 3 is still owed. Until it
+lands, a secret is kept out of a record by rule 2's name list, which is why an
+OAuth `code` was recorded in full — no list holds every name a third party
+chooses. `on-error` narrows the exposure sharply in the meantime, because a run
+that succeeds now records nothing at all.
 
 Added 2026-09-10, replacing a proposed masking mechanism. Masking asked node
 authors to mark secrets, and name matching asked the platform to guess other

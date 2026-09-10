@@ -24,11 +24,35 @@ use crate::pipeline::nodes::NodeExecutionOutput;
 #[cfg(test)]
 mod tests;
 
+/// How much of a payload a run records.
+///
+/// A pipeline on a device has no room for run history; a pipeline being
+/// debugged wants all of it. Contract: `kinds/invocation-record` § Capture
+/// Level. Rule 3 holds underneath every level — a credential's value is never
+/// shown, whatever this is set to.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum CaptureLevel {
+    /// Node id, kind, pins, timing, status, error code. No payloads at all,
+    /// and none of the work of producing them.
+    None,
+    /// `None`, plus the payloads of nodes that failed. The default: it costs
+    /// what `None` costs on disk for a run that succeeds, and a run that fails
+    /// is the one anybody opens.
+    #[default]
+    OnError,
+    /// Every node's config, input and output, subject to the byte budgets.
+    Full,
+}
+
 /// Optional capture overrides. Missing fields inherit the project setting,
 /// then the built-in default. Retention count/age are configured separately.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TraceCaptureSettings {
+    /// How much of each payload is recorded. Default: `on-error`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub level: Option<CaptureLevel>,
     /// First N elements of every logged array; 0 disables array sampling only.
     /// Default: 6. Strings, depth, and byte budgets still apply with 0.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -53,6 +77,8 @@ pub struct TraceCaptureSettings {
 /// Fully resolved capture policy, snapshotted once at invocation start.
 #[derive(Debug, Clone, Copy, Serialize)]
 pub struct TraceCaptureLimits {
+    /// See [`CaptureLevel`].
+    pub level: CaptureLevel,
     /// See [`TraceCaptureSettings::array_sample_count`].
     pub array_sample_count: u32,
     /// See [`TraceCaptureSettings::max_string_chars`].
@@ -91,6 +117,7 @@ impl TraceCaptureSettings {
         let empty = Self::default();
         let over = overrides.unwrap_or(&empty);
         TraceCaptureLimits {
+            level: over.level.or(self.level).unwrap_or_default(),
             array_sample_count: over
                 .array_sample_count
                 .or(self.array_sample_count)
@@ -124,6 +151,23 @@ impl TraceCapture {
 
     pub(crate) fn begin_node(&mut self) {
         self.node_left = self.limits.max_node_bytes as usize;
+    }
+
+    /// Does this level record payloads for a node that *succeeded*?
+    ///
+    /// `OnError` answers no, which is what makes the default cost nothing on
+    /// disk for an ordinary run.
+    pub(crate) fn records_successful_payloads(&self) -> bool {
+        matches!(self.limits.level, CaptureLevel::Full)
+    }
+
+    /// Does this level ever record payloads?
+    ///
+    /// `None` answers no, and the caller skips the serialization entirely —
+    /// not capturing is cheaper than capturing and discarding, which is the
+    /// whole point on a device.
+    pub(crate) fn records_any_payload(&self) -> bool {
+        !matches!(self.limits.level, CaptureLevel::None)
     }
 
     /// Capture one borrowed payload, preserving private-marker and exception

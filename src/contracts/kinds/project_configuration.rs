@@ -1367,6 +1367,7 @@ mod tests {
     fn trace_capture_defaults_survive_runtime_and_yaml_roundtrip() {
         let mut spec = ProjectConfigurationSpec::default();
         let capture = crate::pipeline::trace_capture::TraceCaptureSettings {
+            level: Some(crate::pipeline::trace_capture::CaptureLevel::Full),
             array_sample_count: Some(1),
             max_string_chars: Some(1024),
             max_depth: Some(4),
