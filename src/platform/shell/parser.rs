@@ -289,7 +289,29 @@ pub fn expand_kind(short: &str) -> Option<&'static str> {
 }
 
 /// Default input/output pins per node kind.
+///
+/// The node definition is the single source of truth: a node declares its own
+/// pins, and this reads them. The table below is the fallback for kinds no
+/// definition covers.
+///
+/// It used to be the other way round, and the table was a second, divergent
+/// copy of what every definition already said. A node whose pins were not
+/// remembered here silently got `in`/`out` — so `n.crypto`, which declares
+/// `true`/`false` for its verify operations, could not be branched on from the
+/// DSL at all: the edge was refused as "'true' is not declared by node".
 pub fn default_pins(kind: &str) -> (Vec<String>, Vec<String>) {
+    // `n.logic.match` sets its pins per instance from `cases`, so its
+    // definition cannot answer for one node and the table below still owns it.
+    if kind != "n.logic.match" {
+        if let Some(def) = crate::pipeline::nodes::builtin_node_definitions()
+            .into_iter()
+            .find(|def| def.kind == kind)
+        {
+            if !def.output_pins.is_empty() {
+                return (def.input_pins, def.output_pins);
+            }
+        }
+    }
     match kind {
         "n.trigger.webhook" | "n.trigger.schedule" | "n.trigger.manual" | "n.trigger.function" => {
             (vec![], vec!["out".to_string()])

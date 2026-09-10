@@ -21947,12 +21947,22 @@ fn verify_webhook_auth(
         "jwt" => {
             use jsonwebtoken::{Algorithm, DecodingKey, Validation, decode};
 
-            // Check Authorization: Bearer header first, then Cookie: <cookie_name> fallback.
-            let cookie_name = if auth_credential.is_empty() {
-                "zebflow_session"
-            } else {
-                "zebflow_session"
-            };
+            // Check Authorization: Bearer header first, then Cookie: <cookie_name>.
+            //
+            // The name comes from the credential, beside `auth_redirect`, because
+            // an application's session cookie is the application's to name. Both
+            // branches of this used to return `zebflow_session` — the platform's
+            // own Studio cookie — so a project's JWT auth read the admin session
+            // instead of its own, and an app either had to clobber that name or
+            // could not use webhook JWT auth at all. Default unchanged for
+            // anything already relying on it.
+            let cookie_name = credential
+                .secret
+                .get("cookie_name")
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .filter(|v| !v.is_empty())
+                .unwrap_or("zebflow_session");
             let token = headers
                 .get("Authorization")
                 .and_then(|h| h.to_str().ok())

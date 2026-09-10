@@ -12,6 +12,7 @@ use crate::pipeline::{
 };
 
 pub const NODE_KIND: &str = "n.logic.collect";
+pub const INPUT_PIN_IN: &str = "in";
 pub const OUTPUT_PIN_OUT: &str = "out";
 
 pub fn definition() -> NodeDefinition {
@@ -22,7 +23,12 @@ pub fn definition() -> NodeDefinition {
             .to_string(),
         input_schema: serde_json::json!({ "type": "object" }),
         output_schema: serde_json::json!({ "type": "object" }),
-        input_pins: vec![],
+        // Declared because edges arrive here: this node exists to gather
+        // several upstreams before continuing. The definition said `[]` while
+        // the DSL declared `in` on every instance, and the engine validated
+        // edges against the DSL's copy — so the disagreement stayed invisible
+        // until the parser started reading definitions.
+        input_pins: vec![INPUT_PIN_IN.to_string()],
         output_pins: vec![OUTPUT_PIN_OUT.to_string()],
         script_available: false,
         script_bridge: None,
@@ -52,7 +58,7 @@ impl NodeHandler for Node {
         NODE_KIND
     }
     fn input_pins(&self) -> &'static [&'static str] {
-        &[]
+        &[INPUT_PIN_IN]
     }
     fn output_pins(&self) -> &'static [&'static str] {
         &[OUTPUT_PIN_OUT]
