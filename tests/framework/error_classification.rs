@@ -100,3 +100,64 @@ fn optional_chaining_still_yields_a_value() {
     .expect("an author who wrote ?. asked for absence and must get it");
     assert_eq!(out.get("value").and_then(|v| v.as_str()), Some("fallback"));
 }
+
+/// `input` is the payload in a logic node's expression, as it is in every
+/// `{{ }}` block and in `n.script`.
+///
+/// Binding only `$input` left `input` pointing at the scope object, so
+/// `input.rows` evaluated to undefined and a guard silently took the wrong
+/// branch — no error, no trace entry, just the false path. Found by a real
+/// pipeline taking a 404 on a row that plainly existed.
+#[tokio::test]
+async fn a_logic_expression_reads_input_as_the_payload() {
+    use zebflow::pipeline::engines::basic::BasicPipelineEngine;
+    use zebflow::pipeline::interface::PipelineEngine;
+    use zebflow::pipeline::model::PipelineContext;
+    use zebflow::platform::shell::parser::build_pipeline_graph;
+
+    let graph = build_pipeline_graph(
+        "input-binding",
+        "[a] trigger.manual\n\
+         [b] logic.if --expr \"input.rows && input.rows.length > 0\"\n\
+         [yes] script -- \"return { took: 'true' };\"\n\
+         [no] script -- \"return { took: 'false' };\"\n\
+         [a] -> [b]\n[b]:true -> [yes]\n[b]:false -> [no]\n",
+    )
+    .expect("graph");
+
+    let ctx = PipelineContext {
+        owner: "test".into(),
+        project: "test".into(),
+        pipeline: "input-binding".into(),
+        request_id: "binding-test".into(),
+        route: String::new(),
+        input: json!({ "rows": [ { "id": 1 } ] }),
+        trigger: None,
+        placeholder: None,
+    };
+    let out = BasicPipelineEngine::default()
+        .execute_async(&graph, &ctx)
+        .await
+        .expect("execution");
+    assert_eq!(
+        out.value.get("took").and_then(|v| v.as_str()),
+        Some("true"),
+        "`input.rows` must see the payload, not the scope object"
+    );
+
+    // And `$input` keeps working, because documents and pipelines use both.
+    let graph = build_pipeline_graph(
+        "input-binding-dollar",
+        "[a] trigger.manual\n\
+         [b] logic.if --expr \"$input.rows.length > 0\"\n\
+         [yes] script -- \"return { took: 'true' };\"\n\
+         [no] script -- \"return { took: 'false' };\"\n\
+         [a] -> [b]\n[b]:true -> [yes]\n[b]:false -> [no]\n",
+    )
+    .expect("graph");
+    let out = BasicPipelineEngine::default()
+        .execute_async(&graph, &ctx)
+        .await
+        .expect("execution");
+    assert_eq!(out.value.get("took").and_then(|v| v.as_str()), Some("true"));
+}

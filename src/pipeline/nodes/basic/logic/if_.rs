@@ -88,12 +88,20 @@ impl Node {
         language: std::sync::Arc<dyn LanguageEngine>,
     ) -> Result<Self, PipelineError> {
         let source = format!(
-            "var $input = input.$input;\n\
-             var $item = input.$item;\n\
-             var $index = input.$index;\n\
-             var $count = input.$count;\n\
-             var $trigger = input.$trigger || null;\n\
-             var $nodes = input.$nodes || {{}};\n\
+            // `input` is the payload here, as it is in every `{{ }}` block, in
+            // n.script, and in every document that teaches either. Binding only
+            // `$input` left `input` pointing at the scope object, so
+            // `input.rows` silently evaluated to undefined and a guard took the
+            // wrong branch with no error anywhere. Same defect, same fix as
+            // `expr/resolver.rs`.
+            "var __scope = input;\n\
+             var input = __scope.$input;\n\
+             var $input = input;\n\
+             var $item = __scope.$item;\n\
+             var $index = __scope.$index;\n\
+             var $count = __scope.$count;\n\
+             var $trigger = __scope.$trigger || null;\n\
+             var $nodes = __scope.$nodes || {{}};\n\
              return Boolean({});",
             config.expression
         );
