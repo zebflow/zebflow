@@ -98,6 +98,18 @@ pub const ERROR_CLASS_REGISTRY: &[(&str, ErrorClass)] = &[
     ("FW_NODE_AUTH_TOKEN_SECRET_MISSING", ErrorClass::Refused),
     ("FW_NODE_AUTH_TOKEN_SIGN", ErrorClass::Refused),
     ("FW_NODE_AUTH_TOKEN_UNAVAILABLE", ErrorClass::Refused),
+    // Verification. All refused: every one of these is a misconfigured node or
+    // credential, and none of them succeeds on a second attempt. A token that
+    // simply does not verify is not here at all — that leaves on the `invalid`
+    // pin, because a logged-out visitor is an outcome, not an error.
+    ("FW_NODE_AUTH_VERIFY_ALGORITHM", ErrorClass::Refused),
+    ("FW_NODE_AUTH_VERIFY_CONFIG", ErrorClass::Refused),
+    ("FW_NODE_AUTH_VERIFY_CREDENTIAL", ErrorClass::Refused),
+    ("FW_NODE_AUTH_VERIFY_CREDENTIAL_KIND", ErrorClass::Refused),
+    ("FW_NODE_AUTH_VERIFY_CREDENTIAL_MISSING", ErrorClass::Refused),
+    ("FW_NODE_AUTH_VERIFY_KEY", ErrorClass::Refused),
+    ("FW_NODE_AUTH_VERIFY_SECRET_MISSING", ErrorClass::Refused),
+    ("FW_NODE_AUTH_VERIFY_UNAVAILABLE", ErrorClass::Refused),
     ("FW_NODE_BINDING_COMPILE", ErrorClass::Refused),
     ("FW_NODE_BINDING_EXPR", ErrorClass::Refused),
     ("FW_NODE_BINDING_PARSE", ErrorClass::Refused),

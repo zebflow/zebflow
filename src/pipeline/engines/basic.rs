@@ -35,7 +35,7 @@ use crate::pipeline::model::{
 };
 use crate::pipeline::nodes::basic::file_ref::{BACKEND_ZEBFS, FILE_REF_TYPE, LIFECYCLE_DURABLE};
 use crate::pipeline::nodes::basic::{
-    agent, ai_tts, auth_token_create, browser_run, concept, crypto, mail_send, fs_compress, fs_decompress, fs_object,
+    agent, ai_tts, auth_token_create, auth_token_verify, browser_run, concept, crypto, mail_send, fs_compress, fs_decompress, fs_object,
     fs_pdf_convert, fs_save, fs_thumbnail, function_call, geo_convert, geo_inspect, http_request,
     kv_del, kv_exists, kv_expire, kv_get, kv_incr, kv_publish, kv_set, logic, mapserver_crud,
     pg_query, script, sekejap_insert, sekejap_query, sqlite_mutate, sqlite_query, table_convert,
@@ -1418,6 +1418,20 @@ impl BasicPipelineEngine {
                     credentials.clone(),
                 )?))
             }
+            auth_token_verify::NODE_KIND => {
+                let Some(credentials) = &self.credentials else {
+                    return Err(PipelineError::new(
+                        "FW_NODE_AUTH_VERIFY_UNAVAILABLE",
+                        "credential service is not configured on this framework engine",
+                    ));
+                };
+                Ok(NodeDispatch::AuthTokenVerify(auth_token_verify::Node::new(
+                    serde_json::from_value(node.config.clone()).map_err(|err| {
+                        PipelineError::new("FW_NODE_AUTH_VERIFY_CONFIG", err.to_string())
+                    })?,
+                    credentials.clone(),
+                )?))
+            }
             concept::NODE_KIND => Ok(NodeDispatch::Concept(concept::Node::new(
                 serde_json::from_value(node.config.clone()).map_err(|err| {
                     PipelineError::new("FW_NODE_CONCEPT_CONFIG", err.to_string())
@@ -2723,6 +2737,9 @@ impl PipelineEngine for BasicPipelineEngine {
                     }
                     NodeDispatch::LogicRetry(node) => node.execute_many_async(input_for_exec).await,
                     NodeDispatch::AuthTokenCreate(node) => {
+                        node.execute_many_async(input_for_exec).await
+                    }
+                    NodeDispatch::AuthTokenVerify(node) => {
                         node.execute_many_async(input_for_exec).await
                     }
                     NodeDispatch::MailSend(node) => node.execute_many_async(input_for_exec).await,
@@ -4946,6 +4963,7 @@ enum NodeDispatch {
     LogicReduce(logic::reduce::Node),
     LogicRetry(logic::retry::Node),
     AuthTokenCreate(auth_token_create::Node),
+    AuthTokenVerify(auth_token_verify::Node),
     MailSend(mail_send::Node),
     Concept(concept::Node),
     WebError(weberror::Node),

@@ -29,6 +29,7 @@ use crate::pipeline::NodeDefinition;
 pub mod agent;
 pub mod ai_tts;
 pub mod auth_token_create;
+pub mod auth_token_verify;
 pub mod concept;
 pub mod mail_send;
 pub mod browser_run;
@@ -78,6 +79,7 @@ pub fn builtin_node_definitions() -> Vec<NodeDefinition> {
         agent::definition(),
         ai_tts::definition(),
         auth_token_create::definition(),
+        auth_token_verify::definition(),
         concept::definition(),
         mail_send::definition(),
         browser_run::definition(),
