@@ -99,7 +99,70 @@ enum JsOp {
 
 struct JsRequest {
     op: JsOp,
+    /// This render's own allowance. Carried per request because a worker is
+    /// shared: the deadline belongs to the work, not to the thread.
+    timeout_ms: u64,
     reply: std::sync::mpsc::SyncSender<Result<JsResponse, EngineError>>,
+}
+
+/// Instruction to a worker's watchdog.
+enum WatchCmd {
+    /// A render has started; terminate the isolate if not disarmed in time.
+    Arm(Duration),
+    /// The render finished on its own.
+    Disarm,
+}
+
+/// Spawns the watchdog holding this runtime's kill switch.
+///
+/// Without it, a render that never terminates keeps its worker for the life of
+/// the process: `render_ssr` stops waiting, the worker does not stop rendering,
+/// and the pool's respawn-on-death never fires because nothing died. Three such
+/// renders took every default worker, while `is_pool_ready` still answered
+/// true. Verified by `tests/rwe/worker_wedge.rs`.
+///
+/// The handshake matters: the worker blocks until the watchdog has *decided*.
+/// A flag alone races — the watchdog can resolve to fire, be descheduled before
+/// publishing that, and have its kill land on the following render.
+fn spawn_render_watchdog(
+    handle: deno_core::v8::IsolateHandle,
+    worker_id: usize,
+) -> (
+    std::sync::mpsc::SyncSender<WatchCmd>,
+    std::sync::mpsc::Receiver<bool>,
+) {
+    let (cmd_tx, cmd_rx) = std::sync::mpsc::sync_channel::<WatchCmd>(2);
+    let (ack_tx, ack_rx) = std::sync::mpsc::sync_channel::<bool>(1);
+    std::thread::Builder::new()
+        .name(format!("rwe-js-watchdog-{worker_id}"))
+        .spawn(move || {
+            loop {
+                match cmd_rx.recv() {
+                    Ok(WatchCmd::Arm(budget)) => {
+                        let fired = match cmd_rx.recv_timeout(budget) {
+                            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                                handle.terminate_execution();
+                                // The worker's Disarm is still in flight; take
+                                // it so it is not read as the next Arm.
+                                if cmd_rx.recv().is_err() {
+                                    return;
+                                }
+                                true
+                            }
+                            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return,
+                            Ok(_) => false,
+                        };
+                        if ack_tx.send(fired).is_err() {
+                            return;
+                        }
+                    }
+                    Ok(WatchCmd::Disarm) => {}
+                    Err(_) => return,
+                }
+            }
+        })
+        .expect("failed spawning rwe-js watchdog");
+    (cmd_tx, ack_rx)
 }
 
 enum JsResponse {
@@ -180,6 +243,10 @@ fn run_js_thread(worker_id: usize, mut rx: tokio::sync::mpsc::UnboundedReceiver<
             ..Default::default()
         });
 
+        // The kill switch, held by a thread the render cannot reach.
+        let isolate_handle = js_rt.v8_isolate().thread_safe_handle();
+        let (watch_tx, watch_ack) = spawn_render_watchdog(isolate_handle, worker_id);
+
         // Load the Zeb React SSR globals once.
         if let Err(e) =
             js_rt.execute_script("<zeb_ssr_init>", FastString::from_static(ZEB_SSR_INIT))
@@ -211,6 +278,9 @@ fn run_js_thread(worker_id: usize, mut rx: tokio::sync::mpsc::UnboundedReceiver<
                 return; // Exit current thread; pool slot respawns on next get_channel() call.
             }
 
+            let budget = Duration::from_millis(req.timeout_ms.max(1));
+            let _ = watch_tx.send(WatchCmd::Arm(budget));
+
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 // We need a way to run async in catch_unwind. Use block_on nested.
                 tokio::task::block_in_place(|| {
@@ -225,6 +295,27 @@ fn run_js_thread(worker_id: usize, mut rx: tokio::sync::mpsc::UnboundedReceiver<
                     ))
                 })
             }));
+
+            // Block until the watchdog has decided; after this no kill can
+            // still be pending against the next render.
+            let _ = watch_tx.send(WatchCmd::Disarm);
+            let terminated = watch_ack.recv().unwrap_or(false);
+
+            if terminated {
+                eprintln!(
+                    "rwe-js-runtime[{worker_id}]: render exceeded its allowance — \
+                     terminated, worker retiring"
+                );
+                let _ = req.reply.send(Err(EngineError::new(
+                    "RWE_TIMEOUT",
+                    "SSR render exceeded its time allowance and was stopped",
+                )));
+                // A terminated isolate is not reusable and its realm may be
+                // half-evaluated. Exit so `get_channel` respawns this slot —
+                // the pool already knows how to replace a dead worker; nothing
+                // ever died before.
+                return;
+            }
 
             let result = match result {
                 Ok(r) => r,
@@ -391,25 +482,62 @@ pub fn render_ssr(
     ctx: &Value,
     timeout_ms: u64,
 ) -> Result<SsrResult, EngineError> {
-    let (reply_tx, reply_rx) = std::sync::mpsc::sync_channel(1);
-    get_channel()
-        .send(JsRequest {
-            op: JsOp::RenderSsr {
-                source: module_source.to_string(),
-                ctx: ctx.clone(),
-            },
-            reply: reply_tx,
-        })
-        .map_err(|_| EngineError::new("RWE_CHANNEL", "js runtime channel disconnected"))?;
+    // The caller's own allowance, plus a small grace for the worker to
+    // terminate and answer. The old floor of 10s ignored the caller entirely:
+    // a page asking for 500ms waited ten seconds to be told it had timed out.
+    let timeout = Duration::from_millis(timeout_ms.saturating_add(2_000));
 
-    let timeout = Duration::from_millis(timeout_ms.max(10_000));
-    let response = reply_rx
-        .recv_timeout(timeout)
-        .map_err(|_| EngineError::new("RWE_TIMEOUT", "js render timed out"))?;
+    // Two attempts. A worker that retires after terminating a runaway render
+    // is replaced lazily, so a request can reach the dying slot and lose its
+    // reply channel — which is a disconnect, not a timeout, and is worth one
+    // retry on a fresh worker. Without this, the render *after* a runaway
+    // fails, which looks exactly like the wedge this is meant to fix.
+    let mut last: Option<EngineError> = None;
+    for attempt in 0..2 {
+        let (reply_tx, reply_rx) = std::sync::mpsc::sync_channel(1);
+        if get_channel()
+            .send(JsRequest {
+                op: JsOp::RenderSsr {
+                    source: module_source.to_string(),
+                    ctx: ctx.clone(),
+                },
+                timeout_ms,
+                reply: reply_tx,
+            })
+            .is_err()
+        {
+            last = Some(EngineError::new(
+                "RWE_CHANNEL",
+                "js runtime channel disconnected",
+            ));
+            continue;
+        }
 
-    match response? {
-        JsResponse::Rendered { html, page_config } => Ok(SsrResult { html, page_config }),
+        match reply_rx.recv_timeout(timeout) {
+            Ok(response) => {
+                return match response? {
+                    JsResponse::Rendered { html, page_config } => {
+                        Ok(SsrResult { html, page_config })
+                    }
+                };
+            }
+            // The worker went away without answering. Its slot respawns on the
+            // next dispatch, so try once more.
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                last = Some(EngineError::new(
+                    "RWE_WORKER_LOST",
+                    "SSR worker exited before answering",
+                ));
+                let _ = attempt;
+                continue;
+            }
+            // A genuine deadline. Retrying would only spend it again.
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                return Err(EngineError::new("RWE_TIMEOUT", "js render timed out"));
+            }
+        }
     }
+    Err(last.unwrap_or_else(|| EngineError::new("RWE_WORKER_LOST", "SSR worker unavailable")))
 }
 
 /// Non-blocking check: returns true if at least one worker slot is alive.

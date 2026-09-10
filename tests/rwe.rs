@@ -10,3 +10,5 @@ mod smoke;
 mod template_render;
 #[path = "rwe/zeb_react.rs"]
 mod zeb_react;
+#[path = "rwe/worker_wedge.rs"]
+mod worker_wedge;
