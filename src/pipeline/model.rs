@@ -1020,6 +1020,25 @@ pub struct NodeDefinition {
     /// UI category path for grouping in the pipeline editor catalog.
     /// Dot-separated: `root.subcategory` (e.g. `"data.postgres"`, `"files.fs"`).
     /// First segment = root category button; second = subcategory header.
+    /// Positions in this node's output that hold a secret regardless of value —
+    /// `kinds/invocation-record` rule 3, by position.
+    ///
+    /// Rule 3 by *value* covers anything that came out of the credential store.
+    /// This covers what it cannot: a secret the platform has never seen,
+    /// arriving in someone else's response under a name no list holds. An OAuth
+    /// token endpoint answering `access_token` is the motivating case, and a
+    /// real authorization code reached a trace in full under the name `code`.
+    ///
+    /// JSON Pointer, plus `*` matching one object member or array element:
+    ///
+    ///   `/access_token`        one field
+    ///   `/items/*/token`       that field in every element
+    ///   `/users/*`             every value of a dynamically keyed map
+    ///
+    /// Masks the record only. What the next node receives is untouched —
+    /// a level shapes the record, never the run.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub secret_paths: Vec<String>,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub ui_category: String,
     /// Human-readable label for the leaf subcategory.

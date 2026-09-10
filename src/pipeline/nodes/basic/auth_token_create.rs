@@ -23,6 +23,11 @@ const OUTPUT_PIN_OUT: &str = "out";
 
 pub fn definition() -> NodeDefinition {
     NodeDefinition {
+        // The minted session token. Rule 3 by value cannot see it — it never
+        // came out of the credential store, it was just created here — and the
+        // name list only catches it because `access_token` happens to be on it.
+        // Declared so it stays masked even if that list changes.
+        secret_paths: vec!["/access_token".to_string()],
         kind: NODE_KIND.to_string(),
         capabilities: vec![NodeCapability::Credential],
         title: "Create Auth Token".to_string(),

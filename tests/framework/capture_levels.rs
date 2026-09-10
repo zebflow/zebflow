@@ -218,3 +218,75 @@ fn resolving_a_credential_registers_it_without_the_node_asking() {
         "a project must not see another project's secrets"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Rule 3 by position — declared paths
+// ---------------------------------------------------------------------------
+
+use zebflow::pipeline::trace_capture::mask_secret_paths;
+
+/// The half by-value cannot do: a secret the platform has never seen, arriving
+/// from outside under a name no list holds.
+#[test]
+fn a_declared_path_is_masked_wherever_it_sits() {
+    let body = json!({
+        "response": {
+            "status": 200,
+            "body": { "access_token": "ya29.SECRET", "scope": "openid email" }
+        }
+    });
+    let masked = mask_secret_paths(&body, &["/response/body/access_token".to_string()]);
+    let text = serde_json::to_string(&masked).unwrap();
+    assert!(!text.contains("ya29.SECRET"), "{text}");
+    // Everything around it survives — masking is surgical, not a blackout.
+    assert_eq!(masked["response"]["status"], 200);
+    assert_eq!(masked["response"]["body"]["scope"], "openid email");
+}
+
+#[test]
+fn a_wildcard_matches_every_element_and_every_member() {
+    let rows = json!({ "items": [ { "token": "A-SECRET" }, { "token": "B-SECRET" } ] });
+    let masked = mask_secret_paths(&rows, &["/items/*/token".to_string()]);
+    let text = serde_json::to_string(&masked).unwrap();
+    assert!(!text.contains("A-SECRET") && !text.contains("B-SECRET"), "{text}");
+
+    let map = json!({ "users": { "u1": "KEY-ONE", "u2": "KEY-TWO" } });
+    let masked = mask_secret_paths(&map, &["/users/*".to_string()]);
+    let text = serde_json::to_string(&masked).unwrap();
+    assert!(!text.contains("KEY-ONE") && !text.contains("KEY-TWO"), "{text}");
+}
+
+/// Shapes differ between API versions. A path that matches nothing is fine, and
+/// must never blank the whole payload out of caution.
+#[test]
+fn a_path_that_matches_nothing_changes_nothing() {
+    let payload = json!({ "a": 1, "b": { "c": "visible" } });
+    let masked = mask_secret_paths(&payload, &["/nope/missing".to_string()]);
+    assert_eq!(masked, payload);
+}
+
+/// A whole subtree is how an unknown-depth response is protected — simpler than
+/// searching for guessed names at unknown depth.
+#[test]
+fn masking_a_subtree_hides_everything_under_it() {
+    let payload = json!({ "keep": "yes", "vault": { "deep": { "key": "BURIED-SECRET" } } });
+    let masked = mask_secret_paths(&payload, &["/vault".to_string()]);
+    let text = serde_json::to_string(&masked).unwrap();
+    assert!(!text.contains("BURIED-SECRET"), "{text}");
+    assert_eq!(masked["keep"], "yes");
+}
+
+/// The declaration lives on the node definition, so a node kind ships knowing
+/// where its own secrets are.
+#[test]
+fn a_node_kind_can_declare_where_its_secret_sits() {
+    let def = zebflow::pipeline::nodes::builtin_node_definitions()
+        .into_iter()
+        .find(|d| d.kind == "n.auth.token.create")
+        .expect("auth.token.create must exist");
+    assert!(
+        def.secret_paths.iter().any(|p| p == "/access_token"),
+        "the token node must declare its token: {:?}",
+        def.secret_paths
+    );
+}

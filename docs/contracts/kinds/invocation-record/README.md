@@ -1,6 +1,6 @@
 # InvocationRecord
 
-Status: **review** — spec settled 2026-08-29; secret handling re-decided and the code caught up 2026-09-01; capture levels added and implemented 2026-09-10; rule 3 implemented 2026-09-10 by value; by position (declared paths on a node definition) is contracted and still owed. The entries under Open are open, not owed.
+Status: **review** — spec settled 2026-08-29; secret handling re-decided and the code caught up 2026-09-01; capture levels added and implemented 2026-09-10; rule 3 implemented 2026-09-10, by value and by position. The entries under Open are open, not owed.
 
 One row per pipeline run: when it ran, how long it took, whether it worked, and
 what each node received and returned. This is a project's run history.
@@ -126,9 +126,16 @@ refresh, which arrives by a different path — and masked in every payload at
 every level, with no node declaring anything. That is what covers the seven
 credential-taking nodes of which one ever marked its secrets.
 
-By position is still owed. A secret the platform has never seen — one arriving
-in someone else's response body under a name no list holds — is still recorded.
-That is how an OAuth `code` was kept in full.
+By position holds through `NodeDefinition::secret_paths`: a node kind declares
+where a secret sits in its own output, addressed by JSON Pointer with `*`
+matching one member or element. Only the record is masked — what the next node
+receives is untouched. A path matching nothing changes nothing, because shapes
+differ between API versions and a missing optional field is not an error.
+
+What neither half reaches: a secret in a response under a name nobody declared
+and that never came from the store. The pipeline author closes that by declaring
+the path on the node instance — the kind cannot know what a particular API
+returns. Instance-level declarations are contracted here and not yet built.
 
 Added 2026-09-10, replacing a proposed masking mechanism. Masking asked node
 authors to mark secrets, and name matching asked the platform to guess other

@@ -441,7 +441,7 @@ impl Serialize for View<'_> {
                     Value::Null | Value::Bool(_) | Value::Array(_) | Value::Object(_)
                 ))
         {
-            return serializer.serialize_str("••••••");
+            return serializer.serialize_str(REDACTED);
         }
         match self.value {
             Value::Array(items) => {
@@ -504,6 +504,66 @@ impl Serialize for View<'_> {
             }
             value => value.serialize(serializer),
         }
+    }
+}
+
+/// What a masked value reads as, everywhere.
+pub(crate) const REDACTED: &str = "••••••";
+
+/// Replace the value at every declared path with the redaction marker.
+///
+/// Rule 3 by position. Operates on a clone destined for the record — the value
+/// the next node receives is never touched, because a level shapes the record
+/// and never the run.
+///
+/// JSON Pointer with one extension: `*` matches a single object member or array
+/// element. No recursive descent, filters or expressions — an unknown-depth
+/// response is protected by masking its containing subtree, which is simpler to
+/// reason about than searching for guessed names at unknown depth. A path that
+/// matches nothing is silently fine; shapes differ between API versions and a
+/// missing optional field is not an error.
+pub fn mask_secret_paths(value: &Value, paths: &[String]) -> Value {
+    let mut out = value.clone();
+    for path in paths {
+        let segments: Vec<&str> = path
+            .trim_start_matches('/')
+            .split('/')
+            .filter(|s| !s.is_empty())
+            .collect();
+        if !segments.is_empty() {
+            mask_at(&mut out, &segments);
+        }
+    }
+    out
+}
+
+fn mask_at(value: &mut Value, segments: &[&str]) {
+    let Some((head, rest)) = segments.split_first() else {
+        *value = Value::String(REDACTED.to_string());
+        return;
+    };
+    match value {
+        Value::Object(map) => {
+            if *head == "*" {
+                for child in map.values_mut() {
+                    mask_at(child, rest);
+                }
+            } else if let Some(child) = map.get_mut(*head) {
+                mask_at(child, rest);
+            }
+        }
+        Value::Array(items) => {
+            if *head == "*" {
+                for child in items.iter_mut() {
+                    mask_at(child, rest);
+                }
+            } else if let Ok(index) = head.parse::<usize>() {
+                if let Some(child) = items.get_mut(index) {
+                    mask_at(child, rest);
+                }
+            }
+        }
+        _ => {}
     }
 }
 

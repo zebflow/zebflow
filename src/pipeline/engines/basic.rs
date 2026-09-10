@@ -2848,7 +2848,18 @@ impl PipelineEngine for BasicPipelineEngine {
                     }
 
                     let redacted_config = base_trace_config.clone();
-                    let node_output_value = trace_capture.outputs(&outs);
+                    // Rule 3 by position: the node kind declares where a
+                    // secret sits in its own output, and only the record is
+                    // masked. `outs` — what the next node receives — is
+                    // untouched, because a level shapes the record, never the
+                    // run.
+                    let node_output_value = match declared_secret_paths(&trace_node_kind) {
+                        Some(paths) => crate::pipeline::trace_capture::mask_secret_paths(
+                            &trace_capture.outputs(&outs),
+                            paths,
+                        ),
+                        None => trace_capture.outputs(&outs),
+                    };
                     let nodes_output_value = if processed_payloads.len() == 1 {
                         processed_payloads[0].clone()
                     } else {
@@ -3109,6 +3120,25 @@ fn strip_private_markers(value: Value) -> Value {
         Value::Array(items) => Value::Array(items.into_iter().map(strip_private_markers).collect()),
         other => other,
     }
+}
+
+/// Declared secret positions per node kind — `NodeDefinition::secret_paths`.
+///
+/// Built once. Looking these up per node execution by rebuilding the whole
+/// definition list would cost more than the masking it enables.
+static SECRET_PATHS_BY_KIND: std::sync::LazyLock<
+    std::collections::HashMap<String, Vec<String>>,
+> = std::sync::LazyLock::new(|| {
+    crate::pipeline::nodes::builtin_node_definitions()
+        .into_iter()
+        .filter(|def| !def.secret_paths.is_empty())
+        .map(|def| (def.kind, def.secret_paths))
+        .collect()
+});
+
+/// Declared secret positions for a node kind, if it declares any.
+fn declared_secret_paths(kind: &str) -> Option<&'static [String]> {
+    SECRET_PATHS_BY_KIND.get(kind).map(Vec::as_slice)
 }
 
 #[cfg(test)]
