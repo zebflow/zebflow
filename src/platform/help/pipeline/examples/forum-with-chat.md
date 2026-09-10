@@ -43,7 +43,9 @@ A forum with threaded discussion rooms. Each room has a WebSocket connection for
 
 ```
 | trigger.webhook --path /api/forum/rooms --method POST
-| script -- "if (!input.name) return { error: 'name required', __status: 400 }; return { id: input.name.toLowerCase().replace(/[^a-z0-9]+/g,'-'), name: input.name, created_at: Date.now(), last_activity: Date.now() }"
+| logic.if --expr "!!input.name"
+(false pin → `web.response --status 400 --message "name required"`)
+| script -- "return { id: input.name.toLowerCase().replace(/[^a-z0-9]+/g,'-'), name: input.name, created_at: Date.now(), last_activity: Date.now() };"
 | sekejap.query --table forum_rooms --op upsert
 | script -- "return { ok: true, id: input.id }"
 ```
@@ -90,3 +92,8 @@ ws.send(JSON.stringify({ event: 'chat.message', payload: { user, text } }));
 
 - `pages/forum-home.tsx` — room listing
 - `pages/forum-room.tsx` — chat interface with WebSocket
+
+> A script cannot set the response. It returns a value; the graph decides what
+> happens next. Branch with `logic.if` and let `web.response` answer —
+> `--status`, `--location`, `--set-cookie`. See
+> `help("pipeline/examples/webhook-restapi-postgres")` § Answering with a status.

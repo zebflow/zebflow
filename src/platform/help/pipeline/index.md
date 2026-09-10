@@ -233,7 +233,7 @@ JWT missing/invalid → credential `auth_redirect` fires (browser) or 401 JSON (
 
 ```
 | trigger.webhook --path /go/signup --method GET
-| script -- "return { __redirect: '/auth/register?source=landing' }"
+| web.response --location /auth/register?source=landing
 ```
 
 ### Scheduled Job — run every hour
@@ -287,3 +287,8 @@ See `help(topic="pipeline/dsl")` for the full `{{ expr }}` reference including s
 - `help(topic="web")` — TSX pages, `input` / `ctx`, hydration modes
 - `help(topic="pipeline/web")` — `n.web.response` flags, cookie spec, redirect, custom headers
 - `help(topic="pipeline/examples")` — full archetype recipes (blog, chat, game, scheduling, scraping, auth)
+
+> A script cannot set the response. It returns a value; the graph decides what
+> happens next. Branch with `logic.if` and let `web.response` answer —
+> `--status`, `--location`, `--set-cookie`. See
+> `help("pipeline/examples/webhook-restapi-postgres")` § Answering with a status.

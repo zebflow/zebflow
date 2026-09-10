@@ -50,7 +50,9 @@ If `auth_redirect` / `auth_forbidden_redirect` are not set, auth failure returns
 | trigger.webhook --path /auth/login --method POST
 | pg.query --credential my-pg --params "{{ [input.identifier] }}" \
     -- "SELECT player_id::text, fullname, role FROM app.player WHERE identifier = $1 AND is_active = true"
-| script -- "const user = input.rows?.[0]; if (!user) return { ok: false, error: 'invalid credentials', __status: 401 }; return { player_id: user.player_id, name: user.fullname, roles: [user.role] }"
+| logic.if --expr "input.rows && input.rows.length > 0"
+(false pin → `web.response --status 401 --message "invalid credentials"`)
+| script -- "const user = input.rows[0]; return { player_id: user.player_id, name: user.fullname, roles: [user.role] };"
 | auth.token.create --credential my-jwt --claim sub={{ input.player_id }} --claim name={{ input.name }}:public --claim roles={{ input.roles }}:public --expires-in 86400
 | web.response --location /dashboard --set-cookie name=session,value={{ input.access_token }},http-only,max-age=86400,path=/
 ```
@@ -102,3 +104,8 @@ Role mismatch → credential `auth_forbidden_redirect` fires (browser) or 403 JS
 - `web.response --set-cookie` — set HttpOnly cookie in response
 - `web.response --location` — redirect
 - `web.response --template` — protected page template; `input.user` carries auth context
+
+> A script cannot set the response. It returns a value; the graph decides what
+> happens next. Branch with `logic.if` and let `web.response` answer —
+> `--status`, `--location`, `--set-cookie`. See
+> `help("pipeline/examples/webhook-restapi-postgres")` § Answering with a status.

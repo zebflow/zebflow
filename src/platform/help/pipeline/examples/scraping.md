@@ -62,7 +62,9 @@ Scheduled pipelines that fetch external web pages or APIs, parse/extract data wi
 ```
 | trigger.webhook --path /data/items/:id --method GET
 | sekejap.query --table scraped_items --op get --key "{{input.params.id}}"
-| script -- "if (!input) return { __redirect: '/data/items' }; return { item: input }"
+| logic.if --expr "!!input"
+(false pin → `web.response --location /data/items`)
+| script -- "return { item: input };"
 | web.response --template pages/scraped-item-detail.tsx --route /data/items/:id
 ```
 
@@ -96,3 +98,8 @@ Scheduled pipelines that fetch external web pages or APIs, parse/extract data wi
 
 - `pages/scraped-items.tsx` — paginated item listing with search
 - `pages/scraped-item-detail.tsx` — full item display
+
+> A script cannot set the response. It returns a value; the graph decides what
+> happens next. Branch with `logic.if` and let `web.response` answer —
+> `--status`, `--location`, `--set-cookie`. See
+> `help("pipeline/examples/webhook-restapi-postgres")` § Answering with a status.

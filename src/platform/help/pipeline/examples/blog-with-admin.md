@@ -33,7 +33,8 @@ A public blog with paginated listing and post detail pages, plus a JWT-protected
 ```
 | trigger.webhook --path /blog/:slug --method GET
 | sekejap.query --table posts --op get --key "{{input.params.slug}}"
-| script -- "if (!input || !input.published) return { __redirect: '/blog' }; return input"
+| logic.if --expr "input && input.published"
+(false pin → `web.response --location /blog`)
 | web.response --template pages/blog-detail.tsx --route /blog/:slug
 ```
 
@@ -41,7 +42,9 @@ A public blog with paginated listing and post detail pages, plus a JWT-protected
 
 ```
 | trigger.webhook --path /admin/posts --method GET
-| script -- "const tok = input.headers['authorization'] || input.query.token; if (!tok) return { __redirect: '/auth/login' }; return { token: tok }"
+(authenticate at the door instead — the pipeline body then only runs for someone
+already verified, and cannot forget to check:)
+| trigger.webhook --path /admin/posts --method GET --auth-type jwt --auth-credential session-key
 | sekejap.query --table posts --op scan
 | web.response --template pages/admin-posts.tsx --route /admin/posts
 ```
@@ -50,7 +53,9 @@ A public blog with paginated listing and post detail pages, plus a JWT-protected
 
 ```
 | trigger.webhook --path /api/posts --method POST
-| script -- "if (!input.title) return { error: 'title required', __status: 400 }; const slug = input.slug || input.title.toLowerCase().replace(/[^a-z0-9]+/g,'-'); return { ...input, slug, updated_at: Date.now(), created_at: input.created_at || Date.now() }"
+| logic.if --expr "!!input.title"
+(false pin → `web.response --status 400 --message "title required"`)
+| script -- "const slug = input.slug || input.title.toLowerCase().replace(/[^a-z0-9]+/g,'-'); return { ...input, slug, updated_at: Date.now(), created_at: input.created_at || Date.now() };"
 | sekejap.query --table posts --op upsert
 | script -- "return { ok: true, slug: input.slug }"
 ```
@@ -67,7 +72,13 @@ A public blog with paginated listing and post detail pages, plus a JWT-protected
 
 ```
 | trigger.webhook --path /auth/login --method POST
-| script -- "const { username, password } = input; if (username === 'admin' && password === process.env.ADMIN_PASSWORD) { return { user: username, roles: ['admin'] }; } return { error: 'invalid credentials', __status: 401 }"
+| script -- "return { input: input.password, username: input.username };"
+| crypto --op argon2_verify
+(`true` pin → issue the token; `false` pin → `web.response --status 401`)
+
+Never compare a password with `===`, and never read one from an environment
+variable. `n.crypto --op argon2_verify` answers on `true`/`false` pins, so the
+comparison is the branch and it is constant-time.
 | auth.token.create --credential my-jwt --claim sub={{ input.user }} --claim roles={{ input.roles }}:public --expires-in 86400
 | web.response --location /admin --set-cookie name=session,value={{ input.access_token }},http-only,max-age=86400,path=/
 ```
@@ -90,3 +101,8 @@ A public blog with paginated listing and post detail pages, plus a JWT-protected
 - `pages/admin-posts.tsx` — admin CRUD interface
 
 Use `file_create kind=page name=blog-home` then `file_write` to fill content.
+
+> A script cannot set the response. It returns a value; the graph decides what
+> happens next. Branch with `logic.if` and let `web.response` answer —
+> `--status`, `--location`, `--set-cookie`. See
+> `help("pipeline/examples/webhook-restapi-postgres")` § Answering with a status.

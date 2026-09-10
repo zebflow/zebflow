@@ -62,7 +62,9 @@ Create a `jwt_signing_key` credential in the Credentials UI. Fields:
 | trigger.webhook --path /auth/login --method POST
 | pg.query --credential main-db --params "{{ [input.username] }}" \
     -- "SELECT id::text, username, role FROM users WHERE username = $1 LIMIT 1"
-| script -- "const user = input.rows?.[0]; if (!user) return { ok: false, error: 'invalid credentials', __status: 401 }; return { id: user.id, username: user.username, roles: [user.role] }"
+| logic.if --expr "input.rows && input.rows.length > 0"
+(false pin → `web.response --status 401 --message "invalid credentials"`)
+| script -- "const user = input.rows[0]; return { id: user.id, username: user.username, roles: [user.role] };"
 | auth.token.create --credential my-jwt --claim sub={{ input.id }} --claim username={{ input.username }}:public --claim roles={{ input.roles }}:public --expires-in 86400
 | web.response --location /dashboard --set-cookie name=session,value={{ input.access_token }},http-only,max-age=86400,path=/
 ```
@@ -80,7 +82,16 @@ Create a `jwt_signing_key` credential in the Credentials UI. Fields:
 
 ```
 | trigger.webhook --path /auth/register --method POST
-| script -- "const { username, email, password } = input; if (!username || !email || !password) return { error: 'all fields required', __status: 400 }; if (password.length < 8) return { error: 'password too short', __status: 400 }; return { username, email, password_hash: btoa(password + 'salt'), role: 'user' }"
+| logic.if --expr "input.username && input.email && input.password && input.password.length >= 12"
+(false pin → `web.response --status 400 --message "username, email and a password of at least 12 characters are required"`)
+| script -- "return { username: input.username, email: input.email, role: 'user', input: input.password };"
+| crypto --op argon2_hash
+(the hash arrives as `input.result` — store that, never the password)
+
+**Never hash a password yourself.** An earlier version of this example wrote
+`btoa(password + 'salt')`, which is base64 — not a hash at all, and reversible by
+anyone holding the row. `n.crypto` has `argon2_hash` and `argon2_verify`; verify
+answers on `true`/`false` pins, so the branch is the check.
 | pg.query --credential main-db --params "{{ [input.username, input.email, input.password_hash, input.role] }}" \
     -- "INSERT INTO users (username, email, password_hash, role, created_at) VALUES ($1, $2, $3, $4, NOW()) RETURNING id::text"
 | web.response --location /auth/login?registered=1
@@ -135,3 +146,8 @@ Role mismatch → `auth_forbidden_redirect` fires (browser) or 403 JSON (fetch).
 - `pages/auth-register.tsx` — register form (POST to /auth/register)
 - `pages/dashboard.tsx` — protected user dashboard; receives `input.user`
 - `pages/admin-section.tsx` — admin panel; receives `input.section` + `input.user`
+
+> A script cannot set the response. It returns a value; the graph decides what
+> happens next. Branch with `logic.if` and let `web.response` answer —
+> `--status`, `--location`, `--set-cookie`. See
+> `help("pipeline/examples/webhook-restapi-postgres")` § Answering with a status.

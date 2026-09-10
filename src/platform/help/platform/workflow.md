@@ -154,12 +154,15 @@ file_write
 
   ## Auth strategy
   Script node on all admin routes:
-    const auth = input.headers['authorization'] ?? ''
-    const [user, pass] = atob(auth.replace('Basic ', '')).split(':')
-    if (user !== 'admin' || pass !== credentials.admin_pass.secret) {
-      return { __redirect: '/login', status: 401 }
-    }
-    return input  // pass through
+    Authenticate at the door, not in a script:
+
+      trigger.webhook --path /admin/posts --method GET \
+        --auth-type jwt --auth-credential session-key --auth-required-role admin
+
+    The platform verifies the signature, the expiry and the role before the
+    pipeline runs, and redirects a browser with no session to the credential's
+    `auth_redirect`. A script cannot set a status, and a password compared with
+    `!==` in a script is neither constant-time nor hashed.
   """
 ```
 
@@ -219,14 +222,6 @@ pipeline_register
   file_rel_path=admin/admin-posts.zf.json
   body="""
   | trigger.webhook --path /admin/posts --method GET
-  | script -- "
-      const auth = input.headers['authorization'] ?? ''
-      try {
-        const [user, pass] = atob(auth.replace('Basic ', '')).split(':')
-        if (user !== 'admin') return { __status: 401, __body: 'Unauthorized' }
-      } catch { return { __status: 401, __body: 'Unauthorized' } }
-      return input
-    "
   | pg.query --credential main-db -- "
       SELECT id, slug, title, status, created_at
       FROM posts
@@ -243,14 +238,6 @@ pipeline_register
   file_rel_path=admin/admin-post-get.zf.json
   body="""
   | trigger.webhook --path /admin/post --method GET
-  | script -- "
-      const auth = input.headers['authorization'] ?? ''
-      try {
-        const [user, pass] = atob(auth.replace('Basic ', '')).split(':')
-        if (user !== 'admin') return { __status: 401, __body: 'Unauthorized' }
-      } catch { return { __status: 401, __body: 'Unauthorized' } }
-      return input
-    "
   | pg.query --credential main-db -- "
       SELECT id, slug, title, body, status
       FROM posts
@@ -267,15 +254,10 @@ pipeline_register
 pipeline_register
   file_rel_path=admin/admin-post-put.zf.json
   body="""
-  | trigger.webhook --path /admin/post --method PUT
+  | trigger.webhook --path /admin/post --method PUT \
+      --auth-type jwt --auth-credential session-key --auth-required-role admin
   | script -- "
-      const auth = input.headers['authorization'] ?? ''
-      try {
-        const [user, pass] = atob(auth.replace('Basic ', '')).split(':')
-        if (user !== 'admin') return { __status: 401, __body: 'Unauthorized' }
-      } catch { return { __status: 401, __body: 'Unauthorized' } }
       const { slug, title, body, status } = input
-      if (!slug || !title || !body) return { __status: 400, __body: 'Missing fields' }
       return { slug, title, body, status: status || 'draft' }
     "
   | pg.query --credential main-db -- "
@@ -288,7 +270,7 @@ pipeline_register
             updated_at = now()
       RETURNING id, slug
     "
-  | script -- "return { __redirect: '/admin/posts', __status: 302 }"
+  | web.response --location /admin/posts
   """
 ```
 
@@ -616,3 +598,8 @@ docs_agent_write
 | Design system components only — no raw HTML | Button, Input, Field, Label, Badge |
 | Test with `pipeline_execute` to see node trace | Phase 6 verification |
 | Use `pipeline_get_invocations` to debug scheduled runs | (when scheduler involved) |
+
+> A script cannot set the response. It returns a value; the graph decides what
+> happens next. Branch with `logic.if` and let `web.response` answer —
+> `--status`, `--location`, `--set-cookie`. See
+> `help("pipeline/examples/webhook-restapi-postgres")` § Answering with a status.

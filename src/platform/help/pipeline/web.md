@@ -80,7 +80,9 @@ name=session,value={{ input.access_token }},http-only,max-age=86400,secure,same-
 ```zf
 | trigger.webhook --path /blog/:id --method GET
 | pg.query --credential main-db -- "SELECT * FROM posts WHERE id = $1"
-| script -- "if (!input.rows?.[0]) return { __notfound: true }; return input.rows[0]"
+| logic.if --expr "input.rows && input.rows.length > 0"
+(false pin → `web.response --status 404`)
+| script -- "return input.rows[0];"
 | web.response --template pages/not-found.tsx --status 404
 ```
 
@@ -250,3 +252,8 @@ See `help(topic="pipeline/dsl")` for the full `{{ expr }}` scope reference.
 ## Where templates live
 
 `repo/pipelines/` — e.g. `pages/...`, `components/...`, `shared/ui/...`. Imports use **`@/`** from that root.
+
+> A script cannot set the response. It returns a value; the graph decides what
+> happens next. Branch with `logic.if` and let `web.response` answer —
+> `--status`, `--location`, `--set-cookie`. See
+> `help("pipeline/examples/webhook-restapi-postgres")` § Answering with a status.

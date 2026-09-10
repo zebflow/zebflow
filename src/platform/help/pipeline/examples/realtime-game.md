@@ -33,7 +33,9 @@ A multiplayer game where all clients share synchronized state through WebSocket 
 ```
 | trigger.webhook --path /game/:room --method GET
 | sekejap.query --table game_rooms --op get --key "{{input.params.room}}"
-| script -- "if (!input) return { __redirect: '/game' }; return { room: input }"
+| logic.if --expr "!!input"
+(false pin → `web.response --location /game`)
+| script -- "return { room: input };"
 | web.response --template pages/game-room.tsx --route /game/:room
 ```
 
@@ -101,3 +103,8 @@ Server-side room state is a JSON object. Clients receive:
 
 - `pages/game-lobby.tsx` — room list + create room
 - `pages/game-room.tsx` — game board + player list + WebSocket connection
+
+> A script cannot set the response. It returns a value; the graph decides what
+> happens next. Branch with `logic.if` and let `web.response` answer —
+> `--status`, `--location`, `--set-cookie`. See
+> `help("pipeline/examples/webhook-restapi-postgres")` § Answering with a status.

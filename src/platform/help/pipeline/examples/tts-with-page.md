@@ -57,10 +57,9 @@ Graph DSL:
 
 ```zf
 [a] trigger.webhook --path /api/tts --method POST
+[guard] logic.if --expr "!!(input.text && String(input.text).trim())"
+[bad]   web.response --status 400 --body "{{ { ok: false, error: 'text is required' } }}"
 [b] script -- "
-if (!input.text || !String(input.text).trim()) {
-  return { __status: 400, ok: false, error: 'text is required' };
-}
 return {
   text: String(input.text),
   slug: String(input.slug || Date.now())
@@ -312,3 +311,8 @@ Type text, click **Generate Voice**, and the page should:
   - `model_file`
   - `config_file`
 - `espeak_data_dir` remains supported as an override, but it is not required for the stable path.
+
+> A script cannot set the response. It returns a value; the graph decides what
+> happens next. Branch with `logic.if` and let `web.response` answer —
+> `--status`, `--location`, `--set-cookie`. See
+> `help("pipeline/examples/webhook-restapi-postgres")` § Answering with a status.

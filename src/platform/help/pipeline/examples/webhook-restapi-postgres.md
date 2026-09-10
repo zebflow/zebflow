@@ -47,7 +47,8 @@ Path params (`:id`), query strings (`?status=x`), and body fields all land in th
 | trigger.webhook --path /api/programmes/:unit_id --method GET
 | pg.query --credential my-pg --params "{{ input.params.unit_id }}" \
     -- "SELECT au.unit_id::text, au.code, au.title, COUNT(DISTINCT s.student_id) as total_students FROM academic.academic_unit au LEFT JOIN academic.student s ON s.unit_id = au.unit_id AND s.is_active = true WHERE au.unit_id = $1::uuid AND au.unit_type = 'programme' GROUP BY au.unit_id, au.code, au.title"
-| script -- "const r = input.rows?.[0]; if (!r) return { __status: 404, error: 'not found' }; return { ok: true, data: r }"
+| script -- "return { ok: true, data: input.rows[0] };"
+(see **Answering with a status** below for the 404 branch)
 ```
 
 ### GET /api/items/:id — detail with related records (two pg.query nodes)
@@ -56,7 +57,7 @@ Path params (`:id`), query strings (`?status=x`), and body fields all land in th
 | trigger.webhook --path /api/programmes/:unit_id --method GET
 | pg.query --credential my-pg --params "{{ input.params.unit_id }}" \
     -- "SELECT unit_id::text, code, title FROM academic.academic_unit WHERE unit_id = $1::uuid"
-| script -- "const prog = input.rows?.[0]; if (!prog) return { __status: 404 }; return { ...prog, unit_id: prog.unit_id }"
+| script -- "const prog = input.rows[0]; return { ...prog, unit_id: prog.unit_id };"
 | pg.query --credential my-pg --params "{{ input.unit_id }}" \
     -- "SELECT p.fullname, l.academic_rank, st.position FROM academic.lecturer l JOIN academic.staff st ON st.staff_id = l.staff_id JOIN app.player p ON p.player_id = st.player_id WHERE st.unit_id = $1::uuid AND l.is_active = true ORDER BY p.fullname"
 | script -- "return { ok: true, data: { ...input._prev, lecturers: input.rows } }"
@@ -70,7 +71,8 @@ JSON body fields are merged to root for object bodies. Access as `input.name`, `
 
 ```
 | trigger.webhook --path /api/posts --method POST
-| script -- "if (!input.title || !input.body) return { __status: 400, error: 'title and body required' }; return input"
+| logic.if --expr "input.title && input.body"
+(false pin → `web.response --status 400`; see **Answering with a status**)
 | pg.query --credential my-pg --params "{{ [input.title, input.body, input.author_id] }}" \
     -- "INSERT INTO posts (title, body, author_id, created_at) VALUES ($1, $2, $3, now()) RETURNING id, title"
 | script -- "return { ok: true, data: input.rows?.[0] }"
@@ -84,7 +86,8 @@ Combine path param and body fields with `--params`:
 | trigger.webhook --path /api/posts/:id --method PUT
 | pg.query --credential my-pg --params "{{ [input.title, input.body, input.params.id] }}" \
     -- "UPDATE posts SET title = $1, body = $2, updated_at = now() WHERE id = $3 RETURNING id, title"
-| script -- "const r = input.rows?.[0]; if (!r) return { __status: 404, error: 'not found' }; return { ok: true, data: r }"
+| script -- "return { ok: true, data: input.rows[0] };"
+(see **Answering with a status** below for the 404 branch)
 ```
 
 ### DELETE /api/items/:id — delete by path param
@@ -109,13 +112,24 @@ Combine path param and body fields with `--params`:
 
 ---
 
-## Special Script Output Keys
+## Answering with a status
 
-| Key | Effect |
-|-----|--------|
-| `__status` | Set HTTP response status code (400, 404, 401, etc.) |
-| `_redirect` | Redirect response to a URL |
-| `_set_cookie` | Set an HttpOnly cookie `{ name, value, http_only, max_age, path }` |
+A script cannot set the response. It returns a value; the graph decides what
+happens next. To answer 404, branch and let `web.response` answer:
+
+```
+[find]  pg.query --credential my-pg --params "{{ input.params.id }}" -- "SELECT …"
+[found] logic.if --expr "input.rows && input.rows.length > 0"
+[ok]    web.response --body "{{ { ok: true, data: input.rows[0] } }}"
+[gone]  web.response --status 404 --body "{{ { ok: false, error: 'not found' } }}"
+[find] -> [found]
+[found]:true -> [ok]
+[found]:false -> [gone]
+```
+
+`web.response` owns the response: `--status`, `--location`, `--set-cookie`,
+`--body`, `--template`. The branch is visible in the editor, which a key hidden
+in a payload would not be.
 
 ---
 
@@ -124,3 +138,8 @@ Combine path param and body fields with `--params`:
 - `trigger.webhook` — HTTP endpoints; path params in `input.params.<name>`, body merged to root for JSON, form-urlencoded, and multipart text fields
 - `pg.query` — parameterized SQL; `--params "{{ input.path }}"` (single value) or `--params "{{ [a, b] }}"` (multiple/conditional)
 - `script` — validation, 404 guard, response shaping, chaining multiple queries
+
+> A script cannot set the response. It returns a value; the graph decides what
+> happens next. Branch with `logic.if` and let `web.response` answer —
+> `--status`, `--location`, `--set-cookie`. See
+> `help("pipeline/examples/webhook-restapi-postgres")` § Answering with a status.
