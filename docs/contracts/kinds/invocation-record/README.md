@@ -1,6 +1,6 @@
 # InvocationRecord
 
-Status: **review** — spec settled 2026-08-29; secret handling re-decided and the code caught up 2026-09-01. The entries under Open are open, not owed.
+Status: **review** — spec settled 2026-08-29; secret handling re-decided and the code caught up 2026-09-01; capture levels added 2026-09-10 and not yet implemented. The entries under Open are open, not owed.
 
 One row per pipeline run: when it ran, how long it took, whether it worked, and
 what each node received and returned. This is a project's run history.
@@ -53,7 +53,7 @@ expressions resolved, `duration_ms`, `input`, `output` (null on error), and
 ## What must never appear
 
 A trace is written to disk and shown in the UI, so it is a place secrets leak
-into. Three rules, in order of authority:
+into. Four rules, in order of authority:
 
 1. **A secret belongs in a credential, and then it is never in the config.**
    A node reaches a secret through a `credential_id`; only that identifier is
@@ -68,9 +68,13 @@ into. Three rules, in order of authority:
    this tree does not own: a third-party node may hold a secret in a plain
    field with no credential behind it, and a name it shares with everyone
    else's is the only handle available.
-3. **Payload values are redacted where a node marks them**
-   (`__zf_private_redact`), then summarised so one large run cannot fill the
-   disk.
+3. **A credential's value is never shown, at any capture level.** Anything
+   resolved from the credential store — including a refreshed token, which
+   arrives by a different path than the first read — is registered as
+   confidential where it is resolved, not by each node remembering. No setting,
+   button or level reveals it. This is the floor under Capture Level below.
+4. **Payload values are shown only at the capture level that asks for them**,
+   then summarised so one large run cannot fill the disk.
 
 **A secret typed into a free-text config field is not defended, and cannot be.**
 Writing `http://user:hunter2@host/` into a `url`, or a password into an
@@ -80,6 +84,48 @@ credentials — was available and was bypassed. No redaction rule can tell a
 secret from ordinary text inside a field whose whole purpose is free text, and
 a rule that tried would have to redact script source, which would make the
 history useless.
+
+## Capture Level
+
+How much of a payload is recorded is a **level**, not a security setting. A
+pipeline on a device has no room for run history; a pipeline being debugged
+wants all of it. One axis serves both, and not capturing is cheaper than
+capturing and then hiding — the scan, sample and serialize work disappears
+rather than its output.
+
+| Level | Recorded |
+| --- | --- |
+| `none` | Node id, kind, pins, timing, status, error code. No config, input or output. |
+| `on-error` | `none`, plus the payloads of nodes that failed. |
+| `full` | Every node's config, input and output, subject to the budgets above. |
+
+Default `on-error`: it costs what `none` costs on a run that succeeds, and a run
+that fails is the one anybody opens. Set per project, overridable per pipeline,
+and per node for the node being investigated. A pipeline-level control may raise
+or lower every node at once.
+
+**A level governs the record, never the run.** Raising or lowering it must not
+change what the next node receives, what an expression evaluates, or what a
+pipeline returns. A mechanism that alters execution data to shape a log has
+broken the pipeline to protect the history of it.
+
+**A payload becomes a record once**, through one projection, before it reaches
+any sink. The sinks are the stored record, the HTTP API and Studio view,
+invocation MCP, the live run stream, error messages — which routinely echo the
+request that failed — and anything serialized into a model's context, including
+agent tool results. The next node, `{{ }}` expressions and the pipeline's own
+HTTP response are not sinks: they carry real values, because that is the
+pipeline running.
+
+Rule 3 holds underneath all of it. `full` on every node still shows no
+credential value.
+
+Added 2026-09-10, replacing a proposed masking mechanism. Masking asked node
+authors to mark secrets, and name matching asked the platform to guess other
+people's field names — a live OAuth callback stored its authorization code in
+full because `code` is not a name anyone listed, and no list would have held it.
+Levels make the lean case the default and leave only the credential floor as a
+security rule.
 
 Corrected 2026-09-01. An earlier draft made this a defect the platform owed a
 fix for, and proposed a fourth mechanism — node-declared secret fields — to
