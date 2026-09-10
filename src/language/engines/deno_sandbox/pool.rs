@@ -225,6 +225,55 @@ const SANDBOX_INIT: &str = r#"
     };
   }
 
+  // ----- base64, the WinterTC pair ---------------------------------------
+  // Pure computation: no host reach, nothing to grant, and the sandbox's
+  // guarantees are unchanged by their presence. Added because decoding a JWT
+  // payload is the ordinary way to read an identity out of an OAuth
+  // `id_token`, and without these a script has to hand-roll base64 — which is
+  // how subtly wrong decoders get written.
+  var _B64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+  if (typeof atob === "undefined") {
+    globalThis.atob = function atob(data) {
+      var str = String(data).replace(/[ \t\n\f\r]/g, "");
+      // Tolerate unpadded input: JWT segments are base64url without padding.
+      while (str.length % 4 !== 0) str += "=";
+      if (!/^[A-Za-z0-9+/]*={0,2}$/.test(str)) {
+        throw new Error("InvalidCharacterError: not valid base64");
+      }
+      var out = "";
+      for (var i = 0; i < str.length; i += 4) {
+        var n = 0, pad = 0;
+        for (var j = 0; j < 4; j++) {
+          var c = str.charAt(i + j);
+          if (c === "=") { n = n << 6; pad++; }
+          else { n = (n << 6) | _B64.indexOf(c); }
+        }
+        out += String.fromCharCode((n >> 16) & 255);
+        if (pad < 2) out += String.fromCharCode((n >> 8) & 255);
+        if (pad < 1) out += String.fromCharCode(n & 255);
+      }
+      return out;
+    };
+  }
+  if (typeof btoa === "undefined") {
+    globalThis.btoa = function btoa(data) {
+      var str = String(data), out = "";
+      for (var i = 0; i < str.length; i += 3) {
+        var c0 = str.charCodeAt(i);
+        var c1 = i + 1 < str.length ? str.charCodeAt(i + 1) : NaN;
+        var c2 = i + 2 < str.length ? str.charCodeAt(i + 2) : NaN;
+        if (c0 > 255 || c1 > 255 || c2 > 255) {
+          throw new Error("InvalidCharacterError: byte out of range");
+        }
+        var n = (c0 << 16) | ((c1 || 0) << 8) | (c2 || 0);
+        out += _B64.charAt((n >> 18) & 63) + _B64.charAt((n >> 12) & 63)
+             + (isNaN(c1) ? "=" : _B64.charAt((n >> 6) & 63))
+             + (isNaN(c2) ? "=" : _B64.charAt(n & 63));
+      }
+      return out;
+    };
+  }
+
   // ----- Permanent security locks ----------------------------------------
   var _blocked = function (name) {
     return function () { throw new Error("DenoSandboxError: " + name + " is disabled"); };

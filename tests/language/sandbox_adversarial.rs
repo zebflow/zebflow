@@ -479,3 +479,42 @@ fn generated_code_cannot_evade_the_save_time_analyzer() {
         ),
     }
 }
+
+/// `atob` / `btoa` — the WinterTC base64 pair.
+///
+/// Pure computation: no host reach, nothing granted, the sandbox's guarantees
+/// unchanged. Added because reading an identity out of an OAuth `id_token`
+/// means decoding a JWT payload, and without these a pipeline author has to
+/// hand-roll base64 — which is how subtly wrong decoders get written.
+#[test]
+fn base64_round_trips_including_the_jwt_shape() {
+    let engine = DenoSandboxEngine::default();
+
+    let v = engine
+        .run_script(
+            "const s = 'zebflow ✓'; const b = btoa(unescape(encodeURIComponent(s))); \
+             return { b, back: decodeURIComponent(escape(atob(b))) };",
+            &json!({}),
+            None,
+        )
+        .expect("round trip");
+    assert_eq!(v.get("back").and_then(|s| s.as_str()), Some("zebflow ✓"));
+
+    // A JWT payload segment: base64url, and unpadded.
+    let v = engine
+        .run_script(
+            "const seg = 'eyJlbWFpbCI6ImFAYi5jIiwibmFtZSI6IkEifQ'; \
+             const json = JSON.parse(atob(seg.replace(/-/g,'+').replace(/_/g,'/'))); \
+             return { email: json.email };",
+            &json!({}),
+            None,
+        )
+        .expect("jwt segment decodes");
+    assert_eq!(v.get("email").and_then(|s| s.as_str()), Some("a@b.c"));
+
+    // Garbage is refused rather than silently producing wrong bytes.
+    let err = engine
+        .run_script("return { v: atob('not valid base64!!') };", &json!({}), None)
+        .expect_err("invalid base64 must throw");
+    assert!(err.message.contains("base64"), "{}", err.message);
+}
