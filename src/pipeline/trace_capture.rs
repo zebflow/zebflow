@@ -138,6 +138,11 @@ pub(crate) struct TraceCapture {
     limits: TraceCaptureLimits,
     run_left: usize,
     node_left: usize,
+    /// Values this project has taken out of the credential store. Masked in
+    /// every payload at every level — `kinds/invocation-record` rule 3. Held
+    /// here, owned, so `Secrets` can borrow them alongside the markers it
+    /// discovers in the payload itself.
+    confidential: Vec<String>,
 }
 
 impl TraceCapture {
@@ -146,7 +151,18 @@ impl TraceCapture {
             run_left: limits.max_run_bytes as usize,
             node_left: 0,
             limits,
+            confidential: Vec::new(),
         }
+    }
+
+    /// Values that must never appear, whatever the level says.
+    pub(crate) fn with_confidential(mut self, values: Vec<String>) -> Self {
+        // Longest first, so a secret that contains another is masked whole
+        // rather than leaving its tail visible.
+        let mut values = values;
+        values.sort_by(|a, b| b.len().cmp(&a.len()));
+        self.confidential = values;
+        self
     }
 
     pub(crate) fn begin_node(&mut self) {
@@ -189,9 +205,17 @@ impl TraceCapture {
         if self.node_left.min(self.run_left) == 0 {
             return byte_marker();
         }
-        let secrets = Secrets::discover(value);
+        // Moved out for the duration: `Secrets` borrows these alongside the
+        // payload's own markers, and `encode` needs `&mut self`.
+        let confidential = std::mem::take(&mut self.confidential);
+        let mut secrets = Secrets::discover(value);
+        // Rule 3: a credential's value is hidden at every level, and it is not
+        // among the payload's markers because no node put it there.
+        for value in &confidential {
+            secrets.tokens.push(value.as_str());
+        }
         let limits = self.limits;
-        self.encode(&View {
+        let captured = self.encode(&View {
             value,
             secrets: &secrets,
             limits: &limits,
@@ -201,7 +225,10 @@ impl TraceCapture {
             masked: false,
             excepted: false,
             config,
-        })
+        });
+        drop(secrets);
+        self.confidential = confidential;
+        captured
     }
 
     /// Treat multiple node emissions as one logged array. Avoid constructing a
@@ -478,6 +505,19 @@ impl Serialize for View<'_> {
             value => value.serialize(serializer),
         }
     }
+}
+
+/// Capture one payload at given limits with given confidential values.
+/// Test-only door onto the real capture path.
+#[doc(hidden)]
+pub fn capture_for_test(
+    limits: TraceCaptureLimits,
+    confidential: Vec<String>,
+    value: &Value,
+) -> Value {
+    let mut capture = TraceCapture::new(limits).with_confidential(confidential);
+    capture.begin_node();
+    capture.capture(value)
 }
 
 /// Redact declared literal secrets throughout an execution string using the

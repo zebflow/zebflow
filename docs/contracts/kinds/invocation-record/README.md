@@ -1,6 +1,6 @@
 # InvocationRecord
 
-Status: **review** — spec settled 2026-08-29; secret handling re-decided and the code caught up 2026-09-01; capture levels added and implemented 2026-09-10; rule 3 (a credential registered by value where it resolves) is contracted and not yet implemented — today it rests on rule 2 name matching. The entries under Open are open, not owed.
+Status: **review** — spec settled 2026-08-29; secret handling re-decided and the code caught up 2026-09-01; capture levels added and implemented 2026-09-10; rule 3 implemented 2026-09-10 by value; by position (declared paths on a node definition) is contracted and still owed. The entries under Open are open, not owed.
 
 One row per pipeline run: when it ran, how long it took, whether it worked, and
 what each node received and returned. This is a project's run history.
@@ -120,11 +120,15 @@ pipeline running.
 Rule 3 holds underneath all of it. `full` on every node still shows no
 credential value.
 
-Implemented 2026-09-10 for the levels themselves; rule 3 is still owed. Until it
-lands, a secret is kept out of a record by rule 2's name list, which is why an
-OAuth `code` was recorded in full — no list holds every name a third party
-chooses. `on-error` narrows the exposure sharply in the meantime, because a run
-that succeeds now records nothing at all.
+Implemented 2026-09-10. Rule 3 holds by value: a credential's values are
+registered at the two places one is resolved — the store lookup and the OAuth
+refresh, which arrives by a different path — and masked in every payload at
+every level, with no node declaring anything. That is what covers the seven
+credential-taking nodes of which one ever marked its secrets.
+
+By position is still owed. A secret the platform has never seen — one arriving
+in someone else's response body under a name no list holds — is still recorded.
+That is how an OAuth `code` was kept in full.
 
 Added 2026-09-10, replacing a proposed masking mechanism. Masking asked node
 authors to mark secrets, and name matching asked the platform to guess other

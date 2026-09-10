@@ -14,6 +14,103 @@ use crate::platform::model::{
 };
 
 /// Project-scoped credentials stored in the metadata catalog.
+// ---------------------------------------------------------------------------
+// Confidential value registry — `kinds/invocation-record` rule 3
+// ---------------------------------------------------------------------------
+
+/// Values that have come out of the credential store, per project.
+///
+/// A node that reads a secret cannot be relied on to declare it: seven nodes
+/// take a credential and one ever marked its secrets, which is why an OAuth
+/// `code` reached a trace in full. Registering here — at the one place every
+/// credential is resolved — means no node has to remember, and the 34 callers
+/// of `get_project_credential` are covered without any of them changing.
+///
+/// Scoped by owner and project, and only ever read back for that same pair, so
+/// this is the same isolation boundary the credential store itself has. It is
+/// never a server-wide bag of every tenant's secrets.
+static CONFIDENTIAL_VALUES: std::sync::LazyLock<
+    std::sync::Mutex<
+        std::collections::HashMap<(String, String), std::collections::HashSet<String>>,
+    >,
+> = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+
+/// Shortest value worth registering.
+///
+/// A secret payload holds more than secrets — a host name, a port, a boolean,
+/// a username. Masking every short string would black out ordinary diagnostics
+/// and teach people to turn masking off. Real keys, tokens and passwords are
+/// comfortably longer than this.
+const MIN_CONFIDENTIAL_LEN: usize = 8;
+
+/// Ceiling per project, so a project that rotates constantly cannot grow this
+/// without bound.
+const MAX_CONFIDENTIAL_PER_PROJECT: usize = 512;
+
+/// Record every string inside a resolved secret as confidential.
+pub(crate) fn register_confidential(owner: &str, project: &str, secret: &serde_json::Value) {
+    let mut found: Vec<String> = Vec::new();
+    collect_strings(secret, &mut found, 0);
+    if found.is_empty() {
+        return;
+    }
+    let Ok(mut map) = CONFIDENTIAL_VALUES.lock() else {
+        return;
+    };
+    let bucket = map
+        .entry((owner.to_string(), project.to_string()))
+        .or_default();
+    for value in found {
+        if bucket.len() >= MAX_CONFIDENTIAL_PER_PROJECT {
+            break;
+        }
+        bucket.insert(value);
+    }
+}
+
+/// Register confidential values directly. Test-only: production registers at
+/// the two places a credential is resolved, never by hand.
+#[doc(hidden)]
+pub fn register_confidential_for_test(owner: &str, project: &str, secret: &serde_json::Value) {
+    register_confidential(owner, project, secret);
+}
+
+/// Every confidential value known for this project.
+pub fn confidential_values(owner: &str, project: &str) -> Vec<String> {
+    CONFIDENTIAL_VALUES
+        .lock()
+        .ok()
+        .and_then(|map| {
+            map.get(&(owner.to_string(), project.to_string()))
+                .map(|set| set.iter().cloned().collect())
+        })
+        .unwrap_or_default()
+}
+
+fn collect_strings(value: &serde_json::Value, out: &mut Vec<String>, depth: usize) {
+    if depth > 8 {
+        return;
+    }
+    match value {
+        serde_json::Value::String(text) => {
+            if text.len() >= MIN_CONFIDENTIAL_LEN {
+                out.push(text.clone());
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for item in items {
+                collect_strings(item, out, depth + 1);
+            }
+        }
+        serde_json::Value::Object(map) => {
+            for item in map.values() {
+                collect_strings(item, out, depth + 1);
+            }
+        }
+        _ => {}
+    }
+}
+
 pub struct CredentialService {
     data: Arc<dyn DataAdapter>,
     http_client: reqwest::Client,
@@ -100,8 +197,16 @@ impl CredentialService {
                 "credential id must not be empty",
             ));
         }
-        self.data
-            .get_project_credential(&owner, &project, &credential_id)
+        let resolved = self
+            .data
+            .get_project_credential(&owner, &project, &credential_id)?;
+        // Every value that leaves the store is confidential from here on, in
+        // every diagnostic of every node it reaches. Registered here rather
+        // than by each caller, because the caller is exactly who forgets.
+        if let Some(credential) = &resolved {
+            register_confidential(&owner, &project, &credential.secret);
+        }
+        Ok(resolved)
     }
 
     /// Creates or updates one credential.
@@ -279,6 +384,11 @@ impl CredentialService {
                 Value::String(token_type.to_string()),
             );
         }
+
+        // A refreshed token never passed through `get_project_credential`, so
+        // it would not be registered by the hook there. It is exactly as
+        // confidential as the one it replaces.
+        register_confidential(&credential.owner, &credential.project, &updated_secret);
 
         let updated = ProjectCredential {
             secret: updated_secret,

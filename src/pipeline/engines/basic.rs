@@ -1906,7 +1906,14 @@ impl PipelineEngine for BasicPipelineEngine {
                 .validate()
                 .map_err(|message| PipelineError::new("FW_TRACE_CONFIG", message))?;
         }
-        let mut trace_capture = TraceCapture::new(project_capture.resolve(pipeline_capture));
+        // Rule 3: whatever this project has taken out of the credential store is
+        // masked in every payload, at every level, without any node declaring
+        // it. Scoped to this owner/project — never another tenant's secrets.
+        let mut trace_capture = TraceCapture::new(project_capture.resolve(pipeline_capture))
+            .with_confidential(crate::platform::services::credential::confidential_values(
+                &ctx.owner,
+                &ctx.project,
+            ));
         let project_timeout_secs = project_config
             .as_ref()
             .map(|config| config.configs.pipelines.effective_node_timeout_secs())
