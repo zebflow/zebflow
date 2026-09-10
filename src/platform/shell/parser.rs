@@ -515,12 +515,20 @@ pub fn parse_node_config(
                 }
                 DslFlagKind::KeyValuePairs => {
                     let raw = tokens.get(i + 1).cloned().unwrap_or_default();
-                    reject_unquoted_expression(&flag_str, &raw)?;
                     let (k, v) = if let Some(eq) = raw.find('=') {
                         (raw[..eq].trim().to_string(), raw[eq + 1..].to_string())
                     } else {
                         (raw.trim().to_string(), String::new())
                     };
+                    // Split first, then check. The guard tests whether a value
+                    // *begins* an expression it never closes, and for a pair the
+                    // token begins with the key: `--claim sub={{ input.sub }}`
+                    // arrives as `sub={{`, which starts with `sub=` and sailed
+                    // straight past. The claim was then signed as the literal
+                    // string "{{" — a session whose subject is two braces, with
+                    // nothing anywhere saying so.
+                    reject_unquoted_expression(&flag_str, &raw)?;
+                    reject_unquoted_expression(&flag_str, &v)?;
                     let entry = config
                         .entry(dsl_flag.config_key.clone())
                         .or_insert_with(|| Value::Object(serde_json::Map::new()));
@@ -2277,5 +2285,50 @@ mod quoting_tests {
         let graph = build_pipeline_graph("spaceless", dsl).expect("graph parses");
         let k = graph.nodes.iter().find(|n| n.id == "k").expect("node k");
         assert_eq!(k.config["key"], "{{input.id}}");
+    }
+}
+
+#[cfg(test)]
+mod key_value_quoting_tests {
+    use super::*;
+
+    /// `--claim sub={{ input.sub }}` arrives as the token `sub={{`, which
+    /// begins with the key rather than the expression — so the guard that
+    /// exists to catch a value cut at the first space did not fire, and the
+    /// claim was signed as the literal string "{{". A session whose subject is
+    /// two braces, and nothing anywhere said so.
+    #[test]
+    fn an_unquoted_expression_in_a_pair_is_refused() {
+        let err = build_pipeline_graph(
+            "claims",
+            "[a] trigger.manual\n\
+             [b] auth.token.create --credential k --claim sub={{ input.sub }}\n\
+             [a] -> [b]\n",
+        )
+        .expect_err("an unquoted expression in a key=value pair must be refused");
+        let message = format!("{err:?}");
+        assert!(
+            message.contains("unquoted expression") || message.contains("cut at the"),
+            "the error should name the cause: {message}"
+        );
+    }
+
+    /// Quoted, it parses and the whole expression survives.
+    #[test]
+    fn a_quoted_expression_in_a_pair_survives_whole() {
+        let graph = build_pipeline_graph(
+            "claims-ok",
+            "[a] trigger.manual\n\
+             [b] auth.token.create --credential k --claim \"sub={{ input.sub }}\"\n\
+             [a] -> [b]\n",
+        )
+        .expect("a quoted expression must parse");
+        let node = graph.nodes.iter().find(|n| n.id == "b").expect("node b");
+        let claims = node.config.get("claims").expect("claims");
+        assert_eq!(
+            claims.get("sub").and_then(|v| v.as_str()),
+            Some("{{ input.sub }}"),
+            "the whole expression must survive: {claims:?}"
+        );
     }
 }

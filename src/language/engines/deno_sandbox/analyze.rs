@@ -98,8 +98,8 @@ const WRAPPER_OPEN: &str = concat!(
     // `$nodes is not defined` in the script beside it. `ctx` still works;
     // nothing is taken away.
     " var $trigger = (ctx && ctx.trigger) || null;",
-    " var $nodes = (ctx && ctx.metadata && ctx.metadata.nodes) || {};",
-    " var $placeholder = (ctx && ctx.metadata && ctx.metadata.placeholder) || {};",
+    " var $nodes = (ctx && ctx.nodes) || {};",
+    " var $placeholder = (ctx && ctx.placeholder) || {};",
     " var $run = { pipeline: (ctx && ctx.pipeline) || '', request_id: (ctx && ctx.request_id) || '' };",
 );
 

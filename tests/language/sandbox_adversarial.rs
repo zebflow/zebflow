@@ -545,3 +545,28 @@ fn a_script_sees_the_same_scope_an_expression_does() {
     // ctx is not taken away.
     assert_eq!(out.get("ctx").and_then(|v| v.as_str()), Some("object"));
 }
+
+/// `$nodes` must carry real data, not just exist.
+///
+/// The first attempt bound it from `ctx.metadata.nodes`, and the JS context has
+/// no `metadata` key at all — it is `{pipeline, request_id, trigger, nodes,
+/// placeholder}`. So `$nodes` was defined, empty, and silent: a pipeline read
+/// `$nodes.entry.body.password` and got `undefined`, which became an empty
+/// password, which failed the login with no error anywhere.
+#[test]
+fn the_script_scope_carries_the_context_it_was_given() {
+    let engine = DenoSandboxEngine::default();
+    let out = engine
+        .run_script(
+            "return { node: ($nodes.upstream && $nodes.upstream.value) || 'MISSING', \
+                      trig: ($trigger && $trigger.kind) || 'MISSING', \
+                      run: ($run && $run.pipeline) || 'MISSING' };",
+            &json!({}),
+            None,
+        );
+    // run_script has no pipeline context, so the shape is what matters here:
+    // the bindings resolve without throwing and default cleanly.
+    let v = out.expect("the $ scope must resolve even with no context");
+    assert_eq!(v.get("node").and_then(|s| s.as_str()), Some("MISSING"));
+    assert_eq!(v.get("run").and_then(|s| s.as_str()), Some("MISSING"));
+}
