@@ -73,6 +73,12 @@ const RESERVED: &[&str] = &[
     "__deadline",
     "__r",
     "__fn",
+    // The `$` scope is deliberately NOT reserved. Shadowing `__tj_tick`
+    // disables this script's execution limits, which is why that one is
+    // refused; shadowing `$nodes` only makes the author's own code read an
+    // empty object. And several nodes generate wrappers that declare the `$`
+    // scope themselves, so reserving these refused every logic expression in
+    // the catalog.
 ];
 
 /// The wrapper's own parameters. A body that redeclares one of these is a
@@ -84,7 +90,18 @@ const WRAPPER_PARAMS: &[&str] = &["input", "n", "ctx"];
 /// The header wrapped around an author's body to make it a parseable program.
 /// Kept on ONE line so a reported line number maps to the author's source by
 /// subtracting exactly one.
-const WRAPPER_OPEN: &str = "async function __zf_main(input, n, ctx) {";
+const WRAPPER_OPEN: &str = concat!(
+    "async function __zf_main(input, n, ctx) {",
+    // The same `$` scope a `{{ }}` expression gets. `$nodes` worked in an
+    // expression and not in a script, which is one concept with two answers —
+    // a password read back through `$nodes.in.body` in an expression, and
+    // `$nodes is not defined` in the script beside it. `ctx` still works;
+    // nothing is taken away.
+    " var $trigger = (ctx && ctx.trigger) || null;",
+    " var $nodes = (ctx && ctx.metadata && ctx.metadata.nodes) || {};",
+    " var $placeholder = (ctx && ctx.metadata && ctx.metadata.placeholder) || {};",
+    " var $run = { pipeline: (ctx && ctx.pipeline) || '', request_id: (ctx && ctx.request_id) || '' };",
+);
 
 /// What the resolved config permits. Mirrors the danger-zone switches that
 /// were previously enforced by substring scanning.
@@ -161,6 +178,7 @@ pub fn compile_body(body: &str, policy: ScriptPolicy) -> Result<String, ScriptDi
     }
 
     let mut collector = Collector {
+        body_starts_at: (WRAPPER_OPEN.len() + 1) as u32,
         splices: Vec::new(),
         violation: None,
         policy,
@@ -193,6 +211,10 @@ fn line_col(text: &str, offset: usize) -> (u32, u32) {
 }
 
 struct Collector {
+    /// Where the author's own code begins. Everything before it is the wrapper
+    /// this module wrote, which declares the `$` scope itself — reserving those
+    /// names without this refuses every script for the crime of being wrapped.
+    body_starts_at: u32,
     splices: Vec<Splice>,
     violation: Option<(&'static str, String, usize)>,
     policy: ScriptPolicy,
@@ -206,6 +228,9 @@ impl Collector {
     }
 
     fn note_reserved(&mut self, name: &str, offset: u32) {
+        if offset < self.body_starts_at {
+            return; // the wrapper's own declaration, not the author's
+        }
         if RESERVED.contains(&name) {
             self.refuse(
                 "SCRIPT_RESERVED_BINDING",

@@ -518,3 +518,30 @@ fn base64_round_trips_including_the_jwt_shape() {
         .expect_err("invalid base64 must throw");
     assert!(err.message.contains("base64"), "{}", err.message);
 }
+
+/// A script gets the same `$` scope a `{{ }}` expression gets.
+///
+/// `$nodes` worked in an expression and not in the script beside it — one
+/// concept with two answers, and the failure was `$nodes is not defined` at
+/// run time rather than anything a reader would notice. `ctx` still works.
+#[test]
+fn a_script_sees_the_same_scope_an_expression_does() {
+    let engine = DenoSandboxEngine::default();
+    let out = engine
+        .run_script(
+            "return { nodes: typeof $nodes, trigger: typeof $trigger, \
+             placeholder: typeof $placeholder, run: typeof $run, ctx: typeof ctx };",
+            &json!({}),
+            None,
+        )
+        .expect("the $ scope must exist");
+    for key in ["nodes", "placeholder", "run"] {
+        assert_ne!(
+            out.get(key).and_then(|v| v.as_str()),
+            Some("undefined"),
+            "${key} must be defined in a script: {out}"
+        );
+    }
+    // ctx is not taken away.
+    assert_eq!(out.get("ctx").and_then(|v| v.as_str()), Some("object"));
+}
