@@ -24,8 +24,13 @@ you verified before you stop.
 procedure for one kind of task: when to do what, in what order, and what
 proves it worked. When a task matches one, `skill_read name="…"` before
 acting (a reference file beside it: `skill_read name="…" path="references/x.md"`).
-The blessed set ships with the platform; a project's own `skills/<name>/`
-shadows one by name.
+The blessed set ships with the platform and is published unchanged as
+`github.com/zebflow/skills`; a client that already loaded it can skip the
+`zebflow-*` bodies and read only the project's own `skills/<name>/`, which
+shadow blessed ones by name. Project-specific guidance reaches you in three
+places, all in `start_here`: **AGENTS.md** (the owner's rules, embedded in
+full), **Project Docs** (every `.md` in the repository, `file_read` on demand)
+and the project's **skills**.
 
 | Task | Skill |
 |---|---|
@@ -38,6 +43,7 @@ shadows one by name.
 | uploads, images, rich text | `zebflow-files-editor` |
 | proving it works | `zebflow-verify` |
 | adding or publishing a package | `zebflow-hub` |
+| drawing or modelling an asset — SVG, a Three.js mesh, a scene | `procedural-assets` |
 
 Read the help topic before writing in a domain you have not used this session:
 

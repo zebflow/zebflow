@@ -522,11 +522,19 @@ impl PlatformOps {
         if let Ok(layout) = self.platform.projects.project_layout(owner, project) {
             let skills = crate::platform::skills::list(&layout.repo_source_dir());
             if !skills.is_empty() {
-                out.push_str(
+                let project_count = skills
+                    .iter()
+                    .filter(|s| s.source == crate::platform::skills::SkillSource::Project)
+                    .count();
+                out.push_str(&format!(
                     "\n## Skills\n\
                      A skill is the procedure for one kind of task. When a task below matches one, \
-                     `skill_read name=\"…\"` before acting; the project's own skills shadow the blessed ones.\n",
-                );
+                     `skill_read name=\"…\"` before acting. The blessed `zebflow-*` skills are the same text \
+                     as github.com/zebflow/skills at {} — if your client already loaded them, skip those and \
+                     read only this project's own ({} marked `(project)`), which override them.\n",
+                    crate::version::APP_VERSION,
+                    project_count
+                ));
                 out.push_str(&crate::platform::skills::render_listing(&skills));
             }
         }
