@@ -100,10 +100,27 @@ LIMIT 20
 
 ## Creating a table
 
-Plain SQL through the node creates a table:
+Plain SQL through the node creates a table. Sekejap's DDL is its own dialect —
+this is the whole of it:
+
+```sql
+CREATE TABLE contacts (_key TEXT PRIMARY KEY, name TEXT, email TEXT, status TEXT, score REAL, created_at TIMESTAMPTZ DEFAULT NOW())
+  WITH (hash: ['email', 'status'], range: ['score'], fulltext: ['name'], bm25: ['bio'], spatial: ['location'])
+DROP TABLE [IF EXISTS] contacts
+DROP INDEX [IF EXISTS] ON contacts USING hash (email)
+ALTER TABLE contacts ADD [COLUMN] phone TEXT [NOT NULL]  |  DROP [COLUMN] phone  |  RENAME COLUMN old TO new  |  RENAME TO people  |  ALTER [COLUMN] score TYPE REAL
+SHOW TABLES  |  SHOW EDGES [FROM a] [TO b]
+```
+
+No `NOT NULL`, `UNIQUE`, `REFERENCES` or `CHECK` inside `CREATE TABLE`
+(`expected ), got Kw(Not)`); the only column constraint there is
+`_key TEXT PRIMARY KEY`, and the only default is `DEFAULT NOW()` /
+`DEFAULT UUIDV4()`. Indexes are declared in the `WITH (…)` clause, not as
+separate statements. Types: `TEXT`, `INTEGER`, `REAL`, `BOOLEAN`, `JSON`,
+`TIMESTAMPTZ`, `VECTOR`, `GEO`.
 
 ```
-| sekejap.query --read-only false -- "CREATE TABLE contacts (name TEXT, email TEXT, status TEXT, score REAL, created_at TEXT)"
+| sekejap.query --read-only false -- "CREATE TABLE contacts (_key TEXT PRIMARY KEY, name TEXT, email TEXT, created_at TIMESTAMPTZ DEFAULT NOW()) WITH (hash: ['email'])"
 ```
 
 `SHOW TABLES` lists them. A *managed table* additionally declares attribute
@@ -171,8 +188,10 @@ so `"{{ [a, b] }}"` is a real array and a single value is wrapped),
 `--limit <n>` (default 200 rows for reads), `--read-only true|false`
 (refuse writes; set `false` for INSERT/UPDATE/DELETE/CREATE), `--query`
 (the SQL as a flag instead of the body). Output:
-`{ columns, rows, row_count, truncated, affected_rows, duration_ms }` — the
-rows are `input.rows` in the next node.
+`{ columns, rows, row_count, truncated, affected_rows, duration_ms }` — each
+row an object keyed by column name (`input.rows[0].name`), `columns` the
+positional list beside it. A join that selects the same name twice keeps the
+last; alias in SQL.
 
 ## Platform Collections
 

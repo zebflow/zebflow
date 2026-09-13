@@ -31,10 +31,12 @@ Facts live in `help(topic="pipeline")`, `pipeline/dsl`, `pipeline/authoring`,
 - **Pipe mode** for a chain; **graph mode** (`[id]` and `->`) the moment you
   branch, fan out or loop. Every node must be reachable from the one entry —
   an unwired node is a second entry that fires on every request.
-- **Payload shape.** After `trigger.webhook`: `input.body` (JSON or form
-  fields; `null` on GET), `input.params`, `input.query`, `input.files.<field>`
-  (FileRef), `input.auth` when the trigger verified a token. After a query
-  node: `{ columns, rows, … }` — the rows are `input.rows`, never `input`.
+- **Payload shape.** After `trigger.webhook`: `input.body` — the JSON body,
+  or for a `<form method="post">` an object of its fields (`<input name="email">`
+  → `input.body.email`); `null` on GET — plus `input.params`, `input.query`,
+  `input.files.<field>` (FileRef), `input.auth` when the trigger verified a
+  token. After a query node: `{ columns, rows, … }` — the rows are
+  `input.rows`, objects keyed by column (`input.rows[0].title`), never `input`.
   After `crypto` hash ops: `{ result }` only. Reach an earlier node's output
   with `$nodes.<id>` in `{{ }}`.
 - **SQL in the body, values in `--params`:**

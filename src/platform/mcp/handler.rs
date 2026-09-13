@@ -590,10 +590,11 @@ impl ZebflowMcpHandler {
     }
 
     #[tool(
-        description = "Register (create or update) a pipeline by name and pipe-chained node body. \
-                       Body format: '| trigger.webhook --path /x | pg.query --credential db -- \"SQL\"'. \
-                       After registering, call pipeline_activate to make it live. \
-                       Use help(\"pipeline/dsl\") for the full node catalog and syntax."
+        description = "Register (create or update) a pipeline at file_rel_path from a DSL body. \
+                       The body is the nodes only — pipe mode '| trigger.webhook --path /x | sekejap.query -- \"SQL\" | web.response --template pages/x.tsx' \
+                       or graph mode '[a] trigger.webhook … [b] … [a] -> [b]' — with no leading 'register …' line (that is the console form). \
+                       It is saved as a draft; call pipeline_activate to make it live. Re-registering a live pipeline makes it stale until activated. \
+                       help(\"pipeline/dsl\") for the syntax, help(\"pipeline/nodes/<kind>\") for a node's flags."
     )]
     async fn pipeline_register(
         &self,

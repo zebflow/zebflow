@@ -246,11 +246,16 @@ impl NodeHandler for Node {
         })?
         .map_err(|err| PipelineError::new("FW_NODE_SEKEJAP_QUERY", err.to_string()))?;
 
+        // The store answers positionally (columns + value arrays — the shape
+        // the DB pages render). A pipeline reads `input.rows[0].title`, as it
+        // does after pg.query and sqlite.query, so each row is keyed by its
+        // column name here; the positional `columns` list stays beside it.
+        let rows = rows_as_objects(&result.columns, &result.rows);
         Ok(NodeExecutionOutput {
             output_pins: vec![OUTPUT_PIN_OUT.to_string()],
             payload: json!({
                 "columns": result.columns,
-                "rows": result.rows,
+                "rows": rows,
                 "row_count": result.row_count,
                 "truncated": result.truncated,
                 "affected_rows": result.affected_rows,
@@ -261,5 +266,48 @@ impl NodeHandler for Node {
                 format!("row_count={}", result.row_count),
             ],
         })
+    }
+}
+
+/// One object per row, keyed by column name. A duplicate column name (a join
+/// selecting `id` twice) keeps the last value, as pg.query does; alias in SQL
+/// when both are wanted.
+fn rows_as_objects(
+    columns: &[crate::platform::model::DbQueryColumn],
+    rows: &[Vec<Value>],
+) -> Vec<Value> {
+    rows.iter()
+        .map(|row| {
+            let mut object = serde_json::Map::with_capacity(columns.len());
+            for (index, column) in columns.iter().enumerate() {
+                object.insert(
+                    column.name.clone(),
+                    row.get(index).cloned().unwrap_or(Value::Null),
+                );
+            }
+            Value::Object(object)
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod row_shape_tests {
+    use super::rows_as_objects;
+    use crate::platform::model::DbQueryColumn;
+    use serde_json::json;
+
+    /// The store's positional rows become `input.rows[0].name`, which is what
+    /// every pipeline, page and doc reads — and what pg.query and sqlite.query
+    /// already deliver.
+    #[test]
+    fn rows_are_objects_keyed_by_column_name() {
+        let columns = vec![
+            DbQueryColumn { name: "_key".into(), data_type: None },
+            DbQueryColumn { name: "name".into(), data_type: None },
+        ];
+        let rows = vec![vec![json!("k1"), json!("Alice")], vec![json!("k2")]];
+        let out = rows_as_objects(&columns, &rows);
+        assert_eq!(out[0], json!({ "_key": "k1", "name": "Alice" }));
+        assert_eq!(out[1], json!({ "_key": "k2", "name": null }));
     }
 }

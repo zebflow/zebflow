@@ -528,8 +528,9 @@ impl PlatformOps {
                     .count();
                 out.push_str(&format!(
                     "\n## Skills\n\
-                     A skill is the procedure for one kind of task. When a task below matches one, \
-                     `skill_read name=\"…\"` before acting. The blessed `zebflow-*` skills are the same text \
+                     A skill is the procedure for one kind of task. Read `zebflow-basic` once, then only the \
+                     two or three whose triggers match the task at hand (`skill_read name=\"…\"`) — a page and its \
+                     route is `zebflow-pipeline` + `zebflow-rwe`; not the whole list. The blessed `zebflow-*` skills are the same text \
                      as github.com/zebflow/skills at {} — if your client already loaded them, skip those and \
                      read only this project's own ({} marked `(project)`), which override them.\n",
                     crate::version::APP_VERSION,

@@ -38,10 +38,12 @@ query nodes in `pipeline/nodes`.
   third state will come, `locale` and `translation_of` on anything a person
   reads, `slug` unique per locale. Store rich text as the editor's JSON
   (`body_json`) with derived `body_html`.
-- Sekejap column kinds: `TEXT`, `REAL`/`INTEGER`, `BOOLEAN`, `JSON`; managed
-  tables add indexes (hash, range, fulltext, vector, spatial) — `db/sekejap`.
-  Sekejap has no `UPSERT`/`ON CONFLICT`: select by key, then `logic.if`
-  between `UPDATE` and `INSERT`.
+- Sekejap DDL is its own dialect: `CREATE TABLE t (_key TEXT PRIMARY KEY, name TEXT, created_at TIMESTAMPTZ DEFAULT NOW()) WITH (hash: ['name'])`
+  — no `NOT NULL`/`UNIQUE`/`REFERENCES` in `CREATE TABLE`, indexes in the
+  `WITH (…)` clause, types `TEXT INTEGER REAL BOOLEAN JSON TIMESTAMPTZ VECTOR GEO`
+  (`help(topic="db/sekejap")` has the whole grammar). No `UPSERT`/`ON CONFLICT`:
+  select by key, then `logic.if` between `UPDATE` and `INSERT`. Enforce
+  "required" in the pipeline (`logic.if` on `input.body`), not in the schema.
 - Seeds go in `initial-data/` so a fresh install of the project (or of a
   bundle made from it) gets them.
 
