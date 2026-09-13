@@ -9,7 +9,7 @@ Use this skill when working inside a Zebflow repository or project workspace.
 
 ## Stable Knowledge
 
-- Read `docs/usage/README.md` for project work.
+- Read `src/platform/help/` for how a project is built (the help tree is the canonical "how to use Zebflow"; `docs/usage/` keeps only install, deploy and node authoring).
 - Read `docs/developer/README.md` for Zebflow platform work.
 - Read `docs/contracts/README.md` for stable rules shared by both.
 - Read `docs/reference/README.md` for exact names and formats.
@@ -29,7 +29,7 @@ Open only the reference that matches the task:
 - `references/hub-packages.md` for Hub package review, publishing, and adding.
 - `references/node-authoring.md` for native, composite, and WASM node work.
 - `references/platform-internals.md` for changing platform services, routes, runtime storage, policy, auth, git, and settings.
-- `references/distribution.md` for npm, pip, Docker, libraries, composites, and deployable artifacts.
+- `references/distribution.md` for npm, pip, Docker, the embedded `blessed/` libraries, and deployable artifacts.
 - `references/quality-checks.md` for verification before reporting completion.
 
 ## Working Rule

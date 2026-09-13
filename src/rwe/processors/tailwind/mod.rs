@@ -12,7 +12,7 @@
 //! - it is intentionally "Tailwind-like", not full Tailwind parity
 //! - unsupported tokens are ignored safely (no panic, no hard failure)
 
-mod compiler;
+pub mod compiler;
 mod source_scanner;
 mod variants;
 

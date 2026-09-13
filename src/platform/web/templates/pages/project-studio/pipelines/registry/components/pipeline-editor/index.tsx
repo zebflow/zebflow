@@ -934,7 +934,7 @@ export default function PipelineEditor({
     for (const node of app.graph.nodes) {
       if (!node?.el) continue;
       if (multiSelected.has(node.id)) {
-        node.el.style.outline = "2px solid var(--color-accent, #6d9eff)";
+        node.el.style.outline = "2px solid var(--primary, #6d9eff)";
         node.el.style.outlineOffset = "2px";
       } else {
         node.el.style.outline = "";
@@ -1187,7 +1187,7 @@ export default function PipelineEditor({
     <div className="contents">
       {/* Loading overlay — only when a pipeline is selected and not yet ready */}
       {selectedId && (!loaded || !graphuiReady) && !loadError && (
-        <div className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-3 bg-bg text-body-muted">
+        <div className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-3 bg-background text-muted-foreground">
           <svg viewBox="0 0 24 24" fill="none" className="w-10 h-10 opacity-30" aria-hidden="true">
             <rect x="3" y="3" width="18" height="18" rx="2" stroke="currentColor" strokeWidth="1.5"/>
             <path d="M3 9h18" stroke="currentColor" strokeWidth="1.5"/>
@@ -1196,13 +1196,13 @@ export default function PipelineEditor({
             <circle cx="13" cy="6" r="1" fill="currentColor"/>
             <path d="M8 14h8M8 17h5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
           </svg>
-          <p className="text-sm font-medium text-body">Loading pipeline…</p>
+          <p className="text-sm font-medium text-foreground">Loading pipeline…</p>
         </div>
       )}
 
       {/* Error state */}
       {loadError && (
-        <div className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-3 bg-bg text-body-muted">
+        <div className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-3 bg-background text-muted-foreground">
           <p className="text-sm font-medium text-red-500">{loadError}</p>
         </div>
       )}
@@ -1281,7 +1281,7 @@ export default function PipelineEditor({
                   onClick={() => onLockToggle(!currentLocked)}
                   title={currentLocked ? "Unlock (allow agent access)" : "Lock (block agent access)"}
                   aria-label={currentLocked ? "Unlock pipeline editor" : "Lock pipeline editor"}
-                  className={currentLocked ? "text-dark-accent1" : "text-body hover:text-dark-accent1"}
+                  className={currentLocked ? "text-primary" : "text-foreground hover:text-primary"}
                 >
                   {currentLocked ? <LockIcon /> : <LockOpenIcon />}
                 </Button>
@@ -1302,7 +1302,7 @@ export default function PipelineEditor({
         {runStatus ? (
           <div className={cx(
             "text-[0.72rem]",
-            runStatus.startsWith("Run failed:") ? "text-red-400" : "text-body-soft",
+            runStatus.startsWith("Run failed:") ? "text-red-400" : "text-muted-foreground",
           )}>
             {runStatus}
           </div>
@@ -1318,7 +1318,7 @@ export default function PipelineEditor({
       {/* Canvas + category tools */}
       <div
         ref={canvasRef}
-        className="flex-1 min-h-0 border-b border-border-soft relative"
+        className="flex-1 min-h-0 border-b border-border relative"
         onPointerDownCapture={handleMarqueeDown}
         onPointerMoveCapture={handleMarqueeMove}
         onPointerUpCapture={handleMarqueeUp}
@@ -1332,7 +1332,7 @@ export default function PipelineEditor({
               <button
                 key={cat}
                 type="button"
-                className="w-8 h-8 shrink-0 rounded-md border border-border-soft bg-surface-2 text-body-muted flex items-center justify-center p-0 hover:bg-surface-3 hover:text-body hover:border-border transition-colors disabled:opacity-40 disabled:cursor-default"
+                className="w-8 h-8 shrink-0 rounded-md border border-border bg-muted text-muted-foreground flex items-center justify-center p-0 hover:bg-accent hover:text-foreground hover:border-border transition-colors disabled:opacity-40 disabled:cursor-default"
                 title={cat.charAt(0).toUpperCase() + cat.slice(1)}
                 disabled={currentLocked || !currentMeta}
                 onClick={() => {
@@ -1376,7 +1376,7 @@ export default function PipelineEditor({
         {/* Marquee selection overlay */}
         {marquee && (
           <div
-            className="absolute border border-accent/60 bg-accent/10 pointer-events-none z-[40]"
+            className="absolute border border-primary/60 bg-primary/10 pointer-events-none z-[40]"
             style={{
               left: Math.min(marquee.x1, marquee.x2),
               top: Math.min(marquee.y1, marquee.y2),
@@ -1388,7 +1388,7 @@ export default function PipelineEditor({
 
         {/* Selection toast */}
         {selectionToast && (
-          <div className="absolute bottom-4 left-1/2 -translate-x-1/2 z-50 px-3 py-1.5 rounded-md bg-surface-2 border border-border text-xs text-body font-medium shadow-md">
+          <div className="absolute bottom-4 left-1/2 -translate-x-1/2 z-50 px-3 py-1.5 rounded-md bg-muted border border-border text-xs text-foreground font-medium shadow-md">
             {selectionToast}
           </div>
         )}
@@ -1396,56 +1396,56 @@ export default function PipelineEditor({
 
       {/* Log panel */}
       {logsOpen && currentGraph && (
-        <div className="pipeline-editor-logs-panel border-t border-border bg-bg flex flex-col">
+        <div className="pipeline-editor-logs-panel border-t border-border bg-background flex flex-col">
           {/* Header */}
-          <div className="flex items-center justify-between px-3 py-1.5 bg-surface border-b border-border flex-shrink-0">
-            <span className="text-xs font-semibold text-body">
+          <div className="flex items-center justify-between px-3 py-1.5 bg-card border-b border-border flex-shrink-0">
+            <span className="text-xs font-semibold text-foreground">
               Invocations — {currentMeta?.name || currentMeta?.title || "pipeline"}
             </span>
             <div className="flex items-center gap-2">
-              <span className="text-[0.65rem] text-body-muted">auto-refresh 5s</span>
+              <span className="text-[0.65rem] text-muted-foreground">auto-refresh 5s</span>
               <Button size="sm" variant="ghost" onClick={() => setLogsOpen(false)}>✕</Button>
             </div>
           </div>
           {/* Body */}
           <div className="pipeline-editor-logs-body text-xs">
             {invocations.length === 0 ? (
-              <div className="p-4 text-center text-body-muted">No invocations recorded yet.</div>
+              <div className="p-4 text-center text-muted-foreground">No invocations recorded yet.</div>
             ) : invocations.map((inv: InvocationEntry, i: number) => (
               <div key={i} className="border-b border-border">
                 {/* Invocation row */}
                 <div
                   className={cx(
-                    "flex items-center gap-2 px-3 py-1.5 cursor-pointer select-none hover:bg-surface-2",
+                    "flex items-center gap-2 px-3 py-1.5 cursor-pointer select-none hover:bg-muted",
                     inv.status === "error" && "bg-red-500/5"
                   )}
                   onClick={() => setExpandedInv(expandedInv === i ? null : i)}
                 >
-                  <span className="text-body-muted whitespace-nowrap shrink-0">
+                  <span className="text-muted-foreground whitespace-nowrap shrink-0">
                     {new Date(inv.at * 1000).toLocaleString()}
                   </span>
                   {inv.run_id ? (
-                    <code className="max-w-[15rem] truncate text-[0.62rem] text-body-muted">
+                    <code className="max-w-[15rem] truncate text-[0.62rem] text-muted-foreground">
                       {inv.run_id}
                     </code>
                   ) : null}
                   <Badge variant={inv.status === "ok" ? "default" : "destructive"}>{inv.status}</Badge>
                   <Badge variant="secondary">{inv.trigger}</Badge>
-                  <span className="text-body-muted shrink-0">{inv.duration_ms}ms</span>
+                  <span className="text-muted-foreground shrink-0">{inv.duration_ms}ms</span>
                   {inv.error && (
                     <span className="text-red-400 flex-1 overflow-hidden text-ellipsis whitespace-nowrap">{inv.error}</span>
                   )}
-                  <span className="text-[0.6rem] text-body-muted ml-auto shrink-0">
+                  <span className="text-[0.6rem] text-muted-foreground ml-auto shrink-0">
                     {expandedInv === i ? "▲" : "▼"}
                   </span>
                 </div>
                 {/* Per-node trace */}
                 {expandedInv === i && Array.isArray(inv.trace) && inv.trace.length > 0 && (
-                  <div className="bg-surface border-t border-border">
+                  <div className="bg-card border-t border-border">
                     {inv.run_id ? (
-                      <div className="px-3 py-2 text-[0.68rem] text-body-soft border-b border-border">
-                        <span className="mr-2 uppercase tracking-[0.12em] text-body-muted">Run ID</span>
-                        <code className="text-body">{inv.run_id}</code>
+                      <div className="px-3 py-2 text-[0.68rem] text-muted-foreground border-b border-border">
+                        <span className="mr-2 uppercase tracking-[0.12em] text-muted-foreground">Run ID</span>
+                        <code className="text-foreground">{inv.run_id}</code>
                       </div>
                     ) : null}
                     {inv.error && (
@@ -1460,7 +1460,7 @@ export default function PipelineEditor({
                         <div key={j} className="border-b border-border/60">
                           <div
                             className={cx(
-                              "flex items-center gap-2 px-5 py-1 cursor-pointer hover:bg-surface-2",
+                              "flex items-center gap-2 px-5 py-1 cursor-pointer hover:bg-muted",
                               entry.error && "text-red-400"
                             )}
                             onClick={() => {
@@ -1477,10 +1477,10 @@ export default function PipelineEditor({
                             }}
                           >
                             <code className="font-mono text-[0.7rem]">{entry.node_id}</code>
-                            <span className="text-body-muted text-[0.65rem]">{entry.node_kind}</span>
-                            <span className="text-body-muted text-[0.65rem] ml-auto shrink-0">{entry.duration_ms}ms</span>
+                            <span className="text-muted-foreground text-[0.65rem]">{entry.node_kind}</span>
+                            <span className="text-muted-foreground text-[0.65rem] ml-auto shrink-0">{entry.duration_ms}ms</span>
                             {entry.error && <span className="text-red-400 text-[0.65rem]">{entry.error}</span>}
-                            <span className="text-[0.6rem] text-body-muted shrink-0">{nodeExpanded ? "▲" : "▼"}</span>
+                            <span className="text-[0.6rem] text-muted-foreground shrink-0">{nodeExpanded ? "▲" : "▼"}</span>
                           </div>
                           {nodeExpanded && (
                             <div className="pipeline-editor-logs-io-grid">
@@ -1498,7 +1498,7 @@ export default function PipelineEditor({
                                 ["Output", entry.output],
                               ].filter(([, val]) => val !== undefined && val !== null).map(([label, val]) => (
                                 <div key={label as string}>
-                                  <span className="text-[0.6rem] font-semibold uppercase text-body-muted">{label}</span>
+                                  <span className="text-[0.6rem] font-semibold uppercase text-muted-foreground">{label}</span>
                                   <pre className="pipeline-editor-logs-io-pre">{formatTracePreview(val)}</pre>
                                 </div>
                               ))}
@@ -1525,7 +1525,7 @@ export default function PipelineEditor({
           Latest error: {latestErr}
         </span>
         {multiSelected.size > 0 && (
-          <span className="pipeline-editor-foot-item text-accent font-medium">
+          <span className="pipeline-editor-foot-item text-primary font-medium">
             {multiSelected.size} selected
           </span>
         )}
@@ -1590,14 +1590,14 @@ export default function PipelineEditor({
           setNodePickerCategory("all");
         }
       }}>
-        <DialogContent className="max-w-3xl border-border bg-[var(--color-surface,#161616)] text-body" onKeyDown={(e) => e.stopPropagation()}>
+        <DialogContent className="max-w-3xl border-border bg-[var(--card,#161616)] text-foreground" onKeyDown={(e) => e.stopPropagation()}>
           <div className="flex items-start justify-between gap-4 border-b border-border px-6 py-4">
             <div>
               <DialogHeader>
                 <DialogTitle>{continuationRequest ? "Add Next Node" : nodePickerCategory === "trigger" ? "Change Trigger" : "Add Node"}</DialogTitle>
               </DialogHeader>
               {continuationRequest ? (
-                <p className="mt-1 text-xs text-body-muted">
+                <p className="mt-1 text-xs text-muted-foreground">
                   After {continuationRequest.zfPipelineNodeId || continuationRequest.title || "node"} / {continuationRequest.outputPin || "out"}
                 </p>
               ) : null}
@@ -1608,7 +1608,7 @@ export default function PipelineEditor({
             <div className="flex items-center gap-1 flex-wrap">
               <button
                 type="button"
-                className={`px-2.5 py-1 rounded text-[11px] font-medium transition-colors ${nodePickerCategory === "all" ? "bg-accent/20 text-accent border border-accent/40" : "bg-surface-2 text-body-muted border border-border-soft hover:bg-surface-3 hover:text-body"}`}
+                className={`px-2.5 py-1 rounded text-[11px] font-medium transition-colors ${nodePickerCategory === "all" ? "bg-primary/20 text-primary border border-primary/40" : "bg-muted text-muted-foreground border border-border hover:bg-accent hover:text-foreground"}`}
                 onClick={() => setNodePickerCategory("all")}
               >All</button>
               {Object.entries(catalogGroups).map(([cat, groups]) => {
@@ -1618,7 +1618,7 @@ export default function PipelineEditor({
                   <button
                     key={cat}
                     type="button"
-                    className={`inline-flex items-center gap-1 px-2 py-1 rounded text-[11px] font-medium transition-colors ${nodePickerCategory === cat ? "bg-accent/20 text-accent border border-accent/40" : "bg-surface-2 text-body-muted border border-border-soft hover:bg-surface-3 hover:text-body"}`}
+                    className={`inline-flex items-center gap-1 px-2 py-1 rounded text-[11px] font-medium transition-colors ${nodePickerCategory === cat ? "bg-primary/20 text-primary border border-primary/40" : "bg-muted text-muted-foreground border border-border hover:bg-accent hover:text-foreground"}`}
                     onClick={() => setNodePickerCategory(cat)}
                   >
                     <span className="w-3.5 h-3.5 flex items-center justify-center">{CAT_ICONS[cat]}</span>
@@ -1644,17 +1644,17 @@ export default function PipelineEditor({
                 className="pipeline-editor-continuation-item"
                 onClick={() => handleNodePickerSelect(entry.kind)}
               >
-                <span className="text-sm font-semibold text-body">{entry.title || entry.kind}</span>
+                <span className="text-sm font-semibold text-foreground">{entry.title || entry.kind}</span>
                 <span className="pipeline-editor-continuation-kind">{entry.kind}</span>
                 {entry.description ? (
-                  <span className="line-clamp-2 text-xs text-body-soft">{entry.description}</span>
+                  <span className="line-clamp-2 text-xs text-muted-foreground">{entry.description}</span>
                 ) : (
-                  <span className="text-xs uppercase tracking-[0.12em] text-body-soft">{category}</span>
+                  <span className="text-xs uppercase tracking-[0.12em] text-muted-foreground">{category}</span>
                 )}
               </button>
             ))}
             {continuationItems.length === 0 ? (
-              <div className="col-span-full rounded-md border border-dashed border-border px-4 py-8 text-center text-sm text-body-muted">
+              <div className="col-span-full rounded-md border border-dashed border-border px-4 py-8 text-center text-sm text-muted-foreground">
                 No matching nodes.
               </div>
             ) : null}

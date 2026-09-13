@@ -4,7 +4,7 @@ export const page = {
   },
   body: {
     className:
-      "min-h-screen overflow-hidden bg-ui-bg-muted text-ui-text font-sans",
+      "min-h-screen overflow-hidden bg-background text-foreground font-sans",
   },
   navigation: "history",
 };
@@ -23,7 +23,7 @@ export default function Page(input) {
     <main
       className="relative flex min-h-screen w-full items-center justify-center px-5 py-8"
       style={{
-        backgroundColor: "var(--color-zeb-bg)",
+        backgroundColor: "var(--background)",
         fontFamily: "var(--font-sans)",
       }}
     >
@@ -32,7 +32,7 @@ export default function Page(input) {
         className="pointer-events-none absolute inset-0"
         style={{
           backgroundImage:
-            "linear-gradient(var(--color-zeb-grid) 1px, transparent 1px), linear-gradient(90deg, var(--color-zeb-grid) 1px, transparent 1px)",
+            "linear-gradient(var(--border) 1px, transparent 1px), linear-gradient(90deg, var(--border) 1px, transparent 1px)",
           backgroundSize: "64px 64px",
           opacity: 0.45,
         }}
@@ -48,7 +48,7 @@ export default function Page(input) {
             alt="Zebflow"
             className="h-11 w-11 shrink-0"
           />
-          <span className="text-[22px] font-bold leading-none tracking-[-0.01em] text-ui-text">
+          <span className="text-[22px] font-bold leading-none tracking-[-0.01em] text-foreground">
             zebflow
           </span>
         </div>
@@ -65,7 +65,7 @@ export default function Page(input) {
             defaultValue={input?.default_identifier ?? ""}
             required
             autoComplete="username"
-            className="w-full rounded-[10px] border border-ui-border bg-ui-bg px-4 py-3.5 text-[15px] text-ui-text outline-none transition-colors placeholder:text-ui-text-muted focus:border-brand-blue"
+            className="w-full rounded-[10px] border border-border bg-popover px-4 py-3.5 text-[15px] text-foreground outline-none transition-colors placeholder:text-muted-foreground focus:border-ring"
           />
         </div>
         <div className="mt-3">
@@ -75,18 +75,18 @@ export default function Page(input) {
             placeholder="Password"
             required
             autoComplete="current-password"
-            className="w-full rounded-[10px] border border-ui-border bg-ui-bg px-4 py-3.5 text-[15px] text-ui-text outline-none transition-colors placeholder:text-ui-text-muted focus:border-brand-blue"
+            className="w-full rounded-[10px] border border-border bg-popover px-4 py-3.5 text-[15px] text-foreground outline-none transition-colors placeholder:text-muted-foreground focus:border-ring"
           />
         </div>
         <button
           type="submit"
-          className="mt-4 block w-full rounded-[10px] bg-dark-background px-4 py-3.5 text-center text-[15.5px] font-semibold text-white transition-colors hover:bg-dark-menus"
+          className="mt-4 block w-full rounded-[10px] bg-foreground px-4 py-3.5 text-center text-[15.5px] font-semibold text-background transition-colors hover:bg-foreground/90"
         >
           Sign in
         </button>
         {input?.app_version ? (
           <p
-            className="mt-7 text-center text-[11px] text-ui-text-muted"
+            className="mt-7 text-center text-[11px] text-muted-foreground"
             style={{ fontFamily: "var(--font-mono)" }}
           >
             v{input.app_version}

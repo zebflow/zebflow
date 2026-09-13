@@ -144,6 +144,12 @@ const HUB_ASSET_KIND_NODE_BUNDLE: &str = "node_bundle";
 /// always copies — bytes land at `data/hub/rwe-libraries/{package}/` and the
 /// resolution is recorded in `zeb.lock` with `source: hub` and a real digest.
 pub const HUB_ASSET_KIND_RWE_LIBRARY: &str = "rwe_library";
+/// The seventh asset kind: one skill — a `skills/<name>/` folder whose
+/// `SKILL.md` carries `name`, `description` and `license` frontmatter. Add
+/// copies it to `skills/<name>/` in the receiving project's source root,
+/// whatever target folder was asked for, because the name is where the
+/// agent's `skill_list` finds it and where it shadows a blessed skill.
+pub const HUB_ASSET_KIND_SKILL: &str = "skill";
 const HUB_ASSET_KINDS: &[&str] = &[
     HUB_ASSET_KIND_PIPELINE_BUNDLE,
     HUB_ASSET_KIND_TEMPLATE_BUNDLE,
@@ -151,6 +157,7 @@ const HUB_ASSET_KINDS: &[&str] = &[
     HUB_ASSET_KIND_PROJECT_BUNDLE,
     HUB_ASSET_KIND_NODE_BUNDLE,
     HUB_ASSET_KIND_RWE_LIBRARY,
+    HUB_ASSET_KIND_SKILL,
 ];
 
 /// Refuses any publish under the reserved `zebflow.*` namespace.
@@ -2497,6 +2504,7 @@ impl HubService {
                 self.preview_template(&owner, &project, &layout, source_ref)
             }
             "folder_files" => self.preview_folder(&layout, source_ref),
+            "skill_folder" => self.preview_skill(&layout, source_ref),
             "project_files" => self.preview_project(&layout),
             _ => Err(PlatformError::new(
                 "HUB_SOURCE_INVALID",
@@ -3765,6 +3773,21 @@ impl HubService {
             prepare_hub_install_entries(&placement, &install_base, &payload.files, artifacts)?;
         validate_prepared_pipeline_sources(&layout.repo_layout, &payload.asset_kind, &prepared)?;
         refuse_prepared_install_violations(&layout.repo_layout, &payload.asset_kind, &prepared)?;
+        if payload.asset_kind == HUB_ASSET_KIND_SKILL {
+            // The same shape check as publish: a package can be handed over as
+            // a file, and a receiver trusts nothing it did not verify itself.
+            let name = payload
+                .files
+                .iter()
+                .find_map(|f| {
+                    normalize_repo_rel(&f.rel_path)
+                        .strip_prefix(&format!("{}/", crate::platform::skills::PROJECT_SKILLS_DIR))
+                        .and_then(|rest| rest.split('/').next())
+                        .map(str::to_string)
+                })
+                .ok_or_else(|| PlatformError::new("HUB_SKILL_INVALID", "the package carries no skills/<name>/ folder"))?;
+            validate_skill_entries(&name, &payload.files)?;
+        }
         let previous_lock = if payload.asset_kind == HUB_ASSET_KIND_NODE_BUNDLE
             || payload.asset_kind == HUB_ASSET_KIND_RWE_LIBRARY
         {
@@ -5173,6 +5196,39 @@ impl HubService {
         ))
     }
 
+    /// One skill folder as a package. The paths carried are the ones every
+    /// receiver installs verbatim — `skills/<name>/…` relative to a source
+    /// root — so the publisher's own source prefix is stripped here, and the
+    /// folder is refused unless it is a skill: a `SKILL.md` whose frontmatter
+    /// names the folder, describes when to use it, and states a license.
+    fn preview_skill(
+        &self,
+        layout: &ProjectFileLayout,
+        source_ref: &str,
+    ) -> Result<HubExportPreview, PlatformError> {
+        let rel_root = normalize_repo_rel(source_ref);
+        let source_prefixed = layout.repo_layout.strip_source(&rel_root).map(str::to_string);
+        let source_rel = source_prefixed.clone().unwrap_or_else(|| rel_root.clone());
+        let name = skill_folder_name(&source_rel)?;
+        let mut entries = collect_tree_entries(layout, &rel_root)?;
+        for entry in entries.iter_mut() {
+            if let Some(rest) = layout.repo_layout.strip_source(&entry.rel_path) {
+                entry.rel_path = rest.to_string();
+            }
+        }
+        entries.sort_by(|a, b| a.rel_path.cmp(&b.rel_path));
+        let skill = validate_skill_entries(&name, &entries)?;
+        Ok(build_preview(
+            HUB_ASSET_KIND_SKILL.to_string(),
+            "skill_folder".to_string(),
+            source_ref.to_string(),
+            name,
+            skill.description,
+            entries,
+            Vec::new(),
+        ))
+    }
+
     fn preview_project(
         &self,
         layout: &ProjectFileLayout,
@@ -6160,8 +6216,104 @@ fn normalize_source_type(input: &str) -> String {
         "template_with_dependencies" => "template_with_dependencies".to_string(),
         "folder_files" => "folder_files".to_string(),
         "project_files" => "project_files".to_string(),
+        "skill_folder" => "skill_folder".to_string(),
         _ => "pipeline_with_dependencies".to_string(),
     }
+}
+
+/// The skill's name from its folder path (`skills/<name>` or `<name>` inside
+/// `skills/`), refusing anything that is not one skill folder.
+fn skill_folder_name(source_rel: &str) -> Result<String, PlatformError> {
+    let rel = normalize_repo_rel(source_rel);
+    let name = rel
+        .strip_prefix(&format!("{}/", crate::platform::skills::PROJECT_SKILLS_DIR))
+        .unwrap_or(&rel);
+    if name.is_empty() || name.contains('/') || !crate::platform::skills::valid_name(name) {
+        return Err(PlatformError::new(
+            "HUB_SKILL_INVALID",
+            format!(
+                "a skill is one folder under skills/ named a-z0-9- (got '{source_rel}'); publish skills/<name>"
+            ),
+        ));
+    }
+    Ok(name.to_string())
+}
+
+#[derive(Debug)]
+struct SkillShape {
+    description: String,
+}
+
+/// What every skill package must satisfy, at publish and again at install:
+/// a `skills/<name>/SKILL.md` whose frontmatter `name` is the folder, a
+/// description within the format's limit, an explicit license, and a body
+/// short enough to be a skill. Text files only — a skill is instructions.
+fn validate_skill_entries(
+    name: &str,
+    entries: &[HubPackageFile],
+) -> Result<SkillShape, PlatformError> {
+    let prefix = format!("{}/{name}/", crate::platform::skills::PROJECT_SKILLS_DIR);
+    let stray = entries
+        .iter()
+        .find(|e| !normalize_repo_rel(&e.rel_path).starts_with(&prefix));
+    if let Some(entry) = stray {
+        return Err(PlatformError::new(
+            "HUB_SKILL_INVALID",
+            format!("'{}' is outside skills/{name}/; a skill package carries that folder only", entry.rel_path),
+        ));
+    }
+    let skill_md = entries
+        .iter()
+        .find(|e| normalize_repo_rel(&e.rel_path) == format!("{prefix}{}", crate::platform::skills::SKILL_FILE))
+        .ok_or_else(|| {
+            PlatformError::new("HUB_SKILL_INVALID", format!("skills/{name}/SKILL.md is missing"))
+        })?;
+    let text = match skill_md.supply() {
+        Some(crate::contracts::kinds::HubPackageFileSupply::Carried(content)) => content.to_string(),
+        _ => {
+            return Err(PlatformError::new(
+                "HUB_SKILL_INVALID",
+                "SKILL.md must be carried as text inside the package",
+            ));
+        }
+    };
+    let fm = crate::platform::skills::parse_frontmatter(&text);
+    if fm.name.as_deref() != Some(name) {
+        return Err(PlatformError::new(
+            "HUB_SKILL_INVALID",
+            format!(
+                "SKILL.md frontmatter name '{}' must equal the folder name '{name}'",
+                fm.name.unwrap_or_default()
+            ),
+        ));
+    }
+    let description = fm.description.unwrap_or_default();
+    if description.trim().is_empty() || description.len() > crate::platform::skills::MAX_DESCRIPTION_CHARS {
+        return Err(PlatformError::new(
+            "HUB_SKILL_INVALID",
+            format!(
+                "SKILL.md needs a description of 1–{} characters saying when to use the skill",
+                crate::platform::skills::MAX_DESCRIPTION_CHARS
+            ),
+        ));
+    }
+    if fm.license.as_deref().map(str::trim).unwrap_or("").is_empty() {
+        return Err(PlatformError::new(
+            "HUB_SKILL_INVALID",
+            "SKILL.md needs a license (an SPDX id such as MIT or Apache-2.0, or proprietary)",
+        ));
+    }
+    let lines = fm.body.lines().count();
+    if lines > crate::platform::skills::MAX_BODY_LINES {
+        return Err(PlatformError::new(
+            "HUB_SKILL_INVALID",
+            format!(
+                "SKILL.md body is {lines} lines; a skill stays under {} — move detail into references/",
+                crate::platform::skills::MAX_BODY_LINES
+            ),
+        ));
+    }
+    Ok(SkillShape { description })
 }
 
 fn validate_hub_asset_kind(input: &str) -> Result<String, PlatformError> {
@@ -6591,6 +6743,15 @@ impl HubInstallPlacement {
             || payload.asset_kind == HUB_ASSET_KIND_RWE_LIBRARY
         {
             return Self::Verbatim { install_root };
+        }
+        // A skill's paths are `skills/<name>/…` relative to a source root by
+        // construction (`preview_skill`), and the agent finds it by that path
+        // alone, so it lands verbatim under the target's source root — the
+        // requested target folder does not move it.
+        if payload.asset_kind == HUB_ASSET_KIND_SKILL {
+            return Self::Verbatim {
+                install_root: target.source_rel(""),
+            };
         }
         let folder = target
             .strip_source(&install_root)
@@ -8660,6 +8821,67 @@ mod tests {
 
     /// One pipeline package whose single entry is supplied by the caller, so
     /// the carried and referenced forms differ in nothing else.
+    fn skill_entry(name: &str, front: &str, body: &str) -> HubPackageFile {
+        let content = format!("---\n{front}\n---\n{body}");
+        serde_json::from_value(serde_json::json!({
+            "rel_path": format!("skills/{name}/SKILL.md"), "kind": "doc",
+            "size_bytes": content.len(), "reason": "test", "content": content
+        }))
+        .expect("entry")
+    }
+
+    /// A skill is one `skills/<name>/` folder with a `SKILL.md` that names
+    /// itself, says when to use it, and states a license; the publish and the
+    /// install refuse the same things, by the same function.
+    #[test]
+    fn a_skill_package_is_one_named_folder_with_a_complete_skill_md() {
+        assert_eq!(skill_folder_name("skills/write-pages").unwrap(), "write-pages");
+        assert_eq!(skill_folder_name("write-pages").unwrap(), "write-pages");
+        assert_eq!(skill_folder_name("skills/Write Pages").unwrap_err().code, "HUB_SKILL_INVALID");
+        assert_eq!(skill_folder_name("skills/a/b").unwrap_err().code, "HUB_SKILL_INVALID");
+
+        let good = skill_entry("write-pages", "name: write-pages\ndescription: Use when writing an Researchsite page.\nlicense: MIT", "# Write pages\n\nDo it well.\n");
+        let shape = validate_skill_entries("write-pages", &[good.clone()]).expect("valid");
+        assert_eq!(shape.description, "Use when writing an Researchsite page.");
+
+        let wrong_name = skill_entry("write-pages", "name: other\ndescription: x\nlicense: MIT", "body");
+        assert_eq!(validate_skill_entries("write-pages", &[wrong_name]).unwrap_err().code, "HUB_SKILL_INVALID");
+        let no_license = skill_entry("write-pages", "name: write-pages\ndescription: x", "body");
+        assert!(validate_skill_entries("write-pages", &[no_license]).unwrap_err().message.contains("license"));
+        let no_description = skill_entry("write-pages", "name: write-pages\nlicense: MIT", "body");
+        assert!(validate_skill_entries("write-pages", &[no_description]).unwrap_err().message.contains("description"));
+        let long = skill_entry("write-pages", "name: write-pages\ndescription: x\nlicense: MIT", &"line\n".repeat(600));
+        assert!(validate_skill_entries("write-pages", &[long]).unwrap_err().message.contains("lines"));
+
+        let stray: HubPackageFile = serde_json::from_value(serde_json::json!({
+            "rel_path": "pages/home.tsx", "kind": "tsx", "size_bytes": 1, "reason": "test", "content": "x"
+        }))
+        .unwrap();
+        assert!(validate_skill_entries("write-pages", &[good.clone(), stray]).unwrap_err().message.contains("outside"));
+        assert!(validate_skill_entries("write-pages", &[]).unwrap_err().message.contains("missing"));
+    }
+
+    /// Wherever the caller asked a skill to land, it lands at
+    /// `skills/<name>/` under the target's source root — that path is how the
+    /// agent finds it and how it shadows a blessed skill.
+    #[test]
+    fn a_skill_installs_at_skills_name_under_the_source_root_regardless_of_target_folder() {
+        let entry = skill_entry("write-pages", "name: write-pages\ndescription: x\nlicense: MIT", "body\n");
+        let payload: HubPackageSpec = serde_json::from_value(serde_json::json!({
+            "asset_kind": HUB_ASSET_KIND_SKILL, "title": "Write pages", "description": "x",
+            "files": [serde_json::to_value(&entry).unwrap()]
+        }))
+        .unwrap();
+        let root_layout = ResolvedProjectLayout::platform_default();
+        let placement = HubInstallPlacement::new(&root_layout, &payload, "acme.write-pages", "hub/somewhere");
+        assert_eq!(placement.destination("skills/write-pages/SKILL.md"), "skills/write-pages/SKILL.md");
+
+        let mut moved = ResolvedProjectLayout::platform_default();
+        moved.source = "src".to_string();
+        let placement = HubInstallPlacement::new(&moved, &payload, "acme.write-pages", "");
+        assert_eq!(placement.destination("skills/write-pages/SKILL.md"), "src/skills/write-pages/SKILL.md");
+    }
+
     fn pipeline_package(asset_kind: &str, entry: serde_json::Value) -> HubPackageSpec {
         serde_json::from_value(serde_json::json!({
             "asset_kind": asset_kind,

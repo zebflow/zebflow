@@ -19,7 +19,7 @@ export default function ConnectionContent({ input, workspace }) {
 
   return (
     <section
-      className="db-suite-page flex min-h-0 flex-1 flex-col overflow-auto bg-bg"
+      className="db-suite-page flex min-h-0 flex-1 flex-col overflow-auto bg-background"
       data-db-suite="true"
       data-owner={input.owner}
       data-project={input.project}

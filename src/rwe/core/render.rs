@@ -247,8 +247,53 @@ pub fn render(
 }
 
 fn strip_rwe_client_imports(source: &str) -> String {
-    // Join multi-line import statements into single logical lines before filtering.
-    // A multi-line import starts with `import {` and ends on the line containing `from "..."`.
+    // By AST span, not by line: the exports of a `zeb/*` runtime library are
+    // globals the outer script installs, so the declaration goes; but a line
+    // that merely *looks* like one — a code sample inside a template literal
+    // — stays. The line filter used to eat the gallery's own examples.
+    use oxc_allocator::Allocator;
+    use oxc_ast::ast::Statement;
+    use oxc_parser::Parser;
+    use oxc_span::SourceType;
+
+    let alloc = Allocator::default();
+    let source_type = SourceType::default()
+        .with_module(true)
+        .with_jsx(true)
+        .with_typescript(true);
+    let parsed = Parser::new(&alloc, source, source_type).parse();
+    if parsed.panicked {
+        return strip_rwe_client_imports_by_line(source);
+    }
+    let mut ranges: Vec<(usize, usize)> = Vec::new();
+    for stmt in &parsed.program.body {
+        if let Statement::ImportDeclaration(import) = stmt {
+            let spec = import.source.value.as_str();
+            if spec == "zeb" || spec.starts_with("zeb/") {
+                let start = import.span.start as usize;
+                let mut end = import.span.end as usize;
+                if end < source.len() && source.as_bytes()[end] == b'\n' {
+                    end += 1;
+                }
+                ranges.push((start, end));
+            }
+        }
+    }
+    if ranges.is_empty() {
+        return source.to_string();
+    }
+    let mut out = String::with_capacity(source.len());
+    let mut cursor = 0;
+    for (start, end) in ranges {
+        out.push_str(&source[cursor..start]);
+        cursor = end;
+    }
+    out.push_str(&source[cursor..]);
+    out
+}
+
+/// The old line filter, kept only for a source oxc cannot parse.
+fn strip_rwe_client_imports_by_line(source: &str) -> String {
     let logical = join_import_lines(source);
     logical
         .lines()
@@ -257,8 +302,6 @@ fn strip_rwe_client_imports(source: &str) -> String {
             if !t.starts_with("import ") {
                 return true;
             }
-            // Strip "rwe" / "rwe-*" (hooks are globalThis globals) and
-            // "zeb/*" (library exports are injected into globalThis by the outer script).
             !(t.contains("from \"zeb/react\"")
                 || t.contains("from 'zeb'")
                 || t.contains("from \"zeb/")
@@ -702,7 +745,11 @@ fn build_client_module(client_source: &str, zeb_preamble: &str) -> String {
          const __mod = await import('data:text/javascript;base64,{encoded}');\n\
          const __Page = __mod.default;\n\
          function __RweRoot(props) {{\n\
-           const [state, setState] = useState({{}});\n\
+           // Start from the payload, exactly as the server's provider did\n\
+           // (zeb_ssr_init.js wrapWithPageState): a keyed usePageState whose\n\
+           // key exists in `input` must read the same value on both sides,\n\
+           // or the first client render disagrees with the server HTML.\n\
+           const [state, setState] = useState(() => ({{ ...__input }}));\n\
            const setPageState = (patch) => {{\n\
              if (typeof patch === 'function') {{\n\
                setState((prev) => ({{ ...(prev || {{}}), ...((patch(prev || {{}})) || {{}}) }}));\n\
@@ -1163,6 +1210,16 @@ mod tests {
         assert!(!html.contains("rel=\"stylesheet\""), "{html}");
     }
 
+    /// A runtime-library import is removed by its span; the same text inside
+    /// a template literal — a code sample — survives.
+    #[test]
+    fn stripping_runtime_imports_leaves_code_samples_alone() {
+        let source = "import { useDebounce } from \"zeb/use\";\nconst sample = `\nimport { Button } from \"zeb/ui/button\";\n`;\nexport default function P() { return null; }\n";
+        let out = strip_rwe_client_imports(source);
+        assert!(!out.contains("from \"zeb/use\""), "{out}");
+        assert!(out.contains("import { Button } from \"zeb/ui/button\";"), "{out}");
+    }
+
     #[test]
     fn zeb_preamble_uses_codemirror_entry_module() {
         let preamble = build_zeb_preamble(&["zeb/codemirror".to_string()], &[]);
@@ -1223,6 +1280,18 @@ mod tests {
             style_pos < root_pos,
             "expected collected inline styles in head before body content, got {}",
             output.html
+        );
+    }
+
+    #[test]
+    fn client_root_page_state_starts_from_the_payload() {
+        // The server renders `usePageState("k", d)` from `{...input}`; the
+        // browser must hydrate from the same object or keys present in the
+        // payload tear on first render.
+        let module = build_client_module("export default function P(){return null}", "");
+        assert!(
+            module.contains("useState(() => ({ ...__input }))"),
+            "expected the client root to seed page state from __input, got {module}"
         );
     }
 

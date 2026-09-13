@@ -5,8 +5,8 @@ export default function DropdownMenuItem(props) {
   return (
     <div
       className={cx(
-        "relative flex cursor-default select-none items-center rounded-sm px-2 py-1.5 text-sm outline-none transition-colors hover:bg-ui-bg-muted hover:text-ui-text",
-        isDestructive ? "text-red-500 hover:text-red-500" : "",
+        "relative flex cursor-default select-none items-center rounded-sm px-2 py-1.5 text-sm outline-none transition-colors hover:bg-accent hover:text-foreground",
+        isDestructive ? "text-destructive hover:text-destructive" : "",
         props?.className
       )}
       onClick={props?.onClick}

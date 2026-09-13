@@ -302,6 +302,7 @@ Unless a row says otherwise, these are project-scope acts.
 | Pipeline | `Pipeline` | Hub asset (`pipeline_bundle`) | export, publish, add |
 | RWE source: page, component, script, style | no kind yet | Hub asset (`template_bundle`) | export, publish, add |
 | Folder of project files | no kind yet | Hub asset (`folder_bundle`) | export, publish, add |
+| Skill | `Skill` (`kinds/skill`) | Hub asset (`skill`); blessed set embedded in the binary; public git repository for `npx skills add` | export, publish, add (clone into `skills/<name>/`) |
 | Whole project | `ProjectBundle` | Hub asset (`project_bundle`), transfer archive, git remote | export, publish, import, clone; **install** at platform scope |
 | Project files only | ZebFS objects | transfer archive (`files`) | export, import |
 | UI component | catalog entry, no kind yet | built-in catalog | add only |

@@ -46,11 +46,11 @@ export default function PipelineSettingsDialog({ metadata, defaults, locked, onA
 
   return (
     <Dialog open={true} onOpenChange={(open) => !open && onClose()}>
-      <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto border-border bg-surface text-body">
+      <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto border-border bg-card text-foreground">
         <form className="flex flex-col gap-4" onSubmit={applySettings}>
           <DialogHeader className="px-6 pt-6">
             <DialogTitle>Pipeline Settings</DialogTitle>
-            <p className="text-xs text-body-muted">Configure log capture and retention for this pipeline. Apply, save, and activate the draft to use these settings.</p>
+            <p className="text-xs text-muted-foreground">Configure log capture and retention for this pipeline. Apply, save, and activate the draft to use these settings.</p>
           </DialogHeader>
           <div className="grid gap-3 px-6">
             <CheckboxField
@@ -74,12 +74,12 @@ export default function PipelineSettingsDialog({ metadata, defaults, locked, onA
             <TraceCaptureFields values={captureValues} onChange={setCaptureValues} defaults={defaults?.trace_capture} scope="pipeline" />
             {error ? <p role="alert" className="text-xs text-red-400">{error}</p> : null}
           </div>
-          <div className="mx-6 flex items-center justify-between gap-3 border-t border-border-soft pt-4">
+          <div className="mx-6 flex items-center justify-between gap-3 border-t border-border pt-4">
             <div>
-              <div className="text-xs font-semibold uppercase tracking-[0.12em] text-body-muted">Danger Zone</div>
-              <div className="text-xs text-body-muted">Delete this pipeline from the project.</div>
+              <div className="text-xs font-semibold uppercase tracking-[0.12em] text-muted-foreground">Danger Zone</div>
+              <div className="text-xs text-muted-foreground">Delete this pipeline from the project.</div>
             </div>
-            {locked ? <span className="text-xs text-body-muted">Locked — cannot delete</span> : onDelete ? (
+            {locked ? <span className="text-xs text-muted-foreground">Locked — cannot delete</span> : onDelete ? (
               <Button variant="destructive" size="xs" type="button" onClick={() => { onClose(); onDelete(); }}>Delete Pipeline</Button>
             ) : null}
           </div>

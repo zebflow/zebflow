@@ -10,7 +10,6 @@
   --color-zeb-bg-soft:      #f4f6f9;
   --color-zeb-border:       #dce3ec;
   --color-zeb-border-strong:#cdd6e1;
-  --color-zeb-grid:         #dde3eb;
   --color-zeb-dark:         #14171b;
   --color-zeb-dark-2:       #16191e;
   --color-zeb-dark-3:       #1b2026;
@@ -22,15 +21,6 @@
   --color-brand-orange-ink: #d24f08;
   --color-brand-blue:       #1e66d6;
   --color-brand-blue-ink:   #035fab;
-  --color-dark-menus:       #0f1115;
-  --color-dark-background:  var(--color-zeb-dark);
-  --color-dark-border:      var(--color-zeb-dark-border);
-  --color-dark-accent1:     var(--color-brand-orange);
-  --color-dark-accent2:     var(--color-brand-blue);
-  --color-dark-accent3:     #7cd3a0;
-  --color-dark-accent4:     #f2a33d;
-  --color-dark-accent5:     #c46255;
-  --color-dark-text1:       #6b7785;
 
   /* Fonts */
   --font-display:
@@ -43,20 +33,96 @@
     "JetBrains Mono", "SFMono-Regular", "Roboto Mono", monospace;
 
   --radius-panel: 0.875rem;
-  --rwe-nav-color: var(--color-brand-blue);
-
-  /* Global UI component tokens — light defaults, overridden by [data-studio-theme] */
-  --color-ui-bg:            #ffffff;
-  --color-ui-bg-subtle:     var(--color-zeb-bg-soft);
-  --color-ui-bg-muted:      var(--color-zeb-bg);
-  --color-ui-border:        var(--color-zeb-border);
-  --color-ui-border-subtle: var(--color-zeb-border);
-  --color-ui-text:          var(--color-zeb-ink);
-  --color-ui-text-soft:     var(--color-zeb-ink-soft);
-  --color-ui-text-muted:    var(--color-zeb-ink-muted);
+  --rwe-nav-color: var(--info);
 }
 
-:root[data-theme="dark"] {
+/* ── Theme ──────────────────────────────────────────────────────────────────
+ * shadcn/ui token names, verbatim, with Zebflow's values. Light on :root,
+ * dark on `.dark`. A component names a role; these two blocks decide the
+ * colour. Contract: docs/contracts/kinds/ui-theme. */
+
+:root {
+  --background:            var(--color-zeb-bg);
+  --foreground:            var(--color-zeb-ink);
+  --card:                  #ffffff;
+  --card-foreground:       var(--color-zeb-ink);
+  --popover:               #ffffff;
+  --popover-foreground:    var(--color-zeb-ink);
+  --primary:               var(--color-brand-orange);
+  --primary-foreground:    #ffffff;
+  --secondary:             var(--color-zeb-bg-soft);
+  --secondary-foreground:  var(--color-zeb-ink);
+  --muted:                 var(--color-zeb-bg-soft);
+  --muted-foreground:      var(--color-zeb-ink-soft);
+  --accent:                var(--color-zeb-bg);
+  --accent-foreground:     var(--color-zeb-ink);
+  --destructive:           #dc2626;
+  --destructive-foreground:#ffffff;
+  --success:               #15803d;
+  --success-foreground:    #ffffff;
+  --warning:               #b45309;
+  --warning-foreground:    #ffffff;
+  --info:                  var(--color-brand-blue);
+  --info-foreground:       #ffffff;
+  --border:                var(--color-zeb-border);
+  --input:                 var(--color-zeb-border-strong);
+  --ring:                  var(--color-brand-blue);
+  --chart-1:               var(--color-brand-orange);
+  --chart-2:               var(--color-brand-blue);
+  --chart-3:               #2f9e6a;
+  --chart-4:               #d98a1f;
+  --chart-5:               #b5443a;
+  --sidebar:               #ffffff;
+  --sidebar-foreground:    var(--color-zeb-ink);
+  --sidebar-primary:       var(--color-brand-orange);
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-accent:        var(--color-zeb-bg-soft);
+  --sidebar-accent-foreground: var(--color-zeb-ink);
+  --sidebar-border:        var(--color-zeb-border);
+  --sidebar-ring:          var(--color-brand-blue);
+  --radius:                0.5rem;
+}
+
+.dark {
+  --background:            var(--color-zeb-dark);
+  --foreground:            #e9edf3;
+  --card:                  var(--color-zeb-dark-2);
+  --card-foreground:       #e9edf3;
+  --popover:               #0f1115;
+  --popover-foreground:    #e9edf3;
+  --primary:               var(--color-brand-orange);
+  --primary-foreground:    #ffffff;
+  --secondary:             var(--color-zeb-dark-3);
+  --secondary-foreground:  #e9edf3;
+  --muted:                 var(--color-zeb-dark-3);
+  --muted-foreground:      #8e9cad;
+  --accent:                #222831;
+  --accent-foreground:     #e9edf3;
+  --destructive:           #ef4444;
+  --destructive-foreground:#ffffff;
+  --success:               #7cd3a0;
+  --success-foreground:    #0f1a14;
+  --warning:               #f2a33d;
+  --warning-foreground:    #1b1408;
+  --info:                  var(--color-brand-blue);
+  --info-foreground:       #ffffff;
+  --border:                var(--color-zeb-dark-border);
+  --input:                 var(--color-zeb-dark-border-2);
+  --ring:                  var(--color-brand-blue);
+  --chart-1:               var(--color-brand-orange);
+  --chart-2:               var(--color-brand-blue);
+  --chart-3:               #7cd3a0;
+  --chart-4:               #f2a33d;
+  --chart-5:               #c46255;
+  --sidebar:               var(--color-zeb-dark-2);
+  --sidebar-foreground:    #e9edf3;
+  --sidebar-primary:       var(--color-brand-orange);
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-accent:        var(--color-zeb-dark-3);
+  --sidebar-accent-foreground: #e9edf3;
+  --sidebar-border:        var(--color-zeb-dark-border);
+  --sidebar-ring:          var(--color-brand-blue);
+  color-scheme: dark;
 }
 
 html {
@@ -67,7 +133,9 @@ html {
 }
 
 body {
-  accent-color: var(--color-brand-orange);
+  background: var(--background);
+  color: var(--foreground);
+  accent-color: var(--primary);
 }
 
 dialog::backdrop {
@@ -84,8 +152,8 @@ h6 {
 }
 
 ::selection {
-  background: var(--color-zeb-border-strong);
-  color: var(--color-zeb-ink);
+  background: var(--input);
+  color: var(--foreground);
 }
 
 a {

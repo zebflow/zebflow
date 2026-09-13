@@ -46,20 +46,20 @@ export default function NodeFieldSelect({ field, value, onChange }) {
         <button
           type="button"
           onClick={() => { setOpen(!open); setSearch(""); }}
-          className="flex h-9 w-full items-center justify-between rounded-md border border-ui-border bg-ui-bg text-ui-text px-3 py-1 text-sm text-left focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-brand-blue/40 focus-visible:ring-offset-2"
+          className="flex h-9 w-full items-center justify-between rounded-md border border-border bg-popover text-foreground px-3 py-1 text-sm text-left focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring/40 focus-visible:ring-offset-2"
         >
-          <span className={cx("truncate", !value && "text-ui-text-muted")}>
+          <span className={cx("truncate", !value && "text-muted-foreground")}>
             {value ? selectedLabel : "Select..."}
           </span>
-          <svg viewBox="0 0 24 24" fill="none" className="w-4 h-4 shrink-0 text-ui-text-muted opacity-50">
+          <svg viewBox="0 0 24 24" fill="none" className="w-4 h-4 shrink-0 text-muted-foreground opacity-50">
             <path d="M7 10l5 5 5-5" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"/>
           </svg>
         </button>
 
         {open && (
-          <div className="absolute z-50 mt-1 w-full rounded-md border border-ui-border bg-ui-bg shadow-lg">
+          <div className="absolute z-50 mt-1 w-full rounded-md border border-border bg-popover shadow-lg">
             {options.length > 5 && (
-              <div className="p-1.5 border-b border-ui-border">
+              <div className="p-1.5 border-b border-border">
                 <input
                   ref={inputRef}
                   type="text"
@@ -74,13 +74,13 @@ export default function NodeFieldSelect({ field, value, onChange }) {
                       setSearch("");
                     }
                   }}
-                  className="w-full h-7 rounded border border-ui-border bg-ui-bg text-ui-text px-2 text-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-brand-blue/40"
+                  className="w-full h-7 rounded border border-border bg-popover text-foreground px-2 text-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring/40"
                 />
               </div>
             )}
             <div className="max-h-48 overflow-y-auto py-1">
               {filtered.length === 0 && (
-                <div className="px-3 py-2 text-xs text-ui-text-muted">No matches</div>
+                <div className="px-3 py-2 text-xs text-muted-foreground">No matches</div>
               )}
               {filtered.map((o, i) => (
                 <button
@@ -94,8 +94,8 @@ export default function NodeFieldSelect({ field, value, onChange }) {
                   className={cx(
                     "w-full text-left px-3 py-1.5 text-sm hover:bg-ui-hover cursor-pointer",
                     String(o.value) === String(value ?? "")
-                      ? "bg-ui-hover text-ui-text font-medium"
-                      : "text-ui-text"
+                      ? "bg-ui-hover text-foreground font-medium"
+                      : "text-foreground"
                   )}
                 >
                   {String(o.label ?? o.value ?? "")}

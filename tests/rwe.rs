@@ -12,3 +12,7 @@ mod template_render;
 mod zeb_react;
 #[path = "rwe/worker_wedge.rs"]
 mod worker_wedge;
+#[path = "rwe/theme_tokens.rs"]
+mod theme_tokens;
+#[path = "rwe/zeb_ui.rs"]
+mod zeb_ui;

@@ -8,8 +8,8 @@ export default function ColorSwatch({ name, value, className }) {
         style={{ background: value }}
       />
       <div className="space-y-0.5">
-        <div className="text-[0.7rem] font-mono leading-tight text-body truncate">{name}</div>
-        <div className="text-[0.65rem] font-mono leading-tight text-body-soft opacity-70">{value}</div>
+        <div className="text-[0.7rem] font-mono leading-tight text-foreground truncate">{name}</div>
+        <div className="text-[0.65rem] font-mono leading-tight text-muted-foreground opacity-70">{value}</div>
       </div>
     </div>
   );

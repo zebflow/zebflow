@@ -12,7 +12,7 @@ export default function FileKindIcon({ name = "" }) {
   // like any other data file.
   if (lower.endsWith(".zf.json")) {
     return (
-      <svg viewBox="0 0 24 24" fill="none" className="w-4 h-4 text-dark-accent1" aria-hidden="true">
+      <svg viewBox="0 0 24 24" fill="none" className="w-4 h-4 text-primary" aria-hidden="true">
         <circle cx="6" cy="6" r="2.2" stroke="currentColor" strokeWidth="1.6" />
         <circle cx="18" cy="12" r="2.2" stroke="currentColor" strokeWidth="1.6" />
         <circle cx="6" cy="18" r="2.2" stroke="currentColor" strokeWidth="1.6" />

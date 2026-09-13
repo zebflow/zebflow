@@ -7,7 +7,7 @@ export default function TraceCaptureFields({ values, onChange, defaults, scope =
   return (
     <fieldset className="col-span-full grid gap-3 border-t border-border pt-4">
       <legend className="text-sm font-semibold">Log data capture</legend>
-      <p className="text-xs text-body-muted">
+      <p className="text-xs text-muted-foreground">
         Logged previews only; nodes and function calls receive complete execution data.
         {scope === "pipeline" ? " Leave a field blank to inherit the project default." : " Leave a field blank to use the built-in default."}
         {" "}Changes apply to future runs.

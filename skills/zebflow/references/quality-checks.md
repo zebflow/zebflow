@@ -11,7 +11,8 @@ Before reporting completion:
 For UI work:
 
 - run a local instance when practical
-- inspect with a browser
+- a 200 is not a rendered page: fetch the route and search the body for `RWE component error`
+- inspect with a browser; a console error means hydration failed even when the server HTML is right
 - check desktop and narrow widths for layout changes
 - confirm buttons trigger network requests or state changes when expected
 

@@ -79,6 +79,10 @@ pub struct TemplateOptions {
     /// Filesystem root used for `@/` and boundary-checked relative imports.
     #[serde(default)]
     pub template_root: Option<PathBuf>,
+    /// Source libraries by specifier prefix — `"zeb/ui"` → the directory of its
+    /// `.tsx` files. Resolved and inlined at compile time like `@/` imports.
+    #[serde(default)]
+    pub library_roots: std::collections::BTreeMap<String, PathBuf>,
     /// Optional explicit stylesheet entry paths, relative to `template_root`.
     ///
     /// When empty, RWE probes deterministic defaults:

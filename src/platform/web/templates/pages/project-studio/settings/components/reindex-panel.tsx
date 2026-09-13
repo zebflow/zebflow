@@ -55,7 +55,7 @@ export default function ReIndexPanel({ api }) {
             {Array.isArray(result.errors) && result.errors.length > 0 ? (
               <span className="text-[0.72rem] text-red-300">{result.errors.length} error{result.errors.length !== 1 ? "s" : ""}</span>
             ) : (
-              <span className="text-[0.72rem] text-dark-accent2">Done.</span>
+              <span className="text-[0.72rem] text-info">Done.</span>
             )}
           </div>
         ) : null}

@@ -22,7 +22,7 @@ export default function InstallFromFileDialog({ open, onClose, children }) {
       <DialogContent className="max-w-[42rem]">
         <DialogHeader>
           <DialogTitle>Install a node bundle from a file</DialogTitle>
-          <p className="text-sm text-ui-text-soft">
+          <p className="text-sm text-muted-foreground">
             It runs the same review a published package runs. A Hub package is not safer,
             only published.
           </p>

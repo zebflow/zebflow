@@ -10,9 +10,9 @@ export default function Kbd({ children, className = "" }) {
       "inline-flex items-center justify-center",
       "font-mono text-[0.65rem] leading-none",
       "px-[0.45em] py-[0.18em]",
-      "border border-white/[0.22] border-b-2",
+      "border border-border border-b-2",
       "rounded-[0.3em]",
-      "bg-white/[0.05] text-gray-400",
+      "bg-muted text-muted-foreground",
       "whitespace-nowrap align-middle",
       className,
     )}>

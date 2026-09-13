@@ -44,7 +44,9 @@ pub fn definition() -> NodeDefinition {
         script_bridge: None,
         config_schema: Default::default(),
         dsl_flags: vec![
-            DslFlag { flag: "--credential".to_string(), config_key: "credential_id".to_string(), description: "Credential ID of the PostgreSQL connection to use.".to_string(), kind: DslFlagKind::Scalar, required: true },
+            DslFlag { flag: "--credential".to_string(), config_key: "credential_id".to_string(), description: "Credential ID of the PostgreSQL connection to use (from credential_list, kind postgres).".to_string(), kind: DslFlagKind::Scalar, required: true },
+            DslFlag { flag: "--query".to_string(), config_key: "query".to_string(), description: "SQL (alternative to the body `-- \"SELECT ...\"`). A literal or {{ expr }}.".to_string(), kind: DslFlagKind::Scalar, required: false },
+            DslFlag { flag: "--params".to_string(), config_key: "params".to_string(), description: "Bind values for $1, $2, … — a literal or {{ expr }}. A whole {{ }} carries its typed value, so \"{{ [$trigger.params.id] }}\" is a real array; a single value is wrapped into one.".to_string(), kind: DslFlagKind::Scalar, required: false },
         ],
         fields: {
             use crate::pipeline::model::{NodeFieldDef, NodeFieldType, NodeFieldDataSource, SidebarSection, SidebarItem};

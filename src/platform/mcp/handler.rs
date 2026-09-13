@@ -16,8 +16,9 @@ use base64::Engine as _;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::handler::server::{ServerHandler, tool::Extension};
 use rmcp::model::{
-    CallToolRequestParams, CallToolResult, Content, ListToolsResult, PaginatedRequestParams,
-    ServerCapabilities, ServerInfo, Tool,
+    CallToolRequestParams, CallToolResult, Content, GetPromptRequestParams, GetPromptResult,
+    ListPromptsResult, ListToolsResult, PaginatedRequestParams, Prompt, PromptMessage,
+    PromptMessageContent, PromptMessageRole, ServerCapabilities, ServerInfo, Tool,
 };
 use rmcp::schemars::JsonSchema;
 use rmcp::service::RequestContext;
@@ -47,7 +48,7 @@ struct PipelineListParams {
     /// Optional glob to filter pipeline files (e.g. "api/*.zf.json").
     #[schemars(with = "String")]
     glob: Option<String>,
-    /// Optional status filter: "active", "draft", or "all".
+    /// Optional status filter: "active", "stale" (active, but changed since activation), "draft", or "all".
     #[schemars(with = "String")]
     status: Option<String>,
     /// Optional trigger kind filter: "webhook", "schedule", "function", or full "n.trigger.webhook".
@@ -102,7 +103,7 @@ struct HelpParams {
 
 #[derive(serde::Deserialize, JsonSchema)]
 struct FileWriteParams {
-    /// Relative path under templates/ (e.g. "pages/blog-home.tsx", "components/ui/card.tsx").
+    /// Path relative to the project source root (e.g. "pages/blog-home.tsx", "components/card.tsx", "docs/schema.md").
     rel_path: String,
     /// Full file content to write.
     content: String,
@@ -333,6 +334,15 @@ struct GitCommandParams {
 }
 
 #[derive(serde::Deserialize, JsonSchema)]
+struct SkillReadParams {
+    /// Skill name as listed by skill_list (e.g. "zebflow-pipeline").
+    name: String,
+    /// Optional file inside the skill folder (e.g. "references/verify.md"). Omit for SKILL.md.
+    #[schemars(with = "String")]
+    path: Option<String>,
+}
+
+#[derive(serde::Deserialize, JsonSchema)]
 struct ConnectionDescribeParams {
     /// Connection slug — get slugs from connection_list (e.g. "main-db", "default").
     slug: String,
@@ -470,6 +480,45 @@ impl ZebflowMcpHandler {
         self.check_tool_capability(&session, "help_search")?;
         let ops = PlatformOps::new(self.platform.clone(), &session.owner, &session.project);
         let result = ops.help_search(&params.query);
+        Ok(CallToolResult::success(vec![Content::text(result.text)]))
+    }
+
+    // ── Skills ───────────────────────────────────────────────────────────────
+
+    #[tool(
+        description = "List the skills this project's agent can load — name and one-line trigger each. \
+                       A skill is the procedure for one kind of task (building a page, a pipeline, auth, verification…). \
+                       When a task matches a skill, read it with skill_read before acting. \
+                       Blessed skills ship with the platform; a project's own skills/<name>/SKILL.md shadows one by name."
+    )]
+    async fn skill_list(
+        &self,
+        Extension(parts): Extension<http::request::Parts>,
+    ) -> Result<CallToolResult, McpError> {
+        let session = self.get_session_from_http_parts(&parts)?;
+        self.check_tool_capability(&session, "skill_list")?;
+        let ops = PlatformOps::new(self.platform.clone(), &session.owner, &session.project);
+        let result = ops.skill_list();
+        Ok(CallToolResult::success(vec![Content::text(result.text)]))
+    }
+
+    #[tool(
+        description = "Read a skill's SKILL.md (the procedure, gates and checks for one kind of task), \
+                       or with `path` a reference file beside it. Read a skill when its trigger matches \
+                       the task at hand; do not read them all."
+    )]
+    async fn skill_read(
+        &self,
+        Parameters(params): Parameters<SkillReadParams>,
+        Extension(parts): Extension<http::request::Parts>,
+    ) -> Result<CallToolResult, McpError> {
+        let session = self.get_session_from_http_parts(&parts)?;
+        self.check_tool_capability(&session, "skill_read")?;
+        let ops = PlatformOps::new(self.platform.clone(), &session.owner, &session.project);
+        let result = ops.skill_read(&params.name, params.path.as_deref());
+        if result.text.starts_with("Error: ") {
+            return Err(McpError::invalid_params(result.text, None));
+        }
         Ok(CallToolResult::success(vec![Content::text(result.text)]))
     }
 
@@ -803,9 +852,10 @@ impl ZebflowMcpHandler {
         ok_or_err(result)
     }
 
-    #[tool(description = "Create a new template file with scaffolding. \
-                       Kind must be one of: page (pages/*.tsx), component (components/*.tsx), \
-                       script (scripts/*.ts), folder. \
+    #[tool(description = "Create a new source file with scaffolding. \
+                       Kind must be one of: page (.tsx), component (.tsx), script (.ts), style (.css), doc (.md), folder. \
+                       The file lands at parent_rel_path/name.<ext> relative to the source root — pass \
+                       parent_rel_path=\"pages\" to get pages/<name>.tsx; without it the file is created at the root. \
                        Returns the scaffolded content — use file_write to customise it after.")]
     async fn file_create(
         &self,
@@ -1076,7 +1126,7 @@ impl ZebflowMcpHandler {
     // ── Connections & Credentials ─────────────────────────────────────────────
 
     #[tool(
-        description = "List all DB connections for this project — returns slug, label, and kind (postgres, mysql, sqlite). Use the slug with connection_describe and in --credential flags."
+        description = "List all DB connections for this project — returns slug, label, and kind (postgresql, sekejap, sqlite, ...). Every project has `default` (sqlite) and `default-multimodel` (sekejap). Use the slug with connection_describe. (`--credential` flags take a credential id from credential_list, not a connection slug.)"
     )]
     async fn connection_list(
         &self,
@@ -1190,8 +1240,7 @@ impl ZebflowMcpHandler {
     #[tool(description = "Rename or reorganize a pipeline or template file. \
             Domain detected automatically from path: .zf.json = pipeline, anything else = template. \
             For pipelines: deactivate → move → re-activate lifecycle handled automatically. \
-            Parent folders created automatically. No cross-domain moves (pipeline ↔ template). \
-            node_id can be: opaque ID (e.g. n0), kind (e.g. trigger.webhook), or kind+index (e.g. pg.query[1]).")]
+            Parent folders created automatically. No cross-domain moves (pipeline ↔ template).")]
     async fn move_resource(
         &self,
         Extension(parts): Extension<http::request::Parts>,
@@ -1456,7 +1505,10 @@ impl ServerHandler for ZebflowMcpHandler {
             });
         ServerInfo {
             instructions: Some(instructions.into()),
-            capabilities: ServerCapabilities::builder().enable_tools().build(),
+            capabilities: ServerCapabilities::builder()
+                .enable_tools()
+                .enable_prompts()
+                .build(),
             ..Default::default()
         }
     }
@@ -1485,6 +1537,54 @@ impl ServerHandler for ZebflowMcpHandler {
             tools,
             meta: None,
             next_cursor: None,
+        })
+    }
+
+    /// Every skill is also an MCP prompt, so a client with slash commands
+    /// (Claude Code, Cursor, …) gets `/zebflow-page` for free. The body a
+    /// prompt returns is exactly what `skill_read` returns; the listing is
+    /// the same tier-1 name + description.
+    async fn list_prompts(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        context: RequestContext<RoleServer>,
+    ) -> Result<ListPromptsResult, McpError> {
+        let Some(session) = self.session_from_context(&context) else {
+            return Ok(ListPromptsResult::default());
+        };
+        let Ok(layout) = self.platform.projects.project_layout(&session.owner, &session.project) else {
+            return Ok(ListPromptsResult::default());
+        };
+        let prompts = crate::platform::skills::list(&layout.repo_source_dir())
+            .into_iter()
+            .map(|skill| Prompt::new(skill.name, Some(skill.description), None))
+            .collect();
+        Ok(ListPromptsResult::with_all_items(prompts))
+    }
+
+    async fn get_prompt(
+        &self,
+        request: GetPromptRequestParams,
+        context: RequestContext<RoleServer>,
+    ) -> Result<GetPromptResult, McpError> {
+        let session = self
+            .session_from_context(&context)
+            .ok_or_else(|| McpError::invalid_request("no MCP session", None))?;
+        let layout = self
+            .platform
+            .projects
+            .project_layout(&session.owner, &session.project)
+            .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+        let Some((_, text)) = crate::platform::skills::read(&layout.repo_source_dir(), &request.name, "") else {
+            return Err(McpError::invalid_params(format!("no skill '{}'", request.name), None));
+        };
+        let description = crate::platform::skills::parse_frontmatter(&text).description;
+        Ok(GetPromptResult {
+            description,
+            messages: vec![PromptMessage {
+                role: PromptMessageRole::User,
+                content: PromptMessageContent::Text { text },
+            }],
         })
     }
 

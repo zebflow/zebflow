@@ -274,7 +274,7 @@ export default function NodeForm({ fields, layout, config, dataState, onChange }
                   })
                 }
                 title="Browse template files"
-                className="mb-0.5 px-2 py-1.5 text-xs rounded border border-dark-border text-dark-text1/60 hover:text-dark-text1 hover:bg-dark-accent3 shrink-0 transition-colors"
+                className="mb-0.5 px-2 py-1.5 text-xs rounded border border-border text-muted-foreground/60 hover:text-muted-foreground hover:bg-success shrink-0 transition-colors"
               >
                 Browse
               </button>

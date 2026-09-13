@@ -6,7 +6,7 @@ pub mod js_masker;
 pub mod model;
 pub mod render;
 pub mod security;
-pub(crate) mod zeb_react;
+pub mod zeb_react;
 
 pub use config::{CompileOptions, RuntimeMode, SecurityPolicy};
 pub use error::EngineError;
@@ -50,7 +50,7 @@ pub fn prepare_template_root(root: &std::path::Path) -> Result<(), EngineError> 
 
     // --- 1. Write the shim -------------------------------------------------
     let shim_path = root.join("rwe.ts");
-    fs::write(&shim_path, RWE_SHIM).map_err(|e| {
+    write_atomic(&shim_path, RWE_SHIM.as_bytes()).map_err(|e| {
         EngineError::new("RWE_PREPARE_SHIM", format!("failed writing rwe shim: {e}"))
     })?;
 
@@ -91,7 +91,7 @@ pub fn prepare_template_root(root: &std::path::Path) -> Result<(), EngineError> 
         })?;
         let rewritten = rewrite_source(&source, root)?;
         if rewritten != source {
-            fs::write(&file, rewritten).map_err(|e| {
+            write_atomic(&file, rewritten.as_bytes()).map_err(|e| {
                 EngineError::new(
                     "RWE_PREPARE_WRITE",
                     format!("failed writing '{}': {e}", file.display()),
@@ -101,6 +101,25 @@ pub fn prepare_template_root(root: &std::path::Path) -> Result<(), EngineError> 
     }
 
     Ok(())
+}
+
+/// Replace a file in one step: write beside it, then rename over it. A
+/// reader in another process — a second dev server, a parallel test — sees
+/// the old file or the new one, never a truncated one mid-write. Every
+/// process materializing the same template root writes the same bytes, so
+/// which one wins does not matter; that none of them is seen half-done does.
+pub fn write_atomic(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
+    // Unique per write, not per process: threads of one test binary share a
+    // pid and would otherwise rename each other's temp file away.
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let name = path
+        .file_name()
+        .and_then(|v| v.to_str())
+        .unwrap_or("file");
+    let tmp = path.with_file_name(format!(".{name}.{}.{seq}.tmp", std::process::id()));
+    std::fs::write(&tmp, bytes)?;
+    std::fs::rename(&tmp, path)
 }
 
 fn rewrite_source(source: &str, root: &std::path::Path) -> Result<String, EngineError> {

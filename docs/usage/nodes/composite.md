@@ -43,4 +43,4 @@ not depend on hidden state from the parent graph.
 - Avoid returning large intermediate data that callers do not need.
 - Test the package after a clean install.
 
-Exact package fields belong in the [package reference](../../reference/packages.md).
+Exact package fields are the `NodeBundle` contract, [`docs/contracts/kinds/node-bundle/`](../../contracts/kinds/node-bundle/README.md), summarised for consumers in the help topic `guide/hub/nodes`.

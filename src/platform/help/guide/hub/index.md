@@ -42,6 +42,12 @@ not:
 
 - activate a hidden runtime install
 
+The two package kinds that really are runtime dependencies —
+`node_bundle` (materializes under `data/hub/nodes/`) and `rwe_library`
+(materializes under `data/hub/rwe-libraries/`) — are recorded as such in
+`zeb.lock` (and `zebflow.yaml` for `rwe_library`) rather than left as
+untracked copies.
+
 This keeps Hub aligned with how Zebflow projects actually work.
 
 Use these words consistently:

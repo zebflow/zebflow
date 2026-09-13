@@ -114,7 +114,7 @@ export default function LoggingPanel({ api, invocationsApi, initialConfig }) {
   const pipelines = Array.isArray(stats?.pipelines) ? stats.pipelines : [];
 
   return (
-    <article className="border border-border rounded-lg bg-surface p-[0.85rem] mb-[0.9rem]">
+    <article className="border border-border rounded-lg bg-card p-[0.85rem] mb-[0.9rem]">
       <CommitDialog
         open={commitOpen}
         section="logging"

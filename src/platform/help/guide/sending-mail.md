@@ -12,7 +12,8 @@ Zebflow is involved.
 
 ## 1. Store the relay as a credential
 
-Project settings → Credentials → **SMTP**:
+Credentials is its own Studio page: `/projects/{owner}/{project}/credentials`.
+Add a credential of kind **SMTP**:
 
 | Field | Value |
 |---|---|
@@ -42,21 +43,26 @@ never appears in a pipeline definition, a trace, or the node's output.
 ## 2. Send
 
 ```
-register pipelines/account/activate --
+register account/activate --title "Activate account"
   | trigger.webhook --path /account/activate --method POST
-  | n.sekejap.query --collection users --filter "email = {{ input.email }}"
-  | n.mail.send --credential relay
-                --to {{ input.email }}
-                --subject "Activate your Researchsite account"
-                --text {{ input.message }}
+  | sekejap.query --params "{{ [input.body.email] }}" -- "SELECT * FROM users WHERE email = $1"
+  | mail.send --credential relay
+              --to "{{ input.rows[0].email }}"
+              --subject "Activate your Researchsite account"
+              --text "Follow the link we sent to activate your account."
   | web.response
 ```
 
+The submitted address is under `input.body.email` — webhook bodies never merge
+onto the root (`guide/pipeline` payload conventions). `sekejap.query` answers
+`{ columns, rows, row_count, … }`, so the row is `input.rows[0]`, never a bare
+`input.email`.
+
 `--to`, `--subject`, `--text`, `--html`, `--from` and `--reply-to` each take
-either a literal or a `{{ input.path }}` into the flowing payload — the same convention
-`n.auth.token.create` uses for claims. `{{ input.deep.name }}` reads a nested field; a
-path that matches nothing resolves to empty rather than to the literal text,
-so a typo cannot be posted as an address.
+either a literal or a whole `{{ expr }}` into the flowing payload — the same
+convention `n.auth.token.create` uses for claims. An undefined path throws
+rather than silently posting empty text, so a typo fails loudly instead of
+mailing a blank field.
 
 Give both `--text` and `--html` and the message goes out as
 `multipart/alternative`: the reader's client picks. One of the two is required.
@@ -70,8 +76,11 @@ whom, never the credential.
 |---|---|
 | `FW_NODE_MAIL_CREDENTIAL_MISSING` | no credential with that id in this project |
 | `FW_NODE_MAIL_CREDENTIAL_KIND` | the credential exists but is not kind `smtp` |
+| `FW_NODE_MAIL_CREDENTIAL` | the credential could not be read or decoded |
 | `FW_NODE_MAIL_ADDRESS` | the recipient, from, or reply-to is not a valid mailbox — refused before any connection is opened |
 | `FW_NODE_MAIL_CONFIG` | neither `--text` nor `--html` was given |
+| `FW_NODE_MAIL_BUILD` | the message could not be assembled (e.g. a bad header value) |
+| `FW_NODE_MAIL_TRANSPORT` | the relay connection could not be established (TLS/network) |
 | `FW_NODE_MAIL_SEND` | the relay refused or was unreachable; the message carries the relay's own reason |
 
 ## Testing without a relay

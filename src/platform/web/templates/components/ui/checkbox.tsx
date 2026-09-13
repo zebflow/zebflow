@@ -7,8 +7,8 @@ import { cx } from "zeb/react";
 export default function Checkbox({ label, className, labelClassName, ...rest }) {
   return (
     <label className={cx("inline-flex items-center gap-1.5 cursor-pointer select-none", className)}>
-      <input type="checkbox" className="size-3.5 accent-[var(--color-accent,#60a5fa)] cursor-pointer" {...rest} />
-      <span className={labelClassName || "text-[0.7rem] font-mono text-gray-400"}>{label}</span>
+      <input type="checkbox" className="size-3.5 accent-primary cursor-pointer" {...rest} />
+      <span className={labelClassName || "text-[0.7rem] font-mono text-muted-foreground"}>{label}</span>
     </label>
   );
 }

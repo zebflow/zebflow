@@ -24,11 +24,11 @@ export function ProjectRuntimePanel({ placement, summary }) {
         description="Current resident runtime placement for this project."
       />
       <StudioPanelBody>
-        <div className="rounded-md border border-border-soft bg-surface-2 px-3 py-2.5">
-          <p className="font-mono text-[0.63rem] font-medium uppercase tracking-[0.14em] text-body-muted">
+        <div className="rounded-md border border-border bg-muted px-3 py-2.5">
+          <p className="font-mono text-[0.63rem] font-medium uppercase tracking-[0.14em] text-muted-foreground">
             Current placement
           </p>
-          <p className="mt-1 text-[0.9rem] font-semibold text-body">
+          <p className="mt-1 text-[0.9rem] font-semibold text-foreground">
             {summary || "Local"}
           </p>
         </div>
@@ -40,7 +40,7 @@ export function ProjectRuntimePanel({ placement, summary }) {
           <StudioMetric label="Replicas" value={placement?.desired_replicas || 1} />
           <StudioMetric label="State" value={state} />
         </StudioMetricGrid>
-        <p className="mt-3 text-[0.72rem] leading-5 text-body-muted">
+        <p className="mt-3 text-[0.72rem] leading-5 text-muted-foreground">
           Remote offices join with the cluster token configured outside the browser; the UI never exposes that secret.
         </p>
       </StudioPanelBody>

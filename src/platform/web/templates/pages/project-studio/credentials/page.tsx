@@ -94,17 +94,17 @@ function TagsInput({ value, onChange, placeholder }: { value: string[]; onChange
     <div className="flex flex-col gap-1.5">
       <div className="flex flex-wrap gap-1 min-h-6">
         {value.map((tag) => (
-          <span key={tag} className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs bg-surface-2 border border-border text-body">
+          <span key={tag} className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs bg-muted border border-border text-foreground">
             {tag}
             <button
               type="button"
               onClick={() => onChange(value.filter((t) => t !== tag))}
-              className="text-body-soft hover:text-danger leading-none cursor-pointer"
+              className="text-muted-foreground hover:text-danger leading-none cursor-pointer"
               aria-label={`Remove ${tag}`}
             >×</button>
           </span>
         ))}
-        {value.length === 0 && <span className="text-xs text-body-soft italic">No roles defined</span>}
+        {value.length === 0 && <span className="text-xs text-muted-foreground italic">No roles defined</span>}
       </div>
       <div className="flex gap-1.5">
         <Input
@@ -220,10 +220,10 @@ function SecureRequestVariablesEditor({
   return (
     <div className="flex flex-col gap-2">
       {items.length === 0 ? (
-        <p className="text-xs text-body-soft italic">No runtime variables declared yet.</p>
+        <p className="text-xs text-muted-foreground italic">No runtime variables declared yet.</p>
       ) : null}
       {items.map((item, index) => (
-        <div key={index} className="rounded-md border border-ui-border bg-ui-bg px-3 py-3">
+        <div key={index} className="rounded-md border border-border bg-popover px-3 py-3">
           <div className="grid grid-cols-2 gap-3">
             <Field label="Variable Name">
               <Input value={String(item?.name || "")} onInput={(e: any) => updateAt(index, { name: e.target.value })} placeholder="USER_ID" />
@@ -240,7 +240,7 @@ function SecureRequestVariablesEditor({
             <Field label="Description" className="col-span-2">
               <Input value={String(item?.description || "")} onInput={(e: any) => updateAt(index, { description: e.target.value })} placeholder="Shown in the HTTP request node binding editor" />
             </Field>
-            <label className="col-span-2 inline-flex items-center gap-2 text-sm text-body">
+            <label className="col-span-2 inline-flex items-center gap-2 text-sm text-foreground">
               <input
                 type="checkbox"
                 checked={item?.required !== false}
@@ -287,7 +287,7 @@ function DynamicField({ field, secret, onChange }: { field: any; secret: Record<
           onInput={(e: any) => onChange(field.key, e.target.value)}
           rows={field.rows || 4}
           placeholder={field.placeholder || ""}
-          className="flex w-full rounded-md border border-ui-border bg-ui-bg text-ui-text px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-brand-blue/40 disabled:opacity-50"
+          className="flex w-full rounded-md border border-border bg-popover text-foreground px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring/40 disabled:opacity-50"
         />
       </Field>
     );
@@ -350,9 +350,9 @@ function SecretFields({ kind, secret, onChange, credentialTypes }: { kind: strin
     const statusColor = s("refresh_token") ? (Number(s("expires_at", "0")) * 1000 > Date.now() ? "bg-green-500" : "bg-amber-500") : "bg-zinc-400";
     return (
       <div className="flex flex-col gap-4">
-        <div className="rounded-md border border-ui-border bg-surface-1 px-3 py-3">
-          <p className="text-sm font-medium text-body">OAuth2 Authorization Code Grant</p>
-          <p className="mt-1 text-xs leading-relaxed text-body-soft">
+        <div className="rounded-md border border-border bg-surface-1 px-3 py-3">
+          <p className="text-sm font-medium text-foreground">OAuth2 Authorization Code Grant</p>
+          <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
             Configure the OAuth2 provider's client credentials and endpoints.
             After saving, use the <strong>Authorize</strong> button to complete the consent flow.
           </p>
@@ -360,7 +360,7 @@ function SecretFields({ kind, secret, onChange, credentialTypes }: { kind: strin
 
         <div className="flex items-center gap-2 px-1">
           <span className={cx("inline-block w-2 h-2 rounded-full", statusColor)} />
-          <span className="text-xs text-body-soft">{statusLabel}</span>
+          <span className="text-xs text-muted-foreground">{statusLabel}</span>
         </div>
 
         <div className="grid grid-cols-2 gap-3">
@@ -428,9 +428,9 @@ function SecretFields({ kind, secret, onChange, credentialTypes }: { kind: strin
 
     return (
       <div className="flex flex-col gap-4">
-        <div className="rounded-md border border-ui-border bg-surface-1 px-3 py-3">
-          <p className="text-sm font-medium text-body">Webhook HMAC Verification</p>
-          <p className="mt-1 text-xs leading-relaxed text-body-soft">
+        <div className="rounded-md border border-border bg-surface-1 px-3 py-3">
+          <p className="text-sm font-medium text-foreground">Webhook HMAC Verification</p>
+          <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
             Verify inbound webhook signatures from third-party services.
             Select a provider to auto-fill the verification settings, or use Generic and configure manually.
           </p>
@@ -495,9 +495,9 @@ function SecretFields({ kind, secret, onChange, credentialTypes }: { kind: strin
     });
     return (
       <div className="flex flex-col gap-4">
-        <div className="rounded-md border border-ui-border bg-surface-1 px-3 py-3">
-          <p className="text-sm font-medium text-body">Secure Request Profile</p>
-          <p className="mt-1 text-xs leading-relaxed text-body-soft">
+        <div className="rounded-md border border-border bg-surface-1 px-3 py-3">
+          <p className="text-sm font-medium text-foreground">Secure Request Profile</p>
+          <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
             Define an HTTP request template with placeholders like <code>&lt;USER_ID&gt;</code> and
             <code>&lt;PROGRAMME_CODE&gt;</code>. The HTTP request node will ask for those bindings and
             resolve any secret placeholders from this credential.
@@ -532,12 +532,12 @@ function SecretFields({ kind, secret, onChange, credentialTypes }: { kind: strin
             onInput={(e: any) => updateRequest({ body: e.target.value })}
             rows={5}
             placeholder='{"user_id":"<USER_ID>","programme":"<PROGRAMME_CODE>"}'
-            className="flex w-full rounded-md border border-ui-border bg-ui-bg text-ui-text px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-brand-blue/40"
+            className="flex w-full rounded-md border border-border bg-popover text-foreground px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring/40"
           />
         </Field>
 
-        <div className="rounded-md border border-ui-border bg-surface-1 px-3 py-3">
-          <label className="inline-flex items-center gap-2 text-sm font-medium text-body">
+        <div className="rounded-md border border-border bg-surface-1 px-3 py-3">
+          <label className="inline-flex items-center gap-2 text-sm font-medium text-foreground">
             <input
               type="checkbox"
               checked={!!egress.allow_private}
@@ -553,7 +553,7 @@ function SecretFields({ kind, secret, onChange, credentialTypes }: { kind: strin
                 onInput={(e: any) => updateEgress({ allowed_hosts: textToList(e.target.value) })}
                 rows={3}
                 placeholder={"internal-service\ninternal-service.namespace.svc.cluster.local"}
-                className="flex w-full rounded-md border border-ui-border bg-ui-bg text-ui-text px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-brand-blue/40"
+                className="flex w-full rounded-md border border-border bg-popover text-foreground px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring/40"
               />
             </Field>
             <Field label="Allowed Paths" description="Optional exact URL paths. Blank allows the template path.">
@@ -563,7 +563,7 @@ function SecretFields({ kind, secret, onChange, credentialTypes }: { kind: strin
                 onInput={(e: any) => updateEgress({ allowed_paths: textToList(e.target.value) })}
                 rows={3}
                 placeholder="/embed"
-                className="flex w-full rounded-md border border-ui-border bg-ui-bg text-ui-text px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-brand-blue/40"
+                className="flex w-full rounded-md border border-border bg-popover text-foreground px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring/40"
               />
             </Field>
             <Field label="Allowed Methods" description="Optional methods. Blank allows the template method.">
@@ -573,7 +573,7 @@ function SecretFields({ kind, secret, onChange, credentialTypes }: { kind: strin
                 onInput={(e: any) => updateEgress({ allowed_methods: textToList(e.target.value).map((item) => item.toUpperCase()) })}
                 rows={3}
                 placeholder="POST"
-                className="flex w-full rounded-md border border-ui-border bg-ui-bg text-ui-text px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-brand-blue/40"
+                className="flex w-full rounded-md border border-border bg-popover text-foreground px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring/40"
               />
             </Field>
           </div>
@@ -610,7 +610,7 @@ function SecretFields({ kind, secret, onChange, credentialTypes }: { kind: strin
           onInput={(e: any) => { try { onChange("__json__", JSON.parse(e.target.value)); } catch { onChange("__json_raw__", e.target.value); } }}
           rows={8}
           placeholder={'{\n  "key": "value"\n}'}
-          className="flex w-full rounded-md border border-ui-border bg-ui-bg text-ui-text px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-brand-blue/40"
+          className="flex w-full rounded-md border border-border bg-popover text-foreground px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring/40"
         />
       </Field>
     );
@@ -628,7 +628,7 @@ function SecretFields({ kind, secret, onChange, credentialTypes }: { kind: strin
           onInput={(e: any) => { try { onChange("__json__", JSON.parse(e.target.value)); } catch { onChange("__json_raw__", e.target.value); } }}
           rows={8}
           placeholder={'{\n  "key": "value"\n}'}
-          className="flex w-full rounded-md border border-ui-border bg-ui-bg text-ui-text px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-brand-blue/40"
+          className="flex w-full rounded-md border border-border bg-popover text-foreground px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring/40"
         />
       </Field>
     );
@@ -732,7 +732,7 @@ function CredentialDialog({ open, onClose, mode, editItem, apiList, apiItemBase,
       >
         <DialogHeader className="shrink-0">
           <DialogTitle>{mode === "edit" ? `Edit — ${credentialId}` : "Create Credential"}</DialogTitle>
-          <p className={cx("text-xs mt-0.5", statusTone === "error" ? "text-danger" : statusTone === "ok" ? "text-success" : "text-body-soft")}>{status}</p>
+          <p className={cx("text-xs mt-0.5", statusTone === "error" ? "text-danger" : statusTone === "ok" ? "text-success" : "text-muted-foreground")}>{status}</p>
         </DialogHeader>
 
         <form onSubmit={handleSave} className="flex min-h-0 flex-1 flex-col overflow-hidden">
@@ -774,7 +774,7 @@ function CredentialDialog({ open, onClose, mode, editItem, apiList, apiItemBase,
                 rows={2}
                 placeholder="Optional operational notes (no secrets here)"
                 disabled={busy}
-                className="flex w-full rounded-md border border-ui-border bg-ui-bg text-ui-text px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-brand-blue/40 disabled:opacity-50"
+                className="flex w-full rounded-md border border-border bg-popover text-foreground px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring/40 disabled:opacity-50"
               />
             </Field>
           </div>
@@ -865,7 +865,7 @@ export default function Page(input) {
         <StudioTabNav>
           <StudioTabLink active>Credentials</StudioTabLink>
         </StudioTabNav>
-        <section className="flex-1 min-h-0 overflow-auto flex flex-col bg-bg">
+        <section className="flex-1 min-h-0 overflow-auto flex flex-col bg-background">
           <div className="project-content-wrap">
             <section className="project-content-section">
               <div className="project-content-head">
@@ -894,13 +894,13 @@ export default function Page(input) {
                   <tbody>
                     {items.length === 0 ? (
                       <tr>
-                        <td colSpan={7} className="px-3 py-4 text-sm text-body-soft text-center">No credentials yet</td>
+                        <td colSpan={7} className="px-3 py-4 text-sm text-muted-foreground text-center">No credentials yet</td>
                       </tr>
                     ) : items.map((item) => (
                       <tr key={item.credential_id}>
-                        <td className="px-3 py-2 text-sm font-mono text-body">{item.credential_id}</td>
-                        <td className="px-3 py-2 text-sm text-body">{item.title}</td>
-                        <td className="px-3 py-2 text-sm text-body-soft">{item.kind}</td>
+                        <td className="px-3 py-2 text-sm font-mono text-foreground">{item.credential_id}</td>
+                        <td className="px-3 py-2 text-sm text-foreground">{item.title}</td>
+                        <td className="px-3 py-2 text-sm text-muted-foreground">{item.kind}</td>
                         <td className="px-3 py-2">
                           <div className="flex flex-wrap gap-1">
                             {(item.auth_roles || []).map((r) => (
@@ -908,7 +908,7 @@ export default function Page(input) {
                             ))}
                           </div>
                         </td>
-                        <td className="px-3 py-2 text-sm text-body-soft">
+                        <td className="px-3 py-2 text-sm text-muted-foreground">
                           {item.kind === "oauth2" && item.oauth2_status ? (
                             <span className="inline-flex items-center gap-1.5">
                               <span className={cx("inline-block w-1.5 h-1.5 rounded-full",
@@ -919,7 +919,7 @@ export default function Page(input) {
                             </span>
                           ) : item.has_secret ? "yes" : "no"}
                         </td>
-                        <td className="px-3 py-2 text-sm text-body-soft">{formatTs(item.updated_at)}</td>
+                        <td className="px-3 py-2 text-sm text-muted-foreground">{formatTs(item.updated_at)}</td>
                         <td className="px-3 py-2">
                           <Button size="xs" variant="outline" onClick={() => openEdit(item)}>Edit</Button>
                         </td>

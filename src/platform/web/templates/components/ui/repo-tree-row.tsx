@@ -6,7 +6,7 @@ import FileKindIcon from "@/components/ui/file-kind-icon";
 export function EntryIcon({ kind, name, open }) {
   if (kind !== "folder" && kind !== "root") {
     return (
-      <span className="flex h-4 w-4 shrink-0 items-center justify-center text-ui-text-soft">
+      <span className="flex h-4 w-4 shrink-0 items-center justify-center text-muted-foreground">
         <FileKindIcon name={name} />
       </span>
     );
@@ -65,8 +65,8 @@ export default function RepoTreeRow({ item, depth, open, active, status, menu, o
       className={cx(
         "flex w-full items-center gap-1.5 py-[3px] pr-1 text-[12px] transition-colors",
         active
-          ? "bg-ui-bg-muted text-ui-text"
-          : "text-ui-text-soft hover:bg-ui-bg-muted/60 hover:text-ui-text",
+          ? "bg-accent text-foreground"
+          : "text-muted-foreground hover:bg-accent/60 hover:text-foreground",
       )}
     >
       <button
@@ -81,11 +81,11 @@ export default function RepoTreeRow({ item, depth, open, active, status, menu, o
         >
           <Caret open={open} hidden={!expandable} />
           <EntryIcon kind={item.kind} name={item.name} open={open} />
-          <span className={cx("truncate", item.kind === "root" && "font-medium text-ui-text")}>
+          <span className={cx("truncate", item.kind === "root" && "font-medium text-foreground")}>
             {item.name}
           </span>
           {status ? (
-            <span className="shrink-0 font-mono text-[10px] text-dark-accent3" title={`git: ${status}`}>
+            <span className="shrink-0 font-mono text-[10px] text-success" title={`git: ${status}`}>
               {status}
             </span>
           ) : null}

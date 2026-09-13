@@ -7,7 +7,7 @@ import TransferActionsGrid from "@/pages/project-studio/settings/components/tran
 import TransferOperationRow from "@/pages/project-studio/settings/components/transfer-operation-row";
 
 const GHOST =
-  "!rounded-none !border !border-dark-border !bg-transparent !text-body-soft hover:!bg-dark-border hover:!text-body";
+  "!rounded-none !border !border-border !bg-transparent !text-muted-foreground hover:!bg-border hover:!text-foreground";
 
 /**
  * Moving a project in or out as a ProjectBundle archive.
@@ -61,10 +61,10 @@ export default function ProjectTransferPanel({ owner, project, api, initialOpera
       </div>
 
       <div className="mt-4">
-        <p className="mb-2 text-[0.8rem] font-medium text-body">Recent Operations</p>
+        <p className="mb-2 text-[0.8rem] font-medium text-foreground">Recent Operations</p>
         <div className="grid gap-2">
           {operations.length === 0 ? (
-            <div className="text-[0.78rem] text-body-soft">No transfer operations yet.</div>
+            <div className="text-[0.78rem] text-muted-foreground">No transfer operations yet.</div>
           ) : (
             operations.map((item, index) => (
               <TransferOperationRow

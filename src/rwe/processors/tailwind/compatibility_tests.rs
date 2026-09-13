@@ -30,9 +30,10 @@ fn semantic_tokens_do_not_capture_tailwind_utility_names() {
     assert_unsupported("bg-not-a-declared-token");
     assert_unsupported("border-not-a-declared-token");
     assert_unsupported("outline-not-a-declared-token");
-    assert_rule("bg-surface", &["background-color:var(--color-surface)"]);
-    assert_rule("text-body-soft", &["color:var(--color-body-soft)"]);
-    assert_rule("border-ui-border", &["border-color:var(--color-ui-border)"]);
+    assert_rule("bg-card", &["background-color:var(--card)"]);
+    assert_rule("text-muted-foreground", &["color:var(--muted-foreground)"]);
+    assert_rule("border-input", &["border-color:var(--input)"]);
+    assert_rule("ring-ring/40", &["color-mix(in srgb, var(--ring) 40.0%, transparent)"]);
 }
 
 #[test]

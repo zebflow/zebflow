@@ -22,14 +22,14 @@ function Level({ path, depth, state, actions }) {
 
   if (!items) {
     return (
-      <p className="py-1 text-[11px] text-ui-text-soft" style={{ paddingLeft: `${depth * 12 + 26}px` }}>
+      <p className="py-1 text-[11px] text-muted-foreground" style={{ paddingLeft: `${depth * 12 + 26}px` }}>
         Loading…
       </p>
     );
   }
   if (!items.length) {
     return (
-      <p className="py-1 text-[11px] text-ui-text-soft" style={{ paddingLeft: `${depth * 12 + 26}px` }}>
+      <p className="py-1 text-[11px] text-muted-foreground" style={{ paddingLeft: `${depth * 12 + 26}px` }}>
         Empty
       </p>
     );

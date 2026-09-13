@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use crate::contracts::decode_contract;
 use crate::contracts::kinds::RweLibraryManifestContract;
 use crate::platform::error::PlatformError;
-use crate::platform::web::embedded::PLATFORM_LIBRARY_ASSETS;
+use crate::platform::web::embedded::{PLATFORM_LIBRARY_ASSETS, PLATFORM_SOURCE_LIBRARY_ASSETS};
 
 /// Strict source form stored in each library `manifest.json` contract.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -131,6 +131,24 @@ impl RweLibraryManifest {
 /// In-memory ordered registry of all embedded library manifests.
 pub struct LibraryService {
     manifests: Vec<RweLibraryManifest>,
+    /// Source libraries materialized to disk, by specifier prefix — see
+    /// [`LibraryService::source_roots`].
+    source_roots: std::sync::OnceLock<MaterializedSources>,
+}
+
+/// The directory this process materialized its source libraries into, and
+/// the roots inside it. Removed on drop.
+struct MaterializedSources {
+    dir: Option<std::path::PathBuf>,
+    roots: BTreeMap<String, std::path::PathBuf>,
+}
+
+impl Drop for MaterializedSources {
+    fn drop(&mut self) {
+        if let Some(dir) = &self.dir {
+            let _ = std::fs::remove_dir_all(dir);
+        }
+    }
 }
 
 impl LibraryService {
@@ -170,10 +188,92 @@ impl LibraryService {
                 versions,
             });
         }
-        Ok(Self { manifests })
+        Ok(Self { manifests, source_roots: std::sync::OnceLock::new() })
     }
 
     /// Returns an iterator over all registered manifests in insertion order.
+    /// The source libraries — packages that ship `.tsx` under
+    /// `zeb/<name>/<version>/src/` rather than a runtime bundle. `zeb/ui` is
+    /// one. A page imports a component (`zeb/ui/button`); the RWE compiler
+    /// resolves it to the file here and inlines it like an `@/` import, so the
+    /// Tailwind scan and SSR treat it as the page's own source.
+    ///
+    /// Materialized once per process into a directory this process owns:
+    /// private (0700), unique (pid + nonce), written whole before it is
+    /// published, removed when the service drops. Nothing is shared between
+    /// two servers, a stale file from an older build cannot survive, and a
+    /// write that fails is an error the caller sees — not an empty
+    /// directory the compiler resolves against.
+    pub fn source_roots(&self) -> BTreeMap<String, std::path::PathBuf> {
+        self.source_roots
+            .get_or_init(|| match Self::materialize_source_libraries() {
+                Ok(dir) => dir,
+                Err(err) => {
+                    eprintln!("source libraries not materialized: {err}");
+                    MaterializedSources { dir: None, roots: BTreeMap::new() }
+                }
+            })
+            .roots
+            .clone()
+    }
+
+    fn materialize_source_libraries() -> Result<MaterializedSources, PlatformError> {
+        static SEQ: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.subsec_nanos())
+            .unwrap_or(0)
+            ^ SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed).rotate_left(20);
+        let dir = std::env::temp_dir().join(format!(
+            "zebflow-source-libraries-{}-{}-{nonce:08x}",
+            env!("CARGO_PKG_VERSION"),
+            std::process::id()
+        ));
+        // Not `with_extension`: the version's dot would make every instance
+        // share one `…-0.9.staging` and race on it.
+        let staging = std::path::PathBuf::from(format!("{}.staging", dir.display()));
+        let _ = std::fs::remove_dir_all(&staging);
+        std::fs::create_dir_all(&staging).map_err(|e| {
+            PlatformError::new("PLATFORM_LIBRARY_MATERIALIZE", format!("{}: {e}", staging.display()))
+        })?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&staging, std::fs::Permissions::from_mode(0o700)).map_err(|e| {
+                PlatformError::new("PLATFORM_LIBRARY_MATERIALIZE", format!("chmod {}: {e}", staging.display()))
+            })?;
+        }
+        let mut roots = BTreeMap::new();
+        for asset in PLATFORM_SOURCE_LIBRARY_ASSETS {
+            // zeb/<name>/<version>/src/<file>
+            let mut parts = asset.path.splitn(5, '/');
+            let (Some("zeb"), Some(name), Some(version), Some("src"), Some(rest)) =
+                (parts.next(), parts.next(), parts.next(), parts.next(), parts.next())
+            else {
+                continue;
+            };
+            let src_dir = staging.join("zeb").join(name).join(version).join("src");
+            let target = src_dir.join(rest);
+            if let Some(parent) = target.parent() {
+                std::fs::create_dir_all(parent).map_err(|e| {
+                    PlatformError::new("PLATFORM_LIBRARY_MATERIALIZE", format!("{}: {e}", parent.display()))
+                })?;
+            }
+            std::fs::write(&target, asset.bytes).map_err(|e| {
+                PlatformError::new("PLATFORM_LIBRARY_MATERIALIZE", format!("{}: {e}", target.display()))
+            })?;
+            roots.insert(
+                format!("zeb/{name}"),
+                dir.join("zeb").join(name).join(version).join("src"),
+            );
+        }
+        // Publish: every file is on disk before the directory has its final name.
+        std::fs::rename(&staging, &dir).map_err(|e| {
+            PlatformError::new("PLATFORM_LIBRARY_MATERIALIZE", format!("publish {}: {e}", dir.display()))
+        })?;
+        Ok(MaterializedSources { dir: Some(dir), roots })
+    }
+
     pub fn list(&self) -> impl Iterator<Item = &RweLibraryManifest> {
         self.manifests.iter()
     }

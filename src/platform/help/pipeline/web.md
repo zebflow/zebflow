@@ -1,259 +1,161 @@
-# Pipeline DSL — Web responses (`n.web.response`)
+# Responses — `web.response`
 
-This doc covers **serving HTTP responses** from pipelines: HTML pages, JSON, redirects, cookies, and custom headers — all via `n.web.response`.
+Everything a pipeline sends back over HTTP goes through `web.response`: JSON,
+a rendered page, a redirect, a cookie, a header. Nothing is implicit — a
+script cannot set a status or a header; it returns the next payload and the
+graph decides which `web.response` answers.
 
-For persistent file generation, use `n.web.static.generate`. That node renders the same TSX/RWE
-templates, but writes the resulting HTML into project file storage instead of replying to the
-current request.
+For writing a rendered page to project storage instead of answering the
+request, `web.static.generate` renders the same templates
+(`help("pipeline/examples/static-entry-generation")`).
 
-Concrete example:
-- `pipeline/examples/static-entry-generation`
+## Flags
 
-See also: **`pipeline-dsl`** (full DSL), **`web-templates`** (how to write `.tsx` pages).
+| Flag | Meaning |
+|---|---|
+| *(none)* | answer the upstream payload as JSON, status 200 |
+| `--template pages/post.tsx` | render the TSX page; the payload becomes its `input`. Path relative to the source root, `.tsx` required |
+| `--status 404` | status code (default 200; 302 when `--location` is set) |
+| `--location "/x"` | redirect; a `{{ }}` value is resolved from the payload |
+| `--body "{{ input.rows }}"` | answer this value instead of the whole payload |
+| `--message "text"` | a plain-text body |
+| `--set-cookie "spec"` | one cookie, spec below |
+| `--header K=V` | extra response header, repeatable |
+| `--load-scripts url,url` | external scripts injected into a template response |
 
----
+Quote any value that contains `{{ }}` or a space as one argument;
+`--location {{ input.url }}` unquoted is cut at the first space and refused.
 
-## What `n.web.response` does
-
-Without `--template`: serves the upstream payload as **JSON** (status 200 by default).
-With `--template`: compiles the TSX file, renders it to **HTML** on the server (SSR), and hydrates on the client.
-
-All HTTP concerns (status, cookies, headers, redirects) are explicit flags — nothing hidden.
-
----
-
-## DSL flags
-
-| Flag | Description |
-|------|-------------|
-| `--template pages/foo.tsx` | TSX page to render. Activates RWE mode — upstream payload becomes `input` in the template. |
-| `--status 404` | HTTP status code (default: 200, or 302 when `--location` is set). |
-| `--location /path` | Redirect URL. Implies 302 unless `--status` overrides. Supports `{{ input.field }}` to resolve from upstream payload (e.g. `--location {{ input.redirect_url }}`). |
-| `--message "text"` | Plain-text response body. |
-| `--body {{ input.field }}` | JSON path into upstream payload to use as response body. |
-| `--set-cookie spec` | Set a cookie — see spec format below. |
-| `--header K=V` | Extra response header. Repeatable. |
-| `--load-scripts url` | External script URLs to inject (template mode only, comma-separated). |
-
----
-
-## Cookie spec format (`--set-cookie`)
-
-Comma-separated key=value pairs:
+## Cookie spec
 
 ```
-name=session,value={{ input.access_token }},http-only,max-age=86400,secure,same-site=Strict,path=/
+name=session,value={{ input.token }},http-only,max-age=86400,secure,same-site=Lax,path=/
 ```
 
-| Part | Meaning |
-|------|---------|
-| `name=NAME` | Cookie name (required). |
-| `value={{ input.path }}` | Cookie value — `{{ input.field }}` resolves from upstream payload, or use a literal. |
-| `http-only` | Sets HttpOnly flag (default: on). |
-| `secure` | Sets Secure flag. |
-| `max-age=SECS` | Max-Age directive (default: 900). |
-| `same-site=Lax` | SameSite (default: Lax). |
-| `path=/` | Cookie path (default: /). |
+| Part | Default |
+|---|---|
+| `name=` | required |
+| `value=` | literal or `{{ expr }}`; an empty value clears the cookie |
+| `http-only` / `no-http-only` | HttpOnly on |
+| `secure` | off — turn it on behind HTTPS |
+| `max-age=SECS` | 900 |
+| `same-site=Lax|Strict|None` | Lax |
+| `path=` | `/` |
 
----
+Logout is `--set-cookie "name=session,value=,max-age=0"`.
 
 ## Patterns
 
-### Serve JSON (no template)
+**JSON**
 
-```zf
+```
 | trigger.webhook --path /api/posts --method GET
-| pg.query --credential main-db -- "SELECT id, title FROM posts"
-| web.response
+| sekejap.query -- "SELECT id, title FROM posts ORDER BY created_at DESC"
+| web.response --body "{{ input.rows }}"
 ```
 
-### Render an HTML page
+**A page**
 
-```zf
+```
 | trigger.webhook --path /blog --method GET
-| pg.query --credential main-db -- "SELECT id, title, published_at FROM posts ORDER BY published_at DESC LIMIT 20"
+| sekejap.query -- "SELECT id, title, published_at FROM posts ORDER BY published_at DESC LIMIT 20"
 | web.response --template pages/blog-home.tsx
 ```
 
-### 404 error page
+**Found or 404** — branch, then answer on each pin
 
-```zf
-| trigger.webhook --path /blog/:id --method GET
-| pg.query --credential main-db -- "SELECT * FROM posts WHERE id = $1"
-| logic.if --expr "input.rows && input.rows.length > 0"
-(false pin → `web.response --status 404`)
-| script -- "return input.rows[0];"
-| web.response --template pages/not-found.tsx --status 404
+```
+[a] trigger.webhook --path /blog/:slug --method GET
+[b] sekejap.query --params "{{ [$trigger.params.slug] }}" -- "SELECT * FROM posts WHERE slug = $1"
+[c] logic.if --expr "input.rows.length > 0"
+[d] web.response --template pages/post.tsx
+[e] web.response --status 404 --template pages/not-found.tsx
+[a] -> [b]
+[b] -> [c]
+[c]:true -> [d]
+[c]:false -> [e]
 ```
 
-### Redirect — static URL
+**Redirect**
 
-```zf
+```
 | trigger.webhook --path /go/signup --method GET
-| web.response --location /auth/register
+| web.response --location "/auth/register?source=landing"
 ```
 
-### Redirect — dynamic URL from payload
+**Redirect to a computed URL**
 
-`{{ input.field }}` resolves the redirect target from the upstream payload at execution time.
-
-```zf
-| trigger.webhook --path /auth/login --method POST
-| pg.query --credential main-db -- "SELECT dashboard_url FROM users WHERE email = $1"
-| script -- "return { redirect_url: input.rows?.[0]?.dashboard_url ?? '/home' }"
-| web.response --location {{ input.redirect_url }}
+```
+| trigger.webhook --path /after-login --method GET --auth-type jwt --auth-credential jwt_main
+| sekejap.query --params "{{ [$trigger.auth.sub] }}" -- "SELECT home FROM users WHERE id = $1"
+| web.response --location "{{ input.rows[0]?.home || '/home' }}"
 ```
 
-### Login — set session cookie
+**Login — mint a token, set the cookie**
 
-```zf
-| trigger.webhook --path /auth/login --method POST
-| pg.query --credential main-db -- "SELECT id, role FROM users WHERE email = $1"
-| script -- "const u = input.rows[0]; return { ...u, roles: [u.role] }"
-| auth.token.create --credential my-jwt --claim sub={{ input.id }} --claim roles={{ input.roles }}:public
-| web.response --template pages/home.tsx --set-cookie name=session,value={{ input.access_token }},http-only,max-age=86400
+```
+[a] trigger.webhook --path /auth/login --method POST
+[b] sekejap.query --params "{{ [input.body.email] }}" -- "SELECT id, name, password_hash, roles FROM users WHERE email = $1"
+[c] logic.if --expr "input.rows.length === 1"
+[d] crypto --op argon2_verify --input "{{ $nodes.a.body.password }}" --hash "{{ input.rows[0].password_hash }}"
+[e] script -- "const u = input.rows[0]; return { id: u.id, name: u.name, roles: u.roles || ['member'] }"
+[f] auth.token.create --credential jwt_main --claim "sub={{ input.id }}" --claim "name={{ input.name }}:public" --claim "roles={{ input.roles }}:public"
+[g] web.response --location /home --set-cookie "name=zebflow_session,value={{ input.access_token }},http-only,max-age=86400,same-site=Lax"
+[h] web.response --status 401 --body "{{ { error: 'invalid credentials' } }}"
+[a] -> [b]
+[b] -> [c]
+[c]:true -> [d]
+[c]:false -> [h]
+[d]:true -> [e]
+[d]:false -> [h]
+[e] -> [f]
+[f] -> [g]
 ```
 
-> `roles` claim must be an array. Wrap a single DB `role` string with `[u.role]` in a script node before signing.
+`crypto --op argon2_verify` reads the candidate from `--input` and the stored
+hash from `--hash`, routes to `true`/`false`, and passes the payload through
+unchanged. The submitted password is no longer in `input` after the query, so
+it is read from the trigger's own output, `$nodes.a.body.password`. `roles`
+must be an array — a `:public` claim that produces one stays one. The full
+recipe with registration: `help("pipeline/examples/cookie-jwt-auth")`.
 
-### Custom headers
+**Headers**
 
-```zf
+```
 | trigger.webhook --path /api/data --method GET
-| pg.query --credential main-db -- "SELECT * FROM data"
-| web.response --header Content-Type=application/json --header X-Version=2
+| sekejap.query -- "SELECT * FROM data"
+| web.response --body "{{ input.rows }}" --header Cache-Control=max-age=60 --header X-Version=2
 ```
 
----
+## What a template receives
 
-## Accessing server data in TSX templates
-
-The upstream pipeline payload becomes **`input`** (the function parameter) inside the template. `ctx` is the same object available as a global (`globalThis.ctx`) in both SSR and browser.
+The payload becomes the page's `input`, and `web.response` merges the request
+context into it — `route`, `params`, `query`, `search`, `headers`, `auth` — so
+they are there even after `sekejap.query` replaced the payload. `input.auth`
+carries only the claims minted with `:public`; a token whose claims are all
+private gives `input.auth = null` in the browser, while the same claims stay
+complete in `$trigger.auth` and `ctx.trigger.auth` server-side.
 
 ```tsx
 import { useState } from "zeb/react";
 
-export default function Page(input) {
-  // input = full upstream payload (e.g. { rows: [...], total: 42 })
-  const posts = input?.rows ?? [];
-  const [selected, setSelected] = useState(null);
-
-  return (
-    <Page>
-      <main>
-        {posts.map(p => <div key={p.id}>{p.title}</div>)}
-      </main>
-    </Page>
-  );
-}
-```
-
-**Rules:**
-- Use `input` (function parameter) to access server data — works in both SSR and browser.
-- Use `useState`, `useEffect`, etc. for client interactivity — import them from `"zeb/react"` in every file that uses them.
-- `ctx` also works as a bare global if you prefer, but `input` as the function param is the convention.
-
----
-
-## Trigger context in templates — `ctx.auth`, `ctx.params`, `ctx.query`, `ctx.headers`
-
-`n.web.response` **always injects trigger fields into the template state**, regardless of what upstream nodes did to the payload. Even when `pg.query` replaces `input` with `{rows:[...]}`, the template still sees:
-
-| Template field | Source | Description |
-|---|---|---|
-| `ctx.auth` | `trigger.auth` (after public-claim filter) | Verified JWT claims. Only claims marked `:public` when issued. `null` if no public claims or no JWT. |
-| `ctx.params` | `trigger.params` | URL path params (`:id`, `:slug`, etc.) |
-| `ctx.query` | `trigger.query` | Query string params (`?page=2` etc.) |
-| `ctx.headers` | `trigger.headers` | Safe request headers (content-type, user-agent, etc.) |
-
-These fields are injected by `inject_trigger_fields()` just before the template renders, and they come from `metadata["trigger"]` — the immutable trigger snapshot that flows through every node unchanged.
-
-### The `_zf_public` mechanism — what `ctx.auth` contains
-
-When a JWT is issued via `auth.token.create`, only claims explicitly marked `:public` are visible in the browser. Claims without `:public` are signed into the JWT but stripped before reaching the DOM.
-
-```zf
-# Only name and role reach the browser as ctx.auth.name and ctx.auth.role
-| auth.token.create --credential my-jwt \
-    --claim sub={{ input.id }} \
-    --claim name={{ input.fullname }}:public \
-    --claim role={{ input.role }}:public \
-    --claim internal_id={{ input.db_id }}   ← never visible in browser
-```
-
-**Effect in templates:**
-```tsx
-export default function Page(input) {
-  // ctx is always available as a global
-  const userName = ctx.auth?.name ?? 'Guest';   // only if marked :public
-  const userRole = ctx.auth?.role ?? null;
-  const userId = ctx.auth?.sub;                 // NOT available — sub not marked :public
-  ...
-}
-```
-
-If **no claims are marked `:public`**, `ctx.auth` is `null` even for authenticated users. This is intentional — secure by default.
-
-### Why this survives payload replacement
-
-```
-trigger.webhook --auth-type jwt  →  auth verified; trigger.auth = decoded claims
-pg.query                         →  payload becomes { rows: [...] } — auth is gone from input
-script                           →  transforms rows — auth still gone from input
-web.response --template ...      →  inject_trigger_fields() restores auth/params/query/headers
-                                    into state before rendering
-```
-
-The template always has `ctx.auth`, `ctx.params`, `ctx.query`, `ctx.headers` — no matter how many nodes transformed the payload between the trigger and the response.
-
-### Example — auth-aware template
-
-```tsx
 export default function Dashboard(input) {
-  // input = whatever pg.query returned — { rows: [...] }
-  // ctx.auth comes from the original JWT, not from input
-  const user = ctx.auth;  // { name: "Alice", role: "admin" } — public claims only
-  const params = ctx.params;  // { id: "42" } — from /dashboard/:id
-  const query = ctx.query;    // { tab: "overview" } — from ?tab=overview
-
-  if (!user) return <div>Not authenticated</div>;
-
-  return (
-    <main>
-      <h1>Hello {user.name}</h1>
-      <p>Role: {user.role}</p>
-      {input.rows.map(r => <div key={r.id}>{r.title}</div>)}
-    </main>
-  );
+  const user = input.auth;            // { name, roles } — public claims only
+  const tab = input.query?.tab ?? "overview";
+  if (!user) return <main>Not signed in</main>;
+  return <main><h1>Hello {user.name}</h1>{input.rows.map((r) => <p key={r.id}>{r.title}</p>)}</main>;
 }
 ```
 
----
+`help("web")` for the page side.
 
-## Dynamic expressions in `n.web.response` flags
+## Expressions in flags
 
-`{{ expr }}` is supported in `--location`, `--set-cookie value=...`, and `--header` values, resolved from the pipeline payload just before the response is sent.
+`{{ }}` works in every flag value and is resolved just before the response:
 
-```zf
-# Redirect to a URL built from trigger params and upstream data
+```
 | web.response --location "/users/{{ $trigger.params.id }}/{{ $nodes.lookup.rows[0].slug }}"
-
-# Set a cookie whose value comes from auth.token.create output
-| web.response --set-cookie "name=session,value={{ input.access_token }},http-only,max-age=86400"
-
-# Inject a custom header with the authenticated user's ID
 | web.response --header "X-User-Id={{ $trigger.auth.sub }}"
 ```
 
-See `help(topic="pipeline/dsl")` for the full `{{ expr }}` scope reference.
-
----
-
-## Where templates live
-
-`repo/pipelines/` — e.g. `pages/...`, `components/...`, `shared/ui/...`. Imports use **`@/`** from that root.
-
-> A script cannot set the response. It returns a value; the graph decides what
-> happens next. Branch with `logic.if` and let `web.response` answer —
-> `--status`, `--location`, `--set-cookie`. See
-> `help("pipeline/examples/webhook-restapi-postgres")` § Answering with a status.
+Scope: `input`, `$trigger`, `$nodes` — `help("pipeline/dsl")`.

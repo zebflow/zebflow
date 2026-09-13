@@ -81,7 +81,7 @@ export default function HelpTooltip({ text }) {
           id={tooltipId}
           popover="manual"
           data-help-tooltip-portal="true"
-          className="pointer-events-none fixed z-[1000] min-w-40 max-w-60 rounded-md border border-ui-border bg-gray-800 px-2.5 py-1.5 text-left text-[11px] font-normal leading-[1.5] tracking-normal text-gray-100 shadow-lg"
+          className="pointer-events-none fixed z-[1000] min-w-40 max-w-60 rounded-md border border-border bg-foreground px-2.5 py-1.5 text-left text-[11px] font-normal leading-[1.5] tracking-normal text-background shadow-lg"
           style={{
             left: `${Math.min(Math.max(rect.left + rect.width / 2, 132), window.innerWidth - 132)}px`,
             top: `${rect.top - 8}px`,
@@ -91,7 +91,7 @@ export default function HelpTooltip({ text }) {
           role="tooltip"
         >
           {text}
-          <span className="absolute left-1/2 top-full h-0 w-0 -translate-x-1/2 border-x-[5px] border-t-[5px] border-x-transparent border-t-gray-800" />
+          <span className="absolute left-1/2 top-full h-0 w-0 -translate-x-1/2 border-x-[5px] border-t-[5px] border-x-transparent border-t-foreground" />
         </span>,
         document.body
       )
@@ -120,7 +120,7 @@ export default function HelpTooltip({ text }) {
         }}
       >
         <span
-          className="inline-flex text-ui-text-muted transition-colors duration-150 group-hover:text-ui-text group-focus-within:text-ui-text"
+          className="inline-flex text-muted-foreground transition-colors duration-150 group-hover:text-foreground group-focus-within:text-foreground"
           aria-hidden="true"
         >
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none">

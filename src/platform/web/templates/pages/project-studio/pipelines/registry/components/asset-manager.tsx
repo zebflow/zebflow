@@ -118,7 +118,7 @@ export default function AssetManager({ api, subfolder = "" }: { api: string; sub
       ) : null}
 
       {!loading && files.length === 0 ? (
-        <div className="flex flex-col items-center justify-center flex-1 gap-2 text-body-soft">
+        <div className="flex flex-col items-center justify-center flex-1 gap-2 text-muted-foreground">
           <p className="text-[0.82rem]">No assets yet.</p>
           <p className="text-[0.75rem]">Click <strong>Upload</strong> to add files.</p>
         </div>
@@ -126,7 +126,7 @@ export default function AssetManager({ api, subfolder = "" }: { api: string; sub
         <div className="px-3 py-3">
           <table className="w-full text-[0.78rem]">
             <thead>
-              <tr className="text-left text-body-soft text-[0.68rem] uppercase tracking-wide border-b border-border">
+              <tr className="text-left text-muted-foreground text-[0.68rem] uppercase tracking-wide border-b border-border">
                 <th className="pb-[0.4rem] font-medium">Name</th>
                 <th className="pb-[0.4rem] font-medium text-right">Size</th>
                 <th className="pb-[0.4rem] font-medium text-right">Actions</th>
@@ -136,9 +136,9 @@ export default function AssetManager({ api, subfolder = "" }: { api: string; sub
               {files.map((file) => {
                 const fileSizeStr = formatAssetBytes(file.size_bytes);
                 return (
-                <tr key={file.name} className="border-b border-border-soft hover:bg-surface-2 transition-colors">
-                  <td className="py-[0.45rem] font-mono text-[0.74rem] text-body truncate max-w-[22rem]">{file.name}</td>
-                  <td className="py-[0.45rem] text-right text-body-soft tabular-nums">{fileSizeStr}</td>
+                <tr key={file.name} className="border-b border-border hover:bg-muted transition-colors">
+                  <td className="py-[0.45rem] font-mono text-[0.74rem] text-foreground truncate max-w-[22rem]">{file.name}</td>
+                  <td className="py-[0.45rem] text-right text-muted-foreground tabular-nums">{fileSizeStr}</td>
                   <td className="py-[0.45rem] text-right">
                     <div className="flex items-center justify-end gap-1">
                       <Button variant="ghost" size="xs" onClick={() => handleCopyUrl(file.url)}>

@@ -12,25 +12,27 @@ A simple blog is a good baseline Zebflow app because it uses both pipelines and 
 
 ## Example structure
 
+A project's source root is the repository root (unless `zebflow.yaml` sets
+`spec.layout.source`) — there is no separate `repo/pipelines/` or
+`repo/templates/` tree. Pipelines, pages, and components all live at the root:
+
 ```text
-repo/
-├── pipelines/
-│   ├── pages/
-│   │   ├── home.zf.json
-│   │   ├── post-detail.zf.json
-│   │   └── admin.zf.json
-│   └── api/
-│       └── posts.zf.json
-├── templates/
-│   ├── pages/
-│   │   ├── blog/
-│   │   │   ├── home.tsx
-│   │   │   ├── post.tsx
-│   │   │   └── admin.tsx
-│   ├── components/
-│   └── styles/
-└── docs/
+api/
+└── posts.zf.json          register api/posts -- | trigger.webhook …
+pages/
+├── home.zf.json           register pages/home -- | trigger.webhook … | web.response --template pages/home.tsx
+├── post-detail.zf.json
+├── admin.zf.json
+├── home.tsx
+├── post-detail.tsx
+└── admin.tsx
+components/
+docs/
 ```
+
+A page is two things wired together: a pipeline (`pages/home.zf.json`) whose
+`web.response` node points `--template` at the matching `.tsx` file
+(`pages/home.tsx`). Data pipelines under `api/` answer JSON instead.
 
 ## Why this example matters
 

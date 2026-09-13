@@ -101,13 +101,13 @@ export default function NodeFieldSourceBindings({ field, value, onChange }) {
     <Field label={field.label} description={field.help}>
       <div className="flex flex-col gap-2">
         {rows.length > 0 ? (
-          <div className="rounded border border-dark-border overflow-hidden">
+          <div className="rounded border border-border overflow-hidden">
             <div
-              className="grid gap-1.5 px-2 py-1 bg-dark-accent3/40 border-b border-dark-border"
+              className="grid gap-1.5 px-2 py-1 bg-success/40 border-b border-border"
               style={{ gridTemplateColumns: "minmax(0, 1.7fr) minmax(8rem, 0.8fr) 4.75rem" }}
             >
-              <span className="text-[0.65rem] font-semibold uppercase tracking-wide text-body-muted">Source</span>
-              <span className="text-[0.65rem] font-semibold uppercase tracking-wide text-body-muted">Alias</span>
+              <span className="text-[0.65rem] font-semibold uppercase tracking-wide text-muted-foreground">Source</span>
+              <span className="text-[0.65rem] font-semibold uppercase tracking-wide text-muted-foreground">Alias</span>
               <span />
             </div>
             {rows.map((row, index) => {
@@ -115,7 +115,7 @@ export default function NodeFieldSourceBindings({ field, value, onChange }) {
               return (
                 <div
                   key={index}
-                  className="grid items-center gap-1.5 px-2 py-1.5 border-b border-dark-border last:border-0"
+                  className="grid items-center gap-1.5 px-2 py-1.5 border-b border-border last:border-0"
                   style={{ gridTemplateColumns: "minmax(0, 1.7fr) minmax(8rem, 0.8fr) 4.75rem" }}
                 >
                   <Input
@@ -130,9 +130,9 @@ export default function NodeFieldSourceBindings({ field, value, onChange }) {
                     onInput={(e) => updateRow(index, { alias: e.currentTarget.value })}
                   />
                   <div className="flex items-center justify-end gap-1">
-                    <button type="button" title="Move up" onClick={() => moveRow(index, -1)} disabled={index === 0} className="w-6 h-6 rounded text-body-soft hover:text-body hover:bg-dark-accent3 disabled:opacity-30">↑</button>
-                    <button type="button" title="Move down" onClick={() => moveRow(index, 1)} disabled={index === rows.length - 1} className="w-6 h-6 rounded text-body-soft hover:text-body hover:bg-dark-accent3 disabled:opacity-30">↓</button>
-                    <button type="button" title="Remove" onClick={() => removeRow(index)} className="w-6 h-6 rounded text-body-soft hover:text-red-400 hover:bg-dark-accent3">×</button>
+                    <button type="button" title="Move up" onClick={() => moveRow(index, -1)} disabled={index === 0} className="w-6 h-6 rounded text-muted-foreground hover:text-foreground hover:bg-success disabled:opacity-30">↑</button>
+                    <button type="button" title="Move down" onClick={() => moveRow(index, 1)} disabled={index === rows.length - 1} className="w-6 h-6 rounded text-muted-foreground hover:text-foreground hover:bg-success disabled:opacity-30">↓</button>
+                    <button type="button" title="Remove" onClick={() => removeRow(index)} className="w-6 h-6 rounded text-muted-foreground hover:text-red-400 hover:bg-success">×</button>
                   </div>
                 </div>
               );
@@ -144,7 +144,7 @@ export default function NodeFieldSourceBindings({ field, value, onChange }) {
           <button
             type="button"
             onClick={addRow}
-            className="rounded border border-dark-border bg-dark-accent3 px-2.5 py-1.5 text-xs text-body hover:bg-dark-accent2 transition-colors"
+            className="rounded border border-border bg-success px-2.5 py-1.5 text-xs text-foreground hover:bg-info transition-colors"
           >
             + Add source
           </button>

@@ -133,14 +133,14 @@ export default function ConnectionTablesView({ workspace, schemaExportFilename }
             </div>
 
             {workspace.contentTab === "data" && activeTable && grid.mergedRows.length ? (
-              <div className="border-t border-ui-border/70 bg-ui-bg-muted/15 px-3 py-3">
+              <div className="border-t border-border/70 bg-accent/15 px-3 py-3">
                 <div className="mb-3 flex items-center justify-between gap-3">
-                  <p className="text-xs font-medium uppercase tracking-[0.14em] text-ui-text-soft">
+                  <p className="text-xs font-medium uppercase tracking-[0.14em] text-muted-foreground">
                     Structure
                   </p>
                   <a
                     href={suiteTabs.find((item) => item?.label === "Schema")?.href ?? "#"}
-                    className="text-xs text-ui-text-soft underline-offset-4 hover:text-ui-text hover:underline"
+                    className="text-xs text-muted-foreground underline-offset-4 hover:text-foreground hover:underline"
                   >
                     Open full schema
                   </a>

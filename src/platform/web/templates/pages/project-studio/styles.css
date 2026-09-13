@@ -1,57 +1,12 @@
 /*
  * Project studio — pipeline/registry/editor/git/MCP and related UI.
  * Shell + sidebar + workspace chrome: Tailwind utilities in TSX (RWE extracts `class="..."` → data-rwe-tw).
- * Theme tokens: `[data-studio-theme]` on `ProjectStudioShell` root (SSR-safe; :root defaults stay light).
+ * Theme tokens live in styles/main.css (`:root` light, `.dark` dark) — docs/contracts/kinds/ui-theme.
  */
 
-[data-studio-theme="dark"] {
-  --color-bg: var(--color-dark-background);
-  --color-surface: var(--color-zeb-dark-2);
-  --color-surface-2: var(--color-zeb-dark-3);
-  --color-surface-3: #222831;
-  --color-border: var(--color-dark-border);
-  --color-border-soft: var(--color-zeb-dark-border-2);
-  --color-body: #e9edf3;
-  --color-body-soft: #8e9cad;
-  --color-body-muted: #6b7785;
-  --color-accent: var(--color-brand-orange);
-  --color-accent-strong: var(--color-brand-orange-ink);
-  --color-accent-alt: var(--color-brand-blue);
-  --color-accent-alt-strong: var(--color-brand-blue-ink);
-  --color-ui-bg: var(--color-dark-menus);
-  --color-ui-bg-subtle: var(--color-zeb-dark);
-  --color-ui-bg-muted: var(--color-zeb-dark-3);
-  --color-ui-border: var(--color-dark-border);
-  --color-ui-border-subtle: var(--color-zeb-dark-border-2);
-  --color-ui-text: #e9edf3;
-  --color-ui-text-soft: #8e9cad;
-  --color-ui-text-muted: #6b7785;
-  color: var(--color-ui-text);
-}
-
-[data-studio-theme="light"] {
-  --color-bg: var(--color-zeb-bg);
-  --color-surface: rgb(255 255 255);
-  --color-surface-2: var(--color-zeb-bg-soft);
-  --color-surface-3: var(--color-zeb-bg);
-  --color-border: var(--color-zeb-border);
-  --color-border-soft: var(--color-zeb-border);
-  --color-body: var(--color-zeb-ink);
-  --color-body-soft: var(--color-zeb-ink-soft);
-  --color-body-muted: var(--color-zeb-ink-muted);
-  --color-accent: var(--color-brand-orange);
-  --color-accent-strong: var(--color-brand-orange-ink);
-  --color-accent-alt: var(--color-brand-blue);
-  --color-accent-alt-strong: var(--color-brand-blue-ink);
-  --color-ui-bg: #ffffff;
-  --color-ui-bg-subtle: var(--color-zeb-bg-soft);
-  --color-ui-bg-muted: var(--color-zeb-bg);
-  --color-ui-border: var(--color-zeb-border);
-  --color-ui-border-subtle: var(--color-zeb-border);
-  --color-ui-text: var(--color-zeb-ink);
-  --color-ui-text-soft: var(--color-zeb-ink-soft);
-  --color-ui-text-muted: var(--color-zeb-ink-muted);
-  color: var(--color-ui-text);
+.dark,
+[data-studio-theme] {
+  color: var(--foreground);
 }
 
 /* Prevent UA stylesheet from overriding inherited color on button elements */
@@ -61,7 +16,7 @@
 
 /* General prose for Zeb Markdown component in Studio surfaces */
 .prose {
-  color: var(--color-body);
+  color: var(--foreground);
   line-height: 1.7;
 }
 
@@ -92,7 +47,7 @@
 .prose h5,
 .prose h6 {
   margin: 1.5rem 0 0.7rem;
-  color: var(--color-body);
+  color: var(--foreground);
   font-family: var(--font-display);
   line-height: 1.2;
   letter-spacing: -0.01em;
@@ -133,41 +88,41 @@
 }
 
 .prose a {
-  color: var(--color-accent);
+  color: var(--primary);
   text-decoration: underline;
   text-decoration-thickness: 1px;
   text-underline-offset: 0.16em;
 }
 
 .prose strong {
-  color: var(--color-body);
+  color: var(--foreground);
   font-weight: 650;
 }
 
 .prose em {
-  color: var(--color-body-soft);
+  color: var(--muted-foreground);
 }
 
 .prose hr {
   border: 0;
-  border-top: 1px solid var(--color-border);
+  border-top: 1px solid var(--border);
   margin: 1.25rem 0;
 }
 
 .prose code {
   font-family: var(--font-mono);
   font-size: 0.88em;
-  background: color-mix(in srgb, var(--color-surface-3) 88%, transparent);
-  border: 1px solid var(--color-border);
+  background: color-mix(in srgb, var(--accent) 88%, transparent);
+  border: 1px solid var(--border);
   border-radius: 0.35rem;
   padding: 0.12rem 0.34rem;
 }
 
 .prose pre {
   overflow-x: auto;
-  border: 1px solid var(--color-border);
+  border: 1px solid var(--border);
   border-radius: 0.85rem;
-  background: color-mix(in srgb, var(--color-surface) 72%, var(--color-ui-bg-subtle));
+  background: color-mix(in srgb, var(--card) 72%, var(--muted));
   padding: 0.95rem 1rem;
 }
 
@@ -182,9 +137,9 @@
 }
 
 .prose blockquote {
-  border-left: 3px solid var(--color-accent);
+  border-left: 3px solid var(--primary);
   padding: 0.15rem 0 0.15rem 0.9rem;
-  color: var(--color-body-soft);
+  color: var(--muted-foreground);
 }
 
 .prose table {
@@ -195,20 +150,20 @@
 
 .prose th,
 .prose td {
-  border: 1px solid var(--color-border);
+  border: 1px solid var(--border);
   padding: 0.55rem 0.7rem;
   text-align: left;
   vertical-align: top;
 }
 
 .prose th {
-  background: color-mix(in srgb, var(--color-surface-3) 86%, transparent);
-  color: var(--color-body);
+  background: color-mix(in srgb, var(--accent) 86%, transparent);
+  color: var(--foreground);
   font-weight: 650;
 }
 
 .prose.prose-invert {
-  color: var(--color-ui-text);
+  color: var(--foreground);
 }
 
 .prose.prose-invert h1,
@@ -218,12 +173,12 @@
 .prose.prose-invert h5,
 .prose.prose-invert h6,
 .prose.prose-invert strong {
-  color: var(--color-ui-text);
+  color: var(--foreground);
 }
 
 .prose.prose-invert em,
 .prose.prose-invert blockquote {
-  color: var(--color-ui-text-soft);
+  color: var(--muted-foreground);
 }
 
 .prose.prose-invert hr,
@@ -231,15 +186,15 @@
 .prose.prose-invert td,
 .prose.prose-invert code,
 .prose.prose-invert pre {
-  border-color: var(--color-ui-border);
+  border-color: var(--border);
 }
 
 .prose.prose-invert code {
-  background: color-mix(in srgb, var(--color-ui-bg-muted) 86%, transparent);
+  background: color-mix(in srgb, var(--accent) 86%, transparent);
 }
 
 .prose.prose-invert pre {
-  background: color-mix(in srgb, var(--color-ui-bg) 76%, transparent);
+  background: color-mix(in srgb, var(--popover) 76%, transparent);
 }
 
 /* In-app automation overlay: Tailwind in `auto-overlay.tsx`; @keyframes zf-spin in main.css */
@@ -253,8 +208,8 @@
 /* Optional styling for inline <code> in console HTML (no current emitter) */
 
 /* .project-workspace → Tailwind: flex-1 min-h-0 flex flex-col overflow-hidden */
-/* .project-tab-strip → Tailwind: shrink-0 flex items-stretch border-b border-[var(--color-border)] bg-[var(--color-surface)] px-[0.625rem] */
-/* .project-workspace-body → Tailwind: flex-1 min-h-0 overflow-auto flex flex-col bg-[var(--color-bg)] */
+/* .project-tab-strip → Tailwind: shrink-0 flex items-stretch border-b border-[var(--border)] bg-[var(--card)] px-[0.625rem] */
+/* .project-workspace-body → Tailwind: flex-1 min-h-0 overflow-auto flex flex-col bg-[var(--background)] */
 
 
 .project-content-wrap {
@@ -266,7 +221,7 @@
 .project-content-section {
   display: flex;
   flex-direction: column;
-  border-bottom: 1px solid var(--color-border);
+  border-bottom: 1px solid var(--border);
 }
 
 .project-content-section:last-child {
@@ -279,7 +234,7 @@
   justify-content: space-between;
   gap: 0.75rem;
   padding: 0.625rem 0.875rem;
-  background: color-mix(in srgb, var(--color-surface) 76%, transparent);
+  background: color-mix(in srgb, var(--card) 76%, transparent);
 }
 
 .project-content-title {
@@ -287,13 +242,13 @@
   font-family: var(--font-display);
   text-transform: uppercase;
   letter-spacing: 0.08em;
-  color: var(--color-body-soft);
+  color: var(--muted-foreground);
 }
 
 .project-content-copy {
   margin-top: 0.25rem;
   font-size: 0.78rem;
-  color: var(--color-body-soft);
+  color: var(--muted-foreground);
 }
 
 .project-content-body {
@@ -305,12 +260,12 @@
 /* node-registry-* → Tailwind in settings/page.tsx NodeRegistryPanel */
 
 .project-inline-chip[data-active="true"] {
-  border-color: color-mix(in srgb, var(--color-accent) 60%, var(--color-border));
-  background: color-mix(in srgb, var(--color-accent) 14%, transparent);
-  color: var(--color-accent);
+  border-color: color-mix(in srgb, var(--primary) 60%, var(--border));
+  background: color-mix(in srgb, var(--primary) 14%, transparent);
+  color: var(--primary);
 }
 
-/* .project-surface-toolbar → Tailwind: flex items-center gap-3 px-[0.875rem] py-[0.625rem] border-b border-[var(--color-border)] bg-[var(--color-surface)] */
+/* .project-surface-toolbar → Tailwind: flex items-center gap-3 px-[0.875rem] py-[0.625rem] border-b border-[var(--border)] bg-[var(--card)] */
 
 .project-tree-list {
   margin-left: 1.05rem;
@@ -323,7 +278,7 @@
 }
 
 .project-tree-details {
-  border-left: 1px solid var(--color-border-soft);
+  border-left: 1px solid var(--border);
   padding-left: 0.35rem;
 }
 
@@ -332,7 +287,7 @@
   align-items: center;
   gap: 0.45rem;
   cursor: pointer;
-  color: var(--color-body-soft);
+  color: var(--muted-foreground);
   font-size: 0.82rem;
   user-select: none;
   list-style: none;
@@ -359,7 +314,7 @@
 
 .project-tree-segment {
   font-family: var(--font-display);
-  color: var(--color-body);
+  color: var(--foreground);
 }
 
 .project-tree-body {
@@ -373,14 +328,14 @@
   width: fit-content;
   max-width: 100%;
   text-decoration: none;
-  color: var(--color-body-soft);
+  color: var(--muted-foreground);
   border-radius: 0;
   padding: 0.18rem 0.4rem;
 }
 
 .project-tree-leaf-link:hover {
-  background: color-mix(in srgb, var(--color-surface-3) 68%, transparent);
-  color: var(--color-body);
+  background: color-mix(in srgb, var(--accent) 68%, transparent);
+  color: var(--foreground);
 }
 
 .project-card-grid {
@@ -397,15 +352,15 @@
 }
 
 .project-card {
-  border: 1px solid var(--color-border-soft);
+  border: 1px solid var(--border);
   border-radius: 0.5rem;
-  background: var(--color-surface-2);
+  background: var(--muted);
   padding: 0.75rem;
 }
 
 .project-card:hover {
-  border-color: var(--color-border);
-  background: color-mix(in srgb, var(--color-surface-3) 72%, transparent);
+  border-color: var(--border);
+  background: color-mix(in srgb, var(--accent) 72%, transparent);
 }
 
 .project-card-title {
@@ -413,30 +368,30 @@
   font-family: var(--font-display);
   font-weight: 700;
   letter-spacing: 0.01em;
-  color: var(--color-body);
+  color: var(--foreground);
 }
 
 .project-card-copy {
   margin-top: 0.45rem;
   font-size: 0.78rem;
   line-height: 1.45;
-  color: var(--color-body-soft);
+  color: var(--muted-foreground);
 }
 
-/* .project-inline-path → Tailwind: flex flex-wrap items-center gap-[0.35rem] text-[0.72rem] text-[var(--color-body-soft)] */
+/* .project-inline-path → Tailwind: flex flex-wrap items-center gap-[0.35rem] text-[0.72rem] text-[var(--muted-foreground)] */
 /* .project-inline-path-label → Tailwind: font-mono uppercase tracking-[0.12em] */
 /* .project-inline-path-item → Tailwind: inline-flex items-center gap-[0.35rem] */
-/* .project-inline-path-divider → Tailwind: text-[var(--color-border)] */
-/* .project-inline-path-link → Tailwind: text-[var(--color-body)] hover:text-[var(--color-accent)] */
+/* .project-inline-path-divider → Tailwind: text-[var(--border)] */
+/* .project-inline-path-link → Tailwind: text-[var(--foreground)] hover:text-[var(--primary)] */
 
 .project-inline-chip {
   display: inline-flex;
   align-items: center;
   padding: 0.25rem 0.5rem;
   border-radius: 999px;
-  border: 1px solid var(--color-border);
-  background: var(--color-surface-2);
-  color: var(--color-body-soft);
+  border: 1px solid var(--border);
+  background: var(--muted);
+  color: var(--muted-foreground);
   font-size: 0.66rem;
   font-family: var(--font-mono, monospace);
   text-transform: uppercase;
@@ -444,19 +399,19 @@
 }
 
 .project-inline-chip:hover {
-  color: var(--color-body);
-  background: var(--color-surface-3);
+  color: var(--foreground);
+  background: var(--accent);
 }
 
 .project-inline-chip-accent {
-  border-color: color-mix(in srgb, var(--color-accent) 60%, var(--color-border));
-  background: color-mix(in srgb, var(--color-accent) 14%, transparent);
-  color: var(--color-accent);
+  border-color: color-mix(in srgb, var(--primary) 60%, var(--border));
+  background: color-mix(in srgb, var(--primary) 14%, transparent);
+  color: var(--primary);
 }
 
 .project-inline-chip-accent:hover {
   color: white;
-  background: var(--color-accent);
+  background: var(--primary);
 }
 
 .pipeline-editor-shell {
@@ -470,8 +425,8 @@
 }
 
 .pipeline-editor-sidebar {
-  border-right: 1px solid var(--color-border);
-  background: var(--color-surface);
+  border-right: 1px solid var(--border);
+  background: var(--card);
   min-width: 0;
   display: flex;
   flex-direction: column;
@@ -485,7 +440,7 @@
 
 .pipeline-editor-sidebar-head {
   padding: 0.75rem 0.875rem;
-  border-bottom: 1px solid var(--color-border-soft);
+  border-bottom: 1px solid var(--border);
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -497,19 +452,19 @@
   font-family: var(--font-display);
   letter-spacing: 0.01em;
   font-weight: 700;
-  color: var(--color-body);
+  color: var(--foreground);
 }
 
 .pipeline-editor-subtitle {
   margin-top: 0.2rem;
   font-size: 0.72rem;
-  color: var(--color-body-soft);
+  color: var(--muted-foreground);
 }
 
 /* ── Pipeline editor 1-column folder navigator ──────────────────────────── */
 
 .pipeline-editor-folder-nav {
-  border-bottom: 1px solid var(--color-border-soft);
+  border-bottom: 1px solid var(--border);
 }
 
 .pipeline-editor-folder-crumbs {
@@ -518,7 +473,7 @@
   flex-wrap: wrap;
   gap: 0.1rem;
   padding: 0.38rem 0.75rem;
-  border-bottom: 1px solid var(--color-border-soft);
+  border-bottom: 1px solid var(--border);
 }
 
 .pipeline-editor-folder-crumb {
@@ -528,17 +483,17 @@
 
 .pipeline-editor-crumb-link {
   font-size: 0.68rem;
-  color: var(--color-body-soft);
+  color: var(--muted-foreground);
   text-decoration: none;
 }
 
 .pipeline-editor-crumb-link:hover {
-  color: var(--color-accent);
+  color: var(--primary);
 }
 
 .pipeline-editor-crumb-sep {
   font-size: 0.68rem;
-  color: var(--color-border);
+  color: var(--border);
   padding: 0 0.1rem;
   user-select: none;
 }
@@ -549,12 +504,12 @@
   gap: 0.45rem;
   padding: 0.32rem 0.65rem;
   font-size: 0.72rem;
-  color: var(--color-body);
+  color: var(--foreground);
   text-decoration: none;
 }
 
 .pipeline-editor-nav-row:hover {
-  background: color-mix(in srgb, var(--color-accent) 6%, transparent);
+  background: color-mix(in srgb, var(--primary) 6%, transparent);
 }
 
 .pipeline-editor-nav-icon {
@@ -574,10 +529,10 @@
 
 .pipeline-editor-nav-count {
   font-size: 0.62rem;
-  color: var(--color-body-soft);
+  color: var(--muted-foreground);
   padding: 0.06rem 0.3rem;
-  background: var(--color-surface-2);
-  border: 1px solid var(--color-border-soft);
+  background: var(--muted);
+  border: 1px solid var(--border);
   border-radius: 9999px;
   flex-shrink: 0;
 }
@@ -586,7 +541,7 @@
 .pipeline-editor-item-wrap {
   display: flex;
   align-items: stretch;
-  border-bottom: 1px solid var(--color-border-soft);
+  border-bottom: 1px solid var(--border);
   position: relative;
 }
 
@@ -605,7 +560,7 @@
   border: none;
   background: transparent;
   cursor: pointer;
-  color: var(--color-body-soft);
+  color: var(--muted-foreground);
   transition: color 0.12s, background 0.12s;
 }
 
@@ -616,16 +571,16 @@
 
 .pipeline-editor-item {
   display: block;
-  border-bottom: 1px solid var(--color-border-soft);
+  border-bottom: 1px solid var(--border);
   padding: 0.65rem 0.75rem;
 }
 
 .pipeline-editor-item:hover {
-  background: color-mix(in srgb, var(--color-surface-3) 74%, transparent);
+  background: color-mix(in srgb, var(--accent) 74%, transparent);
 }
 
 .pipeline-editor-item.is-selected {
-  background: color-mix(in srgb, var(--color-accent-alt) 16%, transparent);
+  background: color-mix(in srgb, var(--info) 16%, transparent);
 }
 
 .pipeline-editor-item-head {
@@ -636,7 +591,7 @@
 }
 
 .pipeline-editor-item-name {
-  color: var(--color-body);
+  color: var(--foreground);
   font-size: 0.78rem;
   font-family: var(--font-display);
   font-weight: 700;
@@ -646,13 +601,13 @@
   font-size: 0.65rem;
   text-transform: uppercase;
   letter-spacing: 0.08em;
-  color: var(--color-body-soft);
+  color: var(--muted-foreground);
 }
 
 .pipeline-editor-item-meta {
   margin-top: 0.24rem;
   font-size: 0.7rem;
-  color: var(--color-body-soft);
+  color: var(--muted-foreground);
 }
 
 .pipeline-editor-section-head {
@@ -661,14 +616,14 @@
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.1em;
-  color: var(--color-body-soft);
-  background: var(--color-surface-2);
-  border-bottom: 1px solid var(--color-border-soft);
+  color: var(--muted-foreground);
+  background: var(--muted);
+  border-bottom: 1px solid var(--border);
   user-select: none;
 }
 
 .pipeline-editor-item-git {
-  color: var(--color-warning, #f59e0b);
+  color: var(--warning);
 }
 
 /* Template editor items are buttons — reset browser defaults */
@@ -678,27 +633,27 @@ button.pipeline-editor-item {
   cursor: pointer;
   background: none;
   border: none;
-  border-bottom: 1px solid var(--color-border-soft);
+  border-bottom: 1px solid var(--border);
   padding: 0.65rem 0.75rem;
   font: inherit;
   color: inherit;
 }
 
 button.pipeline-editor-item:hover {
-  background: color-mix(in srgb, var(--color-surface-3) 74%, transparent);
+  background: color-mix(in srgb, var(--accent) 74%, transparent);
 }
 
 .pipeline-editor-main {
   min-width: 0;
   display: flex;
   flex-direction: column;
-  background: var(--color-bg);
+  background: var(--background);
 }
 
 .pipeline-editor-toolbar {
   padding: 0.625rem 0.75rem;
-  border-bottom: 1px solid var(--color-border-soft);
-  background: color-mix(in srgb, var(--color-surface) 82%, transparent);
+  border-bottom: 1px solid var(--border);
+  background: color-mix(in srgb, var(--card) 82%, transparent);
   display: flex;
   flex-direction: column;
   align-items: stretch;
@@ -725,7 +680,7 @@ button.pipeline-editor-item:hover {
   font-size: 0.66rem;
   letter-spacing: 0.08em;
   text-transform: uppercase;
-  color: var(--color-body-soft);
+  color: var(--muted-foreground);
   font-family: var(--font-mono, monospace);
 }
 
@@ -807,10 +762,10 @@ button.pipeline-editor-item:hover {
   height: 1.5rem;
   padding: 0;
   margin: 0;
-  border: 1px solid color-mix(in srgb, var(--color-border, #2a2a2a) 90%, transparent);
+  border: 1px solid color-mix(in srgb, var(--border, #2a2a2a) 90%, transparent);
   border-radius: 0.25rem;
-  background: color-mix(in srgb, var(--color-surface-2, #1b1b1b) 88%, #000);
-  color: var(--color-body, #f3f4f6);
+  background: color-mix(in srgb, var(--muted, #1b1b1b) 88%, #000);
+  color: var(--foreground, #f3f4f6);
   font-size: 0.65rem;
   font-weight: 700;
   line-height: 1;
@@ -832,9 +787,9 @@ button.pipeline-editor-item:hover {
 }
 
 .pipeline-editor-main .zf-node-edit:hover {
-  background: var(--color-accent, #22c55e);
+  background: var(--primary, #22c55e);
   color: #fff;
-  border-color: var(--color-accent, #22c55e);
+  border-color: var(--primary, #22c55e);
 }
 
 .pipeline-editor-main .zf-node-slug {
@@ -847,7 +802,7 @@ button.pipeline-editor-item:hover {
   font-size: 1rem;
   font-weight: 500;
   font-family: var(--font-sans, system-ui, sans-serif);
-  color: var(--color-body-muted, #9ca3af);
+  color: var(--muted-foreground, #9ca3af);
   white-space: nowrap;
   pointer-events: none;
   line-height: 1;
@@ -879,24 +834,24 @@ button.pipeline-editor-item:hover {
   display: grid;
   gap: 0.25rem;
   align-content: start;
-  border: 1px solid var(--color-border);
+  border: 1px solid var(--border);
   border-radius: 0.5rem;
-  background: var(--color-surface-2);
-  color: var(--color-body);
+  background: var(--muted);
+  color: var(--foreground);
   padding: 0.65rem 0.75rem;
   text-align: left;
   cursor: pointer;
 }
 
 .pipeline-editor-continuation-item:hover {
-  border-color: var(--color-accent);
-  background: var(--color-surface-3);
+  border-color: var(--primary);
+  background: var(--accent);
 }
 
 .pipeline-editor-continuation-kind {
   font-family: var(--font-mono, ui-monospace, monospace);
   font-size: 0.63rem;
-  color: var(--color-body-soft);
+  color: var(--muted-foreground);
 }
 
 /* ── Pipeline log panel — structural heights only ─── */
@@ -909,8 +864,8 @@ button.pipeline-editor-item:hover {
   word-break: break-all;
   font-family: monospace;
   font-size: 0.65rem;
-  background: var(--color-bg);
-  border: 1px solid var(--color-border);
+  background: var(--background);
+  border: 1px solid var(--border);
   border-radius: 0.25rem;
   padding: 0.375rem;
   margin: 0;
@@ -920,7 +875,7 @@ button.pipeline-editor-item:hover {
   flex-direction: column;
   gap: 0.5rem;
   padding: 0.5rem 1.25rem;
-  border-top: 1px solid var(--color-border);
+  border-top: 1px solid var(--border);
 }
 
 .pipeline-editor-foot {
@@ -930,8 +885,8 @@ button.pipeline-editor-item:hover {
   gap: 0.8rem;
   padding: 0 0.75rem;
   font-size: 0.7rem;
-  color: var(--color-body-soft);
-  background: var(--color-surface);
+  color: var(--muted-foreground);
+  background: var(--card);
 }
 
 .pipeline-editor-foot-item {
@@ -948,11 +903,11 @@ button.pipeline-editor-item:hover {
   margin: 0;
   padding: 0;
   transform: translate(-50%, -50%);
-  border: 1px solid var(--color-border);
+  border: 1px solid var(--border);
   border-radius: 0.65rem;
-  background: var(--color-surface, #161616);
-  background-color: var(--color-surface, #161616);
-  color: var(--color-body);
+  background: var(--card, #161616);
+  background-color: var(--card, #161616);
+  color: var(--foreground);
   opacity: 1;
   width: min(680px, calc(100vw - 2rem));
   max-height: calc(100dvh - 3rem);
@@ -980,7 +935,7 @@ button.pipeline-editor-item:hover {
   justify-content: space-between;
   gap: 1rem;
   padding: 0.85rem 1rem 0.7rem;
-  border-bottom: 1px solid var(--color-border);
+  border-bottom: 1px solid var(--border);
   flex-shrink: 0;
 }
 .credential-dialog-header-meta { min-width: 0; }
@@ -993,24 +948,24 @@ button.pipeline-editor-item:hover {
 .credential-dialog-header-actions button {
   min-height: 1.9rem;
   border-radius: 0.4rem;
-  border: 1px solid var(--color-border);
-  background: var(--color-surface-2);
-  color: var(--color-body);
+  border: 1px solid var(--border);
+  background: var(--muted);
+  color: var(--foreground);
   padding: 0 0.7rem;
   font-size: 0.72rem;
   cursor: pointer;
   transition: background 0.15s, border-color 0.15s;
 }
 .credential-dialog-header-actions button:hover {
-  background: var(--color-surface-3);
+  background: var(--accent);
 }
 .credential-dialog-header-actions button[type="submit"] {
-  border-color: color-mix(in srgb, var(--color-accent) 60%, var(--color-border));
-  background: color-mix(in srgb, var(--color-accent) 15%, transparent);
-  color: var(--color-accent);
+  border-color: color-mix(in srgb, var(--primary) 60%, var(--border));
+  background: color-mix(in srgb, var(--primary) 15%, transparent);
+  color: var(--primary);
 }
 .credential-dialog-header-actions button[type="submit"]:hover {
-  background: color-mix(in srgb, var(--color-accent) 25%, transparent);
+  background: color-mix(in srgb, var(--primary) 25%, transparent);
 }
 .credential-dialog-body {
   flex: 1;
@@ -1054,16 +1009,16 @@ button.pipeline-editor-item:hover {
   text-transform: uppercase;
   padding: 0 0.6rem;
   border-radius: 0.3rem;
-  border: 1px solid var(--color-border, #2b3648);
-  background: var(--color-surface-2, #1a2232);
-  color: var(--color-body-muted, #8fa3c0);
+  border: 1px solid var(--border, #2b3648);
+  background: var(--muted, #1a2232);
+  color: var(--muted-foreground, #8fa3c0);
   cursor: pointer;
   transition: background 0.15s, color 0.15s, border-color 0.15s;
   white-space: nowrap;
 }
 .credential-gen-btn:hover {
-  background: var(--color-accent, #3b82f6);
-  border-color: var(--color-accent, #3b82f6);
+  background: var(--primary, #3b82f6);
+  border-color: var(--primary, #3b82f6);
   color: #fff;
 }
 
@@ -1075,8 +1030,8 @@ button.pipeline-editor-item:hover {
   display: grid;
   gap: 0.55rem;
   padding: 0.9rem;
-  background: var(--color-surface, #161616);
-  color: var(--color-body);
+  background: var(--card, #161616);
+  color: var(--foreground);
 }
 
 .pipeline-editor-dialog-title {
@@ -1099,7 +1054,7 @@ button.pipeline-editor-item:hover {
 
 .pipeline-editor-field-help {
   font-size: 0.64rem;
-  color: var(--color-body-soft);
+  color: var(--muted-foreground);
 }
 
 .pipeline-editor-subtitle[data-tone="ok"] {
@@ -1115,9 +1070,9 @@ button.pipeline-editor-item:hover {
 .pipeline-editor-field textarea {
   width: 100%;
   border-radius: 0.45rem;
-  border: 1px solid var(--color-border);
-  background: var(--color-surface-2);
-  color: var(--color-body);
+  border: 1px solid var(--border);
+  background: var(--muted);
+  color: var(--foreground);
   min-height: 2rem;
   padding: 0 0.55rem;
 }
@@ -1148,16 +1103,16 @@ button.pipeline-editor-item:hover {
 .pipeline-editor-dialog-actions button {
   min-height: 2rem;
   border-radius: 0.45rem;
-  border: 1px solid var(--color-border);
-  background: var(--color-surface-2);
-  color: var(--color-body);
+  border: 1px solid var(--border);
+  background: var(--muted);
+  color: var(--foreground);
   padding: 0 0.75rem;
 }
 
 .pipeline-editor-dialog-actions button[type=\"submit\"] {
-  border-color: color-mix(in srgb, var(--color-accent) 60%, var(--color-border));
-  background: color-mix(in srgb, var(--color-accent) 15%, transparent);
-  color: var(--color-accent);
+  border-color: color-mix(in srgb, var(--primary) 60%, var(--border));
+  background: color-mix(in srgb, var(--primary) 15%, transparent);
+  color: var(--primary);
 }
 
 .pipeline-editor-node-fields {
@@ -1198,9 +1153,9 @@ button.pipeline-editor-item:hover {
 }
 
 .pipeline-render-sidebar {
-  border: 1px solid var(--color-border);
+  border: 1px solid var(--border);
   border-radius: 0.5rem;
-  background: var(--color-surface-2);
+  background: var(--muted);
   padding: 0.35rem;
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
@@ -1212,9 +1167,9 @@ button.pipeline-editor-item:hover {
 .pipeline-render-sidebar-head input {
   width: 100%;
   border-radius: 0.4rem;
-  border: 1px solid var(--color-border);
-  background: var(--color-surface);
-  color: var(--color-body);
+  border: 1px solid var(--border);
+  background: var(--card);
+  color: var(--foreground);
   min-height: 1.85rem;
   padding: 0 0.45rem;
   font-size: 0.7rem;
@@ -1225,7 +1180,7 @@ button.pipeline-editor-item:hover {
   font-family: var(--font-display);
   letter-spacing: 0.08em;
   text-transform: uppercase;
-  color: var(--color-body-soft);
+  color: var(--muted-foreground);
   margin-bottom: 0.2rem;
 }
 
@@ -1240,17 +1195,17 @@ button.pipeline-editor-item:hover {
 }
 
 .pipeline-render-template-empty {
-  border: 1px dashed var(--color-border-soft);
+  border: 1px dashed var(--border);
   border-radius: 0.4rem;
   padding: 0.5rem;
   font-size: 0.66rem;
-  color: var(--color-body-soft);
+  color: var(--muted-foreground);
 }
 
 .pipeline-render-editor-shell {
-  border: 1px solid var(--color-border);
+  border: 1px solid var(--border);
   border-radius: 0.5rem;
-  background: var(--color-surface);
+  background: var(--card);
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
   min-height: 0;
@@ -1263,7 +1218,7 @@ button.pipeline-editor-item:hover {
   justify-content: space-between;
   gap: 0.5rem;
   padding: 0 0.6rem;
-  border-bottom: 1px solid var(--color-border-soft);
+  border-bottom: 1px solid var(--border);
   font-size: 0.72rem;
 }
 
@@ -1274,7 +1229,7 @@ button.pipeline-editor-item:hover {
 }
 
 .pipeline-render-status {
-  color: var(--color-body-soft);
+  color: var(--muted-foreground);
   font-size: 0.66rem;
 }
 
@@ -1343,7 +1298,7 @@ button.pipeline-editor-item:hover {
 
   .pipeline-editor-sidebar {
     border-right: 0;
-    border-bottom: 1px solid var(--color-border);
+    border-bottom: 1px solid var(--border);
     max-height: 16rem;
   }
 
@@ -1369,8 +1324,8 @@ button.pipeline-editor-item:hover {
 .pipeline-editor-split-handle {
   position: relative;
   cursor: col-resize;
-  background: var(--color-surface);
-  border-right: 1px solid var(--color-border);
+  background: var(--card);
+  border-right: 1px solid var(--border);
 }
 
 .pipeline-editor-split-handle::before {
@@ -1382,11 +1337,11 @@ button.pipeline-editor-item:hover {
   height: 2rem;
   transform: translate(-50%, -50%);
   border-radius: 999px;
-  background: var(--color-border);
+  background: var(--border);
 }
 
 .pipeline-editor-split-handle:hover::before {
-  background: var(--color-accent);
+  background: var(--primary);
 }
 
 /* ===================================================
@@ -1403,29 +1358,29 @@ button.pipeline-editor-item:hover {
 }
 .dash-meta-label {
   font-size: 0.75rem;
-  color: var(--color-body-muted);
+  color: var(--muted-foreground);
 }
 .dash-meta-sep {
   font-size: 0.75rem;
-  color: var(--color-body-muted);
+  color: var(--muted-foreground);
 }
 .dash-metric-value {
   font-size: 0.75rem;
   font-weight: 600;
-  color: var(--color-body);
+  color: var(--foreground);
   margin-left: auto;
 }
 .dash-bar-track {
   margin-top: 0.5rem;
   height: 4px;
   border-radius: 2px;
-  background: var(--color-border-soft);
+  background: var(--border);
   overflow: hidden;
 }
 .dash-bar-fill {
   height: 100%;
   border-radius: 2px;
-  background: var(--color-accent, #ed752e);
+  background: var(--primary, #ed752e);
   width: 0%;
   transition: width 0.4s ease;
 }
@@ -1442,12 +1397,12 @@ button.pipeline-editor-item:hover {
 }
 .dash-stat-key {
   font-size: 0.72rem;
-  color: var(--color-body-muted);
+  color: var(--muted-foreground);
   min-width: 5rem;
 }
 .dash-stat-val {
   font-size: 0.75rem;
-  color: var(--color-body);
+  color: var(--foreground);
 }
 .dash-cap-grid {
   display: flex;
@@ -1459,7 +1414,7 @@ button.pipeline-editor-item:hover {
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.07em;
-  color: var(--color-body-muted);
+  color: var(--muted-foreground);
   padding: 0.5rem 0 0.2rem;
   margin: 0;
 }
@@ -1480,15 +1435,15 @@ button.pipeline-editor-item:hover {
   flex-shrink: 0;
 }
 .dash-cap-dot-on  { background: #22c55e; }
-.dash-cap-dot-off { background: var(--color-border); }
+.dash-cap-dot-off { background: var(--border); }
 .dash-cap-name {
   font-size: 0.78rem;
-  color: var(--color-body);
+  color: var(--foreground);
   min-width: 7rem;
 }
 .dash-cap-status {
   font-size: 0.72rem;
-  color: var(--color-body-muted);
+  color: var(--muted-foreground);
 }
 
 /* ── Pipeline Registry List View ─────────────────────────────────────────── */
@@ -1501,30 +1456,30 @@ button.pipeline-editor-item:hover {
   min-height: 2.4rem;
   padding: 0.4rem 0.6rem;
   border-radius: 0.4rem;
-  border: 1px solid var(--color-border-soft);
-  background: var(--color-surface-2);
-  color: var(--color-body);
+  border: 1px solid var(--border);
+  background: var(--muted);
+  color: var(--foreground);
   text-decoration: none;
   transition: border-color 0.1s;
 }
 
 .pipeline-registry-row:hover {
-  border-color: var(--color-border);
+  border-color: var(--border);
 }
 
 .pipeline-registry-folder-row {
   background: transparent;
   border-style: dashed;
-  color: var(--color-body-soft);
+  color: var(--muted-foreground);
   font-size: 0.75rem;
   gap: 0.4rem;
 }
 
 .pipeline-registry-folder-row:hover {
-  color: var(--color-body);
+  color: var(--foreground);
 }
 
-/* .pipeline-registry-row-icon → Tailwind: shrink-0 flex items-center text-[var(--color-body-soft)] */
+/* .pipeline-registry-row-icon → Tailwind: shrink-0 flex items-center text-[var(--muted-foreground)] */
 /* .pipeline-registry-row-body → Tailwind: flex-1 min-w-0 flex items-center gap-2 flex-wrap */
 
 .pipeline-registry-section-head {
@@ -1533,7 +1488,7 @@ button.pipeline-editor-item:hover {
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.08em;
-  color: var(--color-body-muted);
+  color: var(--muted-foreground);
 }
 
 .pipeline-registry-section-head:first-child {
@@ -1545,7 +1500,7 @@ button.pipeline-editor-item:hover {
   min-width: 0;
   font-size: 0.78rem;
   font-weight: 600;
-  color: var(--color-body);
+  color: var(--foreground);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1587,34 +1542,34 @@ button.pipeline-editor-item:hover {
   background: rgba(239, 68, 68, 0.08);
 }
 
-/* .pipeline-registry-inline-form → Tailwind: flex items-center gap-2 px-3 py-2 border-t border-[var(--color-border-soft)] flex-wrap */
+/* .pipeline-registry-inline-form → Tailwind: flex items-center gap-2 px-3 py-2 border-t border-[var(--border)] flex-wrap */
 
 .pipeline-registry-inline-input {
   width: auto;
   flex: 1 1 8rem;
   height: 1.9rem;
   padding: 0 0.5rem;
-  border: 1px solid var(--color-border);
+  border: 1px solid var(--border);
   border-radius: 0.35rem;
-  background: var(--color-surface);
-  color: var(--color-body);
+  background: var(--card);
+  color: var(--foreground);
   font-size: 0.75rem;
 }
 
 .pipeline-registry-inline-select {
   flex-shrink: 0;
   height: 1.9rem;
-  border: 1px solid var(--color-border);
+  border: 1px solid var(--border);
   border-radius: 0.35rem;
-  background: var(--color-surface);
-  color: var(--color-body);
+  background: var(--card);
+  color: var(--foreground);
   font-size: 0.75rem;
 }
 
 .pipeline-registry-inline-input:focus,
 .pipeline-registry-inline-select:focus {
   outline: none;
-  border-color: var(--color-accent);
+  border-color: var(--primary);
 }
 
 /* ── Select component inner <select> override for inline forms ── */
@@ -1632,11 +1587,11 @@ button.pipeline-editor-item:hover {
   font-size: inherit !important;
 }
 
-/* .pipeline-registry-empty → Tailwind: p-6 text-center text-[0.78rem] text-[var(--color-body-soft)] */
+/* .pipeline-registry-empty → Tailwind: p-6 text-center text-[0.78rem] text-[var(--muted-foreground)] */
 
 /* ── Registry Filter Tabs ────────────────────────────────────────────────── */
 
-/* .pipeline-registry-filters → Tailwind: flex gap-1 px-3 py-[0.375rem] border-b border-[var(--color-border)] bg-[var(--color-surface)] */
+/* .pipeline-registry-filters → Tailwind: flex gap-1 px-3 py-[0.375rem] border-b border-[var(--border)] bg-[var(--card)] */
 
 .pipeline-registry-filter-tab {
   padding: 0.2rem 0.65rem;
@@ -1645,27 +1600,27 @@ button.pipeline-editor-item:hover {
   border-radius: 0.25rem;
   border: 1px solid transparent;
   cursor: pointer;
-  color: var(--color-body-soft);
+  color: var(--muted-foreground);
   background: transparent;
   transition: color 0.12s, background 0.12s, border-color 0.12s;
 }
 
 .pipeline-registry-filter-tab:hover {
-  color: var(--color-body);
-  background: var(--color-surface);
+  color: var(--foreground);
+  background: var(--card);
 }
 
 .pipeline-registry-filter-tab.is-active {
-  color: var(--color-body);
-  background: var(--color-surface);
-  border-color: var(--color-border);
+  color: var(--foreground);
+  background: var(--card);
+  border-color: var(--border);
 }
 
 /* ── Registry Special Folder Separator ───────────────────────────────────── */
 
 .pipeline-registry-special-sep {
   height: 1px;
-  background: var(--color-border);
+  background: var(--border);
   margin: 0.25rem 0;
   opacity: 0.5;
 }
@@ -1733,11 +1688,11 @@ button.pipeline-editor-item:hover {
   border-style: solid;
   gap: 0.5rem;
   text-decoration: none;
-  color: var(--color-body-soft);
+  color: var(--muted-foreground);
 }
 
 .pipeline-registry-file-row:hover {
-  color: var(--color-body);
+  color: var(--foreground);
 }
 
 /* ── Pipeline Status Dot ─────────────────────────────────────────────────── */
@@ -1793,8 +1748,8 @@ button.pipeline-editor-item:hover {
   z-index: 1;
   width: min(28rem, calc(100vw - 2rem));
   max-height: calc(100dvh - 3rem);
-  background: var(--color-surface);
-  border: 1px solid var(--color-border);
+  background: var(--card);
+  border: 1px solid var(--border);
   border-radius: 0.65rem;
   padding: 1.25rem 1.5rem;
   display: flex;
@@ -1816,12 +1771,12 @@ button.pipeline-editor-item:hover {
 .pipeline-delete-name {
   font-family: var(--font-mono);
   font-size: 0.82rem;
-  color: var(--color-body);
+  color: var(--foreground);
 }
 
 .pipeline-delete-copy {
   font-size: 0.78rem;
-  color: var(--color-body-soft);
+  color: var(--muted-foreground);
   margin: 0;
 }
 
@@ -1829,10 +1784,10 @@ button.pipeline-editor-item:hover {
   width: 100%;
   height: 2rem;
   padding: 0 0.6rem;
-  border: 1px solid var(--color-border);
+  border: 1px solid var(--border);
   border-radius: 0.4rem;
-  background: var(--color-surface-2);
-  color: var(--color-body);
+  background: var(--muted);
+  color: var(--foreground);
   font-family: var(--font-mono);
   font-size: 0.82rem;
 }
@@ -1874,8 +1829,8 @@ button.pipeline-editor-item:hover {
   z-index: 1;
   width: min(38rem, calc(100vw - 2rem));
   max-height: calc(100dvh - 3rem);
-  background: var(--color-surface);
-  border: 1px solid var(--color-border);
+  background: var(--card);
+  border: 1px solid var(--border);
   border-radius: 0.65rem;
   display: flex;
   flex-direction: column;
@@ -1905,7 +1860,7 @@ button.pipeline-editor-item:hover {
   flex-wrap: wrap;
   gap: 0.25rem;
   padding: 0 0 0.75rem 0;
-  border-bottom: 1px solid var(--color-border);
+  border-bottom: 1px solid var(--border);
   flex-shrink: 0;
 }
 
@@ -1956,14 +1911,14 @@ button.pipeline-editor-item:hover {
   font-size: 0.95rem;
   font-family: var(--font-display);
   font-weight: 700;
-  color: var(--color-body);
+  color: var(--foreground);
   margin: 0;
 }
 
 .git-commit-close {
   background: transparent;
   border: none;
-  color: var(--color-body-soft);
+  color: var(--muted-foreground);
   cursor: pointer;
   font-size: 0.9rem;
   padding: 0.2rem 0.4rem;
@@ -1971,8 +1926,8 @@ button.pipeline-editor-item:hover {
 }
 
 .git-commit-close:hover {
-  color: var(--color-body);
-  background: var(--color-surface-2);
+  color: var(--foreground);
+  background: var(--muted);
 }
 
 .git-commit-file-list {
@@ -1983,10 +1938,10 @@ button.pipeline-editor-item:hover {
   display: flex;
   flex-direction: column;
   gap: 0.25rem;
-  border: 1px solid var(--color-border-soft);
+  border: 1px solid var(--border);
   border-radius: 0.4rem;
   padding: 0.5rem;
-  background: var(--color-surface-2);
+  background: var(--muted);
 }
 
 .git-commit-file-row {
@@ -2000,13 +1955,13 @@ button.pipeline-editor-item:hover {
 }
 
 .git-commit-file-row:hover {
-  background: var(--color-surface);
+  background: var(--card);
 }
 
 .git-commit-file-path {
   font-family: var(--font-mono);
   font-size: 0.72rem;
-  color: var(--color-body-soft);
+  color: var(--muted-foreground);
   word-break: break-all;
 }
 
@@ -2014,10 +1969,10 @@ button.pipeline-editor-item:hover {
   width: 100%;
   min-height: 4.5rem;
   padding: 0.5rem 0.6rem;
-  border: 1px solid var(--color-border);
+  border: 1px solid var(--border);
   border-radius: 0.4rem;
-  background: var(--color-surface-2);
-  color: var(--color-body);
+  background: var(--muted);
+  color: var(--foreground);
   font-size: 0.78rem;
   resize: vertical;
   box-sizing: border-box;
@@ -2025,7 +1980,7 @@ button.pipeline-editor-item:hover {
 
 .git-commit-message:focus {
   outline: none;
-  border-color: var(--color-accent);
+  border-color: var(--primary);
 }
 
 .git-commit-push-row {
@@ -2033,7 +1988,7 @@ button.pipeline-editor-item:hover {
   align-items: center;
   gap: 0.4rem;
   font-size: 0.75rem;
-  color: var(--color-body-soft);
+  color: var(--muted-foreground);
   cursor: pointer;
 }
 
@@ -2102,19 +2057,19 @@ button.pipeline-editor-item:hover {
   font-size: 0.6rem;
   font-weight: 700;
   letter-spacing: 0.07em;
-  color: var(--color-body-soft);
+  color: var(--muted-foreground);
   padding: 0.3rem 0.75rem 0.15rem;
   text-transform: uppercase;
 }
 
 .git-empty {
   font-size: 0.74rem;
-  color: var(--color-body-soft);
+  color: var(--muted-foreground);
   padding: 0.6rem 0.75rem;
 }
 
 .git-actions {
-  border-top: 1px solid var(--color-border);
+  border-top: 1px solid var(--border);
   padding: 0.5rem 0.6rem;
   display: flex;
   flex-direction: column;
@@ -2152,8 +2107,8 @@ button.pipeline-editor-item:hover {
   width: 640px;
   display: flex;
   flex-direction: column;
-  background: var(--color-surface);
-  border: 1px solid var(--color-border);
+  background: var(--card);
+  border: 1px solid var(--border);
   border-radius: 0.5rem;
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.25);
   overflow: hidden;
@@ -2165,14 +2120,14 @@ button.pipeline-editor-item:hover {
   align-items: center;
   justify-content: space-between;
   padding: 0.55rem 0.75rem;
-  border-bottom: 1px solid var(--color-border);
+  border-bottom: 1px solid var(--border);
   gap: 0.5rem;
 }
 
 .git-repo-title {
   font-size: 0.75rem;
   font-weight: 600;
-  color: var(--color-body);
+  color: var(--foreground);
   display: flex;
   align-items: center;
   gap: 0.35rem;
@@ -2183,7 +2138,7 @@ button.pipeline-editor-item:hover {
   align-items: center;
   gap: 0.5rem;
   font-size: 0.7rem;
-  color: var(--color-body-soft);
+  color: var(--muted-foreground);
 }
 
 .git-repo-body {
@@ -2203,7 +2158,7 @@ button.pipeline-editor-item:hover {
 
 .git-repo-divider {
   width: 1px;
-  background: var(--color-border);
+  background: var(--border);
   flex-shrink: 0;
 }
 
@@ -2222,9 +2177,9 @@ button.pipeline-editor-item:hover {
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.07em;
-  color: var(--color-body-soft);
+  color: var(--muted-foreground);
   padding: 0.5rem 0.75rem 0.3rem;
-  border-bottom: 1px solid var(--color-border-soft);
+  border-bottom: 1px solid var(--border);
 }
 
 .git-repo-cred-label {
@@ -2232,17 +2187,17 @@ button.pipeline-editor-item:hover {
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.07em;
-  color: var(--color-body-soft);
+  color: var(--muted-foreground);
   margin-bottom: 0.3rem;
   display: block;
 }
 
 .git-repo-cred-select {
   width: 100%;
-  background: var(--color-surface-2);
-  border: 1px solid var(--color-border);
+  background: var(--muted);
+  border: 1px solid var(--border);
   border-radius: 0.35rem;
-  color: var(--color-body);
+  color: var(--foreground);
   font-size: 0.72rem;
   padding: 0 0.4rem;
   height: 1.75rem;
@@ -2253,10 +2208,10 @@ button.pipeline-editor-item:hover {
 .git-repo-slug-row {
   display: flex;
   align-items: center;
-  border: 1px solid var(--color-border);
+  border: 1px solid var(--border);
   border-radius: 0.35rem;
   overflow: hidden;
-  background: var(--color-surface-2);
+  background: var(--muted);
 }
 
 .git-repo-slug-row:focus-within {
@@ -2267,11 +2222,11 @@ button.pipeline-editor-item:hover {
 .git-repo-host-prefix {
   font-size: 0.65rem;
   font-family: ui-monospace, monospace;
-  color: var(--color-body-soft);
+  color: var(--muted-foreground);
   padding: 0 0.4rem;
   white-space: nowrap;
-  background: var(--color-surface-3);
-  border-right: 1px solid var(--color-border);
+  background: var(--accent);
+  border-right: 1px solid var(--border);
   height: 1.75rem;
   display: flex;
   align-items: center;
@@ -2284,7 +2239,7 @@ button.pipeline-editor-item:hover {
   background: transparent;
   border: none;
   outline: none;
-  color: var(--color-body);
+  color: var(--foreground);
   font-size: 0.68rem;
   font-family: ui-monospace, monospace;
   padding: 0 0.4rem;
@@ -2293,10 +2248,10 @@ button.pipeline-editor-item:hover {
 
 .git-repo-branch-input {
   width: 100%;
-  background: var(--color-surface-2);
-  border: 1px solid var(--color-border);
+  background: var(--muted);
+  border: 1px solid var(--border);
   border-radius: 0.35rem;
-  color: var(--color-body);
+  color: var(--foreground);
   font-size: 0.68rem;
   font-family: ui-monospace, monospace;
   padding: 0 0.4rem;
@@ -2311,7 +2266,7 @@ button.pipeline-editor-item:hover {
 
 .git-repo-no-cred {
   font-size: 0.72rem;
-  color: var(--color-body-soft);
+  color: var(--muted-foreground);
   line-height: 1.5;
 }
 
@@ -2330,10 +2285,10 @@ dialog.git-cred-dialog:not([open]) {
 dialog.git-cred-dialog {
   padding: 0;
   margin: auto;
-  border: 1px solid var(--color-border);
+  border: 1px solid var(--border);
   border-radius: 0.5rem;
-  background: var(--color-surface);
-  color: var(--color-body);
+  background: var(--card);
+  color: var(--foreground);
   box-shadow: 0 12px 32px rgba(0, 0, 0, 0.4);
   width: 360px;
   display: flex;
@@ -2353,22 +2308,22 @@ dialog.git-cred-dialog::backdrop {
   align-items: center;
   justify-content: space-between;
   padding: 0.6rem 0.85rem;
-  border-bottom: 1px solid var(--color-border);
+  border-bottom: 1px solid var(--border);
   font-size: 0.78rem;
   font-weight: 600;
-  color: var(--color-body);
+  color: var(--foreground);
 }
 
 .git-cred-dialog-close {
   background: none;
   border: none;
-  color: var(--color-body-soft);
+  color: var(--muted-foreground);
   cursor: pointer;
   font-size: 0.85rem;
   padding: 0;
   line-height: 1;
 }
-.git-cred-dialog-close:hover { color: var(--color-body); }
+.git-cred-dialog-close:hover { color: var(--foreground); }
 
 .git-cred-dialog-body {
   display: flex;
@@ -2382,10 +2337,10 @@ dialog.git-cred-dialog::backdrop {
 
 /* ── MCP Session Panel ───────────────────────────────────────────────────── */
 .mcp-token-input {
-  background: var(--color-surface-2, #1b1b1b);
-  border: 1px solid var(--color-border, #2a2a2a);
+  background: var(--muted, #1b1b1b);
+  border: 1px solid var(--border, #2a2a2a);
   border-radius: 0.35rem;
-  color: var(--color-body-soft, #9ca3af);
+  color: var(--muted-foreground, #9ca3af);
   font-size: 0.68rem;
   font-family: ui-monospace, monospace;
   padding: 0.3rem 0.5rem;
@@ -2416,30 +2371,30 @@ dialog.git-cred-dialog::backdrop {
   font-weight: 600;
   padding: 0.2rem 0.55rem;
   border-radius: 0.3rem;
-  border: 1px solid var(--color-border);
-  background: var(--color-surface-2);
-  color: var(--color-body-soft);
+  border: 1px solid var(--border);
+  background: var(--muted);
+  color: var(--muted-foreground);
   cursor: pointer;
   transition: color 120ms ease, border-color 120ms ease, background 120ms ease;
   white-space: nowrap;
 }
 .mcp-guide-tab:hover {
-  color: var(--color-body);
-  border-color: var(--color-body-soft);
+  color: var(--foreground);
+  border-color: var(--muted-foreground);
 }
 .mcp-guide-tab.is-active {
-  background: var(--color-accent);
-  border-color: var(--color-accent);
+  background: var(--primary);
+  border-color: var(--primary);
   color: #fff;
 }
 .mcp-guide-snippet {
-  background: var(--color-surface-2);
-  border: 1px solid var(--color-border);
+  background: var(--muted);
+  border: 1px solid var(--border);
   border-radius: 0.35rem;
   padding: 0.55rem 0.65rem;
   font-size: 0.6rem;
   font-family: ui-monospace, monospace;
-  color: var(--color-body-soft);
+  color: var(--muted-foreground);
   white-space: pre;
   overflow-x: auto;
   margin: 0 0 0.5rem;
@@ -2475,7 +2430,7 @@ dialog.git-cred-dialog::backdrop {
 
 .git-tree-dir {
   padding: 0.1rem 0.5rem;
-  color: var(--color-body-soft);
+  color: var(--muted-foreground);
   font-size: 0.7rem;
   min-height: 1.4rem;
 }
@@ -2492,7 +2447,7 @@ dialog.git-cred-dialog::backdrop {
 }
 
 .git-tree-file:hover {
-  background: color-mix(in srgb, var(--color-body) 6%, transparent);
+  background: color-mix(in srgb, var(--foreground) 6%, transparent);
 }
 
 .git-tree-check {
@@ -2506,7 +2461,7 @@ dialog.git-cred-dialog::backdrop {
   text-overflow: ellipsis;
   white-space: nowrap;
   font-size: 0.72rem;
-  color: var(--color-body);
+  color: var(--foreground);
 }
 
 .git-tree-code {
@@ -2528,9 +2483,9 @@ dialog.git-cred-dialog::backdrop {
   display: flex;
   align-items: center;
   gap: 8px;
-  background: color-mix(in srgb, var(--color-destructive, #ef4444) 10%, transparent);
-  border: 1px solid var(--color-destructive, #ef4444);
-  color: var(--color-destructive-foreground, #b91c1c);
+  background: color-mix(in srgb, var(--destructive) 10%, transparent);
+  border: 1px solid var(--destructive);
+  color: var(--destructive);
   border-radius: 6px;
   padding: 8px 12px;
   font-size: 13px;
@@ -2561,7 +2516,7 @@ dialog.git-cred-dialog::backdrop {
 }
 
 .match-cases-header {
-  color: var(--color-body-soft);
+  color: var(--muted-foreground);
   font-size: 0.64rem;
   font-weight: 700;
   text-transform: uppercase;
@@ -2581,9 +2536,9 @@ dialog.git-cred-dialog::backdrop {
 
 .match-cases-actions button,
 .match-cases-add {
-  border: 1px solid var(--color-border);
-  background: var(--color-surface-2);
-  color: var(--color-body);
+  border: 1px solid var(--border);
+  background: var(--muted);
+  color: var(--foreground);
   border-radius: 0.35rem;
   min-width: 1.6rem;
   height: 2rem;
@@ -2604,8 +2559,8 @@ dialog.git-cred-dialog::backdrop {
 
 .match-cases-actions button:hover:not(:disabled),
 .match-cases-add:hover {
-  border-color: var(--color-accent);
-  background: var(--color-surface-3);
+  border-color: var(--primary);
+  background: var(--accent);
 }
 
 .match-cases-default {
@@ -2613,22 +2568,22 @@ dialog.git-cred-dialog::backdrop {
   grid-template-columns: minmax(7rem, 0.8fr) minmax(7rem, 1fr) minmax(7rem, 1fr);
   gap: 0.45rem;
   align-items: center;
-  border-top: 1px solid var(--color-border);
+  border-top: 1px solid var(--border);
   padding-top: 0.55rem;
 }
 
 .match-cases-default-title {
-  color: var(--color-body-soft);
+  color: var(--muted-foreground);
   font-size: 0.72rem;
   font-weight: 700;
 }
 
 .match-cases-invalid {
-  border-color: var(--color-destructive, #ef4444) !important;
+  border-color: var(--destructive) !important;
 }
 
 .match-cases-error {
-  color: var(--color-destructive, #ef4444);
+  color: var(--destructive);
   font-size: 0.72rem;
 }
 

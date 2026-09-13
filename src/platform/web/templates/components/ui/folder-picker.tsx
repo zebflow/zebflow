@@ -7,14 +7,14 @@ function PickerRow({ item, depth, open, selected, onToggle, onChoose }) {
     <div
       className={cx(
         "flex w-full items-center gap-1 py-[3px] pr-2 text-[12px] transition-colors",
-        selected ? "bg-ui-bg-muted text-ui-text" : "text-ui-text-soft hover:bg-ui-bg-muted/60",
+        selected ? "bg-accent text-foreground" : "text-muted-foreground hover:bg-accent/60",
       )}
       style={{ paddingLeft: `${depth * 12 + 6}px` }}
     >
       <button
         type="button"
         aria-label={open ? "Collapse" : "Expand"}
-        className="shrink-0 rounded p-[1px] hover:bg-ui-bg-muted"
+        className="shrink-0 rounded p-[1px] hover:bg-accent"
         onClick={() => onToggle(item.rel_path)}
       >
         <svg
@@ -52,7 +52,7 @@ function PickerLevel({ path, depth, state, actions }) {
 
   if (!items) {
     return (
-      <p className="py-1 text-[11px] text-ui-text-soft" style={{ paddingLeft: `${depth * 12 + 24}px` }}>
+      <p className="py-1 text-[11px] text-muted-foreground" style={{ paddingLeft: `${depth * 12 + 24}px` }}>
         Loading…
       </p>
     );
@@ -116,11 +116,11 @@ export default function FolderPicker({ owner, project, value, onChange, rootLabe
   };
 
   return (
-    <div className="max-h-56 overflow-y-auto rounded-md border border-ui-border bg-ui-bg py-1" data-folder-picker="true">
+    <div className="max-h-56 overflow-y-auto rounded-md border border-border bg-popover py-1" data-folder-picker="true">
       <div
         className={cx(
           "flex w-full items-center gap-1.5 py-[3px] pl-[6px] pr-2 text-[12px]",
-          state.value === "" ? "bg-ui-bg-muted text-ui-text" : "text-ui-text-soft hover:bg-ui-bg-muted/60",
+          state.value === "" ? "bg-accent text-foreground" : "text-muted-foreground hover:bg-accent/60",
         )}
       >
         <button

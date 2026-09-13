@@ -52,7 +52,7 @@ export default function AssistantPanel({ api, credentials, initialConfig }) {
   }
 
   return (
-    <article className="border border-border rounded-lg bg-surface p-[0.85rem] mb-[0.9rem]">
+    <article className="border border-border rounded-lg bg-card p-[0.85rem] mb-[0.9rem]">
       <header className="flex items-start justify-between gap-3 mb-[0.65rem]">
         <div>
           <h3 className="project-card-title">Project Assistant</h3>
@@ -150,7 +150,7 @@ export default function AssistantPanel({ api, credentials, initialConfig }) {
             disabled={saving}
             label={saving ? "Saving..." : "Save Assistant Config"}
           />
-          <span className={cx("text-[0.72rem]", statusTone === "ok" ? "text-dark-accent2" : statusTone === "error" ? "text-red-300" : "text-body-soft")}>{statusMsg}</span>
+          <span className={cx("text-[0.72rem]", statusTone === "ok" ? "text-info" : statusTone === "error" ? "text-red-300" : "text-muted-foreground")}>{statusMsg}</span>
         </div>
       </form>
     </article>

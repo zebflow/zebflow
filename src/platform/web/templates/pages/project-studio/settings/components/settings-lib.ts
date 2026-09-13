@@ -22,10 +22,10 @@ export function formatOperationTimestamp(ts) {
 
 export function settingsStatusToneClass(tone) {
   if (tone === "ok") {
-    return "text-dark-accent2";
+    return "text-info";
   }
   if (tone === "error") {
-    return "text-dark-accent4";
+    return "text-warning";
   }
-  return "text-body-soft";
+  return "text-muted-foreground";
 }

@@ -45,9 +45,12 @@ FROM MATCH (u:users)-[:follows]->(friend:users)
 WHERE u._key = 'alice'
 ```
 
-## Querying via `run_db_query`
+## Running a query
 
-Pass SekejapQL text directly as the `sql` param.
+From a pipeline the node is `sekejap.query` (SQL in the body, values in
+`--params`); to try one without saving anything,
+`pipeline_run body="| trigger.function | sekejap.query -- \"SELECT …\""`;
+over HTTP, `POST /api/projects/{o}/{p}/db/connections/default-multimodel/query`.
 
 List rows:
 
@@ -95,49 +98,38 @@ WHERE event._key = 'maribyrnong-flood'
 LIMIT 20
 ```
 
-## Creating a Table — DSL
+## Creating a table
 
-```text
-create table contacts --title "Contacts" --fields "name:Text,email:Text,status:Text,score:Number,created_at:Number" --hash "email,status" --range "score,created_at"
+Plain SQL through the node creates a table:
+
+```
+| sekejap.query --read-only false -- "CREATE TABLE contacts (name TEXT, email TEXT, status TEXT, score REAL, created_at TEXT)"
 ```
 
-- `--fields "f1:Kind,f2:Kind"` — comma-separated `name:Kind` pairs. Kinds: `Text`, `Number`, `Boolean`, `Json`
-- `--hash "f1,f2"` — exact-match index fields
-- `--range "f1,f2"` — range index fields
-
-After creation you can immediately query:
-
-```sql
-SELECT _key, name
-FROM contacts
-LIMIT 50
-```
-
-List all tables:
-
-```sql
-SHOW TABLES
-```
-
-## Creating a Table — HTTP API
+`SHOW TABLES` lists them. A *managed table* additionally declares attribute
+kinds and indexes (hash, range, full-text, vector, spatial) and appears in
+the Studio's Tables tab — create it there or over HTTP:
 
 `POST /api/projects/{owner}/{project}/tables`:
 
 ```json
 {
   "table": "contacts",
-  "title": "Contacts",
   "attributes": [
-    {"name": "name", "kind": "Text"},
-    {"name": "email", "kind": "Text"},
-    {"name": "status", "kind": "Text"},
-    {"name": "score", "kind": "Number"},
-    {"name": "created_at", "kind": "Number"}
+    {"name": "name", "kind": "string"},
+    {"name": "email", "kind": "string", "index_types": ["hash"]},
+    {"name": "status", "kind": "string", "index_types": ["hash"]},
+    {"name": "score", "kind": "number", "index_types": ["range"]},
+    {"name": "bio", "kind": "text", "index_types": ["fulltext"]},
+    {"name": "embedding", "kind": "vector", "index_types": ["vector"]}
   ],
   "hash_indexed_fields": ["email", "status"],
-  "range_indexed_fields": ["score", "created_at"]
+  "range_indexed_fields": ["score"]
 }
 ```
+
+Attribute kinds: `string` · `number` · `boolean` · `text` · `json` · `vector` · `geo`.
+Index types: `hash` · `range` · `fulltext` · `vector` · `spatial`.
 
 ## Writing Rows
 
@@ -166,20 +158,21 @@ ORDER BY price ASC
 LIMIT 20
 ```
 
-## `n.sekejap.query` Pipeline Node Config
+## The `sekejap.query` node
 
-```zf
-| n.sekejap.query -- "SELECT _key, title FROM posts LIMIT 20"
-| n.sekejap.query --params "{{ input.params.id }}" -- "SELECT friend._key AS friend_key FROM MATCH (u:users)-[:follows]->(friend:users) WHERE u._key = $1"
-| n.sekejap.query --params "{{ [$trigger.body.slug, $trigger.body.title] }}" -- "INSERT INTO posts (_key, title) VALUES ($1, $2)"
+```
+| sekejap.query -- "SELECT _key, title FROM posts LIMIT 20"
+| sekejap.query --params "{{ [$trigger.params.id] }}" -- "SELECT friend._key AS friend_key FROM MATCH (u:users)-[:follows]->(friend:users) WHERE u._key = $1"
+| sekejap.query --params "{{ [input.body.slug, input.body.title] }}" --read-only false -- "INSERT INTO posts (_key, title) VALUES ($1, $2)"
 ```
 
-Optional flags:
-
-- `--limit <n>` — maximum rows returned for read queries
-- `--read-only true|false` — reject writes when enabled
-- `--params <literal-or-{{ expr }}>` — bind values into `$1`, `$2`, ...: a dot-path template for one upstream value (or every element when the value is an array), e.g. `--params "{{ input.params.id }}"`, or an array `{{ expr }}` for multiple or computed values, e.g. `--params "{{ [a, b] }}"`
-- `--query <literal-or-{{ expr }}>` — the SQL string; use a `{{ expr }}` when the query itself must be selected at runtime
+Flags: `--params` (bind values for `$1, $2 …`; a whole `{{ }}` keeps its type,
+so `"{{ [a, b] }}"` is a real array and a single value is wrapped),
+`--limit <n>` (default 200 rows for reads), `--read-only true|false`
+(refuse writes; set `false` for INSERT/UPDATE/DELETE/CREATE), `--query`
+(the SQL as a flag instead of the body). Output:
+`{ columns, rows, row_count, truncated, affected_rows, duration_ms }` — the
+rows are `input.rows` in the next node.
 
 ## Platform Collections
 

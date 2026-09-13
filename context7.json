@@ -1,27 +1,30 @@
 {
   "$schema": "https://context7.com/schema/context7.json",
   "projectTitle": "Zebflow",
-  "description": "Full-stack reactive web automation. TSX templates + pipeline DSL + 40 MCP tools in a single Rust binary. No build step.",
+  "description": "Zebflow: pipelines, server-rendered TSX pages on the RWE engine, the zeb/ui component set, Sekejap, the Hub — built by agents over MCP. The help tree under src/platform/help is the canonical 'how to use Zebflow'; blessed/skills are the procedures agents follow.",
   "folders": [
-    "skills/zebflow",
-    "docs/user-guide",
-    "src/platform/help"
+    "src/platform/help",
+    "blessed/skills",
+    "docs/usage",
+    "docs/contracts"
   ],
   "excludeFolders": [
-    "docs/unused",
-    "docs/ops",
-    "src/platform/help/pipeline/examples"
+    ".ignored",
+    "target",
+    "node_modules",
+    "tests"
+  ],
+  "rules": [
+    "Change a Zebflow project only through its MCP tools or HTTP API; never write into users/{owner}/{project}/ directly.",
+    "The DSL: register <file_rel_path> | trigger.webhook --path /x | sekejap.query --params \"{{ [..] }}\" -- \"SQL\" | web.response --template pages/x.tsx; a draft serves nothing until activated.",
+    "Webhook data is under input.body; input.params, input.query, input.files, input.auth sit beside it; $trigger has no body.",
+    "Every TSX file imports what it uses from \"zeb/react\", \"zeb/ui/<name>\" or \"@/…\"; colours are theme roles (bg-primary, text-muted-foreground), never palette classes.",
+    "A 200 response can carry '<!-- RWE component error -->'; read the body and open the page before claiming it works.",
+    "Pipeline DSL has two modes: pipe (| chains) for a linear flow and graph ([id] nodes + [a] -> [b] edges, :pin for branches) — every node must be reachable from the one entry.",
+    "{{ expr }} in a flag value is resolved before the node runs; scope is input/$input, $trigger, $nodes.<id>, and $item/$index/$count inside foreach; a whole-value expression keeps its JSON type.",
+    "Credentials are created by the owner in Studio; pipelines reference them by id (credential_list) and never read or write their values."
   ],
   "excludeFiles": [
     "SECURITY-AUDIT-REPORT*.md"
-  ],
-  "rules": [
-    "Import hooks from 'zeb', never from 'preact', 'react', or 'npm:preact/hooks'",
-    "Use @/ paths for component imports, never relative ../ between components",
-    "Pipeline DSL has two modes: pipe (| chains) for linear and graph ([id] + edges) for branching — don't mix",
-    "Templates use built-in Tailwind — no build step, no CSS files needed",
-    "Page entry is always: export default function Page(input) { return <jsx/>; }",
-    "Credentials are UI-only — DSL cannot read or write credential values",
-    "Dynamic config in pipelines uses {{ expr }} with $input, $trigger, $nodes scope variables"
   ]
 }

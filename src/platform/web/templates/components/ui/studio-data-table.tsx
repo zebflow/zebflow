@@ -1,10 +1,10 @@
 import { cx } from "zeb/react";
 
 const studioTableThClass =
-  "px-[0.8rem] py-[0.65rem] border-b border-border-soft text-left text-[0.68rem] font-mono uppercase tracking-[0.12em] text-body-soft";
+  "px-[0.8rem] py-[0.65rem] border-b border-border text-left text-[0.68rem] font-mono uppercase tracking-[0.12em] text-muted-foreground";
 
 const studioTableTdClassInner =
-  "px-[0.8rem] py-[0.65rem] border-b border-border-soft text-left text-[0.8rem] text-body";
+  "px-[0.8rem] py-[0.65rem] border-b border-border text-left text-[0.8rem] text-foreground";
 
 /** For behaviors that create `<td>` in JS — same string as `StudioTd`. */
 export const studioTableTdClass = studioTableTdClassInner;
@@ -21,7 +21,7 @@ export function StudioTable({ variant = "default", className, children, ...rest 
 
 export function StudioThead({ className, children, ...rest }) {
   return (
-    <thead className={cx("bg-surface-2", className)} {...rest}>
+    <thead className={cx("bg-muted", className)} {...rest}>
       {children}
     </thead>
   );

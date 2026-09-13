@@ -1,1 +1,18 @@
-["prosemirror", "rich text", "editor", "wysiwyg", "prose", "markdown", "document", "contenteditable", "text editing", "schema", "ProseEditor", "mountProseEditor"]
+[
+  "prosemirror",
+  "rich text",
+  "editor",
+  "wysiwyg",
+  "prose",
+  "markdown",
+  "document",
+  "contenteditable",
+  "text editing",
+  "schema",
+  "ProseEditor",
+  "mountProseEditor",
+  "block editor",
+  "notion",
+  "createEditor",
+  "slash menu"
+]

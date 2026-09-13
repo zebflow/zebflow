@@ -70,12 +70,14 @@ fn compile_inner(source: &str, options: CompileOptions) -> Result<CompiledTempla
         &normalized_page_source,
         &imports,
         options.template_root.as_deref(),
+        &options.library_roots,
     )?;
     let transformed_server = format!("{}{}", JSX_PRELUDE, bundled_server);
     let (bundled_client, detected_zeb_libs, client_deps, _) = bundle_for_client(
         &normalized_page_source,
         &imports,
         options.template_root.as_deref(),
+        &options.library_roots,
     )?;
     let transformed_client = format!("{}{}", JSX_PRELUDE, bundled_client);
     let mut dependency_paths = server_deps;
@@ -127,6 +129,39 @@ fn ensure_default_export(program: &oxc_ast::ast::Program<'_>) -> Result<(), Engi
             "template must have one default export component",
         ))
     }
+}
+
+
+/// Rewrite import specifiers in place, by span. Only the string literal of
+/// an `import … from "…"` changes; the same text inside a code sample, a
+/// description, or a template literal is left alone. A blanket `replace`
+/// once turned the gallery's `"zeb/ui/button"` caption into a temp path.
+fn replace_import_specifiers(source: &str, mut map: impl FnMut(&str) -> Option<String>) -> String {
+    let alloc = Allocator::default();
+    let source_type = SourceType::default()
+        .with_module(true)
+        .with_jsx(true)
+        .with_typescript(true);
+    let parsed = Parser::new(&alloc, source, source_type).parse();
+    if parsed.panicked {
+        return source.to_string();
+    }
+    let mut edits: Vec<(usize, usize, String)> = Vec::new();
+    for stmt in &parsed.program.body {
+        if let Statement::ImportDeclaration(import) = stmt {
+            let spec = import.source.value.as_str();
+            if let Some(new) = map(spec) {
+                let span = import.source.span;
+                // Keep the original quote characters; replace what is between them.
+                edits.push((span.start as usize + 1, span.end as usize - 1, new));
+            }
+        }
+    }
+    let mut out = source.to_string();
+    for (start, end, new) in edits.into_iter().rev() {
+        out.replace_range(start..end, &new);
+    }
+    out
 }
 
 fn collect_imports(program: &oxc_ast::ast::Program<'_>) -> Vec<String> {
@@ -428,7 +463,7 @@ fn rewrite_imports(
     options: &CompileOptions,
     diagnostics: &mut Vec<super::model::Diagnostic>,
 ) -> Result<(String, Vec<ImportEdge>), EngineError> {
-    let mut rewritten = source.to_string();
+    let mut resolved_specs: std::collections::HashMap<String, String> = std::collections::HashMap::new();
     let mut out = Vec::new();
 
     for import in imports {
@@ -440,14 +475,15 @@ fn rewrite_imports(
                     .to_string(),
             ));
         }
-        if import.starts_with("zeb/") {
+        // A source library (`zeb/ui/button`) resolves to a file and is inlined;
+        // every other `zeb/*` is a runtime bundle the preamble loads.
+        if import.starts_with("zeb/") && resolve_library_import(import, &options.library_roots)?.is_none() {
             continue;
         }
 
         let resolved = resolve_import(import, options)?;
         if let Some(path) = &resolved {
-            rewritten = rewritten.replace(&format!("\"{import}\""), &format!("\"{path}\""));
-            rewritten = rewritten.replace(&format!("'{import}'"), &format!("'{path}'"));
+            resolved_specs.insert(import.clone(), path.clone());
         }
 
         if import.starts_with("@/") && resolved.is_none() {
@@ -464,10 +500,42 @@ fn rewrite_imports(
         });
     }
 
+    let rewritten = replace_import_specifiers(source, |spec| resolved_specs.get(spec).cloned());
     Ok((rewritten, out))
 }
 
+/// `zeb/ui/button` → `<library_roots["zeb/ui"]>/button.tsx`. The longest
+/// declared prefix wins; a bare prefix (`zeb/ui`) is its `index`.
+fn resolve_library_import(
+    import: &str,
+    library_roots: &std::collections::BTreeMap<String, String>,
+) -> Result<Option<String>, EngineError> {
+    let Some((prefix, root)) = library_roots
+        .iter()
+        .filter(|(prefix, _)| import == prefix.as_str() || import.starts_with(&format!("{prefix}/")))
+        .max_by_key(|(prefix, _)| prefix.len())
+    else {
+        return Ok(None);
+    };
+    let rest = import.strip_prefix(prefix.as_str()).unwrap_or("").trim_start_matches('/');
+    let root_path = canonical_or_current(Path::new(root))?;
+    let joined = root_path.join(if rest.is_empty() { "index" } else { rest });
+    let resolved = resolve_module_path(&joined).ok().filter(|p| p.is_file());
+    let Some(resolved) = resolved else {
+        return Err(EngineError::new(
+            "RWE_IMPORT_UNRESOLVED",
+            format!("'{import}' is not a component of {prefix}"),
+        ));
+    };
+    let final_path = normalize_path(&canonical_or_fallback(&resolved)?);
+    ensure_within_root(&final_path, &root_path)?;
+    Ok(Some(final_path.to_string_lossy().to_string()))
+}
+
 fn resolve_import(import: &str, options: &CompileOptions) -> Result<Option<String>, EngineError> {
+    if let Some(path) = resolve_library_import(import, &options.library_roots)? {
+        return Ok(Some(path));
+    }
     if import.starts_with("npm:")
         || import.starts_with("node:")
         || import.starts_with("jsr:")
@@ -661,42 +729,40 @@ fn rewrite_page_root_tag(source: &str) -> String {
 /// `extract_filesystem_import_paths` filter (which only matches paths starting
 /// with `/`). Resolving them here makes transitive inlining work correctly
 /// regardless of whether `prepare_template_root` has been called.
-fn rewrite_at_imports(source: &str, template_root: &Path) -> String {
-    let alloc = Allocator::default();
-    let source_type = SourceType::default()
-        .with_module(true)
-        .with_jsx(true)
-        .with_typescript(true);
-    let parsed = Parser::new(&alloc, source, source_type).parse();
-    if parsed.panicked {
-        return source.to_string();
-    }
-
-    let mut out = source.to_string();
-    for stmt in &parsed.program.body {
-        if let Statement::ImportDeclaration(import) = stmt {
-            let spec = import.source.value.as_str();
-            if !spec.starts_with("@/") {
-                continue;
-            }
-            let rel = spec.trim_start_matches("@/");
-            let joined = template_root.join(rel);
-            let resolved = if spec.ends_with(".css") {
-                resolve_style_path(&joined)
-            } else {
-                resolve_module_path(&joined)
-            };
-            if let Ok(resolved) = resolved {
-                if let Ok(canonical) = canonical_or_fallback(&resolved) {
-                    let abs = normalize_path(&canonical);
-                    let abs_str = abs.to_string_lossy();
-                    out = out.replace(&format!("\"{spec}\""), &format!("\"{}\"", abs_str));
-                    out = out.replace(&format!("'{spec}'"), &format!("'{}'", abs_str));
+fn rewrite_at_imports(
+    source: &str,
+    template_root: &Path,
+    library_roots: &std::collections::BTreeMap<String, String>,
+) -> Result<String, EngineError> {
+    // A library import that does not resolve is an error here, not a
+    // fallthrough: left as `zeb/ui/wizard` it would be taken for a runtime
+    // library, stripped, and the page would fail at render with no name.
+    let mut failure: Option<EngineError> = None;
+    let out = replace_import_specifiers(source, |spec| {
+        if spec.starts_with("zeb/") {
+            return match resolve_library_import(spec, library_roots) {
+                Ok(path) => path,
+                Err(err) => {
+                    failure.get_or_insert(err);
+                    None
                 }
-            }
+            };
         }
+        let rel = spec.strip_prefix("@/")?;
+        let joined = template_root.join(rel);
+        let resolved = if spec.ends_with(".css") {
+            resolve_style_path(&joined)
+        } else {
+            resolve_module_path(&joined)
+        }
+        .ok()?;
+        let canonical = canonical_or_fallback(&resolved).ok()?;
+        Some(normalize_path(&canonical).to_string_lossy().to_string())
+    });
+    match failure {
+        Some(err) => Err(err),
+        None => Ok(out),
     }
-    out
 }
 
 /// At compile time, inline all filesystem-path imports into one self-contained
@@ -706,6 +772,7 @@ fn bundle_for_client(
     page_source: &str,
     imports: &[ImportEdge],
     template_root: Option<&str>,
+    library_roots: &std::collections::BTreeMap<String, String>,
 ) -> Result<(String, Vec<String>, HashSet<String>, Vec<String>), EngineError> {
     let mut visited: HashSet<String> = HashSet::new();
     let mut inlined_parts: Vec<String> = Vec::new();
@@ -713,6 +780,16 @@ fn bundle_for_client(
     let mut counter: usize = 0;
     let mut rwe_names: HashSet<String> = HashSet::new();
     let mut zeb_libs: HashSet<String> = HashSet::new();
+    // Every exported name the bundle has declared so far, and the module that
+    // owns it. The flat bundle keeps exports unrenamed, so a second module
+    // exporting the same name is a `SyntaxError: Identifier has already been
+    // declared` at render — refused here, naming both files.
+    let mut declared: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    // The source of every module read so far, by canonical path. An
+    // importer's default-import binding needs the imported module's default
+    // name; it is looked up here, never re-read from disk — the shared debug
+    // template root is rewritten by other instances while a compile runs.
+    let mut sources: std::collections::HashMap<String, String> = std::collections::HashMap::new();
 
     // Collect rwe + zeb imports from the main page itself
     rwe_names.extend(extract_rwe_import_names(page_source));
@@ -733,12 +810,27 @@ fn bundle_for_client(
                 &mut rwe_names,
                 &mut zeb_libs,
                 template_root,
+                library_roots,
+                &mut declared,
+                &mut sources,
             )?;
         }
     }
 
+    // The page's own top-level declarations share the bundle too.
+    {
+        let alloc = Allocator::default();
+        let source_type = SourceType::default().with_module(true).with_jsx(true).with_typescript(true);
+        let parsed = Parser::new(&alloc, page_source, source_type).parse();
+        for name in collect_top_level_declared_names(&parsed.program) {
+            if let Some(owner) = declared.get(&name) {
+                return Err(name_collision(&name, owner, "the page"));
+            }
+        }
+    }
+
     // Strip filesystem imports + rwe imports from the main page source
-    let clean_main = strip_local_imports(page_source)?;
+    let clean_main = strip_local_imports(page_source, &sources)?;
 
     // Build: inlined components first, then main page
     let mut result = inlined_parts.join("\n\n");
@@ -751,6 +843,16 @@ fn bundle_for_client(
     Ok((result, libs, visited, inline_styles))
 }
 
+fn name_collision(name: &str, first: &str, second: &str) -> EngineError {
+    EngineError::new(
+        "RWE_BUNDLE_NAME_COLLISION",
+        format!(
+            "'{name}' is declared by both {first} and {second}; a page's bundle declares each \
+             exported name once. Use one of them, or clone and rename the other."
+        ),
+    )
+}
+
 fn collect_inlined_module(
     path: &str,
     parts: &mut Vec<String>,
@@ -760,6 +862,9 @@ fn collect_inlined_module(
     rwe_names: &mut HashSet<String>,
     zeb_libs: &mut HashSet<String>,
     template_root: Option<&str>,
+    library_roots: &std::collections::BTreeMap<String, String>,
+    declared: &mut std::collections::HashMap<String, String>,
+    sources: &mut std::collections::HashMap<String, String>,
 ) -> Result<(), EngineError> {
     let canonical_path = canonical_module_identity(path)?;
     let visit_key = canonical_path.to_string_lossy().to_string();
@@ -782,11 +887,8 @@ fn collect_inlined_module(
     // Without rewriting them here, extract_filesystem_import_paths (which only
     // matches paths starting with '/') would miss them, leaving unresolved
     // imports in the inlined bundle.
-    let content = if let Some(root) = template_root {
-        rewrite_at_imports(&raw, Path::new(root))
-    } else {
-        raw
-    };
+    let content = rewrite_at_imports(&raw, Path::new(template_root.unwrap_or("/")), library_roots)?;
+    sources.insert(canonical_path.to_string_lossy().to_string(), content.clone());
 
     // A component's relative import is worse than the entry page's: it is not
     // refused and not resolved either. `extract_filesystem_import_paths` keeps
@@ -821,15 +923,27 @@ fn collect_inlined_module(
                 rwe_names,
                 zeb_libs,
                 template_root,
+                library_roots,
+                declared,
+                sources,
             )?;
         }
     }
 
     // Collect exported names BEFORE localize_exports strips the export keywords.
     let exported = collect_top_level_exported_names(&content);
+    let this_module = canonical_path.to_string_lossy().to_string();
+    for name in &exported {
+        if let Some(owner) = declared.get(name) {
+            if owner != &this_module {
+                return Err(name_collision(name, owner, &this_module));
+            }
+        }
+        declared.insert(name.clone(), this_module.clone());
+    }
 
     // Strip import lines on original content (import paths must be visible to the filter).
-    let stripped = strip_local_imports(&content)?;
+    let stripped = strip_local_imports(&content, sources)?;
 
     // Mask string/template literal contents before line-based transforms.
     // This prevents code-like text inside strings (e.g. `import x from 'y'` inside a
@@ -1278,7 +1392,118 @@ fn extract_filesystem_import_paths(source: &str) -> Vec<String> {
 /// Remove all filesystem-path imports AND rwe imports from source using OXC AST.
 /// Handles multi-line imports correctly (OXC knows exact byte spans).
 /// Keeps: npm:, node:, jsr:, https: imports (handled by render.rs later).
-fn strip_local_imports(source: &str) -> Result<String, EngineError> {
+
+/// The bindings an import of an inlined module still needs after the
+/// declaration is removed. The module's exports keep their names in the flat
+/// bundle, so `import { Button }` needs nothing — but `import { Button as
+/// SaveButton }` and `import Btn from …` bind a name the bundle never declares.
+/// Emit `const SaveButton = Button;` in the importer's place.
+fn bind_inlined_import(
+    import: &oxc_ast::ast::ImportDeclaration<'_>,
+    path: &str,
+    sources: &std::collections::HashMap<String, String>,
+) -> Result<String, EngineError> {
+    use oxc_ast::ast::ImportDeclarationSpecifier;
+    if import.import_kind.is_type() {
+        return Ok(String::new());
+    }
+    let mut out = String::new();
+    let Some(specifiers) = &import.specifiers else {
+        return Ok(out);
+    };
+    for specifier in specifiers {
+        let local = specifier.local().name.as_str();
+        match specifier {
+            ImportDeclarationSpecifier::ImportSpecifier(named) => {
+                if named.import_kind.is_type() {
+                    continue;
+                }
+                let imported = named.imported.name();
+                let imported = imported.as_str();
+                let source_name = if imported == "default" {
+                    default_export_name(path, sources)?
+                } else {
+                    imported.to_string()
+                };
+                if source_name != local {
+                    out.push_str(&format!("const {local} = {source_name};\n"));
+                }
+            }
+            ImportDeclarationSpecifier::ImportDefaultSpecifier(_) => {
+                let source_name = default_export_name(path, sources)?;
+                if source_name != local {
+                    out.push_str(&format!("const {local} = {source_name};\n"));
+                }
+            }
+            ImportDeclarationSpecifier::ImportNamespaceSpecifier(_) => {
+                return Err(EngineError::new(
+                    "RWE_IMPORT_NAMESPACE",
+                    format!(
+                        "`import * as {local}` from a component file is not supported — import the names you use"
+                    ),
+                ));
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// The identifier a module exports as default: `export default function X`,
+/// `export default class X`, or `export default X;`. An anonymous default
+/// (`export default () => …`) has no name to bind and is refused.
+fn default_export_name(
+    path: &str,
+    sources: &std::collections::HashMap<String, String>,
+) -> Result<String, EngineError> {
+    use oxc_ast::ast::{ExportDefaultDeclarationKind, Expression};
+    let key = canonical_module_identity(path)?.to_string_lossy().to_string();
+    let source = match sources.get(&key) {
+        Some(s) => s.clone(),
+        None => fs::read_to_string(path).map_err(|e| {
+            EngineError::new("RWE_BUNDLE_READ", format!("cannot read '{path}': {e}"))
+        })?,
+    };
+    let alloc = Allocator::default();
+    let source_type = SourceType::default()
+        .with_module(true)
+        .with_jsx(true)
+        .with_typescript(true);
+    let parsed = Parser::new(&alloc, &source, source_type).parse();
+    for stmt in &parsed.program.body {
+        if let Statement::ExportDefaultDeclaration(ed) = stmt {
+            let name = match &ed.declaration {
+                ExportDefaultDeclarationKind::FunctionDeclaration(f) => {
+                    f.id.as_ref().map(|id| id.name.to_string())
+                }
+                ExportDefaultDeclarationKind::ClassDeclaration(c) => {
+                    c.id.as_ref().map(|id| id.name.to_string())
+                }
+                ExportDefaultDeclarationKind::Identifier(id) => Some(id.name.to_string()),
+                other => match other.as_expression() {
+                    Some(Expression::Identifier(id)) => Some(id.name.to_string()),
+                    _ => None,
+                },
+            };
+            return name.ok_or_else(|| {
+                EngineError::new(
+                    "RWE_DEFAULT_EXPORT_ANONYMOUS",
+                    format!(
+                        "'{path}' has an anonymous default export; name it (`const X = …; export default X;`) so an importer can bind it"
+                    ),
+                )
+            });
+        }
+    }
+    Err(EngineError::new(
+        "RWE_DEFAULT_EXPORT_MISSING",
+        format!("'{path}' has no default export"),
+    ))
+}
+
+fn strip_local_imports(
+    source: &str,
+    sources: &std::collections::HashMap<String, String>,
+) -> Result<String, EngineError> {
     let alloc = Allocator::default();
     let source_type = SourceType::default()
         .with_module(true)
@@ -1304,6 +1529,8 @@ fn strip_local_imports(source: &str) -> Result<String, EngineError> {
                 }
                 let replacement = if specifier == super::zeb_react::SPECIFIER {
                     super::zeb_react::lower_import(import)?
+                } else if specifier.starts_with('/') {
+                    bind_inlined_import(import, specifier, sources)?
                 } else {
                     String::new()
                 };

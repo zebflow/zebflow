@@ -257,7 +257,7 @@ export default function UnifiedRegistryEditor(input) {
     if (options.locked) {
       return (
         <span
-          className="pipeline-registry-row-del inline-flex items-center justify-center text-dark-accent1"
+          className="pipeline-registry-row-del inline-flex items-center justify-center text-primary"
           title="Locked — cannot delete"
           aria-label="Locked item"
         >
@@ -1106,7 +1106,7 @@ export default function UnifiedRegistryEditor(input) {
                         className="pipeline-registry-row pipeline-registry-folder-row"
                       >
                         <Link href={f?.href ?? "#"} className="pipeline-registry-row-link">
-                          <span className="shrink-0 flex items-center text-body-soft"><FolderIcon /></span>
+                          <span className="shrink-0 flex items-center text-muted-foreground"><FolderIcon /></span>
                           <span className="pipeline-registry-row-name">{f?.name}/</span>
                         </Link>
                         <div className="flex items-center gap-1 shrink-0">
@@ -1144,7 +1144,7 @@ export default function UnifiedRegistryEditor(input) {
                       href={f?.href ?? "#"}
                       className={cx("pipeline-registry-row pipeline-registry-folder-row pipeline-registry-special-folder", specialFolderEditorClass(f?.name ?? ""))}
                     >
-                      <span className="shrink-0 flex items-center text-body-soft"><FolderIcon /></span>
+                      <span className="shrink-0 flex items-center text-muted-foreground"><FolderIcon /></span>
                       <span className="pipeline-registry-row-name">{f?.name}/</span>
                     </Link>
                   ))}
@@ -1164,9 +1164,9 @@ export default function UnifiedRegistryEditor(input) {
                           data-rel-path={item?.id ?? ""}
                         >
                           <Link href={item?.editor_href ?? "#"} className="pipeline-registry-row-link">
-                            <span className="shrink-0 flex items-center text-body-soft"><PipelineIcon /></span>
+                            <span className="shrink-0 flex items-center text-muted-foreground"><PipelineIcon /></span>
                             <StatusDot isActive={item?.is_active} hasDraft={item?.has_draft} />
-                            {pipelineLocked && <LockIcon className="w-3 h-3 text-dark-accent1 shrink-0" title="Locked — agents cannot access" />}
+                            {pipelineLocked && <LockIcon className="w-3 h-3 text-primary shrink-0" title="Locked — agents cannot access" />}
                             <span className="pipeline-registry-row-name">{item?.title || item?.name}</span>
                             <Badge variant="secondary">{item?.trigger_kind}</Badge>
                           </Link>
@@ -1199,8 +1199,8 @@ export default function UnifiedRegistryEditor(input) {
                           data-rel-path={file?.rel_path ?? ""}
                         >
                           <Link href={file?.editor_href ?? "#"} className="pipeline-registry-row-link">
-                            <span className="shrink-0 flex items-center text-body-soft"><FileKindIcon name={file?.name ?? ""} /></span>
-                            {templateLocked && <LockIcon className="w-3 h-3 text-dark-accent1 shrink-0" title="Locked — agents cannot access" />}
+                            <span className="shrink-0 flex items-center text-muted-foreground"><FileKindIcon name={file?.name ?? ""} /></span>
+                            {templateLocked && <LockIcon className="w-3 h-3 text-primary shrink-0" title="Locked — agents cannot access" />}
                             <span className="pipeline-registry-row-name">{file?.name}</span>
                           </Link>
                           <div className="flex items-center gap-1 shrink-0">
@@ -1232,7 +1232,7 @@ export default function UnifiedRegistryEditor(input) {
                   ))}
 
                   {(dynFolderNormalFolders.length + dynFolderSpecialFolders.length) === 0 && dynFolderPipelines.length === 0 && dynFolderTemplates.length === 0 ? (
-                    <p className="p-6 text-center text-[0.78rem] text-body-soft">Empty folder. Use <strong>+ New</strong> to add pipelines.</p>
+                    <p className="p-6 text-center text-[0.78rem] text-muted-foreground">Empty folder. Use <strong>+ New</strong> to add pipelines.</p>
                   ) : null}
                 </div>
               </div>
@@ -1242,8 +1242,8 @@ export default function UnifiedRegistryEditor(input) {
 
             {/* ── Template editor ─────────────────────────────────────── */}
             {isFile && (
-              <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-[var(--zf-radius-panel)] border border-border bg-surface">
-                <div className="pipeline-editor-toolbar border-b border-border-soft">
+              <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-[var(--zf-radius-panel)] border border-border bg-card">
+                <div className="pipeline-editor-toolbar border-b border-border">
                   <div className="flex items-start justify-between gap-4">
                     <div className="pipeline-editor-toolbar-main">
                       <p className="pipeline-editor-title">{template?.name}</p>
@@ -1281,7 +1281,7 @@ export default function UnifiedRegistryEditor(input) {
                           onClick={handleToggleTemplateLock}
                           title={selectedTemplateLocked ? "Unlock (allow agent access)" : "Lock (block agent access)"}
                           aria-label={selectedTemplateLocked ? "Unlock template editor" : "Lock template editor"}
-                          className={selectedTemplateLocked ? "text-dark-accent1" : "text-body hover:text-dark-accent1"}
+                          className={selectedTemplateLocked ? "text-primary" : "text-foreground hover:text-primary"}
                         >
                           {selectedTemplateLocked ? <LockIcon /> : <LockOpenIcon />}
                         </Button>
@@ -1300,7 +1300,7 @@ export default function UnifiedRegistryEditor(input) {
                             <TrashIcon />
                           </Button>
                         ) : (
-                          <span className="inline-flex items-center justify-center text-dark-accent1" title="Locked — cannot delete" aria-label="Locked item">
+                          <span className="inline-flex items-center justify-center text-primary" title="Locked — cannot delete" aria-label="Locked item">
                             <LockIcon />
                           </span>
                         )}
@@ -1357,8 +1357,8 @@ export default function UnifiedRegistryEditor(input) {
 
             {/* ── No-selection placeholder (folder mode with no folder content) ── */}
             {!isPipeline && !isFile && !isFolder && (
-              <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 text-body-muted">
-                <p className="text-sm font-medium text-body">Select a file to edit</p>
+              <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 text-muted-foreground">
+                <p className="text-sm font-medium text-foreground">Select a file to edit</p>
               </div>
             )}
           </section>

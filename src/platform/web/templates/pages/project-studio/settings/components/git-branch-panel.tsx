@@ -88,7 +88,7 @@ export default function GitBranchPanel({ owner, project }) {
       </div>
 
       {msg && (
-        <p className={cx("text-[0.72rem] mt-[0.5rem]", msgTone === "ok" ? "text-accent" : msgTone === "error" ? "text-red-400" : "text-body-soft")}>
+        <p className={cx("text-[0.72rem] mt-[0.5rem]", msgTone === "ok" ? "text-primary" : msgTone === "error" ? "text-red-400" : "text-muted-foreground")}>
           {msg}
         </p>
       )}

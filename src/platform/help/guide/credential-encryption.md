@@ -72,14 +72,18 @@ themselves display safety and never storage safety.
 
 ## Rotating keys
 
-Two operations, both online, both superadmin, neither requiring a restart.
+Two operations, both online, both superadmin, neither requiring a restart. The
+examples below use a session cookie jar — `POST /login` with `identifier` and
+`password`, `--cookie-jar /tmp/zf.txt`, then `-b /tmp/zf.txt` on every call
+after (`zebflow_session` is an opaque token minted at login, never the
+username).
 
 **Rotate** installs a new data key. New credentials are written under it;
 everything already stored stays readable under the key that wrote it. Instant,
 and it re-encrypts nothing.
 
 ```bash
-curl -H "Cookie: zebflow_session=superadmin" \
+curl -b /tmp/zf.txt \
   -X POST http://localhost:10610/api/platform/credentials/rotate
 ```
 
@@ -88,7 +92,7 @@ the current generation. Run it when you want an older generation to stop being
 needed — rotation alone never does that.
 
 ```bash
-curl -H "Cookie: zebflow_session=superadmin" \
+curl -b /tmp/zf.txt \
   -X POST http://localhost:10610/api/platform/credentials/reencrypt
 ```
 
@@ -97,7 +101,7 @@ new one and no credential is touched, so it is cheap however many you hold.
 Back up the new file afterwards: the old one no longer opens anything.
 
 ```bash
-curl -H "Cookie: zebflow_session=superadmin" \
+curl -b /tmp/zf.txt \
   -X POST http://localhost:10610/api/platform/credentials/rekey
 ```
 
@@ -107,7 +111,7 @@ instance does not own the file it would rewrite.
 **Where the keyring stands** — never key material, only which generations exist:
 
 ```bash
-curl -H "Cookie: zebflow_session=superadmin" \
+curl -b /tmp/zf.txt \
   http://localhost:10610/api/platform/credentials/keyring
 ```
 

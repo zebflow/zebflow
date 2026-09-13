@@ -24,7 +24,7 @@ Create a `jwt_signing_key` credential in the Credentials UI. Fields:
 |---|---|
 | `algorithm` | `HS256` / `HS384` / `HS512` (symmetric) or `RS256` / `RS384` / `RS512` / `ES256` / `ES384` (asymmetric) |
 | `secret` | Signing key for HS* algorithms |
-| `auth_roles` | Roles registered for this credential — used to populate the **Required Role** checkboxes in webhook nodes. Defines what values are valid in the JWT `role` claim. |
+| `auth_roles` | Roles registered for this credential — used to populate the **Required Role** checkboxes in webhook nodes. Defines what values are valid in the JWT `roles` array claim. |
 | `auth_redirect` | Where to redirect on 401 (browser navigation only — `Sec-Fetch-Mode: navigate`) |
 | `auth_forbidden_redirect` | Where to redirect on 403 (browser navigation only) |
 
@@ -32,7 +32,7 @@ Create a `jwt_signing_key` credential in the Credentials UI. Fields:
 
 ### `--auth-required-role` behaviour
 
-- **One or more roles selected** → JWT `role` claim must match one of the selected roles or request is rejected with 403.
+- **One or more roles selected** → the JWT `roles` array claim must contain one of the selected roles or request is rejected with 403.
 - **No roles selected (empty)** → any holder of a valid JWT may access — role is not checked. Use this for "authenticated but unrestricted" routes.
 
 ---
@@ -60,13 +60,13 @@ Create a `jwt_signing_key` credential in the Credentials UI. Fields:
 
 ```
 | trigger.webhook --path /auth/login --method POST
-| pg.query --credential main-db --params "{{ [input.username] }}" \
+| pg.query --credential main-db --params "{{ [input.body.username] }}" \
     -- "SELECT id::text, username, role FROM users WHERE username = $1 LIMIT 1"
 | logic.if --expr "input.rows && input.rows.length > 0"
 (false pin → `web.response --status 401 --message "invalid credentials"`)
 | script -- "const user = input.rows[0]; return { id: user.id, username: user.username, roles: [user.role] };"
-| auth.token.create --credential my-jwt --claim sub={{ input.id }} --claim username={{ input.username }}:public --claim roles={{ input.roles }}:public --expires-in 86400
-| web.response --location /dashboard --set-cookie name=session,value={{ input.access_token }},http-only,max-age=86400,path=/
+| auth.token.create --credential my-jwt --claim "sub={{ input.id }}" --claim "username={{ input.username }}:public" --claim "roles={{ input.roles }}:public" --expires-in 86400
+| web.response --location /dashboard --set-cookie "name=session,value={{ input.access_token }},http-only,max-age=86400,path=/"
 ```
 
 > **Note:** `roles` must be an array in the JWT claim — wrap a single DB `role` string with `[user.role]`. If your schema already returns an array (junction table, `text[]` column), use it directly.
@@ -82,26 +82,28 @@ Create a `jwt_signing_key` credential in the Credentials UI. Fields:
 
 ```
 | trigger.webhook --path /auth/register --method POST
-| logic.if --expr "input.username && input.email && input.password && input.password.length >= 12"
+| logic.if --expr "input.body.username && input.body.email && input.body.password && input.body.password.length >= 12"
 (false pin → `web.response --status 400 --message "username, email and a password of at least 12 characters are required"`)
-| script -- "return { username: input.username, email: input.email, role: 'user', input: input.password };"
-| crypto --op argon2_hash
-(the hash arrives as `input.result` — store that, never the password)
+| crypto --op argon2_hash --input "{{ input.body.password }}"
+(`n.crypto` REPLACES the payload with `{ result }` — the hashed password. The
+original webhook fields are gone from `input`, so the insert below reads them
+back from the trigger node's own output via `$nodes.n0`, `n0` being this
+pipeline's first node.)
+| pg.query --credential main-db --params "{{ [$nodes.n0.body.username, $nodes.n0.body.email, input.result, 'user'] }}" \
+    -- "INSERT INTO users (username, email, password_hash, role, created_at) VALUES ($1, $2, $3, $4, NOW()) RETURNING id::text"
+| web.response --location /auth/login?registered=1
+```
 
 **Never hash a password yourself.** An earlier version of this example wrote
 `btoa(password + 'salt')`, which is base64 — not a hash at all, and reversible by
 anyone holding the row. `n.crypto` has `argon2_hash` and `argon2_verify`; verify
 answers on `true`/`false` pins, so the branch is the check.
-| pg.query --credential main-db --params "{{ [input.username, input.email, input.password_hash, input.role] }}" \
-    -- "INSERT INTO users (username, email, password_hash, role, created_at) VALUES ($1, $2, $3, $4, NOW()) RETURNING id::text"
-| web.response --location /auth/login?registered=1
-```
 
 ### auth-logout — clear session cookie
 
 ```
 | trigger.webhook --path /auth/logout --method GET
-| web.response --location /auth/login --set-cookie name=session,value=,http-only,max-age=0,path=/
+| web.response --location /auth/login --set-cookie "name=session,value=,http-only,max-age=0,path=/"
 ```
 
 ### dashboard-protected — JWT-protected page
@@ -114,7 +116,7 @@ answers on `true`/`false` pins, so the branch is the check.
 | web.response --template pages/dashboard.tsx
 ```
 
-JWT missing/invalid → `auth_redirect` fires (browser) or 401 JSON (fetch).
+JWT missing/invalid → `auth_redirect` fires as a 303 redirect (browser navigation) or 401 JSON (fetch/API).
 
 ### admin-guard — role-checked admin route
 
@@ -124,7 +126,7 @@ JWT missing/invalid → `auth_redirect` fires (browser) or 401 JSON (fetch).
 | web.response --template pages/admin-section.tsx
 ```
 
-Role mismatch → `auth_forbidden_redirect` fires (browser) or 403 JSON (fetch).
+Role mismatch → `auth_forbidden_redirect` fires as a 303 redirect (browser navigation) or 403 JSON (fetch/API).
 
 ---
 
@@ -133,7 +135,7 @@ Role mismatch → `auth_forbidden_redirect` fires (browser) or 403 JSON (fetch).
 - `trigger.webhook --auth-type jwt --auth-credential <id>` — auto-verify JWT; `input.auth` = decoded claims
 - `trigger.webhook --auth-required-role <roles>` — comma-separated roles; checks against JWT `roles` array claim. Empty = any authenticated user.
 - `pg.query` — user lookup and insert
-- `auth.token.create --claim key={{ input.field }}` — sign JWT; output `{{ input.access_token }}`. Append `:public` to expose that claim in the browser via `ctx.auth` (e.g. `--claim role={{ input.role }}:public`). Private claims like `sub` never reach the browser DOM.
+- `auth.token.create --claim "key={{ input.field }}"` — sign JWT; output `{{ input.access_token }}`. Append `:public` to expose that claim in the browser via `ctx.auth` (e.g. `--claim "role={{ input.role }}:public"`). Private claims like `sub` never reach the browser DOM.
 - `web.response --set-cookie` — set HttpOnly session cookie
 - `web.response --location` — redirect after login/logout/register
 - `web.response --template` — render protected pages

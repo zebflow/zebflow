@@ -56,7 +56,7 @@ export default function Page(input) {
         <StudioTabNav>
           <StudioTabLink href={input.nav?.links?.db_connections ?? "#"} active>Connections</StudioTabLink>
         </StudioTabNav>
-        <section className="flex-1 min-h-0 overflow-auto flex flex-col bg-bg">
+        <section className="flex-1 min-h-0 overflow-auto flex flex-col bg-background">
           <div className="project-content-wrap">
             <section className="project-content-section">
               <div className="project-content-head">

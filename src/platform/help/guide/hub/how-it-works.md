@@ -185,6 +185,14 @@ Current canonical package kinds are:
 - `folder_bundle`
 - `project_bundle`
 - `node_bundle`
+- `rwe_library`
+- `skill` — one `skills/<name>/` folder with a `SKILL.md`; Add copies it to
+  `skills/<name>/` under the receiving project's source root (whatever folder
+  was requested), where the project's agent lists it with `skill_list` and
+  where it shadows a blessed skill of the same name. Publish source:
+  `skill_folder` with `skills/<name>` as the reference; the folder is refused
+  unless its `SKILL.md` names itself, has a description and a license
+  (`HUB_SKILL_INVALID`). Contract: `docs/contracts/kinds/skill`.
 
 Unknown package kinds are rejected. This keeps Hub packages predictable and
 prevents arbitrary package categories from appearing in consumers.
@@ -205,9 +213,17 @@ added through Add+.
 For normal Hub packages, use Add. Imported pipelines should land as draft unless
 the user explicitly activates them.
 
-Add is copy/clone based. Hub does not keep ownership of the resulting project
-files and does not track an installation state after Add. Users can change the
-added source like any other project code.
+Add is copy/clone based for `pipeline_bundle`, `template_bundle`,
+`folder_bundle`, and `project_bundle`: Hub does not keep ownership of the
+resulting project files and does not track an installation state after Add.
+Users can change the added source like any other project code.
+
+`node_bundle` and `rwe_library` are the two exceptions — a node bundle
+materializes into `data/hub/nodes/` and an RWE library's runtime lands under
+`data/hub/rwe-libraries/`, and both are recorded as real dependencies: a
+`node_bundle` install is written into `zeb.lock`, and an `rwe_library` install
+is written into both `zeb.lock` and `zebflow.yaml` (`rwe.libraries`), pinning
+the version and digest the way any dependency lock does.
 
 ### Where an added package lands
 

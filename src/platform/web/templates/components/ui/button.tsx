@@ -1,13 +1,13 @@
 import { cx } from "zeb/react";
 
 const VARIANT_CLASSES = {
-  primary: "border border-brand-orange bg-brand-orange text-white hover:opacity-90",
-  outline: "border border-[var(--color-border,var(--color-ui-border))] bg-transparent text-[var(--color-body,var(--color-ui-text))] hover:bg-[var(--color-surface-2,var(--color-ui-bg-subtle))]",
-  secondary: "border border-[var(--color-border,var(--color-ui-border))] bg-[var(--color-surface-2,var(--color-ui-bg-subtle))] text-[var(--color-body,var(--color-ui-text))] hover:bg-[var(--color-surface-3,var(--color-ui-bg-muted))]",
-  ghost: "text-[var(--color-body-soft,var(--color-ui-text-soft))] hover:bg-[var(--color-surface-2,var(--color-ui-bg-subtle))] hover:text-[var(--color-body,var(--color-ui-text))]",
-  destructive: "bg-red-500/10 !text-red-500 border border-red-500/20 hover:bg-red-500/20",
-  link: "!text-brand-blue underline-offset-4 hover:underline",
-  live: "bg-green-600 !text-white hover:bg-green-700 border border-green-600",
+  primary: "border border-primary bg-primary text-primary-foreground hover:bg-primary/90",
+  outline: "border border-input bg-transparent text-foreground hover:bg-muted",
+  secondary: "border border-input bg-secondary text-secondary-foreground hover:bg-accent",
+  ghost: "text-muted-foreground hover:bg-muted hover:text-foreground",
+  destructive: "border border-destructive/20 bg-destructive/10 !text-destructive hover:bg-destructive/20",
+  link: "!text-info underline-offset-4 hover:underline",
+  live: "border border-success bg-success !text-success-foreground hover:bg-success/90",
 };
 const ALL_VARIANT_TOKENS = Object.values(VARIANT_CLASSES).join(" ");
 
@@ -38,7 +38,7 @@ export default function Button({
     <>
       <span
         hidden
-        tw-variants="border border-brand-orange bg-brand-orange text-white hover:opacity-90 border-[var(--color-border,var(--color-ui-border))] bg-transparent text-[var(--color-body,var(--color-ui-text))] hover:bg-[var(--color-surface-2,var(--color-ui-bg-subtle))] bg-[var(--color-surface-2,var(--color-ui-bg-subtle))] hover:bg-[var(--color-surface-3,var(--color-ui-bg-muted))] text-[var(--color-body-soft,var(--color-ui-text-soft))] hover:text-[var(--color-body,var(--color-ui-text))] bg-red-500/10 !text-red-500 border border-red-500/20 hover:bg-red-500/20 !text-brand-blue underline-offset-4 hover:underline bg-green-600 !text-white hover:bg-green-700 border border-green-600"
+        tw-variants="border border-primary bg-primary text-primary-foreground hover:bg-primary/90 border border-input bg-transparent text-foreground hover:bg-muted border border-input bg-secondary text-secondary-foreground hover:bg-accent text-muted-foreground hover:bg-muted hover:text-foreground border border-destructive/20 bg-destructive/10 !text-destructive hover:bg-destructive/20 !text-info underline-offset-4 hover:underline border border-success bg-success !text-success-foreground hover:bg-success/90"
       />
       <Element
         type={Element === "button" ? type : undefined}

@@ -117,7 +117,7 @@ export default function GeoPreviewMap({ geometry }) {
   if (overlay) layers.push(overlay);
   return (
     <div className="space-y-1">
-      <div className="overflow-hidden rounded-md border border-ui-border/70">
+      <div className="overflow-hidden rounded-md border border-border/70">
         <DeckMap
           id="geo-cell-preview"
           height="180px"
@@ -126,7 +126,7 @@ export default function GeoPreviewMap({ geometry }) {
           layers={layers}
         />
       </div>
-      <p className="text-[0.68rem] text-ui-text-soft">{geoLabel(geometry)}</p>
+      <p className="text-[0.68rem] text-muted-foreground">{geoLabel(geometry)}</p>
     </div>
   );
 }

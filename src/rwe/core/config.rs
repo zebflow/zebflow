@@ -43,6 +43,11 @@ impl Default for SecurityPolicy {
 #[serde(default)]
 pub struct CompileOptions {
     pub template_root: Option<String>,
+    /// Source libraries: a `zeb/<name>` specifier prefix mapped to the
+    /// directory holding its `.tsx` files. `import { Button } from "zeb/ui/button"`
+    /// resolves to `<root>/button.tsx` and is inlined like an `@/` import — the
+    /// page's Tailwind scan and SSR see it as source, not as a runtime bundle.
+    pub library_roots: std::collections::BTreeMap<String, String>,
     pub file_path: Option<String>,
     pub security: SecurityPolicy,
     pub runtime_mode: RuntimeMode,
@@ -53,6 +58,7 @@ impl Default for CompileOptions {
     fn default() -> Self {
         Self {
             template_root: None,
+            library_roots: std::collections::BTreeMap::new(),
             file_path: None,
             security: SecurityPolicy::default(),
             runtime_mode: RuntimeMode::Inline,

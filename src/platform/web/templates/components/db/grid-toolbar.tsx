@@ -22,10 +22,10 @@ function Glyph({ path, className = "h-3.5 w-3.5" }) {
 }
 
 const ACTION =
-  "flex items-center gap-1 rounded px-2 py-1 text-[11px] font-medium text-ui-text-soft hover:bg-ui-bg-muted hover:text-ui-text disabled:opacity-30";
+  "flex items-center gap-1 rounded px-2 py-1 text-[11px] font-medium text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-30";
 
 function Divider() {
-  return <span className="mx-0.5 h-4 w-px bg-ui-border/60" />;
+  return <span className="mx-0.5 h-4 w-px bg-border/60" />;
 }
 
 /**
@@ -37,7 +37,7 @@ function Divider() {
  */
 export default function GridToolbar({ editor, canDeleteRow, csv, loadedCount, onRefresh }) {
   return (
-    <div className="flex shrink-0 flex-wrap items-center gap-1 border-b border-ui-border/70 bg-ui-bg-muted/30 px-2 py-1.5">
+    <div className="flex shrink-0 flex-wrap items-center gap-1 border-b border-border/70 bg-accent/30 px-2 py-1.5">
       <button
         type="button"
         title="Save changes"
@@ -45,7 +45,7 @@ export default function GridToolbar({ editor, canDeleteRow, csv, loadedCount, on
           "flex items-center gap-1 rounded px-2 py-1 text-[11px] font-medium disabled:opacity-30",
           editor.hasPendingEdits
             ? "bg-blue-600 text-white hover:bg-blue-700"
-            : "text-ui-text-soft hover:bg-ui-bg-muted hover:text-ui-text",
+            : "text-muted-foreground hover:bg-accent hover:text-foreground",
         )}
         disabled={!editor.hasPendingEdits}
         onClick={() => editor.confirmSave.setOpen(true)}
@@ -69,7 +69,7 @@ export default function GridToolbar({ editor, canDeleteRow, csv, loadedCount, on
       <button
         type="button"
         title="Add row"
-        className="flex items-center gap-1 rounded px-2 py-1 text-[11px] font-medium text-ui-text hover:bg-ui-bg-muted"
+        className="flex items-center gap-1 rounded px-2 py-1 text-[11px] font-medium text-foreground hover:bg-accent"
         onClick={editor.addRow}
       >
         <Glyph path={ICONS.add} />
@@ -91,7 +91,7 @@ export default function GridToolbar({ editor, canDeleteRow, csv, loadedCount, on
       <a
         title="Export CSV"
         className={cx(
-          "flex items-center gap-1 rounded px-2 py-1 text-[11px] font-medium text-ui-text-soft hover:bg-ui-bg-muted hover:text-ui-text",
+          "flex items-center gap-1 rounded px-2 py-1 text-[11px] font-medium text-muted-foreground hover:bg-accent hover:text-foreground",
           !csv.href && "pointer-events-none opacity-30",
         )}
         href={csv.href || undefined}
@@ -104,8 +104,8 @@ export default function GridToolbar({ editor, canDeleteRow, csv, loadedCount, on
         type="button"
         title="Calculate total row count"
         className={cx(
-          "flex items-center gap-1 rounded px-2 py-1 text-[11px] font-medium hover:bg-ui-bg-muted",
-          editor.countBusy ? "animate-pulse text-ui-text" : "text-ui-text-soft hover:text-ui-text",
+          "flex items-center gap-1 rounded px-2 py-1 text-[11px] font-medium hover:bg-accent",
+          editor.countBusy ? "animate-pulse text-foreground" : "text-muted-foreground hover:text-foreground",
         )}
         onClick={editor.countRows}
       >
@@ -117,7 +117,7 @@ export default function GridToolbar({ editor, canDeleteRow, csv, loadedCount, on
         Refresh
       </button>
 
-      <span className="ml-auto text-[10px] tabular-nums text-ui-text-soft">
+      <span className="ml-auto text-[10px] tabular-nums text-muted-foreground">
         {editor.totalRowCount !== null ? `${editor.totalRowCount} rows` : `${loadedCount} loaded`}
       </span>
     </div>

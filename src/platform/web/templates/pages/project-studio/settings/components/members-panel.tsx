@@ -217,7 +217,7 @@ export default function MembersPanel({ membersApi, invitesApi, grantableRoles })
 
       {invites.length ? (
         <div className="flex flex-col gap-2">
-          <p className="text-[0.74rem] uppercase tracking-[0.08em] text-body-soft">
+          <p className="text-[0.74rem] uppercase tracking-[0.08em] text-muted-foreground">
             Waiting on an answer
           </p>
           {invites.map((invite) => (
@@ -228,8 +228,8 @@ export default function MembersPanel({ membersApi, invitesApi, grantableRoles })
             >
               <p className="text-[0.8rem]">
                 <span className="font-medium">{invite.target_user}</span>
-                <span className="text-body-soft"> · {invite.role_preset}</span>
-                {invite.note ? <span className="text-body-soft"> · {invite.note}</span> : null}
+                <span className="text-muted-foreground"> · {invite.role_preset}</span>
+                {invite.note ? <span className="text-muted-foreground"> · {invite.note}</span> : null}
               </p>
               <Button
                 type="button"
@@ -259,7 +259,7 @@ export default function MembersPanel({ membersApi, invitesApi, grantableRoles })
         variant="destructive"
         busy={busy}
       >
-        <p className="text-[0.8rem] text-body-soft">
+        <p className="text-[0.8rem] text-muted-foreground">
           <span className="font-mono">{removing?.user_id}</span> loses access to this project
           immediately. Anything they made stays; they can be invited again.
         </p>

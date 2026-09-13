@@ -1,249 +1,170 @@
-# Web Templates (TSX Pages)
+# Web pages (TSX)
 
-Zebflow serves HTML from **TSX files** in your project: the server renders them to HTML (SSR), then the browser hydrates for interactivity. After you save with `file_write`, the next request uses the new file — no separate frontend build.
+A page is a TSX file in the project, rendered to HTML on the server and
+hydrated in the browser. A pipeline serves it:
+
+```
+| trigger.webhook --path /posts/:slug --method GET
+| sekejap.query --params "{{ [$trigger.params.slug] }}" -- "SELECT * FROM posts WHERE slug = $1"
+| web.response --template pages/post.tsx
+```
+
+The payload that reaches `web.response` is the page's `input`. Save the file
+with `file_write`; the next request renders the new file — there is no build
+step. Paths are relative to the project's source root, which is the repository
+root unless `zebflow.yaml` sets `spec.layout.source`.
 
 ---
 
-## Import Rules (CRITICAL)
+## Import rules
 
-### Hooks — import them in every file that uses them
-
-`useState`, `useEffect`, `useRef`, `useMemo`, `useCallback`, `usePageState`, `useRouter` and the rest come from `"zeb/react"`. There are no implicit globals: **every file that calls a hook imports it in that file**, entry pages and component files alike. A hook used without an import is refused at compile time.
-
-```tsx
-// ✓ CORRECT — in every file that uses them
-import { useState, useEffect } from "zeb/react";
-
-const [open, setOpen] = useState(false);
-```
+**Every file imports what it uses, from `"zeb/react"`.** Entry pages and
+component files alike. There is one door; `react`, `preact`, npm, CDN and
+relative paths are refused at compile time.
 
 ```tsx
-// ✗ WRONG — refused: "'useState' is used but not imported"
-const [open, setOpen] = useState(false);
+import { useState, useEffect, cx } from "zeb/react";
+import { Button } from "zeb/ui/button";            // component library, no install
+import PostCard from "@/components/post-card";     // your own file: always @/, never ../
+import "@/globals.css";                            // the project's theme tokens
 ```
 
-```tsx
-// ✗ WRONG — NEVER do this
-import { useState } from "zeb/react";
-// RWE hydrates the page automatically; never call render() manually.
-```
+- A hook used without an import is refused: `'useState' is used but not imported`.
+- `@/` is the source root. Relative imports are refused — the compiler would
+  resolve one but not carry it into the bundle.
+- The compiler inlines every imported file into **one flat bundle per page**.
+  Two consequences: a component must import its own names (it never inherits
+  the page's), and two files may not export the same name onto one page
+  (`RWE_BUNDLE_NAME_COLLISION`). Non-exported top-level names are prefixed
+  per file, so they never collide.
+- CSS: `import "@/globals.css"` and `import "@/styles/x.css"` work; a directory
+  import loads its `index.css`; duplicates are loaded once.
 
-### Component imports — always use `@/` alias
-
-`@/` resolves to the template root at compile time. Always use it. Never use relative paths.
-
-```tsx
-// ✓ CORRECT
-import Button from "@/shared/ui/button";
-import MyWidget from "@/components/my-widget";
-
-// ✗ WRONG — relative paths break
-import Button from "../../components/ui/button";
-```
-
-### Component files — the same rule, no exception
-
-A component file imports its own hooks. It is not covered by the entry page's imports.
-
-```tsx
-// components/my-widget.tsx
-import { useState } from "zeb/react";
-
-export default function MyWidget({ label }) {
-  const [open, setOpen] = useState(false);
-  return <button onClick={() => setOpen(!open)}>{label}</button>;
-}
-```
-
-Relative imports are refused in component files too — use `@/` there as well. The compiler resolves a relative path but does not carry what it finds into the bundle, so the page would compile and then fail in the browser.
-
-### `.ts` behavior files — use camelCase exports, never ALL_CAPS
-
-The bundler automatically renames `UPPER_SNAKE_CASE` top-level `const/let/var` declarations with a unique per-file prefix to avoid collisions in the flat output bundle. This means an exported `ALL_CAPS` name is no longer exported under its original name — imports of it resolve to `undefined`.
-
-**Always export camelCase from `.ts` files:**
-
-```ts
-// ✓ CORRECT — camelCase, name preserved through bundling
-export const apiUrl = "https://api.example.com";
-export const defaultPageSize = 20;
-export const myConfig = { timeout: 5000 };
-
-// ✗ WRONG — UPPER_SNAKE_CASE gets prefixed, import resolves to undefined
-export const API_URL = "https://api.example.com";
-export const DEFAULT_PAGE_SIZE = 20;
-export const MY_CONFIG = { timeout: 5000 };
-```
-
-Consuming page:
-```tsx
-import { apiUrl, defaultPageSize } from "@/behavior/config";
-// ✓ works — camelCase names survive bundling
-```
+What `zeb/react` exports: `help("web/hooks")`. What is refused and why:
+`help("web/custom-scripts")`.
 
 ---
 
-## Page File Shape
+## Page file shape
 
 ```tsx
-// pages/my-page.tsx
+// pages/post.tsx
+import { useState } from "zeb/react";
+import { Button } from "zeb/ui/button";
+import "@/globals.css";
 
-import { usePageState } from "zeb/react";
-
-export default function MyPage(input: PageInput) {
-  const state = usePageState(input.state ?? { count: 0, title: "Hello" });
-
+export default function Post(input) {
+  const post = input.rows?.[0];
+  const [liked, setLiked] = useState(false);
   return (
-    <div className="p-8 bg-slate-950 text-slate-100 min-h-screen">
-      <h1 className="text-3xl font-bold mb-4">{state.title}</h1>
-      <p className="text-slate-400">{state.count}</p>
-    </div>
+    <main className="mx-auto max-w-2xl p-8">
+      <h1 className="text-3xl font-bold">{post?.title}</h1>
+      <Button variant="outline" onClick={() => setLiked(!liked)}>{liked ? "Liked" : "Like"}</Button>
+    </main>
   );
 }
 
 export const page = {
-  head: {
-    title: "My Page",
-    description: "Page description for SEO",
-    themeColor: "#145FA4",
-    canonical: "https://example.com/my-page",
-    robots: "index, follow",
-    icons: [
-      { rel: "icon",             type: "image/png", sizes: "32x32", href: "/favicon-32x32.png" },
-      { rel: "icon",             type: "image/png", sizes: "16x16", href: "/favicon-16x16.png" },
-      { rel: "apple-touch-icon", sizes: "180x180",                  href: "/apple-touch-icon.png" },
-    ],
-    manifest: "/site.webmanifest",
-    og: {
-      title: "My Page",
-      description: "Page description",
-      image: "https://example.com/og.png",
-      url: "https://example.com/my-page",
-      type: "website",
-      siteName: "My Site",
-    },
-    twitter: {
-      card: "summary_large_image",
-      title: "My Page",
-      description: "Page description",
-      image: "https://example.com/og.png",
-    },
-    // extra: raw HTML injected verbatim into <head> — for anything not covered above
-    extra: "<link rel=\"preconnect\" href=\"https://fonts.googleapis.com\">",
-  },
+  head: { title: "Post", description: "One post" },
   html: { lang: "en" },
-  body: { className: "min-h-screen bg-slate-950 text-slate-100" },
+  body: { className: "bg-background text-foreground" },
 };
 
-export const app = {
-  hydration: "reactive", // "reactive" | "static" | "none"
-};
-```
-
-**`page.head` fields:**
-
-| Field | Output | Notes |
-|---|---|---|
-| `title` | `<title>` | |
-| `description` | `<meta name="description">` | |
-| `themeColor` | `<meta name="theme-color">` | PWA + browser chrome color |
-| `canonical` | `<link rel="canonical">` | SEO deduplication |
-| `robots` | `<meta name="robots">` | e.g. `"index, follow"` or `"noindex"` |
-| `icons` | `<link rel="icon">` / `<link rel="apple-touch-icon">` | Array of `{ rel, href, type?, sizes? }` |
-| `manifest` | `<link rel="manifest">` | PWA web app manifest |
-| `og` | `<meta property="og:*">` | `title`, `description`, `image`, `url`, `type`, `siteName`, `locale` |
-| `twitter` | `<meta name="twitter:*">` | `card`, `title`, `description`, `image`, `site`, `creator` |
-| `extra` | raw HTML verbatim | Escape hatch — inject anything else |
-
-Use **`className`**, not `class`.
-
----
-
-## `usePageState(initialState)`
-
-Returns a reactive Proxy. On server: renders with the initial snapshot. On client: live reactivity — mutations propagate to the DOM.
-
-```tsx
-import { usePageState } from "zeb/react";
-
-const state = usePageState(input.state ?? { count: 0, items: [] });
-state.count++;           // ← triggers DOM update on client
-state.items = [...state.items, newItem];
-```
-
-Pipeline data flows in via `input.state`. Design your pipeline's final node output to match the shape your template expects.
-
----
-
-## `PageInput` Type
-
-```ts
-interface PageInput {
-  state?: Record<string, unknown>;  // data from pipeline's last node
-  request?: {
-    method: string;
-    path: string;
-    query: Record<string, string>;
-    headers: Record<string, string>;
-    body?: unknown;
-  };
+// Optional: config that depends on the data. Merged over `page`.
+export function getPage(input) {
+  const post = input.rows?.[0];
+  return { head: { title: post?.title, og: { title: post?.title, image: post?.cover } } };
 }
 ```
 
----
+`page.head` fields, each optional:
 
-## Hydration Modes
+| Field | Output |
+|---|---|
+| `title`, `description`, `themeColor`, `robots`, `canonical`, `manifest` | the matching `<title>`, `<meta>` or `<link>` |
+| `icons` | `[{ rel, href, type?, sizes? }]` → `<link>` tags (favicons, apple-touch-icon) |
+| `links` | `[{ rel, href, type?, sizes?, media?, crossorigin? }]` → `<link>` tags — a stylesheet the page needs |
+| `scripts` | `[{ src, defer?, async?, nomodule?, type?, crossorigin?, integrity?, referrerpolicy? }]` → `<script>` tags |
+| `og` | `{ title, description, image, url, type, siteName, locale }` → `og:*` |
+| `twitter` | `{ card, title, description, image, site, creator }` → `twitter:*` |
+| `extra` | a raw HTML string appended to `<head>`, unescaped |
 
-| `app.hydration` | Behaviour | Use when |
-|-----------------|-----------|----------|
-| `"reactive"` | Full SSR + client JS hydration | Interactive pages (forms, dashboards) |
-| `"static"` | SSR only, no client JS | Read-only content, blog posts |
-| `"none"` | Raw HTML string, no wrapper | Fragments, email templates |
-
----
-
-## Data from the Pipeline
-
-The upstream payload passed to **`n.web.response --template`** becomes `input` in the page:
-
-```
-pipeline:  trigger → pg.query → web.response --template pages/foo.tsx
-                         ↓
-template:  input = { rows: [...], row_count: 20 }  (pg.query output)
-```
-
-`input` is the function parameter (props). `ctx` is the same object exposed as `globalThis.ctx` — usable in both SSR and browser contexts. Use `input` for server-seeded data, `useState` for client-side state.
+`html.lang` and `body.className` set the two outer elements. Use
+`className`, never `class`.
 
 ---
 
-## MCP Workflow
+## `input` — data from the pipeline
 
-```
-file_create   kind=page   name=my-page
-file_read      rel_path=pages/my-page.tsx
-file_write    rel_path=pages/my-page.tsx   content="..."
-pipeline_register + pipeline_activate
-```
+`input` **is** the payload the previous node produced, with the request
+context merged in at the top level (never overwriting a key the pipeline set):
 
-For a reusable TypeScript module:
+| Key | Value |
+|---|---|
+| `route` | the path the request arrived on |
+| `params` | route parameters (`/posts/:slug` → `{ slug }`) |
+| `query` | parsed query string; `search` is the raw `?…` string |
+| `headers` | request headers |
+| `auth` | the verified token's public claims, when the trigger had `--auth-*` |
 
-```text
-help              topic=web/custom-scripts
-file_create   kind=script   name=format-address
-file_read      rel_path=scripts/format-address.ts
-file_write    rel_path=scripts/format-address.ts   content="..."
-```
+So after `sekejap.query`, `input.rows` is the result; after `script -- "return { base: '/x' }"`,
+`input.base` is `/x`. There is no `input.state` or `input.request` wrapper.
 
-Do not add npm, JSR, CDN, React, Preact, or Node package imports to project
-scripts. Use local TypeScript, reviewed Hub packages, or enabled `zeb/*`
-libraries.
+Server data comes from `input`. Client state is `useState` (local) or
+`usePageState("key", default)` (shared across the page's components). See
+`help("web/hooks")`.
 
 ---
 
-## Further Reading
+## Hydration
 
-- `help("web/hooks")` — useState, useEffect, usePageState, cx, useRouter, Link, tv
-- `help("web/tailwind")` — semantic tokens, tw-variants, cx(), tv()
-- `help("web/libraries")` — zeb/* bundled add-ons: icons, markdown, codemirror, d3
-- `help("web/custom-scripts")` — create focused TypeScript modules through MCP
-- `help("web/design-system")` — component library rules
+Every page is rendered on the server and hydrated in the browser. To defer a
+subtree, put `hydrate` on its element:
+
+```tsx
+<section hydrate="onview">…</section>      {/* hydrates when scrolled into view */}
+<section hydrate="oninteract">…</section>  {/* hydrates on first click or focus */}
+<section hydrate="off">…</section>         {/* server HTML only, never hydrates */}
+```
+
+Navigation between pages of the project is client-side through `<Link>` and
+`useRouter()`: the next page is fetched and swapped in without a full reload.
+
+---
+
+## Verify a page
+
+A component that throws during server render is replaced by
+`<!-- RWE component error: … -->` **and the response is still 200**. After
+writing a page or a component it imports:
+
+1. `file_write` (a save evicts every compiled page that inlined the file; if
+   something still looks old, `POST /api/projects/{o}/{p}/rwe/cache/clear`).
+2. Fetch the page and search the body for `RWE component error`.
+3. Open it in a browser; a console error means hydration failed even though
+   the server HTML looked right.
+
+---
+
+## MCP workflow
+
+```
+file_create   kind=page  name=post  parent_rel_path=pages    → pages/post.tsx scaffold
+file_write    rel_path=pages/post.tsx  content="..."
+pipeline_register  … | web.response --template pages/post.tsx
+pipeline_activate
+```
+
+Reusable TypeScript lives in `scripts/*.ts` (`file_create kind=script`) and is
+imported with `@/scripts/<name>`; see `help("web/custom-scripts")`.
+
+---
+
+## Further reading
+
+- `help("web/hooks")` — everything `zeb/react` exports; `usePageState`, `useRouter`, `Link`, `cx`
+- `help("web/ui")` — zeb/ui: the shadcn component set, the editor, clone-to-own
+- `help("web/tailwind")` — the Tailwind subset, theme tokens, `tw-variants`
+- `help("web/libraries")` — `zeb/*` runtime libraries: d3, deckgl, codemirror, markdown, pdf, prosemirror, threejs, graphui, livegeo
+- `help("web/custom-scripts")` — `.ts` modules and the compiler's refusals
+- `help("web/design-system")` — the platform's own theme and component conventions

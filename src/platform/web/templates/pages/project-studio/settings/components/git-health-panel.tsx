@@ -106,7 +106,7 @@ export default function GitHealthPanel({ healthApi, repairApi }) {
                     ? "border-amber-400/40 bg-amber-400/10 text-amber-200"
                     : healthState === "broken"
                       ? "border-red-400/40 bg-red-400/10 text-red-300"
-                      : "border-border bg-surface-2 text-body-soft"
+                      : "border-border bg-muted text-muted-foreground"
               )}>
                 {healthState}
               </span>
@@ -115,7 +115,7 @@ export default function GitHealthPanel({ healthApi, repairApi }) {
                 <span className="project-inline-chip">recommended: {recommended}</span>
               ) : null}
             </div>
-            <div className="text-[0.72rem] text-body-soft break-all">
+            <div className="text-[0.72rem] text-muted-foreground break-all">
               {String(health?.repo_path ?? "Loading repository path...")}
             </div>
             {health?.last_error ? (
@@ -152,9 +152,9 @@ export default function GitHealthPanel({ healthApi, repairApi }) {
           {detailItems.map((item) => (
             <span
               key={item.label}
-              className="inline-flex items-center gap-[0.35rem] rounded-full border border-border-soft bg-surface-2 px-[0.72rem] py-[0.32rem] text-[0.72rem] text-body"
+              className="inline-flex items-center gap-[0.35rem] rounded-full border border-border bg-muted px-[0.72rem] py-[0.32rem] text-[0.72rem] text-foreground"
             >
-              <span className="uppercase tracking-[0.08em] text-body-soft">{item.label}</span>
+              <span className="uppercase tracking-[0.08em] text-muted-foreground">{item.label}</span>
               <span>{item.value}</span>
             </span>
           ))}

@@ -6,14 +6,14 @@ export default function RelationsSummaryPanel({ tableName, stats }) {
     <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto px-4 py-4">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <p className="text-sm font-semibold text-ui-text">Relations</p>
-          <p className="mt-1 text-xs text-ui-text-soft">
+          <p className="text-sm font-semibold text-foreground">Relations</p>
+          <p className="mt-1 text-xs text-muted-foreground">
             Collection-level relation patterns for {tableName}.
           </p>
         </div>
       </div>
 
-      {stats.busy ? <p className="text-xs text-ui-text-soft">Loading relation statistics…</p> : null}
+      {stats.busy ? <p className="text-xs text-muted-foreground">Loading relation statistics…</p> : null}
       {stats.error ? (
         <p className="text-xs text-danger">Failed to load relation statistics: {stats.error}</p>
       ) : null}

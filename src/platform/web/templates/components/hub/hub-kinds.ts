@@ -29,8 +29,8 @@ export const HUB_KINDS = [
     one: "template",
     verb: "add" as HubVerb,
     glyph: "◇",
-    tone: "text-dark-accent4",
-    chipOn: "border-dark-accent4 bg-dark-accent4/10 text-dark-accent4",
+    tone: "text-warning",
+    chipOn: "border-warning bg-warning/10 text-warning",
   },
   {
     id: "pipeline_bundle",
@@ -38,8 +38,8 @@ export const HUB_KINDS = [
     one: "pipeline",
     verb: "add" as HubVerb,
     glyph: "◆",
-    tone: "text-dark-accent3",
-    chipOn: "border-dark-accent3 bg-dark-accent3/10 text-dark-accent3",
+    tone: "text-success",
+    chipOn: "border-success bg-success/10 text-success",
   },
   {
     id: "folder_bundle",
@@ -47,8 +47,8 @@ export const HUB_KINDS = [
     one: "folder",
     verb: "add" as HubVerb,
     glyph: "▤",
-    tone: "text-dark-accent5",
-    chipOn: "border-dark-accent5 bg-dark-accent5/10 text-dark-accent5",
+    tone: "text-destructive",
+    chipOn: "border-destructive bg-destructive/10 text-destructive",
   },
   {
     id: "project_bundle",
@@ -56,8 +56,8 @@ export const HUB_KINDS = [
     one: "project",
     verb: "install" as HubVerb,
     glyph: "▣",
-    tone: "text-body-soft",
-    chipOn: "border-border bg-ui-bg-muted text-body",
+    tone: "text-muted-foreground",
+    chipOn: "border-border bg-accent text-foreground",
   },
   {
     id: "node_bundle",
@@ -65,8 +65,8 @@ export const HUB_KINDS = [
     one: "node bundle",
     verb: "install" as HubVerb,
     glyph: "⬢",
-    tone: "text-dark-accent1",
-    chipOn: "border-dark-accent1 bg-dark-accent1/10 text-dark-accent1",
+    tone: "text-primary",
+    chipOn: "border-primary bg-primary/10 text-primary",
   },
   {
     id: "rwe_library",
@@ -74,8 +74,8 @@ export const HUB_KINDS = [
     one: "library",
     verb: "install" as HubVerb,
     glyph: "◈",
-    tone: "text-dark-accent2",
-    chipOn: "border-dark-accent2 bg-dark-accent2/10 text-dark-accent2",
+    tone: "text-info",
+    chipOn: "border-info bg-info/10 text-info",
   },
 ];
 
@@ -88,8 +88,8 @@ export function kindOf(assetKind: string) {
       one: "package",
       verb: "add" as HubVerb,
       glyph: "▫",
-      tone: "text-body-soft",
-      chipOn: "border-border bg-ui-bg-muted text-body",
+      tone: "text-muted-foreground",
+      chipOn: "border-border bg-accent text-foreground",
     }
   );
 }

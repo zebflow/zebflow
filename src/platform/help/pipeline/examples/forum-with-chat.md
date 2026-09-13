@@ -2,7 +2,9 @@
 
 ## What this builds
 
-A forum with threaded discussion rooms. Each room has a WebSocket connection for live chat. Messages are persisted in Sekejap. JWT auth for posting. Public read, auth-gated write.
+A forum with threaded discussion rooms. Each room has a WebSocket connection
+for live chat. Messages persist in Sekejap. Public read, open write (add
+`--auth-type jwt` to the webhook and WS triggers below to require sign-in).
 
 ---
 
@@ -11,9 +13,17 @@ A forum with threaded discussion rooms. Each room has a WebSocket connection for
 1. `GET /forum` → list rooms → render listing
 2. `GET /forum/:room` → fetch room + recent messages → render room page
 3. `POST /api/forum/rooms` → create room → return JSON
-4. `POST /api/forum/:room/messages` → auth → save message → return JSON
-5. `WS /ws/{owner}/{project}/rooms/:room` → WebSocket room (built-in route, no pipeline needed)
-6. `WS event: chat.message` → auth check → save message → broadcast to room
+4. `WS /ws/{owner}/{project}/rooms/:room` → WebSocket room (built-in route, no pipeline needed)
+5. `WS event: chat.message` → validate → save message → broadcast to room
+
+---
+
+## Tables
+
+```sql
+CREATE TABLE forum_rooms (_key TEXT PRIMARY KEY, name TEXT, created_at INTEGER, last_activity INTEGER)
+CREATE TABLE forum_messages (_key TEXT PRIMARY KEY, room TEXT, user TEXT, text TEXT, ts INTEGER)
+```
 
 ---
 
@@ -23,52 +33,83 @@ A forum with threaded discussion rooms. Each room has a WebSocket connection for
 
 ```
 | trigger.webhook --path /forum --method GET
-| sekejap.query --table forum_rooms --op scan
-| script -- "return { rooms: input.sort((a,b)=>b.last_activity-a.last_activity) }"
-| web.response --template pages/forum-home.tsx --route /forum
+| sekejap.query -- "SELECT * FROM forum_rooms ORDER BY last_activity DESC"
+| script -- "return { rooms: input.rows }"
+| web.response --template pages/forum-home.tsx
 ```
 
 ### forum-room — room view with recent messages
 
-```
-| trigger.webhook --path /forum/:room --method GET
-| sekejap.query --table forum_rooms --op get --key "{{input.params.room}}"
-| script -- "return { room: input }"
-| sekejap.query --table forum_messages --op scan
-| script -- "return { ...input, messages: input.messages?.filter(m => m.room === input.room?.id).slice(-50) || [] }"
-| web.response --template pages/forum-room.tsx --route /forum/:room
+Two queries, so the room lookup is carried forward by graph id instead of
+being overwritten by the messages query:
+
+```zf
+register forum/room --
+[a] trigger.webhook --path /forum/:room --method GET
+[room] sekejap.query --params "{{ [input.params.room] }}" -- "SELECT * FROM forum_rooms WHERE _key = $1"
+[msgs] sekejap.query --params "{{ [input.params.room] }}" -- "SELECT * FROM forum_messages WHERE room = $1 ORDER BY ts DESC LIMIT 50"
+[merge] script -- "return { room: $nodes.room.rows[0] || null, messages: input.rows.slice().reverse() };"
+[b] web.response --template pages/forum-room.tsx
+
+[a] -> [room]
+[room] -> [msgs]
+[msgs] -> [merge]
+[merge] -> [b]
 ```
 
 ### api-room-create — create a new room
 
-```
-| trigger.webhook --path /api/forum/rooms --method POST
-| logic.if --expr "!!input.name"
-(false pin → `web.response --status 400 --message "name required"`)
-| script -- "return { id: input.name.toLowerCase().replace(/[^a-z0-9]+/g,'-'), name: input.name, created_at: Date.now(), last_activity: Date.now() };"
-| sekejap.query --table forum_rooms --op upsert
-| script -- "return { ok: true, id: input.id }"
+```zf
+register forum/api-room-create --
+[trig] trigger.webhook --path /api/forum/rooms --method POST
+[has_name] logic.if --expr "!!(input.body && input.body.name)"
+[bad] web.response --status 400 --body "{{ { ok: false, error: 'name required' } }}"
+[draft] script -- "const id = String(input.body.name).toLowerCase().replace(/[^a-z0-9]+/g,'-'); return { id, name: input.body.name };"
+[ins] sekejap.query --read-only false --params "{{ [$nodes.draft.id, $nodes.draft.name, Date.now(), Date.now()] }}" -- "INSERT INTO forum_rooms (_key, name, created_at, last_activity) VALUES ($1, $2, $3, $4)"
+[ok] script -- "return { ok: true, id: $nodes.draft.id };"
+
+[trig] -> [has_name]
+[has_name]:false -> [bad]
+[has_name]:true -> [draft]
+[draft] -> [ins]
+[ins] -> [ok]
 ```
 
 ### ws-chat-message — WebSocket chat handler
 
+`trigger.ws --room` is a literal filter, never an expression, so it is left
+off here and every room's traffic reaches this one pipeline; `input.room_id`
+(set by the trigger) says which room a given event came from.
+
+```zf
+register forum/ws-chat-message --
+[a] trigger.ws --event chat.message
+[guard] logic.if --expr "!!(input.payload && input.payload.user && input.payload.text)"
+[save] script -- "return { id: Date.now().toString(), room: input.room_id, user: input.payload.user, text: input.payload.text, ts: Date.now() };"
+[ins] sekejap.query --read-only false --params "{{ [$nodes.save.id, $nodes.save.room, $nodes.save.user, $nodes.save.text, $nodes.save.ts] }}" -- "INSERT INTO forum_messages (_key, room, user, text, ts) VALUES ($1, $2, $3, $4, $5)"
+[emit] ws.emit --to all --event chat.message --payload "{{ $nodes.save }}"
+
+[a] -> [guard]
+[guard]:true -> [save]
+[save] -> [ins]
+[ins] -> [emit]
 ```
-| trigger.ws --room "{{input.room_id}}" --event chat.message
-| script -- "if (!input.payload.user) return null; return { id: Date.now().toString(), room: input.room_id, user: input.payload.user, text: input.payload.text, ts: Date.now() }"
-| sekejap.query --table forum_messages --op upsert
-| ws.emit --to all --event chat.message --payload_path /
-```
+
+A malformed event just stops at `[guard]` — the `false` pin has nothing wired
+to it, and returning `null` from a script would not have stopped anything
+(only branching does).
 
 ---
 
 ## Nodes Used
 
 - `trigger.webhook` — HTTP endpoints
-- `trigger.ws` — WebSocket event handler
-- `sekejap.query` — rooms and messages storage (scan, get, upsert)
-- `script` — validation, transforms, auth checks
+- `trigger.ws --event chat.message` — WebSocket event handler; `--room` omitted (it is a literal filter, not per-connection routing)
+- `sekejap.query` — rooms and messages storage; plain `SELECT`/`INSERT`, no `--table`/`--op`
+- `logic.if` — validate before saving
+- `script` — shape rows, carry the room lookup forward via `$nodes`
 - `web.response` — TSX templates
-- `ws.emit` — broadcast message to all room participants
+- `ws.emit --payload "{{ expr }}"` — broadcast message to all room participants
 
 ---
 

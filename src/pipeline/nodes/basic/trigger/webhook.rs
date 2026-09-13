@@ -112,7 +112,7 @@ pub fn definition() -> NodeDefinition {
                 "auth_required_role": {
                     "type": "array",
                     "items": { "type": "string" },
-                    "description": "Required roles for this route. JWT claim 'role' must match one of these. Empty = any authenticated user."
+                    "description": "Required roles for this route. One entry of the JWT 'roles' array claim must match. Empty = any authenticated user."
                 }
             }
         }),
@@ -161,7 +161,7 @@ pub fn definition() -> NodeDefinition {
             DslFlag {
                 flag: "--auth-required-role".to_string(),
                 config_key: "auth_required_role".to_string(),
-                description: "Comma-separated roles required for this route. JWT claim 'role' must match one. E.g. lecturer,student. Empty = any authenticated user.".to_string(),
+                description: "Comma-separated roles required for this route. One entry of the JWT 'roles' array claim must match. E.g. lecturer,student. Empty = any authenticated user.".to_string(),
                 kind: DslFlagKind::CommaSeparatedList,
                 required: false,
             },

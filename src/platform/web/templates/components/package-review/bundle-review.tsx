@@ -20,7 +20,7 @@ export default function BundleReview({ review, scope, onScopeChange, busy = fals
       <InstallConsent scope={scope} onChange={onScopeChange} disabled={busy} />
 
       {dirty ? (
-        <p className="m-0 rounded-lg border border-ui-border bg-ui-bg-muted/40 px-3 py-2 text-xs text-ui-text-soft">
+        <p className="m-0 rounded-lg border border-border bg-accent/40 px-3 py-2 text-xs text-muted-foreground">
           The consent flags changed. The report below still answers for the previous ones — refresh
           the review before installing.
         </p>
@@ -28,9 +28,9 @@ export default function BundleReview({ review, scope, onScopeChange, busy = fals
 
       {review ? (
         <>
-          <div className="rounded-lg border border-ui-border bg-ui-bg p-3">
+          <div className="rounded-lg border border-border bg-popover p-3">
             <div className="flex flex-wrap items-center gap-2">
-              <p className="m-0 font-mono text-sm font-semibold text-ui-text">
+              <p className="m-0 font-mono text-sm font-semibold text-foreground">
                 {String(review.package_id || "")}@{String(review.version || "")}
               </p>
               <Badge variant="outline" label={String(review.asset_kind || "")} />
@@ -39,13 +39,13 @@ export default function BundleReview({ review, scope, onScopeChange, busy = fals
                 label={installable ? `risk ${String(review.risk_level || "")}` : `blocked · risk ${String(review.risk_level || "")}`}
               />
             </div>
-            <p className="m-0 mt-2 text-xs text-ui-text-soft">
-              Would create the project <span className="font-mono text-ui-text">{String(review.owner || "")}/{String(review.project || "")}</span>.
+            <p className="m-0 mt-2 text-xs text-muted-foreground">
+              Would create the project <span className="font-mono text-foreground">{String(review.owner || "")}/{String(review.project || "")}</span>.
               That name is a prediction of the first free slug: a name free now can be claimed before
               you install, and the install moves on to the next one.
             </p>
-            <p className="m-0 mt-1 text-xs text-ui-text-soft">
-              Schema execution for this review: <span className="font-mono text-ui-text">{review.schema_executed ? "the SQL runs" : "nothing runs"}</span>.
+            <p className="m-0 mt-1 text-xs text-muted-foreground">
+              Schema execution for this review: <span className="font-mono text-foreground">{review.schema_executed ? "the SQL runs" : "nothing runs"}</span>.
             </p>
           </div>
 
@@ -96,7 +96,7 @@ export default function BundleReview({ review, scope, onScopeChange, busy = fals
           </div>
         </>
       ) : (
-        <p className="m-0 rounded-lg border border-ui-border bg-ui-bg px-3 py-6 text-center text-sm text-ui-text-soft">
+        <p className="m-0 rounded-lg border border-border bg-popover px-3 py-6 text-center text-sm text-muted-foreground">
           {busy ? "Reading the package…" : "No review yet. Refresh it to see what this install would do."}
         </p>
       )}

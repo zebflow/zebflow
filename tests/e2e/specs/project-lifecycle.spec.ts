@@ -74,11 +74,19 @@ test("a new project scaffolds a flat repository with runnable samples", async ({
   await expect(page.getByRole("heading", { name: /Hello from Zebflow/i })).toBeVisible();
 
   // globals.css is imported explicitly by the page; if the compiler failed to
-  // inline it, this custom property would resolve to an empty string.
-  const brand = await page.evaluate(() =>
-    getComputedStyle(document.documentElement).getPropertyValue("--color-brand").trim(),
+  // inline it, the theme token would resolve to an empty string.
+  const primary = await page.evaluate(() =>
+    getComputedStyle(document.documentElement).getPropertyValue("--primary").trim(),
   );
-  expect(brand, "globals.css reached the browser").not.toBe("");
+  expect(primary, "globals.css reached the browser").not.toBe("");
+
+  // The sample's button is zeb/ui's, inlined by the compiler: shadcn's
+  // markup, painted by the project's theme.
+  const buttonPaint = await page.evaluate(() => {
+    const el = document.querySelector('button[data-slot="button"]');
+    return el ? getComputedStyle(el).backgroundColor : "";
+  });
+  expect(buttonPaint, "zeb/ui button rendered on the theme").toBe("rgb(234, 90, 12)");
 
   // Hydration: the counter only moves if the runtime attached the handler.
   const button = page.getByRole("button", { name: /Clicked/i });

@@ -1469,62 +1469,65 @@ impl ProjectService {
 
         // The stylesheet reaches a page because the page imports it, the way
         // `app/layout.tsx` imports `globals.css` in Next. There is no implicit
-        // global here either. Styling is Tailwind utilities in the markup; the
-        // tokens are reached with arbitrary values, `bg-[var(--color-surface)]`,
-        // which is Tailwind's own escape hatch and needs no custom classes.
+        // global here either. Styling is Tailwind utilities naming theme
+        // tokens; the button comes from `zeb/ui`, the component library every
+        // project can import without installing anything.
         let page = concat!(
             "import { useState } from \"zeb/react\";\n",
+            "import { Button } from \"zeb/ui/button\";\n",
             "import \"@/globals.css\";\n",
             "\n",
             "export default function SampleWebPage() {\n",
             "  const [count, setCount] = useState(0);\n",
             "  return (\n",
-            "    <main className=\"min-h-screen bg-[var(--color-surface)] text-[var(--color-text)] p-8\">\n",
-            "      <h1 className=\"text-2xl font-bold text-[var(--color-brand)]\">Hello from Zebflow</h1>\n",
-            "      <p className=\"mt-2 opacity-70\">Tailwind utilities work with no setup.</p>\n",
-            "      <button\n",
-            "        className=\"mt-6 rounded-md bg-[var(--color-brand)] px-4 py-2 font-medium\"\n",
-            "        onClick={() => setCount(count + 1)}\n",
-            "      >\n",
+            "    <main className=\"min-h-screen bg-background p-8 text-foreground\">\n",
+            "      <h1 className=\"text-2xl font-bold text-primary\">Hello from Zebflow</h1>\n",
+            "      <p className=\"mt-2 text-muted-foreground\">Tailwind utilities work with no setup.</p>\n",
+            "      <Button className=\"mt-6\" onClick={() => setCount(count + 1)}>\n",
             "        Clicked {count} times\n",
-            "      </button>\n",
+            "      </Button>\n",
             "    </main>\n",
             "  );\n",
             "}\n",
         );
 
         // One always-loaded stylesheet, named the way Next and Astro name it.
-        //
-        // The token names follow Tailwind's own namespaces -- `--color-*`,
-        // `--font-*`, `--spacing-*` -- so they read the same as everyone
-        // else's, and so they already match if `@theme` support arrives. They
-        // sit in `:root` rather than `@theme` because this engine reads
-        // `--theme()` inside preflight and not the at-rule.
-        let globals = concat!(
-            "/* Loaded by every page that imports it:\n",
-            "     import \"@/globals.css\";\n",
-            "\n",
-            "   Tailwind utilities need no setup and no import -- the engine emits\n",
-            "   the ones your markup uses, including arbitrary values like\n",
-            "   `bg-[var(--color-surface)]`. This file is for what utilities cannot\n",
-            "   express: design tokens, base rules, and fonts.\n",
-            "\n",
-            "   Every other .css file is imported by whoever needs it. A layout that\n",
-            "   imports this one passes it to every page built on that layout, and a\n",
-            "   stylesheet reached twice is still emitted once.\n",
-            "\n",
-            "   There is only one global. */\n",
-            "\n",
-            ":root {\n",
-            "  --color-brand: #ff5c00;\n",
-            "  --color-surface: #020617;\n",
-            "  --color-text: #e2e8f0;\n",
-            "  --font-sans: ui-sans-serif, system-ui, sans-serif;\n",
-            "}\n",
-            "\n",
-            "body {\n",
-            "  font-family: var(--font-sans);\n",
-            "}\n",
+        // The theme is shadcn/ui's token vocabulary with Zebflow's values —
+        // `crate::platform::theme::THEME_CSS` — so `zeb/ui` components and
+        // any `bg-card` / `text-muted-foreground` in a page resolve on day one,
+        // and a theme from ui.shadcn.com or tweakcn drops in over the two
+        // blocks. See docs/contracts/kinds/ui-theme.
+        let globals = format!(
+            concat!(
+                "/* Loaded by every page that imports it:\n",
+                "     import \"@/globals.css\";\n",
+                "\n",
+                "   Tailwind utilities need no setup and no import -- the engine emits\n",
+                "   the ones your markup uses. Colour utilities name a theme token:\n",
+                "   bg-card, text-muted-foreground, border-input, ring-ring. The two\n",
+                "   blocks below define every token for light (:root) and dark (.dark);\n",
+                "   put `dark` on any ancestor to switch. Replace the blocks with a\n",
+                "   theme exported from ui.shadcn.com to restyle everything at once.\n",
+                "\n",
+                "   Every other .css file is imported by whoever needs it. A layout that\n",
+                "   imports this one passes it to every page built on that layout, and a\n",
+                "   stylesheet reached twice is still emitted once.\n",
+                "\n",
+                "   There is only one global. */\n",
+                "\n",
+                "{theme}",
+                "\n",
+                ":root {{\n",
+                "  --font-sans: ui-sans-serif, system-ui, sans-serif;\n",
+                "}}\n",
+                "\n",
+                "body {{\n",
+                "  font-family: var(--font-sans);\n",
+                "  background: var(--background);\n",
+                "  color: var(--foreground);\n",
+                "}}\n",
+            ),
+            theme = crate::platform::theme::THEME_CSS,
         );
 
         for (name, content) in [

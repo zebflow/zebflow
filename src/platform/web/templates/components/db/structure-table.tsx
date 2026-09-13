@@ -68,12 +68,12 @@ export default function StructureTable({ activeTable, schemaColumns, schemaRows,
                   <div className="flex flex-wrap gap-2">
                     {badges.length ? (
                       badges.map((badge) => (
-                        <span key={badge.key} className="inline-flex rounded-full border border-ui-border px-2 py-0.5 text-[11px] text-ui-text-soft">
+                        <span key={badge.key} className="inline-flex rounded-full border border-border px-2 py-0.5 text-[11px] text-muted-foreground">
                           {badge.label}
                         </span>
                       ))
                     ) : (
-                      <span className="text-ui-text-muted">—</span>
+                      <span className="text-muted-foreground">—</span>
                     )}
                   </div>
                 </StudioTd>

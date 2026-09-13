@@ -12,7 +12,7 @@ export const page = {
     lang: "en",
   },
   body: {
-    className: "min-h-screen bg-ui-bg-muted text-ui-text font-sans",
+    className: "min-h-screen bg-background text-foreground font-sans",
   },
   navigation: "history",
 };
@@ -157,7 +157,7 @@ export default function Page(input) {
           </CardContent>
         </Card>
         {input?.app_version ? (
-          <p className="mt-6 text-center text-[11px] text-ui-text-muted">
+          <p className="mt-6 text-center text-[11px] text-muted-foreground">
             v{input.app_version}
           </p>
         ) : null}

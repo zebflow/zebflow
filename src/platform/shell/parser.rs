@@ -713,9 +713,12 @@ fn schema_property_for_type(type_spec: &str) -> Result<Value, String> {
 /// stored says `{{`, which resolves to nothing.
 ///
 /// One rule closes it: a value that opens an expression must also close it.
+/// Close it *somewhere*, not at the end — `{{ input.name }}:public` is a whole
+/// claim with its visibility suffix, and the tokenizer never produces that
+/// shape from a cut.
 fn reject_unquoted_expression(flag: &str, value: &str) -> Result<(), String> {
     let trimmed = value.trim();
-    if trimmed.starts_with("{{") && !trimmed.ends_with("}}") {
+    if trimmed.starts_with("{{") && !trimmed.contains("}}") {
         return Err(format!(
             "`{flag} {trimmed}` looks like an unquoted expression — the value was cut at the \
              first space. Quote the whole thing: {flag} \"{{{{ … }}}}\""
@@ -2311,6 +2314,22 @@ mod key_value_quoting_tests {
             message.contains("unquoted expression") || message.contains("cut at the"),
             "the error should name the cause: {message}"
         );
+    }
+
+    /// A claim carries its visibility after the expression. `:public` is not
+    /// a cut, and the guard must not read it as one.
+    #[test]
+    fn a_quoted_expression_with_a_public_suffix_is_a_whole_claim() {
+        let graph = build_pipeline_graph(
+            "claims-public",
+            "[a] trigger.manual\n\
+             [b] auth.token.create --credential k --claim \"name={{ input.name }}:public\"\n\
+             [a] -> [b]\n",
+        )
+        .expect("a quoted expression with :public must parse");
+        let node = graph.nodes.iter().find(|n| n.id == "b").expect("node b");
+        let claims = node.config.get("claims").expect("claims");
+        assert_eq!(claims.get("name").and_then(|v| v.as_str()), Some("{{ input.name }}:public"));
     }
 
     /// Quoted, it parses and the whole expression survives.

@@ -36,8 +36,8 @@ export default function MaintenancePanel({ health, report, busy, status, onRefre
     <div className="flex min-h-0 flex-1 flex-col overflow-y-auto px-4 py-4">
       <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
         <div>
-          <p className="text-sm font-semibold text-ui-text">Sekejap Store Maintenance</p>
-          <p className="mt-1 max-w-2xl text-xs text-ui-text-soft">
+          <p className="text-sm font-semibold text-foreground">Sekejap Store Maintenance</p>
+          <p className="mt-1 max-w-2xl text-xs text-muted-foreground">
             Inspect the project-local store, flush pending WAL writes, and compact the snapshot during low-traffic windows.
           </p>
         </div>
@@ -60,7 +60,7 @@ export default function MaintenancePanel({ health, report, busy, status, onRefre
             "mb-4 rounded-md border px-3 py-2 text-xs",
             status.startsWith("Error")
               ? "border-red-300/70 bg-red-50/50 text-red-700 dark:border-red-800/60 dark:bg-red-950/20 dark:text-red-400"
-              : "border-ui-border/80 bg-ui-bg-muted/30 text-ui-text-soft"
+              : "border-border/80 bg-accent/30 text-muted-foreground"
           )}
         >
           {status}
@@ -75,22 +75,22 @@ export default function MaintenancePanel({ health, report, busy, status, onRefre
 
       <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
         {statItems.map((item) => (
-          <div key={item.label} className="rounded-lg border border-ui-border/80 bg-ui-bg-muted/20 p-3">
-            <p className="text-[0.68rem] font-medium uppercase tracking-[0.14em] text-ui-text-soft">{item.label}</p>
-            <p className={cx("mt-1 truncate text-sm font-medium text-ui-text", item.mono ? "font-mono text-[0.72rem]" : "")} title={item.value}>
+          <div key={item.label} className="rounded-lg border border-border/80 bg-accent/20 p-3">
+            <p className="text-[0.68rem] font-medium uppercase tracking-[0.14em] text-muted-foreground">{item.label}</p>
+            <p className={cx("mt-1 truncate text-sm font-medium text-foreground", item.mono ? "font-mono text-[0.72rem]" : "")} title={item.value}>
               {item.value}
             </p>
             {item.delta ? (
-              <p className="mt-1 text-[0.68rem] tabular-nums text-ui-text-soft">{item.delta}</p>
+              <p className="mt-1 text-[0.68rem] tabular-nums text-muted-foreground">{item.delta}</p>
             ) : null}
           </div>
         ))}
       </div>
 
       {report ? (
-        <div className="mt-4 rounded-lg border border-ui-border/80 bg-ui-bg-muted/10 p-3">
-          <p className="text-xs font-medium uppercase tracking-[0.14em] text-ui-text-soft">Last Operation</p>
-          <p className="mt-2 text-sm text-ui-text">
+        <div className="mt-4 rounded-lg border border-border/80 bg-accent/10 p-3">
+          <p className="text-xs font-medium uppercase tracking-[0.14em] text-muted-foreground">Last Operation</p>
+          <p className="mt-2 text-sm text-foreground">
             {report.operation} completed in {Number(report.duration_ms || 0)} ms.
           </p>
         </div>

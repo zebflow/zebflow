@@ -79,6 +79,13 @@ pub fn definition() -> NodeDefinition {
                 required: false,
             },
             DslFlag {
+                flag: "--default".to_string(),
+                config_key: "default".to_string(),
+                description: "Fallback value when the key is missing or expired — a literal or {{ expr }}.".to_string(),
+                kind: DslFlagKind::Scalar,
+                required: false,
+            },
+            DslFlag {
                 flag: "--durable".to_string(),
                 config_key: "durable".to_string(),
                 description: "Persist to durable storage (survives restart). Default: ephemeral."

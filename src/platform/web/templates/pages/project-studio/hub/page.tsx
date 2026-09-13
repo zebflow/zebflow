@@ -99,15 +99,15 @@ function blankProjectSource() {
 function ReviewList({ title, items, danger = false }) {
   const values = Array.isArray(items) ? items.filter(Boolean) : [];
   return (
-    <div className={danger ? "rounded-lg border border-red-400/30 bg-red-500/10 px-3 py-2" : "rounded-lg border border-ui-border bg-ui-bg-muted/20 px-3 py-2"}>
-      <p className={danger ? "m-0 text-xs font-medium text-red-100" : "m-0 text-xs font-medium text-ui-text"}>{title}</p>
+    <div className={danger ? "rounded-lg border border-red-400/30 bg-red-500/10 px-3 py-2" : "rounded-lg border border-border bg-accent/20 px-3 py-2"}>
+      <p className={danger ? "m-0 text-xs font-medium text-red-100" : "m-0 text-xs font-medium text-foreground"}>{title}</p>
       {values.length ? (
-        <ul className={danger ? "mt-1 space-y-1 text-[11px] text-red-50" : "mt-1 space-y-1 text-[11px] text-ui-text-soft"}>
+        <ul className={danger ? "mt-1 space-y-1 text-[11px] text-red-50" : "mt-1 space-y-1 text-[11px] text-muted-foreground"}>
           {values.slice(0, 8).map((item, index) => <li key={`${title}-${index}`}>{String(item)}</li>)}
           {values.length > 8 ? <li>+{values.length - 8} more</li> : null}
         </ul>
       ) : (
-        <p className="m-0 mt-1 text-[11px] text-ui-text-soft">None</p>
+        <p className="m-0 mt-1 text-[11px] text-muted-foreground">None</p>
       )}
     </div>
   );
@@ -116,16 +116,16 @@ function ReviewList({ title, items, danger = false }) {
 function BundleReviewList({ title, items }) {
   const values = Array.isArray(items) ? items : [];
   return (
-    <div className="rounded-lg border border-ui-border bg-ui-bg-muted/20 px-3 py-2">
-      <p className="text-xs font-medium uppercase tracking-wide text-ui-text-soft">{title}</p>
+    <div className="rounded-lg border border-border bg-accent/20 px-3 py-2">
+      <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{title}</p>
       {values.length ? (
-        <ul className="mt-1 list-disc pl-5 text-sm text-ui-text">
+        <ul className="mt-1 list-disc pl-5 text-sm text-foreground">
           {values.map((item, index) => (
             <li key={`${title}-${index}`}>{item}</li>
           ))}
         </ul>
       ) : (
-        <p className="mt-1 text-sm text-ui-text-soft">None</p>
+        <p className="mt-1 text-sm text-muted-foreground">None</p>
       )}
     </div>
   );
@@ -672,7 +672,7 @@ export default function Page(input) {
             ))}
           </StudioTabNav>
 
-          <section className="flex-1 min-h-0 overflow-auto flex flex-col bg-bg">
+          <section className="flex-1 min-h-0 overflow-auto flex flex-col bg-background">
             <div className="project-content-wrap">
               <section className="project-content-section">
                 <div className="project-content-head">
@@ -699,8 +699,8 @@ export default function Page(input) {
               <section className="project-content-section">
                 <div className="project-content-body space-y-4">
                   {status ? (
-                    <div className="rounded-lg border border-ui-border bg-ui-bg-muted/30 px-4 py-3 text-sm text-ui-text-soft">
-                      <span className="font-medium text-ui-text">Status:</span> {status}
+                    <div className="rounded-lg border border-border bg-accent/30 px-4 py-3 text-sm text-muted-foreground">
+                      <span className="font-medium text-foreground">Status:</span> {status}
                     </div>
                   ) : null}
 
@@ -724,7 +724,7 @@ export default function Page(input) {
         variant="destructive"
         busy={browseBusy}
       >
-        <p className="text-[0.8rem] text-body-soft">
+        <p className="text-[0.8rem] text-muted-foreground">
           <span className="font-mono">{libraryNameOf(removePrompt)}</span> is deleted from{" "}
           <code className="font-mono">zeb.lock</code> and its installed files are removed. Any
           template importing it stops working until it is installed again.
@@ -753,14 +753,14 @@ export default function Page(input) {
         variant="destructive"
         busy={browseBusy}
       >
-        <p className="text-[0.8rem] text-body-soft">
+        <p className="text-[0.8rem] text-muted-foreground">
           Adding <span className="font-mono">{overwritePrompt?.item?.package_id}</span> writes over
           {" "}{overwritePrompt?.files?.length} file(s) that already exist here. What is in them now
           is lost.
         </p>
         <ul className="mt-3 flex flex-col gap-1">
           {(overwritePrompt?.files ?? []).map((file) => (
-            <li key={file} className="font-mono text-[0.72rem] text-body-soft">
+            <li key={file} className="font-mono text-[0.72rem] text-muted-foreground">
               {file}
             </li>
           ))}
@@ -771,7 +771,7 @@ export default function Page(input) {
                     <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
                       <div>
                         <p className="project-content-subtitle">Node Bundle From File</p>
-                        <p className="text-sm text-ui-text-soft">
+                        <p className="text-sm text-muted-foreground">
                           Install a node bundle you authored locally or received as a file. It runs the same
                           review a published package runs: a Hub package is not safer, only published.
                         </p>
@@ -807,8 +807,8 @@ export default function Page(input) {
                     </div>
 
                     {bundleFileName ? (
-                      <p className="mt-3 text-sm text-ui-text-soft">
-                        Selected: <span className="font-medium text-ui-text">{bundleFileName}</span>
+                      <p className="mt-3 text-sm text-muted-foreground">
+                        Selected: <span className="font-medium text-foreground">{bundleFileName}</span>
                       </p>
                     ) : null}
 
@@ -836,8 +836,8 @@ export default function Page(input) {
                           <BundleReviewList title="Files overwritten" items={bundleReview.files_overwritten} />
                         </div>
 
-                        <p className="text-sm text-ui-text-soft">
-                          Risk level: <span className="font-medium text-ui-text">{bundleReview.risk_level}</span>
+                        <p className="text-sm text-muted-foreground">
+                          Risk level: <span className="font-medium text-foreground">{bundleReview.risk_level}</span>
                         </p>
                       </div>
                     ) : null}
@@ -849,7 +849,7 @@ export default function Page(input) {
                         <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
                           <div>
                             <p className="project-content-subtitle">Hub Sources</p>
-                            <p className="text-sm text-ui-text-soft">Project sources are private to this project. Shared sources are granted from Home &gt; Hub and are read-only here.</p>
+                            <p className="text-sm text-muted-foreground">Project sources are private to this project. Shared sources are granted from Home &gt; Hub and are read-only here.</p>
                           </div>
                           <Button type="button" variant="outline" size="sm" onClick={resetSourceForm}>
                             New Project Source
@@ -912,20 +912,20 @@ export default function Page(input) {
                         </form>
 
                         <div className="mt-5 grid gap-4 lg:grid-cols-2">
-                          <div className="rounded-lg border border-ui-border bg-ui-bg-muted/20">
-                            <div className="border-b border-ui-border px-3 py-2 text-xs font-medium uppercase tracking-wider text-ui-text-soft">
+                          <div className="rounded-lg border border-border bg-accent/20">
+                            <div className="border-b border-border px-3 py-2 text-xs font-medium uppercase tracking-wider text-muted-foreground">
                               Project sources
                             </div>
-                            <div className="divide-y divide-ui-border/60">
+                            <div className="divide-y divide-border/60">
                               {projectSources.map((item) => (
                                 <div key={`project-${item.repository_id}`} className="flex items-start justify-between gap-3 px-3 py-3">
                                   <div className="min-w-0">
                                     <div className="flex items-center gap-2">
-                                      <span className="truncate text-sm font-medium text-ui-text">{item.title || item.repository_id}</span>
-                                      <span className="rounded-full border border-ui-border px-2 py-0.5 text-[10px] uppercase text-ui-text-soft">{item.enabled ? "enabled" : "off"}</span>
+                                      <span className="truncate text-sm font-medium text-foreground">{item.title || item.repository_id}</span>
+                                      <span className="rounded-full border border-border px-2 py-0.5 text-[10px] uppercase text-muted-foreground">{item.enabled ? "enabled" : "off"}</span>
                                     </div>
-                                    <p className="m-0 mt-1 truncate text-xs text-ui-text-soft">{item.base_url}</p>
-                                    <p className="m-0 mt-1 text-xs text-ui-text-soft">
+                                    <p className="m-0 mt-1 truncate text-xs text-muted-foreground">{item.base_url}</p>
+                                    <p className="m-0 mt-1 text-xs text-muted-foreground">
                                       {item.repository_id}{item.has_read_token ? " · token set" : ""}
                                     </p>
                                   </div>
@@ -936,37 +936,37 @@ export default function Page(input) {
                                 </div>
                               ))}
                               {!projectSources.length ? (
-                                <div className="px-3 py-4 text-sm text-ui-text-soft">No project-local Hub sources.</div>
+                                <div className="px-3 py-4 text-sm text-muted-foreground">No project-local Hub sources.</div>
                               ) : null}
                             </div>
                           </div>
 
-                          <div className="rounded-lg border border-ui-border bg-ui-bg-muted/20">
-                            <div className="border-b border-ui-border px-3 py-2 text-xs font-medium uppercase tracking-wider text-ui-text-soft">
+                          <div className="rounded-lg border border-border bg-accent/20">
+                            <div className="border-b border-border px-3 py-2 text-xs font-medium uppercase tracking-wider text-muted-foreground">
                               Shared from platform
                             </div>
-                            <div className="divide-y divide-ui-border/60">
+                            <div className="divide-y divide-border/60">
                               {sharedSources.map((item) => (
                                 <div key={`shared-${item.repository_id}`} className="px-3 py-3">
                                   <div className="flex items-center gap-2">
-                                    <span className="truncate text-sm font-medium text-ui-text">{item.title || item.repository_id}</span>
-                                    <span className="rounded-full border border-ui-border px-2 py-0.5 text-[10px] uppercase text-ui-text-soft">read-only</span>
+                                    <span className="truncate text-sm font-medium text-foreground">{item.title || item.repository_id}</span>
+                                    <span className="rounded-full border border-border px-2 py-0.5 text-[10px] uppercase text-muted-foreground">read-only</span>
                                   </div>
-                                  <p className="m-0 mt-1 truncate text-xs text-ui-text-soft">{item.base_url}</p>
-                                  <p className="m-0 mt-1 text-xs text-ui-text-soft">
+                                  <p className="m-0 mt-1 truncate text-xs text-muted-foreground">{item.base_url}</p>
+                                  <p className="m-0 mt-1 text-xs text-muted-foreground">
                                     {item.repository_id}{item.has_read_token ? " · token set" : ""}
                                   </p>
                                 </div>
                               ))}
                               {!sharedSources.length ? (
-                                <div className="px-3 py-4 text-sm text-ui-text-soft">No platform-granted Hub sources.</div>
+                                <div className="px-3 py-4 text-sm text-muted-foreground">No platform-granted Hub sources.</div>
                               ) : null}
                             </div>
                           </div>
                         </div>
                       </HubSourcesDialog>
 
-                      <div className="flex flex-col rounded-lg border border-ui-border bg-ui-bg">
+                      <div className="flex flex-col rounded-lg border border-border bg-popover">
                         <HubBrowser
                           items={browseItems}
                           owner={input?.owner}
@@ -999,7 +999,7 @@ export default function Page(input) {
                           <tr key={`${item?.package_id ?? "mine"}-${index}`}>
                             <StudioTd>
                               <div className="flex items-center gap-3">
-                                {item?.image_url ? <img src={item.image_url} alt="" className="h-10 w-14 rounded-md object-cover border border-ui-border" /> : null}
+                                {item?.image_url ? <img src={item.image_url} alt="" className="h-10 w-14 rounded-md object-cover border border-border" /> : null}
                                 <span>{item?.package_id}</span>
                               </div>
                             </StudioTd>
@@ -1026,10 +1026,10 @@ export default function Page(input) {
 
                   {tabFlags?.publish ? (
                     <form className="space-y-4" onSubmit={publishAsset}>
-                      <div className="rounded-lg border border-ui-border bg-ui-bg p-4 space-y-4">
+                      <div className="rounded-lg border border-border bg-popover p-4 space-y-4">
                         <div>
                           <p className="project-content-subtitle">1. Choose Source Type</p>
-                          <p className="text-sm text-ui-text-soft">Pick the export scope first, then choose the specific item and review the final file tree.</p>
+                          <p className="text-sm text-muted-foreground">Pick the export scope first, then choose the specific item and review the final file tree.</p>
                         </div>
                         <Field label="Source type">
                           <Select
@@ -1041,15 +1041,15 @@ export default function Page(input) {
                             ))}
                           </Select>
                         </Field>
-                        <div className="rounded-lg border border-ui-border bg-ui-bg-muted/30 px-3 py-2 text-sm text-ui-text-soft">
-                          <span className="font-medium text-ui-text">{selectedType.label}:</span> {selectedType.note}
+                        <div className="rounded-lg border border-border bg-accent/30 px-3 py-2 text-sm text-muted-foreground">
+                          <span className="font-medium text-foreground">{selectedType.label}:</span> {selectedType.note}
                         </div>
                       </div>
 
-                      <div className="rounded-lg border border-ui-border bg-ui-bg p-4 space-y-4">
+                      <div className="rounded-lg border border-border bg-popover p-4 space-y-4">
                         <div>
                           <p className="project-content-subtitle">2. Select Item</p>
-                          <p className="text-sm text-ui-text-soft">Only name, description, and path are shown here. The actual export set is resolved in the preview step below.</p>
+                          <p className="text-sm text-muted-foreground">Only name, description, and path are shown here. The actual export set is resolved in the preview step below.</p>
                         </div>
                         <Field label="Selected item">
                           <Select
@@ -1067,60 +1067,60 @@ export default function Page(input) {
                           </Select>
                         </Field>
                         {selectedSource ? (
-                          <div className="grid gap-3 md:grid-cols-3 rounded-lg border border-ui-border bg-ui-bg-muted/20 px-3 py-3 text-sm">
+                          <div className="grid gap-3 md:grid-cols-3 rounded-lg border border-border bg-accent/20 px-3 py-3 text-sm">
                             <div>
-                              <div className="text-ui-text-soft uppercase tracking-wider text-[11px]">Name</div>
-                              <div className="mt-1 text-ui-text">{selectedSource.name}</div>
+                              <div className="text-muted-foreground uppercase tracking-wider text-[11px]">Name</div>
+                              <div className="mt-1 text-foreground">{selectedSource.name}</div>
                             </div>
                             <div>
-                              <div className="text-ui-text-soft uppercase tracking-wider text-[11px]">Description</div>
-                              <div className="mt-1 text-ui-text">{selectedSource.description}</div>
+                              <div className="text-muted-foreground uppercase tracking-wider text-[11px]">Description</div>
+                              <div className="mt-1 text-foreground">{selectedSource.description}</div>
                             </div>
                             <div>
-                              <div className="text-ui-text-soft uppercase tracking-wider text-[11px]">Path</div>
-                              <code className="mt-1 block text-xs text-ui-text">{selectedSource.path}</code>
+                              <div className="text-muted-foreground uppercase tracking-wider text-[11px]">Path</div>
+                              <code className="mt-1 block text-xs text-foreground">{selectedSource.path}</code>
                             </div>
                           </div>
                         ) : null}
                       </div>
 
-                      <div className="rounded-lg border border-ui-border bg-ui-bg p-4 space-y-4">
+                      <div className="rounded-lg border border-border bg-popover p-4 space-y-4">
                         <div>
                           <p className="project-content-subtitle">3. Export Tree Preview</p>
-                          <p className="text-sm text-ui-text-soft">This is the exact file set that will be packed and published.</p>
+                          <p className="text-sm text-muted-foreground">This is the exact file set that will be packed and published.</p>
                         </div>
                         {publishPreview ? (
                           <>
-                            <div className="grid gap-3 md:grid-cols-4 rounded-lg border border-ui-border bg-ui-bg-muted/20 px-3 py-3 text-sm">
+                            <div className="grid gap-3 md:grid-cols-4 rounded-lg border border-border bg-accent/20 px-3 py-3 text-sm">
                               <div>
-                                <div className="text-ui-text-soft uppercase tracking-wider text-[11px]">Package kind</div>
-                                <div className="mt-1 text-ui-text">{publishPreview.asset_kind}</div>
+                                <div className="text-muted-foreground uppercase tracking-wider text-[11px]">Package kind</div>
+                                <div className="mt-1 text-foreground">{publishPreview.asset_kind}</div>
                               </div>
                               <div>
-                                <div className="text-ui-text-soft uppercase tracking-wider text-[11px]">Source</div>
-                                <div className="mt-1 text-ui-text">{sourceLabel(publishPreview.source_type)}</div>
+                                <div className="text-muted-foreground uppercase tracking-wider text-[11px]">Source</div>
+                                <div className="mt-1 text-foreground">{sourceLabel(publishPreview.source_type)}</div>
                               </div>
                               <div>
-                                <div className="text-ui-text-soft uppercase tracking-wider text-[11px]">Files</div>
-                                <div className="mt-1 text-ui-text">{publishPreview.total_files}</div>
+                                <div className="text-muted-foreground uppercase tracking-wider text-[11px]">Files</div>
+                                <div className="mt-1 text-foreground">{publishPreview.total_files}</div>
                               </div>
                               <div>
-                                <div className="text-ui-text-soft uppercase tracking-wider text-[11px]">Bytes</div>
-                                <div className="mt-1 text-ui-text">{formatBytes(publishPreview.total_bytes)}</div>
+                                <div className="text-muted-foreground uppercase tracking-wider text-[11px]">Bytes</div>
+                                <div className="mt-1 text-foreground">{formatBytes(publishPreview.total_bytes)}</div>
                               </div>
                             </div>
 
-                            <div className="rounded-lg border border-ui-border bg-ui-bg-muted/20">
-                              <div className="border-b border-ui-border px-3 py-2 text-xs font-mono uppercase tracking-widest text-ui-text-soft">Resolved Files</div>
-                              <div className="max-h-80 overflow-auto divide-y divide-ui-border/60">
+                            <div className="rounded-lg border border-border bg-accent/20">
+                              <div className="border-b border-border px-3 py-2 text-xs font-mono uppercase tracking-widest text-muted-foreground">Resolved Files</div>
+                              <div className="max-h-80 overflow-auto divide-y divide-border/60">
                                 {publishPreview.entries.map((entry, index) => (
                                   <div key={`${entry.rel_path}-${index}`} className="grid gap-2 px-3 py-2 md:grid-cols-[minmax(0,1fr)_140px_90px]">
                                     <div className="min-w-0">
-                                      <code className="block truncate text-xs text-ui-text">{entry.rel_path}</code>
-                                      <div className="mt-1 text-[11px] text-ui-text-soft">{entry.reason}</div>
+                                      <code className="block truncate text-xs text-foreground">{entry.rel_path}</code>
+                                      <div className="mt-1 text-[11px] text-muted-foreground">{entry.reason}</div>
                                     </div>
-                                    <div className="text-xs text-ui-text-soft">{entry.kind}</div>
-                                    <div className="text-right text-xs text-ui-text-soft">{entry.size_bytes}</div>
+                                    <div className="text-xs text-muted-foreground">{entry.kind}</div>
+                                    <div className="text-right text-xs text-muted-foreground">{entry.size_bytes}</div>
                                   </div>
                                 ))}
                               </div>
@@ -1138,22 +1138,22 @@ export default function Page(input) {
                             ) : null}
                           </>
                         ) : (
-                          <div className="rounded-lg border border-dashed border-ui-border px-4 py-6 text-sm text-ui-text-soft">
+                          <div className="rounded-lg border border-dashed border-border px-4 py-6 text-sm text-muted-foreground">
                             Select a source item to generate the export tree.
                           </div>
                         )}
                       </div>
 
-                      <div className="rounded-lg border border-ui-border bg-ui-bg p-4 space-y-4">
+                      <div className="rounded-lg border border-border bg-popover p-4 space-y-4">
                         <div>
                           <p className="project-content-subtitle">4. Publish Package</p>
-                          <p className="text-sm text-ui-text-soft">Use a publisher token issued from Home &gt; Hub. Project sources can be added on the Browse tab; publishers and tokens stay in Home &gt; Hub.</p>
+                          <p className="text-sm text-muted-foreground">Use a publisher token issued from Home &gt; Hub. Project sources can be added on the Browse tab; publishers and tokens stay in Home &gt; Hub.</p>
                         </div>
                         {publishForm.source_type === "project_files" ? (
-                          <div className="rounded-lg border border-ui-border bg-ui-bg-muted/20 p-3 space-y-3">
+                          <div className="rounded-lg border border-border bg-accent/20 p-3 space-y-3">
                             <div>
-                              <p className="m-0 text-sm font-medium text-ui-text">Project bundle initialization</p>
-                              <p className="m-0 mt-1 text-xs text-ui-text-soft">Choose the schema and runtime settings that the installed project should initialize from.</p>
+                              <p className="m-0 text-sm font-medium text-foreground">Project bundle initialization</p>
+                              <p className="m-0 mt-1 text-xs text-muted-foreground">Choose the schema and runtime settings that the installed project should initialize from.</p>
                             </div>
                             <CheckboxField
                               label="Include Sekejap schema"
@@ -1180,8 +1180,8 @@ export default function Page(input) {
                             <div className="space-y-2">
                               <div className="flex items-center justify-between gap-3">
                                 <div>
-                                  <p className="m-0 text-xs font-medium uppercase tracking-wider text-ui-text-soft">Initial data</p>
-                                  <p className="m-0 text-xs text-ui-text-soft">Selected SQL files execute during install after schemas are applied.</p>
+                                  <p className="m-0 text-xs font-medium uppercase tracking-wider text-muted-foreground">Initial data</p>
+                                  <p className="m-0 text-xs text-muted-foreground">Selected SQL files execute during install after schemas are applied.</p>
                                 </div>
                                 <CheckboxField
                                   label=""
@@ -1199,10 +1199,10 @@ export default function Page(input) {
                                     const path = item?.path || "";
                                     const checked = (Array.isArray(publishForm.initial_data_paths) ? publishForm.initial_data_paths : []).includes(path);
                                     return (
-                                      <label key={path} className="flex items-center justify-between gap-3 rounded-md border border-ui-border bg-ui-bg px-3 py-2 text-sm text-ui-text">
+                                      <label key={path} className="flex items-center justify-between gap-3 rounded-md border border-border bg-popover px-3 py-2 text-sm text-foreground">
                                         <span className="min-w-0">
                                           <code className="block truncate text-xs">{path}</code>
-                                          <span className="block text-xs text-ui-text-soft">{item?.engine || "data"} · {item?.statement_count || 0} statement(s) · {formatBytes(item?.size_bytes || 0)}</span>
+                                          <span className="block text-xs text-muted-foreground">{item?.engine || "data"} · {item?.statement_count || 0} statement(s) · {formatBytes(item?.size_bytes || 0)}</span>
                                         </span>
                                         <CheckboxField label="" checked={checked} onChange={() => toggleInitialDataPath(path)} />
                                       </label>
@@ -1210,21 +1210,21 @@ export default function Page(input) {
                                   })}
                                 </div>
                               ) : (
-                                <p className="m-0 text-xs text-ui-text-soft">No initial data SQL files found under initial-data, init, or seeds.</p>
+                                <p className="m-0 text-xs text-muted-foreground">No initial data SQL files found under initial-data, init, or seeds.</p>
                               )}
                             </div>
                             <div className="space-y-2">
-                              <p className="m-0 text-xs font-medium uppercase tracking-wider text-ui-text-soft">Installed libraries</p>
+                              <p className="m-0 text-xs font-medium uppercase tracking-wider text-muted-foreground">Installed libraries</p>
                               {availableLibraries.length ? (
                                 <div className="grid gap-2">
                                   {availableLibraries.map((item) => {
                                     const name = item?.name || "";
                                     const checked = (Array.isArray(publishForm.include_libraries) ? publishForm.include_libraries : []).includes(name);
                                     return (
-                                      <label key={name} className="flex items-center justify-between gap-3 rounded-md border border-ui-border bg-ui-bg px-3 py-2 text-sm text-ui-text">
+                                      <label key={name} className="flex items-center justify-between gap-3 rounded-md border border-border bg-popover px-3 py-2 text-sm text-foreground">
                                         <span className="min-w-0">
                                           <span className="block truncate">{name}</span>
-                                          <span className="block text-xs text-ui-text-soft">{item?.version || "default"} · {item?.source || "offline"}</span>
+                                          <span className="block text-xs text-muted-foreground">{item?.version || "default"} · {item?.source || "offline"}</span>
                                         </span>
                                         <CheckboxField label="" checked={checked} onChange={() => togglePublishLibrary(name)} />
                                       </label>
@@ -1232,7 +1232,7 @@ export default function Page(input) {
                                   })}
                                 </div>
                               ) : (
-                                <p className="m-0 text-xs text-ui-text-soft">No project-enabled RWE libraries.</p>
+                                <p className="m-0 text-xs text-muted-foreground">No project-enabled RWE libraries.</p>
                               )}
                             </div>
                           </div>
@@ -1262,7 +1262,7 @@ export default function Page(input) {
                                 <input className="sr-only" type="file" accept="image/png,image/jpeg,image/webp,image/gif" onChange={uploadCoverImage} disabled={imageUploadBusy} />
                                 <span className="zf-btn zf-btn-outline zf-btn-sm cursor-pointer">{imageUploadBusy ? "Uploading..." : "Upload image"}</span>
                               </label>
-                              <span className="text-xs text-ui-text-soft">Uploaded images are stored in Files and normalized to WebP in the Hub package.</span>
+                              <span className="text-xs text-muted-foreground">Uploaded images are stored in Files and normalized to WebP in the Hub package.</span>
                             </div>
                           </div>
                         </Field>
@@ -1285,34 +1285,34 @@ export default function Page(input) {
                           <Button type="submit" disabled={!publishForm.source_ref || !publishPreview?.entries?.length || !publishForm.publisher_token || !publishReview || publishReviewDirty || !!publishReview?.violations?.length}>{publishReview?.violations?.length ? "Blocked" : "Publish Package"}</Button>
                         </div>
                         {publishReview ? (
-                          <div className="rounded-lg border border-ui-border bg-ui-bg-muted/20 p-3 space-y-3">
+                          <div className="rounded-lg border border-border bg-accent/20 p-3 space-y-3">
                             <div className="flex items-start justify-between gap-3">
                               <div>
-                                <p className="m-0 text-sm font-semibold text-ui-text">Publish Review</p>
-                                <p className="m-0 mt-1 text-xs text-ui-text-soft">
+                                <p className="m-0 text-sm font-semibold text-foreground">Publish Review</p>
+                                <p className="m-0 mt-1 text-xs text-muted-foreground">
                                   {publishReview.package_id}@{publishReview.version} · {publishReview.asset_kind} · risk {publishReview.risk_level}
                                 </p>
                               </div>
-                              {publishReviewDirty ? <span className="rounded-full border border-amber-400/40 px-2 py-0.5 text-[10px] uppercase text-amber-100">stale</span> : <span className="rounded-full border border-ui-border px-2 py-0.5 text-[10px] uppercase text-ui-text-soft">ready</span>}
+                              {publishReviewDirty ? <span className="rounded-full border border-amber-400/40 px-2 py-0.5 text-[10px] uppercase text-amber-100">stale</span> : <span className="rounded-full border border-border px-2 py-0.5 text-[10px] uppercase text-muted-foreground">ready</span>}
                             </div>
                             <div className="grid gap-3 md:grid-cols-4 text-sm">
-                              <div><div className="text-[11px] uppercase text-ui-text-soft">Files</div><div>{publishReview.total_files}</div></div>
-                              <div><div className="text-[11px] uppercase text-ui-text-soft">Bytes</div><div>{formatBytes(publishReview.total_bytes)}</div></div>
-                              <div><div className="text-[11px] uppercase text-ui-text-soft">Visibility</div><div>{publishReview.visibility}</div></div>
-                              <div><div className="text-[11px] uppercase text-ui-text-soft">Cover</div><div>{publishReview.media?.[0]?.name || "None"}</div></div>
+                              <div><div className="text-[11px] uppercase text-muted-foreground">Files</div><div>{publishReview.total_files}</div></div>
+                              <div><div className="text-[11px] uppercase text-muted-foreground">Bytes</div><div>{formatBytes(publishReview.total_bytes)}</div></div>
+                              <div><div className="text-[11px] uppercase text-muted-foreground">Visibility</div><div>{publishReview.visibility}</div></div>
+                              <div><div className="text-[11px] uppercase text-muted-foreground">Cover</div><div>{publishReview.media?.[0]?.name || "None"}</div></div>
                             </div>
                             {publishReview.media?.length ? (
-                              <div className="rounded-lg border border-ui-border bg-ui-bg px-3 py-2 text-xs text-ui-text-soft">
+                              <div className="rounded-lg border border-border bg-popover px-3 py-2 text-xs text-muted-foreground">
                                 Cover will be published as <code>{publishReview.media[0].name}</code> ({publishReview.media[0].content_type}, {formatBytes(publishReview.media[0].size_bytes)}).
                               </div>
                             ) : null}
                             {publishReview.asset_kind === "project_bundle" ? (
-                              <div className="rounded-lg border border-ui-border bg-ui-bg px-3 py-2 text-xs text-ui-text-soft">
-                                <div className="font-medium text-ui-text">Initialization</div>
+                              <div className="rounded-lg border border-border bg-popover px-3 py-2 text-xs text-muted-foreground">
+                                <div className="font-medium text-foreground">Initialization</div>
                                 <div className="mt-1">Sekejap schema: {publishReview.project_initialization?.include_sekejap_schema ? "included" : "not included"}</div>
                                 <div>SQLite schema: {publishReview.project_initialization?.include_sqlite_schema ? "included" : "not included"}</div>
                                 <div>Libraries: {(publishReview.project_initialization?.libraries || []).length ? publishReview.project_initialization.libraries.join(", ") : "none"}</div>
-                                <div className="mt-2 font-medium text-ui-text">Initial data to execute</div>
+                                <div className="mt-2 font-medium text-foreground">Initial data to execute</div>
                                 {(publishReview.project_initialization?.initial_data || []).length ? (
                                   <ul className="m-0 mt-1 space-y-1 pl-4">
                                     {publishReview.project_initialization.initial_data.map((item, index) => (

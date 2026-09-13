@@ -156,11 +156,11 @@ function LayerDetail({ layer, api, onBack }) {
         </Button>
       </div>
 
-      <div className="rounded-lg border border-ui-border/80 p-4">
+      <div className="rounded-lg border border-border/80 p-4">
         <div className="flex items-start justify-between gap-4 mb-3">
           <div>
-            <p className="text-base font-semibold text-ui-text">{layer.layer_id}</p>
-            <p className="text-xs text-ui-text-muted mt-0.5">
+            <p className="text-base font-semibold text-foreground">{layer.layer_id}</p>
+            <p className="text-xs text-muted-foreground mt-0.5">
               {layer.path}
             </p>
           </div>
@@ -172,25 +172,25 @@ function LayerDetail({ layer, api, onBack }) {
           </div>
         </div>
         {loading ? (
-          <p className="text-sm text-ui-text-soft">Loading stats...</p>
+          <p className="text-sm text-muted-foreground">Loading stats...</p>
         ) : error ? (
           <p className="text-sm text-rose-400">{error}</p>
         ) : (
           <div className="grid grid-cols-3 gap-3 text-sm">
-            <div className="rounded border border-ui-border/60 px-3 py-2">
-              <p className="text-ui-text-muted text-[11px] uppercase tracking-wider">Rows</p>
-              <p className="text-ui-text font-medium">{formatNumber(stats?.row_count)}</p>
+            <div className="rounded border border-border/60 px-3 py-2">
+              <p className="text-muted-foreground text-[11px] uppercase tracking-wider">Rows</p>
+              <p className="text-foreground font-medium">{formatNumber(stats?.row_count)}</p>
             </div>
-            <div className="rounded border border-ui-border/60 px-3 py-2">
-              <p className="text-ui-text-muted text-[11px] uppercase tracking-wider">Fields</p>
-              <p className="text-ui-text font-medium">{attrColumns.length}</p>
+            <div className="rounded border border-border/60 px-3 py-2">
+              <p className="text-muted-foreground text-[11px] uppercase tracking-wider">Fields</p>
+              <p className="text-foreground font-medium">{attrColumns.length}</p>
             </div>
-            <div className="rounded border border-ui-border/60 px-3 py-2">
-              <p className="text-ui-text-muted text-[11px] uppercase tracking-wider">Source</p>
-              <p className="text-ui-text font-medium truncate">{layer.source_path || "—"}</p>
+            <div className="rounded border border-border/60 px-3 py-2">
+              <p className="text-muted-foreground text-[11px] uppercase tracking-wider">Source</p>
+              <p className="text-foreground font-medium truncate">{layer.source_path || "—"}</p>
             </div>
-            <div className="rounded border border-ui-border/60 px-3 py-2 col-span-3">
-              <p className="text-ui-text-muted text-[11px] uppercase tracking-wider">Public properties</p>
+            <div className="rounded border border-border/60 px-3 py-2 col-span-3">
+              <p className="text-muted-foreground text-[11px] uppercase tracking-wider">Public properties</p>
               {exposed.length ? (
                 <div className="flex flex-wrap gap-1 mt-1">
                   {exposed.map((name) => (
@@ -198,7 +198,7 @@ function LayerDetail({ layer, api, onBack }) {
                   ))}
                 </div>
               ) : (
-                <p className="text-ui-text font-medium">Geometry only — no properties are served</p>
+                <p className="text-foreground font-medium">Geometry only — no properties are served</p>
               )}
             </div>
           </div>
@@ -206,9 +206,9 @@ function LayerDetail({ layer, api, onBack }) {
       </div>
 
       {!loading && !error && attrColumns.length > 0 ? (
-        <div className="rounded-lg border border-ui-border/80">
-          <div className="px-4 py-2.5 border-b border-ui-border/60">
-            <p className="text-sm font-medium text-ui-text">Attributes</p>
+        <div className="rounded-lg border border-border/80">
+          <div className="px-4 py-2.5 border-b border-border/60">
+            <p className="text-sm font-medium text-foreground">Attributes</p>
           </div>
           <div className="overflow-x-auto">
             <StudioTable>
@@ -246,13 +246,13 @@ function LayerDetail({ layer, api, onBack }) {
                     <StudioTd>
                       <div className="flex flex-wrap gap-1 max-w-xs">
                         {(col.top_values || []).slice(0, 5).map(([val, count], j) => (
-                          <span key={`tv-${i}-${j}`} className="inline-flex items-center gap-1 rounded bg-ui-bg-muted px-1.5 py-0.5 text-[11px] text-ui-text-soft">
+                          <span key={`tv-${i}-${j}`} className="inline-flex items-center gap-1 rounded bg-accent px-1.5 py-0.5 text-[11px] text-muted-foreground">
                             <span className="truncate max-w-[100px]">{val}</span>
-                            <span className="text-ui-text-muted">({count})</span>
+                            <span className="text-muted-foreground">({count})</span>
                           </span>
                         ))}
                         {(col.top_values?.length || 0) > 5 ? (
-                          <span className="text-[11px] text-ui-text-muted">+{col.top_values.length - 5}</span>
+                          <span className="text-[11px] text-muted-foreground">+{col.top_values.length - 5}</span>
                         ) : null}
                       </div>
                     </StudioTd>
@@ -264,9 +264,9 @@ function LayerDetail({ layer, api, onBack }) {
         </div>
       ) : null}
 
-      <div className="rounded-lg border border-ui-border/80">
-        <div className="px-4 py-2.5 border-b border-ui-border/60">
-          <p className="text-sm font-medium text-ui-text">Preview</p>
+      <div className="rounded-lg border border-border/80">
+        <div className="px-4 py-2.5 border-b border-border/60">
+          <p className="text-sm font-medium text-foreground">Preview</p>
         </div>
         <div className="p-0">
           {previewData?.features?.length ? (
@@ -278,7 +278,7 @@ function LayerDetail({ layer, api, onBack }) {
               controller={true}
             />
           ) : (
-            <div className="flex items-center justify-center h-[200px] text-sm text-ui-text-muted">
+            <div className="flex items-center justify-center h-[200px] text-sm text-muted-foreground">
               {previewData === null ? "Loading preview..." : "No features to preview"}
             </div>
           )}
@@ -431,7 +431,7 @@ export default function Page(input) {
             ))}
           </StudioTabNav>
           <section
-            className="db-suite-page flex min-h-0 flex-1 flex-col overflow-auto bg-bg"
+            className="db-suite-page flex min-h-0 flex-1 flex-col overflow-auto bg-background"
             data-db-suite="true"
             data-owner={input.owner}
             data-project={input.project}
@@ -454,7 +454,7 @@ export default function Page(input) {
                     <div className="db-suite-side-actions">
                       <div>
                         <p className="db-suite-side-title">Status</p>
-                        <p className="text-sm text-ui-text-soft">{status}</p>
+                        <p className="text-sm text-muted-foreground">{status}</p>
                       </div>
                       <Button type="button" variant="outline" onClick={() => refresh().then(() => setStatus("Refreshed")).catch((err) => setStatus(String(err?.message || err)))}>
                         Refresh
@@ -496,7 +496,7 @@ export default function Page(input) {
                         </StudioThead>
                         <tbody>
                           {layers.map((item, index) => (
-                            <tr key={`${item?.layer_id ?? "layer"}-${index}`} className="cursor-pointer hover:bg-ui-bg-muted/50" onClick={() => setSelectedLayer(item)}>
+                            <tr key={`${item?.layer_id ?? "layer"}-${index}`} className="cursor-pointer hover:bg-accent/50" onClick={() => setSelectedLayer(item)}>
                               <StudioTd>
                                 <span className="font-medium text-blue-400 hover:underline">{item?.layer_id}</span>
                               </StudioTd>
@@ -526,18 +526,18 @@ export default function Page(input) {
 
                     {tabFlags?.publish ? (
                       <div className="space-y-4">
-                        <div className="rounded-lg border border-ui-border/80 p-4">
+                        <div className="rounded-lg border border-border/80 p-4">
                           <div className="db-suite-side-actions mb-3">
                             <p className="db-suite-side-title">Upload GeoJSON</p>
                           </div>
                           <input type="file" accept=".geojson,.json,application/geo+json,application/json" onChange={onUpload} disabled={uploading} />
-                          <p className="text-xs text-ui-text-muted mt-2">Files are stored under <code>mapserver/</code> in Zebflow FS.</p>
+                          <p className="text-xs text-muted-foreground mt-2">Files are stored under <code>mapserver/</code> in Zebflow FS.</p>
                         </div>
-                        <form className="rounded-lg border border-ui-border/80 p-4 space-y-3" onSubmit={publishLayer}>
+                        <form className="rounded-lg border border-border/80 p-4 space-y-3" onSubmit={publishLayer}>
                           <div className="db-suite-side-actions">
                             <div>
                               <p className="db-suite-side-title">Publish Layer</p>
-                              <p className="text-xs text-ui-text-muted">Bind a private GeoJSON source into a public mapserver layer.</p>
+                              <p className="text-xs text-muted-foreground">Bind a private GeoJSON source into a public mapserver layer.</p>
                             </div>
                           </div>
                           <Field label="Layer ID">
@@ -547,7 +547,7 @@ export default function Page(input) {
                             <Input value={form.path} onInput={(e) => setForm((prev) => ({ ...prev, path: e.target.value }))} placeholder="/layers/admin-province" />
                           </Field>
                           <Field label="Source GeoJSON">
-                            <select className="w-full rounded-md border border-ui-border bg-ui-bg px-3 py-2" value={form.source_path} onChange={(e) => setForm((prev) => ({ ...prev, source_path: e.target.value }))}>
+                            <select className="w-full rounded-md border border-border bg-popover px-3 py-2" value={form.source_path} onChange={(e) => setForm((prev) => ({ ...prev, source_path: e.target.value }))}>
                               <option value="">Select source file</option>
                               {sources.map((item, index) => (
                                 <option key={`${item?.path ?? "src"}-${index}`} value={item?.path}>{item?.path}</option>

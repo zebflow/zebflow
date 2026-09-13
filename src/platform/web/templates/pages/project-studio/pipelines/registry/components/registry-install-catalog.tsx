@@ -142,19 +142,19 @@ export function RegistryInstallCatalog({
           {installTab === "ui" ? (
             <div className="install-catalog-tab-panel">
               {uiInstallReview ? (
-                <div className="space-y-3 rounded-md border border-ui-border bg-ui-bg-muted/30 p-3">
+                <div className="space-y-3 rounded-md border border-border bg-accent/30 p-3">
                   <div className="flex items-start justify-between gap-3">
                     <div>
-                      <p className="m-0 text-sm font-semibold text-ui-text">Built-in UI Policy Review</p>
-                      <p className="m-0 mt-1 text-xs text-ui-text-soft">
+                      <p className="m-0 text-sm font-semibold text-foreground">Built-in UI Policy Review</p>
+                      <p className="m-0 mt-1 text-xs text-muted-foreground">
                         {uiInstallReview.components?.length || 0} component(s) · {uiInstallReview.asset_kind} · risk {uiInstallReview.risk_level}
                       </p>
                     </div>
-                    <span className="rounded-full border border-ui-border px-2 py-0.5 text-[10px] uppercase tracking-wide text-ui-text-soft">
+                    <span className="rounded-full border border-border px-2 py-0.5 text-[10px] uppercase tracking-wide text-muted-foreground">
                       Add
                     </span>
                   </div>
-                  <div className="rounded-md border border-ui-border bg-ui-bg px-2 py-1.5 text-xs text-ui-text-soft">
+                  <div className="rounded-md border border-border bg-popover px-2 py-1.5 text-xs text-muted-foreground">
                     Files will be added under <code>{uiInstallReview.install_root || "pipelines/shared/ui"}</code>.
                   </div>
                   <div className="grid gap-2 text-xs md:grid-cols-2">
@@ -183,7 +183,7 @@ export function RegistryInstallCatalog({
                 </div>
               ) : (
                 <>
-                  <p className="text-xs text-body-soft m-0">
+                  <p className="text-xs text-muted-foreground m-0">
                     Select components to add into <code>shared/ui/</code>. Review runs before files are written.
                   </p>
                   <div className="flex flex-wrap gap-2 shrink-0">
@@ -196,7 +196,7 @@ export function RegistryInstallCatalog({
                   </div>
                   <div className="git-install-component-list-host">
                     {catalogData.map((comp) => (
-                      <label key={comp.name} className="flex items-center gap-1.5 px-2 py-1.5 rounded-md cursor-pointer text-xs bg-surface-2">
+                      <label key={comp.name} className="flex items-center gap-1.5 px-2 py-1.5 rounded-md cursor-pointer text-xs bg-muted">
                         <Checkbox
                           checked={selectedComponents.has(comp.name)}
                           onChange={(checked: boolean) => {
@@ -209,26 +209,26 @@ export function RegistryInstallCatalog({
                         />
                         <span className="flex-1">{comp.name}</span>
                         {comp.installed && <span className="text-green-500 text-[10px]">✓</span>}
-                        <span className="text-[10px] text-body-soft capitalize">{comp.category}</span>
+                        <span className="text-[10px] text-muted-foreground capitalize">{comp.category}</span>
                       </label>
                     ))}
                   </div>
                 </>
               )}
-              {installResult ? <p className="text-xs text-body-soft m-0 shrink-0">{installResult}</p> : null}
+              {installResult ? <p className="text-xs text-muted-foreground m-0 shrink-0">{installResult}</p> : null}
             </div>
           ) : (
             <div className="install-catalog-tab-panel">
               {hubInstallReview ? (
-                <div className="space-y-3 rounded-md border border-ui-border bg-ui-bg-muted/30 p-3">
+                <div className="space-y-3 rounded-md border border-border bg-accent/30 p-3">
                   <div className="flex items-start justify-between gap-3">
                     <div>
-                      <p className="m-0 text-sm font-semibold text-ui-text">Package Policy Review</p>
-                      <p className="m-0 mt-1 text-xs text-ui-text-soft">
+                      <p className="m-0 text-sm font-semibold text-foreground">Package Policy Review</p>
+                      <p className="m-0 mt-1 text-xs text-muted-foreground">
                         {hubInstallReview.package_id}@{hubInstallReview.version} · {hubInstallReview.asset_kind} · risk {hubInstallReview.risk_level}
                       </p>
                     </div>
-                    <span className="rounded-full border border-ui-border px-2 py-0.5 text-[10px] uppercase tracking-wide text-ui-text-soft">
+                    <span className="rounded-full border border-border px-2 py-0.5 text-[10px] uppercase tracking-wide text-muted-foreground">
                       Add
                     </span>
                   </div>
@@ -240,7 +240,7 @@ export function RegistryInstallCatalog({
                       placeholder="/functions/blogging/new-asset-folder"
                     />
                   </label>
-                  <div className="rounded-md border border-ui-border bg-ui-bg px-2 py-1.5 text-xs text-ui-text-soft">
+                  <div className="rounded-md border border-border bg-popover px-2 py-1.5 text-xs text-muted-foreground">
                     Files will be added under <code>{hubInstallReview.install_root || "."}</code>. Edit the folder and refresh the review before confirming.
                   </div>
                   <div className="grid gap-2 text-xs md:grid-cols-2">
@@ -279,7 +279,7 @@ export function RegistryInstallCatalog({
                 </div>
               ) : (
               <div className="space-y-3">
-                <p className="text-xs text-body-soft m-0">
+                <p className="text-xs text-muted-foreground m-0">
                   Browse Hub packages and add them into this project workspace. Project bundles are intentionally excluded from Add+.
                 </p>
                 <div className="flex flex-wrap gap-2">
@@ -320,27 +320,27 @@ export function RegistryInstallCatalog({
                   onInput={(e) => setPackSearch((e?.currentTarget as HTMLInputElement)?.value || "")}
                   placeholder="Search packages, publishers, kinds, or tags..."
                 />
-                <div className="max-h-[440px] overflow-auto rounded-md border border-ui-border bg-ui-bg-muted/20">
+                <div className="max-h-[440px] overflow-auto rounded-md border border-border bg-accent/20">
                   {filteredPacks.length ? filteredPacks.map((item) => (
-                    <div key={`${item.repository_id || "local"}:${item.package_id}:${item.latest_version || ""}`} className="flex items-start gap-3 border-b border-ui-border px-3 py-2 last:border-b-0">
-                      {item.image_url ? <img src={item.image_url} alt="" className="h-14 w-20 shrink-0 rounded-md border border-ui-border object-cover" /> : null}
+                    <div key={`${item.repository_id || "local"}:${item.package_id}:${item.latest_version || ""}`} className="flex items-start gap-3 border-b border-border px-3 py-2 last:border-b-0">
+                      {item.image_url ? <img src={item.image_url} alt="" className="h-14 w-20 shrink-0 rounded-md border border-border object-cover" /> : null}
                       <div className="min-w-0 flex-1">
                         <div className="flex items-center gap-2">
-                          <span className="text-sm font-medium text-ui-text">{item.title || item.package_id}</span>
-                          <span className="rounded-full border border-ui-border px-2 py-0.5 text-[10px] uppercase tracking-wide text-ui-text-soft">{item.asset_kind}</span>
+                          <span className="text-sm font-medium text-foreground">{item.title || item.package_id}</span>
+                          <span className="rounded-full border border-border px-2 py-0.5 text-[10px] uppercase tracking-wide text-muted-foreground">{item.asset_kind}</span>
                         </div>
                         {Array.isArray(item.tags) && item.tags.length ? (
                           <div className="mt-1 flex flex-wrap gap-1">
                             {item.tags.slice(0, 6).map((tag) => (
-                              <span key={tag} className="rounded-full border border-ui-border bg-ui-bg px-2 py-0.5 text-[10px] text-ui-text-soft">{tag}</span>
+                              <span key={tag} className="rounded-full border border-border bg-popover px-2 py-0.5 text-[10px] text-muted-foreground">{tag}</span>
                             ))}
                           </div>
                         ) : null}
-                        <div className="mt-1 text-xs text-ui-text-soft">
+                        <div className="mt-1 text-xs text-muted-foreground">
                           {item.package_id} · {item.latest_version || "-"} · {item.publisher_display_name || item.publisher_id || "-"} · {item.repository_title || "Local"}
                         </div>
                         {item.description ? (
-                          <p className="mt-1 text-xs text-ui-text-soft">{item.description}</p>
+                          <p className="mt-1 text-xs text-muted-foreground">{item.description}</p>
                         ) : null}
                       </div>
                       <Button type="button" size="xs" variant="ghost" onClick={() => onAddPack(item)}>
@@ -348,10 +348,10 @@ export function RegistryInstallCatalog({
                       </Button>
                     </div>
                   )) : (
-                    <div className="px-3 py-4 text-xs text-ui-text-soft">No matching packages.</div>
+                    <div className="px-3 py-4 text-xs text-muted-foreground">No matching packages.</div>
                   )}
                 </div>
-                {installResult ? <p className="text-xs text-body-soft m-0 shrink-0">{installResult}</p> : null}
+                {installResult ? <p className="text-xs text-muted-foreground m-0 shrink-0">{installResult}</p> : null}
               </div>
               )}
             </div>
@@ -376,15 +376,15 @@ function ReviewList({ title, items, danger = false }: { title: string; items: an
   const values = Array.isArray(items) ? items.filter(Boolean).slice(0, 8) : [];
   const remaining = Array.isArray(items) ? Math.max(0, items.length - values.length) : 0;
   return (
-    <div className={cx("rounded-md border px-2 py-1.5", danger && values.length ? "border-amber-300 bg-amber-50/60" : "border-ui-border bg-ui-bg")}>
-      <p className="m-0 text-[10px] font-semibold uppercase tracking-wide text-ui-text-soft">{title}</p>
+    <div className={cx("rounded-md border px-2 py-1.5", danger && values.length ? "border-amber-300 bg-amber-50/60" : "border-border bg-popover")}>
+      <p className="m-0 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">{title}</p>
       {values.length ? (
-        <ul className="m-0 mt-1 space-y-0.5 p-0 list-none text-ui-text-soft">
+        <ul className="m-0 mt-1 space-y-0.5 p-0 list-none text-muted-foreground">
           {values.map((item, index) => <li key={`${title}-${index}`} className="truncate">{String(item)}</li>)}
-          {remaining ? <li className="text-ui-text-soft">+{remaining} more</li> : null}
+          {remaining ? <li className="text-muted-foreground">+{remaining} more</li> : null}
         </ul>
       ) : (
-        <p className="m-0 mt-1 text-ui-text-soft">None</p>
+        <p className="m-0 mt-1 text-muted-foreground">None</p>
       )}
     </div>
   );

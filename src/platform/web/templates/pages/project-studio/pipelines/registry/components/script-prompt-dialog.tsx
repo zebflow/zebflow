@@ -74,7 +74,7 @@ export default function ScriptPromptDialog({ open, onClose }: { open: boolean; o
 
   return (
     <Dialog open={open} onOpenChange={(value) => { if (!value) onClose(); }}>
-      <DialogContent size="lg" className="border-border bg-surface text-body">
+      <DialogContent size="lg" className="border-border bg-card text-foreground">
         <DialogHeader className="shrink-0">
           <DialogTitle>Create Script Prompt</DialogTitle>
           <DialogDescription>
@@ -83,32 +83,32 @@ export default function ScriptPromptDialog({ open, onClose }: { open: boolean; o
         </DialogHeader>
 
         <div className="grid gap-4 px-6 py-5">
-          <label className="grid gap-1.5 text-xs text-body-soft">
+          <label className="grid gap-1.5 text-xs text-muted-foreground">
             <span>Script name</span>
             <Input value={name} onInput={(event) => setName(event.currentTarget.value)} placeholder="format-address" />
           </label>
-          <label className="grid gap-1.5 text-xs text-body-soft">
+          <label className="grid gap-1.5 text-xs text-muted-foreground">
             <span>What should it do?</span>
             <Textarea value={need} onInput={(event) => setNeed(event.currentTarget.value)} rows={4} placeholder="Normalize an address and return a stable display label." />
           </label>
           <div className="grid gap-4 md:grid-cols-2">
-            <label className="grid min-w-0 gap-1.5 text-xs text-body-soft">
+            <label className="grid min-w-0 gap-1.5 text-xs text-muted-foreground">
               <span>Input example</span>
               <Textarea value={inputExample} onInput={(event) => setInputExample(event.currentTarget.value)} rows={6} className="font-mono text-xs" placeholder={'{"street":"1 Swanston St","city":"Melbourne"}'} />
             </label>
-            <label className="grid min-w-0 gap-1.5 text-xs text-body-soft">
+            <label className="grid min-w-0 gap-1.5 text-xs text-muted-foreground">
               <span>Output example</span>
               <Textarea value={outputExample} onInput={(event) => setOutputExample(event.currentTarget.value)} rows={6} className="font-mono text-xs" placeholder={'{"label":"1 Swanston St, Melbourne"}'} />
             </label>
           </div>
 
           {generated ? (
-            <label className="grid gap-1.5 text-xs text-body-soft">
+            <label className="grid gap-1.5 text-xs text-muted-foreground">
               <span>Generated prompt</span>
               <Textarea value={generated} readOnly rows={14} className="font-mono text-xs" />
             </label>
           ) : null}
-          {copyState ? <p className="m-0 text-xs text-body-soft">{copyState}</p> : null}
+          {copyState ? <p className="m-0 text-xs text-muted-foreground">{copyState}</p> : null}
         </div>
 
         <DialogFooter className="shrink-0">

@@ -7,8 +7,8 @@ Authoritative locations:
 - `docker/`
 - `charts/`
 - `k8s/`
-- `libraries/`
-- `composites/`
+- `blessed/rwe-libraries/` (zeb/* runtime bundles, each built by its `build/`)
+- `src/pipeline/nodes/bundled/` (built-in composite node packages)
 - `src/platform/services/hub.rs`
 - `src/platform/help/guide/hub/`
 
@@ -20,8 +20,8 @@ Distribution surfaces:
 | pip | Simple install for Python users. |
 | Docker | Server and repeatable deployment. |
 | Helm/charts | Kubernetes deployment. |
-| libraries | Zeb/RWE frontend library bundles. |
-| composites | Built-in composite node packages. |
+| blessed/rwe-libraries | zeb/* frontend library bundles, embedded in the binary. |
+| src/pipeline/nodes/bundled | built-in composite node packages. |
 | Hub | Shareable packages across projects/instances. |
 
 README rule:

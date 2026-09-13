@@ -28,9 +28,13 @@ different pipeline model because the implementation is WASM.
 
 ## Safety and Limits
 
-The host controls module size, input size, output size, memory, time, and allowed
-capabilities. A module cannot assume normal operating system access unless the
-host grants it.
+The host caps the module at 32 MiB, the input at 4 MiB and the output at
+128 MiB, and instantiates the module with **no imports at all** — no
+filesystem, network, clock or environment; the only I/O is the JSON in and
+the JSON out (`zebflow-wasm-json-v1`). Time is bounded by the node's
+engine timeout (`--timeout`, default the project's `pipeline_node_timeout_secs`);
+there is no separate memory or fuel limit, so a module's memory is what its
+own linear memory declares.
 
 ## Good WASM Design
 

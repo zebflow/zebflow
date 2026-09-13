@@ -1,18 +1,29 @@
-[
-  {
-    "name": "mountProseEditor",
-    "kind": "function",
-    "signature": "async (container: HTMLElement, config?: ProseEditorConfig) => ProseEditorInstance",
-    "description": "Mount a ProseMirror editor into a DOM container. Returns an instance with getHTML, getJSON, setHTML, setJSON, destroy."
-  },
-  {
-    "name": "prosemirror",
-    "kind": "namespace",
-    "description": "Namespace re-exporting mountProseEditor."
-  },
-  {
-    "name": "ProseEditor",
-    "kind": "component",
-    "description": "RWE wrapper component. Renders a placeholder div hydrated by mountProseEditor. Props: config, className."
+{
+  "package": "zeb/prosemirror",
+  "version": "0.2",
+  "raw": {
+    "createEditor": {
+      "kind": "function",
+      "signature": "(mount: HTMLElement, options?) => EditorInstance",
+      "description": "Mount an editor. options: doc, classes, placeholder, editable, onChange(json), onSlash(state|null), onSelection(state|null), onFocus(bool), uploadImage(file). Instance: view, schema, commands, exec, applySlash, getJSON, setJSON, getHTML, setHTML, focus, destroy."
+    },
+    "createSchema": {
+      "kind": "function",
+      "signature": "(classes?) => Schema",
+      "description": "Zebflow's block schema: paragraph, heading 1-3, blockquote, callout, code_block, horizontal_rule, image, bullet/ordered/todo lists; marks bold, italic, underline, strike, code, link."
+    },
+    "htmlToDocument": {
+      "kind": "function",
+      "signature": "(html: string, classes?) => DocumentJSON",
+      "description": "Parse an HTML body into a document through the schema (browser only)."
+    },
+    "EMPTY_DOC": {
+      "kind": "constant",
+      "description": "The document a fresh editor starts with."
+    },
+    "pm": {
+      "kind": "namespace",
+      "description": "The ProseMirror packages: EditorState, EditorView, Plugin, Schema, DOMParser, commands, inputrules, lists, history, keymap, dropcursor, gapcursor."
+    }
   }
-]
+}

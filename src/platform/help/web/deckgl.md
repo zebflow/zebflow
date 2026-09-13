@@ -27,7 +27,7 @@ import {
   colorRamp,             // interpolate color stops at position t
   interpolateAlongPath,  // [lon, lat, heading] at progress along a path
   createAnimationLoop,   // requestAnimationFrame loop with play/pause/speed
-  DeckMap,               // Preact component (same as default export)
+  DeckMap,               // Zeb React component (same as default export)
 } from "zeb/deckgl";
 ```
 
@@ -342,7 +342,7 @@ Use `createAnimationLoop` for smooth vehicle tracking, temporal simulations, and
 import { useEffect, useRef, useState, usePageState } from "zeb/react";
 import DeckMap, { createAnimationLoop, interpolateAlongPath } from "zeb/deckgl";
 
-export default function FleetPlayback() {
+export default function FleetPlayback(input) {
   const [vehicles, setVehicles] = usePageState("vehicles", []);
   const [progress, setProgress] = usePageState("progress", 0);
   const loopRef = useRef(null);
@@ -399,27 +399,40 @@ export default function FleetPlayback() {
 
 ### 8. Real-Time WebSocket Tracking
 
-Combine DeckMap with Zebflow's WebSocket pipelines for live fleet tracking:
+Combine DeckMap with Zebflow's WebSocket pipelines for live fleet tracking.
+`owner`/`project` are not part of `input` — have the page's serving pipeline
+attach the socket path to the payload before it renders, e.g. a `script` node
+right before `web.response --template pages/live-fleet.tsx`:
+
+```
+script -- "return { ...input, ws: '/ws/acme/blog/rooms/fleet' }"
+```
+
+Then read `input.ws` in the page:
 
 ```tsx
 import { useEffect, useState, usePageState } from "zeb/react";
 import DeckMap from "zeb/deckgl";
 
-export default function LiveFleet() {
+export default function LiveFleet(input) {
   const [vehicles, setVehicles] = usePageState("vehicles", []);
 
   useEffect(() => {
     const ws = new WebSocket(
-      `${location.protocol === "https:" ? "wss:" : "ws:"}//${location.host}/ws/${input.owner}/${input.project}/rooms/fleet`
+      `${location.protocol === "https:" ? "wss:" : "ws:"}//${location.host}${input.ws}`
     );
     ws.onmessage = (e) => {
       const msg = JSON.parse(e.data);
-      if (msg.type === "state_patch" || msg.type === "event") {
+      if (msg.type === "state_patch") {
+        // n.ws.sync_state broadcasts the room's FULL state on every change.
+        setVehicles(msg.state?.vehicles || []);
+      } else if (msg.type === "event" && msg.event === "telemetry") {
+        // n.ws.emit broadcasts one event; merge it into what we have.
         setVehicles(prev => {
-          const map = new Map(prev.map(v => [v.id, v]));
-          for (const v of msg.payload?.vehicles || []) {
-            map.set(v.id, { ...map.get(v.id), ...v });
-          }
+          const v = msg.payload;
+          if (!v?.id) return prev;
+          const map = new Map(prev.map(x => [x.id, x]));
+          map.set(v.id, { ...map.get(v.id), ...v });
           return [...map.values()];
         });
       }
@@ -613,14 +626,14 @@ inst.setViewState({
 ```
 | trigger.webhook --path /api/locations --method GET
 | pg.query --credential main-db -- "SELECT id, name, longitude, latitude, value FROM locations"
-| n.web.json_response
+| web.response
 ```
 
 ### Real-Time Tracking via WebSocket
 
 ```
 | n.trigger.ws --room fleet --event telemetry
-| n.ws.sync_state --op merge --path /vehicles/{payload.id} --value_path /payload
+| n.ws.sync_state --op merge --path /vehicles/{session_id} --value "{{ input.payload }}"
 ```
 
 ### Aggregated Data for Heatmap
@@ -628,7 +641,7 @@ inst.setViewState({
 ```
 | trigger.webhook --path /api/incidents --method GET
 | pg.query --credential main-db -- "SELECT longitude as lon, latitude as lat, severity FROM incidents WHERE created_at > NOW() - INTERVAL '7 days'"
-| n.web.json_response
+| web.response
 ```
 
 ---
@@ -639,7 +652,7 @@ inst.setViewState({
 import { useEffect, useRef, useState, usePageState } from "zeb/react";
 import DeckMap, { haversine, colorRamp, createAnimationLoop } from "zeb/deckgl";
 
-export default function FleetDashboard() {
+export default function FleetDashboard(input) {
   const [vehicles, setVehicles] = usePageState("vehicles", input.vehicles || []);
   const [selected, setSelected] = useState(null);
   const [view, setView] = usePageState("mapView", {
@@ -682,9 +695,9 @@ export default function FleetDashboard() {
         className="flex-1"
       />
       {selected && (
-        <div className="absolute bottom-4 left-4 bg-surface p-4 rounded-lg shadow-lg">
+        <div className="absolute bottom-4 left-4 bg-card p-4 rounded-lg shadow-lg">
           <h3 className="font-medium">{selected.name}</h3>
-          <p className="text-sm text-muted">{selected.status}</p>
+          <p className="text-sm text-muted-foreground">{selected.status}</p>
         </div>
       )}
     </div>

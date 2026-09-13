@@ -33,13 +33,13 @@ export default function Page(input) {
       <main className="flex-1 min-h-0 overflow-auto">
         <div className="flex min-h-full flex-col gap-3 px-3.5 py-3">
           <header className="border-b border-border pb-3">
-            <p className="font-mono text-[0.66rem] font-semibold uppercase tracking-[0.16em] text-body-muted">
+            <p className="font-mono text-[0.66rem] font-semibold uppercase tracking-[0.16em] text-muted-foreground">
               Infrastructure
             </p>
-            <h1 className="mt-1 text-[1.05rem] font-semibold leading-tight text-body">
+            <h1 className="mt-1 text-[1.05rem] font-semibold leading-tight text-foreground">
               Controller and office topology
             </h1>
-            <p className="mt-1 max-w-3xl text-[0.78rem] leading-5 text-body-soft">
+            <p className="mt-1 max-w-3xl text-[0.78rem] leading-5 text-muted-foreground">
               Current office inventory, project runtime placement, and controller
               registration state for this project.
             </p>

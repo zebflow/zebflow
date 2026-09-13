@@ -1113,6 +1113,15 @@ impl BasicPipelineEngine {
         self
     }
 
+    /// Source libraries (`zeb/ui`, …) the compiler resolves by file. They ship
+    /// with the platform, so an engine without one has none.
+    fn library_roots(&self) -> std::collections::BTreeMap<String, std::path::PathBuf> {
+        self.platform
+            .as_ref()
+            .map(|p| p.library.source_roots())
+            .unwrap_or_default()
+    }
+
     /// Attach a shared template compile cache to this engine.
     /// Same cache instance should be passed on every request so hits accumulate.
     pub fn with_template_cache(mut self, cache: TemplateCache) -> Self {
@@ -2076,6 +2085,7 @@ impl PipelineEngine for BasicPipelineEngine {
                             let options = crate::rwe::ReactiveWebOptions {
                                 templates: crate::rwe::TemplateOptions {
                                     template_root: self.template_root.clone(),
+                                    library_roots: self.library_roots(),
                                     style_entries: Vec::new(),
                                 },
                                 ..Default::default()
@@ -2187,6 +2197,7 @@ impl PipelineEngine for BasicPipelineEngine {
                         let options = crate::rwe::ReactiveWebOptions {
                             templates: crate::rwe::TemplateOptions {
                                 template_root: self.template_root.clone(),
+                                library_roots: self.library_roots(),
                                 style_entries: Vec::new(),
                             },
                             processors: vec!["tailwind".to_string(), "markdown".to_string()],
@@ -2461,6 +2472,7 @@ impl PipelineEngine for BasicPipelineEngine {
                         let options = crate::rwe::ReactiveWebOptions {
                             templates: crate::rwe::TemplateOptions {
                                 template_root: self.template_root.clone(),
+                                library_roots: self.library_roots(),
                                 style_entries: Vec::new(),
                             },
                             ..Default::default()

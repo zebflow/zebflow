@@ -88,13 +88,13 @@ export default function HubBrowser({ items, owner, project, initialState, destin
               className={cx(
                 "rounded px-2.5 py-1 text-[0.72rem] font-medium transition-colors",
                 state === entry.id
-                  ? "bg-ui-bg-muted text-body"
-                  : "text-body-soft hover:bg-ui-bg-muted/60 hover:text-body",
+                  ? "bg-accent text-foreground"
+                  : "text-muted-foreground hover:bg-accent/60 hover:text-foreground",
               )}
             >
               {entry.label}
               {entry.id === "problems" && problemCount ? (
-                <span className="ml-1 text-dark-accent4">{problemCount}</span>
+                <span className="ml-1 text-warning">{problemCount}</span>
               ) : null}
             </button>
           ))}
@@ -107,7 +107,7 @@ export default function HubBrowser({ items, owner, project, initialState, destin
           onClick={() => setKind("")}
           className={cx(
             "rounded-full border px-2.5 py-[3px] text-[0.7rem] transition-colors",
-            kind ? "border-border text-body-soft hover:text-body" : "border-border bg-ui-bg-muted text-body",
+            kind ? "border-border text-muted-foreground hover:text-foreground" : "border-border bg-accent text-foreground",
           )}
         >
           All
@@ -120,7 +120,7 @@ export default function HubBrowser({ items, owner, project, initialState, destin
             onClick={() => setKind(kind === entry.id ? "" : entry.id)}
             className={cx(
               "flex items-center gap-1.5 rounded-full border px-2.5 py-[3px] text-[0.7rem] transition-colors",
-              kind === entry.id ? entry.chipOn : "border-border text-body-soft hover:text-body",
+              kind === entry.id ? entry.chipOn : "border-border text-muted-foreground hover:text-foreground",
             )}
           >
             <span className={cx("leading-none", kind === entry.id ? "" : entry.tone)} aria-hidden="true">
@@ -132,9 +132,9 @@ export default function HubBrowser({ items, owner, project, initialState, destin
       </div>
 
       {state === "problems" && problemCount ? (
-        <div className="flex items-center justify-between gap-3 border-b border-dark-accent4/40 bg-dark-accent4/5 px-3 py-2">
-          <p className="text-[0.74rem] text-body-soft">
-            <span className="font-medium text-dark-accent4">{problemCount}</span> installed package(s)
+        <div className="flex items-center justify-between gap-3 border-b border-warning/40 bg-warning/5 px-3 py-2">
+          <p className="text-[0.74rem] text-muted-foreground">
+            <span className="font-medium text-warning">{problemCount}</span> installed package(s)
             do not match <code className="font-mono">zeb.lock</code> — missing, or the bytes changed.
           </p>
           <Button type="button" variant="outline" size="sm" onClick={() => onAct({ repair_all: true })}>
@@ -155,7 +155,7 @@ export default function HubBrowser({ items, owner, project, initialState, destin
               />
             ))
           ) : (
-            <p className="px-3 py-6 text-center text-[0.76rem] text-body-soft">
+            <p className="px-3 py-6 text-center text-[0.76rem] text-muted-foreground">
               {kind ? `No ${kindOf(kind).label.toLowerCase()} here.` : "Nothing matches."}
             </p>
           )}

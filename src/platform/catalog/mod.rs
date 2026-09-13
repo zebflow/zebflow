@@ -2,6 +2,8 @@
 //! installable into user projects at `repo/pipelines/shared/ui/`.
 
 use std::collections::HashMap;
+
+use crate::platform::web::embedded::PLATFORM_SOURCE_LIBRARY_ASSETS;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
@@ -78,287 +80,76 @@ pub struct InstallUiRequest {
     pub overwrite: bool,
 }
 
-// ── Embedded component sources ────────────────────────────────────────────────
+// ── Component sources ────────────────────────────────────────────────────────
 
-macro_rules! ui_sources {
-    ( $( ($name:expr, $file:expr, $cat:expr, $desc:expr) ),* $(,)? ) => {
-        &[
-            $(
-                (
-                    $name,
-                    include_str!(concat!("../../../blessed/templates/", $cat, "/", $file)),
-                    $file,
-                    $cat,
-                    $desc,
-                ),
-            )*
-        ]
-    };
+/// One component of `zeb/ui`, as the catalog lists it and as a clone copies it.
+#[derive(Debug, Clone, Copy)]
+pub struct UiSource {
+    pub name: &'static str,
+    pub source: &'static str,
+    pub filename: &'static str,
+    pub category: &'static str,
+    pub description: &'static str,
 }
 
-/// `(name, source, filename, category, description)`
-static UI_SOURCES: &[(&str, &str, &str, &str, &str)] = ui_sources![
-    // Primitives
-    (
-        "button",
-        "button.tsx",
-        "primitives",
-        "Accessible button with variant and size props"
-    ),
-    (
-        "input",
-        "input.tsx",
-        "primitives",
-        "Text input with consistent styling"
-    ),
-    (
-        "textarea",
-        "textarea.tsx",
-        "primitives",
-        "Multi-line text input"
-    ),
-    (
-        "label",
-        "label.tsx",
-        "primitives",
-        "Form label with peer-disabled support"
-    ),
-    (
-        "checkbox",
-        "checkbox.tsx",
-        "primitives",
-        "Checkbox with onCheckedChange API"
-    ),
-    (
-        "radio-group",
-        "radio-group.tsx",
-        "primitives",
-        "Radio group with single selection"
-    ),
-    (
-        "switch",
-        "switch.tsx",
-        "primitives",
-        "Toggle switch with checked/onCheckedChange"
-    ),
-    (
-        "slider",
-        "slider.tsx",
-        "primitives",
-        "Range slider with onValueChange"
-    ),
-    // Display
-    (
-        "badge",
-        "badge.tsx",
-        "display",
-        "Inline status badge with variants"
-    ),
-    (
-        "avatar",
-        "avatar.tsx",
-        "display",
-        "Avatar with image and fallback"
-    ),
-    ("progress", "progress.tsx", "display", "Progress bar 0–100"),
-    (
-        "skeleton",
-        "skeleton.tsx",
-        "display",
-        "Loading skeleton placeholder"
-    ),
-    (
-        "separator",
-        "separator.tsx",
-        "display",
-        "Horizontal or vertical divider"
-    ),
-    ("kbd", "kbd.tsx", "display", "Keyboard shortcut display"),
-    (
-        "alert",
-        "alert.tsx",
-        "display",
-        "Alert banner with title and description"
-    ),
-    // Layout
-    (
-        "card",
-        "card.tsx",
-        "layout",
-        "Card with header, content, and footer"
-    ),
-    (
-        "table",
-        "table.tsx",
-        "layout",
-        "Styled HTML table with all sub-parts"
-    ),
-    (
-        "tabs",
-        "tabs.tsx",
-        "layout",
-        "Tab panels with internal active state"
-    ),
-    (
-        "accordion",
-        "accordion.tsx",
-        "layout",
-        "Collapsible accordion, single or multiple"
-    ),
-    (
-        "collapsible",
-        "collapsible.tsx",
-        "layout",
-        "Simple open/close collapsible container"
-    ),
-    (
-        "scroll-area",
-        "scroll-area.tsx",
-        "layout",
-        "Styled scrollable container"
-    ),
-    // Navigation
-    (
-        "breadcrumb",
-        "breadcrumb.tsx",
-        "navigation",
-        "Breadcrumb nav with all sub-parts"
-    ),
-    (
-        "pagination",
-        "pagination.tsx",
-        "navigation",
-        "Page pagination with previous/next"
-    ),
-    (
-        "toggle",
-        "toggle.tsx",
-        "navigation",
-        "Pressable toggle button"
-    ),
-    (
-        "toggle-group",
-        "toggle-group.tsx",
-        "navigation",
-        "Toggle group with single or multiple selection"
-    ),
-    // Overlay
-    (
-        "dialog",
-        "dialog.tsx",
-        "overlay",
-        "Modal dialog with backdrop and close button"
-    ),
-    (
-        "alert-dialog",
-        "alert-dialog.tsx",
-        "overlay",
-        "Confirmation dialog, no outside-click dismiss"
-    ),
-    (
-        "sheet",
-        "sheet.tsx",
-        "overlay",
-        "Slide-in panel from any edge"
-    ),
-    ("drawer", "drawer.tsx", "overlay", "Bottom drawer sheet"),
-    (
-        "popover",
-        "popover.tsx",
-        "overlay",
-        "Anchored popover panel"
-    ),
-    (
-        "hover-card",
-        "hover-card.tsx",
-        "overlay",
-        "Content card shown on hover"
-    ),
-    (
-        "tooltip",
-        "tooltip.tsx",
-        "overlay",
-        "Tooltip shown on hover/focus"
-    ),
-    (
-        "dropdown-menu",
-        "dropdown-menu.tsx",
-        "overlay",
-        "Dropdown menu with items, checkboxes, radios"
-    ),
-    // Complex
-    (
-        "select",
-        "select.tsx",
-        "complex",
-        "Custom select with item list"
-    ),
-    (
-        "sonner",
-        "sonner.tsx",
-        "complex",
-        "Toast notifications with queue"
-    ),
-    (
-        "input-otp",
-        "input-otp.tsx",
-        "complex",
-        "OTP input with auto-advance slots"
-    ),
-    (
-        "calendar",
-        "calendar.tsx",
-        "complex",
-        "Month calendar with date selection"
-    ),
-    (
-        "data-table",
-        "data-table.tsx",
-        "complex",
-        "Table with sorting, filtering, pagination"
-    ),
-];
+/// The catalog is `zeb/ui`'s own source, `blessed/source-libraries/ui/<v>/src/`,
+/// embedded by build.rs. A page imports a component from `zeb/ui/<name>`
+/// without installing anything; the catalog exists for the project that wants
+/// to *own* one — a clone copies these exact bytes into `shared/ui/`.
+///
+/// The description is the first sentence of the file's header comment, so
+/// the catalog says what the file says.
+pub fn ui_sources() -> Vec<UiSource> {
+    let mut out: Vec<UiSource> = PLATFORM_SOURCE_LIBRARY_ASSETS
+        .iter()
+        .filter_map(|asset| {
+            let rest = asset.path.strip_prefix("zeb/ui/")?;
+            let (_version, file) = rest.split_once("/src/")?;
+            if file.contains('/') || !file.ends_with(".tsx") {
+                return None;
+            }
+            let name = file.trim_end_matches(".tsx");
+            let source = std::str::from_utf8(asset.bytes).ok()?;
+            Some(UiSource {
+                name,
+                source,
+                filename: file,
+                category: ui_category(name),
+                description: header_sentence(source),
+            })
+        })
+        .collect();
+    out.sort_by(|a, b| a.name.cmp(b.name));
+    out
+}
 
-/// The publish metadata beside each blessed template set, embedded so the
-/// hub seeder can publish the sets without touching the source tree at run
-/// time.
-static TEMPLATE_SET_MANIFESTS: &[(&str, &str)] = &[
-    (
-        "primitives",
-        include_str!("../../../blessed/templates/primitives/package.yaml"),
-    ),
-    (
-        "display",
-        include_str!("../../../blessed/templates/display/package.yaml"),
-    ),
-    (
-        "layout",
-        include_str!("../../../blessed/templates/layout/package.yaml"),
-    ),
-    (
-        "navigation",
-        include_str!("../../../blessed/templates/navigation/package.yaml"),
-    ),
-    (
-        "overlay",
-        include_str!("../../../blessed/templates/overlay/package.yaml"),
-    ),
-    (
-        "complex",
-        include_str!("../../../blessed/templates/complex/package.yaml"),
-    ),
-];
+fn ui_category(name: &str) -> &'static str {
+    match name {
+        "button" | "toggle" | "toggle-group" | "button-group" | "dropdown-menu" | "context-menu" => "actions",
+        "input" | "textarea" | "label" | "field" | "checkbox" | "switch" | "radio-group" | "slider"
+        | "input-otp" | "native-select" | "input-group" | "select" => "forms",
+        "dialog" | "alert-dialog" | "sheet" | "drawer" | "popover" | "tooltip" | "hover-card" | "sonner" => "overlays",
+        "tabs" | "accordion" | "collapsible" | "scroll-area" | "resizable" | "breadcrumb" | "pagination" => "navigation",
+        "hooks" => "internal",
+        _ => "display",
+    }
+}
 
-/// One blessed template set: the catalog's components grouped by category,
-/// with the `package.yaml` the seeder publishes them under.
-pub struct TemplateSet {
-    /// Directory name under `blessed/templates/`, equal to the catalog
-    /// category.
-    pub set: &'static str,
-    /// Raw `package.yaml` publish metadata.
-    pub package_yaml: &'static str,
-    /// `(filename, source)` for every component in the set.
-    pub files: Vec<(&'static str, &'static str)>,
+/// The first sentence of the header comment: the line after the `/**` that
+/// names the component, up to its first period.
+fn header_sentence(source: &str) -> &'static str {
+    let Some(start) = source.find("/**") else { return "" };
+    let body = &source[start + 3..];
+    let end = body.find("*/").unwrap_or(body.len());
+    let text: String = body[..end]
+        .lines()
+        .map(|l| l.trim().trim_start_matches('*').trim())
+        .filter(|l| !l.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ");
+    let sentence = text.split(". ").next().unwrap_or("").trim_end_matches('.').to_string();
+    // Leaked once per process; the catalog is read far more than built.
+    Box::leak(sentence.into_boxed_str())
 }
 
 // ── CatalogService ─────────────────────────────────────────────────────────────
@@ -366,27 +157,11 @@ pub struct TemplateSet {
 pub struct CatalogService;
 
 impl CatalogService {
-    /// The blessed template sets, grouped by catalog category.
-    pub fn template_sets() -> Vec<TemplateSet> {
-        TEMPLATE_SET_MANIFESTS
-            .iter()
-            .map(|(set, package_yaml)| TemplateSet {
-                set,
-                package_yaml,
-                files: UI_SOURCES
-                    .iter()
-                    .filter(|(_, _, _, category, _)| category == set)
-                    .map(|(_, source, filename, _, _)| (*filename, *source))
-                    .collect(),
-            })
-            .collect()
-    }
-
     /// Return all UI catalog entries (without presence info).
     pub fn list_ui() -> Vec<CatalogEntry> {
-        UI_SOURCES
+        ui_sources()
             .iter()
-            .map(|(name, _, filename, category, description)| CatalogEntry {
+            .map(|UiSource { name, filename, category, description, .. }| CatalogEntry {
                 name: name.to_string(),
                 category: category.to_string(),
                 description: description.to_string(),
@@ -398,9 +173,9 @@ impl CatalogService {
 
     /// Return all UI catalog entries enriched with `installed` presence flag.
     pub fn list_ui_with_presence(shared_ui_dir: &PathBuf) -> Vec<CatalogEntry> {
-        UI_SOURCES
+        ui_sources()
             .iter()
-            .map(|(name, _, filename, category, description)| {
+            .map(|UiSource { name, filename, category, description, .. }| {
                 let installed = shared_ui_dir.join(filename).exists();
                 CatalogEntry {
                     name: name.to_string(),
@@ -415,9 +190,9 @@ impl CatalogService {
 
     /// Returns a map of `name → installed` for quick lookups.
     pub fn check_presence(shared_ui_dir: &PathBuf) -> HashMap<String, bool> {
-        UI_SOURCES
+        ui_sources()
             .iter()
-            .map(|(name, _, filename, _, _)| {
+            .map(|UiSource { name, filename, .. }| {
                 let installed = shared_ui_dir.join(filename).exists();
                 (name.to_string(), installed)
             })
@@ -432,9 +207,10 @@ impl CatalogService {
         overwrite: bool,
     ) -> UiInstallReview {
         let install_root = layout.source_rel(SHARED_UI_SUBDIR);
-        let source_map: HashMap<&str, (&str, &str)> = UI_SOURCES
+        let sources = ui_sources();
+        let source_map: HashMap<&str, (&str, &str)> = sources
             .iter()
-            .map(|(name, src, filename, _, _)| (*name, (*src, *filename)))
+            .map(|c| (c.name, (c.source, c.filename)))
             .collect();
 
         let mut components = Vec::new();
@@ -546,9 +322,10 @@ impl CatalogService {
         std::fs::create_dir_all(shared_ui_dir)
             .map_err(|e| format!("Failed to create shared/ui dir: {e}"))?;
 
-        let source_map: HashMap<&str, (&str, &str)> = UI_SOURCES
+        let sources = ui_sources();
+        let source_map: HashMap<&str, (&str, &str)> = sources
             .iter()
-            .map(|(name, src, filename, _, _)| (*name, (*src, *filename)))
+            .map(|c| (c.name, (c.source, c.filename)))
             .collect();
 
         let mut report = CloneReport::default();
@@ -562,7 +339,13 @@ impl CatalogService {
                 report.skipped.push(name.clone());
                 continue;
             }
-            std::fs::write(&dest, src).map_err(|e| format!("Failed to write {filename}: {e}"))?;
+            // The clone is the library's bytes plus one line of provenance.
+            // Its `zeb/ui/*` imports still resolve to the library, so it
+            // works unchanged; the page switches one import to `@/shared/ui/`.
+            let cloned = format!(
+                "// cloned from zeb/ui — {name}. Edit freely; `zeb/ui/*` imports still resolve to the library.\n{src}"
+            );
+            std::fs::write(&dest, cloned).map_err(|e| format!("Failed to write {filename}: {e}"))?;
             report.installed.push(name.clone());
         }
 
@@ -571,10 +354,7 @@ impl CatalogService {
 
     /// Get source content for a single component by name.
     pub fn get_source(name: &str) -> Option<&'static str> {
-        UI_SOURCES
-            .iter()
-            .find(|(n, _, _, _, _)| *n == name)
-            .map(|(_, src, _, _, _)| *src)
+        ui_sources().into_iter().find(|c| c.name == name).map(|c| c.source)
     }
 }
 

@@ -1,34 +1,34 @@
 # Using Zebflow
 
-This guide is for people who install Zebflow and build projects with it.
+**How to build with Zebflow lives in the help tree**, `src/platform/help/`,
+which the binary embeds. It is the same text an agent reads over MCP with
+`help(topic)` and a person reads in the Studio's Help. There is one copy so it
+cannot drift.
 
-You are a Zebflow user when you:
+| Building… | Topic |
+|---|---|
+| pipelines, the DSL, responses | `pipeline`, `pipeline/dsl`, `pipeline/authoring`, `pipeline/web` |
+| pages, components, the UI kit, libraries | `web`, `web/hooks`, `web/ui`, `web/tailwind`, `web/libraries` |
+| databases | `db`, `db/sekejap` |
+| script helpers | `tool` |
+| end-to-end recipes | `pipeline/examples/*` |
+| the platform, API, operations, agent workflow | `platform`, `platform/api`, `platform/operations`, `platform/workflow`, `platform/agent` |
+| hub, mail, maps, federation, credentials | `guide/hub`, `guide/sending-mail`, `guide/mapserver`, `guide/federated-offices`, `guide/credential-encryption` |
 
-- create pages, APIs, and pipelines
-- store or query data
-- work with files and maps
-- create composite or WASM nodes
-- publish or add Hub packages
-- run Zebflow on a laptop, server, or cluster
+Read them as files under [`src/platform/help/`](../../src/platform/help/), or
+run Zebflow and open Help. The **skills** — the procedures an agent follows
+for each kind of task — are under [`blessed/skills/`](../../blessed/skills/),
+served to every project over MCP (`skill_list`, `skill_read`) and published
+as `zebflow/skills` for agents that read skills from a folder
+(`scripts/publish-skills.sh`).
 
-You do not need to know how the Rust runtime is built. That information is in
-the [developer guide](../developer/README.md).
-
-## Start Here
+This folder keeps only what an **operator** needs before there is a running
+instance to ask:
 
 1. [Install Zebflow](./installation.md)
-2. [Understand projects](./projects.md)
-3. [Build pipelines](./pipelines.md)
-4. [Build web pages](./web.md)
-5. [Use databases](./databases.md)
-6. [Use files](./files.md)
+2. [Deploy and operate it](./deployment.md)
+3. [Author your own nodes](./nodes/README.md) — composite and WASM
 
-## More Capabilities
-
-- [Maps](./maps.md)
-- [Hub](./hub.md)
-- [Deployment](./deployment.md)
-- [Node authoring](./nodes/README.md)
-
-Use the [reference](../reference/README.md) when you need exact names, fields,
-schemas, or error codes.
+The [reference](../reference/README.md) lists error-code families; every other
+exact name (routes, tools, flags) is in the help tree or generated from the
+code (`help(topic="pipeline/nodes")`).

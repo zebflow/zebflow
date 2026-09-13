@@ -56,10 +56,31 @@ On Unix systems, the directory uses mode `0700` and the password file uses mode
 longer needed. Restarting Zebflow never replaces an existing superadmin
 password.
 
-## Change the Address
+## Where the data goes
 
-Use `ZEBFLOW_PLATFORM_HOST` to change the listen address and
-`ZEBFLOW_PLATFORM_PORT` to change the port.
+Unset, `ZEBFLOW_PLATFORM_DATA_DIR` defaults to the OS user data path —
+`~/.local/share/zebflow`, `~/Library/Application Support/Zebflow`, or
+`%LOCALAPPDATA%\Zebflow` — never a path relative to the working directory.
+Set it explicitly for anything you intend to keep. Two instances must never
+share a data directory: it holds an embedded database.
 
-For a disposable local test, keep the default host. For a server, use a strong
-password, a durable data directory, TLS at the proxy, and regular backups.
+## Environment
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `ZEBFLOW_PLATFORM_HOST` / `_PORT` | `127.0.0.1` / `10610` | where the server listens |
+| `ZEBFLOW_PLATFORM_DATA_DIR` | OS user data path | the data root |
+| `ZEBFLOW_PLATFORM_BASE_URL` | derived from request headers | external base URL for OAuth redirects and MCP session URLs |
+| `ZEBFLOW_HEALTH_PORT` / `_HOST` | unset | a dedicated liveness listener (see deployment) |
+| `ZEBFLOW_PLATFORM_DEFAULT_OWNER` / `_PROJECT` | `superadmin` / `default` | created on first boot |
+| `ZEBFLOW_PLATFORM_DEFAULT_PASSWORD` | generated | the owner's first password |
+| `ZEBFLOW_PLATFORM_ALLOW_INSECURE_DEFAULT_PASSWORD` | unset | `1` permits the literal password `secret`, for disposable local runs only |
+| `ZEBFLOW_COOKIE_SECURE` | on unless the host is loopback | force the `Secure` cookie attribute |
+| `ZEBFLOW_SECRET_ROTATION_EPOCH` | unset | Unix timestamp; platform-issued tokens older than it stop working |
+| `ZEBFLOW_HUB_DEFAULT_BASE_URL` | `https://hub.zebflow.com/api` | the default hub |
+
+`zebflow --help` prints the same list, including the cluster variables an
+office or controller needs.
+
+For a disposable local test, keep the defaults. For a server: a strong
+password, an explicit durable data directory, TLS at the proxy, backups.

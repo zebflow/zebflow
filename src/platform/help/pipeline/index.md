@@ -1,294 +1,229 @@
-# Pipeline System Guide
+# Pipelines
 
-## Mental Model
-
-**A pipeline is a function.**
+A pipeline is a function: a trigger produces an input, a chain of nodes
+transforms it, the last node answers.
 
 ```
-pipeline(trigger_input) → response
+| trigger.webhook --path /posts/:slug --method GET
+| sekejap.query --params "{{ [$trigger.params.slug] }}" -- "SELECT * FROM posts WHERE slug = $1"
+| web.response --template pages/post.tsx
 ```
 
-Inside that function there are three distinct things:
+Every node receives the previous node's output as **`input`** and returns the
+next payload. `sekejap.query` replaces it with `{ columns, rows, … }`; a
+`script` shapes it; `web.response` turns it into an HTTP response or a page.
+Nothing flows unless a node passes it on.
 
-| Concept | What it is | Accessible via |
-|---------|-----------|----------------|
-| **Run context** | Immutable snapshot of the triggering event — who called, from where, verified identity. Set once at entry, available to every node unchanged. | `ctx.*` in script nodes |
-| **Nodes** | Individual operations — query, transform, decide, render. Each is a pure function: takes `input`, returns the next payload. | declared in graph |
-| **Graph** | The data flow — which node's output becomes which node's input. Explicit dependencies. Nothing flows unless you wire it. | edges (`->`) |
+## The two envelopes
 
-### The two envelopes
+| | What it is | Where |
+|---|---|---|
+| **`input`** | The business payload flowing along the edges. Each node transforms it. | `input` in scripts; `input`/`$input` in `{{ }}` |
+| **request context** | The triggering event, frozen at entry: path params, query, headers, verified identity. Never changed by any node. | `ctx.trigger.*` in scripts; `$trigger.*` in `{{ }}` |
 
-Every node receives **two separate things**:
+So when `sekejap.query` has replaced the payload, the caller's identity is
+still `ctx.trigger.auth.sub` in a script and `$trigger.auth.sub` in a flag.
+`ctx.request_id` and `ctx.pipeline` are there too.
 
-- **`input`** — the business payload flowing through edges. Each node transforms it. `pg.query` replaces it with `{rows:[...]}`. A `script` node shapes it. This is the graph's concern.
-- **`ctx`** — the run-level context. Same on every node. Never touched by edges. Contains `ctx.pipeline`, `ctx.request_id`, and for webhook-triggered pipelines: `ctx.trigger.auth`, `ctx.trigger.params`, `ctx.trigger.query`, `ctx.trigger.headers`.
+### What a webhook puts in `input`
 
-The mental model maps directly to code:
+User-submitted data lives under **`input.body`**; request context sits beside
+it. Nothing is merged to the root.
 
-```js
-// pipeline execution is essentially:
-function myPipeline(trigger_input, ctx) {
-  const a = nodeA(trigger_input, ctx);   // e.g. pg.query
-  const b = nodeB(a, ctx);              // e.g. script transform
-  const c = nodeC(b, ctx);              // e.g. web.response
-  return c;
-}
-// ctx is always available — it never flows through edges
-// input is whatever the upstream node returned — it can be anything
+| Key | Content |
+|---|---|
+| `input.body` | JSON body as parsed; form fields for `application/x-www-form-urlencoded`; text fields of a multipart form. `null` on GET. |
+| `input.files.<field>` | Uploaded files as FileRef objects (`ref`, `filename`, `mime`, `size`, `sha256`, …) |
+| `input.params` | Path parameters: `/posts/:slug` → `input.params.slug` |
+| `input.query` | Parsed query string |
+| `input.path`, `input.method` | The request line |
+| `input.auth` | Verified token claims, when the trigger has `--auth-type` |
+
+A login form is therefore `input.body.email` and `input.body.password`.
+In `{{ }}` the same request is `$trigger.params`, `$trigger.query`,
+`$trigger.auth`, `$trigger.headers`, `$trigger.search`, `$trigger.pathname`
+— `$trigger` has no `body`; reach the body as `{{ input.body.email }}` while
+`input` is still the trigger payload, or in a script.
+
+### JWT on a route
+
+```
+| trigger.webhook --path /admin --method GET --auth-type jwt --auth-credential jwt_main --auth-required-role admin
 ```
 
-### Why this matters
-
-- **Lost auth problem**: if `pg.query` replaces the payload with `{rows:[...]}`, auth is gone from `input.auth` — but `ctx.trigger.auth` is never lost. Use `ctx.trigger.auth` in script nodes when you need caller identity regardless of where you are in the graph.
-- **Graph stays clean**: edges carry business data only. Auth, params, request identity are ambient — they don't pollute the data flow.
-- **`web.response` + templates**: `ctx.trigger.auth` public claims are always injected as `ctx.auth` in the template, same as `ctx.params` and `ctx.query` — regardless of what the pipeline chain did to the payload.
-
-### `ctx.trigger.*` reference
-
-Available in script nodes (`n.script`) as `ctx.trigger.*` and in templates as top-level state fields:
-
-| Field | Script node | Template | Description |
-|-------|-------------|----------|-------------|
-| `ctx.trigger.auth` | `ctx.trigger.auth.sub` | `ctx.auth.sub` | Verified JWT claims (public fields only in templates) |
-| `ctx.trigger.params` | `ctx.trigger.params.id` | `ctx.params.id` | URL path params from the request (`:id`, `:slug`, etc.) |
-| `ctx.trigger.query` | `ctx.trigger.query.page` | `ctx.query.page` | Query string params (`?page=2` etc.) |
-| `ctx.trigger.headers` | `ctx.trigger.headers["user-agent"]` | `ctx.headers["user-agent"]` | Safe subset of request headers |
-
-All fields are `null` / empty objects for non-webhook triggers (schedule, WS, manual).
-
-### JWT auth — Bearer + Cookie fallback
-
-When `--auth-type jwt` is set, the webhook checks:
-1. `Authorization: Bearer <token>` header
-2. `Cookie: zebflow_session` (fallback — used by browser sessions)
-
-Both paths verify with the same credential. If neither is present, auth fails.
-
-### `_zf_public` — what reaches `ctx.auth` in templates
-
-JWT claims are **private by default**. Only claims explicitly marked `:public` in `auth.token.create` are visible in the browser via `ctx.auth`:
-
-```zf
-| auth.token.create --credential my-jwt \
-    --claim sub={{ input.id }} \
-    --claim name={{ input.fullname }}:public \   ← visible as ctx.auth.name
-    --claim role={{ input.role }}:public         ← visible as ctx.auth.role
-    # sub is signed but never reaches the browser
-```
-
-If no claims are marked `:public`, `ctx.auth` is `null` even for authenticated requests — secure by default.
-
-In **script node `{{ expr }}` expressions**, `$trigger.auth` holds **all** claims (including private). The `_zf_public` filter only applies at the `n.web.response` render boundary.
+The token comes from `Authorization: Bearer …` or, for browsers, the
+`zebflow_session` cookie. Its `roles` **array** claim must contain one of the
+required roles. A browser navigation that fails is redirected (303) to the
+credential's `auth_redirect`; a `fetch` gets 401/403 JSON. Verified claims
+appear as `input.auth`, `ctx.trigger.auth` and `$trigger.auth`; only claims
+minted with `:public` reach the browser as `input.auth` in a page.
+Full recipe: `help(topic="pipeline/examples/cookie-jwt-auth")`.
 
 ---
 
-When you call **`help(topic="pipeline")`** over MCP, the platform **appends a live node appendix** after this file: every node `kind`, description, pins, DSL flags, and input/output schemas come from the same Rust `definition()` as the pipeline editor node API (not from hand-written docs).
+## Two modes
 
----
+**Pipe mode** — a straight chain, one node per `|`. Most pipelines.
 
-## Two Modes
-
-### Pipe Mode (most common — use this)
-
-Use `|` to chain nodes left-to-right. Every node receives the previous node's output as `input`.
-
-```zf
-| trigger.webhook --path /blog --method GET
-| pg.query --credential main-db -- "SELECT id, title, slug FROM posts ORDER BY created_at DESC LIMIT 20"
-| web.response --template pages/blog-home.tsx --route /blog
+```
+| trigger.webhook --path /api/notes --method GET
+| sekejap.query -- "SELECT id, title FROM notes ORDER BY created_at DESC LIMIT 50"
+| script -- "return { notes: input.rows }"
 ```
 
-Pass this as the `body` to `pipeline_register`.
+**Graph mode** — label nodes `[id]`, wire edges with `->`, name pins with `:pin`.
+For branching, fan-out and loops.
 
-### Graph Mode (for branching)
-
-Label each node with `[id]`, then declare edges with `->`. Use for conditional routing, fan-out, loops.
-
-```zf
+```
 [a] trigger.webhook --path /ingest --method POST
-[b] logic.match --expr "input.type" --cases normal,urgent --default other
-[c] sekejap.query --table normal_queue --op upsert
-[d] http.request --url https://alert.svc/send --method POST
-[e] sekejap.query --table other_queue --op upsert
+[b] logic.match --expr "input.body.type" --cases normal,urgent --default other
+[c] sekejap.query --params "{{ [input.body.id, input.body] }}" --read-only false -- "INSERT INTO normal_queue (id, data) VALUES ($1, $2)"
+[d] http.request --url https://alert.example.com/send --method POST --body "{{ input.body }}"
+[e] sekejap.query --params "{{ [input.body.id, input.body] }}" --read-only false -- "INSERT INTO other_queue (id, data) VALUES ($1, $2)"
 [a] -> [b]
 [b]:normal -> [c]
 [b]:urgent -> [d]
 [b]:other -> [e]
 ```
 
+Every node must be reachable from the one entry node; a node with no incoming
+edge is a second entry and runs on every request.
+
 ---
 
 ## Nodes
 
-A **node** is one step in the pipeline. Each node has a **kind** (trigger, query, render, logic, …). The previous node’s JSON output becomes the next node’s **`input`**.
+- **Triggers** start a run: `trigger.webhook`, `trigger.schedule`, `trigger.function`, `trigger.manual`, `trigger.ws`, `trigger.ws.client`, `trigger.kv.subscribe`, `trigger.mcp`, `trigger.weberror`.
+- **Middle nodes** read, transform or decide: `sekejap.query`, `sekejap.insert`, `pg.query`, `sqlite.query`, `sqlite.mutate`, `script`, `http.request`, `kv.get`, `kv.set`, `kv.incr`, `logic.if`, `logic.match`, `logic.foreach`, `logic.collect`, `logic.reduce`, `logic.retry`, `crypto`, `auth.token.create`, `auth.token.verify`, `fs.save`, `fs.thumbnail`, `fs.*`, `table.query`, `table.convert`, `geo.*`, `mail.send`, `ai.agent`, `ai.embedding`, `ai.tts`, `browser.run`, …
+- **Last nodes** answer: `web.response` (JSON, page, redirect, cookie — `help(topic="pipeline/web")`), or push: `ws.emit`, `ws.sync_state`, `kv.publish`, `telegram.send`, `ms.publish`.
 
-- **Triggers** start a run (`trigger.webhook`, `trigger.schedule`, `trigger.ws`, `trigger.kv.subscribe`, …).
-- **Middle nodes** read or transform data (`pg.query`, `sekejap.query`, `script`, `http.request`, `kv.get`, `kv.set`, `kv.incr`, `logic.if`, …).
-- **Last nodes** produce the HTTP response (`web.response` for HTML pages, JSON, redirects, or cookies — see `help(topic="pipeline/web")`), or push real-time updates (`ws.emit`, `ws.sync_state`, `kv.publish`).
-
-### How to open the full node reference
-
-Use `help(topic="pipeline/nodes")` instead of guessing flags:
+Flags are declared per node and an undeclared flag is a parse error, so read
+the node before guessing:
 
 | Call | What you get |
-|------|----------------|
-| `help(topic="pipeline/nodes")` | The **entire** node catalog (same generated appendix as `help(topic="pipeline")`). |
-| `help(topic="pipeline/nodes/{kind}")` | **One** node only — e.g. `topic="pipeline/nodes/n.trigger.webhook"`, `topic="pipeline/nodes/n.script"`. |
+|---|---|
+| `help(topic="pipeline/nodes")` | the whole catalog, generated from the node definitions |
+| `help(topic="pipeline/nodes/n.fs.save")` | one node: description, pins, every flag with its config key, required or not |
+| `help_search query="thumbnail"` | search across the help files **and** every node's description and flags |
 
-Use **`help_search`** for keywords across remaining skill markdown (node bodies are not duplicated there — use `help(topic="pipeline/nodes/…")` for node flags and schemas).
-
----
-
-## Registering and Activating
-
-### The Pipeline Identifier: `file_rel_path`
-
-Every pipeline is identified by its `file_rel_path` — the path of its `.zf.json`
-file **inside the project's source root**. The source root itself is declared in
-`repo/zebflow.yaml` under `spec.layout.source` (default `pipelines`) and is never
-part of the identifier, so moving the source tree does not rename any pipeline.
-
-```
-repo/pipelines/pages/blog-home.zf.json  ->  file_rel_path = "pages/blog-home.zf.json"
-repo/pipelines/api/posts.zf.json        ->  file_rel_path = "api/posts.zf.json"
-repo/pipelines/my-pipe.zf.json          ->  file_rel_path = "my-pipe.zf.json"
-```
-
-The `.zf.json` extension is added when omitted, and a leading source root is
-removed when you include one:
-```
-pages/blog-home            ->  pages/blog-home.zf.json
-blog-home                  ->  blog-home.zf.json
-pipelines/pages/blog-home  ->  pages/blog-home.zf.json   (default layout)
-```
-
-**Never use `name` or `path` as separate pipeline parameters.** `file_rel_path` is the only key.
-
-### Step 1: Register (saves as draft)
-
-```
-pipeline_register
-  file_rel_path = "pages/blog-home"
-  title = "Blog Home"
-  body = "| trigger.webhook --path /blog --method GET | pg.query --credential main-db -- \"SELECT * FROM posts\" | web.response --template pages/blog-home.tsx --route /blog"
-```
-
-### Step 2: Activate (goes live)
-
-```
-pipeline_activate  file_rel_path="pages/blog-home.zf.json"
-```
-
-Or via DSL shell: `activate pages/blog-home.zf.json`
-
-After activate, the pipeline handles live traffic.
-
-### Updating a Pipeline
-
-Option A — re-register with full new body (easiest):
-```
-pipeline_register  file_rel_path="pages/blog-home"  body="..."
-pipeline_activate  file_rel_path="pages/blog-home.zf.json"
-```
-
-Option B — patch one node without rewriting the graph:
-```
-pipeline_describe  file_rel_path="pages/blog-home.zf.json"   ← get node IDs
-pipeline_patch     file_rel_path="pages/blog-home.zf.json"  node_id="n1"  flags="--credential new-db"
-pipeline_activate  file_rel_path="pages/blog-home.zf.json"
-```
+The DSL accepts the short form (`trigger.webhook`, `sekejap.query`) or the full
+kind (`n.trigger.webhook`). Installed third-party nodes are `n.x.<bundle>.<node>`.
 
 ---
 
-## Common Fullstack Web Patterns
+## Registering and activating
 
-### GET Page — render HTML from DB
+A pipeline is identified by its **`file_rel_path`** — the `.zf.json` path
+inside the project's source root. The source root is the repository root
+unless `zebflow.yaml` sets `spec.layout.source`; it is never part of the
+identifier. The extension may be omitted:
+
+```
+api/posts        →  api/posts.zf.json
+pages/blog-home  →  pages/blog-home.zf.json
+```
+
+**Register** saves a draft; **activate** promotes it to live traffic.
+
+```
+pipeline_register  file_rel_path="api/posts"  title="Posts"  body="| trigger.webhook --path /api/posts --method GET | sekejap.query -- \"SELECT * FROM posts\""
+pipeline_activate  file_rel_path="api/posts"
+```
+
+Or in the project console: `register api/posts --title "Posts" | trigger.webhook … | …`
+then `activate pipeline api/posts`.
+
+Status is one of **`active`** (live and current), **`stale`** (live, but the
+file changed since activation — re-registering or patching does not promote;
+run `pipeline_activate`), **`draft`** (never activated). `pipeline_list`
+shows it; `pipeline_get_invocations` shows what a live pipeline actually did.
+
+To change one node without rewriting the graph:
+
+```
+pipeline_describe  file_rel_path="api/posts"                      ← node ids: n0, n1, …
+pipeline_patch     file_rel_path="api/posts"  node_id="n1"  flags="--limit 100"
+pipeline_activate  file_rel_path="api/posts"
+```
+
+To try a body without saving anything: `pipeline_run body="| trigger.function | script -- \"return 1\""`
+(`input` gives it a payload).
+
+---
+
+## Common web patterns
+
+**GET page from the database**
 
 ```
 | trigger.webhook --path /blog --method GET
-| pg.query --credential main-db -- "SELECT id, title, body, created_at FROM posts ORDER BY created_at DESC"
-| web.response --template pages/blog-home.tsx --route /blog
+| sekejap.query -- "SELECT id, title, slug, created_at FROM posts ORDER BY created_at DESC LIMIT 20"
+| web.response --template pages/blog-home.tsx
 ```
 
-### POST JSON API — insert and return JSON
+**POST JSON API — validate, insert, answer**
 
 ```
-| trigger.webhook --path /api/posts --method POST
-| script -- "return { title: input.title, slug: input.title.toLowerCase().replace(/\s+/g,'-'), created_at: Date.now() }"
-| sekejap.query --table posts --op upsert
-| script -- "return { ok: true, slug: input.slug }"
+[a] trigger.webhook --path /api/posts --method POST
+[b] logic.if --expr "typeof input.body?.title === 'string' && input.body.title.length > 0"
+[c] sekejap.query --params "{{ [input.body.title, input.body.title.toLowerCase().replace(/\s+/g, '-')] }}" --read-only false -- "INSERT INTO posts (title, slug) VALUES ($1, $2)"
+[d] script -- "return { ok: true }"
+[e] web.response --status 400 --body "{{ { error: 'title is required' } }}"
+[a] -> [b]
+[b]:true -> [c]
+[c] -> [d]
+[b]:false -> [e]
 ```
 
-### Auth-Gated Route — JWT auto-verify
+**Authenticated route**
 
 ```
-| trigger.webhook --path /dashboard --method GET --auth-type jwt --auth-credential my-jwt
-| pg.query --credential main-db -- "SELECT id, name FROM users WHERE id = $1" --params "{{ [ctx.trigger.auth.sub] }}"
+| trigger.webhook --path /dashboard --method GET --auth-type jwt --auth-credential jwt_main
+| sekejap.query --params "{{ [$trigger.auth.sub] }}" -- "SELECT id, name FROM users WHERE id = $1"
 | web.response --template pages/dashboard.tsx
 ```
 
-JWT missing/invalid → credential `auth_redirect` fires (browser) or 401 JSON (API). `ctx.trigger.auth` holds the decoded claims in all downstream nodes. Template gets `ctx.auth` automatically.
-
-### Redirect
+**Redirect**
 
 ```
 | trigger.webhook --path /go/signup --method GET
-| web.response --location /auth/register?source=landing
+| web.response --location "/auth/register?source=landing"
 ```
 
-### Scheduled Job — run every hour
+**Scheduled job**
 
 ```
-| trigger.schedule --cron "0 * * * *"
+| trigger.schedule --cron "0 * * * *" --timezone UTC
 | http.request --url https://api.example.com/feed --method GET
-| script -- "return input.response.body.items.slice(0,10)"
-| sekejap.query --table feed_cache --op upsert
+| script -- "return { items: (input.response.body?.items || []).slice(0, 10) }"
+| kv.set --key feed:latest --ttl 3600
 ```
 
-### Sekejap CRUD — read from embedded database
-
-```
-| trigger.webhook --path /api/notes --method GET
-| sekejap.query --table notes --op scan
-| script -- "return { notes: input }"
-```
+A script cannot set the HTTP status or headers; it returns the next payload.
+Branch with `logic.if` and let `web.response` answer with `--status`,
+`--location` or `--set-cookie`. Returning `null` from a script does not stop
+the pipeline either — `null` simply becomes the next `input`.
 
 ---
 
-## Dynamic expressions — `{{ expr }}`
+## `{{ expr }}` — dynamic config
 
-Any string field in a node's config can contain `{{ js_expr }}` placeholders resolved before the node runs.
+Any flag value may contain `{{ js_expression }}`, resolved right before the
+node runs. A value that is **only** an expression keeps its JSON type
+(`"{{ [input.body.id] }}"` is a real array); an expression inside a longer
+string is stringified.
 
-| Variable | Available from | Description |
-|----------|---------------|-------------|
-| `$input` | All nodes | Current payload flowing into this node |
-| `$trigger.auth` | All nodes | Verified JWT claims from the original request |
-| `$trigger.params` | All nodes | URL path params (`:id` etc.) |
-| `$trigger.query` | All nodes | Query string params |
-| `$nodes.id` | All nodes | Output payload of an upstream node by graph ID |
-| `$ctx` | All nodes | `{ pipeline, request_id, trigger }` |
+| Name | Meaning |
+|---|---|
+| `input`, `$input` | the payload flowing into this node |
+| `$trigger` | the trigger snapshot: `params`, `query`, `search`, `pathname`, `headers`, `auth` |
+| `$nodes.<id>` | the output of an upstream node by graph id |
+| `$item`, `$index`, `$count` | inside `logic.foreach` |
 
-```zf
-# Path param → SQL param (whole-field expr → native array type)
-| pg.query --params "{{ [$trigger.params.id] }}"
+There is no `ctx`, `$ctx` or `env` in `{{ }}`; an undefined name throws and
+fails the node rather than silently inserting `null`. Always quote a value
+that contains `{{ }}` or a space as one argument.
 
-# Dynamic URL from upstream output (interpolated expr → string)
-| http.request --url "https://api.example.com/{{ $nodes.userQuery.rows[0].slug }}"
-```
-
-See `help(topic="pipeline/dsl")` for the full `{{ expr }}` reference including sandbox security guarantees.
-
----
-
-## Next steps
-
-- `help(topic="pipeline/nodes")` — same live catalog as the appendix on `help(topic="pipeline")`, or one node via `topic="pipeline/nodes/{kind}"`
-- `help(topic="pipeline/dsl")` — `{{ expr }}` dynamic expressions, full node DSL flags
-- `help(topic="web")` — TSX pages, `input` / `ctx`, hydration modes
-- `help(topic="pipeline/web")` — `n.web.response` flags, cookie spec, redirect, custom headers
-- `help(topic="pipeline/examples")` — full archetype recipes (blog, chat, game, scheduling, scraping, auth)
-
-> A script cannot set the response. It returns a value; the graph decides what
-> happens next. Branch with `logic.if` and let `web.response` answer —
-> `--status`, `--location`, `--set-cookie`. See
-> `help("pipeline/examples/webhook-restapi-postgres")` § Answering with a status.
+Full DSL: `help(topic="pipeline/dsl")`. Pages: `help(topic="web")`. Responses,
+cookies, redirects: `help(topic="pipeline/web")`. Complete recipes:
+`help(topic="pipeline/examples")`.

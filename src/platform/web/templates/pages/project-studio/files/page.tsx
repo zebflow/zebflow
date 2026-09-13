@@ -389,22 +389,22 @@ export default function Page(input) {
           )}
         </StudioTabNav>
 
-        <section className="flex-1 min-h-0 overflow-auto flex flex-col bg-bg">
+        <section className="flex-1 min-h-0 overflow-auto flex flex-col bg-background">
           {activeTab === "storages" ? (
             <div className="project-content-wrap">
               <div className="flex flex-col gap-3">
                 <div className="flex items-center justify-between gap-3">
                   <div>
-                    <h2 className="text-[0.95rem] font-semibold text-body">Storages</h2>
-                    <p className="text-[0.76rem] text-body-muted mt-1">
+                    <h2 className="text-[0.95rem] font-semibold text-foreground">Storages</h2>
+                    <p className="text-[0.76rem] text-muted-foreground mt-1">
                       Project artifact storage. Every project starts with a default ZebFS namespace.
                     </p>
                   </div>
                 </div>
 
-                <div className="overflow-hidden rounded-md border border-border bg-surface">
+                <div className="overflow-hidden rounded-md border border-border bg-card">
                   <table className="w-full border-collapse text-[0.78rem]">
-                    <thead className="bg-surface-2 text-body-muted">
+                    <thead className="bg-muted text-muted-foreground">
                       <tr>
                         <th className="text-left font-medium px-3 py-2 border-b border-border">Name</th>
                         <th className="text-left font-medium px-3 py-2 border-b border-border">Backend</th>
@@ -435,17 +435,17 @@ export default function Page(input) {
 
           {activeTab === "explorer" ? (
             <div className="flex flex-col flex-1 min-h-0" onPaste={handlePaste}>
-              <div className="flex items-center gap-3 px-3.5 py-2.5 border-b border-border bg-surface">
+              <div className="flex items-center gap-3 px-3.5 py-2.5 border-b border-border bg-card">
                 <div className="flex flex-1 min-w-0 flex-wrap items-center gap-1 text-[0.78rem]">
-                  <a href={base} className="text-body-soft hover:text-body transition-colors">
+                  <a href={base} className="text-muted-foreground hover:text-foreground transition-colors">
                     storages
                   </a>
                   <span className="text-border">/</span>
-                  <span className="text-body font-medium">{selectedStorage}</span>
+                  <span className="text-foreground font-medium">{selectedStorage}</span>
                   <span className="text-border">/</span>
                   <button
                     type="button"
-                    className="text-body-soft hover:text-body transition-colors bg-transparent border-0 p-0 cursor-pointer"
+                    className="text-muted-foreground hover:text-foreground transition-colors bg-transparent border-0 p-0 cursor-pointer"
                     onClick={() => navigate("")}
                   >
                     files/
@@ -455,7 +455,7 @@ export default function Page(input) {
                       <span className="text-border">/</span>
                       <button
                         type="button"
-                        className="text-body-soft hover:text-body transition-colors bg-transparent border-0 p-0 cursor-pointer"
+                        className="text-muted-foreground hover:text-foreground transition-colors bg-transparent border-0 p-0 cursor-pointer"
                         onClick={() => navigate(crumb.path)}
                       >
                         {crumb.label}
@@ -481,7 +481,7 @@ export default function Page(input) {
               </div>
 
               {newFolderOpen ? (
-                <div className="flex items-center gap-2 px-3 py-2 border-b border-border-soft flex-wrap">
+                <div className="flex items-center gap-2 px-3 py-2 border-b border-border flex-wrap">
                   <Input
                     name="folder_name"
                     type="text"
@@ -504,7 +504,7 @@ export default function Page(input) {
                   "mx-3 mt-2 rounded border px-3 py-2 text-[0.76rem]",
                   messageTone === "error" && "border-red-500/40 bg-red-500/10 text-red-300",
                   messageTone === "ok" && "border-emerald-500/40 bg-emerald-500/10 text-emerald-300",
-                  messageTone === "muted" && "border-border bg-surface-2 text-body-soft",
+                  messageTone === "muted" && "border-border bg-muted text-muted-foreground",
                 )}>
                   {message}
                 </div>
@@ -512,7 +512,7 @@ export default function Page(input) {
 
               <div className="flex flex-col py-2 px-3 gap-0.5">
                 {folders.length === 0 && files.length === 0 ? (
-                  <p className="px-2 py-6 text-[0.78rem] text-body-muted">
+                  <p className="px-2 py-6 text-[0.78rem] text-muted-foreground">
                     {currentPath
                       ? "Empty folder"
                       : <>No objects yet. Upload here or via a pipeline using <code className="font-mono text-[0.75rem]">n.fs.save</code>.</>
@@ -617,8 +617,8 @@ function UploadDialog({
       >
         <DialogHeader className="shrink-0">
           <DialogTitle>Upload Files</DialogTitle>
-          <p className="text-xs text-body-soft mt-0.5">
-            Destination: <span className="font-mono text-body">{targetPath}/</span>
+          <p className="text-xs text-muted-foreground mt-0.5">
+            Destination: <span className="font-mono text-foreground">{targetPath}/</span>
           </p>
         </DialogHeader>
 
@@ -627,8 +627,8 @@ function UploadDialog({
             className={cx(
               "flex min-h-[15rem] flex-col items-center justify-center rounded-md border border-dashed px-6 py-8 text-center transition-colors",
               dragActive
-                ? "border-accent bg-accent/10 text-body"
-                : "border-border bg-surface-2 text-body-soft",
+                ? "border-primary bg-primary/10 text-foreground"
+                : "border-border bg-muted text-muted-foreground",
             )}
             onDragEnter={(event) => {
               event.preventDefault();
@@ -647,13 +647,13 @@ function UploadDialog({
             }}
             onDrop={onDrop}
           >
-            <div className="mb-3 flex h-11 w-11 items-center justify-center rounded-md border border-border bg-surface text-body">
+            <div className="mb-3 flex h-11 w-11 items-center justify-center rounded-md border border-border bg-card text-foreground">
               <UploadIcon />
             </div>
-            <p className="text-[0.9rem] font-semibold text-body">
+            <p className="text-[0.9rem] font-semibold text-foreground">
               {uploading ? "Uploading..." : dragActive ? "Drop to upload" : "Drop files here"}
             </p>
-            <p className="mt-1 max-w-sm text-[0.76rem] text-body-muted">
+            <p className="mt-1 max-w-sm text-[0.76rem] text-muted-foreground">
               Choose files, drag them into this panel, or paste an image from the clipboard. Files are not uploaded until you confirm.
             </p>
             <div className="mt-4 flex flex-wrap items-center justify-center gap-2">
@@ -667,9 +667,9 @@ function UploadDialog({
           </div>
 
           {hasItems ? (
-            <div className="mt-4 rounded-md border border-border bg-surface">
+            <div className="mt-4 rounded-md border border-border bg-card">
               <div className="flex items-center justify-between gap-3 border-b border-border px-3 py-2">
-                <p className="text-[0.78rem] font-semibold text-body">
+                <p className="text-[0.78rem] font-semibold text-foreground">
                   Pending upload
                 </p>
                 <Badge variant="outline" className="text-[0.68rem]">
@@ -678,19 +678,19 @@ function UploadDialog({
               </div>
               <div className="max-h-[13rem] overflow-y-auto">
                 {items.map((item) => (
-                  <div key={item.id} className="grid grid-cols-[1fr_auto_auto] items-center gap-2 border-b border-border-soft px-3 py-2 last:border-b-0">
+                  <div key={item.id} className="grid grid-cols-[1fr_auto_auto] items-center gap-2 border-b border-border px-3 py-2 last:border-b-0">
                     <Input
                       value={item.name}
                       onInput={(event) => onRename(item.id, event.currentTarget.value)}
                       disabled={uploading}
                       className="min-w-0"
                     />
-                    <span className="whitespace-nowrap text-[0.7rem] text-body-muted">
+                    <span className="whitespace-nowrap text-[0.7rem] text-muted-foreground">
                       {formatBytes(item.size)}
                     </span>
                     <button
                       type="button"
-                      className="flex h-7 w-7 items-center justify-center rounded text-body-muted transition-colors hover:bg-red-400/10 hover:text-red-400 disabled:opacity-50"
+                      className="flex h-7 w-7 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-red-400/10 hover:text-red-400 disabled:opacity-50"
                       onClick={() => onRemove(item.id)}
                       disabled={uploading}
                       aria-label={`Remove ${item.name}`}
@@ -709,7 +709,7 @@ function UploadDialog({
               "mt-3 rounded border px-3 py-2 text-[0.76rem]",
               messageTone === "error" && "border-red-500/40 bg-red-500/10 text-red-300",
               messageTone === "ok" && "border-emerald-500/40 bg-emerald-500/10 text-emerald-300",
-              messageTone === "muted" && "border-border bg-surface-2 text-body-soft",
+              messageTone === "muted" && "border-border bg-muted text-muted-foreground",
             )}>
               {message}
             </div>
@@ -737,10 +737,10 @@ function UploadDialog({
 function StorageRow({ storage }) {
   const tags = Array.isArray(storage.tags) ? storage.tags : [];
   return (
-    <tr className="border-b border-border-soft last:border-b-0">
-      <td className="px-3 py-2.5 text-body font-medium">{storage.name}</td>
-      <td className="px-3 py-2.5 text-body-soft">{storage.backend}</td>
-      <td className="px-3 py-2.5 text-body-soft font-mono text-[0.74rem]">{storage.namespace}</td>
+    <tr className="border-b border-border last:border-b-0">
+      <td className="px-3 py-2.5 text-foreground font-medium">{storage.name}</td>
+      <td className="px-3 py-2.5 text-muted-foreground">{storage.backend}</td>
+      <td className="px-3 py-2.5 text-muted-foreground font-mono text-[0.74rem]">{storage.namespace}</td>
       <td className="px-3 py-2.5">
         <div className="flex flex-wrap gap-1">
           {tags.map((tag) => (
@@ -751,7 +751,7 @@ function StorageRow({ storage }) {
       <td className="px-3 py-2.5 text-right">
         <a
           href={storage.open_href}
-          className="inline-flex items-center justify-center min-h-7 px-2.5 rounded border border-border bg-surface-2 text-body hover:border-accent hover:text-accent transition-colors"
+          className="inline-flex items-center justify-center min-h-7 px-2.5 rounded border border-border bg-muted text-foreground hover:border-primary hover:text-primary transition-colors"
         >
           Open
         </a>
@@ -765,11 +765,11 @@ function FolderRow({ folder, busy, accessAction, returnTo, onOpen, onToggleAcces
   const accessBusy = busy === `access:${folder.path}`;
   const accessTitle = isPublic ? "Make folder private" : "Make folder public";
   return (
-    <div className="group flex items-center gap-2 min-h-[2.1rem] px-2 py-1.5 rounded-md border border-dashed border-border-soft text-body-soft text-[0.8rem] hover:bg-surface-2 hover:text-body hover:border-border transition-colors">
+    <div className="group flex items-center gap-2 min-h-[2.1rem] px-2 py-1.5 rounded-md border border-dashed border-border text-muted-foreground text-[0.8rem] hover:bg-muted hover:text-foreground hover:border-border transition-colors">
       <FolderIcon />
       <button
         type="button"
-        className="flex-1 min-w-0 truncate text-left font-medium text-[0.78rem] text-body bg-transparent border-0 p-0 cursor-pointer"
+        className="flex-1 min-w-0 truncate text-left font-medium text-[0.78rem] text-foreground bg-transparent border-0 p-0 cursor-pointer"
         onClick={onOpen}
       >
         {folder.name}
@@ -796,7 +796,7 @@ function FolderRow({ folder, busy, accessAction, returnTo, onOpen, onToggleAcces
         title={accessTitle}
         busy={accessBusy}
         className={cx(
-          "flex items-center justify-center w-6 h-6 rounded shrink-0 text-body-muted transition-colors hover:text-accent hover:bg-accent/10",
+          "flex items-center justify-center w-6 h-6 rounded shrink-0 text-muted-foreground transition-colors hover:text-primary hover:bg-primary/10",
           accessBusy && "opacity-50 pointer-events-none",
         )}
         onToggleAccess={onToggleAccess}
@@ -822,17 +822,17 @@ function FileRow({ file, busy, accessAction, returnTo, onToggleAccess, onDelete 
   const accessTitle = isPublic ? "Make file private" : "Make file public";
 
   return (
-    <div className="group flex items-center gap-2 min-h-[2.1rem] px-2 py-1.5 rounded-md border border-border-soft bg-surface-2 hover:border-border transition-colors">
+    <div className="group flex items-center gap-2 min-h-[2.1rem] px-2 py-1.5 rounded-md border border-border bg-muted hover:border-border transition-colors">
       {isImage ? <ImageFileIcon /> : <GenericFileIcon />}
       <a
-        className="flex-1 min-w-0 truncate font-medium text-[0.78rem] text-body hover:text-accent hover:underline"
+        className="flex-1 min-w-0 truncate font-medium text-[0.78rem] text-foreground hover:text-primary hover:underline"
         href={file.url}
         target="_blank"
         rel="noopener"
       >
         {file.name}
       </a>
-      <span className="text-[0.7rem] text-body-muted whitespace-nowrap shrink-0">
+      <span className="text-[0.7rem] text-muted-foreground whitespace-nowrap shrink-0">
         {formatBytes(file.size)}
         {file.modified ? ` · ${new Date(file.modified * 1000).toLocaleDateString()}` : ""}
       </span>
@@ -858,7 +858,7 @@ function FileRow({ file, busy, accessAction, returnTo, onToggleAccess, onDelete 
         title={accessTitle}
         busy={accessBusy}
         className={cx(
-          "flex items-center justify-center w-6 h-6 rounded shrink-0 text-body-muted transition-colors hover:text-accent hover:bg-accent/10",
+          "flex items-center justify-center w-6 h-6 rounded shrink-0 text-muted-foreground transition-colors hover:text-primary hover:bg-primary/10",
           accessBusy && "opacity-50 pointer-events-none",
         )}
         onToggleAccess={onToggleAccess}
@@ -913,9 +913,9 @@ function IconButton({ children, title, tone = "default", onClick, disabled = fal
     <button
       type="button"
       className={cx(
-        "flex items-center justify-center w-6 h-6 rounded shrink-0 text-body-muted transition-colors",
+        "flex items-center justify-center w-6 h-6 rounded shrink-0 text-muted-foreground transition-colors",
         tone === "danger" && "hover:text-red-400 hover:bg-red-400/10",
-        tone !== "danger" && "hover:text-accent hover:bg-accent/10",
+        tone !== "danger" && "hover:text-primary hover:bg-primary/10",
         disabled && "opacity-50 pointer-events-none",
       )}
       title={title}
@@ -952,7 +952,7 @@ function ImageFileIcon() {
 
 function GenericFileIcon() {
   return (
-    <svg viewBox="0 0 24 24" fill="none" className="w-4 h-4 shrink-0 text-body-soft" aria-hidden="true">
+    <svg viewBox="0 0 24 24" fill="none" className="w-4 h-4 shrink-0 text-muted-foreground" aria-hidden="true">
       <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z" stroke="currentColor" strokeWidth="1.6" strokeLinejoin="round" />
       <path d="M14 2v6h6" stroke="currentColor" strokeWidth="1.6" strokeLinejoin="round" />
     </svg>
@@ -1041,7 +1041,7 @@ function S3Panel() {
       <div className="project-settings-panel-body flex flex-col gap-6 pt-2">
         <Card className="opacity-60">
           <CardContent className="flex items-start gap-4 pt-5">
-            <div className="mt-0.5 rounded bg-[color-mix(in_srgb,var(--color-accent)_12%,transparent)] p-2 text-accent">
+            <div className="mt-0.5 rounded bg-[color-mix(in_srgb,var(--primary)_12%,transparent)] p-2 text-primary">
               <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
                 <path d="M21 8V16a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8"/>
                 <path d="M3 8l9-5 9 5"/>
@@ -1049,8 +1049,8 @@ function S3Panel() {
               </svg>
             </div>
             <div className="flex-1">
-              <p className="text-[0.88rem] font-semibold text-body">Amazon S3 / S3-Compatible</p>
-              <p className="mt-0.5 text-[0.78rem] text-body-soft">
+              <p className="text-[0.88rem] font-semibold text-foreground">Amazon S3 / S3-Compatible</p>
+              <p className="mt-0.5 text-[0.78rem] text-muted-foreground">
                 Connect an S3 bucket (AWS S3, Cloudflare R2, MinIO, Backblaze B2) as the primary
                 file backend. Files stored in the bucket and served through the Zebflow FS contract.
               </p>

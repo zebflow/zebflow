@@ -36,7 +36,7 @@ export function WorkersPanel({ workers }) {
         title="Offices"
         description="Execution-plane offices registered to this controller."
         trailing={
-          <span className="rounded-md border border-border bg-surface-2 px-2 py-1 font-mono text-[0.64rem] font-medium uppercase tracking-[0.14em] text-body-muted">
+          <span className="rounded-md border border-border bg-muted px-2 py-1 font-mono text-[0.64rem] font-medium uppercase tracking-[0.14em] text-muted-foreground">
           {items.length} node{items.length === 1 ? "" : "s"}
           </span>
         }
@@ -53,14 +53,14 @@ export function WorkersPanel({ workers }) {
             return (
             <article
               key={worker.node_id}
-              className="rounded-md border border-border-soft bg-surface-2 p-3"
+              className="rounded-md border border-border bg-muted p-3"
             >
               <div className="flex items-start justify-between gap-3">
                 <div className="min-w-0">
-                  <h3 className="truncate text-[0.82rem] font-semibold text-body">
+                  <h3 className="truncate text-[0.82rem] font-semibold text-foreground">
                     {worker.label || worker.node_id}
                   </h3>
-                  <p className="truncate font-mono text-[0.68rem] text-body-muted">{worker.node_id}</p>
+                  <p className="truncate font-mono text-[0.68rem] text-muted-foreground">{worker.node_id}</p>
                 </div>
                 <StudioStatusBadge status={worker.status || "online"} />
               </div>

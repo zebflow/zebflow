@@ -24,13 +24,13 @@ export default function CheckboxField({
     <label
       className={cx(
         "flex items-start gap-2 text-sm",
-        disabled ? "text-ui-text-soft" : "text-ui-text cursor-pointer",
+        disabled ? "text-muted-foreground" : "text-foreground cursor-pointer",
         className,
       )}
     >
       <input
         type="checkbox"
-        className="mt-1 size-3.5 accent-[var(--color-accent,#60a5fa)] disabled:cursor-not-allowed"
+        className="mt-1 size-3.5 accent-primary disabled:cursor-not-allowed"
         checked={!!checked}
         disabled={!!disabled}
         onChange={onChange}
@@ -38,7 +38,7 @@ export default function CheckboxField({
       <span className="min-w-0">
         {label}
         {description ? (
-          <span className="block text-xs text-ui-text-soft">{description}</span>
+          <span className="block text-xs text-muted-foreground">{description}</span>
         ) : null}
       </span>
     </label>

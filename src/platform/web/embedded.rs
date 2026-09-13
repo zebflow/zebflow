@@ -472,6 +472,16 @@ pub fn platform_composite_node_asset(path: &str) -> Option<&'static [u8]> {
 // Do not edit manually; add files to that directory and recompile.
 include!(concat!(env!("OUT_DIR"), "/platform_templates_gen.rs"));
 
+// PLATFORM_SOURCE_LIBRARY_ASSETS — auto-generated at build time from
+// blessed/source-libraries/. `zeb/ui/0.1/src/button.tsx` and friends: source
+// the RWE compiler inlines into a page, not a runtime bundle.
+include!(concat!(env!("OUT_DIR"), "/source_libraries_gen.rs"));
+
+// PLATFORM_SKILL_ASSETS — auto-generated at build time from blessed/skills/.
+// `zebflow-basic/SKILL.md` and friends: the skills every project's agent is
+// shown without cloning; a project's own `skills/<name>/` shadows one by name.
+include!(concat!(env!("OUT_DIR"), "/skills_gen.rs"));
+
 pub const PLATFORM_LIBRARY_ASSETS: &[EmbeddedAsset] = &[
     EmbeddedAsset {
         path: "zeb/d3/0.1/library.json",
@@ -733,12 +743,6 @@ pub const PLATFORM_LIBRARY_ASSETS: &[EmbeddedAsset] = &[
             "../../../blessed/rwe-libraries/prosemirror/0.1/runtime/prosemirror.bundle.mjs"
         ),
     },
-    EmbeddedAsset {
-        path: "zeb/prosemirror/0.1/wrappers/ProseEditor.tsx",
-        bytes: include_bytes!(
-            "../../../blessed/rwe-libraries/prosemirror/0.1/wrappers/ProseEditor.tsx"
-        ),
-    },
     // No library.json for zeb/react. The other entries here describe packages a
     // project installs; the engine is not one, and a manifest beside these would
     // read as though it were.
@@ -935,6 +939,14 @@ mod vendor_tests {
         collect_zeb_imports(std::path::Path::new(templates), &mut imported);
 
         for library in &imported {
+            // `zeb/ui/*` is source the compiler inlines from this build's own
+            // `blessed/source-libraries/`, not a hub bundle: the gallery at
+            // /dev/design-system/ui imports it on purpose, to show exactly what
+            // a project page gets from this binary. It moves with the build,
+            // never with the hub.
+            if library.starts_with("zeb/ui/") {
+                continue;
+            }
             let prefix = format!("{library}/");
             let vendored = PLATFORM_VENDOR_ASSETS
                 .iter()

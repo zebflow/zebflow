@@ -120,6 +120,17 @@ fn token_css_rule_uncached(token: &str) -> Option<String> {
             continue;
         }
         match variant.as_str() {
+            // The theme is a class on the theme root, never a media query:
+            // `.dark` is what `styles/main.css` switches on and what a page
+            // toggles. Tailwind v4's `@custom-variant dark (&:is(.dark *))`.
+            "dark" => {
+                rule.selector = format!(".dark {}", rule.selector);
+                continue;
+            }
+            "light" => {
+                rule.selector = format!(":not(.dark) {}", rule.selector);
+                continue;
+            }
             "rtl" => {
                 rule.selector = format!("[dir=\"rtl\"] {}", rule.selector);
                 continue;
@@ -262,13 +273,14 @@ fn compare_token_precedence(a: &str, b: &str) -> std::cmp::Ordering {
     ak.cmp(&bk).then_with(|| a.cmp(b))
 }
 
-fn token_precedence_key(token: &str) -> (u8, u8, u8) {
+fn token_precedence_key(token: &str) -> (u8, u8, u8, u8) {
     let Some((variants, utility)) = split_variants(token) else {
-        return (0, 0, 0);
+        return (0, 0, 0, 0);
     };
     let utility_rank = utility_precedence_rank(&utility);
+    let depth = longhand_depth(&utility);
     if variants.is_empty() {
-        return (0, 0, utility_rank);
+        return (0, 0, utility_rank, depth);
     }
 
     let mut has_non_media = false;
@@ -289,12 +301,31 @@ fn token_precedence_key(token: &str) -> (u8, u8, u8) {
     if has_media {
         // Keep all responsive variants after base and pseudo variants.
         // Use breakpoint rank so `sm` rules emit before `md`, `lg`, ...
-        return (2, max_media_rank, utility_rank);
+        return (2, max_media_rank, utility_rank, depth);
     }
     if has_non_media {
-        return (1, 0, utility_rank);
+        return (1, 0, utility_rank, depth);
     }
-    (0, 0, utility_rank)
+    (0, 0, utility_rank, depth)
+}
+
+/// How specific a utility's properties are: a shorthand (`border-radius`,
+/// `border-width`, `margin`) sorts before the longhands that refine it
+/// (`border-top-left-radius`, `border-left-width`, `margin-left`), the way
+/// Tailwind orders its stylesheet — so `rounded-md rounded-l-none` squares
+/// the left corners whichever way the template spells it. Same specificity,
+/// so source order alone would let the alphabetically earlier class lose.
+fn longhand_depth(utility: &str) -> u8 {
+    let utility = utility.strip_prefix('!').unwrap_or(utility);
+    let Some(rule) = utility_rule(utility, ".x", false) else {
+        return 0;
+    };
+    rule.declarations
+        .split(';')
+        .filter_map(|decl| decl.split(':').next())
+        .map(|prop| prop.trim().matches('-').count() as u8)
+        .max()
+        .unwrap_or(0)
 }
 
 fn utility_precedence_rank(utility: &str) -> u8 {
@@ -395,7 +426,13 @@ fn minify_css_lossy(raw: &str) -> String {
         pending_space = false;
 
         if is_css_punct(ch) && out.ends_with(' ') {
-            out.pop();
+            // `calc(a + b)`: the space before a `+`/`-` operator is syntax.
+            let before_space = out[..out.len() - 1].chars().last();
+            let operator = (ch == '+' || ch == '-')
+                && before_space.is_some_and(|c| c == ')' || c.is_ascii_alphanumeric() || c == '%');
+            if !operator {
+                out.pop();
+            }
         }
         out.push(ch);
     }
@@ -416,6 +453,16 @@ fn should_emit_space(prev: Option<char>, next: Option<char>) -> bool {
     };
     if p.is_whitespace() || n.is_whitespace() {
         return false;
+    }
+    // Inside calc() the space around `+` and `-` is syntax: `) - 2px` is a
+    // subtraction, `)- 2px` is a parse error and the whole declaration is
+    // dropped. Keep it whenever an operator follows a closing paren or a
+    // value, whichever side it is on.
+    if (n == '-' || n == '+') && (p == ')' || p.is_ascii_alphanumeric()) {
+        return true;
+    }
+    if (p == '-' || p == '+') && n.is_ascii_alphanumeric() {
+        return true;
     }
     if is_css_punct(p) || is_css_punct(n) {
         return false;
@@ -502,7 +549,7 @@ fn split_top_level_commas(input: &str) -> Vec<String> {
     out
 }
 
-fn escape_class_selector(token: &str) -> String {
+pub fn escape_class_selector(token: &str) -> String {
     let mut out = String::new();
     for ch in token.chars() {
         if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
@@ -561,8 +608,6 @@ fn variant_media_query(v: &str) -> Option<String> {
         "2xl" => "(min-width: 1536px)",
         "motion-reduce" => "(prefers-reduced-motion: reduce)",
         "motion-safe" => "(prefers-reduced-motion: no-preference)",
-        "dark" => "(prefers-color-scheme: dark)",
-        "light" => "(prefers-color-scheme: light)",
         "portrait" => "(orientation: portrait)",
         "landscape" => "(orientation: landscape)",
         "contrast-more" => "(prefers-contrast: more)",
@@ -1742,63 +1787,8 @@ fn utility_rule(utility: &str, base_selector: &str, important: bool) -> Option<U
         if let Some(declarations) = directional_radius_rule(v) {
             return Some(simple_rule(base_selector, &declarations, important));
         }
-        if v == "none" {
-            return Some(simple_rule(base_selector, "border-radius:0;", important));
-        }
-        if v == "xs" {
-            return Some(simple_rule(
-                base_selector,
-                "border-radius:0.125rem;",
-                important,
-            ));
-        }
-        if v == "sm" {
-            return Some(simple_rule(
-                base_selector,
-                "border-radius:0.25rem;",
-                important,
-            ));
-        }
-        if v == "md" {
-            return Some(simple_rule(
-                base_selector,
-                "border-radius:0.375rem;",
-                important,
-            ));
-        }
-        if v == "lg" {
-            return Some(simple_rule(
-                base_selector,
-                "border-radius:0.5rem;",
-                important,
-            ));
-        }
-        if v == "xl" {
-            return Some(simple_rule(
-                base_selector,
-                "border-radius:0.75rem;",
-                important,
-            ));
-        }
-        if v == "2xl" {
-            return Some(simple_rule(base_selector, "border-radius:1rem;", important));
-        }
-        if v == "3xl" {
-            return Some(simple_rule(
-                base_selector,
-                "border-radius:1.5rem;",
-                important,
-            ));
-        }
-        if v == "4xl" {
-            return Some(simple_rule(base_selector, "border-radius:2rem;", important));
-        }
-        if let Some(raw) = arbitrary_value(v) {
-            return Some(simple_rule(
-                base_selector,
-                &format!("border-radius:{};", raw),
-                important,
-            ));
+        if let Some(value) = radius_value(v) {
+            return Some(simple_rule(base_selector, &format!("border-radius:{value};"), important));
         }
     }
     if let Some(v) = utility.strip_prefix("divide-x-") {
@@ -2410,7 +2400,7 @@ fn utility_rule(utility: &str, base_selector: &str, important: bool) -> Option<U
         ));
     }
     match utility {
-        "flex" => Some(simple_rule(base_selector, "display:flex;", important)), "grid" => Some(simple_rule(base_selector, "display:grid;", important)), "block" => Some(simple_rule(base_selector, "display:block;", important)), "inline" => Some(simple_rule(base_selector, "display:inline;", important)), "inline-block" => Some(simple_rule(base_selector, "display:inline-block;", important)), "hidden" => Some(simple_rule(base_selector, "display:none;", important)), "flex-col" => Some(simple_rule(base_selector, "flex-direction:column;", important)), "flex-row" => Some(simple_rule(base_selector, "flex-direction:row;", important)), "flex-wrap" => Some(simple_rule(base_selector, "flex-wrap:wrap;", important)), "flex-1" => Some(simple_rule(base_selector, "flex:1 1 0%;", important)), "flex-0" => Some(simple_rule(base_selector, "flex:0 0 auto;", important)), "flex-none" => Some(simple_rule(base_selector, "flex:none;", important)), "shrink-0" => Some(simple_rule(base_selector, "flex-shrink:0;", important)), "basis-0" => Some(simple_rule(base_selector, "flex-basis:0;", important)), "items-start" => Some(simple_rule(base_selector, "align-items:flex-start;", important)), "items-center" => Some(simple_rule(base_selector, "align-items:center;", important)), "items-end" => Some(simple_rule(base_selector, "align-items:flex-end;", important)), "items-stretch" => Some(simple_rule(base_selector, "align-items:stretch;", important)), "items-baseline" => Some(simple_rule(base_selector, "align-items:baseline;", important)), "align-start" => Some(simple_rule(base_selector, "align-items:flex-start;", important)), "justify-start" => Some(simple_rule(base_selector, "justify-content:flex-start;", important)), "justify-center" => Some(simple_rule(base_selector, "justify-content:center;", important)), "justify-end" => Some(simple_rule(base_selector, "justify-content:flex-end;", important)), "justify-between" => Some(simple_rule(base_selector, "justify-content:space-between;", important)), "justify-around" => Some(simple_rule(base_selector, "justify-content:space-around;", important)), "justify-evenly" => Some(simple_rule(base_selector, "justify-content:space-evenly;", important)), "justify-stretch" => Some(simple_rule(base_selector, "justify-content:stretch;", important)), "rounded" => Some(simple_rule(base_selector, "border-radius:0.25rem;", important)), "rounded-sm" => Some(simple_rule(base_selector, "border-radius:0.25rem;", important)), "rounded-md" => Some(simple_rule(base_selector, "border-radius:0.375rem;", important)), "rounded-lg" => Some(simple_rule(base_selector, "border-radius:0.5rem;", important)), "rounded-xl" => Some(simple_rule(base_selector, "border-radius:0.75rem;", important)), "rounded-2xl" => Some(simple_rule(base_selector, "border-radius:1rem;", important)), "rounded-3xl" => Some(simple_rule(base_selector, "border-radius:1.5rem;", important)), "rounded-4xl" => Some(simple_rule(base_selector, "border-radius:2rem;", important)), "rounded-full" => Some(simple_rule(base_selector, "border-radius:9999px;", important)), "rounded-none" => Some(simple_rule(base_selector, "border-radius:0;", important)), "rounded-xs" => Some(simple_rule(base_selector, "border-radius:0.125rem;", important)), "shadow" | "shadow-sm" => Some(simple_rule(base_selector, "box-shadow:0 1px 2px rgba(0,0,0,0.05);", important)), "shadow-md" => Some(simple_rule(base_selector, "box-shadow:0 4px 12px rgba(0,0,0,0.08);", important)), "shadow-lg" => Some(simple_rule(base_selector, "box-shadow:0 12px 32px rgba(0,0,0,0.12);", important)), "shadow-2xl" => Some(simple_rule(base_selector, "box-shadow:0 20px 48px rgba(0,0,0,0.2);", important)), "shadow-xs" => Some(simple_rule(base_selector, "box-shadow:0 1px 1px rgba(0,0,0,0.04);", important)), "font-thin" => Some(simple_rule(base_selector, "font-weight:100;", important)), "font-extralight" => Some(simple_rule(base_selector, "font-weight:200;", important)), "font-light" => Some(simple_rule(base_selector, "font-weight:300;", important)), "font-normal" => Some(simple_rule(base_selector, "font-weight:400;", important)), "font-medium" => Some(simple_rule(base_selector, "font-weight:500;", important)), "font-semibold" => Some(simple_rule(base_selector, "font-weight:600;", important)), "font-bold" => Some(simple_rule(base_selector, "font-weight:700;", important)), "font-extrabold" => Some(simple_rule(base_selector, "font-weight:800;", important)), "font-black" => Some(simple_rule(base_selector, "font-weight:900;", important)), "font-mono" => Some(simple_rule(base_selector, "font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,'Liberation Mono','Courier New',monospace;", important)), "font-sans" => Some(simple_rule(base_selector, "font-family:ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',Arial,sans-serif;", important)), "font-serif" => Some(simple_rule(base_selector, "font-family:ui-serif,Georgia,Cambria,'Times New Roman',Times,serif;", important)), "italic" => Some(simple_rule(base_selector, "font-style:italic;", important)), "text-left" => Some(simple_rule(base_selector, "text-align:left;", important)), "text-center" => Some(simple_rule(base_selector, "text-align:center;", important)), "text-right" => Some(simple_rule(base_selector, "text-align:right;", important)), "text-justify" => Some(simple_rule(base_selector, "text-align:justify;", important)), "leading-none" => Some(simple_rule(base_selector, "line-height:1;", important)), "leading-tight" => Some(simple_rule(base_selector, "line-height:1.25;", important)), "leading-snug" => Some(simple_rule(base_selector, "line-height:1.375;", important)), "leading-normal" => Some(simple_rule(base_selector, "line-height:1.5;", important)), "leading-relaxed" => Some(simple_rule(base_selector, "line-height:1.625;", important)), "tracking-tight" => Some(simple_rule(base_selector, "letter-spacing:-0.025em;", important)), "tracking-normal" => Some(simple_rule(base_selector, "letter-spacing:0;", important)), "tracking-wide" => Some(simple_rule(base_selector, "letter-spacing:0.025em;", important)), "tracking-wider" => Some(simple_rule(base_selector, "letter-spacing:0.05em;", important)), "tracking-widest" => Some(simple_rule(base_selector, "letter-spacing:0.1em;", important)), "border" => Some(simple_rule(base_selector, "border-width:1px;border-style:solid;", important)), "border-0" => Some(simple_rule(base_selector, "border-width:0;", important)), "border-2" => Some(simple_rule(base_selector, "border-width:2px;border-style:solid;", important)), "border-4" => Some(simple_rule(base_selector, "border-width:4px;border-style:solid;", important)), "border-t" => Some(simple_rule(base_selector, "border-top-width:1px;border-top-style:solid;", important)), "border-r" => Some(simple_rule(base_selector, "border-right-width:1px;border-right-style:solid;", important)), "border-b" => Some(simple_rule(base_selector, "border-bottom-width:1px;border-bottom-style:solid;", important)), "border-l" => Some(simple_rule(base_selector, "border-left-width:1px;border-left-style:solid;", important)), "border-x" => Some(simple_rule(base_selector, "border-left-width:1px;border-right-width:1px;border-left-style:solid;border-right-style:solid;", important)), "border-y" => Some(simple_rule(base_selector, "border-top-width:1px;border-bottom-width:1px;border-top-style:solid;border-bottom-style:solid;", important)), "border-dashed" => Some(simple_rule(base_selector, "border-style:dashed;", important)), "border-solid" => Some(simple_rule(base_selector, "border-style:solid;", important)), "relative" => Some(simple_rule(base_selector, "position:relative;", important)), "absolute" => Some(simple_rule(base_selector, "position:absolute;", important)), "fixed" => Some(simple_rule(base_selector, "position:fixed;", important)), "sticky" => Some(simple_rule(base_selector, "position:sticky;", important)), "min-h-screen" => Some(simple_rule(base_selector, "min-height:100vh;", important)), "h-full" => Some(simple_rule(base_selector, "height:100%;", important)), "w-full" => Some(simple_rule(base_selector, "width:100%;", important)), "w-auto" => Some(simple_rule(base_selector, "width:auto;", important)), "h-auto" => Some(simple_rule(base_selector, "height:auto;", important)), "overflow-hidden" => Some(simple_rule(base_selector, "overflow:hidden;", important)), "overflow-auto" => Some(simple_rule(base_selector, "overflow:auto;", important)), "overflow-scroll" => Some(simple_rule(base_selector, "overflow:scroll;", important)), "overflow-visible" => Some(simple_rule(base_selector, "overflow:visible;", important)), "overflow-x-auto" => Some(simple_rule(base_selector, "overflow-x:auto;", important)), "overflow-y-auto" => Some(simple_rule(base_selector, "overflow-y:auto;", important)), "overflow-x-hidden" => Some(simple_rule(base_selector, "overflow-x:hidden;", important)), "overflow-y-hidden" => Some(simple_rule(base_selector, "overflow-y:hidden;", important)), "whitespace-normal" => Some(simple_rule(base_selector, "white-space:normal;", important)), "whitespace-nowrap" => Some(simple_rule(base_selector, "white-space:nowrap;", important)), "transition" => Some(simple_rule(base_selector, "transition-property:all;transition-duration:150ms;transition-timing-function:cubic-bezier(0.4,0,0.2,1);", important)), "transition-all" => Some(simple_rule(base_selector, "transition-property:all;transition-duration:150ms;transition-timing-function:cubic-bezier(0.4,0,0.2,1);", important)), "transition-colors" => Some(simple_rule(base_selector, "transition-property:background-color,border-color,color,fill,stroke;transition-duration:150ms;transition-timing-function:cubic-bezier(0.4,0,0.2,1);", important)), "transition-none" => Some(simple_rule(base_selector, "transition-property:none;", important)), "transition-opacity" => Some(simple_rule(base_selector, "transition-property:opacity;transition-duration:150ms;transition-timing-function:cubic-bezier(0.4,0,0.2,1);", important)), "transition-transform" => Some(simple_rule(base_selector, "transition-property:transform;transition-duration:150ms;transition-timing-function:cubic-bezier(0.4,0,0.2,1);", important)), "cursor-pointer" => Some(simple_rule(base_selector, "cursor:pointer;", important)), "cursor-default" => Some(simple_rule(base_selector, "cursor:default;", important)), "uppercase" => Some(simple_rule(base_selector, "text-transform:uppercase;", important)), "lowercase" => Some(simple_rule(base_selector, "text-transform:lowercase;", important)), "capitalize" => Some(simple_rule(base_selector, "text-transform:capitalize;", important)), "underline" => Some(simple_rule(base_selector, "text-decoration:underline;", important)), "inline-flex" => Some(simple_rule(base_selector, "display:inline-flex;", important)), "list-disc" => Some(simple_rule(base_selector, "list-style-type:disc;", important)), "list-inside" => Some(simple_rule(base_selector, "list-style-position:inside;", important)), "break-words" => Some(simple_rule(base_selector, "overflow-wrap:break-word;", important)), "appearance-none" => Some(simple_rule(base_selector, "appearance:none;", important)), "backdrop-blur-sm" => Some(simple_rule(base_selector, "backdrop-filter:blur(4px);", important)), "backdrop-blur" => Some(simple_rule(base_selector, "backdrop-filter:blur(8px);", important)), "backdrop-blur-md" => Some(simple_rule(base_selector, "backdrop-filter:blur(12px);", important)), "backdrop-blur-lg" => Some(simple_rule(base_selector, "backdrop-filter:blur(16px);", important)), "backdrop-blur-xl" => Some(simple_rule(base_selector, "backdrop-filter:blur(24px);", important)), "backdrop-blur-none" => Some(simple_rule(base_selector, "backdrop-filter:none;", important)), "antialiased" => Some(simple_rule(base_selector, "-webkit-font-smoothing:antialiased;-moz-osx-font-smoothing:grayscale;", important)), "pointer-events-none" => Some(simple_rule(base_selector, "pointer-events:none;", important)), "pointer-events-auto" => Some(simple_rule(base_selector, "pointer-events:auto;", important)), "select-none" => Some(simple_rule(base_selector, "user-select:none;", important)), "fill-current" => Some(simple_rule(base_selector, "fill:currentColor;", important)), "align-top" => Some(simple_rule(base_selector, "vertical-align:top;", important)), "align-middle" => Some(simple_rule(base_selector, "vertical-align:middle;", important)), "resize-y" => Some(simple_rule(base_selector, "resize:vertical;", important)), "touch-pan-y" => Some(simple_rule(base_selector, "touch-action:pan-y;", important)), "tabular-nums" => Some(simple_rule(base_selector, "font-variant-numeric:tabular-nums;", important)), "sr-only" => Some(simple_rule(base_selector, "position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border-width:0;", important)), "prose-sm" => Some(simple_rule(base_selector, "font-size:0.875rem;line-height:1.7142857;", important)), "bg-center" => Some(simple_rule(base_selector, "background-position:center;", important)), "bg-bottom" => Some(simple_rule(base_selector, "background-position:bottom;", important)), "bg-repeat" => Some(simple_rule(base_selector, "background-repeat:repeat;", important)), "bg-repeat-x" => Some(simple_rule(base_selector, "background-repeat:repeat-x;", important)), "bg-repeat-y" => Some(simple_rule(base_selector, "background-repeat:repeat-y;", important)), "bg-no-repeat" => Some(simple_rule(base_selector, "background-repeat:no-repeat;", important)), "bg-cover" => Some(simple_rule(base_selector, "background-size:cover;", important)), "bg-contain" => Some(simple_rule(base_selector, "background-size:contain;", important)), "bg-gradient-to-r" => Some(simple_rule(base_selector, "background-image:linear-gradient(to right,var(--tw-gradient-from),var(--tw-gradient-to));", important)), "bg-gradient-to-b" => Some(simple_rule(base_selector, "background-image:linear-gradient(to bottom,var(--tw-gradient-from),var(--tw-gradient-to));", important)), "bg-gradient-to-br" => Some(simple_rule(base_selector, "background-image:linear-gradient(to bottom right,var(--tw-gradient-from),var(--tw-gradient-to));", important)), "outline-none" => Some(simple_rule(base_selector, "outline:2px solid transparent;outline-offset:2px;", important)), "outline-hidden" => Some(simple_rule(base_selector, "outline:none;", important)), "ring" => Some(simple_rule(base_selector, "box-shadow:0 0 0 1px rgba(59,130,246,0.5);", important)), "ring-1" => Some(simple_rule(base_selector, "box-shadow:0 0 0 1px rgba(59,130,246,0.5);", important)), "ring-2" => Some(simple_rule(base_selector, "box-shadow:0 0 0 2px rgba(59,130,246,0.5);", important)), "ring-4" => Some(simple_rule(base_selector, "box-shadow:0 0 0 4px rgba(59,130,246,0.5);", important)), "max-w-none" => Some(simple_rule(base_selector, "max-width:none;", important)), "w-px" => Some(simple_rule(base_selector, "width:1px;", important)), "size-full" => Some(simple_rule(base_selector, "width:100%;height:100%;", important)), "list-decimal" => Some(simple_rule(base_selector, "list-style-type:decimal;", important)), "animate-spin" => Some(UtilityRule { selector: base_selector.to_string(), declarations: maybe_important("animation:zebflow-spin 1s linear infinite;", important), prelude: Some("@keyframes zebflow-spin{to{transform:rotate(360deg);}}".to_string()) }), "animate-ping" => Some(UtilityRule { selector: base_selector.to_string(), declarations: maybe_important("animation:zebflow-ping 1s cubic-bezier(0,0,0.2,1) infinite;", important), prelude: Some("@keyframes zebflow-ping{75%,100%{transform:scale(2);opacity:0;}}".to_string()) }), "animate-pulse" => Some(UtilityRule { selector: base_selector.to_string(), declarations: maybe_important("animation:zebflow-pulse 2s cubic-bezier(0.4,0,0.6,1) infinite;", important), prelude: Some("@keyframes zebflow-pulse{0%,100%{opacity:1;}50%{opacity:.5;}}".to_string()) }), "animate-bounce" => Some(UtilityRule { selector: base_selector.to_string(), declarations: maybe_important("animation:zebflow-bounce 1s infinite;", important), prelude: Some("@keyframes zebflow-bounce{0%,100%{transform:translateY(-25%);animation-timing-function:cubic-bezier(.8,0,1,1);}50%{transform:none;animation-timing-function:cubic-bezier(0,0,.2,1);}}".to_string()) }),
+        "flex" => Some(simple_rule(base_selector, "display:flex;", important)), "grid" => Some(simple_rule(base_selector, "display:grid;", important)), "block" => Some(simple_rule(base_selector, "display:block;", important)), "inline" => Some(simple_rule(base_selector, "display:inline;", important)), "inline-block" => Some(simple_rule(base_selector, "display:inline-block;", important)), "hidden" => Some(simple_rule(base_selector, "display:none;", important)), "flex-col" => Some(simple_rule(base_selector, "flex-direction:column;", important)), "flex-row" => Some(simple_rule(base_selector, "flex-direction:row;", important)), "flex-wrap" => Some(simple_rule(base_selector, "flex-wrap:wrap;", important)), "flex-1" => Some(simple_rule(base_selector, "flex:1 1 0%;", important)), "flex-0" => Some(simple_rule(base_selector, "flex:0 0 auto;", important)), "flex-none" => Some(simple_rule(base_selector, "flex:none;", important)), "shrink-0" => Some(simple_rule(base_selector, "flex-shrink:0;", important)), "basis-0" => Some(simple_rule(base_selector, "flex-basis:0;", important)), "items-start" => Some(simple_rule(base_selector, "align-items:flex-start;", important)), "items-center" => Some(simple_rule(base_selector, "align-items:center;", important)), "items-end" => Some(simple_rule(base_selector, "align-items:flex-end;", important)), "items-stretch" => Some(simple_rule(base_selector, "align-items:stretch;", important)), "items-baseline" => Some(simple_rule(base_selector, "align-items:baseline;", important)), "align-start" => Some(simple_rule(base_selector, "align-items:flex-start;", important)), "justify-start" => Some(simple_rule(base_selector, "justify-content:flex-start;", important)), "justify-center" => Some(simple_rule(base_selector, "justify-content:center;", important)), "justify-end" => Some(simple_rule(base_selector, "justify-content:flex-end;", important)), "justify-between" => Some(simple_rule(base_selector, "justify-content:space-between;", important)), "justify-around" => Some(simple_rule(base_selector, "justify-content:space-around;", important)), "justify-evenly" => Some(simple_rule(base_selector, "justify-content:space-evenly;", important)), "justify-stretch" => Some(simple_rule(base_selector, "justify-content:stretch;", important)), "rounded" => Some(simple_rule(base_selector, "border-radius:0.25rem;", important)), "rounded-sm" => Some(simple_rule(base_selector, "border-radius:calc(var(--radius,0.5rem) - 4px);", important)), "rounded-md" => Some(simple_rule(base_selector, "border-radius:calc(var(--radius,0.5rem) - 2px);", important)), "rounded-lg" => Some(simple_rule(base_selector, "border-radius:var(--radius,0.5rem);", important)), "rounded-xl" => Some(simple_rule(base_selector, "border-radius:calc(var(--radius,0.5rem) + 4px);", important)), "rounded-2xl" => Some(simple_rule(base_selector, "border-radius:calc(var(--radius,0.5rem) + 8px);", important)), "rounded-3xl" => Some(simple_rule(base_selector, "border-radius:calc(var(--radius,0.5rem) + 12px);", important)), "rounded-4xl" => Some(simple_rule(base_selector, "border-radius:calc(var(--radius,0.5rem) + 16px);", important)), "rounded-full" => Some(simple_rule(base_selector, "border-radius:9999px;", important)), "rounded-none" => Some(simple_rule(base_selector, "border-radius:0;", important)), "rounded-xs" => Some(simple_rule(base_selector, "border-radius:0.125rem;", important)), "shadow" | "shadow-sm" => Some(simple_rule(base_selector, "box-shadow:0 1px 2px rgba(0,0,0,0.05);", important)), "shadow-md" => Some(simple_rule(base_selector, "box-shadow:0 4px 12px rgba(0,0,0,0.08);", important)), "shadow-lg" => Some(simple_rule(base_selector, "box-shadow:0 12px 32px rgba(0,0,0,0.12);", important)), "shadow-2xl" => Some(simple_rule(base_selector, "box-shadow:0 20px 48px rgba(0,0,0,0.2);", important)), "shadow-xs" => Some(simple_rule(base_selector, "box-shadow:0 1px 1px rgba(0,0,0,0.04);", important)), "font-thin" => Some(simple_rule(base_selector, "font-weight:100;", important)), "font-extralight" => Some(simple_rule(base_selector, "font-weight:200;", important)), "font-light" => Some(simple_rule(base_selector, "font-weight:300;", important)), "font-normal" => Some(simple_rule(base_selector, "font-weight:400;", important)), "font-medium" => Some(simple_rule(base_selector, "font-weight:500;", important)), "font-semibold" => Some(simple_rule(base_selector, "font-weight:600;", important)), "font-bold" => Some(simple_rule(base_selector, "font-weight:700;", important)), "font-extrabold" => Some(simple_rule(base_selector, "font-weight:800;", important)), "font-black" => Some(simple_rule(base_selector, "font-weight:900;", important)), "font-mono" => Some(simple_rule(base_selector, "font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,'Liberation Mono','Courier New',monospace;", important)), "font-sans" => Some(simple_rule(base_selector, "font-family:ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',Arial,sans-serif;", important)), "font-serif" => Some(simple_rule(base_selector, "font-family:ui-serif,Georgia,Cambria,'Times New Roman',Times,serif;", important)), "italic" => Some(simple_rule(base_selector, "font-style:italic;", important)), "text-left" => Some(simple_rule(base_selector, "text-align:left;", important)), "text-center" => Some(simple_rule(base_selector, "text-align:center;", important)), "text-right" => Some(simple_rule(base_selector, "text-align:right;", important)), "text-justify" => Some(simple_rule(base_selector, "text-align:justify;", important)), "leading-none" => Some(simple_rule(base_selector, "line-height:1;", important)), "leading-tight" => Some(simple_rule(base_selector, "line-height:1.25;", important)), "leading-snug" => Some(simple_rule(base_selector, "line-height:1.375;", important)), "leading-normal" => Some(simple_rule(base_selector, "line-height:1.5;", important)), "leading-relaxed" => Some(simple_rule(base_selector, "line-height:1.625;", important)), "tracking-tight" => Some(simple_rule(base_selector, "letter-spacing:-0.025em;", important)), "tracking-normal" => Some(simple_rule(base_selector, "letter-spacing:0;", important)), "tracking-wide" => Some(simple_rule(base_selector, "letter-spacing:0.025em;", important)), "tracking-wider" => Some(simple_rule(base_selector, "letter-spacing:0.05em;", important)), "tracking-widest" => Some(simple_rule(base_selector, "letter-spacing:0.1em;", important)), "border" => Some(simple_rule(base_selector, "border-width:1px;border-style:solid;", important)), "border-0" => Some(simple_rule(base_selector, "border-width:0;", important)), "border-2" => Some(simple_rule(base_selector, "border-width:2px;border-style:solid;", important)), "border-4" => Some(simple_rule(base_selector, "border-width:4px;border-style:solid;", important)), "border-t" => Some(simple_rule(base_selector, "border-top-width:1px;border-top-style:solid;", important)), "border-r" => Some(simple_rule(base_selector, "border-right-width:1px;border-right-style:solid;", important)), "border-b" => Some(simple_rule(base_selector, "border-bottom-width:1px;border-bottom-style:solid;", important)), "border-l" => Some(simple_rule(base_selector, "border-left-width:1px;border-left-style:solid;", important)), "border-x" => Some(simple_rule(base_selector, "border-left-width:1px;border-right-width:1px;border-left-style:solid;border-right-style:solid;", important)), "border-y" => Some(simple_rule(base_selector, "border-top-width:1px;border-bottom-width:1px;border-top-style:solid;border-bottom-style:solid;", important)), "border-dashed" => Some(simple_rule(base_selector, "border-style:dashed;", important)), "border-solid" => Some(simple_rule(base_selector, "border-style:solid;", important)), "relative" => Some(simple_rule(base_selector, "position:relative;", important)), "absolute" => Some(simple_rule(base_selector, "position:absolute;", important)), "fixed" => Some(simple_rule(base_selector, "position:fixed;", important)), "sticky" => Some(simple_rule(base_selector, "position:sticky;", important)), "min-h-screen" => Some(simple_rule(base_selector, "min-height:100vh;", important)), "h-full" => Some(simple_rule(base_selector, "height:100%;", important)), "w-full" => Some(simple_rule(base_selector, "width:100%;", important)), "w-auto" => Some(simple_rule(base_selector, "width:auto;", important)), "h-auto" => Some(simple_rule(base_selector, "height:auto;", important)), "overflow-hidden" => Some(simple_rule(base_selector, "overflow:hidden;", important)), "overflow-auto" => Some(simple_rule(base_selector, "overflow:auto;", important)), "overflow-scroll" => Some(simple_rule(base_selector, "overflow:scroll;", important)), "overflow-visible" => Some(simple_rule(base_selector, "overflow:visible;", important)), "overflow-x-auto" => Some(simple_rule(base_selector, "overflow-x:auto;", important)), "overflow-y-auto" => Some(simple_rule(base_selector, "overflow-y:auto;", important)), "overflow-x-hidden" => Some(simple_rule(base_selector, "overflow-x:hidden;", important)), "overflow-y-hidden" => Some(simple_rule(base_selector, "overflow-y:hidden;", important)), "whitespace-normal" => Some(simple_rule(base_selector, "white-space:normal;", important)), "whitespace-nowrap" => Some(simple_rule(base_selector, "white-space:nowrap;", important)), "transition" => Some(simple_rule(base_selector, "transition-property:all;transition-duration:150ms;transition-timing-function:cubic-bezier(0.4,0,0.2,1);", important)), "transition-all" => Some(simple_rule(base_selector, "transition-property:all;transition-duration:150ms;transition-timing-function:cubic-bezier(0.4,0,0.2,1);", important)), "transition-colors" => Some(simple_rule(base_selector, "transition-property:background-color,border-color,color,fill,stroke;transition-duration:150ms;transition-timing-function:cubic-bezier(0.4,0,0.2,1);", important)), "transition-none" => Some(simple_rule(base_selector, "transition-property:none;", important)), "transition-opacity" => Some(simple_rule(base_selector, "transition-property:opacity;transition-duration:150ms;transition-timing-function:cubic-bezier(0.4,0,0.2,1);", important)), "transition-transform" => Some(simple_rule(base_selector, "transition-property:transform;transition-duration:150ms;transition-timing-function:cubic-bezier(0.4,0,0.2,1);", important)), "cursor-pointer" => Some(simple_rule(base_selector, "cursor:pointer;", important)), "cursor-default" => Some(simple_rule(base_selector, "cursor:default;", important)), "uppercase" => Some(simple_rule(base_selector, "text-transform:uppercase;", important)), "lowercase" => Some(simple_rule(base_selector, "text-transform:lowercase;", important)), "capitalize" => Some(simple_rule(base_selector, "text-transform:capitalize;", important)), "underline" => Some(simple_rule(base_selector, "text-decoration:underline;", important)), "inline-flex" => Some(simple_rule(base_selector, "display:inline-flex;", important)), "list-disc" => Some(simple_rule(base_selector, "list-style-type:disc;", important)), "list-none" => Some(simple_rule(base_selector, "list-style-type:none;", important)), "list-inside" => Some(simple_rule(base_selector, "list-style-position:inside;", important)), "break-words" => Some(simple_rule(base_selector, "overflow-wrap:break-word;", important)), "appearance-none" => Some(simple_rule(base_selector, "appearance:none;", important)), "backdrop-blur-sm" => Some(simple_rule(base_selector, "backdrop-filter:blur(4px);", important)), "backdrop-blur" => Some(simple_rule(base_selector, "backdrop-filter:blur(8px);", important)), "backdrop-blur-md" => Some(simple_rule(base_selector, "backdrop-filter:blur(12px);", important)), "backdrop-blur-lg" => Some(simple_rule(base_selector, "backdrop-filter:blur(16px);", important)), "backdrop-blur-xl" => Some(simple_rule(base_selector, "backdrop-filter:blur(24px);", important)), "backdrop-blur-none" => Some(simple_rule(base_selector, "backdrop-filter:none;", important)), "antialiased" => Some(simple_rule(base_selector, "-webkit-font-smoothing:antialiased;-moz-osx-font-smoothing:grayscale;", important)), "pointer-events-none" => Some(simple_rule(base_selector, "pointer-events:none;", important)), "pointer-events-auto" => Some(simple_rule(base_selector, "pointer-events:auto;", important)), "select-none" => Some(simple_rule(base_selector, "user-select:none;", important)), "fill-current" => Some(simple_rule(base_selector, "fill:currentColor;", important)), "align-top" => Some(simple_rule(base_selector, "vertical-align:top;", important)), "align-middle" => Some(simple_rule(base_selector, "vertical-align:middle;", important)), "resize-y" => Some(simple_rule(base_selector, "resize:vertical;", important)), "touch-pan-y" => Some(simple_rule(base_selector, "touch-action:pan-y;", important)), "tabular-nums" => Some(simple_rule(base_selector, "font-variant-numeric:tabular-nums;", important)), "sr-only" => Some(simple_rule(base_selector, "position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border-width:0;", important)), "prose-sm" => Some(simple_rule(base_selector, "font-size:0.875rem;line-height:1.7142857;", important)), "bg-center" => Some(simple_rule(base_selector, "background-position:center;", important)), "bg-bottom" => Some(simple_rule(base_selector, "background-position:bottom;", important)), "bg-repeat" => Some(simple_rule(base_selector, "background-repeat:repeat;", important)), "bg-repeat-x" => Some(simple_rule(base_selector, "background-repeat:repeat-x;", important)), "bg-repeat-y" => Some(simple_rule(base_selector, "background-repeat:repeat-y;", important)), "bg-no-repeat" => Some(simple_rule(base_selector, "background-repeat:no-repeat;", important)), "bg-cover" => Some(simple_rule(base_selector, "background-size:cover;", important)), "bg-contain" => Some(simple_rule(base_selector, "background-size:contain;", important)), "bg-gradient-to-r" => Some(simple_rule(base_selector, "background-image:linear-gradient(to right,var(--tw-gradient-from),var(--tw-gradient-to));", important)), "bg-gradient-to-b" => Some(simple_rule(base_selector, "background-image:linear-gradient(to bottom,var(--tw-gradient-from),var(--tw-gradient-to));", important)), "bg-gradient-to-br" => Some(simple_rule(base_selector, "background-image:linear-gradient(to bottom right,var(--tw-gradient-from),var(--tw-gradient-to));", important)), "outline-none" => Some(simple_rule(base_selector, "outline:2px solid transparent;outline-offset:2px;", important)), "outline-hidden" => Some(simple_rule(base_selector, "outline:none;", important)), "ring" => Some(simple_rule(base_selector, "box-shadow:0 0 0 1px rgba(59,130,246,0.5);", important)), "ring-1" => Some(simple_rule(base_selector, "box-shadow:0 0 0 1px rgba(59,130,246,0.5);", important)), "ring-2" => Some(simple_rule(base_selector, "box-shadow:0 0 0 2px rgba(59,130,246,0.5);", important)), "ring-4" => Some(simple_rule(base_selector, "box-shadow:0 0 0 4px rgba(59,130,246,0.5);", important)), "max-w-none" => Some(simple_rule(base_selector, "max-width:none;", important)), "w-px" => Some(simple_rule(base_selector, "width:1px;", important)), "size-full" => Some(simple_rule(base_selector, "width:100%;height:100%;", important)), "list-decimal" => Some(simple_rule(base_selector, "list-style-type:decimal;", important)), "animate-spin" => Some(UtilityRule { selector: base_selector.to_string(), declarations: maybe_important("animation:zebflow-spin 1s linear infinite;", important), prelude: Some("@keyframes zebflow-spin{to{transform:rotate(360deg);}}".to_string()) }), "animate-ping" => Some(UtilityRule { selector: base_selector.to_string(), declarations: maybe_important("animation:zebflow-ping 1s cubic-bezier(0,0,0.2,1) infinite;", important), prelude: Some("@keyframes zebflow-ping{75%,100%{transform:scale(2);opacity:0;}}".to_string()) }), "animate-pulse" => Some(UtilityRule { selector: base_selector.to_string(), declarations: maybe_important("animation:zebflow-pulse 2s cubic-bezier(0.4,0,0.6,1) infinite;", important), prelude: Some("@keyframes zebflow-pulse{0%,100%{opacity:1;}50%{opacity:.5;}}".to_string()) }), "animate-bounce" => Some(UtilityRule { selector: base_selector.to_string(), declarations: maybe_important("animation:zebflow-bounce 1s infinite;", important), prelude: Some("@keyframes zebflow-bounce{0%,100%{transform:translateY(-25%);animation-timing-function:cubic-bezier(.8,0,1,1);}50%{transform:none;animation-timing-function:cubic-bezier(0,0,.2,1);}}".to_string()) }),
         // Overflow
         "overflow-x-scroll"   => Some(simple_rule(base_selector, "overflow-x:scroll;", important)),
         "overflow-y-scroll"   => Some(simple_rule(base_selector, "overflow-y:scroll;", important)),
@@ -3160,16 +3150,21 @@ fn directional_radius_rule(v: &str) -> Option<String> {
     )
 }
 
+/// The radius scale derives from the theme's `--radius` (shadcn's
+/// `--radius-sm` … `--radius-4xl`), so one token rounds every corner. The
+/// fallback is the default theme's value, for a page with no theme at all.
 fn radius_value(v: &str) -> Option<String> {
     let value = match v {
         "none" => "0",
-        "sm" => "0.125rem",
+        "xs" => "0.125rem",
         "" | "DEFAULT" => "0.25rem",
-        "md" => "0.375rem",
-        "lg" => "0.5rem",
-        "xl" => "0.75rem",
-        "2xl" => "1rem",
-        "3xl" => "1.5rem",
+        "sm" => "calc(var(--radius,0.5rem) - 4px)",
+        "md" => "calc(var(--radius,0.5rem) - 2px)",
+        "lg" => "var(--radius,0.5rem)",
+        "xl" => "calc(var(--radius,0.5rem) + 4px)",
+        "2xl" => "calc(var(--radius,0.5rem) + 8px)",
+        "3xl" => "calc(var(--radius,0.5rem) + 12px)",
+        "4xl" => "calc(var(--radius,0.5rem) + 16px)",
         "full" => "9999px",
         _ => return arbitrary_value(v),
     };
@@ -3401,8 +3396,10 @@ fn color_value(v: &str) -> Option<String> {
     } else if let Some(h) = tw_color_hex(b) {
         h.to_string()
     } else if is_semantic_color_token(b) {
-        let k = b.replace('_', "-");
-        format!("var(--color-{})", k)
+        // The theme value itself, not an alias: a `--color-*: var(--*)` alias
+        // on :root would compute once against :root's light values and be
+        // inherited as that colour into `.dark`.
+        format!("var(--{})", b)
     } else {
         return None;
     };
@@ -3456,45 +3453,51 @@ fn hex_to_rgb(v: &str) -> Option<(u8, u8, u8)> {
         _ => None,
     }
 }
+/// The colour roles a template may name — shadcn/ui's vocabulary, verbatim,
+/// plus the three status pairs added by its own rule. The theme in
+/// `styles/main.css` gives each a light and a dark value; a utility resolves
+/// to `var(--<token>)`. See `docs/contracts/kinds/ui-theme`.
 fn is_semantic_color_token(v: &str) -> bool {
     matches!(
         v,
-        "bg" | "surface"
-            | "surface-2"
-            | "surface-3"
-            | "body"
-            | "body-soft"
-            | "body-muted"
+        "background"
+            | "foreground"
+            | "card"
+            | "card-foreground"
+            | "popover"
+            | "popover-foreground"
+            | "primary"
+            | "primary-foreground"
+            | "secondary"
+            | "secondary-foreground"
+            | "muted"
+            | "muted-foreground"
             | "accent"
-            | "accent-strong"
-            | "accent-alt"
-            | "accent-alt-strong"
-            | "border"
-            | "border-soft"
-            | "warning"
+            | "accent-foreground"
             | "destructive"
             | "destructive-foreground"
-            | "brand-blue"
-            | "brand-blue-ink"
-            | "brand-orange"
-            | "brand-orange-ink"
-            | "dark-background"
-            | "dark-border"
-            | "dark-menus"
-            | "dark-text1"
-            | "dark-accent1"
-            | "dark-accent2"
-            | "dark-accent3"
-            | "dark-accent4"
-            | "dark-accent5"
-            | "ui-bg"
-            | "ui-bg-muted"
-            | "ui-bg-subtle"
-            | "ui-border"
-            | "ui-border-subtle"
-            | "ui-text"
-            | "ui-text-muted"
-            | "ui-text-soft"
+            | "success"
+            | "success-foreground"
+            | "warning"
+            | "warning-foreground"
+            | "info"
+            | "info-foreground"
+            | "border"
+            | "input"
+            | "ring"
+            | "chart-1"
+            | "chart-2"
+            | "chart-3"
+            | "chart-4"
+            | "chart-5"
+            | "sidebar"
+            | "sidebar-foreground"
+            | "sidebar-primary"
+            | "sidebar-primary-foreground"
+            | "sidebar-accent"
+            | "sidebar-accent-foreground"
+            | "sidebar-border"
+            | "sidebar-ring"
     )
 }
 fn is_size_like(v: &str) -> bool {
@@ -3811,7 +3814,7 @@ fn format_rem(v: f64) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{minify_css_lossy, process_tailwind, token_css_rule};
+    use super::{is_semantic_color_token, minify_css_lossy, process_tailwind, token_css_rule};
 
     #[test]
     fn css_minifier_removes_comments_and_compacts_whitespace() {
@@ -3853,30 +3856,75 @@ mod tests {
 
     #[test]
     fn semantic_color_tokens_map_to_main_css_variable_contract() {
-        let text_css = token_css_rule("text-brand-blue").expect("text-brand-blue rule");
-        let bg_css = token_css_rule("bg-surface").expect("bg-surface rule");
-        let border_css = token_css_rule("border-body-soft").expect("border-body-soft rule");
+        let text_css = token_css_rule("text-primary").expect("text-primary rule");
+        let bg_css = token_css_rule("bg-card").expect("bg-card rule");
+        let border_css = token_css_rule("border-muted-foreground").expect("border-muted-foreground rule");
 
-        assert!(text_css.contains("var(--color-brand-blue)"));
-        assert!(bg_css.contains("var(--color-surface)"));
-        assert!(border_css.contains("var(--color-body-soft)"));
+        assert!(text_css.contains("var(--primary)"));
+        assert!(bg_css.contains("var(--card)"));
+        assert!(border_css.contains("var(--muted-foreground)"));
+    }
+
+    /// The radius scale derives from the theme's `--radius`, the way shadcn's
+    /// `--radius-sm … --radius-4xl` do, so a pasted theme rounds everything.
+    #[test]
+    fn rounded_scale_derives_from_the_theme_radius() {
+        // Through the minifier too: `) - 2px` and `) + 4px` must keep their
+        // spaces; `calc(a)+ 4px` is a parse error and the declaration is dropped.
+        let minified = minify_css_lossy(".x{border-radius:calc(var(--radius,0.5rem) - 2px);}");
+        assert!(minified.contains(") - 2px"), "{minified}");
+        let minified = minify_css_lossy(".x{border-radius:calc(var(--radius,0.5rem) + 4px);}");
+        assert!(minified.contains(") + 4px"), "{minified}");
+        // The whole path a page takes: utility → rule → minified stylesheet.
+        let css = minify_css_lossy(&process_tailwind("<div class=\"rounded-2xl rounded-md\"></div>", &std::collections::HashSet::new()));
+        assert!(css.contains("calc(var(--radius,0.5rem) + 8px)"), "{css}");
+        assert!(css.contains("calc(var(--radius,0.5rem) - 2px)"), "{css}");
+        let lg = token_css_rule("rounded-lg").unwrap();
+        assert!(lg.contains("var(--radius,0.5rem)"), "{lg}");
+        let sm = token_css_rule("rounded-sm").unwrap();
+        assert!(sm.contains("calc(var(--radius,0.5rem) - 4px)"), "{sm}");
+        let xl = token_css_rule("rounded-2xl").unwrap();
+        assert!(xl.contains("calc(var(--radius,0.5rem) + 8px)"), "{xl}");
+    }
+
+    /// `dark:` follows the `.dark` class the theme switches on, not the OS.
+    #[test]
+    fn dark_variant_is_the_theme_class_not_a_media_query() {
+        let css = token_css_rule("dark:bg-input/30").expect("dark:bg-input/30 rule");
+        assert!(css.contains(".dark .dark\\:bg-input\\/30"), "{css}");
+        assert!(!css.contains("prefers-color-scheme"), "{css}");
+    }
+
+    /// The old vocabulary is gone, not aliased. A template still saying
+    /// `text-body` gets no rule, and the guard in tests/rwe names the file.
+    #[test]
+    fn retired_semantic_color_tokens_produce_no_rule() {
+        for old in ["text-body", "bg-surface-2", "border-ui-border", "text-brand-blue", "bg-dark-background"] {
+            assert!(token_css_rule(old).is_none(), "{old} should no longer resolve");
+        }
     }
 
     #[test]
     fn semantic_color_tokens_align_with_platform_main_css() {
         let main_css = include_str!("../../../platform/web/templates/styles/main.css");
-        assert!(
-            main_css.contains("--color-brand-blue:"),
-            "expected platform main.css to define --color-brand-blue"
-        );
-        assert!(
-            main_css.contains("--color-ui-text-soft:"),
-            "expected platform main.css to define --color-ui-text-soft"
-        );
-
-        let text_css = token_css_rule("text-brand-blue").expect("text-brand-blue rule");
-        let soft_text_css = token_css_rule("text-ui-text-soft").expect("text-ui-text-soft rule");
-        assert!(text_css.contains("var(--color-brand-blue)"));
-        assert!(soft_text_css.contains("var(--color-ui-text-soft)"));
+        // Every token the compiler accepts is defined by the theme, in the
+        // light block and in the dark block.
+        let light = &main_css[main_css.find(":root {").expect(":root block")..main_css.find(".dark {").expect(".dark block")];
+        let dark = &main_css[main_css.find(".dark {").unwrap()..];
+        for token in [
+            "background", "foreground", "card", "card-foreground", "popover", "popover-foreground",
+            "primary", "primary-foreground", "secondary", "secondary-foreground", "muted", "muted-foreground",
+            "accent", "accent-foreground", "destructive", "destructive-foreground", "success", "success-foreground",
+            "warning", "warning-foreground", "info", "info-foreground", "border", "input", "ring",
+            "chart-1", "chart-2", "chart-3", "chart-4", "chart-5",
+            "sidebar", "sidebar-foreground", "sidebar-primary", "sidebar-primary-foreground",
+            "sidebar-accent", "sidebar-accent-foreground", "sidebar-border", "sidebar-ring",
+        ] {
+            assert!(is_semantic_color_token(token), "{token} missing from is_semantic_color_token");
+            assert!(light.contains(&format!("--{token}:")), "light theme does not define --{token}");
+            assert!(dark.contains(&format!("--{token}:")), "dark theme does not define --{token}");
+            let css = token_css_rule(&format!("bg-{token}")).expect(token);
+            assert!(css.contains(&format!("var(--{token})")));
+        }
     }
 }

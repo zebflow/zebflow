@@ -13,17 +13,19 @@ Path params (`:id`), query strings (`?status=x`), and body fields all land in th
 - `--params "{{ input.params.id }}"` — single value from a dot path → becomes `$1`
 - `--params "{{ [input.name, input.email] }}"` — array expression → becomes `$1, $2, ...`
 
-**Webhook input shape:**
+**Webhook input shape:** user-submitted data lives under `input.body`; request
+context sits at the root. Nothing is merged to the root — a JSON body field
+`name` is `input.body.name`, never `input.name`.
 
 | Location | Access | Example |
 |----------|--------|---------|
 | Path param `:id` | `input.params.id` | `--path /api/users/:id` |
 | Query string `?status=x` | `input.query.status` | `?status=active` |
-| GET root (merged) | `input.id` | path params + query merged to root for GET |
-| POST JSON body field | `input.name` | `application/json` object fields merged to root |
-| POST form field | `input.name` | `application/x-www-form-urlencoded` fields merged to root (percent-decoded) |
-| POST multipart text field | `input.name` | `multipart/form-data` text fields merged to root |
-| POST multipart file | `input.files.avatar` | `{ filename, content_type, size, data }` — data is base64 |
+| GET request | `input.body` is `null` | path params and query are still at `input.params` / `input.query` |
+| POST JSON body field | `input.body.name` | `application/json` — the parsed object sits at `input.body` |
+| POST form field | `input.body.name` | `application/x-www-form-urlencoded`, percent-decoded |
+| POST multipart text field | `input.body.name` | `multipart/form-data` text fields |
+| POST multipart file | `input.files.avatar` | a FileRef object: `{ __zf_type: "file_ref", ref, filename, mime, kind, size, sha256, ... }` |
 | Raw / non-object body | `input.body` | non-object JSON or plain text fallback |
 
 ---
@@ -60,20 +62,24 @@ Path params (`:id`), query strings (`?status=x`), and body fields all land in th
 | script -- "const prog = input.rows[0]; return { ...prog, unit_id: prog.unit_id };"
 | pg.query --credential my-pg --params "{{ input.unit_id }}" \
     -- "SELECT p.fullname, l.academic_rank, st.position FROM academic.lecturer l JOIN academic.staff st ON st.staff_id = l.staff_id JOIN app.player p ON p.player_id = st.player_id WHERE st.unit_id = $1::uuid AND l.is_active = true ORDER BY p.fullname"
-| script -- "return { ok: true, data: { ...input._prev, lecturers: input.rows } }"
+| script -- "return { ok: true, data: { ...ctx.nodes['n2'], lecturers: input.rows } }"
 ```
 
-Note: each pg.query replaces `input` with `{ rows: [...] }`. Use a script node to carry forward fields between queries by merging into a running context.
+Note: each `pg.query` REPLACES `input` with `{ rows: [...] }` — there is no
+`input._prev`. To reach an earlier node's output after later nodes have
+replaced the payload, use `ctx.nodes['<node id>']` in a script (pipe-mode node
+ids are `n0`, `n1`, … in source order — the first `script` above is `n2`) or
+`$nodes.<node id>` inside a `{{ }}` expression.
 
 ### POST /api/items — create from body
 
-JSON body fields are merged to root for object bodies. Access as `input.name`, `input.email`, etc.:
+JSON body fields sit under `input.body`. Access as `input.body.title`, `input.body.email`, etc.:
 
 ```
 | trigger.webhook --path /api/posts --method POST
-| logic.if --expr "input.title && input.body"
+| logic.if --expr "input.body.title && input.body.body"
 (false pin → `web.response --status 400`; see **Answering with a status**)
-| pg.query --credential my-pg --params "{{ [input.title, input.body, input.author_id] }}" \
+| pg.query --credential my-pg --params "{{ [input.body.title, input.body.body, input.body.author_id] }}" \
     -- "INSERT INTO posts (title, body, author_id, created_at) VALUES ($1, $2, $3, now()) RETURNING id, title"
 | script -- "return { ok: true, data: input.rows?.[0] }"
 ```
@@ -84,7 +90,7 @@ Combine path param and body fields with `--params`:
 
 ```
 | trigger.webhook --path /api/posts/:id --method PUT
-| pg.query --credential my-pg --params "{{ [input.title, input.body, input.params.id] }}" \
+| pg.query --credential my-pg --params "{{ [input.body.title, input.body.body, input.params.id] }}" \
     -- "UPDATE posts SET title = $1, body = $2, updated_at = now() WHERE id = $3 RETURNING id, title"
 | script -- "return { ok: true, data: input.rows[0] };"
 (see **Answering with a status** below for the 404 branch)
@@ -106,9 +112,9 @@ Combine path param and body fields with `--params`:
 | | Single value | Array expression |
 |---|---|---|
 | Best for | Single `$1` from a known path | Multiple bind values, type coercion, conditional |
-| Syntax | `--params "{{ input.<dot.path> }}"` | `--params "{{ [input.title, input.email] }}"` |
+| Syntax | `--params "{{ input.<dot.path> }}"` | `--params "{{ [input.body.title, input.body.email] }}"` |
 | Scalar result | Wrapped as `[$1]` | Must return array explicitly |
-| Example | `--params "{{ input.params.unit_id }}"` | `--params "{{ [input.title, input.params.id] }}"` |
+| Example | `--params "{{ input.params.unit_id }}"` | `--params "{{ [input.body.title, input.params.id] }}"` |
 
 ---
 
@@ -135,8 +141,8 @@ in a payload would not be.
 
 ## Nodes Used
 
-- `trigger.webhook` — HTTP endpoints; path params in `input.params.<name>`, body merged to root for JSON, form-urlencoded, and multipart text fields
-- `pg.query` — parameterized SQL; `--params "{{ input.path }}"` (single value) or `--params "{{ [a, b] }}"` (multiple/conditional)
+- `trigger.webhook` — HTTP endpoints; path params in `input.params.<name>`, user-submitted data (JSON, form-urlencoded, multipart text fields) under `input.body.<name>`
+- `pg.query --credential <id>` — parameterized SQL; `--params "{{ input.path }}"` (single value) or `--params "{{ [a, b] }}"` (multiple/conditional)
 - `script` — validation, 404 guard, response shaping, chaining multiple queries
 
 > A script cannot set the response. It returns a value; the graph decides what

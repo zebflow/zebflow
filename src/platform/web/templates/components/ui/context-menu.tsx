@@ -55,8 +55,8 @@ export default function ContextMenu({ items, children, trigger, className, disab
           aria-label="Actions"
           data-context-menu-trigger="true"
           className={cx(
-            "shrink-0 rounded px-1 text-ui-text-soft hover:bg-ui-bg-muted hover:text-ui-text",
-            at ? "bg-ui-bg-muted text-ui-text" : "",
+            "shrink-0 rounded px-1 text-muted-foreground hover:bg-accent hover:text-foreground",
+            at ? "bg-accent text-foreground" : "",
           )}
           onClick={open}
         >
@@ -83,7 +83,7 @@ export default function ContextMenu({ items, children, trigger, className, disab
             data-context-menu="true"
             className={cx(
               "fixed z-[1000] min-w-[10rem] overflow-hidden rounded-md p-1 shadow-md",
-              "border border-border bg-surface text-body",
+              "border border-border bg-card text-foreground",
             )}
             style={{ left: `${at.x}px`, top: `${at.y}px` }}
           >

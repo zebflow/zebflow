@@ -255,6 +255,11 @@ const PAGE_DEFS: &[(&str, &str, &str)] = &[
         "pages/dev/design-system/page.tsx",
     ),
     (
+        "platform-design-system-ui",
+        "platform.dev.design_system_ui",
+        "pages/dev/design-system/ui/page.tsx",
+    ),
+    (
         "platform-project-settings-clone-ui-preview",
         "platform.project.settings.clone_ui_preview",
         "pages/project-studio/settings/clone/ui/preview/page.tsx",
@@ -319,7 +324,7 @@ pub struct PlatformAppState {
 
 /// Builds Zebflow platform router.
 pub async fn router(platform: Arc<PlatformService>) -> Router {
-    let frontend = build_frontend(&platform.config.data_root).unwrap_or_else(|err| {
+    let frontend = build_frontend(&platform.config.data_root, platform.library.source_roots()).unwrap_or_else(|err| {
         panic!("failed building platform frontend templates: {err}");
     });
 
@@ -448,6 +453,7 @@ pub async fn router(platform: Arc<PlatformService>) -> Router {
         .route("/account/password", get(account_password_page))
         .route("/hub", get(platform_hub_page))
         .route("/dev/design-system", get(design_system_page))
+        .route("/dev/design-system/ui", get(design_system_ui_page))
         .route("/docs/node", get(docs_node_contract))
         .route("/docs/operation", get(docs_operation_contract))
         .route("/home/projects/create", post(home_create_project_submit))
@@ -1324,7 +1330,10 @@ fn build_render_script_cache(data_root: &FsPath) -> Option<Arc<RenderScriptCache
     }
 }
 
-fn build_frontend(data_root: &FsPath) -> Result<PlatformFrontend, PlatformError> {
+fn build_frontend(
+    data_root: &FsPath,
+    library_roots: std::collections::BTreeMap<String, PathBuf>,
+) -> Result<PlatformFrontend, PlatformError> {
     let rwe_engine_id = std::env::var("ZEBFLOW_PLATFORM_RWE_ENGINE_ID").ok();
     let rwe: Arc<dyn ReactiveWebEngine> = resolve_engine_or_default(rwe_engine_id.as_deref());
     let language: Arc<dyn LanguageEngine> = Arc::new(NoopLanguageEngine);
@@ -1339,6 +1348,9 @@ fn build_frontend(data_root: &FsPath) -> Result<PlatformFrontend, PlatformError>
         },
         templates: TemplateOptions {
             template_root: Some(template_root.clone()),
+            // The gallery at /dev/design-system renders `zeb/ui` next to the
+            // studio primitives; nothing else in the studio imports it.
+            library_roots: library_roots.clone(),
             style_entries: Vec::new(),
         },
         processors: vec!["tailwind".to_string()],
@@ -1538,7 +1550,13 @@ fn materialize_platform_template_root(_data_root: &FsPath) -> Result<PathBuf, Pl
             }
             let mut existing = Vec::new();
             collect_files(&root, &mut existing);
-            for stale in existing.into_iter().filter(|p| !asset_paths.contains(p)) {
+            // Another process's in-flight `.tmp` is not stale; sweeping it would
+            // fail that process's rename.
+            let in_flight = |p: &PathBuf| p.extension().is_some_and(|e| e == "tmp");
+            for stale in existing
+                .into_iter()
+                .filter(|p| !asset_paths.contains(p) && !in_flight(p))
+            {
                 let _ = fs::remove_file(&stale);
             }
         }
@@ -1548,7 +1566,9 @@ fn materialize_platform_template_root(_data_root: &FsPath) -> Result<PathBuf, Pl
             if let Some(parent) = full.parent() {
                 fs::create_dir_all(parent)?;
             }
-            fs::write(&full, asset.bytes)?;
+            // Atomic: a second process (another dev server, a parallel test)
+            // compiling from this shared root must never read a half-written file.
+            crate::rwe::core::write_atomic(&full, asset.bytes)?;
         }
         crate::rwe::core::prepare_template_root(&root)
             .map_err(|e| PlatformError::new("PLATFORM_TEMPLATE_REWRITE", e.message))?;
@@ -3562,17 +3582,64 @@ async fn api_change_password(
 }
 
 async fn design_system_page(State(state): State<PlatformAppState>, headers: HeaderMap) -> Response {
-    let Some(_owner) = session_owner(&state, &headers) else {
+    let Some(owner) = session_owner(&state, &headers) else {
         return Redirect::to(LOGIN_PATH).into_response();
     };
+    // The primitives that read a repository (RepoTree, FolderPicker) are shown
+    // against the viewer's first project, so the gallery renders real rows
+    // rather than an error state.
+    let project = state
+        .platform
+        .projects
+        .list_projects(&owner)
+        .ok()
+        .and_then(|items| items.into_iter().next())
+        .map(|item| item.project);
     match render_page(
         &state,
         "platform-design-system",
         "/dev/design-system",
         json!({
+            "owner": owner,
+            "project": project,
             "seo": {
                 "title": "Design System · Zebflow",
                 "description": "Platform UI reference for platform developers and agents",
+            },
+        }),
+    ) {
+        Ok(html) => Html(html).into_response(),
+        Err(err) => internal_error(err),
+    }
+}
+
+/// The `zeb/ui` gallery is its own page: the studio kit and `zeb/ui` export
+/// the same names (`Button`, `Card`, `Dialog`…), and the compiler's flat
+/// bundle declares each exported name once per page. Two kits, two pages.
+async fn design_system_ui_page(State(state): State<PlatformAppState>, headers: HeaderMap) -> Response {
+    let Some(owner) = session_owner(&state, &headers) else {
+        return Redirect::to(LOGIN_PATH).into_response();
+    };
+    // The primitives that read a repository (RepoTree, FolderPicker) are shown
+    // against the viewer's first project, so the gallery renders real rows
+    // rather than an error state.
+    let project = state
+        .platform
+        .projects
+        .list_projects(&owner)
+        .ok()
+        .and_then(|items| items.into_iter().next())
+        .map(|item| item.project);
+    match render_page(
+        &state,
+        "platform-design-system-ui",
+        "/dev/design-system/ui",
+        json!({
+            "owner": owner,
+            "project": project,
+            "seo": {
+                "title": "zeb/ui · Zebflow",
+                "description": "The component library project pages import — every component, every variant",
             },
         }),
     ) {
@@ -23013,6 +23080,7 @@ async fn public_webhook_ingress(
         let path = sc.get("path").and_then(Value::as_str).unwrap_or("/");
         let same_site = sc.get("same_site").and_then(Value::as_str).unwrap_or("Lax");
         let http_only = sc.get("http_only").and_then(Value::as_bool).unwrap_or(true);
+        let secure = sc.get("secure").and_then(Value::as_bool).unwrap_or(false);
         let mut parts = vec![
             format!("{name}={value}"),
             format!("Path={path}"),
@@ -23021,6 +23089,10 @@ async fn public_webhook_ingress(
         ];
         if http_only {
             parts.push("HttpOnly".to_string());
+        }
+        // The spec parsed `secure`; the header must say it or the flag was a lie.
+        if secure {
+            parts.push("Secure".to_string());
         }
         Some(parts.join("; "))
     });
@@ -25693,6 +25765,9 @@ fn compile_template_buffer(
         },
         templates: TemplateOptions {
             template_root: Some(template_root.to_path_buf()),
+            // The editor checks a buffer with the same resolution a render
+            // uses, or `zeb/ui/button` would fail here and work in the page.
+            library_roots: state.platform.library.source_roots(),
             style_entries: Vec::new(),
         },
         processors: vec!["tailwind".to_string()],
@@ -26453,30 +26528,30 @@ fn editor_completion_catalog() -> Value {
         "duration-200",
     ];
     let tokens = [
-        "bg-bg",
-        "bg-surface",
-        "bg-surface-2",
-        "bg-surface-3",
-        "bg-ui-bg",
-        "bg-ui-bg-subtle",
-        "bg-ui-bg-muted",
+        "bg-background",
+        "bg-card",
+        "bg-popover",
+        "bg-muted",
         "bg-accent",
-        "bg-brand-orange",
-        "bg-brand-blue",
-        "text-body",
-        "text-body-soft",
-        "text-body-muted",
-        "text-ui-text",
-        "text-ui-text-soft",
-        "text-ui-text-muted",
-        "text-accent",
-        "text-brand-orange",
-        "text-brand-blue",
+        "bg-primary",
+        "bg-secondary",
+        "bg-destructive",
+        "bg-success",
+        "bg-warning",
+        "bg-info",
+        "text-foreground",
+        "text-muted-foreground",
+        "text-card-foreground",
+        "text-primary",
+        "text-primary-foreground",
+        "text-destructive",
+        "text-success",
+        "text-warning",
+        "text-info",
         "border-border",
-        "border-border-soft",
-        "border-accent",
-        "border-ui-border",
-        "ring-accent",
+        "border-input",
+        "border-primary",
+        "ring-ring",
     ];
     let typography = [
         "text-xs",
@@ -26503,10 +26578,10 @@ fn editor_completion_catalog() -> Value {
         "uppercase",
     ];
     let variants = [
-        "hover:bg-surface-2",
-        "hover:bg-surface-3",
-        "hover:text-body",
-        "hover:text-accent",
+        "hover:bg-muted",
+        "hover:bg-accent",
+        "hover:text-foreground",
+        "hover:text-primary",
         "focus:outline-none",
         "focus:ring-2",
         "disabled:opacity-50",
@@ -27583,6 +27658,7 @@ async fn preview_page(
     let options = crate::rwe::ReactiveWebOptions {
         templates: crate::rwe::TemplateOptions {
             template_root: Some(layout.repo_source_dir()),
+            library_roots: state.platform.library.source_roots(),
             style_entries: Vec::new(),
         },
         processors: vec!["tailwind".to_string()],

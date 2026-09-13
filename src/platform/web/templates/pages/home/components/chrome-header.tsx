@@ -48,16 +48,16 @@ export default function ChromeHeader(props) {
     );
 
   return (
-    <nav className="fixed top-0 z-50 w-full border-b border-ui-border bg-ui-bg/95 py-3 shadow-sm backdrop-blur-sm">
+    <nav className="fixed top-0 z-50 w-full border-b border-border bg-popover/95 py-3 shadow-sm backdrop-blur-sm">
       <div className="mx-auto flex w-full max-w-[1960px] items-center justify-between gap-4 px-6 sm:px-10">
         <Link
           href="/home"
-          className="flex items-center gap-3 text-lg font-semibold tracking-tight text-ui-text hover:no-underline"
+          className="flex items-center gap-3 text-lg font-semibold tracking-tight text-foreground hover:no-underline"
         >
           <img src="/assets/branding/logo.svg" alt="Zebflow logo" className="h-9 w-9 shrink-0" />
           <span className="flex items-baseline gap-2">
             <span>zebflow</span>
-            <span className="text-xs font-medium text-ui-text-muted">Platform</span>
+            <span className="text-xs font-medium text-muted-foreground">Platform</span>
           </span>
         </Link>
         <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">{trailing}</div>

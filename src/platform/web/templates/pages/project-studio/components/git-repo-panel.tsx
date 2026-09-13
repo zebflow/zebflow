@@ -10,9 +10,9 @@ import { GitBranchIcon } from "@/pages/project-studio/components/icons";
 import { GitFileTree } from "@/pages/project-studio/components/git-file-tree";
 import { useStudioChrome } from "@/pages/project-studio/components/studio-chrome-context";
 
-const credLabelCx = "text-[0.65rem] font-semibold uppercase tracking-[0.07em] text-body-soft mb-[0.3rem] block";
-const credInputCx = "w-full bg-surface-2 border border-border rounded-[0.35rem] text-body text-[0.68rem] font-mono px-[0.4rem] h-7 outline-none focus:border-green-500";
-const credSelectCx = "w-full bg-surface-2 border border-border rounded-[0.35rem] text-body text-[0.72rem] px-[0.4rem] h-7 outline-none cursor-pointer";
+const credLabelCx = "text-[0.65rem] font-semibold uppercase tracking-[0.07em] text-muted-foreground mb-[0.3rem] block";
+const credInputCx = "w-full bg-muted border border-border rounded-[0.35rem] text-foreground text-[0.68rem] font-mono px-[0.4rem] h-7 outline-none focus:border-green-500";
+const credSelectCx = "w-full bg-muted border border-border rounded-[0.35rem] text-foreground text-[0.72rem] px-[0.4rem] h-7 outline-none cursor-pointer";
 
 export function GitRepoPanel({ owner, project }) {
   const nav = useRouter().push;
@@ -236,7 +236,7 @@ export function GitRepoPanel({ owner, project }) {
   return (
     <div
       className="relative"
-      tw-variants="fixed inset-0 z-40 top-[calc(100%+6px)] w-[640px] shadow-[0_8px_24px_rgba(0,0,0,0.25)] z-50 py-[0.55rem] gap-[0.35rem] bg-gray-500 max-h-[440px] py-[0.5rem] pb-[0.3rem] border-border-soft tracking-[0.07em] py-[0.4rem] min-h-[2.5rem] pt-[0.3rem] pb-[0.15rem] py-[0.6rem] text-[0.74rem] px-[0.6rem] gap-[0.4rem] px-[0.1rem] text-red-400 text-green-400 w-[260px] gap-[0.85rem] leading-[1.5] text-[0.72rem] underline text-accent rounded-[0.35rem] focus-within:border-green-500 opacity-50 whitespace-nowrap bg-surface-3 border-r h-7 bg-transparent border-none text-[0.68rem] text-green-500 border-green-500 text-[0.75rem] text-[0.7rem] text-[0.65rem] text-[0.6rem] text-blue-400 w-3.5 h-3.5 gap-1.5 w-px font-mono px-1.5 text-body-soft border-border bg-green-500 bg-gray-400"
+      tw-variants="fixed inset-0 z-40 top-[calc(100%+6px)] w-[640px] shadow-[0_8px_24px_rgba(0,0,0,0.25)] z-50 py-[0.55rem] gap-[0.35rem] bg-gray-500 max-h-[440px] py-[0.5rem] pb-[0.3rem] border-border tracking-[0.07em] py-[0.4rem] min-h-[2.5rem] pt-[0.3rem] pb-[0.15rem] py-[0.6rem] text-[0.74rem] px-[0.6rem] gap-[0.4rem] px-[0.1rem] text-red-400 text-green-400 w-[260px] gap-[0.85rem] leading-[1.5] text-[0.72rem] underline text-primary rounded-[0.35rem] focus-within:border-green-500 opacity-50 whitespace-nowrap bg-accent border-r h-7 bg-transparent border-none text-[0.68rem] text-green-500 border-green-500 text-[0.75rem] text-[0.7rem] text-[0.65rem] text-[0.6rem] text-blue-400 w-3.5 h-3.5 gap-1.5 w-px font-mono px-1.5 text-muted-foreground border-border bg-green-500 bg-gray-400"
     >
       {/* Trigger button */}
       <button
@@ -261,28 +261,28 @@ export function GitRepoPanel({ owner, project }) {
           <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
 
           {/* Panel */}
-          <div className="absolute top-[calc(100%+6px)] right-0 w-[640px] flex flex-col bg-surface border border-border rounded-lg shadow-[0_8px_24px_rgba(0,0,0,0.25)] overflow-hidden z-50">
+          <div className="absolute top-[calc(100%+6px)] right-0 w-[640px] flex flex-col bg-card border border-border rounded-lg shadow-[0_8px_24px_rgba(0,0,0,0.25)] overflow-hidden z-50">
 
             {/* Header */}
             <div className="flex items-center justify-between px-3 py-[0.55rem] border-b border-border gap-2">
-              <div className="text-[0.75rem] font-semibold text-body flex items-center gap-[0.35rem]">
+              <div className="text-[0.75rem] font-semibold text-foreground flex items-center gap-[0.35rem]">
                 <GitBranchIcon className="w-3.5 h-3.5 shrink-0" />
                 <span>Git</span>
                 {localBranch && (
-                  <span className="font-mono text-[0.65rem] text-body-soft bg-surface-3 border border-border px-1.5 rounded">
+                  <span className="font-mono text-[0.65rem] text-muted-foreground bg-accent border border-border px-1.5 rounded">
                     {localBranch}
                   </span>
                 )}
                 <Link
                   href={`/projects/${owner}/${project}/settings/git`}
                   onClick={() => setOpen(false)}
-                  className="text-[0.62rem] text-body-soft hover:text-body underline ml-[0.15rem]"
-                  tw-variants="hover:text-body"
+                  className="text-[0.62rem] text-muted-foreground hover:text-foreground underline ml-[0.15rem]"
+                  tw-variants="hover:text-foreground"
                 >
                   settings
                 </Link>
               </div>
-              <div className="flex items-center gap-2 text-[0.7rem] text-body-soft">
+              <div className="flex items-center gap-2 text-[0.7rem] text-muted-foreground">
                 <span>{gitLoading ? "…" : `${count} change${count !== 1 ? "s" : ""}`}</span>
                 <span
                   className={cx(
@@ -300,24 +300,24 @@ export function GitRepoPanel({ owner, project }) {
 
               {/* Left: commit */}
               <div className="flex-1 min-w-0 flex flex-col overflow-hidden">
-                <div className="text-[0.65rem] font-bold uppercase tracking-[0.07em] text-body-soft px-3 py-[0.5rem] pb-[0.3rem] border-b border-border-soft">
+                <div className="text-[0.65rem] font-bold uppercase tracking-[0.07em] text-muted-foreground px-3 py-[0.5rem] pb-[0.3rem] border-b border-border">
                   Commit
                 </div>
                 <div className="flex-1 overflow-y-auto py-[0.4rem] min-h-[2.5rem]">
                   {staged.length > 0 && (
                     <>
-                      <p className="text-[0.6rem] font-bold tracking-[0.07em] text-body-soft px-3 pt-[0.3rem] pb-[0.15rem] uppercase">STAGED</p>
+                      <p className="text-[0.6rem] font-bold tracking-[0.07em] text-muted-foreground px-3 pt-[0.3rem] pb-[0.15rem] uppercase">STAGED</p>
                       <GitFileTree files={staged} setFiles={setFiles} />
                     </>
                   )}
                   {unstaged.length > 0 && (
                     <>
-                      <p className="text-[0.6rem] font-bold tracking-[0.07em] text-body-soft px-3 pt-[0.3rem] pb-[0.15rem] uppercase">CHANGES</p>
+                      <p className="text-[0.6rem] font-bold tracking-[0.07em] text-muted-foreground px-3 pt-[0.3rem] pb-[0.15rem] uppercase">CHANGES</p>
                       <GitFileTree files={unstaged} setFiles={setFiles} />
                     </>
                   )}
-                  {count === 0 && !gitLoading && <p className="text-[0.74rem] text-body-soft px-3 py-[0.6rem]">Working tree clean.</p>}
-                  {gitLoading && <p className="text-[0.74rem] text-body-soft px-3 py-[0.6rem]">Loading…</p>}
+                  {count === 0 && !gitLoading && <p className="text-[0.74rem] text-muted-foreground px-3 py-[0.6rem]">Working tree clean.</p>}
+                  {gitLoading && <p className="text-[0.74rem] text-muted-foreground px-3 py-[0.6rem]">Loading…</p>}
                 </div>
                 {count > 0 && (
                   <div className="border-t border-border px-[0.6rem] py-[0.5rem] flex flex-col gap-[0.4rem]">
@@ -353,19 +353,19 @@ export function GitRepoPanel({ owner, project }) {
               {/* Right: remote */}
               <div className="w-[260px] shrink-0 flex flex-col overflow-y-auto p-3 gap-[0.85rem]">
                 <div
-                  className="text-[0.65rem] font-bold uppercase tracking-[0.07em] text-body-soft border-b border-border-soft pb-[0.3rem]"
+                  className="text-[0.65rem] font-bold uppercase tracking-[0.07em] text-muted-foreground border-b border-border pb-[0.3rem]"
                   style={{ margin: "-.75rem -.75rem .6rem" }}
                 >Remote</div>
 
                 {repoLoading ? (
-                  <p className="text-[0.72rem] text-body-soft leading-[1.5]">Loading…</p>
+                  <p className="text-[0.72rem] text-muted-foreground leading-[1.5]">Loading…</p>
                 ) : creds.length === 0 ? (
-                  <p className="text-[0.72rem] text-body-soft leading-[1.5]">
+                  <p className="text-[0.72rem] text-muted-foreground leading-[1.5]">
                     No GitHub / GitLab credentials.{" "}
                     <a
                       href="#"
                       onClick={(e) => { e.preventDefault(); setShowCredDialog(true); }}
-                      className="underline text-accent"
+                      className="underline text-primary"
                     >Create one</a>
                   </p>
                 ) : (
@@ -387,16 +387,16 @@ export function GitRepoPanel({ owner, project }) {
                     <div>
                       <label className={credLabelCx}>Repository</label>
                       <div className={cx(
-                        "flex items-center border border-border rounded-[0.35rem] overflow-hidden bg-surface-2 focus-within:border-green-500",
+                        "flex items-center border border-border rounded-[0.35rem] overflow-hidden bg-muted focus-within:border-green-500",
                         !selectedId && "opacity-50",
                       )}>
                         {credHost && (
-                          <span className="text-[0.65rem] font-mono text-body-soft px-[0.4rem] whitespace-nowrap bg-surface-3 border-r border-border h-7 flex items-center shrink-0">
+                          <span className="text-[0.65rem] font-mono text-muted-foreground px-[0.4rem] whitespace-nowrap bg-accent border-r border-border h-7 flex items-center shrink-0">
                             {credHost}/
                           </span>
                         )}
                         <input
-                          className="flex-1 min-w-0 bg-transparent border-none outline-none text-body text-[0.68rem] font-mono px-[0.4rem] h-7"
+                          className="flex-1 min-w-0 bg-transparent border-none outline-none text-foreground text-[0.68rem] font-mono px-[0.4rem] h-7"
                           type="text"
                           placeholder="username/repo-name"
                           value={slug}

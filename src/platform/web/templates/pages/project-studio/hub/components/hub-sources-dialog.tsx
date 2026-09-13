@@ -21,7 +21,7 @@ export default function HubSourcesDialog({ open, onClose, children }) {
       <DialogContent className="max-w-[52rem]">
         <DialogHeader>
           <DialogTitle>Hub sources</DialogTitle>
-          <p className="text-sm text-ui-text-soft">
+          <p className="text-sm text-muted-foreground">
             Project sources are private to this project. Shared sources are granted from
             Home &gt; Hub and are read-only here.
           </p>

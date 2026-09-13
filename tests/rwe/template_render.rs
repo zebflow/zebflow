@@ -319,6 +319,7 @@ export default function Page(input) {
             &language,
             &ReactiveWebOptions {
                 templates: TemplateOptions {
+                                library_roots: Default::default(),
                     template_root: Some(root),
                     style_entries: Vec::new(),
                 },

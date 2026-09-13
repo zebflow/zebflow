@@ -51,7 +51,7 @@ Tool.time.startOf(new Date(), 'month')  // first moment of current month
 Tool.time.endOf(new Date(), 'year')     // last moment of current year
 ```
 
-Units: `day`, `week`, `month`, `year`
+Units: `day`, `week`, `month`, `year` for `startOf`; `endOf` knows `day`, `month`, `year`.
 
 ### Comparisons
 
@@ -75,41 +75,53 @@ Tool.time.relativeTime(pastDate, 'id')                  // "1 jam lalu"
 Tool.time.tz(new Date(), 'Asia/Jakarta')  // → Date adjusted for timezone
 ```
 
+### Hijri
+
+```js
+Tool.time.toHijri(new Date())             // → { day, month, year, monthName }
+Tool.time.fromHijri(1, 9, 1447)           // → Date (day, month, year)
+```
+
 ---
 
 ## Tool.arr
 
-Array utilities.
+Array utilities for rows. `key` is a field name or a function of the item.
 
 ```js
-Tool.arr.groupBy(items, 'category')         // → { [key]: items[] }
-Tool.arr.sortBy(items, 'name')              // ascending sort by field
-Tool.arr.sortBy(items, 'date', 'desc')      // descending
-Tool.arr.unique(arr)                         // deduplicate
-Tool.arr.unique(items, 'id')                // deduplicate by field
-Tool.arr.chunk(arr, 10)                     // → [[...], [...], ...]
-Tool.arr.flatten(nested)                    // deep flatten
-Tool.arr.sum(items, 'amount')               // sum numeric field
-Tool.arr.min(items, 'price')                // min by field
-Tool.arr.max(items, 'price')                // max by field
-Tool.arr.avg(items, 'score')                // average
+Tool.arr.sortBy(rows, 'name')                 // ascending; strings by locale, nulls last
+Tool.arr.sortBy(rows, 'created_at', 'desc')
+Tool.arr.filterBy(rows, { status: 'active' }) // every listed field equals
+Tool.arr.filterBy(rows, 'quarterly')          // a string: case-insensitive match in any field
+Tool.arr.filterBy(rows, (r) => r.score > 80)  // a predicate
+Tool.arr.paginate(rows, 2, 20)                // → { items, total, totalPages, page }
+Tool.arr.groupBy(rows, 'category')            // → { [key]: rows[] }
+Tool.arr.flatGroupBy(rows, 'category')        // → [{ key, items }, …]
+Tool.arr.sumBy(rows, 'amount')                // number
+Tool.arr.countBy(rows, 'status')              // → { [key]: count }
+Tool.arr.uniqueBy(rows, 'email')              // first occurrence wins
 ```
+
+Nothing else — `unique`, `chunk`, `flatten`, `min`, `max`, `avg` do not exist;
+use the array methods or `Tool.stat`.
 
 ---
 
 ## Tool.stat
 
-Statistics and number formatting.
+Statistics over arrays of numbers.
 
 ```js
-Tool.stat.round(3.14159, 2)          // 3.14
-Tool.stat.percent(45, 200)           // 22.5
-Tool.stat.currency(1500000, 'IDR')   // "Rp 1.500.000"
-Tool.stat.currency(1234.56, 'USD')   // "$1,234.56"
-Tool.stat.format(1234567, ',')       // "1,234,567"
-Tool.stat.clamp(value, min, max)     // clamp to range
-Tool.stat.lerp(0, 100, 0.5)          // 50
+Tool.stat.mean(values)            Tool.stat.median(values)
+Tool.stat.variance(values)        Tool.stat.stddev(values)
+Tool.stat.percentile(values, 90)  Tool.stat.zscore(values)       // → array of z-scores
+Tool.stat.rateAbove(values, 80)   // percentage of values >= threshold
+Tool.stat.correlation(xs, ys)     Tool.stat.linreg(xs, ys)       // → { slope, intercept, r2 }
+Tool.stat.histogram(values, 10)   // → [{ min, max, count }, …]
 ```
+
+Number formatting (`round`, `percent`, `currency`, `format`) is not here —
+use `Intl.NumberFormat` and `toFixed`.
 
 ---
 
@@ -163,11 +175,8 @@ Simple polygon ring arrays like `[[lon, lat], ...]` are also accepted for backwa
 ### In TSX templates
 
 ```tsx
-import { usePageState } from "zeb/react";
-
 export default function PostList(input) {
-  const state = usePageState(input.state ?? { posts: [] });
-  const grouped = Tool.arr.groupBy(state.posts, 'category');
+  const grouped = Tool.arr.groupBy(input.rows ?? [], 'category');
   return (
     <div>
       {Object.entries(grouped).map(([cat, posts]) => (
@@ -194,7 +203,7 @@ export default function PostList(input) {
 const formatted = input.rows.map(r => ({
   ...r,
   date_label: Tool.time.format(r.created_at, 'DD MMMM YYYY', 'id'),
-  amount_display: Tool.stat.currency(r.amount, 'IDR'),
+  amount_display: new Intl.NumberFormat('id-ID', { style: 'currency', currency: 'IDR' }).format(r.amount),
 }));
 return { rows: formatted };
 ```

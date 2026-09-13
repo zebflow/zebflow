@@ -12,8 +12,8 @@ export default function SchemaTabPanel({ activeTable, describe, canCreateTable, 
           <>
             <div className="flex items-center justify-between gap-3">
               <div>
-                <p className="text-lg font-semibold text-ui-text">{activeTable.table}</p>
-                <p className="text-sm text-ui-text-soft">{activeTable.rowCount || 0} rows</p>
+                <p className="text-lg font-semibold text-foreground">{activeTable.table}</p>
+                <p className="text-sm text-muted-foreground">{activeTable.rowCount || 0} rows</p>
               </div>
               {canCreateTable ? (
                 <Button type="button" variant="outline" size="sm" onClick={onCreateTable}>

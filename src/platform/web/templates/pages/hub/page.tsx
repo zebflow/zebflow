@@ -14,7 +14,7 @@ import { formatBytes as fmtBytes } from "@/components/lib/format";
 
 export const page = {
   html: { lang: "en" },
-  body: { className: "min-h-screen bg-ui-bg-muted text-ui-text font-sans" },
+  body: { className: "min-h-screen bg-background text-foreground font-sans" },
   navigation: "history",
 };
 
@@ -495,10 +495,10 @@ export default function Page(input) {
       <ChromeHeader />
       <main className="pb-20 pt-28">
         <section className="mx-auto w-full max-w-[1960px] px-6 sm:px-10">
-          <div className="mb-8 flex flex-col gap-6 border-b border-ui-border pb-5 sm:flex-row sm:items-end sm:justify-between">
+          <div className="mb-8 flex flex-col gap-6 border-b border-border pb-5 sm:flex-row sm:items-end sm:justify-between">
             <div>
-              <p className="font-mono text-xs font-semibold uppercase tracking-wide text-ui-text-muted">Platform Home</p>
-              <h1 className="mt-1 text-[40px] font-semibold leading-none tracking-tight text-ui-text">Hub</h1>
+              <p className="font-mono text-xs font-semibold uppercase tracking-wide text-muted-foreground">Platform Home</p>
+              <h1 className="mt-1 text-[40px] font-semibold leading-none tracking-tight text-foreground">Hub</h1>
             </div>
             <Button as="a" href="/home" variant="outline">Home</Button>
           </div>
@@ -563,7 +563,7 @@ export default function Page(input) {
                         </div>
                         <div className="mt-5 flex flex-wrap items-center gap-2">
                           <Button type="button" variant="primary" disabled={busy || installBusy} onClick={() => openInstallReview(item)}>Review &amp; Install</Button>
-                          <span className="text-xs text-ui-text-soft">Nothing is written until you confirm.</span>
+                          <span className="text-xs text-muted-foreground">Nothing is written until you confirm.</span>
                         </div>
                       </article>
                     );

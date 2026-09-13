@@ -132,27 +132,27 @@ export default function FileSearchDialog({ open, onClose, onSelect, owner, proje
 
   return (
     <Dialog open={open} onOpenChange={(value) => { if (!value) onClose(); }}>
-      <DialogContent className="max-w-xl border-dark-border bg-dark-background text-dark-text1">
+      <DialogContent className="max-w-xl border-border bg-background text-muted-foreground">
           {/* Input */}
-          <div className="flex items-center gap-2 px-3 py-2.5 border-b border-dark-border">
+          <div className="flex items-center gap-2 px-3 py-2.5 border-b border-border">
             <DlgSearchIcon />
             <input
               ref={inputRef}
               value={query}
               onInput={(e: any) => setQuery(e.target.value)}
               placeholder={mode === "files" ? "Find file by name…" : "Search file contents…"}
-              className="flex-1 min-w-0 bg-transparent text-sm text-dark-text1 placeholder-dark-text1/40 outline-none"
+              className="flex-1 min-w-0 bg-transparent text-sm text-muted-foreground placeholder-muted-foreground/40 outline-none"
             />
             {loading && <DlgSpinIcon />}
           </div>
           {/* Mode tabs */}
-          <div className="flex gap-1.5 px-3 py-2 border-b border-dark-border">
+          <div className="flex gap-1.5 px-3 py-2 border-b border-border">
             <button
               onClick={() => { setMode("files"); setQuery(""); }}
               className={`text-xs px-2.5 py-0.5 rounded-full transition-colors ${
                 mode === "files"
                   ? "bg-blue-600 text-white"
-                  : "text-dark-text1/60 hover:bg-dark-accent3 hover:text-dark-text1"
+                  : "text-muted-foreground/60 hover:bg-success hover:text-muted-foreground"
               }`}
             >
               Files
@@ -162,7 +162,7 @@ export default function FileSearchDialog({ open, onClose, onSelect, owner, proje
               className={`text-xs px-2.5 py-0.5 rounded-full transition-colors ${
                 mode === "search"
                   ? "bg-blue-600 text-white"
-                  : "text-dark-text1/60 hover:bg-dark-accent3 hover:text-dark-text1"
+                  : "text-muted-foreground/60 hover:bg-success hover:text-muted-foreground"
               }`}
             >
               Search
@@ -171,7 +171,7 @@ export default function FileSearchDialog({ open, onClose, onSelect, owner, proje
           {/* Results */}
           <div ref={listRef} className="min-h-0 flex-1 overflow-y-auto">
             {results.length === 0 && !loading && (
-              <p className="py-5 text-center text-xs text-dark-text1/40">
+              <p className="py-5 text-center text-xs text-muted-foreground/40">
                 {mode === "files"
                   ? query.trim() ? "No files match" : "Type to filter files"
                   : query.trim() ? "No matches found" : "Type to search file contents"}
@@ -186,8 +186,8 @@ export default function FileSearchDialog({ open, onClose, onSelect, owner, proje
                   onClick={() => { onSelect(r.relPath); onClose(); }}
                   className={`w-full text-left px-3 py-2 flex flex-col gap-0.5 transition-colors ${
                     i === cursor
-                      ? "bg-blue-600/20 text-dark-text1"
-                      : "text-dark-text1/80 hover:bg-dark-accent3 hover:text-dark-text1"
+                      ? "bg-blue-600/20 text-muted-foreground"
+                      : "text-muted-foreground/80 hover:bg-success hover:text-muted-foreground"
                   }`}
                 >
                   <div className="flex items-center gap-2 min-w-0">
@@ -201,14 +201,14 @@ export default function FileSearchDialog({ open, onClose, onSelect, owner, proje
                     </span>
                   </div>
                   {r.sub && r.sub !== r.label && (
-                    <span className="text-xs text-dark-text1/40 truncate">{r.sub}</span>
+                    <span className="text-xs text-muted-foreground/40 truncate">{r.sub}</span>
                   )}
                 </button>
               );
             })}
           </div>
           {/* Footer hints */}
-          <div className="flex items-center gap-3 px-3 py-1.5 border-t border-dark-border text-[11px] text-dark-text1/30 select-none">
+          <div className="flex items-center gap-3 px-3 py-1.5 border-t border-border text-[11px] text-muted-foreground/30 select-none">
             <span>↑↓ navigate</span>
             <span>↵ select</span>
             <span>Esc close</span>
@@ -220,7 +220,7 @@ export default function FileSearchDialog({ open, onClose, onSelect, owner, proje
 
 function DlgSearchIcon() {
   return (
-    <svg viewBox="0 0 24 24" fill="none" className="w-4 h-4 shrink-0 text-dark-text1/40">
+    <svg viewBox="0 0 24 24" fill="none" className="w-4 h-4 shrink-0 text-muted-foreground/40">
       <circle cx="11" cy="11" r="7" stroke="currentColor" strokeWidth="1.8" />
       <path d="M17 17l4 4" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
     </svg>
@@ -229,7 +229,7 @@ function DlgSearchIcon() {
 
 function DlgSpinIcon() {
   return (
-    <svg className="w-3.5 h-3.5 animate-spin text-dark-text1/40" viewBox="0 0 24 24" fill="none">
+    <svg className="w-3.5 h-3.5 animate-spin text-muted-foreground/40" viewBox="0 0 24 24" fill="none">
       <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" opacity="0.3" />
       <path fill="currentColor" opacity="0.8" d="M4 12a8 8 0 018-8V0C5.4 0 0 5.4 0 12h4z" />
     </svg>

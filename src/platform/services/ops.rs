@@ -395,7 +395,7 @@ impl PlatformOps {
                 out.push_str(
                     "(none — interview the user: what to build, DB schema, auth needs?)\n",
                 );
-                out.push_str("Then: `file_write_doc path=\"REQUIREMENTS.md\" content=...`\n");
+                out.push_str("Then: `file_write rel_path=\"docs/REQUIREMENTS.md\" content=...`\n");
             }
             Err(e) => out.push_str(&format!("(error: {e})\n")),
         }
@@ -408,17 +408,14 @@ impl PlatformOps {
             .list_pipeline_meta_rows(owner, project)
         {
             Ok(ps) if !ps.is_empty() => {
-                let active = ps.iter().filter(|p| p.active_hash.is_some()).count();
-                let draft = ps.len() - active;
+                let active = ps.iter().filter(|p| pipeline_status(p) == "active").count();
+                let stale = ps.iter().filter(|p| pipeline_status(p) == "stale").count();
+                let draft = ps.len() - active - stale;
                 out.push_str(&format!(
-                    "\n### Pipelines [{active} active, {draft} draft]\n"
+                    "\n### Pipelines [{active} active, {stale} stale, {draft} draft]\n"
                 ));
                 for p in ps.iter().take(60) {
-                    let status = if p.active_hash.is_some() {
-                        "active"
-                    } else {
-                        "draft"
-                    };
+                    let status = pipeline_status(p);
                     let trigger = if !p.trigger_kind.is_empty() {
                         format!(" | {}", p.trigger_kind)
                     } else {
@@ -514,11 +511,25 @@ impl PlatformOps {
              Pipeline DSL: `help topic=\"pipeline/dsl\"`; node catalog: `help topic=\"pipeline/nodes\"` ({node_count} official nodes)\n\
              Web templates: `help topic=\"web\"`; examples: `help topic=\"pipeline/examples\"` ({example_count} recipes)\n\
              Search docs: `help_search query=\"...\"`\n\
-             Read/write project docs: `file_list_docs`, `file_read_doc`, `file_write_doc`\n\
+             Project docs are files: `file_list glob=\"docs/**\"`, `file_read`, `file_write rel_path=\"docs/...\"`\n\
              Read/write agent memory: `docs_agent_read name=\"MEMORY.md\"`, `docs_agent_write name=\"MEMORY.md\" content=...`\n\
              Inspect code cheaply: `file_outline`, `file_deps`; edit with `file_edit` or `file_batch_edit`\n\
              Full agent workflow: `help topic=\"platform/workflow\"`\n"
         ));
+
+        // Tier 1 of the skills: name and description only. The agent reads a
+        // body with `skill_read` when a task matches — never all of them.
+        if let Ok(layout) = self.platform.projects.project_layout(owner, project) {
+            let skills = crate::platform::skills::list(&layout.repo_source_dir());
+            if !skills.is_empty() {
+                out.push_str(
+                    "\n## Skills\n\
+                     A skill is the procedure for one kind of task. When a task below matches one, \
+                     `skill_read name=\"…\"` before acting; the project's own skills shadow the blessed ones.\n",
+                );
+                out.push_str(&crate::platform::skills::render_listing(&skills));
+            }
+        }
 
         out.push_str(
             "\n## Operational Rules\n\
@@ -2253,11 +2264,15 @@ fn filter_template_rows(
         .collect()
 }
 
-fn pipeline_status(meta: &PipelineMeta) -> &'static str {
-    if meta.active_hash.is_some() {
-        "active"
-    } else {
-        "draft"
+/// `active` serves the working tree; `stale` serves an older snapshot because
+/// the file changed after activation (register or patch) and nobody promoted
+/// it; `draft` serves nothing. An agent that patched a live pipeline sees
+/// `stale` and knows the next step is `pipeline_activate`.
+pub(crate) fn pipeline_status(meta: &PipelineMeta) -> &'static str {
+    match meta.active_hash.as_deref() {
+        Some(active) if active == meta.hash => "active",
+        Some(_) => "stale",
+        None => "draft",
     }
 }
 
@@ -2638,4 +2653,56 @@ fn format_describe_for_llm(
     }
 
     out
+}
+
+// ── Skills ───────────────────────────────────────────────────────────────────
+
+impl PlatformOps {
+    /// Tier 1: every skill this project's agent sees, name and description.
+    pub fn skill_list(&self) -> OpsResult {
+        let layout = match self.platform.projects.project_layout(&self.owner, &self.project) {
+            Ok(layout) => layout,
+            Err(e) => return OpsResult::err(e.to_string()),
+        };
+        let skills = crate::platform::skills::list(&layout.repo_source_dir());
+        if skills.is_empty() {
+            return OpsResult::ok("No skills. A project adds one at skills/<name>/SKILL.md.".to_string());
+        }
+        let mut out = String::from(
+            "Skills — read one with `skill_read name=\"<name>\"` when its trigger matches your task; \
+             a reference file beside it with `skill_read name=\"<name>\" path=\"references/<file>\"`.\n\n",
+        );
+        out.push_str(&crate::platform::skills::render_listing(&skills));
+        OpsResult::ok(out)
+    }
+
+    /// Tier 2 and 3: the `SKILL.md` body, or a file beside it.
+    pub fn skill_read(&self, name: &str, path: Option<&str>) -> OpsResult {
+        let layout = match self.platform.projects.project_layout(&self.owner, &self.project) {
+            Ok(layout) => layout,
+            Err(e) => return OpsResult::err(e.to_string()),
+        };
+        let path = path.unwrap_or("");
+        match crate::platform::skills::read(&layout.repo_source_dir(), name, path) {
+            Some((source, text)) => {
+                let where_ = match source {
+                    crate::platform::skills::SkillSource::Project => format!("skills/{name}/"),
+                    crate::platform::skills::SkillSource::Blessed => "blessed".to_string(),
+                };
+                let file = if path.is_empty() { "SKILL.md" } else { path };
+                OpsResult::ok(format!("<!-- skill {name} · {file} · {where_} -->\n{text}"))
+            }
+            None => {
+                let known = crate::platform::skills::list(&layout.repo_source_dir())
+                    .into_iter()
+                    .map(|s| s.name)
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                OpsResult::err(format!(
+                    "No skill '{name}'{}. Known skills: {known}. `skill_list` shows them with descriptions.",
+                    if path.is_empty() { String::new() } else { format!(" file '{path}'") }
+                ))
+            }
+        }
+    }
 }

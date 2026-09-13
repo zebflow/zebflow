@@ -1,8 +1,14 @@
 # Tailwind in Zeb Templates
 
-The RWE engine processes Tailwind utility classes at compile time without Node.js or an npm build step. Zebflow targets the high-frequency **Tailwind CSS 3.4 LTS** class contract used by existing themes and component libraries.
+The compiler turns the Tailwind classes in a page's bundle into CSS at
+compile time — no Node, no npm, no `tailwind.config.js`. It implements the
+Tailwind 3.4 utility vocabulary plus the handful of v4 spellings that
+shadcn/ui components use (`size-*`, `rounded-xs`, `shadow-xs`,
+`outline-hidden`, `ring-[3px]`).
 
-Compatibility is tested by CSS meaning, not only by whether a class produces a rule. Unsupported utilities are ignored rather than translated into an unrelated property.
+Compatibility is tested by CSS meaning, not only by whether a class produces a
+rule. A utility the compiler does not know emits nothing — silently — so a
+class that has no visible effect is the first thing to suspect.
 
 ## Compatibility Boundary
 
@@ -19,67 +25,68 @@ Not part of the current contract:
 - loading `tailwind.config.js`
 - executing third-party Tailwind plugins
 - automatically importing npm packages
-- Tailwind v4-only syntax and utilities
+- the v4 `@theme` / CSS-first configuration
 
-Use project CSS for plugin-specific class systems. Do not assume that a third-party plugin class exists merely because its name starts with `prose-`, `form-`, or another familiar prefix.
+Use project CSS for plugin-specific class systems. There is no `prose`,
+`form-*` or other plugin class; a name that starts with a familiar prefix is
+not evidence that it exists.
 
 ---
 
-## Standard Tailwind 3.4 Utilities
+## Standard utilities
 
 ```tsx
-<div className="flex items-center gap-4 p-6 rounded-xl border">
-  <h1 className="text-2xl font-bold text-slate-900">Title</h1>
-  <p className="text-slate-500 text-sm">Subtitle</p>
+<div className="flex items-center gap-4 rounded-xl border border-border bg-card p-6">
+  <h1 className="text-2xl font-bold text-foreground">Title</h1>
+  <p className="text-sm text-muted-foreground">Subtitle</p>
 </div>
 ```
 
 ---
 
-## Semantic Color Tokens
+## Theme Tokens
 
-Zeb defines `--color-*` CSS custom properties that resolve to the active theme (dark or light). Use semantic token classes instead of hardcoded palette values for theme-aware UI.
+Colour utilities name a **role**, never a colour. The names are shadcn/ui's,
+verbatim; the project's `globals.css` (scaffolded with every project, imported
+by each page with `import "@/globals.css"`) gives each a value under `:root`
+(light) and `.dark`. `bg-card` compiles to `background-color: var(--card)`.
+Every token takes an alpha: `bg-accent/40`, `border-destructive/30`. Put
+`dark` on any ancestor to switch. A theme exported from ui.shadcn.com or
+tweakcn replaces the two blocks — every token needs a complete colour value,
+and the three extra pairs `success`, `warning`, `info` stay. See the tokens
+live at `/dev/design-system` and the components on them at
+`/dev/design-system/ui`; contract in `docs/contracts/kinds/ui-theme`.
 
-### Theme tokens (per-theme, change with dark/light)
+| Token | Utilities | Role |
+|-------|-----------|------|
+| `background` / `foreground` | `bg-background text-foreground` | the page |
+| `card` / `card-foreground` | `bg-card text-card-foreground` | a raised panel |
+| `popover` / `popover-foreground` | `bg-popover` | menus, dialogs, an input's own background |
+| `primary` / `primary-foreground` | `bg-primary text-primary-foreground` | the one action colour (brand orange) |
+| `secondary` / `secondary-foreground` | `bg-secondary` | a quieter button |
+| `muted` / `muted-foreground` | `bg-muted text-muted-foreground` | subdued surface; secondary text |
+| `accent` / `accent-foreground` | `hover:bg-accent` | hover / selected-row background |
+| `destructive` / `destructive-foreground` | `text-destructive bg-destructive/10` | delete, error |
+| `success` / `success-foreground` | `text-success` | live, passed, saved |
+| `warning` / `warning-foreground` | `text-warning` | caution, pending |
+| `info` / `info-foreground` | `text-info` | neutral notice, links (brand blue) |
+| `border` | `border-border divide-border` | every hairline |
+| `input` | `border-input` | a control's border |
+| `ring` | `ring-ring/40 focus:border-ring` | focus outline |
+| `chart-1` … `chart-5` | `bg-chart-1` | series colours, in order |
+| `sidebar*` | `bg-sidebar border-sidebar-border` | the navigation rail: `sidebar`, `-foreground`, `-primary`, `-primary-foreground`, `-accent`, `-accent-foreground`, `-border`, `-ring` |
 
-| Class | CSS property | Semantic meaning |
-|-------|-------------|-----------------|
-| `bg-bg` | background-color | Page background |
-| `bg-surface` | background-color | Card / panel background |
-| `bg-surface-2` | background-color | Nested panel |
-| `bg-surface-3` | background-color | Deeply nested / hover target |
-| `text-body` | color | Primary text |
-| `text-body-soft` | color | Secondary / muted text |
-| `text-body-muted` | color | Placeholder / hint text |
-| `text-accent` | color | Brand orange highlight |
-| `bg-accent` | background-color | Accent fill |
-| `border-border` | border-color | Standard border |
-| `border-border-soft` | border-color | Subtle / inner border |
-| `border-accent` | border-color | Accent-colored border |
-| `border-b-accent` | border-bottom-color | Active tab underline |
+Status notices are tinted by default and solid when filled:
 
-### Global UI tokens (used by `components/ui/` system)
+```tsx
+<div className="border border-warning/30 bg-warning/10 text-warning">tinted</div>
+<span className="bg-success text-success-foreground">solid</span>
+```
 
-| Class | Token |
-|-------|-------|
-| `bg-ui-bg` | `--color-ui-bg` |
-| `bg-ui-bg-subtle` | `--color-ui-bg-subtle` |
-| `bg-ui-bg-muted` | `--color-ui-bg-muted` |
-| `border-ui-border` | `--color-ui-border` |
-| `text-ui-text` | `--color-ui-text` |
-| `text-ui-text-soft` | `--color-ui-text-soft` |
-| `text-ui-text-muted` | `--color-ui-text-muted` |
-
-### Brand tokens (fixed, same in all themes)
-
-| Class | Value |
-|-------|-------|
-| `text-brand-orange` | `#ff5c00` |
-| `bg-brand-orange` | `#ff5c00` |
-| `text-brand-blue` | `#005b9a` |
-| `bg-brand-blue` | `#005b9a` |
-
-**How it works:** Declared Zebflow semantic names map to CSS variables. `bg-surface` becomes `background-color: var(--color-surface)`. The CSS defines `--color-surface` under the active theme and the browser resolves it automatically.
+A raw palette class (`bg-red-500`, `text-gray-400`, `text-white`) is a colour
+that does not move when the theme does. `zeb/ui` refuses them by test; pages
+should not add new ones. The tokens are a closed list: `bg-accent-strong` or
+`text-brand` are not tokens and compile to nothing.
 
 Arbitrary semantic names are deliberately not inferred because names such as `bg-fixed`, `border-collapse`, and `outline-offset-2` are real Tailwind utilities. For a project-specific variable, use an explicit arbitrary value:
 
@@ -89,22 +96,23 @@ Arbitrary semantic names are deliberately not inferred because names such as `bg
 
 ---
 
-## `cx()` — Conditional Class Names
+## `cx()` — conditional class names
 
-`cx()` is a global. Concatenates truthy class strings:
+`import { cx } from "zeb/react"` — like every other name, imported in the
+file that uses it. It joins truthy parts:
 
 ```tsx
-// Simple conditional
-<div className={cx("rounded p-4", isActive && "ring-2 ring-accent")}>
+import { cx } from "zeb/react";
 
-// Multi-variant composition
+<div className={cx("rounded p-4", isActive && "ring-2 ring-ring")}>
+
 <button className={cx(
-  "px-4 py-2 rounded font-medium transition-colors",
-  variant === "primary" && "bg-accent text-white hover:bg-accent-strong",
-  variant === "ghost"   && "hover:bg-surface-3 text-body",
-  variant === "danger"  && "bg-red-600 text-white hover:bg-red-700",
-  size === "sm"         && "text-sm px-3 py-1",
-  disabled              && "opacity-50 cursor-not-allowed pointer-events-none",
+  "rounded-md px-4 py-2 font-medium transition-colors",
+  variant === "primary" && "bg-primary text-primary-foreground hover:bg-primary/90",
+  variant === "ghost"   && "text-foreground hover:bg-accent hover:text-accent-foreground",
+  variant === "danger"  && "bg-destructive text-destructive-foreground hover:bg-destructive/90",
+  size === "sm"         && "px-3 py-1 text-sm",
+  disabled              && "pointer-events-none cursor-not-allowed opacity-50",
 )}>
 ```
 
@@ -120,60 +128,67 @@ before generating CSS. This means classes in:
 - `{_isOpen ? "block" : "hidden"}` — both string literals found
 - Components that return `null` in SSR — their class strings still found
 
-**`tw-variants` is only needed** when a class value is built entirely at runtime
-from variables with no string literal form in source:
+**`tw-variants` is only needed** when a class is assembled at runtime with no
+literal form in the source — `` `bg-${tone}` `` produces no CSS on its own.
+Declare the possibilities on any element, as an attribute the compiler reads
+and strips:
 
 ```tsx
-// This would NOT be auto-discovered (pure runtime concatenation):
-const prefix = userInput;
-const cls = prefix + "-500";   // tw-variants needed if cls used as className
+// Not discovered: the literal "bg-success" never appears in source.
+<div className={`rounded px-3 py-2 bg-${tone}`} />
 
-// This IS auto-discovered (string literals visible in source):
-const cls = condition ? "bg-red-500" : "bg-blue-500";  // ✅ no tw-variants needed
+// Discovered: list the forms the value can take.
+<span hidden tw-variants="bg-success bg-warning bg-info bg-destructive" />
+
+// Discovered without help: both literals are visible.
+const cls = condition ? "bg-success" : "bg-warning";
 ```
+
+`tw-variants="text-[*]"` admits any arbitrary value for that utility.
 
 ---
 
-## `tv()` — Variant Maps
+## Variant maps
 
-`tailwind-variants` `tv()` is a global. For components with many permutations:
+There is no `cva` and no `tv()`. A component with many permutations keeps a
+plain object of literal class strings and joins with `cx` — every string is
+found by the compile-time scan, and the shape is the one `zeb/ui` uses:
 
 ```tsx
-const badge = tv({
-  base: "inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium",
-  variants: {
-    color: {
-      default: "bg-surface-3 text-body",
-      success: "bg-green-900/40 text-green-300",
-      warning: "bg-amber-900/40 text-amber-300",
-      danger:  "bg-red-900/40 text-red-300",
-      accent:  "bg-accent text-white",
-    },
-    size: {
-      sm: "text-[10px] px-1.5 py-0",
-      md: "text-xs px-2 py-0.5",
-      lg: "text-sm px-3 py-1",
-    },
-  },
-  defaultVariants: { color: "default", size: "md" },
-});
+import { cx } from "zeb/react";
 
-// All variant strings are discovered automatically by the OXC source scanner
-// No ghost span needed — the string literals in the tv() map are found statically
+const COLORS = {
+  default: "bg-muted text-muted-foreground",
+  success: "bg-success/15 text-success",
+  warning: "bg-warning/15 text-warning",
+  danger:  "bg-destructive/15 text-destructive",
+};
+const SIZES = { sm: "text-[10px] px-1.5 py-0", md: "text-xs px-2 py-0.5", lg: "text-sm px-3 py-1" };
 
-// Usage
-<span className={badge({ color: "success", size: "sm" })}>Active</span>
-<span className={badge({ color: "danger" })}>Error</span>
+export function Badge({ color = "default", size = "md", className, children }) {
+  return (
+    <span className={cx("inline-flex items-center rounded-full font-medium", COLORS[color] ?? COLORS.default, SIZES[size] ?? SIZES.md, className)}>
+      {children}
+    </span>
+  );
+}
 ```
 
----
+## Fonts
 
-## Font tokens
+`font-<name>` compiles to `font-family: var(--font-<name>, <fallback>)`, so a
+font is a variable in `globals.css`, not a class. A new project defines only
+`--font-sans` (the system stack). To use a web font, load it with
+`page.head.links` and set the variable:
+
+```css
+/* globals.css */
+:root { --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif; --font-display: "Fraunces", serif; }
+```
 
 ```tsx
-<h1 className="font-display text-2xl">  // "Pathway Extreme" display font
-<p className="font-sans">               // "Roboto" body font
-<code className="font-mono">            // "Roboto Mono"
+<h1 className="font-display text-3xl">…</h1>   /* var(--font-display, …) */
+<code className="font-mono">…</code>           /* var(--font-mono, ui-monospace …) */
 ```
 
 ---
@@ -182,9 +197,9 @@ const badge = tv({
 
 | Rule | Detail |
 |------|--------|
-| Never `style=` | Use utility classes. Inline styles are a design system smell. |
-| Never `[var(--studio-*)]` | Those old names are gone. Use semantic token classes: `bg-surface`, `text-body`, etc. |
+| Avoid `style=` | Use utility classes; inline styles are for values that are truly data (a computed width, a colour from a dataset). |
+| Never `[var(--studio-*)]`, `text-body`, `bg-surface`, `text-ui-text` | Those names are gone. Use the theme tokens: `bg-card`, `text-foreground`, `text-muted-foreground`. |
 | Never `[var(--zf-*)]` | Old prefix, gone. |
 | `tw-variants` for pure runtime strings | Only needed when a class is assembled from user input or external data with no literal form in source. Auto-discovery handles all normal cases. |
-| Prefer semantic tokens | `bg-surface` over `bg-[#111827]` — it adapts to dark/light theme automatically. |
+| Prefer theme tokens | `bg-card` over `bg-[#111827]` — it adapts to dark/light theme automatically. |
 | Arbitrary values OK when needed | `bg-[#ff5c00]`, `w-[320px]`, `mt-[3px]` are fine for one-offs. |

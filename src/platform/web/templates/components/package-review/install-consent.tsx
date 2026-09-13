@@ -13,8 +13,8 @@ function ConsentRow({ id, title, checked, disabled, onToggle, when, whenNot }) {
     <div
       className={
         disabled
-          ? "rounded-lg border border-ui-border bg-ui-bg-muted/40 px-3 py-2.5 opacity-70"
-          : "rounded-lg border border-ui-border bg-ui-bg px-3 py-2.5"
+          ? "rounded-lg border border-border bg-accent/40 px-3 py-2.5 opacity-70"
+          : "rounded-lg border border-border bg-popover px-3 py-2.5"
       }
     >
       <Checkbox
@@ -23,10 +23,10 @@ function ConsentRow({ id, title, checked, disabled, onToggle, when, whenNot }) {
         label={title}
         checked={!!checked}
         disabled={!!disabled}
-        labelClassName="text-sm font-medium text-ui-text"
+        labelClassName="text-sm font-medium text-foreground"
         onChange={(event) => onToggle(!!event?.target?.checked)}
       />
-      <p className="m-0 mt-1.5 pl-5 text-xs text-ui-text-soft">{checked ? when : whenNot}</p>
+      <p className="m-0 mt-1.5 pl-5 text-xs text-muted-foreground">{checked ? when : whenNot}</p>
     </div>
   );
 }
@@ -38,10 +38,10 @@ export default function InstallConsent({ scope, onChange, disabled = false }) {
   const installsNothing = !includeCode && !includeSchema;
 
   return (
-    <section className="rounded-lg border border-ui-border bg-ui-bg-muted/30 p-3">
+    <section className="rounded-lg border border-border bg-accent/30 p-3">
       <div className="flex flex-wrap items-baseline justify-between gap-2">
-        <p className="m-0 text-sm font-semibold text-ui-text">What you are consenting to</p>
-        <p className="m-0 text-xs text-ui-text-soft">Every part is on by default. Turn off what you do not want.</p>
+        <p className="m-0 text-sm font-semibold text-foreground">What you are consenting to</p>
+        <p className="m-0 text-xs text-muted-foreground">Every part is on by default. Turn off what you do not want.</p>
       </div>
 
       <div className="mt-3 space-y-2">
@@ -77,7 +77,7 @@ export default function InstallConsent({ scope, onChange, disabled = false }) {
       </div>
 
       {includeSchema ? null : (
-        <p className="m-0 mt-2 rounded-md border border-ui-border bg-ui-bg px-3 py-2 text-xs text-ui-text-soft">
+        <p className="m-0 mt-2 rounded-md border border-border bg-popover px-3 py-2 text-xs text-muted-foreground">
           Running the schema is locked off because the schema is not being written. Asking to run SQL
           that is never written is a request the API refuses rather than quietly reinterprets.
         </p>

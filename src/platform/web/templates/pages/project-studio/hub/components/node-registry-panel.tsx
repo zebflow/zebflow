@@ -34,7 +34,7 @@ export default function NodeRegistryPanel({ groups, count }) {
   );
 
   return (
-    <div className="border border-border rounded-lg bg-surface overflow-hidden">
+    <div className="border border-border rounded-lg bg-card overflow-hidden">
       {/* Toolbar */}
       <div className="flex flex-row items-center gap-[0.55rem] px-3 pt-[0.7rem] pb-[0.6rem]">
         <Input
@@ -52,7 +52,7 @@ export default function NodeRegistryPanel({ groups, count }) {
             key={tab}
             variant="ghost"
             size="sm"
-            className={cx(tab === activeTab && "bg-accent/10 text-accent border-accent/40")}
+            className={cx(tab === activeTab && "bg-primary/10 text-primary border-primary/40")}
             label={tab === "installed" ? `Installed · ${count}` : tab === "discover" ? "Discover" : "Updates"}
             onClick={() => setActiveTab(tab)}
           />
@@ -64,34 +64,34 @@ export default function NodeRegistryPanel({ groups, count }) {
       {/* Installed panel */}
       {activeTab === "installed" ? (
         <div>
-          <p className="px-3 py-[0.4rem] text-[0.72rem] text-body-soft border-b border-border-soft">
+          <p className="px-3 py-[0.4rem] text-[0.72rem] text-muted-foreground border-b border-border">
             {visibleCount === count
               ? `${count} nodes · ${count} built-in`
               : `${visibleCount} of ${count} nodes · ${count} built-in`}
           </p>
           <div className="flex flex-col gap-[0.35rem] px-3 py-[0.6rem]">
             {filteredGroups.length === 0 ? (
-              <p className="p-8 text-center text-[0.8rem] text-body-soft">No nodes found.</p>
+              <p className="p-8 text-center text-[0.8rem] text-muted-foreground">No nodes found.</p>
             ) : (
               filteredGroups.map((group, gi) => (
                 <div key={`grp-${gi}`}>
                   <div className="flex items-center gap-2 mb-[0.35rem] mt-2 first:mt-0">
                     {group?.prefix ? (
-                      <span className="text-[0.65rem] font-mono text-body-soft tracking-[0.05em] whitespace-nowrap shrink-0">{group.prefix}</span>
+                      <span className="text-[0.65rem] font-mono text-muted-foreground tracking-[0.05em] whitespace-nowrap shrink-0">{group.prefix}</span>
                     ) : null}
-                    <div className="flex-1 h-px bg-border-soft" />
+                    <div className="flex-1 h-px bg-border" />
                   </div>
                   {(Array.isArray(group?.nodes) ? group.nodes : []).map((node, ni) => (
                     <div
                       key={`${node?.kind ?? "node"}-${ni}`}
-                      className="flex items-stretch border border-border-soft rounded-lg bg-surface-2 overflow-hidden transition-colors duration-[120ms]"
+                      className="flex items-stretch border border-border rounded-lg bg-muted overflow-hidden transition-colors duration-[120ms]"
                     >
                       <div className="w-[3px] shrink-0 bg-border" />
                       <div className="flex-1 min-w-0 px-3 py-[0.6rem] flex items-start justify-between gap-3">
                         <div className="flex-1 min-w-0">
-                          <div className="text-[0.83rem] font-bold text-body leading-tight">{node?.title}</div>
-                          <div className="text-[0.66rem] font-mono text-body-soft mt-[0.15rem] tracking-[0.03em]">{node?.kind}</div>
-                          <div className="text-[0.75rem] leading-[1.4] text-body-soft mt-[0.3rem]">{node?.description}</div>
+                          <div className="text-[0.83rem] font-bold text-foreground leading-tight">{node?.title}</div>
+                          <div className="text-[0.66rem] font-mono text-muted-foreground mt-[0.15rem] tracking-[0.03em]">{node?.kind}</div>
+                          <div className="text-[0.75rem] leading-[1.4] text-muted-foreground mt-[0.3rem]">{node?.description}</div>
                         </div>
                         <div className="flex items-center flex-wrap gap-[0.3rem] shrink-0 pt-[0.1rem]">
                           {node?.ai_registered ? (

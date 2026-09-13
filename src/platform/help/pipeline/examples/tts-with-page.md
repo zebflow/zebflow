@@ -56,19 +56,22 @@ This endpoint accepts JSON like:
 Graph DSL:
 
 ```zf
+register tts/api --
 [a] trigger.webhook --path /api/tts --method POST
-[guard] logic.if --expr "!!(input.text && String(input.text).trim())"
+[guard] logic.if --expr "!!(input.body && input.body.text && String(input.body.text).trim())"
 [bad]   web.response --status 400 --body "{{ { ok: false, error: 'text is required' } }}"
 [b] script -- "
 return {
-  text: String(input.text),
-  slug: String(input.slug || Date.now())
+  text: String(input.body.text),
+  slug: String(input.body.slug || Date.now())
 };
 "
 [c] ai.tts --provider piper --credential narrator-tts --text "{{ input.text }}" --output-path "{{ 'audio/tts-' + input.slug + '.wav' }}" --return both
 [d] web.response
 
-[a] -> [b]
+[a] -> [guard]
+[guard]:true -> [b]
+[guard]:false -> [bad]
 [b] -> [c]
 [c] -> [d]
 ```
@@ -89,9 +92,14 @@ Response shape:
     "duration_ms": 4238,
     "credential_id": "narrator-tts"
   },
-  "audio_blob_base64": "UklGRi4A..."
+  "audio_blob_base64": "UklGRi4A...",
+  "word_timings": null,
+  "lipsync": null
 }
 ```
+
+`word_timings` and `lipsync` are only populated when `--lipsync` is passed to
+`ai.tts`; otherwise both stay `null`.
 
 ---
 

@@ -80,7 +80,7 @@ export function AttributeEditorHeader({ compact = false }) {
   return (
     <div
       className={cx(
-        "grid items-center gap-2 border-b border-ui-border/70 px-2 pb-1 text-[10px] font-medium uppercase tracking-[0.12em] text-ui-text-muted",
+        "grid items-center gap-2 border-b border-border/70 px-2 pb-1 text-[10px] font-medium uppercase tracking-[0.12em] text-muted-foreground",
         compact
           ? "grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)_3.5rem_minmax(0,1fr)_minmax(0,10rem)_1.75rem]"
           : "grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)_3.5rem_minmax(0,1fr)_minmax(0,10rem)_1.75rem]",
@@ -111,9 +111,9 @@ export function AttributeEditorRow({ item, types, onChange, onRemove }) {
   const options = INDEX_OPTIONS_BY_FAMILY[family] || [];
 
   return (
-    <div className="grid min-w-0 items-center gap-2 border-b border-ui-border/40 px-2 py-1.5 grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)_3.5rem_minmax(0,1fr)_minmax(0,10rem)_1.75rem]">
+    <div className="grid min-w-0 items-center gap-2 border-b border-border/40 px-2 py-1.5 grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)_3.5rem_minmax(0,1fr)_minmax(0,10rem)_1.75rem]">
       <div className="flex min-w-0 items-center gap-1.5">
-        <span className="w-4 shrink-0 text-center text-[11px] text-ui-text-muted" title={family}>
+        <span className="w-4 shrink-0 text-center text-[11px] text-muted-foreground" title={family}>
           {glyphForFamily(family)}
         </span>
         <Input
@@ -154,7 +154,7 @@ export function AttributeEditorRow({ item, types, onChange, onRemove }) {
           options.map((option) => {
             const checked = Array.isArray(item?.index_types) && item.index_types.includes(option.id);
             return (
-              <label key={option.id} className="inline-flex items-center gap-1 text-[11px] text-ui-text-soft">
+              <label key={option.id} className="inline-flex items-center gap-1 text-[11px] text-muted-foreground">
                 <input
                   type="checkbox"
                   checked={checked}
@@ -173,7 +173,7 @@ export function AttributeEditorRow({ item, types, onChange, onRemove }) {
             );
           })
         ) : (
-          <span className="text-[11px] text-ui-text-muted">—</span>
+          <span className="text-[11px] text-muted-foreground">—</span>
         )}
       </div>
 
@@ -206,13 +206,13 @@ export default function CreateTableDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent size="wide" className="border-border bg-surface text-body">
+      <DialogContent size="wide" className="border-border bg-card text-foreground">
         <DialogHeader className="px-6 pt-6">
           <DialogTitle>Create Table</DialogTitle>
-          <p className="text-sm text-body-soft">
+          <p className="text-sm text-muted-foreground">
             Define a sekejap table and its attributes. Index options change based on the selected kind.
           </p>
-          <p className={cx("text-xs", status.startsWith("Error") ? "text-danger" : status.startsWith("Created") ? "text-success" : "text-body-soft")}>
+          <p className={cx("text-xs", status.startsWith("Error") ? "text-danger" : status.startsWith("Created") ? "text-success" : "text-muted-foreground")}>
             {status}
           </p>
         </DialogHeader>
@@ -243,8 +243,8 @@ export default function CreateTableDialog({
                   onRemove={() => removeAttribute(index)}
                 />
               ))}
-              <div className="flex items-center justify-between gap-3 rounded-lg border border-dashed border-ui-border px-3 py-2">
-                <p className="text-xs text-ui-text-soft">Add only the attributes you want to predeclare. Sekejap still accepts dynamic JSON payloads.</p>
+              <div className="flex items-center justify-between gap-3 rounded-lg border border-dashed border-border px-3 py-2">
+                <p className="text-xs text-muted-foreground">Add only the attributes you want to predeclare. Sekejap still accepts dynamic JSON payloads.</p>
                 <Button
                   type="button"
                   variant="outline"

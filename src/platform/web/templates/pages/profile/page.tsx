@@ -13,7 +13,7 @@ export const page = {
     lang: "en",
   },
   body: {
-    className: "min-h-screen bg-ui-bg-muted text-ui-text font-sans",
+    className: "min-h-screen bg-background text-foreground font-sans",
   },
   navigation: "history",
 };

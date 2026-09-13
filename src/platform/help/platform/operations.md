@@ -1,270 +1,191 @@
-# Project Operations
+# Project operations
 
-Everything an agent needs to understand how a Zebflow project is structured and how to operate it.
+How a project is laid out and operated: files, agent docs, capabilities,
+locks, git, probes. The MCP tools are described in `help("platform/agent")`;
+the HTTP surface in `help("platform/api")`.
 
 ---
 
-## Project File Layout
+## Layout
 
 ```
-{project-root}/
-├── repo/
-│   ├── zebflow.yaml              ← project config (title, assistant LLM settings)
-│   ├── pipelines/                ← source root: .zf.json pipelines + TSX/CSS
-│   ├── templates/
-│   │   ├── pages/                ← full-page TSX templates
-│   │   ├── components/
-│   │   │   ├── ui/               ← design system (always use, never bypass)
-│   │   │   ├── layout/           ← page shell / layout wrappers
-│   │   │   └── behavior/         ← client-side behavior modules (.ts)
-│   │   ├── scripts/              ← shared TS utility modules
-│   │   └── styles/               ← CSS files (main.css, etc.)
-│   └── docs/                     ← project docs (markdown)
-│
+users/{owner}/{project}/
+├── repo/                    the git repository = the source root (unless spec.layout.source moves it)
+│   ├── zebflow.yaml         ProjectConfiguration: layout, rwe.libraries, locks, policy
+│   ├── zeb.lock             installed node bundles and zeb/* libraries
+│   ├── globals.css          theme tokens
+│   ├── api/  pages/  components/  scripts/  jobs/     pipelines (*.zf.json) and code — the folders are convention
+│   ├── docs/                project documents
+│   ├── static/              served at /static/{owner}/{project}/…
+│   ├── schemas/sekejap/  schemas/sqlite/  initial-data/  nodes/  shared/ui/
 ├── data/
-│   └── sekejap/                  ← project data
-│       └── runtime/
-│           └── agent_docs/       ← AGENTS.md, SOUL.md, MEMORY.md
-│
-└── files/                        ← Zebflow FS project artifacts
+│   ├── store/               sekejap/ · local.db · kv.db · assistant/{user}/memory.md (MEMORY.md, per user)
+│   ├── cache/               pipelines/ (live snapshots) · agent_docs/ (AGENTS.md, SOUL.md) · mapserver-artifacts/
+│   ├── hub/                 nodes/ · rwe-libraries/
+│   ├── logs/  recovery/
+└── files/                   ZebFS objects (public/… is anonymous, the rest private)
 ```
 
-Every directory under `repo/` is declared in `repo/zebflow.yaml` under
-`spec.layout`; the names above are what a project that declares nothing gets.
-A project may set `spec.layout.source` to any directory, and discovery,
-registration, RWE compilation, docs, assets, seeds, and Hub installs all follow
-it. A pipeline's `file_rel_path` is relative to that root, so changing it does
-not rename anything.
-
-`spec.layout.allowed_extensions` says which file types a Hub package may write
-into `repo/`. A project that declares nothing gets the platform set; a project
-may narrow it and cannot widen it. A package carrying anything outside the set
-is refused outright rather than warned about.
+`spec.layout` keys and defaults: `source` = `""` (the repo root), `static` =
+`static`, `docs` = `docs`, `schema` = `schemas/sekejap`, `sqlite_schema` =
+`schemas/sqlite`, `node_interfaces` = `nodes`. `spec.layout.allowed_extensions`
+narrows which file types a Hub package may write; a package carrying anything
+else is refused, not warned about.
 
 ---
 
-## Agent Docs
+## Agent docs
 
-Three special files every agent reads and writes:
+| File | Purpose | Written by |
+|---|---|---|
+| `AGENTS.md` | the project's rules and decisions — read first, they override the help | owner |
+| `SOUL.md` | voice and tone for the in-Studio assistant | owner |
+| `MEMORY.md` | what previous sessions did and what is open; one file per user | the agent |
 
-| File | Purpose | Who writes |
-|------|---------|------------|
-| `AGENTS.md` | Project rules, tech decisions, conventions for all agents | Project owner |
-| `SOUL.md` | Agent personality, tone, and communication style | Project owner |
-| `MEMORY.md` | Persistent notes across sessions — what was done, what's next | Agent |
-
-**Rules:**
-- Read `AGENTS.md` at the start of every session — it overrides all skill docs.
-- Read `MEMORY.md` to understand prior context before doing any work.
-- Write to `MEMORY.md` after completing any significant work.
-- Never overwrite `AGENTS.md` unless explicitly asked — it's the owner's configuration.
+`docs_agent_list` · `docs_agent_read name=` · `docs_agent_write name= content=`.
+Never rewrite `AGENTS.md` unless asked. Everything else the project documents
+is an ordinary file under `docs/` — `file_write rel_path="docs/schema.md"`.
 
 ---
 
-## Data Understanding Phase
+## Understand the data first
 
-**Always do this first when a project has DB connections.** One session of understanding saves many sessions of guessing.
+When a project has database connections, one session of understanding saves
+many of guessing:
 
 ```
-1. list_connections                              → identify available DBs (slug, kind)
-2. describe_connection slug=<slug>               → full schema: tables, columns, types, PKs, FKs
-3. write_doc path=docs/schema.md                 → persist the schema for all future sessions
-4. write_agent_doc MEMORY.md                     → note key tables, relations, auth pattern
+connection_list                                       → slugs and kinds
+connection_describe  slug=default-multimodel          → tables and columns (scope, schema, table narrow it)
+file_write  rel_path=docs/schema.md  content=…        → the schema, written down once
+docs_agent_write  name=MEMORY.md  content=…           → key tables, relations, auth pattern
 ```
 
-`describe_connection` returns per-table `meta.columns`:
-```json
-{
-  "name": "unit_id",
-  "type": "uuid",
-  "nullable": false,
-  "fk": { "schema": "academic", "table": "academic_unit", "column": "unit_id" }
-}
+`connection_describe` returns per-table `columns` with `name`, `type`,
+`nullable`, and `pk` / `fk: { schema, table, column }` / `default` when known.
+Then start every later session with `file_read rel_path=docs/schema.md`.
+
+To look at real values, run a query — `pipeline_run` with the right node:
+
+```
+pipeline_run  body="| trigger.function | sekejap.query --limit 3 -- \"SELECT * FROM orders\""
+pipeline_run  body="| trigger.function | pg.query --credential pg_main -- \"SELECT DISTINCT status FROM orders\""
 ```
 
-Fields present: `name`, `type`, `nullable`, optionally `pk: true`, `fk: {schema, table, column}`, `default`.
-
-After writing `schema.md`, start every future session with `read_project_doc path=docs/schema.md` — instant full context, zero re-discovery queries.
-
-### SQL Exploration Techniques
-
-When `schema.md` doesn't exist yet, or you need to verify actual data patterns, use these techniques in order:
-
-**1. Sample rows first — always before writing queries**
-```sql
-SELECT * FROM myschema.orders LIMIT 3
-```
-Reveals actual value formats, JSONB shapes, enum values, and NULLs before you guess.
-
-**2. Inspect JSONB field keys**
-```sql
-SELECT DISTINCT jsonb_object_keys(metadata) FROM myschema.products LIMIT 5
--- or see a live example:
-SELECT metadata FROM myschema.products LIMIT 1
-```
-
-**3. Discover enum/categorical values**
-```sql
-SELECT DISTINCT status FROM myschema.orders
-SELECT DISTINCT role FROM myschema.users
-```
-
-**4. Check row counts before joining (avoid accidental cross joins)**
-```sql
-SELECT COUNT(*) FROM myschema.orders     -- 30k rows? 300?
-SELECT COUNT(*) FROM myschema.order_items
-```
-
-**5. Avoid `||` pipe in SQL inside DSL** — the DSL parser treats `||` as a node separator.
-Use `format()` or `concat()` instead:
-```sql
--- ✗ WRONG in DSL:  first_name || ' ' || last_name
--- ✓ CORRECT:       format('%s %s', first_name, last_name)
--- ✓ CORRECT:       concat(first_name, ' ', last_name)
-```
-
-**6. Aggregate to a single string to bypass MCP row-count limits**
-```sql
-SELECT string_agg(format('%s: %s', id, name), E'\n' ORDER BY name) AS result
-FROM myschema.categories
-```
-Returns one row → always fits in the MCP response window.
-
-**7. PostgreSQL JSONB access patterns**
-```sql
-col->>'key'           -- text value (use for WHERE, ORDER BY, display)
-col->'key'            -- jsonb value (use for nested access)
-col->>'key' = 'val'   -- filter on JSONB text field
-```
+Sample rows before writing queries; check counts before joining; in PostgreSQL
+use `format()`/`concat()` rather than `||` inside a DSL body (the parser reads
+`|` as a node separator); aggregate to one string with `string_agg(...)` when a
+result would be too long for the tool window.
 
 ---
 
-## Build Loop
-
-A complete feature delivery follows this sequence:
+## The build loop
 
 ```
-1. read_agent_doc AGENTS.md                      → understand project rules
-2. read_agent_doc MEMORY.md                      → understand prior state
-3. read_project_doc path=docs/schema.md          → instant schema context (if exists)
-   └─ if missing: describe_connection → write_doc docs/schema.md
-4. write_doc path=docs/feature.md                → write spec / ERD before building
-5. list_pipelines                                → understand existing logic
-6. register_pipeline                             → build pipeline DSL (status: draft)
-7. create_template → write_template              → build TSX UI
-8. activate_pipeline                             → goes live
-9. git_command add + commit                      → commit all changes
-10. write_agent_doc MEMORY.md                    → record what was done and what's next
+1. docs_agent_read AGENTS.md, MEMORY.md
+2. file_read docs/schema.md            (or connection_describe → write it)
+3. file_write docs/<feature>.md        the spec: routes, tables, pages — before code
+4. pipeline_list, file_list            what already exists
+5. pipeline_register                   draft
+6. file_create → file_write            the page and its components
+7. pipeline_activate                   live
+8. fetch the route, search the body for "RWE component error", open it in a browser
+9. git_command add + commit
+10. docs_agent_write MEMORY.md         what was built, what was verified, what is open
 ```
 
-Always write a spec doc before building. Always commit after a logical chunk. Always update MEMORY.md before ending the session.
-
-**RULE: Before writing DSL for a node you haven't used in this session → call `help(topic="pipeline/nodes/{kind}")` (or `help(topic="pipeline/nodes")` for the full catalog).** Node flags and schemas come from Rust `definition()`, not from a markdown file.
+Before using a node for the first time in a session: `help(topic="pipeline/nodes/<kind>")`.
 
 ---
 
-## Operational Channels
+## Channels
 
-Three ways to interact with a project — same capability model enforces the same rules across all three:
+| Channel | Entry | For |
+|---|---|---|
+| MCP tools | `POST /api/projects/{o}/{p}/mcp` with the session's bearer token | agents (Claude Code, Cursor, Codex, …) |
+| Studio | the web UI, including the project console (`register …`, `activate pipeline …`) | people |
+| REST API | `/api/projects/{o}/{p}/…` with a session cookie | scripts, CI, integrations |
 
-| Channel | Entry point | Best for |
-|---------|-------------|----------|
-| **MCP Tools** | Structured tool calls (see `help(topic="platform/agent")` for full list) | LLM agents (Cursor, Claude, etc.) |
-| **Project Assistant** | `execute_pipeline_dsl` + DSL string | Interactive chat, exploratory/diagnostic work |
-| **REST API** | `/api/projects/{owner}/{project}/...` | Programmatic access, CI/CD, integrations |
-
----
-
-## Capability System
-
-Every MCP session has scoped permissions. Your session token determines what tools you can call:
-
-| Capability | Controls |
-|-----------|---------|
-| `PipelinesRead` | list, get, describe pipelines |
-| `PipelinesWrite` | register, patch, activate, deactivate, git |
-| `PipelinesExecute` | execute, run_ephemeral |
-| `TemplatesRead` | list, get templates |
-| `TemplatesWrite` | write_template |
-| `TemplatesCreate` | create_template |
-| `SettingsRead` | list/read agent docs |
-| `SettingsWrite` | write agent docs |
-| `TablesRead` | list_connections, describe_connection |
-| `CredentialsRead` | list_credentials |
+All three go through the same services, so locks and validation apply
+everywhere.
 
 ---
 
-## Locking Resources (Agent-Only Restriction)
+## Capabilities
 
-Owners can mark pipelines or templates as **locked** from the UI. Locked resources are invisible to write — agents that attempt to read or modify them receive an error.
+An MCP session token carries a set of capabilities; a tool outside the set
+is refused with the missing capability named.
 
-### Pipeline lock
+| Capability key | Tools |
+|---|---|
+| `project.read` | `start_here`, `help`, `help_search`, `skill_list`, `skill_read` |
+| `pipelines.read` | `pipeline_list`, `pipeline_get`, `pipeline_describe`, `pipeline_search`, `pipeline_get_invocations`, `list_ui_catalog` |
+| `pipelines.write` | `pipeline_register`, `pipeline_patch`, `pipeline_activate`, `pipeline_deactivate`, `git_command`, `install_ui_components`, `move_resource` |
+| `pipelines.execute` | `pipeline_execute`, `pipeline_run` |
+| `templates.read` | `file_list`, `file_read`, `file_search`, `file_outline`, `file_deps` |
+| `templates.create` / `templates.write` | `file_create` / `file_write`, `file_edit`, `file_batch_edit` |
+| `tables.read` | `connection_list`, `connection_describe` |
+| `credentials.read` | `credential_list` |
+| `settings.read` / `settings.write` | `docs_agent_list`, `docs_agent_read` / `docs_agent_write` |
 
-Stored as `"metadata": { "locked": true }` inside the `.zf.json` file itself. Toggling the lock commits the change to git automatically.
+These keys are what `POST /mcp/session { "capabilities": [...] }` takes.
 
-```json
-{
-  "metadata": { "locked": true },
-  "nodes": [...],
-  "edges": [...]
-}
-```
+`version` needs no capability. The project owner sets the session's
+capabilities in the Studio's session panel (the MCP button in the project
+shell), which also shows the endpoint, the token and a client setup guide.
 
-### Template lock
+---
 
-Stored in `repo/zebflow.yaml` under `spec.locks.templates` as a list of `rel_path` strings. A folder prefix locks all files under it.
+## Locks
+
+An owner can lock a pipeline, a file, or a folder of files. The lock is
+enforced in the service layer, so it holds for every channel — MCP, Studio
+and the REST API alike — with `PLATFORM_PIPELINE_LOCKED` /
+`PLATFORM_TEMPLATE_LOCKED`. Reading stays open in Studio; MCP refuses reads
+of locked items too, while `pipeline_list` and `file_list` still show that
+they exist. Agents cannot unlock anything.
+
+- A pipeline lock lives in the pipeline file: `"metadata": { "locked": true }`; toggling it commits.
+- File locks live in `zebflow.yaml` under `spec.locks.templates` as a list of paths; a folder path locks everything under it.
 
 ```yaml
 spec:
   locks:
     templates:
-    - components/auth
-    - pages/admin.tsx
+      - components/auth
+      - pages/admin.tsx
 ```
-
-### Lock scope
-
-- `pipeline_list` / `file_list` — **still visible** (agents can see names)
-- All read/write tools (`get`, `describe`, `register`, `patch`, `activate`, `deactivate`, `file_read`, `file_write`, `file_create`) — **blocked with error**
-- Human web UI — **always works**, lock is agent-only
 
 ---
 
-## Git Workflow
+## Git
 
-All project files under `repo/` are git-tracked. Commit after every logical chunk:
+`repo/` is a git repository. Commit after each logical chunk:
 
 ```
-git_command  subcommand=add      args="."
-git_command  subcommand=commit   message="feat: add blog pipeline and home page"
+git_command  subcommand=add     args="."
+git_command  subcommand=commit  message="feat: blog pipeline and home page"
 ```
 
-**Allowed:** `status`, `log`, `diff`, `add`, `commit`
-**Blocked (safety):** `reset`, `rebase`, `force-push`, `checkout .`
-
-Use descriptive commit messages. Convention: `feat:`, `fix:`, `refactor:`, `docs:`, `chore:`.
-
-**Commit author identity** is taken from the user's platform profile (`git_name` and `git_email` fields). Set these in the UI under your user profile settings. If empty, Zebflow falls back to the owner slug + `owner@zebflow.local`.
+Allowed subcommands: `status`, `log`, `diff`, `add`, `commit`. Nothing that
+rewrites history. The commit author is the user's profile (`git_name`,
+`git_email`); a remote and pushes are configured in Studio → Settings → Git.
 
 ---
 
-## Health and Readiness Probes
+## Health and readiness probes
 
-Zebflow exposes the traditional app-router probes on the main platform port,
-and can also run a dedicated liveness listener when `ZEBFLOW_HEALTH_PORT` is set.
-Use the dedicated listener for Kubernetes liveness in production offices.
+Zebflow answers the usual probes on the main port, and can run a dedicated
+liveness listener when `ZEBFLOW_HEALTH_PORT` is set (use it for Kubernetes
+liveness on office pods — it stays reachable when the main router is wedged
+and answers 503 when the main runtime stops ticking).
 
 | Endpoint | Purpose | Returns |
-|----------|---------|---------|
-| `GET :10611/health/live` | Raw process liveness — is the dedicated health thread alive? | `200 {"status":"ok","kind":"live","version":"..."}` |
-| `GET :10611/health/runtime` | Production liveness — is the main runtime heartbeat fresh? | `200 {"status":"ok"}` or `503 {"status":"stale"}` |
-| `GET :10610/health` | Compatibility liveness on the main app router | `200 {"status":"ok","version":"..."}` |
-| `GET :10610/ready` | Readiness — can the main app serve traffic? | `200 {"status":"ready"}` or `503 {"status":"not_ready"}` |
+|---|---|---|
+| `GET :10611/health/live` | the dedicated health thread is alive | `200 {"status":"ok","kind":"live","version":"…"}` |
+| `GET :10611/health/runtime` | the main runtime heartbeat is fresh | `200 {"status":"ok"}` or `503 {"status":"stale"}` |
+| `GET :10610/health` | compatibility liveness on the main router | `200 {"status":"ok","version":"…"}` |
+| `GET :10610/ready` | the main app can serve — at least one SSR worker is alive | `200 {"status":"ready"}` or `503 {"status":"not_ready"}` |
 
-`/ready` checks that at least one V8 SSR worker in the pool is alive. Use it as the K8s `readinessProbe` so traffic is held until the JS runtime is warm.
-The dedicated liveness listener runs on a separate OS thread and tiny Tokio runtime. Use `/health/runtime` for Kubernetes liveness on office pods: it stays reachable when the main app router is wedged, but returns `503` if the main Tokio runtime stops ticking.
-
-Suggested K8s probe config:
 ```yaml
 livenessProbe:
   httpGet: { path: /health/runtime, port: health }
@@ -277,35 +198,13 @@ readinessProbe:
   failureThreshold: 6
 ```
 
-The server handles `SIGTERM` gracefully — it stops accepting new connections and waits for in-flight requests to finish before exiting with code 0.
+`SIGTERM` is handled gracefully: new connections stop, in-flight requests
+finish, exit code 0.
 
 ---
 
-## Webhook Ingress
+## Webhook ingress
 
-Activated pipelines with `trigger.webhook` are reachable at:
-
-```
-{method} /wh/{owner}/{project}/{webhook-path}
-```
-
-Example: `GET /wh/acme/my-app/blog` → triggers the blog-home pipeline → returns HTML.
-
----
-
-## DSL Reference
-
-Run `read_skill pipeline-dsl` for the full command reference.
-Quick cheat:
-
-```
-register <name> --path <folder>  [DSL body]   ← save pipeline (draft)
-activate <file_rel_path>                       ← go live
-deactivate <file_rel_path>                     ← stop serving
-execute <file_rel_path>                        ← run saved active version
-run [DSL body]                                 ← ephemeral, not saved
-describe pipeline <name>                       ← inspect nodes + config
-patch <name> --node <id> [flags]               ← update node config
-git status / log / diff / add / commit         ← version control
-get pipelines / templates / docs / tables      ← list resources
-```
+Every active `trigger.webhook` answers at `{method} /wh/{owner}/{project}{path}`;
+`GET /wh/acme/shop/blog` runs the pipeline whose trigger declares
+`--path /blog --method GET`. The DSL that registers it: `help("pipeline/dsl")`.

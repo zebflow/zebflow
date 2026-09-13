@@ -318,16 +318,16 @@ export default function NodeDialog({
 
           {/* Dynamic function input panel (n.function.call only) */}
           {kind === "n.function.call" && formState.function && (
-            <div className="mt-1 rounded border border-dark-border overflow-hidden">
-              <div className="flex items-center gap-2 px-3 py-2 bg-dark-accent3/40 border-b border-dark-border">
-                <span className="text-[0.7rem] font-semibold uppercase tracking-wide text-body-soft">
+            <div className="mt-1 rounded border border-border overflow-hidden">
+              <div className="flex items-center gap-2 px-3 py-2 bg-success/40 border-b border-border">
+                <span className="text-[0.7rem] font-semibold uppercase tracking-wide text-muted-foreground">
                   Function Input
                 </span>
                 {functionParamsLoading && (
-                  <span className="text-[0.7rem] text-body-muted">Loading…</span>
+                  <span className="text-[0.7rem] text-muted-foreground">Loading…</span>
                 )}
                 {!functionParamsLoading && !functionParams && (
-                  <span className="text-[0.7rem] text-body-muted">
+                  <span className="text-[0.7rem] text-muted-foreground">
                     No params defined — passes full payload through.
                   </span>
                 )}
@@ -345,7 +345,7 @@ export default function NodeDialog({
                     return (
                       <a
                         href={href}
-                        className="inline-flex items-center gap-1 text-[0.68rem] font-medium text-accent hover:underline"
+                        className="inline-flex items-center gap-1 text-[0.68rem] font-medium text-primary hover:underline"
                         title={`Open ${fnSlug} definition`}
                       >
                         <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" className="w-3 h-3">
@@ -364,7 +364,7 @@ export default function NodeDialog({
                       <Label>
                         {name}
                         {def?.type && (
-                          <span className="ml-1.5 text-[0.68rem] font-normal text-body-muted">
+                          <span className="ml-1.5 text-[0.68rem] font-normal text-muted-foreground">
                             {def.type}{def.required ? " required" : ""}
                           </span>
                         )}
@@ -376,7 +376,7 @@ export default function NodeDialog({
                         onInput={(e) => handleParamInputChange(name, e.currentTarget.value)}
                       />
                       {def?.description && (
-                        <small className="text-xs text-body-muted">{def.description}</small>
+                        <small className="text-xs text-muted-foreground">{def.description}</small>
                       )}
                     </Field>
                   ))}

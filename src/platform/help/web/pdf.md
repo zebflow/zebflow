@@ -1,5 +1,9 @@
 # zeb/pdf
 
+```tsx
+import { createDocument, createTable, PAGE_SIZES } from "zeb/pdf";
+```
+
 `zeb/pdf` is the bundled client-side PDF generation library for Zebflow pages.
 
 Use it when you need:

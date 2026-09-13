@@ -1,16 +1,50 @@
-# Zeb Libraries (`zeb/*`)
+# `zeb/*` runtime libraries
 
-Bundled add-on libraries for Zebflow templates. Enable under **Settings → Libraries** before use.
+Browser libraries the platform ships with the binary and serves from
+`/assets/libraries/zeb/<lib>/0.1/runtime/…`. A page uses one with a **static
+import**; the compiler recognises the specifier, the page loads the bundle
+before hydrating, and the names arrive as globals in the browser. Nothing to
+install, nothing to configure:
 
-Each library provides a pre-built JavaScript bundle served from `/assets/libraries/zeb/{lib}/{version}/`.
+```tsx
+import { d3 } from "zeb/d3";
+import { DeckMap, ScatterplotLayer } from "zeb/deckgl";
+import { renderMarkdown } from "zeb/markdown";
+```
 
-Most browser-only libraries should be loaded via dynamic `import()` inside `useEffect()`.
+Dynamic `import()` is refused by the default security policy
+(`RWE_SECURITY_DYNAMIC_IMPORT`), and importing a bundle URL directly is not
+supported — always the `zeb/<lib>` specifier. The libraries are browser code:
+call them from `useEffect`, event handlers or `useD3`-style hooks, not during
+render. Components the libraries provide (`DeckMap`, `ThreeScene`, `CodeEditor`,
+`Markdown`, `VrmViewer`) render a placeholder on the server and mount in the
+browser, so they may appear in JSX directly.
+
+A project can restrict which libraries its pages may load under
+`rwe.libraries` in `zebflow.yaml` (`POST /api/projects/{o}/{p}/rwe/libraries/enable`);
+with no list, any of them loads on demand.
+
+| Library | Import | For |
+|---|---|---|
+| `zeb/use` | hooks | debounce, clipboard, localStorage, intervals, trees… |
+| `zeb/livegeo` | hooks | playback and smoothing for moving things on a map |
+| `zeb/markdown` | `renderMarkdown`, `marked`, `DOMPurify`, `<Markdown>` | Markdown → sanitised HTML |
+| `zeb/codemirror` | `codemirror`, `presets`, `createZebflowEditorExtensions`, `<CodeEditor>` | a code editor (CodeMirror 6) |
+| `zeb/prosemirror` | `createEditor`, `createSchema`, `htmlToDocument`, `EMPTY_DOC`, `pm` | the engine under `zeb/ui/editor` |
+| `zeb/d3` | `d3`, `useD3` | charts and data visualisation (d3 v7) |
+| `zeb/deckgl` | `DeckMap`, layer classes, `buildLayers`, `colorRamp`, … | WebGL maps |
+| `zeb/threejs`, `zeb/threejs-vrm` | `threejs`, `<ThreeScene>`, `mountThreeScene`; `vrm`, `<VrmViewer>` | 3D scenes and VRM avatars |
+| `zeb/graphui` | `createGraphUI`, `GraphStore`, … | node-graph editors |
+| `zeb/pdf` | `createDocument`, `createTable`, `render`, `PAGE_SIZES`, … | PDF generation in the browser |
+
+There is no icons library; use inline SVG (the `zeb/ui` components do).
 
 ---
 
-## zeb/use — Utility Hooks
+## zeb/use — hooks
 
-Extra hooks beyond the core set. After enabling, import them from `"zeb/use"` in every file that uses them.
+Import them from `"zeb/use"` in every file that uses them, next to the
+`zeb/react` imports. On the server they return their initial value.
 
 | Hook | Signature | Description |
 |------|-----------|-------------|
@@ -28,26 +62,23 @@ Extra hooks beyond the core set. After enabling, import them from `"zeb/use"` in
 | `useTree` | `(options?)` | Tree expansion state. Returns `{ expanded, isExpanded, toggle, expand, collapse, expandAll, collapseAll }`. |
 
 ```tsx
-// Import the hooks you use, in every file that uses them
 import { useState, useSearchParams } from "zeb/react";
 import { useDebounce, useClipboard } from "zeb/use";
 
 const [search, setSearch] = useState("");
-const debouncedSearch = useDebounce(search, 300);
-
+const debounced = useDebounce(search, 300);
 const { copy, copied } = useClipboard();
-<button onClick={() => copy(state.apiKey)}>{copied ? "Copied!" : "Copy"}</button>
+<button onClick={() => copy(apiKey)}>{copied ? "Copied" : "Copy"}</button>
 
-// URL hooks belong to zeb/react; navigate with useRouter to change the query.
-const params = useSearchParams();
+const params = useSearchParams();                 // URL state is zeb/react's
 const page = Number(params.get("page") ?? "1");
 ```
 
 ---
 
-## zeb/livegeo — Live Map Hooks
+## zeb/livegeo — live map hooks
 
-Frontend-only hooks for playback, smoothing, and live track interactivity.
+Browser-only hooks for playback, smoothing and following a moving target.
 
 | Hook | Signature | Description |
 |------|-----------|-------------|
@@ -56,262 +87,206 @@ Frontend-only hooks for playback, smoothing, and live track interactivity.
 | `useTrackSmoothing` | `(target, options?)` | Smooths moving position and bearing updates. |
 | `useMapFollow` | `(target, options?)` | Keeps map view state centered on a moving target. |
 
-Use `Tool.geo` for cross-runtime math like `routeProgress`, `interpolateRoute`, and `bearing`.
+Use `Tool.geo` (`routeProgress`, `interpolateRoute`, `bearing`) for the maths
+that must also run on the server. Guard these hooks behind `useEffect` or a
+component rendered only in the browser — they have no server stubs.
 
 ---
 
-Lucide icon components. After enabling, you must still import the bundle explicitly:
+## zeb/markdown
 
 ```tsx
+import { Markdown, renderMarkdown } from "zeb/markdown";
 
-// Then use the icon components directly
-<Search className="w-4 h-4" />
-<Loader2 className="w-4 h-4 animate-spin text-accent" />
-<Trash2 className="w-4 h-4 text-red-400" />
-<CheckCircle className="w-4 h-4 text-green-400" />
+<Markdown content={post.body_md} className="max-w-none" />
+// or
+<div dangerouslySetInnerHTML={{ __html: renderMarkdown(text) }} />   // refused: raw HTML is off by policy
 ```
 
-All accept `className` and `size` (number, defaults to 16) props.
-
-**Available icons:**
-
-- **Navigation:** `ChevronLeft`, `ChevronRight`, `ChevronDown`, `ChevronUp`, `ChevronsLeft`, `ChevronsRight`, `ChevronsUpDown`, `ArrowLeft`, `ArrowRight`, `ArrowUp`, `ArrowDown`
-- **Actions:** `Plus`, `Minus`, `X`, `Check`, `Pencil`, `Trash2`, `Copy`, `Clipboard`, `Save`, `Download`, `Upload`, `ExternalLink`, `Undo2`, `Redo2`, `RefreshCw`, `Search`, `Filter`
-- **Status:** `AlertCircle`, `AlertTriangle`, `Info`, `CheckCircle`, `CheckCircle2`, `XCircle`, `Loader2`
-- **UI chrome:** `Eye`, `EyeOff`, `Lock`, `Unlock`, `Settings`, `Menu`, `MoreHorizontal`, `MoreVertical`, `Maximize2`, `Minimize2`, `PanelLeft`, `PanelRight`, `SidebarOpen`, `SidebarClose`, `Bell`, `BellOff`
-- **Data/Dev:** `Database`, `TableIcon`, `BarChart2`, `PieChart`, `TrendingUp`, `TrendingDown`, `Columns2`, `Code2`, `Terminal`, `Cpu`, `Cloud`, `Wifi`
-- **Files:** `File`, `FileText`, `Folder`, `FolderOpen`
-- **People:** `User`, `Users`, `KeyRound`, `LogIn`, `LogOut`
-- **Misc:** `Globe`, `Package`, `Zap`, `Star`, `Layers`, `LayoutGrid`, `ListIcon`, `Tag`
+`renderMarkdown(text)` returns sanitised HTML (marked + DOMPurify). `<Markdown>`
+renders it into a `div` and exists only when the file imports it — it is not a
+global. There is no `prose` stylesheet; style headings, lists and code with
+your own CSS or wrap the output in a container with utilities. For rich text
+authored in the platform, prefer the editor's JSON document and
+`zeb/ui/editor-render` (`help("web/ui")`).
 
 ---
 
-## zeb/markdown — Markdown Rendering
-
-Renders markdown to HTML with sanitisation (marked + DOMPurify).
-
-```tsx
-// Markdown component — global after enabling
-<Markdown content={state.body} className="prose prose-invert" />
-```
-
-Or imperatively in `useEffect`:
+## zeb/codemirror
 
 ```tsx
 import { useEffect, useRef } from "zeb/react";
+import { codemirror, presets } from "zeb/codemirror";
 
-const containerRef = useRef(null);
-useEffect(() => {
-  import('/assets/libraries/zeb/markdown/0.1/runtime/markdown.bundle.mjs')
-    .then(({ renderMarkdown }) => {
-      if (containerRef.current) {
-        containerRef.current.innerHTML = renderMarkdown(state.body ?? "");
-      }
+export default function Editor({ code }) {
+  const host = useRef(null);
+  useEffect(() => {
+    const view = new codemirror.EditorView({
+      parent: host.current,
+      doc: code ?? "",
+      extensions: presets.zebflow({ kind: "typescript" }),
     });
-}, [state.body]);
-return <div ref={containerRef} />;
+    return () => view.destroy();
+  }, []);
+  return <div ref={host} className="h-64 overflow-hidden rounded-md border border-border" />;
+}
 ```
+
+`codemirror` is the CodeMirror 6 namespace (`EditorView`, `EditorState`,
+`keymap`, languages…); `presets.zebflow({ kind })` is the platform's own
+extension set; `<CodeEditor>` is the same thing as a component.
 
 ---
 
-## zeb/codemirror — Code Editor
+## zeb/prosemirror — the editing engine
 
-Full CodeMirror 6 editor. Always load in `useEffect` (browser only).
+ProseMirror, Zebflow's document schema, and `createEditor`. Engine only: it
+draws no toolbar, menu or colour. For a page that just needs an editor, use
+`zeb/ui/editor` — a Notion-style block editor built on this (see
+`help("web/ui")`). Reach for the engine to build a custom one.
 
 ```tsx
 import { useEffect, useRef } from "zeb/react";
+import { createEditor, EMPTY_DOC } from "zeb/prosemirror";
 
-const editorRef = useRef(null);
-
+const mountRef = useRef(null);
 useEffect(() => {
-  import('/assets/libraries/zeb/codemirror/0.1/runtime/entry.mjs')
-    .then(({ EditorView, presets }) => {
-      const view = new EditorView({
-        extensions: presets.zebflow({ kind: "typescript" }),
-        parent: editorRef.current,
-        doc: state.code ?? "",
-      });
-      // save handle if needed
-    });
+  const editor = createEditor(mountRef.current, {
+    doc: EMPTY_DOC,                       // a ProseMirror document (JSON)
+    classes: { root: "outline-none", heading1: "text-3xl font-bold", … },
+    placeholder: "Write…",
+    onChange: (doc) => save(doc),         // JSON, every transaction that changes the document
+    onSlash: (s) => {},                   // { query, from, to, left, top, bottom } or null — draw your own menu
+    onSelection: (s) => {},               // { from, to, left, top, bottom, marks, block, attrs, text } or null
+    uploadImage: async (file) => url,     // pasted or dropped images; omit to refuse them
+  });
+  return () => editor.destroy();
 }, []);
 
-return <div ref={editorRef} className="h-64 border border-border rounded overflow-hidden" />;
+editor.exec("heading", 2);  editor.exec("toggleBold");  editor.exec("list", "todo");
+editor.exec("image", { src, alt });  editor.exec("setLink", href);  editor.getJSON();  editor.setJSON(doc);
 ```
 
-The `CodeEditor` Preact wrapper component lives in `@/components/ui/code-editor` (platform studio only).
+Blocks: paragraph, heading 1–3, blockquote, callout, code_block, image,
+bullet/ordered/todo lists, horizontal_rule. Marks: bold, italic, underline,
+strike, code, link. Markdown shortcuts, Mod-key bindings, history, drop
+cursor, a hover drag handle and to-do checkboxes are built in. Rendering a
+stored document without the engine is `zeb/ui/editor-render`
+(`DocumentView`, `renderDocumentHtml`, `documentText`). `pm` exports every
+ProseMirror package for plugins of your own; `htmlToDocument(html)` converts
+legacy HTML.
 
 ---
 
-## zeb/prosemirror — Rich Text Editor
+---
 
-ProseMirror WYSIWYG editor with toolbar, plugins, and a Preact wrapper.
+## zeb/d3
 
 ```tsx
-// ProseEditor component — available after enabling
-<ProseEditor
-  id="body-editor"
-  stateKey="body"        // syncs to usePageState key "body"
-  toolbar="basic"        // "minimal" | "basic" | "full" | false
-  toolbarMode="inline"   // "inline" | "bubble"
-  editable={true}
-  placeholder="Start writing…"
-/>
+import { useD3 } from "zeb/d3";
+
+export default function Bars({ rows }) {
+  const ref = useD3((container, d3) => {
+    const svg = d3.select(container).selectAll("svg").data([null]).join("svg").attr("width", 480).attr("height", 240);
+    const x = d3.scaleBand().domain(rows.map((r) => r.label)).range([0, 480]).padding(0.2);
+    const y = d3.scaleLinear().domain([0, d3.max(rows, (r) => r.value)]).range([240, 0]);
+    svg.selectAll("rect").data(rows).join("rect")
+      .attr("x", (r) => x(r.label)).attr("y", (r) => y(r.value))
+      .attr("width", x.bandwidth()).attr("height", (r) => 240 - y(r.value))
+      .attr("class", "fill-chart-1");
+  }, [rows]);
+  return <div ref={ref} />;
+}
 ```
 
-See also: `help_docs topic=zeb/prosemirror` for full config API and plugin docs.
+`useD3(callback, deps)` returns a ref; the callback runs in the browser with
+the container element and the full d3 v7 namespace. `import { d3 }` gives the
+namespace directly for use inside `useEffect`. For a handful of bars or a
+sparkline, plain SVG in JSX with theme classes needs no library at all.
 
 ---
 
-## zeb/d3 — Data Visualisations
-
-Full d3 v7 namespace plus a `useD3` Preact hook.
+## zeb/deckgl
 
 ```tsx
-import { useEffect, useRef } from "zeb/react";
-
-const chartRef = useRef(null);
-
-useEffect(() => {
-  import('/assets/libraries/zeb/d3/0.1/runtime/d3.bundle.mjs')
-    .then(({ d3 }) => {
-      const svg = d3.select(chartRef.current)
-        .append("svg")
-        .attr("width", 500).attr("height", 300);
-
-      // Draw bars, axes, etc.
-      const x = d3.scaleBand().domain(state.labels).range([0, 500]).padding(0.2);
-      // ...
-    });
-}, [state.data]);
-
-return <div ref={chartRef} />;
-```
-
-`useD3(callback, deps)` hook (from zeb/d3) provides a more idiomatic way:
-
-```tsx
-const ref = useD3((container, d3) => {
-  const svg = d3.select(container).append("svg");
-  // ...
-}, [state.data]);
-return <div ref={ref} />;
-```
-
----
-
-## zeb/threejs — 3D Scenes
-
-Three.js with scene helpers.
-
-```tsx
-import { useEffect, useRef } from "zeb/react";
-
-const canvasRef = useRef(null);
-
-useEffect(() => {
-  import('/assets/libraries/zeb/threejs/0.1/runtime/threejs.bundle.mjs')
-    .then(({ mountThreeScene }) => {
-      mountThreeScene(canvasRef.current, {
-        // scene setup config
-      });
-    });
-}, []);
-
-return <div ref={canvasRef} className="w-full h-96" />;
-```
-
----
-
-## zeb/deckgl — Geospatial Map Visualization
-
-WebGL-accelerated maps and data layers. Deck.gl 9.x bundled offline — ScatterplotLayer,
-PathLayer, HeatmapLayer, GeoJsonLayer, TileLayer, ColumnLayer, and 20+ more layer types.
-
-```tsx
-import DeckMap from "zeb/deckgl";
+import { DeckMap } from "zeb/deckgl";
 
 <DeckMap
   height="500px"
-  initialViewState={{ longitude: 101.7, latitude: 3.1, zoom: 12 }}
-  layers={[{
-    type: "ScatterplotLayer",
-    data: input.locations,
-    getPosition: "[longitude, latitude]",
-    getFillColor: [0, 180, 255],
-    getRadius: 50,
-    pickable: true,
-  }]}
-  tooltip={true}
+  initialViewState={{ longitude: 106.8, latitude: -6.2, zoom: 10 }}
+  layers={[{ type: "ScatterplotLayer", data: input.rows, getPosition: "[lon, lat]", getFillColor: [0, 180, 255], getRadius: 50, pickable: true }]}
+  tooltip
 />
 ```
 
-Includes utility functions: `haversine`, `bearing`, `colorRamp`, `interpolateAlongPath`, `createAnimationLoop`.
-
-See `help("web/deckgl")` for full documentation — all layer types, patterns (API-first,
-WebSocket real-time, animation/playback, heatmaps, GeoJSON, tile basemaps), and pipeline examples.
+Layer classes, `buildLayers`, `colorRamp`, `haversine`, `bearing`,
+`interpolateAlongPath`, `createAnimationLoop`, the imperative
+`mountDeckMap` / `createDeckMapRuntime`, WebSocket and playback patterns:
+`help("web/deckgl")`.
 
 ---
 
-## zeb/pdf — Client-side PDF Generation
+## zeb/threejs and zeb/threejs-vrm
 
-Zero-dependency PDF 1.7 generator. Runs entirely in the browser — no server round-trip.
+```tsx
+import { ThreeScene } from "zeb/threejs";
+import { VrmViewer } from "zeb/threejs-vrm";
+
+<ThreeScene height="400px" config={{ background: "#0b0b0f", cameraZ: 4, fov: 60 }} />
+<VrmViewer modelUrl="/files/o/p/public/avatar.vrm" height="480px" autoRotate />
+```
+
+`threejs` is the namespace; `ensureThree`, `createSceneRuntime` and
+`mountThreeScene(host, options)` are the imperative forms. Read the library's
+README under `blessed/rwe-libraries/threejs/` for the scene runtime options.
+
+---
+
+## zeb/graphui
+
+`createGraphUI(root, options)` mounts a node-graph editor into a DOM element;
+`GraphStore` and the graph classes are exported for custom tooling. Browser
+only — mount in `useEffect`.
+
+---
+
+## zeb/pdf
+
+A PDF 1.7 generator that runs in the browser — no server round-trip.
 
 ```tsx
 import { createDocument, createTable, PAGE_SIZES } from "zeb/pdf";
 ```
 
-### Exports
+Exports: `createDocument` (the builder — start here), `createTable`,
+`PAGE_SIZES` (`A4`, `A3`, `Letter`, … as `[w, h]` in points), `NODE_TYPES`,
+`render(doc)` / `renderSync(doc)` (an IR document → bytes), the IR node
+constructors `page`, `text`, `image`, `line`, `rect`, `table`, plus
+`PdfDocument`, `readPdf`, `DEFAULT_STYLES`, `parseColor`, `measureTextWidth`,
+`wrapText`.
 
-```ts
-import {
-  createDocument,   // DocumentBuilder factory — start here
-  createTable,      // standalone table node helper
-  PAGE_SIZES,       // { A4, A3, Letter, ... } — [width, height] in pts
-  NODE_TYPES,       // enum of IR node kind strings
-  render,           // async render(doc) → ArrayBuffer
-  renderSync,       // sync renderSync(doc) → ArrayBuffer
-  // Primitive IR node constructors (low-level):
-  page, text, image, line, rect, table,
-} from "zeb/pdf";
-```
-
-### Coordinate system
-
-- **Y = 0 at bottom-left**, Y increases upward (standard PDF)
-- A4 = 595 × 842 pts
-- Content flows from **high Y → low Y** (top of page → bottom)
-- `margin.top = 60` means content area top = `H - 60`
-
-### DocumentBuilder API
+Coordinates: y = 0 at the bottom-left, increasing upward; A4 is 595 × 842 pt;
+content flows from high y to low y; `margin.top = 60` puts the content top at
+`H - 60`.
 
 ```ts
 const doc = createDocument({
-  meta: { title, author, subject, creator },
-  styles: { /* CSS-like class map */ },
-  settings: {
-    margin: { top: 60, right: 48, bottom: 72, left: 48 },
-  },
+  meta: { title, author },
+  styles: { ".cell": { padding: [3, 6, 3, 6], "font-size": 9 } },   // CSS-like class map
+  settings: { margin: { top: 60, right: 48, bottom: 72, left: 48 } },
 });
 
-// Add a page (first page is created automatically or explicitly)
-const page1 = doc.page({
-  size: "A4",                          // or [595, 842] or "Letter"
-  margin: { top: 241, right: 48, bottom: 72, left: 48 },
-  footer: { template: "Page {page} of {total}", align: "center" },
-});
-
-// Draw primitives on a specific page (absolute coordinates)
+const page1 = doc.page({ size: "A4", footer: { template: "Page {page} of {total}", align: "center" } });
 page1.rect({ x, y, width, height, fill, stroke, strokeWidth });
 page1.line({ x1, y1, x2, y2, width, color });
 page1.text("content", { x, y, style: { "font-size": 12, color: "#000" } });
 
-// Flow content across pages automatically (auto page-break)
-doc.tableFlow(tableNode, { pageOptions: contPageOpts });
-doc.textFlow(textNode,   { pageOptions: contPageOpts });
+doc.textFlow("a long paragraph…", { style: { "font-size": 10 }, pageOptions: contPageOpts });  // wraps and page-breaks
+doc.tableFlow(tableNode, { pageOptions: contPageOpts });                                        // rows across pages
 
-// Produce output
-const arrayBuffer = doc.toArrayBuffer();  // or renderSync(doc)
-const blob        = doc.toBlob();         // Blob for URL.createObjectURL
+const bytes = doc.toBytes();          // Uint8Array
+const blob  = doc.toBlob();           // application/pdf
+const url   = doc.toUrl();            // object URL for an <iframe> or a download link
 ```
 
 ### Page 1 header + info box pattern
@@ -458,18 +433,3 @@ export default function PdfPage() {
 ```
 
 ---
-
-## Critical rule: load browser-only bundles inside `useEffect`
-
-For browser-only bundles like `zeb/d3`, `zeb/codemirror`, `zeb/markdown`, and `zeb/threejs`, never import the raw runtime asset at module top-level — they reference browser APIs unavailable during SSR.
-
-```tsx
-// ✗ WRONG — crashes SSR
-import * as d3 from '/assets/libraries/zeb/d3/0.1/runtime/d3.bundle.mjs';
-
-// ✓ CORRECT — runs after mount, browser only
-useEffect(() => {
-  import('/assets/libraries/zeb/d3/0.1/runtime/d3.bundle.mjs')
-    .then(({ d3 }) => { /* ... */ });
-}, []);
-```

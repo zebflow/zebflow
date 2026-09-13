@@ -96,13 +96,13 @@ export function RelationDialog({
 }) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-xl border-border bg-surface text-body">
+      <DialogContent className="max-w-xl border-border bg-card text-foreground">
         <DialogHeader className="px-6 pt-6">
           <DialogTitle>Create Relation</DialogTitle>
-          <p className="text-sm text-body-soft">
+          <p className="text-sm text-muted-foreground">
             Link the current node to another node in the Sekejap store.
           </p>
-          <p className={cx("text-xs", status.startsWith("Error") ? "text-danger" : status.startsWith("Created") ? "text-success" : "text-body-soft")}>
+          <p className={cx("text-xs", status.startsWith("Error") ? "text-danger" : status.startsWith("Created") ? "text-success" : "text-muted-foreground")}>
             {status}
           </p>
         </DialogHeader>
@@ -158,7 +158,7 @@ export function RelationDialog({
             ) : null}
           </Field>
 
-          <p className="text-xs text-body-soft">
+          <p className="text-xs text-muted-foreground">
             Use the Sekejap node slug format: <span className="font-mono">collection/key</span>.
           </p>
 
@@ -210,11 +210,11 @@ export function RelationTargetSearchDialog({ open, onOpenChange, tables, onSearc
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent size="wide" className="border-border bg-surface text-body">
+      <DialogContent size="wide" className="border-border bg-card text-foreground">
         <DialogHeader className="px-6 pt-6">
           <DialogTitle>Search Node</DialogTitle>
-          <p className="text-sm text-body-soft">Select an existing node for the relation target.</p>
-          <p className={cx("text-xs", status.startsWith("Error") ? "text-danger" : "text-body-soft")}>{status}</p>
+          <p className="text-sm text-muted-foreground">Select an existing node for the relation target.</p>
+          <p className={cx("text-xs", status.startsWith("Error") ? "text-danger" : "text-muted-foreground")}>{status}</p>
         </DialogHeader>
         <div className="flex flex-col gap-3 px-6 py-4">
           <div className="grid gap-3 md:grid-cols-[12rem_minmax(0,1fr)_auto]">
@@ -226,7 +226,7 @@ export function RelationTargetSearchDialog({ open, onOpenChange, tables, onSearc
             <Input value={query} onInput={(event) => setQuery(event?.target?.value || "")} placeholder="Search by _key, title, name, slug…" disabled={busy} />
             <Button type="button" size="sm" disabled={busy || !collection} onClick={runSearch}>Search</Button>
           </div>
-          <div className="max-h-96 overflow-auto rounded-md border border-ui-border/70">
+          <div className="max-h-96 overflow-auto rounded-md border border-border/70">
             {results.length ? (
               <StudioTable>
                 <StudioThead>
@@ -251,7 +251,7 @@ export function RelationTargetSearchDialog({ open, onOpenChange, tables, onSearc
                 </tbody>
               </StudioTable>
             ) : (
-              <p className="px-3 py-6 text-center text-sm text-ui-text-soft">No nodes loaded yet.</p>
+              <p className="px-3 py-6 text-center text-sm text-muted-foreground">No nodes loaded yet.</p>
             )}
           </div>
         </div>
@@ -262,33 +262,33 @@ export function RelationTargetSearchDialog({ open, onOpenChange, tables, onSearc
 
 export function RelationStatsList({ title, items, emptyText, peerKey }) {
   return (
-    <div className="rounded-lg border border-ui-border/80 bg-ui-bg-muted/10 p-3">
+    <div className="rounded-lg border border-border/80 bg-accent/10 p-3">
       <div className="mb-3 flex items-center justify-between gap-3">
-        <p className="text-xs font-medium uppercase tracking-[0.14em] text-ui-text-soft">{title}</p>
-        <span className="text-xs text-ui-text-soft">{items?.length || 0}</span>
+        <p className="text-xs font-medium uppercase tracking-[0.14em] text-muted-foreground">{title}</p>
+        <span className="text-xs text-muted-foreground">{items?.length || 0}</span>
       </div>
       {items?.length ? (
         <div className="space-y-2">
           {items.map((item, index) => (
-            <div key={`${title}-${item.type}-${item.from}-${item.to}-${index}`} className="grid grid-cols-[minmax(0,1fr)_auto] gap-3 rounded-md border border-ui-border/70 bg-ui-bg px-3 py-2">
+            <div key={`${title}-${item.type}-${item.from}-${item.to}-${index}`} className="grid grid-cols-[minmax(0,1fr)_auto] gap-3 rounded-md border border-border/70 bg-popover px-3 py-2">
               <div className="min-w-0">
-                <p className="truncate text-sm font-medium text-ui-text">{item.type}</p>
-                <p className="truncate text-xs text-ui-text-soft">{peerKey === "to" ? `to ${item.to}` : `from ${item.from}`}</p>
+                <p className="truncate text-sm font-medium text-foreground">{item.type}</p>
+                <p className="truncate text-xs text-muted-foreground">{peerKey === "to" ? `to ${item.to}` : `from ${item.from}`}</p>
                 {item.countError ? (
                   <p className="mt-1 text-[11px] text-amber-500">Count unavailable</p>
                 ) : null}
               </div>
               <div className="text-right">
-                <p className="font-mono text-sm font-semibold tabular-nums text-ui-text">
+                <p className="font-mono text-sm font-semibold tabular-nums text-foreground">
                   {item.count === null || item.count === undefined ? "n/a" : Number(item.count).toLocaleString()}
                 </p>
-                <p className="text-[11px] uppercase tracking-[0.12em] text-ui-text-soft">edges</p>
+                <p className="text-[11px] uppercase tracking-[0.12em] text-muted-foreground">edges</p>
               </div>
             </div>
           ))}
         </div>
       ) : (
-        <p className="text-sm text-ui-text-soft">{emptyText}</p>
+        <p className="text-sm text-muted-foreground">{emptyText}</p>
       )}
     </div>
   );
@@ -296,20 +296,20 @@ export function RelationStatsList({ title, items, emptyText, peerKey }) {
 
 export function RowRelationList({ title, items, emptyText, onDelete }) {
   return (
-    <div className="rounded-lg border border-ui-border/80 bg-ui-bg-muted/10 p-3">
+    <div className="rounded-lg border border-border/80 bg-accent/10 p-3">
       <div className="mb-3 flex items-center justify-between gap-3">
-        <p className="text-xs font-medium uppercase tracking-[0.14em] text-ui-text-soft">{title}</p>
-        <span className="text-xs text-ui-text-soft">{items?.length || 0}</span>
+        <p className="text-xs font-medium uppercase tracking-[0.14em] text-muted-foreground">{title}</p>
+        <span className="text-xs text-muted-foreground">{items?.length || 0}</span>
       </div>
       {items?.length ? (
         <div className="space-y-2">
           {items.map((entry, index) => (
-            <div key={`${title}-${entry.type}-${entry.otherSlug}-${index}`} className="rounded-md border border-ui-border/70 bg-ui-bg px-3 py-2">
+            <div key={`${title}-${entry.type}-${entry.otherSlug}-${index}`} className="rounded-md border border-border/70 bg-popover px-3 py-2">
               <div className="flex items-start justify-between gap-3">
                 <div className="min-w-0">
-                  <p className="text-sm font-medium text-ui-text">{entry.type}</p>
-                  <p className="truncate text-xs text-ui-text-soft">{entry.otherLabel}</p>
-                  <p className="truncate text-[11px] text-ui-text-muted">{entry.otherSlug}</p>
+                  <p className="text-sm font-medium text-foreground">{entry.type}</p>
+                  <p className="truncate text-xs text-muted-foreground">{entry.otherLabel}</p>
+                  <p className="truncate text-[11px] text-muted-foreground">{entry.otherSlug}</p>
                 </div>
                 <Button type="button" variant="ghost" size="sm" onClick={() => onDelete(entry)}>
                   Delete
@@ -319,7 +319,7 @@ export function RowRelationList({ title, items, emptyText, onDelete }) {
           ))}
         </div>
       ) : (
-        <p className="text-sm text-ui-text-soft">{emptyText}</p>
+        <p className="text-sm text-muted-foreground">{emptyText}</p>
       )}
     </div>
   );

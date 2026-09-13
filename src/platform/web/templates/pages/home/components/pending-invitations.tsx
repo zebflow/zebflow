@@ -56,7 +56,7 @@ export default function PendingInvitations() {
 
   return (
     <section data-pending-invitations className="flex flex-col gap-2">
-      <p className="text-[0.74rem] uppercase tracking-[0.08em] text-body-soft">
+      <p className="text-[0.74rem] uppercase tracking-[0.08em] text-muted-foreground">
         You have been invited
       </p>
       {problem ? <p className="text-[0.78rem] text-red-400">{problem}</p> : null}
@@ -70,7 +70,7 @@ export default function PendingInvitations() {
             <p className="text-[0.85rem] font-medium">
               {invite.owner}/{invite.project}
             </p>
-            <p className="text-[0.76rem] text-body-soft">
+            <p className="text-[0.76rem] text-muted-foreground">
               as {invite.role_preset} · invited by {invite.invited_by}
               {invite.note ? ` · ${invite.note}` : ""}
             </p>

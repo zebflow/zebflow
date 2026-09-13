@@ -162,6 +162,39 @@ fn resolve_claim(val: &Value, _payload: &Value) -> Value {
     val.clone()
 }
 
+/// The value of a `:public` claim once the marker is removed. The marker made
+/// the flag an interpolated string, so a non-string the expression produced
+/// arrived as JSON text; it is read back so the claim keeps its type.
+fn public_claim_value(stripped: &str) -> Value {
+    let stripped = stripped.trim();
+    serde_json::from_str::<Value>(stripped)
+        .ok()
+        .filter(|v| !v.is_string())
+        .unwrap_or_else(|| Value::String(stripped.to_string()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::public_claim_value;
+    use serde_json::json;
+
+    #[test]
+    fn a_public_array_claim_is_an_array_not_its_json_text() {
+        // `--claim "roles={{ input.roles }}:public"` interpolates the array to
+        // `["admin"]`; the verifier needs `roles.as_array()` to succeed.
+        assert_eq!(public_claim_value(r#"["admin","editor"]"#), json!(["admin", "editor"]));
+        assert_eq!(public_claim_value("42"), json!(42));
+        assert_eq!(public_claim_value("true"), json!(true));
+    }
+
+    #[test]
+    fn a_public_string_claim_stays_a_string() {
+        assert_eq!(public_claim_value("Alice"), json!("Alice"));
+        assert_eq!(public_claim_value("\"quoted\""), json!("\"quoted\""));
+        assert_eq!(public_claim_value(""), json!(""));
+    }
+}
+
 fn now_unix() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -238,10 +271,12 @@ impl NodeHandler for Node {
             // as safe to expose in the browser via __rwe_payload.
             let (resolved_val, is_public) = if let Value::String(s) = val {
                 if let Some(stripped) = s.strip_suffix(":public") {
-                    (
-                        resolve_claim(&Value::String(stripped.to_string()), &input.payload),
-                        true,
-                    )
+                    // The `:public` suffix made this an interpolated string, so
+                    // an array or object the expression produced arrived as its
+                    // JSON text (`["admin"]`). Read it back: `roles` must be an
+                    // array for `--auth-required-role` to ever match, and a
+                    // marker about visibility must not change a claim's type.
+                    (resolve_claim(&public_claim_value(stripped), &input.payload), true)
                 } else {
                     (resolve_claim(val, &input.payload), false)
                 }

@@ -1,314 +1,164 @@
-# Pipeline Authoring
+# Pipeline authoring
 
-Pipelines are directed graphs stored as `.zf.json` files under the project's
-source root — `repo/pipelines/` unless `spec.layout.source` in `repo/zebflow.yaml`
-says otherwise.
-Use the **DSL** (`pipeline_register`) to author them — the JSON is auto-generated.
-Read this doc for the underlying model. See `help("pipeline/dsl")` for the DSL.
+A pipeline is a `.zf.json` document in the project's source root — the
+repository root, unless `zebflow.yaml` sets `spec.layout.source`. Author it
+with the DSL (`pipeline_register` over MCP, or `register …` in the project
+console); the JSON is generated. This page is the underlying model.
+The DSL itself: `help("pipeline/dsl")`.
 
-> **Before you write a pipeline node that references a template or credential:**
-> - `web.response --template <path>` — the path must be an exact `rel_path` from `file_list` (e.g. `pages/home.tsx` — always ends in `.tsx`). Call it if you don't have the value in your current context.
-> - `--credential <slug>` — the slug must be exact from `connection_list`. Call it if unsure.
-> Never guess these values. A wrong template path silently serves nothing; a wrong credential slug causes auth failures.
+> Before a node references something by name, read the real value:
+> - `web.response --template <path>` — an exact `rel_path` from `file_list`, ending in `.tsx`. A wrong path is a 500 at request time.
+> - `--credential <id>` — an exact id from `credential_list`. Connection slugs (`connection_list`) are for `connection_describe`, not for `--credential`.
+> - `--auth-credential <id>` — the `jwt_signing_key` (or hmac / api_key) credential id.
 
-`pipeline_list` and `file_list` are semantic indexes, not source dumps. Use `*_list`
-to find the right path, `*_search` to grep implementation content, then `*_get` or
-`*_outline` for the exact file.
+`pipeline_list` and `file_list` are indexes; `pipeline_search` / `file_search`
+grep contents; `pipeline_get` / `file_read` / `file_outline` open one file.
 
 ---
 
-## Template Metadata
+## Where files go
 
-Template metadata is optional but recommended for LLM navigation. Put it in the
-first block comment so the file remains valid TSX/TS/CSS:
+```
+api/posts.zf.json          pipeline (file_rel_path = "api/posts.zf.json")
+jobs/daily-report.zf.json
+pages/post.tsx             template the pipeline renders
+components/post-card.tsx
+scripts/slugify.ts
+globals.css
+docs/schema.md
+```
+
+The folder is the author's choice; `api/`, `pages/`, `jobs/` is the
+convention. The identifier is the path relative to the source root, so
+moving the source root never renames a pipeline. `.zf.json` may be omitted
+when you name one.
+
+Template metadata is optional and helps `file_list query=…` find a page:
 
 ```tsx
 /*
 zebflow:
   title: Blog Home
-  description: Public blog listing page with featured posts and pagination.
-  keywords:
-    - blog
-    - posts
-    - pagination
+  description: Public blog listing with featured posts and pagination.
+  keywords: [blog, posts, pagination]
 */
 ```
 
-`file_list(query=...)` searches `rel_path`, inferred kind, title,
-description, and keywords. Templates without this block still appear in
-`file_list`; their title and description are empty.
-
-## File Location
-
-Inside the source root:
-
-```
-api/
-    auth/login.zf.json
-    posts/list.zf.json
-  pages/
-    home.zf.json
-    auth/login.zf.json
-  jobs/
-    daily-report.zf.json
-```
-
-Naming convention: `<virtual-path>/<name>.zf.json`, relative to the source root.
-
 ---
 
-## JSON Model
-
-Every saved pipeline is a canonical `Pipeline` document. Its executable `PipelineGraph` is stored in `spec`:
+## JSON model
 
 ```json
 {
   "apiVersion": "zebflow.com/v1",
   "kind": "Pipeline",
-  "metadata": { "name": "auth-login" },
+  "metadata": { "name": "api/login" },
   "spec": {
-    "id": "auth-login",
-    "entry_nodes": ["a"],
+    "id": "api/login",
+    "entry_nodes": ["n0"],
     "nodes": [
-      {
-        "id": "a",
-        "kind": "n.trigger.webhook",
-        "input_pins": [],
-        "output_pins": ["out"],
-        "config": { "path": "/api/auth/login", "method": "POST" }
-      },
-      {
-        "id": "b",
-        "kind": "n.pg.query",
-        "input_pins": ["in"],
-        "output_pins": ["out"],
-        "config": {
-          "credential_id": "main-db",
-          "query": "SELECT * FROM users WHERE identifier = $1",
-          "params": "{{ input.identifier }}"
-        }
-      },
-      {
-        "id": "c",
-        "kind": "n.web.response",
-        "input_pins": ["in"],
-        "output_pins": ["out", "error"],
-        "config": { "template": "pages/auth/login.tsx" }
-      }
+      { "id": "n0", "kind": "n.trigger.webhook", "input_pins": [], "output_pins": ["out"],
+        "config": { "path": "/api/login", "method": "POST" } },
+      { "id": "n1", "kind": "n.sekejap.query", "input_pins": ["in"], "output_pins": ["out"],
+        "config": { "query": "SELECT * FROM users WHERE email = $1", "params": "{{ [input.body.email] }}" } },
+      { "id": "n2", "kind": "n.web.response", "input_pins": ["in"], "output_pins": ["out"],
+        "config": { "template": "pages/login.tsx" } }
     ],
     "edges": [
-      { "from_node": "a", "from_pin": "out", "to_node": "b", "to_pin": "in" },
-      { "from_node": "b", "from_pin": "out", "to_node": "c", "to_pin": "in" }
+      { "from_node": "n0", "from_pin": "out", "to_node": "n1", "to_pin": "in" },
+      { "from_node": "n1", "from_pin": "out", "to_node": "n2", "to_pin": "in" }
     ]
   }
 }
 ```
 
-### Key fields
+| Field | Meaning |
+|---|---|
+| `metadata.name`, `spec.id` | the pipeline's identity — the same value, equal to `file_rel_path` without the extension |
+| `spec.entry_nodes` | nodes with no incoming edge; computed by the DSL |
+| `spec.nodes[].id` | `n0, n1, …` in pipe mode; the `[label]` you wrote in graph mode |
+| `spec.nodes[].kind` | the full kind, always `n.…` |
+| `spec.nodes[].input_pins` / `output_pins` | `[]`/`["out"]` for triggers, `["in"]`/`["out"]` for most nodes; logic nodes declare named output pins (`true`/`false`, the `--cases`, `item`) |
+| `spec.nodes[].config` | the node's config keys — each DSL flag maps to one (`--credential` → `credential_id`); the `-- "body"` maps to `query` for query nodes and `source` for `script` |
+| `spec.edges[]` | `from_node:from_pin → to_node:to_pin`; `from_pin` names a pin (`out`, `true`, a case). Any node's failure may also be routed from the pin `error`. |
 
-| Field | Type | Description |
-|---|---|---|
-| `apiVersion` | string | Always `"zebflow.com/v1"` |
-| `kind` | string | Always `"Pipeline"` |
-| `metadata.name` | string | Stable pipeline name |
-| `spec.id` | string | Pipeline slug, matching `metadata.name` |
-| `spec.entry_nodes` | string[] | IDs of entry nodes, computed by the DSL when omitted there |
-| `spec.nodes` | Node[] | All nodes in the graph |
-| `spec.edges` | Edge[] | All pin-to-pin connections |
-
-### Node fields
-
-| Field | Type | Description |
-|---|---|---|
-| `id` | string | Node label (e.g. `"a"`, `"b"`, `"trigger"`, `"n0"`) |
-| `kind` | string | Full node kind (e.g. `"n.trigger.webhook"`, `"n.pg.query"`) |
-| `input_pins` | string[] | Usually `["in"]` or `[]` for triggers |
-| `output_pins` | string[] | Usually `["out"]`; logic nodes have named pins |
-| `config` | object | Node-specific configuration (credential IDs, SQL, template paths, etc.) |
-
-### Edge fields
-
-| Field | Type | Description |
-|---|---|---|
-| `from_node` | string | Source node ID |
-| `from_pin` | string | Output pin name (`"out"` or named pin like `"true"`, `"false"`) |
-| `to_node` | string | Target node ID |
-| `to_pin` | string | Input pin name (usually `"in"`) |
+`pipeline_get` returns this document; `pipeline_describe` renders it back as DSL
+with the node ids, which is what `pipeline_patch node_id=` wants.
 
 ---
 
-## Pipeline Lifecycle
+## Lifecycle
 
 | Status | Meaning |
 |---|---|
-| `draft` | Registered but never activated — not serving traffic |
-| `active` | Live; active snapshot matches current source |
-| `stale` | Live but source changed since last activation — needs re-activate |
-| `inactive` | Explicitly deactivated; source retained |
+| `draft` | registered, never activated — serves nothing |
+| `active` | live, and the live snapshot equals the file |
+| `stale` | live, but the file changed since activation (a re-register or a patch) — traffic still runs the old snapshot until `pipeline_activate` |
 
-Workflow: `register` → `activate` → (edit → `activate` again to unstale)
-
----
-
-## Webhook Ingress URL
-
-When activated, webhook pipelines receive traffic at:
-
-```
-{METHOD} /wh/{owner}/{project}/{configured-path}
-```
-
-Example: `trigger.webhook --path /api/auth/login --method POST` →
-
-```
-POST /wh/superadmin/my-project/api/auth/login
-```
+`pipeline_deactivate` returns a pipeline to `draft` and keeps the file.
+Activation checks the graph before writing the live snapshot — required node
+config present, every node kind available (built-in or an installed bundle),
+every `zeb/*` library it needs enabled — and refuses with the reason. It does
+not compile templates: a wrong `--template` path only shows at request time,
+which is why you fetch the route after activating.
 
 ---
 
-## Node Kind Reference
+## Ingress
 
-All node kinds use the `n.` prefix. Short aliases work in DSL (e.g. `pg.query` → `n.pg.query`).
+A webhook pipeline serves at `{METHOD} /wh/{owner}/{project}{--path}`:
 
-| Kind | Short alias | Input pins | Output pins |
-|---|---|---|---|
-| `n.trigger.webhook` | `trigger.webhook` | _(none)_ | `out` |
-| `n.trigger.schedule` | `trigger.schedule` | _(none)_ | `out` |
-| `n.trigger.manual` | `trigger.manual` | _(none)_ | `out` |
-| `n.trigger.ws` | `trigger.ws` | _(none)_ | `out` |
-| `n.trigger.kv.subscribe` | `trigger.kv.subscribe` | _(none)_ | `out` |
-| `n.trigger.function` | `trigger.function` | _(none)_ | `out` |
-| `n.script` | `script` | `in` | `out` |
-| `n.pg.query` | `pg.query` | `in` | `out` |
-| `n.http.request` | `http.request` | `in` | `out` |
-| `n.web.response` | `web.response` | `in` | `out`, `error` |
-| `n.web.static.generate` | `web.static.generate` | `in` | `out` |
-| `n.sekejap.query` | `sekejap.query` | `in` | `out` |
-| `n.table.convert` | `table.convert` | `in` | `out` |
-| `n.table.query` | `table.query` | `in` | `out` |
-| `n.auth.token.create` | `auth.token.create` | `in` | `out` |
-| `n.logic.if` | `logic.if` | `in` | `true`, `false` |
-| `n.logic.match` | `logic.match` | `in` | _(named cases)_ |
-| `n.logic.collect` | `logic.collect` | `in` | `out` |
-| `n.logic.foreach` | `logic.foreach` | `in` | `item` |
-| `n.logic.reduce` | `logic.reduce` | `in` | `out` |
-| `n.logic.retry` | `logic.retry` | `in` | `retry`, `failed` |
-| `n.ws.emit` | `ws.emit` | `in` | `out` |
-| `n.ws.sync_state` | `ws.sync_state` | `in` | `out` |
-| `n.kv.set` | `kv.set` | `in` | `out` |
-| `n.kv.get` | `kv.get` | `in` | `out` |
-| `n.kv.exists` | `kv.exists` | `in` | `out` |
-| `n.kv.del` | `kv.del` | `in` | `out` |
-| `n.kv.expire` | `kv.expire` | `in` | `out` |
-| `n.kv.incr` | `kv.incr` | `in` | `out` |
-| `n.kv.publish` | `kv.publish` | `in` | `out` |
-| `n.crypto` | `crypto` | `in` | `out` |
-| `n.ai.agent` | `ai.agent` | `in` | `out` |
+```
+trigger.webhook --path /api/login --method POST   →   POST /wh/acme/shop/api/login
+```
+
+The same route answers a browser (HTML or redirect) and a `fetch` (JSON) —
+`web.response` decides by what it is given, and auth failures follow the
+request kind (303 to the credential's `auth_redirect` for navigations, 401/403
+JSON otherwise). Clients that send `Accept: text/event-stream` get the run as
+an SSE stream instead of one response.
 
 ---
 
-## Config Key Reference
+## What a webhook delivers
 
-Key config fields and their DSL flag equivalents:
+User data is under `input.body`, never at the root:
 
-| Node | Config key | DSL flag | Description |
-|---|---|---|---|
-| `n.pg.query` | `credential_id` | `--credential` | PostgreSQL credential ID; literal or `{{ expr }}`, e.g. `--credential "{{ input.cred_id }}"` |
-| `n.pg.query` | `query` | `-- <sql>` (body) | SQL query; literal or `{{ expr }}` for a computed query string, e.g. `--query "{{ expr }}"` |
-| `n.pg.query` | `params` | `--params` | Bind params for `$1`/`$2`: dot path, e.g. `--params "{{ input.identifier }}"`, or array expr, e.g. `--params "{{ [input.id, input.name] }}"` |
-| `n.sekejap.query` | `query` | `-- <sql>` (body) | Sekejap SQL query; literal or `{{ expr }}` for a computed query string |
-| `n.sekejap.query` | `params` | `--params` | Bind params for `$1`/`$2`: dot path, e.g. `--params "{{ input.params.id }}"`, or array expr, e.g. `--params "{{ [$trigger.body.slug, $trigger.body.title] }}"` |
-| `n.table.convert` | `from` | `--from` | ZebFS object path, literal or `{{ expr }}` returning upstream rows, e.g. `uploads/data.csv` or `--from "{{ input.rows }}"` |
-| `n.table.convert` | `from_format` | `--from-format` | Source format: `csv`, `json`, `ndjson`, or `parquet`; inferred from path when possible |
-| `n.table.convert` | `to_path` | `--to` | ZebFS object path to write |
-| `n.table.convert` | `to_format` | `--to-format` | Target format: `csv`, `json`, `ndjson`, or `parquet`; inferred from path when possible |
-| `n.table.convert` | `to_json` | `--to-json` | Emit rows under `table.data` for downstream nodes |
-| `n.table.query` | `sources` | `--from` | Repeated list of source bindings, each `<path-or-expr> as <alias>` |
-| `n.table.query` | `query` | `--query` or `-- <sql>` | Read-only GeoDataFusion SQL query |
-| `n.table.query` | `engine` | `--engine` | Query engine. Only supported value: `geodatafusion` |
-| `n.table.query` | `params` | `--params` | Bind params for `$1`/`$2`: dot path, e.g. `--params "{{ input.some.path }}"`, or array expr, e.g. `--params "{{ [a, b] }}"` |
-| `n.table.query` | `to_path` | `--to` | Optional ZebFS object path to write query rows |
-| `n.table.query` | `to_format` | `--format` | Output format: `csv`, `json`, `ndjson`, or `parquet`; inferred from `--to` when possible |
-| `n.table.query` | `to_json` | `--to-json` | Emit rows under `table.data` for downstream nodes |
-| `n.table.query` | `preview` | `--preview` | Number of rows included in `table.preview` |
-| `n.table.query` | `limit` | `--limit` | Maximum rows materialized from the query result |
-| `n.script` | `source` | `-- <code>` (body) | Script source code |
-| `n.web.response` | `template` | `--template` | TSX path relative to `templates/`, e.g. `pages/home.tsx` (`.tsx` extension optional) |
-| `n.web.response` | `location` | `--location` | Redirect URL; supports `{{ input.field }}` for dynamic resolution from payload |
-| `n.web.response` | `set_cookie` | `--set-cookie` | Cookie spec string: `name=X,value={{ input.token }},http-only,max-age=86400` |
-| `n.web.response` | `status` | `--status` | HTTP status code |
-| `n.web.static.generate` | `template` | `--template` | TSX path relative to the project pipeline workspace, e.g. `pages/lyric.tsx` |
-| `n.web.static.generate` | `output_path` | `--output-path` | Zebflow FS object path; supports `{{ expr }}` |
-| `n.web.static.generate` | `route` | `--route` | Optional `ctx.route` override used during generation |
-| `n.web.static.generate` | `on_conflict` | `--on-conflict` | `overwrite`, `skip`, or `error` |
-| `n.trigger.webhook` | `auth_type` | `--auth-type` | `none`, `jwt`, `hmac`, `api_key` |
-| `n.trigger.webhook` | `auth_credential` | `--auth-credential` | Credential ID for auth verification |
-| `n.auth.token.create` | `credential_id` | `--credential` | JWT signing key credential ID |
-| `n.auth.token.create` | `expires_in` | `--expires-in` | Token lifetime in seconds |
+| Content-Type | `input.body` |
+|---|---|
+| `application/json` | the parsed value (object, array, …) |
+| `application/x-www-form-urlencoded` | `{ field: value }`, percent-decoded |
+| `multipart/form-data` | text fields as `{ field: value }`; files under `input.files.<field>` as FileRef objects |
+| GET, or no body | `null` |
 
----
+Beside it, always: `input.params` (path parameters), `input.query`,
+`input.path`, `input.method`; and `input.auth` when `--auth-type` verified a
+token. Repeated fields, `field[]` and `field[0]` become arrays, so a
+multi-upload is `input.files.photos[0]`.
 
-## Webhook Input Shape
-
-Body fields are always merged to root — regardless of encoding. Path params and query string are nested. This means a pipeline works the same whether the client sends JSON, a form POST, or a multipart upload.
-
-### `application/json`
+A FileRef:
 
 ```json
-{ "email": "user@example.com", "password": "secret" }
+{ "__zf_type": "file_ref", "backend": "zebfs", "ref": "tmp/runs/<request_id>/files/<uuid>.jpg",
+  "filename": "photo.jpg", "mime": "image/jpeg", "kind": "image", "size": 12345,
+  "sha256": "sha256:<64 hex>", "lifecycle": "temporary", "origin": "webhook", "trust": "untrusted" }
 ```
 
-→ `input.email`, `input.password`
+It is temporary until a node keeps it — `fs.save` writes it into the project's
+files and answers with the durable path. Bytes never travel inline in the
+payload.
 
-### `application/x-www-form-urlencoded` (native HTML form POST)
+---
 
-```
-email=user%40example.com&password=secret
-```
+## Flags and bodies
 
-→ `input.body.email`, `input.body.password` — percent-decoded automatically
+A node's flags are declared in its definition and the parser refuses any it
+does not know, so `help(topic="pipeline/nodes/<kind>")` is the reference.
+Three conventions hold everywhere:
 
-### `multipart/form-data` (file upload)
+- **Query nodes take SQL in the body**: `sekejap.query --params "{{ [input.body.id] }}" -- "SELECT … WHERE id = $1"`. `--query "…"` is the same thing as a flag. `sqlite.*` binds `?1, ?2`.
+- **`script` takes code in the body**: `script -- "return { ok: true }"`. `input` and `ctx` are in scope; the return value is the next payload.
+- **Any value with `{{ }}` or a space is one quoted argument.** A whole-value expression keeps its JSON type; an interpolated one stringifies.
 
-Text fields go under `input.body`. Files go under `input.files.{field_name}` as
-FileRef metadata:
-
-```json
-{
-  "body": {
-    "email": "user@example.com"
-  },
-  "files": {
-    "avatar": {
-      "__zf_type": "file_ref",
-      "backend": "zebfs",
-      "ref": "tmp/runs/<request_id>/files/<uuid>.jpg",
-      "filename": "photo.jpg",
-      "mime": "image/jpeg",
-      "kind": "image",
-      "size": 12345,
-      "sha256": "sha256:<64 hex>",
-      "lifecycle": "temporary",
-      "origin": "webhook",
-      "trust": "untrusted"
-    }
-  }
-}
-```
-
-For multiple uploads, prefer repeated `FormData.append("photos", file)` calls.
-`photos[]` and `photos[0]` are also normalized to `input.files.photos` arrays,
-so downstream nodes can address a single file with dot paths like
-`files.photos.0`.
-
-### Always present
-
-```json
-{
-  "params": { "id": "42" },
-  "query": { "page": "1" },
-  "auth": { "player_id": "...", "roles": [] }
-}
-```
-
-`auth` is injected by the webhook trigger when `--auth-type jwt` is configured and the token is valid.
+Node kinds and short aliases: the DSL accepts `sekejap.query` for
+`n.sekejap.query`; the stored JSON always holds the full kind.

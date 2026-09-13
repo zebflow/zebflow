@@ -26,11 +26,11 @@ export default function NodeFieldSecureRequestBindings({ field, value, onChange 
     <Field label={field.label} description={field.help}>
       <div className="flex flex-col gap-3">
         {!credential ? (
-          <div className="rounded-md border border-dashed border-ui-border px-3 py-3 text-sm text-body-soft">
+          <div className="rounded-md border border-dashed border-border px-3 py-3 text-sm text-muted-foreground">
             Select a secure request profile first. Its required variables will appear here.
           </div>
         ) : variables.length === 0 ? (
-          <div className="rounded-md border border-ui-border bg-ui-bg px-3 py-3 text-sm text-body-soft">
+          <div className="rounded-md border border-border bg-popover px-3 py-3 text-sm text-muted-foreground">
             This profile does not declare any runtime variables.
           </div>
         ) : (
@@ -41,21 +41,21 @@ export default function NodeFieldSecureRequestBindings({ field, value, onChange 
             const valueType = String(item?.value_type || "").trim();
             const required = item?.required === true;
             return (
-              <div key={name} className="rounded-md border border-ui-border bg-ui-bg px-3 py-3">
+              <div key={name} className="rounded-md border border-border bg-popover px-3 py-3">
                 <div className="mb-2 flex flex-wrap items-center gap-2">
-                  <div className="text-sm font-medium text-body">{label}</div>
-                  <code className="rounded bg-surface-2 px-1.5 py-0.5 text-xs text-body-soft">{name}</code>
+                  <div className="text-sm font-medium text-foreground">{label}</div>
+                  <code className="rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">{name}</code>
                   {required ? (
                     <span className="rounded bg-danger/10 px-1.5 py-0.5 text-[11px] font-medium text-danger">Required</span>
                   ) : (
-                    <span className="rounded bg-surface-2 px-1.5 py-0.5 text-[11px] font-medium text-body-soft">Optional</span>
+                    <span className="rounded bg-muted px-1.5 py-0.5 text-[11px] font-medium text-muted-foreground">Optional</span>
                   )}
                   {valueType ? (
-                    <span className="rounded bg-surface-2 px-1.5 py-0.5 text-[11px] font-medium text-body-soft">{valueType}</span>
+                    <span className="rounded bg-muted px-1.5 py-0.5 text-[11px] font-medium text-muted-foreground">{valueType}</span>
                   ) : null}
                 </div>
                 {description ? (
-                  <p className="mb-2 text-xs leading-relaxed text-body-soft">{description}</p>
+                  <p className="mb-2 text-xs leading-relaxed text-muted-foreground">{description}</p>
                 ) : null}
                 <Input
                   type="text"
@@ -63,7 +63,7 @@ export default function NodeFieldSecureRequestBindings({ field, value, onChange 
                   placeholder={String(item?.default_expr || "").trim() || "input.player_id"}
                   onInput={(e) => updateBinding(name, e.currentTarget.value)}
                 />
-                <p className="mt-1 text-[11px] text-body-soft">
+                <p className="mt-1 text-[11px] text-muted-foreground">
                   Enter a JS expression, for example <code>input.player_id</code> or <code>ctx.nodes.n3.unit.code</code>.
                 </p>
               </div>

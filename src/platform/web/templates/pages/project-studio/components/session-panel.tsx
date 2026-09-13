@@ -303,7 +303,7 @@ export function SessionPanel({ owner, project }) {
     } catch (_) {}
   }
 
-  const labelCls = "text-[0.65rem] font-semibold tracking-widest text-body-soft uppercase";
+  const labelCls = "text-[0.65rem] font-semibold tracking-widest text-muted-foreground uppercase";
   const sectionCls = "px-4 py-3 border-b border-border";
   const rotationLabel = rotationEpoch ? formatSessionTime(rotationEpoch) : "Off";
 
@@ -323,24 +323,24 @@ export function SessionPanel({ owner, project }) {
 
       <DropdownMenuContent
         align="right"
-        className="w-[760px] border-border bg-surface"
+        className="w-[760px] border-border bg-card"
       >
         {/* ── Header ── */}
         <div className="flex items-center justify-between gap-3 px-4 py-3 border-b border-border">
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-2">
-              <p className="text-sm font-semibold text-body">MCP Session</p>
+              <p className="text-sm font-semibold text-foreground">MCP Session</p>
               <span className={cx(
                 "inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[0.6rem] font-semibold tracking-wide",
                 enabled
                   ? "bg-green-900/40 text-green-400 border border-green-800/60"
-                  : "bg-surface-3 text-body-soft border border-border"
+                  : "bg-accent text-muted-foreground border border-border"
               )}>
                 <span className={cx("w-1.5 h-1.5 rounded-full", enabled ? "bg-green-500" : "bg-gray-500")} />
                 {enabled ? "Active" : "Inactive"}
               </span>
             </div>
-            <p className="text-[0.68rem] text-body-soft mt-0.5 leading-snug">
+            <p className="text-[0.68rem] text-muted-foreground mt-0.5 leading-snug">
               Remote control for LLM agents (Cursor, Claude Code, etc.)
             </p>
           </div>
@@ -392,7 +392,7 @@ export function SessionPanel({ owner, project }) {
                     size="xs"
                     onClick={handleResetToken}
                     disabled={resetting}
-                    className="text-[0.68rem] text-body-soft hover:text-body"
+                    className="text-[0.68rem] text-muted-foreground hover:text-foreground"
                   >
                     {resetting ? "Resetting…" : "↺ Reset"}
                   </Button>
@@ -418,22 +418,22 @@ export function SessionPanel({ owner, project }) {
                   {copied ? "✓" : "Copy"}
                 </Button>
               </div>
-              <div className="mt-2 grid grid-cols-3 gap-2 text-[0.64rem] text-body-soft">
+              <div className="mt-2 grid grid-cols-3 gap-2 text-[0.64rem] text-muted-foreground">
                 <div>
                   <span className="block uppercase tracking-widest">Created</span>
-                  <span className="block truncate text-body">{formatSessionTime(createdAt)}</span>
+                  <span className="block truncate text-foreground">{formatSessionTime(createdAt)}</span>
                 </div>
                 <div>
                   <span className="block uppercase tracking-widest">Auto reset</span>
-                  <span className="block truncate text-body">{formatAutoReset(autoResetSeconds)}</span>
+                  <span className="block truncate text-foreground">{formatAutoReset(autoResetSeconds)}</span>
                 </div>
                 <div>
                   <span className="block uppercase tracking-widest">Rotation epoch</span>
-                  <span className="block truncate text-body">{rotationLabel}</span>
+                  <span className="block truncate text-foreground">{rotationLabel}</span>
                 </div>
               </div>
               {token && (
-                <p className="mt-1.5 text-[0.65rem] leading-snug text-body-soft">
+                <p className="mt-1.5 text-[0.65rem] leading-snug text-muted-foreground">
                   Reset invalidates existing MCP clients immediately.
                 </p>
               )}

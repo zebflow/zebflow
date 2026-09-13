@@ -29,7 +29,7 @@ function StatementChip({ kind, count }) {
       className={
         destructive
           ? "inline-flex items-center gap-1.5 rounded-md border border-red-500/40 bg-red-500/10 px-2 py-1 font-mono text-[0.7rem] text-red-600"
-          : "inline-flex items-center gap-1.5 rounded-md border border-ui-border bg-ui-bg-subtle px-2 py-1 font-mono text-[0.7rem] text-ui-text"
+          : "inline-flex items-center gap-1.5 rounded-md border border-border bg-muted px-2 py-1 font-mono text-[0.7rem] text-foreground"
       }
     >
       <span>{kind}</span>
@@ -47,10 +47,10 @@ export function DatabaseInitializationCard({ report }) {
   const unreadable = String(report?.unreadable || "");
 
   return (
-    <div className="rounded-lg border border-ui-border bg-ui-bg p-3">
+    <div className="rounded-lg border border-border bg-popover p-3">
       <div className="flex flex-wrap items-center gap-2">
         <Badge variant="secondary" label={String(report?.engine || "unknown engine")} />
-        <span className="min-w-0 break-all font-mono text-xs text-ui-text">{String(report?.source || "")}</span>
+        <span className="min-w-0 break-all font-mono text-xs text-foreground">{String(report?.source || "")}</span>
       </div>
 
       <div
@@ -83,7 +83,7 @@ export function DatabaseInitializationCard({ report }) {
       ) : null}
 
       <div className="mt-3">
-        <p className="m-0 text-[0.7rem] font-mono uppercase tracking-widest text-ui-text-muted">
+        <p className="m-0 text-[0.7rem] font-mono uppercase tracking-widest text-muted-foreground">
           Statements ({total})
         </p>
         {rows.length ? (
@@ -91,12 +91,12 @@ export function DatabaseInitializationCard({ report }) {
             {rows.map((row) => <StatementChip key={row.kind} kind={row.kind} count={row.count} />)}
           </div>
         ) : (
-          <p className="m-0 mt-1 text-xs text-ui-text-soft">No statements.</p>
+          <p className="m-0 mt-1 text-xs text-muted-foreground">No statements.</p>
         )}
       </div>
 
       <div className="mt-3">
-        <p className="m-0 text-[0.7rem] font-mono uppercase tracking-widest text-ui-text-muted">
+        <p className="m-0 text-[0.7rem] font-mono uppercase tracking-widest text-muted-foreground">
           Tables touched ({tables.length})
         </p>
         {tables.length ? (
@@ -104,19 +104,19 @@ export function DatabaseInitializationCard({ report }) {
             {tables.map((table, index) => (
               <span
                 key={`table-${index}`}
-                className="inline-flex items-center rounded-md border border-ui-border bg-ui-bg-subtle px-2 py-1 font-mono text-[0.7rem] text-ui-text"
+                className="inline-flex items-center rounded-md border border-border bg-muted px-2 py-1 font-mono text-[0.7rem] text-foreground"
               >
                 {String(table)}
               </span>
             ))}
           </div>
         ) : (
-          <p className="m-0 mt-1 text-xs text-ui-text-soft">None named.</p>
+          <p className="m-0 mt-1 text-xs text-muted-foreground">None named.</p>
         )}
       </div>
 
       <div className="mt-3">
-        <p className="m-0 text-[0.7rem] font-mono uppercase tracking-widest text-ui-text-muted">
+        <p className="m-0 text-[0.7rem] font-mono uppercase tracking-widest text-muted-foreground">
           Destructive statements ({destructive.length})
         </p>
         {destructive.length ? (
@@ -131,7 +131,7 @@ export function DatabaseInitializationCard({ report }) {
             ))}
           </ul>
         ) : (
-          <p className="m-0 mt-1 text-xs text-ui-text-soft">
+          <p className="m-0 mt-1 text-xs text-muted-foreground">
             None. Nothing in this file drops, deletes, truncates, or alters.
           </p>
         )}
@@ -143,17 +143,17 @@ export function DatabaseInitializationCard({ report }) {
 export default function SqlReport({ reports, executeSchema = true, emptyNote }) {
   const items = Array.isArray(reports) ? reports : [];
   return (
-    <section className="rounded-lg border border-ui-border bg-ui-bg-muted/30 p-3">
+    <section className="rounded-lg border border-border bg-accent/30 p-3">
       <div className="flex flex-wrap items-baseline justify-between gap-2">
-        <p className="m-0 text-sm font-semibold text-ui-text">Install-time SQL</p>
-        <p className="m-0 text-xs text-ui-text-soft">
+        <p className="m-0 text-sm font-semibold text-foreground">Install-time SQL</p>
+        <p className="m-0 text-xs text-muted-foreground">
           {items.length} file{items.length === 1 ? "" : "s"} of SQL this install would replay
         </p>
       </div>
       {items.length ? (
         <>
           {executeSchema ? null : (
-            <p className="m-0 mt-2 rounded-md border border-ui-border bg-ui-bg px-3 py-2 text-xs text-ui-text-soft">
+            <p className="m-0 mt-2 rounded-md border border-border bg-popover px-3 py-2 text-xs text-muted-foreground">
               You have turned execution off, so none of the statements below run. The files are still
               written into the repository and this is still what they would do when you run them.
             </p>
@@ -165,7 +165,7 @@ export default function SqlReport({ reports, executeSchema = true, emptyNote }) 
           </div>
         </>
       ) : (
-        <p className="m-0 mt-2 text-xs text-ui-text-soft">
+        <p className="m-0 mt-2 text-xs text-muted-foreground">
           {emptyNote || "This package carries no install-time SQL. Nothing is replayed into any store."}
         </p>
       )}

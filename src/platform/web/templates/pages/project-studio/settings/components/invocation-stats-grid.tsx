@@ -21,9 +21,9 @@ export default function InvocationStatsGrid({ stats }) {
   return (
     <div className="grid grid-cols-4 gap-2 mb-4">
       {cells.map((cell) => (
-        <div key={cell.label} className="border border-dark-border bg-dark-panel p-3">
-          <p className="text-[0.66rem] uppercase tracking-[0.08em] text-body-soft">{cell.label}</p>
-          <p className="mt-1 text-[1rem] font-semibold text-body">{cell.value}</p>
+        <div key={cell.label} className="border border-border bg-dark-panel p-3">
+          <p className="text-[0.66rem] uppercase tracking-[0.08em] text-muted-foreground">{cell.label}</p>
+          <p className="mt-1 text-[1rem] font-semibold text-foreground">{cell.value}</p>
         </div>
       ))}
     </div>

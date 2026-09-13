@@ -1,5 +1,9 @@
 # zeb/use
 
+```tsx
+import { useDebounce, useClipboard } from "zeb/use";
+```
+
 `zeb/use` provides utility hooks for common UI and browser behavior.
 
 Use it when the core Zeb React hooks are not enough and you want a Zebflow-native helper instead of adding random browser code.

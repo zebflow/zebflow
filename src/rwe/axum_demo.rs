@@ -618,6 +618,7 @@ pub fn build_dx_test_router() -> Result<Router, String> {
     let options = ReactiveWebOptions {
         templates: TemplateOptions {
             template_root: Some(dir.clone()),
+            library_roots: Default::default(),
             ..Default::default()
         },
         processors: vec!["tailwind".to_string()],

@@ -18,8 +18,8 @@ export default function ValidationNoticeDialog({ notice, onClose }) {
     >
       {notice?.example ? (
         <div className="mt-3">
-          <p className="mb-2 text-xs font-medium uppercase tracking-[0.14em] text-body-soft">Example</p>
-          <pre className="overflow-auto rounded-md border border-ui-border/70 bg-ui-bg-muted/30 p-3 text-xs text-body">{notice.example}</pre>
+          <p className="mb-2 text-xs font-medium uppercase tracking-[0.14em] text-muted-foreground">Example</p>
+          <pre className="overflow-auto rounded-md border border-border/70 bg-accent/30 p-3 text-xs text-foreground">{notice.example}</pre>
         </div>
       ) : null}
     </ConfirmDialog>

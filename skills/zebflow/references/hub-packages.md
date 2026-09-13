@@ -2,15 +2,11 @@
 
 Hub distributes inspectable source packages, not backups.
 
-Package families:
+Package kinds (`src/platform/services/hub.rs`):
 
-- template
-- pipeline
-- folder
-- library
-- example
-- project bundle
-- node bundle
+- `pipeline_bundle`, `template_bundle`, `folder_bundle`, `project_bundle` — cloned into the repo as ordinary source, not tracked afterwards
+- `node_bundle`, `rwe_library` — installed and recorded in `zeb.lock` (materialized under `data/hub/`)
+- `skill` — one `skills/<name>/` folder, cloned to `skills/<name>/` in the receiver's source root; blessed skills come from `blessed/skills/` in the binary (`src/platform/skills/`)
 
 Review before add should show:
 

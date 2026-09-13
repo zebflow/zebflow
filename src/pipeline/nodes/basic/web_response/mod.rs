@@ -85,7 +85,7 @@ pub fn definition() -> NodeDefinition {
             DslFlag {
                 flag: "--template".to_string(),
                 config_key: "template".to_string(),
-                description: "TSX page file relative to templates/, e.g. pages/home.tsx. \
+                description: "TSX page file relative to the project source root, e.g. pages/home.tsx (the .tsx is required). \
                     Activates RWE mode — upstream payload becomes template state."
                     .to_string(),
                 kind: DslFlagKind::Scalar,
@@ -394,7 +394,9 @@ pub fn parse_cookie_spec(spec: &str) -> Option<Value> {
         }
     }
 
-    if name.is_empty() || value.is_empty() {
+    // An empty value is how a cookie is cleared (`value=,max-age=0` on logout);
+    // only a missing name makes the spec meaningless.
+    if name.is_empty() {
         return None;
     }
 

@@ -20,14 +20,14 @@ const GITLAB_TOKEN_HELP =
 const GITHUB_TOKEN_HELP =
   "In GitHub: Settings → Developer settings → Personal access tokens → Tokens (classic). Select the repo scope.";
 const SELECT_CLASS =
-  "h-10 w-full rounded-md border border-ui-border bg-ui-bg px-3 text-sm text-ui-text shadow-sm transition-all focus:border-brand-blue/40 focus:outline-none focus:ring-1 focus:ring-brand-blue/40";
+  "h-10 w-full rounded-md border border-border bg-popover px-3 text-sm text-foreground shadow-sm transition-all focus:border-ring/40 focus:outline-none focus:ring-1 focus:ring-ring/40";
 
 export const page = {
   html: {
     lang: "en",
   },
   body: {
-    className: "min-h-screen bg-ui-bg-muted text-ui-text font-sans",
+    className: "min-h-screen bg-background text-foreground font-sans",
   },
   navigation: "history",
 };
@@ -44,23 +44,23 @@ export function getPage(input) {
 function SectionHeading({ title, description }) {
   return (
     <header className="mb-5">
-      <h2 className="text-[26px] font-semibold leading-tight tracking-tight text-ui-text">{title}</h2>
-      <p className="mt-1 max-w-2xl text-[15px] leading-6 text-ui-text-soft">{description}</p>
+      <h2 className="text-[26px] font-semibold leading-tight tracking-tight text-foreground">{title}</h2>
+      <p className="mt-1 max-w-2xl text-[15px] leading-6 text-muted-foreground">{description}</p>
     </header>
   );
 }
 
 function DetailRow({ label, children, mono = false }) {
   return (
-    <p className={mono ? "truncate font-mono text-[11.5px] text-ui-text-muted" : "text-[13.5px] leading-7 text-ui-text-soft"}>
-      <span className={mono ? "font-sans font-semibold text-ui-text" : "font-semibold text-ui-text"}>{label}:</span>{" "}
+    <p className={mono ? "truncate font-mono text-[11.5px] text-muted-foreground" : "text-[13.5px] leading-7 text-muted-foreground"}>
+      <span className={mono ? "font-sans font-semibold text-foreground" : "font-semibold text-foreground"}>{label}:</span>{" "}
       {children}
     </p>
   );
 }
 
 function ProjectCard({ item, index }) {
-  const accent = item?.is_app ? "var(--color-brand-orange)" : index % 3 === 2 ? "var(--color-brand-blue)" : "var(--color-ui-text-muted)";
+  const accent = item?.is_app ? "var(--primary)" : index % 3 === 2 ? "var(--info)" : "var(--muted-foreground)";
   const primaryAction = item?.open_app_path ? "Play" : "Edit";
   const primaryHref = item?.open_app_path || item?.edit_path || item?.path || "#";
 
@@ -69,7 +69,7 @@ function ProjectCard({ item, index }) {
       {item?.is_app ? (
         <div aria-hidden="true" className="pointer-events-none absolute right-0 top-0 h-16 w-32 opacity-35">
           <svg width="128" height="64" viewBox="0 0 128 64" fill="none">
-            <path d="M0 42 C 32 42, 42 16, 74 16 S 116 38, 128 24" stroke="var(--color-brand-orange)" strokeWidth="1.5" strokeDasharray="2 7" />
+            <path d="M0 42 C 32 42, 42 16, 74 16 S 116 38, 128 24" stroke="var(--primary)" strokeWidth="1.5" strokeDasharray="2 7" />
           </svg>
         </div>
       ) : null}
@@ -118,7 +118,7 @@ function StatusBadge({ status }) {
       ? "border-emerald-200 bg-emerald-50 text-emerald-700"
       : value === "dangling"
         ? "border-amber-200 bg-amber-50 text-amber-700"
-        : "border-ui-border bg-ui-bg-muted text-ui-text-soft";
+        : "border-border bg-accent text-muted-foreground";
   return (
     <span className={`inline-flex rounded-full border px-2.5 py-1 font-mono text-[10px] font-semibold uppercase tracking-[0.08em] ${tone}`}>
       {value}
@@ -140,7 +140,7 @@ function OfficeCard({ office, index }) {
           </div>
           <StatusBadge status={office?.availability} />
         </div>
-        <div className="my-4 h-px bg-ui-border" />
+        <div className="my-4 h-px bg-border" />
         <div>
           <DetailRow label="State">{office?.resource_state || "unknown"}</DetailRow>
           <DetailRow label="Address" mono>
@@ -227,14 +227,14 @@ export default function Page(input) {
         <section className="mx-auto w-full max-w-[1960px] px-6 sm:px-10">
           <header className="flex flex-col gap-6 sm:flex-row sm:items-end sm:justify-between">
             <div>
-              <h1 className="text-[40px] font-semibold leading-none tracking-tight text-ui-text">
-                Projects for <span className="text-brand-orange">{input.owner}</span>
+              <h1 className="text-[40px] font-semibold leading-none tracking-tight text-foreground">
+                Projects for <span className="text-primary">{input.owner}</span>
               </h1>
-              <p className="mt-3 max-w-2xl text-base leading-6 text-ui-text-soft">
+              <p className="mt-3 max-w-2xl text-base leading-6 text-muted-foreground">
                 Create and manage automation projects inside this office.
               </p>
               {input?.app_version ? (
-                <p className="mt-1.5 font-mono text-[11px] tracking-wide text-ui-text-muted">v{input.app_version}</p>
+                <p className="mt-1.5 font-mono text-[11px] tracking-wide text-muted-foreground">v{input.app_version}</p>
               ) : null}
             </div>
             <div className="flex shrink-0 flex-wrap gap-3">
@@ -250,7 +250,7 @@ export default function Page(input) {
             </div>
           </header>
 
-          <div className="my-8 h-px bg-ui-border" />
+          <div className="my-8 h-px bg-border" />
 
           {/* Above the project list, because an invitation is about a project
               that is not in that list yet. */}

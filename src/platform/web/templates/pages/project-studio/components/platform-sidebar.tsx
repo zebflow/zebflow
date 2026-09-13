@@ -1,18 +1,14 @@
 import { cx, Link, useState } from "zeb/react";
 
-function navRowCx(expanded: boolean, isLight: boolean, routeClass: string) {
+function navRowCx(expanded: boolean, routeClass: string) {
   const active = routeClass?.includes("is-active");
   return cx(
     "group flex items-center gap-3 px-3 py-1.5 text-[0.78rem] transition-colors",
     expanded ? "justify-start" : "justify-center",
     !active &&
-      (isLight
-        ? "text-gray-600 hover:bg-gray-100 hover:text-gray-900"
-        : "border-l-2 border-dark-menus text-dark-text1 hover:bg-gray-100/10 hover:text-gray-100"),
+      ("border-l-2 border-transparent text-muted-foreground hover:bg-accent hover:text-foreground"),
     active &&
-      (isLight
-        ? "bg-orange-500 font-medium text-white shadow-sm"
-        : "border-l-2 border-solid border-dark-accent1 bg-dark-accent1/10 font-medium text-dark-accent1 shadow-sm"),
+      ("border-l-2 border-solid border-primary bg-primary/10 font-medium text-primary shadow-sm"),
     routeClass,
   );
 }
@@ -21,8 +17,6 @@ export default function PlatformSidebar(props) {
   const nav = props?.nav ?? {};
   const links = nav?.links ?? {};
   const classes = nav?.classes ?? {};
-  const theme = props?.theme === "light" ? "light" : "dark";
-  const isLight = theme === "light";
   const [expanded, setExpanded] = useState(false);
 
   return (
@@ -31,13 +25,13 @@ export default function PlatformSidebar(props) {
         className={cx(
           "flex h-full flex-col overflow-visible border-r shadow-lg transition-all duration-200 ease-out",
           expanded ? "w-60 shadow-2xl" : "w-16 shadow-md",
-          isLight ? "border-gray-200 bg-white" : "border-dark-border bg-dark-menus",
+          "border-border bg-popover",
         )}
       >
         <div
           className={cx(
             "flex items-center gap-3 border-b px-3 py-2.5",
-            isLight ? "border-gray-200" : "border-dark-border",
+            "border-border",
             expanded ? "justify-between" : "justify-center",
           )}
         >
@@ -50,10 +44,10 @@ export default function PlatformSidebar(props) {
           >
             <img src="/assets/branding/logo.svg" alt="Zebflow logo" className="h-9 w-9 shrink-0" />
             <span className={cx("min-w-0", !expanded && "hidden")}>
-              <span className="block text-[0.95rem] font-semibold tracking-tight text-body">
+              <span className="block text-[0.95rem] font-semibold tracking-tight text-foreground">
                 zebflow
               </span>
-              <span className="block font-mono text-[9.5px] uppercase tracking-[0.16em] text-body-soft">
+              <span className="block font-mono text-[9.5px] uppercase tracking-[0.16em] text-muted-foreground">
                 Project Studio
               </span>
             </span>
@@ -63,9 +57,7 @@ export default function PlatformSidebar(props) {
               type="button"
               className={cx(
                 "inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full border transition-colors",
-                isLight
-                  ? "border-gray-200 bg-gray-50 text-gray-500 hover:bg-gray-100"
-                  : "border-gray-600 bg-gray-800 text-gray-400 hover:bg-gray-700",
+                "border-border bg-muted text-muted-foreground hover:bg-accent",
               )}
               aria-label="Collapse sidebar"
               aria-expanded={expanded}
@@ -89,9 +81,7 @@ export default function PlatformSidebar(props) {
               type="button"
               className={cx(
                 "inline-flex h-7 w-7 items-center justify-center rounded-full border transition-colors",
-                isLight
-                  ? "border-dark-border bg-gray-50 text-gray-500 hover:bg-gray-100"
-                  : "border-dark-border bg-gray-800 text-gray-400 hover:bg-gray-700",
+                "border-border bg-muted text-muted-foreground hover:bg-accent",
               )}
               aria-label="Expand sidebar"
               onClick={() => setExpanded(true)}
@@ -113,7 +103,7 @@ export default function PlatformSidebar(props) {
           <Link
             href={links.pipelines_registry ?? "#"}
             aria-label="Pipelines"
-            className={navRowCx(expanded, isLight, classes.pipelines ?? "")}
+            className={navRowCx(expanded, classes.pipelines ?? "")}
           >
             <span className="inline-flex h-5 w-5 shrink-0 items-center justify-center">
               <svg viewBox="0 0 24 24" fill="none" className="h-5 w-5">
@@ -134,7 +124,7 @@ export default function PlatformSidebar(props) {
           <Link
             href={links.hub ?? "#"}
             aria-label="Hub"
-            className={navRowCx(expanded, isLight, classes.hub ?? "")}
+            className={navRowCx(expanded, classes.hub ?? "")}
           >
             <span className="inline-flex h-5 w-5 shrink-0 items-center justify-center">
               <svg viewBox="0 0 24 24" fill="none" className="h-5 w-5">
@@ -149,7 +139,7 @@ export default function PlatformSidebar(props) {
           <Link
             href={links.dashboard ?? "#"}
             aria-label="Dashboard"
-            className={navRowCx(expanded, isLight, classes.dashboard ?? "")}
+            className={navRowCx(expanded, classes.dashboard ?? "")}
           >
             <span className="inline-flex h-5 w-5 shrink-0 items-center justify-center">
               <svg viewBox="0 0 24 24" fill="none" className="h-5 w-5">
@@ -162,7 +152,7 @@ export default function PlatformSidebar(props) {
           <Link
             href={links.credentials ?? "#"}
             aria-label="Credentials"
-            className={navRowCx(expanded, isLight, classes.credentials ?? "")}
+            className={navRowCx(expanded, classes.credentials ?? "")}
           >
             <span className="inline-flex h-5 w-5 shrink-0 items-center justify-center">
               <svg viewBox="0 0 24 24" fill="none" className="h-5 w-5">
@@ -181,7 +171,7 @@ export default function PlatformSidebar(props) {
           <Link
             href={links.db_connections ?? "#"}
             aria-label="Databases"
-            className={navRowCx(expanded, isLight, classes.databases ?? "")}
+            className={navRowCx(expanded, classes.databases ?? "")}
           >
             <span className="inline-flex h-5 w-5 shrink-0 items-center justify-center">
               <svg viewBox="0 0 24 24" fill="none" className="h-5 w-5">
@@ -195,7 +185,7 @@ export default function PlatformSidebar(props) {
           <Link
             href={links.files ?? "#"}
             aria-label="Files"
-            className={navRowCx(expanded, isLight, classes.files ?? "")}
+            className={navRowCx(expanded, classes.files ?? "")}
           >
             <span className="inline-flex h-5 w-5 shrink-0 items-center justify-center">
               <svg viewBox="0 0 24 24" fill="none" className="h-5 w-5">
@@ -208,7 +198,7 @@ export default function PlatformSidebar(props) {
           <Link
             href={links.settings ?? "#"}
             aria-label="Settings"
-            className={navRowCx(expanded, isLight, classes.settings ?? "")}
+            className={navRowCx(expanded, classes.settings ?? "")}
           >
             <span className="inline-flex h-5 w-5 shrink-0 items-center justify-center">
               <svg viewBox="0 0 24 24" fill="none" className="h-5 w-5">
@@ -232,7 +222,7 @@ export default function PlatformSidebar(props) {
         <div className="flex justify-center p-2">
           <span
             className={cx(
-              "font-mono text-[0.65rem] tracking-wider text-gray-500 transition-opacity",
+              "font-mono text-[0.65rem] tracking-wider text-muted-foreground transition-opacity",
               !expanded && "hidden",
             )}
             aria-hidden={!expanded}

@@ -2,12 +2,20 @@
 
 Frontend Libraries are the primary curated library surface in Hub.
 
-These are the libraries Zebflow projects use directly in TSX:
+These are the libraries Zebflow projects use directly in TSX (beyond
+`zeb/react` and `zeb/ui`, which need no install):
 
-- `zeb/use`
+- `zeb/d3`
 - `zeb/deckgl`
-- `zeb/pdf`
+- `zeb/codemirror`
 - `zeb/markdown`
+- `zeb/pdf`
+- `zeb/prosemirror`
+- `zeb/threejs`
+- `zeb/threejs-vrm`
+- `zeb/graphui`
+- `zeb/livegeo`
+- `zeb/use`
 
 This area should help a user answer two questions fast:
 

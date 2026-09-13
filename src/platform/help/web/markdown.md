@@ -1,5 +1,9 @@
 # zeb/markdown
 
+```tsx
+import { Markdown, renderMarkdown } from "zeb/markdown";
+```
+
 `zeb/markdown` is the bundled markdown rendering surface for Zebflow pages.
 
 Use it when you need:
@@ -10,3 +14,5 @@ Use it when you need:
 - generated help content
 
 It should be the preferred markdown renderer inside Zebflow web UI instead of ad hoc rendering logic.
+
+See `help("web/libraries")` for the API.

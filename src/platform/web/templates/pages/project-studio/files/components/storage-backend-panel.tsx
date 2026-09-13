@@ -41,7 +41,7 @@ export default function StorageBackendPanel({ backend, backendLabel, declared, f
       </div>
       <div className="project-settings-panel-body flex flex-col gap-6 pt-2">
 
-        <p className="text-[0.78rem] text-body-soft">
+        <p className="text-[0.78rem] text-muted-foreground">
           Where this project keeps its own files. Every object under{" "}
           <code className="font-mono text-[0.75rem]">files/</code> lives in this store, and every FileRef a
           pipeline passes around carries its name in <code className="font-mono text-[0.75rem]">backend</code>.
@@ -52,19 +52,19 @@ export default function StorageBackendPanel({ backend, backendLabel, declared, f
         {/* Current selection */}
         <Card>
           <CardContent className="flex items-start gap-4 pt-5">
-            <div className="mt-0.5 rounded bg-accent/10 p-2 text-accent">
+            <div className="mt-0.5 rounded bg-primary/10 p-2 text-primary">
               <DiskIcon />
             </div>
             <div className="flex-1">
               <div className="flex flex-wrap items-center gap-2">
-                <p className="text-[0.88rem] font-semibold text-body">{activeLabel}</p>
+                <p className="text-[0.88rem] font-semibold text-foreground">{activeLabel}</p>
                 <Badge variant="secondary" className="text-[0.72rem]">Selected</Badge>
               </div>
-              <p className="mt-0.5 text-[0.78rem] text-body-soft">
+              <p className="mt-0.5 text-[0.78rem] text-muted-foreground">
                 Objects are stored on this machine&apos;s disk and served through{" "}
                 <code className="font-mono text-[0.75rem]">/fs/...</code> under this project&apos;s access rules.
               </p>
-              <p className="mt-2 text-[0.75rem] text-body-soft">
+              <p className="mt-2 text-[0.75rem] text-muted-foreground">
                 <code className="font-mono text-[0.75rem]">{field ?? "spec.files.backend"}: {active}</code>{" "}
                 {declared ? "declared in" : "— the default; not declared in"}{" "}
                 <code className="font-mono text-[0.75rem]">repo/zebflow.yaml</code>
@@ -76,15 +76,15 @@ export default function StorageBackendPanel({ backend, backendLabel, declared, f
         {/* Not yet available */}
         <Card className="opacity-60">
           <CardContent className="flex items-start gap-4 pt-5">
-            <div className="mt-0.5 rounded bg-accent/10 p-2 text-accent">
+            <div className="mt-0.5 rounded bg-primary/10 p-2 text-primary">
               <BucketIcon />
             </div>
             <div className="flex-1">
               <div className="flex flex-wrap items-center gap-2">
-                <p className="text-[0.88rem] font-semibold text-body">Object store</p>
+                <p className="text-[0.88rem] font-semibold text-foreground">Object store</p>
                 <Badge variant="outline" className="text-[0.72rem]">Coming soon</Badge>
               </div>
-              <p className="mt-0.5 text-[0.78rem] text-body-soft">
+              <p className="mt-0.5 text-[0.78rem] text-muted-foreground">
                 Replace disk as this project&apos;s store, so the same objects live in a bucket instead.
                 Selecting one will be a change of this same setting plus the connection that holds the
                 endpoint and credential — stored FileRefs keep their shape.

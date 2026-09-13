@@ -1,11 +1,13 @@
 # Runtime Workflows
 
-Common local checks:
+Common local checks, cheapest first:
 
 ```bash
+cargo test --test rwe platform_templates_parse   # < 1 s: every platform template parses, no borrowed bindings
 cargo check
-cargo fmt --check
+cargo test --test framework help_matches         # the help tree matches the code (DSL fences build, imports resolve)
 cargo test --lib
+cd tests/e2e && npm test                         # after any Studio or RWE change; fails on a console error
 ```
 
 Use narrower tests when the change is narrow.
@@ -13,8 +15,12 @@ Use narrower tests when the change is narrow.
 Common local run:
 
 ```bash
-zebflow
+./dev.sh            # kills port 10610, cargo run, ZEBFLOW_PLATFORM_DEFAULT_PASSWORD=admin123, data in .zebflow-platform-data
+./dev.sh 10620      # a second, isolated instance
 ```
+
+Platform templates are compiled into the binary: an edit under
+`src/platform/web/templates/` shows nothing until `./dev.sh` rebuilds.
 
 Default local URL:
 

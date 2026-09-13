@@ -27,12 +27,12 @@ export default function CommitDialog({ open, section, defaultMessage, onConfirm,
             Commit changes{section ? <span className="project-inline-chip ml-2">{section}</span> : null}
           </DialogTitle>
         </DialogHeader>
-        <p className="text-xs text-body-soft">
+        <p className="text-xs text-muted-foreground">
           Your changes will be saved and committed to the project repository.
         </p>
         <form onSubmit={handleSubmit} className="flex flex-col gap-3">
           <div className="flex flex-col gap-1.5">
-            <label className="text-xs font-medium text-body-soft">Commit message</label>
+            <label className="text-xs font-medium text-muted-foreground">Commit message</label>
             <Input
               name="commit_message"
               value={message}

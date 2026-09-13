@@ -257,32 +257,10 @@
   };
 
   // ---------------------------------------------------------------------------
-  // zeb/prosemirror SSR stubs — ProseEditor renders a placeholder div
+  // zeb/prosemirror — engine only, browser only. `zeb/ui/editor` renders a
+  // document on the server itself and mounts the engine in an effect, so
+  // nothing here needs a server-side stand-in.
   // ---------------------------------------------------------------------------
-  globalThis.mountProseEditor = function() { return Promise.resolve(null); };
-  globalThis.prosemirror = { mountProseEditor: globalThis.mountProseEditor };
-  globalThis.ProseEditor = function ProseEditor(props) {
-    /* SSR stub — renders the sentinel div with the full data-config so the
-     * client-side MutationObserver and bundle can pick up the correct config
-     * on hydration.  Mirrors the ProseEditor export in prosemirror.bundle.mjs. */
-    var config = JSON.stringify({
-      content:     props.content,
-      stateKey:    props.stateKey,
-      statsKey:    props.statsKey,
-      editable:    props.editable !== false,
-      autofocus:   props.autofocus || false,
-      placeholder: props.placeholder,
-      toolbar:     props.toolbar !== undefined ? props.toolbar : 'basic',
-      toolbarMode: props.toolbarMode || 'inline',
-    });
-    return globalThis.h('div', {
-      'data-zeb-lib':     'prosemirror',
-      'data-zeb-wrapper': 'ProseEditor',
-      'data-config':      config,
-      id:                 props.id,
-      class:              props.className || 'w-full min-h-[200px]',
-    });
-  };
 
   // ---------------------------------------------------------------------------
   // Devicon helpers — no-ops during SSR. The marks are a platform

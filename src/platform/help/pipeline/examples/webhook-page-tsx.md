@@ -46,33 +46,34 @@ return (
 );
 ```
 
-### Detail page with path param — `:unit_id` → `$1`
+### Detail page with path param — `:unit_id` → `$1`, 404 when missing
+
+A script cannot set the response status, so the not-found branch is a real
+graph branch, not a flag on the same `web.response` that serves the found
+case:
 
 ```
-| trigger.webhook --path /programmes/:unit_id --method GET
-| pg.query --credential my-pg --params "{{ input.params.unit_id }}" \
-    -- "SELECT unit_id::text, code, title, description FROM academic.academic_unit WHERE unit_id = $1::uuid AND is_active = true"
-| script -- "const r = input.rows?.[0]; if (!r) return { notfound: true }; return r"
-| web.response --template pages/programme-detail.tsx --status 404
+[find]  trigger.webhook --path /programmes/:unit_id --method GET
+[query] pg.query --credential my-pg --params "{{ input.params.unit_id }}" -- "SELECT unit_id::text, code, title, description FROM academic.academic_unit WHERE unit_id = $1::uuid AND is_active = true"
+[found] logic.if --expr "input.rows && input.rows.length > 0"
+[ok]    web.response --template pages/programme-detail.tsx
+[gone]  web.response --status 404 --template pages/not-found.tsx
+[find] -> [query]
+[query] -> [found]
+[found]:true -> [ok]
+[found]:false -> [gone]
 ```
 
-Wait — the status 404 should only apply when not found. Better pattern: two separate pipelines, or use a script to set the status conditionally. For the not-found case:
-
-```
-| script -- "const r = input.rows?.[0]; if (!r) return { notfound: true }; return r"
-| web.response --template pages/not-found.tsx --status 404
-```
-
-In `pages/programme-detail.tsx`:
+`[ok]` receives `{ rows }` as `input` in `pages/programme-detail.tsx`:
 
 ```tsx
 export default function Page(input) {
-  if (input?.notfound) return <Page><main><h1>Not Found</h1></main></Page>;
+  const row = input?.rows?.[0];
   return (
     <Page>
       <main>
-        <h1>{input?.title?.id}</h1>
-        <p>{input?.code}</p>
+        <h1>{row?.title?.id}</h1>
+        <p>{row?.code}</p>
       </main>
     </Page>
   );
@@ -93,8 +94,9 @@ export default function Page(input) {
 ## Nodes Used
 
 - `trigger.webhook` — GET endpoint; path params in `input.params.<name>`, query string in `input.query.<name>`
-- `pg.query` — fetch data; `--params "{{ input.params.unit_id }}"` binds `:unit_id` as `$1`
-- `script` — 404 guard, data transform
+- `pg.query --credential <id>` — fetch data; `--params "{{ input.params.unit_id }}"` binds `:unit_id` as `$1`
+- `logic.if --expr "input.rows.length > 0"` — branch on `true`/`false` pins; the only way to answer 404 conditionally, since a script cannot set the status
+- `script` — static payloads, data transform
 - `web.response` — renders TSX template; upstream output = `input` in template; supports `--status`, `--set-cookie`, `--header`
 
 ---

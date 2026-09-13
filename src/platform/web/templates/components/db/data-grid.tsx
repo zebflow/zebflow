@@ -110,7 +110,7 @@ export default function ResizableDataGrid({ columns, rows, columnMeta, identityC
 
   return (
     <table className="w-full border-collapse project-table" style={{ width: "max-content", minWidth: "100%" }}>
-      <thead className="bg-surface-2">
+      <thead className="bg-muted">
         <tr>
           {columns.map((col, index) => {
             const isSorted = sortCol === col;
@@ -134,7 +134,7 @@ export default function ResizableDataGrid({ columns, rows, columnMeta, identityC
               <th
                 key={`${col}-${index}`}
                 title={headerTitle}
-                className="relative px-[0.65rem] py-[0.4rem] border-b border-border-soft text-left text-[0.68rem] font-mono uppercase tracking-[0.12em] text-body-soft select-none cursor-pointer hover:text-body"
+                className="relative px-[0.65rem] py-[0.4rem] border-b border-border text-left text-[0.68rem] font-mono uppercase tracking-[0.12em] text-muted-foreground select-none cursor-pointer hover:text-foreground"
                 style={{ width: colWidths[col] || defaultColumnWidth(col), minWidth: 48, maxWidth: 600 }}
                 onClick={() => onHeaderClick(index)}
               >
@@ -143,7 +143,7 @@ export default function ResizableDataGrid({ columns, rows, columnMeta, identityC
                   {/* A column that points at another table says so, because a
                       value it will accept is not guessable otherwise. */}
                   {ref ? (
-                    <span className="shrink-0 text-[0.6rem] normal-case tracking-normal text-ui-text-muted" title={`references ${ref}`}>
+                    <span className="shrink-0 text-[0.6rem] normal-case tracking-normal text-muted-foreground" title={`references ${ref}`}>
                       {"\u2192"}
                     </span>
                   ) : null}
@@ -160,7 +160,7 @@ export default function ResizableDataGrid({ columns, rows, columnMeta, identityC
                   className="absolute top-0 right-0 w-[5px] h-full cursor-col-resize group"
                   onMouseDown={(ev) => onResizeStart(ev, index)}
                 >
-                  <div className="absolute top-1 bottom-1 right-[2px] w-[1px] bg-border-soft opacity-0 hover:opacity-100 transition-opacity" />
+                  <div className="absolute top-1 bottom-1 right-[2px] w-[1px] bg-border opacity-0 hover:opacity-100 transition-opacity" />
                 </div>
               </th>
             );
@@ -191,7 +191,7 @@ export default function ResizableDataGrid({ columns, rows, columnMeta, identityC
                 return (
                   <td
                     key={`cell-${rowIndex}-${cellIndex}`}
-                    className={`px-[0.65rem] border-b border-border-soft text-left text-[0.78rem] text-body cursor-pointer whitespace-nowrap overflow-hidden text-ellipsis ${isEditing ? "p-0" : "py-[0.35rem]"} ${hasPending ? "bg-amber-500/10" : ""}`}
+                    className={`px-[0.65rem] border-b border-border text-left text-[0.78rem] text-foreground cursor-pointer whitespace-nowrap overflow-hidden text-ellipsis ${isEditing ? "p-0" : "py-[0.35rem]"} ${hasPending ? "bg-amber-500/10" : ""}`}
                     style={{ maxWidth: colWidths[colName] || defaultColumnWidth(colName) }}
                     title={isEditing ? undefined : cellTitleText(displayValue, colName, vectorFields)}
                     onClick={() => {
@@ -208,7 +208,7 @@ export default function ResizableDataGrid({ columns, rows, columnMeta, identityC
                       <input
                         ref={editInputRef}
                         type="text"
-                        className="w-full border-0 bg-ui-bg px-[0.65rem] py-[0.35rem] text-[0.78rem] text-body outline-none ring-1 ring-inset ring-blue-500"
+                        className="w-full border-0 bg-popover px-[0.65rem] py-[0.35rem] text-[0.78rem] text-foreground outline-none ring-1 ring-inset ring-blue-500"
                         defaultValue={rawCellValue(displayValue)}
                         onBlur={(e) => {
                           const val = e.target.value;
@@ -273,7 +273,7 @@ export default function ResizableDataGrid({ columns, rows, columnMeta, identityC
                           <button
                             type="button"
                             title="Pick geometry on map"
-                            className="ml-auto inline-flex h-5 w-5 shrink-0 items-center justify-center rounded border border-ui-border/70 bg-ui-bg text-ui-text-soft hover:border-[#f6863c] hover:text-[#f6863c]"
+                            className="ml-auto inline-flex h-5 w-5 shrink-0 items-center justify-center rounded border border-border/70 bg-popover text-muted-foreground hover:border-[#f6863c] hover:text-[#f6863c]"
                             onClick={(event) => {
                               event.preventDefault();
                               event.stopPropagation();
@@ -301,7 +301,7 @@ export default function ResizableDataGrid({ columns, rows, columnMeta, identityC
         <tr>
           <td
             colSpan={columns.length}
-            className="px-[0.65rem] py-[0.3rem] text-[0.68rem] text-body-muted border-t border-border-soft bg-surface-2/50"
+            className="px-[0.65rem] py-[0.3rem] text-[0.68rem] text-muted-foreground border-t border-border bg-muted/50"
           >
             {sortedRows.length} rows{sortCol ? ` · sorted by ${sortCol} ${sortDir}` : ""}
           </td>

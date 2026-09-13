@@ -27,7 +27,7 @@ export default function NodeFieldMultiCheckbox({ field, value, onChange }: Props
 
   if (options.length === 0) {
     return (
-      <div className="text-xs text-body-muted py-1">
+      <div className="text-xs text-muted-foreground py-1">
         No tools available.
       </div>
     );
@@ -48,11 +48,11 @@ export default function NodeFieldMultiCheckbox({ field, value, onChange }: Props
           value={search}
           placeholder="Search tools..."
           onInput={(e) => setSearch((e.target as HTMLInputElement).value)}
-          className="w-full h-7 rounded border border-ui-border bg-ui-bg text-ui-text px-2 text-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-brand-blue/40 mb-1"
+          className="w-full h-7 rounded border border-border bg-popover text-foreground px-2 text-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring/40 mb-1"
         />
       )}
       {filtered.length === 0 && (
-        <div className="text-xs text-body-muted py-1">No matches</div>
+        <div className="text-xs text-muted-foreground py-1">No matches</div>
       )}
       {filtered.map((opt) => (
         <label key={opt.value} className="flex items-start gap-2 cursor-pointer">
@@ -62,9 +62,9 @@ export default function NodeFieldMultiCheckbox({ field, value, onChange }: Props
             className="mt-0.5 shrink-0"
           />
           <span className="flex flex-col min-w-0">
-            <span className="text-sm text-body">{opt.label}</span>
+            <span className="text-sm text-foreground">{opt.label}</span>
             {opt.description && (
-              <span className="text-xs text-body-muted leading-tight">{opt.description}</span>
+              <span className="text-xs text-muted-foreground leading-tight">{opt.description}</span>
             )}
           </span>
         </label>

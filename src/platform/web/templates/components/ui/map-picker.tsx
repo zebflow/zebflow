@@ -203,7 +203,7 @@ function MapCanvas({ center, zoom, points, mode, onPick, onZoom, onPan }) {
 
   return (
     <div
-      className={cx("relative overflow-hidden rounded-lg border border-ui-border/80 bg-slate-950 select-none", dragCursor ? "cursor-grabbing" : "cursor-crosshair")}
+      className={cx("dark relative overflow-hidden rounded-lg border border-border/80 bg-background text-foreground select-none", dragCursor ? "cursor-grabbing" : "cursor-crosshair")}
       style={{ height: 420, touchAction: "none" }}
       ref={ref}
       onPointerDown={handlePointerDown}
@@ -232,11 +232,11 @@ function MapCanvas({ center, zoom, points, mode, onPick, onZoom, onPan }) {
           </g>
         ))}
       </svg>
-      <div className="absolute left-3 top-3 flex flex-col overflow-hidden rounded-md border border-white/20 bg-slate-950/80 text-white shadow-lg">
-        <button type="button" className="h-8 w-8 hover:bg-white/15" onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); onZoom(1); }}>+</button>
-        <button type="button" className="h-8 w-8 border-t border-white/15 hover:bg-white/15" onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); onZoom(-1); }}>-</button>
+      <div className="absolute left-3 top-3 flex flex-col overflow-hidden rounded-md border border-border bg-popover/80 text-popover-foreground shadow-lg">
+        <button type="button" className="h-8 w-8 hover:bg-accent" onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); onZoom(1); }}>+</button>
+        <button type="button" className="h-8 w-8 border-t border-border hover:bg-accent" onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); onZoom(-1); }}>-</button>
       </div>
-      <div className="absolute right-3 top-3 grid grid-cols-3 overflow-hidden rounded-md border border-white/20 bg-slate-950/80 text-white shadow-lg">
+      <div className="absolute right-3 top-3 grid grid-cols-3 overflow-hidden rounded-md border border-border bg-popover/80 text-popover-foreground shadow-lg">
         {[
           ["↖", -1, -1], ["↑", 0, -1], ["↗", 1, -1],
           ["←", -1, 0], ["•", 0, 0], ["→", 1, 0],
@@ -245,7 +245,7 @@ function MapCanvas({ center, zoom, points, mode, onPick, onZoom, onPan }) {
           <button
             key={label}
             type="button"
-            className="h-7 w-7 text-xs hover:bg-white/15"
+            className="h-7 w-7 text-xs hover:bg-accent"
             onPointerDown={(event) => event.stopPropagation()}
             onClick={(event) => { event.stopPropagation(); onPan(dx, dy); }}
           >
@@ -253,7 +253,7 @@ function MapCanvas({ center, zoom, points, mode, onPick, onZoom, onPan }) {
           </button>
         ))}
       </div>
-      <div className="absolute bottom-3 left-3 rounded-md bg-slate-950/80 px-2 py-1 text-[11px] text-white">
+      <div className="absolute bottom-3 left-3 rounded-md bg-popover/80 px-2 py-1 text-[11px] text-popover-foreground">
         Drag to pan. Click to {mode === "Point" ? "place point" : mode === "LineString" ? "add line vertex" : "add polygon vertex"}.
       </div>
     </div>
@@ -323,10 +323,10 @@ export default function MapPicker({ open, onOpenChange, value, title = "Pick Geo
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent size="full" className="border-border bg-surface text-body">
+      <DialogContent size="full" className="border-border bg-card text-foreground">
         <DialogHeader className="px-6 pt-6">
           <DialogTitle>{title}</DialogTitle>
-          <p className="text-sm text-body-soft">Create one GeoJSON geometry for the selected spatial field.</p>
+          <p className="text-sm text-muted-foreground">Create one GeoJSON geometry for the selected spatial field.</p>
         </DialogHeader>
         <div className="grid gap-4 px-6 py-4 lg:grid-cols-[minmax(0,1fr)_20rem]">
           <div className="space-y-3">
@@ -337,7 +337,7 @@ export default function MapPicker({ open, onOpenChange, value, title = "Pick Geo
                   type="button"
                   className={cx(
                     "rounded-md border px-3 py-1.5 text-xs font-medium",
-                    mode === item ? "border-[#f6863c] bg-[#f6863c]/15 text-[#f6863c]" : "border-ui-border bg-ui-bg text-ui-text-soft hover:bg-ui-bg-muted hover:text-ui-text"
+                    mode === item ? "border-[#f6863c] bg-[#f6863c]/15 text-[#f6863c]" : "border-border bg-popover text-muted-foreground hover:bg-accent hover:text-foreground"
                   )}
                   onClick={() => handleMode(item)}
                 >
@@ -369,23 +369,23 @@ export default function MapPicker({ open, onOpenChange, value, title = "Pick Geo
                 setCenter(worldToLngLat(world[0] + dx * step, world[1] + dy * step, zoom));
               }}
             />
-            <p className="text-xs text-body-soft">{status}</p>
+            <p className="text-xs text-muted-foreground">{status}</p>
           </div>
           <div className="space-y-3">
-            <div className="rounded-lg border border-ui-border/80 bg-ui-bg-muted/20 p-3">
-              <p className="mb-2 text-xs font-medium uppercase tracking-[0.14em] text-ui-text-soft">Vertices</p>
-              <div className="max-h-40 space-y-1 overflow-auto pr-1 text-xs text-ui-text-soft">
+            <div className="rounded-lg border border-border/80 bg-accent/20 p-3">
+              <p className="mb-2 text-xs font-medium uppercase tracking-[0.14em] text-muted-foreground">Vertices</p>
+              <div className="max-h-40 space-y-1 overflow-auto pr-1 text-xs text-muted-foreground">
                 {points.length ? points.map((point, index) => (
-                  <div key={`coord-${index}`} className="flex justify-between gap-3 rounded border border-ui-border/60 bg-ui-bg px-2 py-1 font-mono">
+                  <div key={`coord-${index}`} className="flex justify-between gap-3 rounded border border-border/60 bg-popover px-2 py-1 font-mono">
                     <span>{index + 1}</span>
                     <span>{formatPoint(point)}</span>
                   </div>
                 )) : <p>No vertices yet.</p>}
               </div>
             </div>
-            <div className="rounded-lg border border-ui-border/80 bg-ui-bg-muted/20 p-3">
-              <p className="mb-2 text-xs font-medium uppercase tracking-[0.14em] text-ui-text-soft">GeoJSON</p>
-              <pre className="max-h-72 overflow-auto rounded border border-ui-border/60 bg-ui-bg p-2 text-[11px] text-ui-text">
+            <div className="rounded-lg border border-border/80 bg-accent/20 p-3">
+              <p className="mb-2 text-xs font-medium uppercase tracking-[0.14em] text-muted-foreground">GeoJSON</p>
+              <pre className="max-h-72 overflow-auto rounded border border-border/60 bg-popover p-2 text-[11px] text-foreground">
                 {previewGeometry ? JSON.stringify(previewGeometry, null, 2) : "No valid geometry yet."}
               </pre>
             </div>

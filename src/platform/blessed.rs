@@ -1,11 +1,13 @@
 //! The blessed source tree, enumerated from the binary.
 //!
 //! `blessed/` is the curated content the release itself carries: RWE library
-//! bundles (`blessed/rwe-libraries/`) and the UI template sets
-//! (`blessed/templates/`). At every boot, check-first, the hub seeder
-//! publishes each of these into the local hub (`services/hub-local/`) as the
+//! bundles (`blessed/rwe-libraries/`), which the hub seeder publishes into
+//! the local hub (`services/hub-local/`) at every boot, check-first, as the
 //! reserved `zebflow` publisher, through the same publish gates every other
-//! package passes. This module only enumerates; it publishes nothing.
+//! package passes; and the `zeb/ui` source library
+//! (`blessed/source-libraries/`), which is not a hub package — the compiler
+//! inlines it into pages, and the catalog clones from it. This module only
+//! enumerates; it publishes nothing.
 //!
 //! `blessed/nodes/` and `blessed/pipelines/` are deliberately empty today:
 //! foundation composites in `src/pipeline/nodes/bundled/` are part of the
@@ -13,7 +15,6 @@
 
 use serde::Deserialize;
 
-use crate::platform::catalog::CatalogService;
 use crate::platform::error::PlatformError;
 use crate::platform::web::embedded::PLATFORM_LIBRARY_ASSETS;
 
@@ -146,38 +147,13 @@ fn blessed_rwe_library_packages() -> Result<Vec<BlessedPackage>, PlatformError> 
     Ok(packages)
 }
 
-/// Every blessed UI template set, from the catalog's embedded sources.
-fn blessed_template_packages() -> Result<Vec<BlessedPackage>, PlatformError> {
-    let mut packages = Vec::new();
-    for set in CatalogService::template_sets() {
-        let source_ref = format!("blessed/templates/{}", set.set);
-        let meta = parse_meta(&source_ref, set.package_yaml.as_bytes())?;
-        let files = set
-            .files
-            .iter()
-            .map(|(filename, source)| BlessedFile {
-                rel_path: (*filename).to_string(),
-                bytes: source.as_bytes(),
-            })
-            .collect();
-        packages.push(BlessedPackage {
-            package_id: meta.id,
-            version: meta.version,
-            title: meta.title,
-            description: meta.description,
-            asset_kind: "template_bundle",
-            source_ref,
-            files,
-        });
-    }
-    Ok(packages)
-}
-
 /// Every package the binary blesses, in seeding order.
 pub fn blessed_packages() -> Result<Vec<BlessedPackage>, PlatformError> {
-    let mut packages = blessed_rwe_library_packages()?;
-    packages.extend(blessed_template_packages()?);
-    Ok(packages)
+    // `zeb/ui` is not a hub package yet: it ships with the platform as source
+    // the compiler inlines, and a project clones a component from it through
+    // the catalog. It joins the hub when runtime libraries resolve from
+    // `zeb.lock` rather than from the binary.
+    blessed_rwe_library_packages()
 }
 
 #[cfg(test)]
@@ -222,7 +198,10 @@ mod tests {
     #[test]
     fn every_blessed_package_carries_reserved_metadata_and_files() {
         let packages = blessed_packages().expect("blessed packages enumerate");
-        // 11 installable libraries + 6 template sets.
+        // 11 installable libraries. The six UI template sets that used to
+        // sit beside them were a copy of the same files `zeb/ui` now ships as
+        // source; a project imports those without installing and clones one
+        // through the catalog.
         //
         // Zeb React is not among them and has no package here at all: it is the
         // engine every template imports, not something a project chooses to
@@ -230,7 +209,7 @@ mod tests {
         // library.json, excluded from the hub purely because it lacked a
         // manifest.json — an exclusion by missing file, which the next person to
         // notice would have "fixed" by adding one.
-        assert_eq!(packages.len(), 17);
+        assert_eq!(packages.len(), 11);
         assert!(
             !packages
                 .iter()
@@ -269,16 +248,11 @@ mod tests {
                 .iter()
                 .any(|file| file.rel_path == "0.1/runtime/deckgl.bundle.mjs")
         );
-        let primitives = packages
-            .iter()
-            .find(|package| package.package_id == "zebflow.ui-primitives")
-            .expect("ui primitives are blessed");
-        assert_eq!(primitives.asset_kind, "template_bundle");
+        // No UI template package: `zeb/ui` is source, not a hub asset.
         assert!(
-            primitives
-                .files
-                .iter()
-                .any(|file| file.rel_path == "button.tsx")
+            !packages.iter().any(|p| p.package_id.starts_with("zebflow.ui")),
+            "zeb/ui ships as source the compiler inlines, not as a hub package"
         );
+        assert!(packages.iter().all(|p| p.asset_kind == "rwe_library"));
     }
 }

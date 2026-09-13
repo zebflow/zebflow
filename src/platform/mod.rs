@@ -10,6 +10,7 @@
 
 pub mod adapters;
 pub mod blessed;
+pub mod theme;
 pub mod boot;
 pub mod catalog;
 pub mod cli;
@@ -26,6 +27,7 @@ pub mod policy;
 pub mod sekejap;
 pub mod services;
 pub mod shell;
+pub mod skills;
 pub mod sqlite_schema;
 pub mod web;
 

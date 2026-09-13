@@ -4,6 +4,8 @@ use std::path::Path;
 fn main() {
     generate_version();
     generate_platform_template_assets();
+    generate_source_library_assets();
+    generate_skill_assets();
     generate_node_bundle_assets();
     generate_help_index();
 }
@@ -114,6 +116,68 @@ fn generate_platform_template_assets() {
 
     // Re-run whenever any template file changes.
     println!("cargo:rerun-if-changed={templates_dir}");
+}
+
+/// Emits the asset table for source libraries — `zeb/ui` — shipped inside the
+/// binary as `.tsx` the RWE compiler inlines into a page. Paths are
+/// `zeb/<name>/<version>/src/<file>`; `LibraryService::source_roots` keys on
+/// that shape. Drop a component file in and recompile.
+fn generate_source_library_assets() {
+    let root = "blessed/source-libraries";
+    let out_dir = std::env::var("OUT_DIR").expect("OUT_DIR not set");
+    let dest = Path::new(&out_dir).join("source_libraries_gen.rs");
+
+    let mut rel_paths: Vec<String> = Vec::new();
+    collect_files(Path::new(root), root, &mut rel_paths);
+    rel_paths.sort();
+
+    let mut code = String::from("pub const PLATFORM_SOURCE_LIBRARY_ASSETS: &[EmbeddedAsset] = &[\n");
+    for rel in &rel_paths {
+        if !rel.ends_with(".tsx") && !rel.ends_with(".ts") {
+            continue;
+        }
+        code.push_str(&format!(
+            "    EmbeddedAsset {{ \
+                path: \"zeb/{rel}\", \
+                bytes: include_bytes!(concat!(env!(\"CARGO_MANIFEST_DIR\"), \"/{root}/{rel}\")) \
+            }},\n"
+        ));
+    }
+    code.push_str("];\n");
+    fs::write(&dest, code).expect("failed writing source_libraries_gen.rs");
+    println!("cargo:rerun-if-changed={root}");
+}
+
+/// Emits the asset table for the blessed skills — the `SKILL.md` folders every
+/// project's agent sees without cloning anything. Paths are
+/// `<skill>/<file>` under `blessed/skills/`; text files only, since a skill
+/// is instructions, references and recipes, never a binary. Drop a folder in
+/// and recompile.
+fn generate_skill_assets() {
+    let root = "blessed/skills";
+    let out_dir = std::env::var("OUT_DIR").expect("OUT_DIR not set");
+    let dest = Path::new(&out_dir).join("skills_gen.rs");
+
+    let mut rel_paths: Vec<String> = Vec::new();
+    collect_files(Path::new(root), root, &mut rel_paths);
+    rel_paths.sort();
+
+    let text = [".md", ".json", ".yaml", ".yml", ".txt", ".ts", ".tsx", ".mjs", ".js", ".py", ".sh", ".sql", ".css"];
+    let mut code = String::from("pub const PLATFORM_SKILL_ASSETS: &[EmbeddedAsset] = &[\n");
+    for rel in &rel_paths {
+        if !text.iter().any(|ext| rel.ends_with(ext)) {
+            continue;
+        }
+        code.push_str(&format!(
+            "    EmbeddedAsset {{ \
+                path: {rel:?}, \
+                bytes: include_bytes!(concat!(env!(\"CARGO_MANIFEST_DIR\"), \"/{root}/{rel}\")) \
+            }},\n"
+        ));
+    }
+    code.push_str("];\n");
+    fs::write(&dest, code).expect("failed writing skills_gen.rs");
+    println!("cargo:rerun-if-changed={root}");
 }
 
 // ── Bundled node asset generation ────────────────────────────────────────────

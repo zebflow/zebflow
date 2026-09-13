@@ -15,14 +15,11 @@ That makes it the right primitive for any regeneration flow where one content mu
 
 ## Template
 
-Use a normal TSX page template. A concrete example lives at:
+Use a normal TSX page template. A project's source root is the repository
+root (unless `zebflow.yaml` sets `spec.layout.source`), so the template lives
+at:
 
-- `docs/unused/conventions/templates/pages/static-entry-page.tsx`
-- `docs/unused/conventions/pipelines/static_entry_generation.zf.json`
-
-In a real project, that template would live under:
-
-- `repo/pipelines/pages/static-entry-page.tsx`
+- `pages/static-entry-page.tsx`
 
 The template receives a single input payload like:
 
@@ -53,7 +50,7 @@ The template receives a single input payload like:
 Minimal version as a callable function pipeline:
 
 ```zf
-| trigger.function --params '{"entry_slug": {"type": "string", "description": "Slug of the entry to generate"}}'
+| trigger.function --description "Generate the static page for one entry" --input "entry_slug:string!" "Slug of the entry to generate"
 | script -- "
 const collection = {
   name: 'Field Notes',
@@ -79,18 +76,18 @@ return {
 "
 | web.static.generate \
     --template pages/static-entry-page.tsx \
-    --output-path "collections/{{ input.collection.slug }}/{{ input.entry.slug }}/index.html" \
+    --output-path "public/collections/{{ input.collection.slug }}/{{ input.entry.slug }}/index.html" \
     --route "/collections/{{ input.collection.slug }}/{{ input.entry.slug }}" \
     --on-conflict overwrite
 ```
 
 Generated file:
 
-- `collections/field-notes/city-garden/index.html`
+- `public/collections/field-notes/city-garden/index.html`
 
 Served URL:
 
-- `/fs/{owner}/{project}/collections/field-notes/city-garden/index.html`
+- `/files/{owner}/{project}/public/collections/field-notes/city-garden/index.html`
 
 ---
 
@@ -99,7 +96,7 @@ Served URL:
 This is a more realistic content-backed version:
 
 ```zf
-| trigger.function --params '{"entry_id": {"type": "string", "description": "Entry UUID"}}'
+| trigger.function --description "Generate the static page for one content entry" --input "entry_id:string!" "Entry UUID"
 | pg.query --credential content-db --params "{{ [input.entry_id] }}" -- "
 SELECT
   e.entry_id::text AS entry_id,
@@ -136,7 +133,7 @@ return {
 "
 | web.static.generate \
     --template pages/static-entry-page.tsx \
-    --output-path "collections/{{ input.collection.slug }}/{{ input.entry.slug }}/index.html"
+    --output-path "public/collections/{{ input.collection.slug }}/{{ input.entry.slug }}/index.html"
 ```
 
 ---
@@ -162,25 +159,32 @@ That is much easier to debug than hiding traversal and parallelism inside one gi
 
 ## Serving behavior
 
-After generation, the file is already serveable directly from project storage.
+Object paths in Zebflow FS are private by default. `--output-path` under
+`public/` is what makes the artifact anonymously readable, at the legacy
+`/files/{owner}/{project}/<path>` route (`public/*` is served without auth;
+every other path requires the project's `FilesRead` capability). Writing
+outside `public/` and reading it back through `/fs/{owner}/{project}/<path>`
+instead still requires that capability — `/fs/...` stays private unless the
+object is explicitly marked public in the project's ZebFS access rules.
 
 If the output path is:
 
-- `collections/field-notes/city-garden/index.html`
+- `public/collections/field-notes/city-garden/index.html`
 
-then the office can serve it immediately at:
+then it is already servable anonymously at:
 
-- `/fs/{owner}/{project}/collections/field-notes/city-garden/index.html`
+- `/files/{owner}/{project}/public/collections/field-notes/city-garden/index.html`
 
 So:
 - generation pipeline: `trigger.function` is enough
-- serving generated artifact: no webhook is required
+- serving generated artifact: no webhook is required, as long as the output
+  path is under `public/`
 
 Only add a webhook or ingress rewrite if you want a prettier public route like:
 
 - `/collections/field-notes/city-garden`
 
-instead of the native `/fs/...` address.
+instead of the native `/files/...` address.
 
 ---
 

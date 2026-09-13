@@ -1,9 +1,15 @@
-# Operator Console
+# Project Console
 
-The Operator Console is the fast path for:
+In Studio this is called the **Project Console** — toggled from the shell,
+titled "Console" — and it drives
+`POST /api/projects/{owner}/{project}/pipelines/dsl`, the same DSL endpoint
+`register`/`activate`/`execute`/`describe` commands go through from a script
+or agent.
+
+Use it as the fast path for:
 
 - inspecting runtime output
-- running commands
+- running DSL commands
 - checking agent work
 - quick operational debugging
 

@@ -12,10 +12,9 @@ Authoritative code and docs:
 
 Contract boundary:
 
-- `docs/usage/pipelines.md`
-- `docs/reference/pipeline-language.md`
-- `docs/reference/expressions.md`
-- `docs/reference/nodes.md`
+- `src/platform/help/pipeline/index.md`
+- `src/platform/help/pipeline/dsl.md` (the DSL and `{{ }}` expressions)
+- `help(topic="pipeline/nodes")` — generated from the node definitions
 - `docs/contracts/project.md`
 - `docs/contracts/versioning.md`
 
@@ -29,7 +28,7 @@ Pipeline formats:
 
 Canonical lifecycle:
 
-1. Choose `file_rel_path`, usually `pipelines/{area}/{name}.zf.json`.
+1. Choose `file_rel_path`, relative to the source root (the repo root by default): `api/{name}.zf.json`, `pages/{name}.zf.json`, `jobs/{name}.zf.json`. No `pipelines/` prefix.
 2. Write title and description.
 3. Register the pipeline.
 4. Activate when it should receive live traffic.

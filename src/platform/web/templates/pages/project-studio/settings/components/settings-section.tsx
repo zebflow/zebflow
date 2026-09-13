@@ -10,7 +10,7 @@ import { cx } from "zeb/react";
  */
 
 export const SETTINGS_SECTION_TAG_CLASS =
-  "inline-flex items-center border border-dark-border bg-dark-border px-2 py-[0.38rem] text-[0.66rem] font-mono uppercase tracking-[0.12em] text-body-soft";
+  "inline-flex items-center border border-border bg-border px-2 py-[0.38rem] text-[0.66rem] font-mono uppercase tracking-[0.12em] text-muted-foreground";
 
 export default function SettingsSection({
   id,
@@ -22,15 +22,15 @@ export default function SettingsSection({
 }: any) {
   const titleClass =
     tone === "danger"
-      ? "text-dark-accent5"
-      : "text-body";
+      ? "text-destructive"
+      : "text-foreground";
 
   return (
     <article
       id={id}
       className={cx(
-        "border-b border-dark-border",
-        tone === "danger" && "border-dark-accent4",
+        "border-b border-border",
+        tone === "danger" && "border-warning",
       )}
     >
       <header className="flex items-start justify-between gap-3 px-4 py-3">
@@ -39,7 +39,7 @@ export default function SettingsSection({
             {title}
           </h3>
           {description ? (
-            <p className="mt-1 text-[0.78rem] leading-[1.45] text-body-soft">
+            <p className="mt-1 text-[0.78rem] leading-[1.45] text-muted-foreground">
               {description}
             </p>
           ) : null}

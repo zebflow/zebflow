@@ -135,19 +135,19 @@ export default function NodeFieldParamsBuilder({ field, value, onChange }) {
     <Field label={field.label} description={field.help}>
       <div className="flex flex-col gap-1">
         {entries.length > 0 && (
-          <div className="rounded border border-dark-border overflow-hidden">
-            <div className="grid px-2 py-1 bg-dark-accent3/40 border-b border-dark-border"
+          <div className="rounded border border-border overflow-hidden">
+            <div className="grid px-2 py-1 bg-success/40 border-b border-border"
               style={{ gridTemplateColumns: "1fr 7rem 4rem 1fr 1.5rem" }}>
-              <span className="text-[0.65rem] font-semibold uppercase tracking-wide text-body-muted">Name</span>
-              <span className="text-[0.65rem] font-semibold uppercase tracking-wide text-body-muted">Type</span>
-              <span className="text-[0.65rem] font-semibold uppercase tracking-wide text-body-muted">Req</span>
-              <span className="text-[0.65rem] font-semibold uppercase tracking-wide text-body-muted">Description</span>
+              <span className="text-[0.65rem] font-semibold uppercase tracking-wide text-muted-foreground">Name</span>
+              <span className="text-[0.65rem] font-semibold uppercase tracking-wide text-muted-foreground">Type</span>
+              <span className="text-[0.65rem] font-semibold uppercase tracking-wide text-muted-foreground">Req</span>
+              <span className="text-[0.65rem] font-semibold uppercase tracking-wide text-muted-foreground">Description</span>
               <span />
             </div>
             {entries.map(([name, def], idx) => (
               <div
                 key={idx}
-                className="grid items-center gap-1.5 px-2 py-1.5 border-b border-dark-border last:border-0"
+                className="grid items-center gap-1.5 px-2 py-1.5 border-b border-border last:border-0"
                 style={{ gridTemplateColumns: "1fr 7rem 4rem 1fr 1.5rem" }}
               >
                 <Input
@@ -158,7 +158,7 @@ export default function NodeFieldParamsBuilder({ field, value, onChange }) {
                 <select
                   value={def.type}
                   onChange={(e) => updateType(idx, e.currentTarget.value)}
-                  className="h-8 w-full rounded border border-dark-border bg-dark-accent3 px-2 text-[0.78rem] text-body focus:outline-none focus:ring-1 focus:ring-accent"
+                  className="h-8 w-full rounded border border-border bg-success px-2 text-[0.78rem] text-foreground focus:outline-none focus:ring-1 focus:ring-primary"
                 >
                   {PARAM_TYPES.map((t) => (
                     <option key={t} value={t}>{t}</option>
@@ -181,7 +181,7 @@ export default function NodeFieldParamsBuilder({ field, value, onChange }) {
                 <button
                   type="button"
                   onClick={() => remove(idx)}
-                  className="flex items-center justify-center w-6 h-6 rounded text-body-soft hover:text-red-400 hover:bg-dark-accent3 transition-colors text-sm"
+                  className="flex items-center justify-center w-6 h-6 rounded text-muted-foreground hover:text-red-400 hover:bg-success transition-colors text-sm"
                 >
                   ×
                 </button>

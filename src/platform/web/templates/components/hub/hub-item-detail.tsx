@@ -7,8 +7,8 @@ import { kindOf, needsDestination, verbOf } from "@/components/hub/hub-kinds";
 function Fact({ label, children }) {
   return (
     <div className="flex gap-3 text-[0.74rem]">
-      <span className="w-20 shrink-0 text-body-soft">{label}</span>
-      <span className="min-w-0 text-body">{children}</span>
+      <span className="w-20 shrink-0 text-muted-foreground">{label}</span>
+      <span className="min-w-0 text-foreground">{children}</span>
     </div>
   );
 }
@@ -24,7 +24,7 @@ export default function HubItemDetail({ item, owner, project, destination, onDes
   const [picking, setPicking] = useState(false);
   if (!item) {
     return (
-      <div className="flex h-full items-center justify-center px-6 text-center text-[0.78rem] text-body-soft">
+      <div className="flex h-full items-center justify-center px-6 text-center text-[0.78rem] text-muted-foreground">
         Choose a package to see what it would do to this project.
       </div>
     );
@@ -37,8 +37,8 @@ export default function HubItemDetail({ item, owner, project, destination, onDes
   return (
     <div className="flex flex-col gap-4 px-4 py-4">
       <div>
-        <p className="text-[0.9rem] font-semibold text-body">{item.title || item.package_id}</p>
-        <p className="mt-1 text-[0.78rem] leading-[1.5] text-body-soft">
+        <p className="text-[0.9rem] font-semibold text-foreground">{item.title || item.package_id}</p>
+        <p className="mt-1 text-[0.78rem] leading-[1.5] text-muted-foreground">
           {item.description || item.summary || `A ${kind.one}.`}
         </p>
       </div>
@@ -51,19 +51,19 @@ export default function HubItemDetail({ item, owner, project, destination, onDes
       </div>
 
       {verb === "add" ? (
-        <div className="border border-dark-accent4/40 bg-dark-accent4/5 px-3 py-2.5">
-          <p className="text-[0.74rem] font-medium text-dark-accent4">
+        <div className="border border-warning/40 bg-warning/5 px-3 py-2.5">
+          <p className="text-[0.74rem] font-medium text-warning">
             Adding copies these files into your project
           </p>
-          <p className="mt-1 text-[0.72rem] leading-[1.45] text-body-soft">
+          <p className="mt-1 text-[0.72rem] leading-[1.45] text-muted-foreground">
             They become your files — you can edit them freely. Nothing records where
             they came from, so the Hub cannot update them later.
           </p>
         </div>
       ) : (
-        <div className="border border-border bg-ui-bg-muted/30 px-3 py-2.5">
-          <p className="text-[0.74rem] font-medium text-body">Installing keeps this managed</p>
-          <p className="mt-1 text-[0.72rem] leading-[1.45] text-body-soft">
+        <div className="border border-border bg-accent/30 px-3 py-2.5">
+          <p className="text-[0.74rem] font-medium text-foreground">Installing keeps this managed</p>
+          <p className="mt-1 text-[0.72rem] leading-[1.45] text-muted-foreground">
             Recorded in <code className="font-mono">zeb.lock</code> with its exact version, so it
             can be updated and removed.
           </p>
@@ -72,19 +72,19 @@ export default function HubItemDetail({ item, owner, project, destination, onDes
 
       {asks ? (
         <div className="flex flex-col gap-1.5">
-          <span className="text-[0.7rem] font-medium uppercase tracking-[0.08em] text-body-soft">
+          <span className="text-[0.7rem] font-medium uppercase tracking-[0.08em] text-muted-foreground">
             Destination
           </span>
           <button
             type="button"
             data-destination-toggle="true"
             onClick={() => setPicking((open) => !open)}
-            className="flex items-center justify-between gap-2 rounded-md border border-ui-border bg-ui-bg px-3 py-2 text-left text-sm text-ui-text hover:border-ui-border/80"
+            className="flex items-center justify-between gap-2 rounded-md border border-border bg-popover px-3 py-2 text-left text-sm text-foreground hover:border-border/80"
           >
-            <span className={cx("truncate", destination ? "" : "text-ui-text-soft")}>
+            <span className={cx("truncate", destination ? "" : "text-muted-foreground")}>
               {destination || "Project root"}
             </span>
-            <span className="shrink-0 text-[0.7rem] text-ui-text-soft">{picking ? "done" : "change"}</span>
+            <span className="shrink-0 text-[0.7rem] text-muted-foreground">{picking ? "done" : "change"}</span>
           </button>
           {picking ? (
             <FolderPicker

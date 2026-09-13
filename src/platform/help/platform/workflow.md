@@ -23,9 +23,9 @@ connection_list
 **What the agent learns on a fresh project:**
 - AGENTS.md: "Blog for @acme. Tone is casual. DB is PostgreSQL (credential: `main-db`)."
 - MEMORY.md: "(empty — first session)"
-- pipeline_list: "(no pipelines)"
-- file_list: "(no templates)"
-- connection_list: "main-db (postgres)"
+- pipeline_list: `count: 0` (nothing registered yet)
+- file_list: `count: 0` (no templates yet)
+- connection_list: `{"connections":[{"slug":"main-db","label":"main-db","kind":"postgres"}],"count":1}`
 
 **Agent decision:** Fresh project. Read the domain skills before anything else.
 
@@ -45,7 +45,7 @@ The agent and owner clarify what "blog" means before touching any code.
 
 ```
 file_write
-  path=REQUIREMENTS.md
+  rel_path=docs/REQUIREMENTS.md
   content="""
   # Blog Concept
 
@@ -56,11 +56,12 @@ file_write
 
   ## Users
   - Visitors: read posts (no auth)
-  - Owner: write posts (HTTP Basic auth or session token)
+  - Owner: write posts (JWT session cookie, verified at the trigger)
 
   ## Tech decisions
   - Data: PostgreSQL via credential `main-db`
-  - Auth: HTTP Basic on admin routes (handled in pipeline script node)
+  - Auth: JWT session cookie on admin routes, checked by `--auth-type jwt`
+    on `trigger.webhook` before the pipeline runs
   - No JS framework needed for public pages (hydration: static)
   - Admin panel needs reactivity (hydration: reactive)
   """
@@ -76,7 +77,7 @@ Agent designs the schema and writes it as a spec doc before creating anything.
 
 ```
 file_write
-  path=schema.md
+  rel_path=docs/schema.md
   content="""
   # Database Schema
 
@@ -133,7 +134,7 @@ Before writing any pipeline or template, the agent designs the full architecture
 
 ```
 file_write
-  path=architecture.md
+  rel_path=docs/architecture.md
   content="""
   # Architecture
 
@@ -153,8 +154,7 @@ file_write
   pages/admin-editor.tsx    — form: title, slug, body (markdown), status toggle, save
 
   ## Auth strategy
-  Script node on all admin routes:
-    Authenticate at the door, not in a script:
+  Authenticate at the door, not in a script, on every /admin route:
 
       trigger.webhook --path /admin/posts --method GET \
         --auth-type jwt --auth-credential session-key --auth-required-role admin
@@ -221,7 +221,8 @@ pipeline_register
 pipeline_register
   file_rel_path=admin/admin-posts.zf.json
   body="""
-  | trigger.webhook --path /admin/posts --method GET
+  | trigger.webhook --path /admin/posts --method GET \
+      --auth-type jwt --auth-credential session-key --auth-required-role admin
   | pg.query --credential main-db -- "
       SELECT id, slug, title, status, created_at
       FROM posts
@@ -237,7 +238,8 @@ pipeline_register
 pipeline_register
   file_rel_path=admin/admin-post-get.zf.json
   body="""
-  | trigger.webhook --path /admin/post --method GET
+  | trigger.webhook --path /admin/post --method GET \
+      --auth-type jwt --auth-credential session-key --auth-required-role admin
   | pg.query --credential main-db -- "
       SELECT id, slug, title, body, status
       FROM posts
@@ -257,7 +259,7 @@ pipeline_register
   | trigger.webhook --path /admin/post --method PUT \
       --auth-type jwt --auth-credential session-key --auth-required-role admin
   | script -- "
-      const { slug, title, body, status } = input
+      const { slug, title, body, status } = input.body
       return { slug, title, body, status: status || 'draft' }
     "
   | pg.query --credential main-db -- "
@@ -301,11 +303,8 @@ Agent sees the scaffold, then writes the real component:
 file_write
   rel_path=pages/blog-list.tsx
   content="""
-  import Button from "@/components/ui/button";
-  import Badge from "@/components/ui/badge";
-
   export default function BlogList(input) {
-    const posts = input.state?.rows ?? [];
+    const posts = input.rows ?? [];
     return (
       <div className="max-w-2xl mx-auto px-4 py-12">
         <h1 className="text-4xl font-bold text-slate-900 mb-2">Blog</h1>
@@ -337,10 +336,10 @@ file_create  kind=page  name=blog-post
 file_write
   rel_path=pages/blog-post.tsx
   content="""
-  import Markdown from "@/components/ui/markdown";
+  import { Markdown } from "zeb/markdown";
 
   export default function BlogPost(input) {
-    const post = input.state?.rows?.[0];
+    const post = input.rows?.[0];
     if (!post) return (
       <div className="max-w-2xl mx-auto px-4 py-12">
         <h1 className="text-2xl font-bold text-slate-800">Post not found</h1>
@@ -369,16 +368,16 @@ file_create  kind=page  name=admin-posts
 file_write
   rel_path=pages/admin-posts.tsx
   content="""
-  import Badge from "@/components/ui/badge";
-  import Button from "@/components/ui/button";
+  import { Badge } from "zeb/ui/badge";
+  import { Button } from "zeb/ui/button";
 
   export default function AdminPosts(input) {
-    const posts = input.state?.rows ?? [];
+    const posts = input.rows ?? [];
     return (
       <div className="max-w-4xl mx-auto px-4 py-10">
         <div className="flex items-center justify-between mb-8">
           <h1 className="text-2xl font-bold text-slate-900">Posts</h1>
-          <Button asChild><a href="/admin/post?slug=new">New post</a></Button>
+          <Button as="a" href="/admin/post?slug=new">New post</Button>
         </div>
         <table className="w-full text-sm">
           <thead>
@@ -394,7 +393,7 @@ file_write
               <tr key={p.id} className="border-b border-slate-100">
                 <td className="py-3 text-slate-800">{p.title}</td>
                 <td className="py-3">
-                  <Badge variant={p.status === 'published' ? 'success' : 'default'}>
+                  <Badge variant={p.status === 'published' ? 'default' : 'secondary'}>
                     {p.status}
                   </Badge>
                 </td>
@@ -423,13 +422,14 @@ file_create  kind=page  name=admin-editor
 file_write
   rel_path=pages/admin-editor.tsx
   content="""
-  import Button from "@/components/ui/button";
-  import Input from "@/components/ui/input";
-  import Field from "@/components/ui/field";
-  import Label from "@/components/ui/label";
+  import { useState } from "zeb/react";
+  import { Button } from "zeb/ui/button";
+  import { Input } from "zeb/ui/input";
+  import { Field } from "zeb/ui/field";
+  import { Label } from "zeb/ui/label";
 
   export default function AdminEditor(input) {
-    const post = input.state?.rows?.[0] ?? {};
+    const post = input.rows?.[0] ?? {};
     const [slug, setSlug]     = useState(post.slug    ?? '');
     const [title, setTitle]   = useState(post.title   ?? '');
     const [body, setBody]     = useState(post.body    ?? '');
@@ -535,11 +535,15 @@ pipeline_execute
   input={"query":{}}
 ```
 
-Output includes inline node trace:
+Output is the pipeline result followed by an inline node trace:
 ```
+Pipeline 'pages/blog-list.zf.json' executed.
+{
+  "rows": []
+}
 --- node trace (2 nodes, 8ms total) ---
-  ✓  n0  (trigger.webhook)   0ms
-  ✓  n1  (pg.query)          8ms
+  ✓  n0  (trigger.webhook)  0ms
+  ✓  n1  (pg.query)  8ms
 ```
 
 If a node shows `✗`, inspect that node ID and fix before moving on.
@@ -564,20 +568,20 @@ docs_agent_write
   ## Delivered
   - 5 pipelines (all active): blog-list, blog-post, admin-posts, admin-post-get, admin-post-put
   - 4 templates: blog-list, blog-post, admin-posts, admin-editor
-  - Docs: REQUIREMENTS.md, schema.md, architecture.md
+  - Docs: docs/REQUIREMENTS.md, docs/schema.md, docs/architecture.md
 
   ## Prerequisites (owner must do)
   - Create `posts` table in PostgreSQL (schema in docs/schema.md)
 
   ## Known gaps for v2
   - No pagination on blog-list (currently LIMIT 20)
-  - Auth uses HTTP Basic — consider session tokens for v2
+  - JWT session has no refresh/rotation yet — tokens are long-lived only
   - No image upload support
   - About page not built (low priority)
 
   ## Routes
   Public:  GET /blog,  GET /blog/post?slug=...
-  Admin:   GET /admin/posts,  GET /admin/post?slug=...  (Basic auth)
+  Admin:   GET /admin/posts,  GET /admin/post?slug=...  (JWT session, admin role required)
   """
 ```
 
@@ -587,9 +591,9 @@ docs_agent_write
 
 | Pattern | Where shown |
 |---------|-------------|
-| Write spec before code | Phase 1–3: REQUIREMENTS.md, schema.md, architecture.md |
-| Data flows from pipeline to template via `input.state` | Phase 4 pipelines → Phase 5 `input.state?.rows` |
-| Auth in a script node before query | admin-posts pipeline |
+| Write spec before code | Phase 1–3: docs/REQUIREMENTS.md, docs/schema.md, docs/architecture.md |
+| Data flows from pipeline to template: `input` IS the pipeline's final payload | Phase 4 pipelines → Phase 5 `input.rows` |
+| Auth verified at the trigger, before the pipeline runs | admin-posts, admin-post-get, admin-post-put pipelines |
 | `hydration: "static"` for read-only pages | blog-list, blog-post, admin-posts |
 | `hydration: "reactive"` for interactive forms | admin-editor |
 | `useState` hooks for form binding | admin-editor component |

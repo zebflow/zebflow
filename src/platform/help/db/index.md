@@ -1,68 +1,58 @@
 # Databases
 
-Zebflow supports two categories of databases: the built-in Sekejap embedded store and external connections.
+Every project has two databases ready without any setup, and can connect to
+external ones by credential.
 
----
+| Connection slug | Kind | What it is |
+|---|---|---|
+| `default-multimodel` | `sekejap` | Zebflow's embedded multi-model store: tables, graph, vector, spatial, full-text. The default choice for a project's own data. |
+| `default` | `sqlite` | an embedded SQLite file (`data/store/local.db`) |
+| yours | `postgresql`, … | external servers, added in Studio → DB Connections with a credential |
 
-## Sekejap — Built-in, Always Available
+`connection_list` shows them; `connection_describe slug=… [scope=tables|schemas|functions] [schema=] [table=]`
+shows tables and columns. Read the schema before writing SQL.
 
-Zebflow's built-in multi-model database — graph, vector, spatial, full-text, vague temporal.
+## Nodes
 
-**No connection setup needed.** Scoped to your project automatically.
+| Node | Database | Binds |
+|---|---|---|
+| `sekejap.query` | Sekejap | `$1, $2 …` |
+| `sekejap.insert` | Sekejap — bulk records and graph edges from a payload (`--target`, `--records-path`, `--edges-path`) | |
+| `sqlite.query` / `sqlite.mutate` | the project's `default` SQLite | `?1, ?2 …` |
+| `pg.query` | PostgreSQL — `--credential <id from credential_list>` | `$1, $2 …` |
+| `table.query` | files (CSV, JSON, NDJSON, Parquet) with SQL | `$1, $2 …` |
 
-Suitable for: blog posts, user tables, AI memory, vector embeddings, event graphs, RAG indexes.
-
-### Workflow
-
-1. Create a table in the Studio UI (Tables page)
-2. Use `n.sekejap.query` in pipelines with raw SQL
-3. For graph reads, use `SELECT ... FROM MATCH ...`
-
-### Node
-
-```zf
-| n.sekejap.query -- "SELECT _key, title FROM posts LIMIT 20"
-| n.sekejap.query --params "{{ input.params.id }}" -- "SELECT friend._key AS friend_key FROM MATCH (u:users)-[:follows]->(friend:users) WHERE u._key = $1"
-| n.sekejap.query --params "{{ [$trigger.body.slug, $trigger.body.title] }}" -- "INSERT INTO posts (_key, title) VALUES ($1, $2)"
-```
-
-### Reference
-
-Call `help("db/sekejap")` for the full SekejapQL query language reference.
-
----
-
-## External DB Connections
-
-PostgreSQL, MySQL, and other databases via named connections.
-
-### Setup
-
-Configure connections in Studio → Connections → DB Connections.
-
-### Workflow
-
-1. `connection_list` — see your configured connections and their slugs
-2. `connection_describe slug=<slug>` — inspect the schema
-3. Use slug in pipeline nodes: `n.pg.query --credential <slug>`
-
-### Available pipeline nodes
-
-- `n.pg.query` — PostgreSQL queries (SELECT, INSERT, UPDATE, DELETE)
-- `n.mysql.query` — MySQL/MariaDB queries
-- `n.sekejap.query` — Sekejap (built-in)
-
-### Schema discovery
+SQL goes in the body; values go in `--params`:
 
 ```
-connection_describe slug=main-db scope=tables
-connection_describe slug=main-db table=public.users
+| sekejap.query --params "{{ [$trigger.params.id] }}" -- "SELECT id, title FROM posts WHERE id = $1"
+| sekejap.query --params "{{ [input.body.title, input.body.slug] }}" --read-only false -- "INSERT INTO posts (title, slug) VALUES ($1, $2)"
+| sqlite.query --params "{{ [input.body.email] }}" -- "SELECT * FROM users WHERE email = ?1"
+| pg.query --credential pg_main --params "{{ [$trigger.auth.sub] }}" -- "SELECT * FROM accounts WHERE id = $1"
 ```
 
-Always run `connection_describe` before writing SQL queries.
+Query nodes answer `{ columns, rows, row_count, … }` for reads and
+`{ affected_rows }` for writes — the rows are `input.rows`, never `input`
+itself. There is no MySQL node; a MySQL connection can be stored but nothing
+queries it from a pipeline.
 
----
+## Trying a query
 
-## Further Reading
+`pipeline_run` runs a body once without saving it:
 
-- `help("db/sekejap")` — SekejapQL query language: INSERT, SELECT, UPDATE, DELETE syntax
+```
+pipeline_run body="| trigger.function | sekejap.query --limit 5 -- \"SELECT * FROM posts\""
+```
+
+The Studio's DB pages (`/projects/{o}/{p}/db/{kind}/{slug}/query`) run the
+same thing interactively, and `POST /api/projects/{o}/{p}/db/connections/{id}/query`
+is the HTTP form.
+
+## Creating tables
+
+- **Sekejap:** plain SQL through the node — `CREATE TABLE posts (id TEXT, title TEXT, body_json JSON, created_at TEXT)` — or a *managed table* with declared attributes and indexes (hash, range, full-text, vector, spatial) in Studio → the connection's Tables tab, or `POST /api/projects/{o}/{p}/tables`. Declared schemas live in `schemas/sekejap/`; seed rows in `initial-data/`.
+- **SQLite:** `sqlite.mutate -- "CREATE TABLE …"`; schema in `schemas/sqlite/schema.sql`.
+- **PostgreSQL:** `pg.query --credential … -- "CREATE TABLE …"` against a credential that is allowed to.
+
+`help("db/sekejap")` for SekejapQL: graph reads with `FROM MATCH`, full-text,
+vectors, spatial, the managed-table API.

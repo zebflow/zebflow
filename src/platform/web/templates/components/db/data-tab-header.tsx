@@ -8,7 +8,7 @@ function SubTab({ label, active, disabled, onClick }) {
       disabled={disabled}
       className={cx(
         "px-3 py-1.5 text-xs font-medium transition-colors",
-        active ? "border-b-2 border-ui-text text-ui-text" : "text-ui-text-soft hover:text-ui-text",
+        active ? "border-b-2 border-foreground text-foreground" : "text-muted-foreground hover:text-foreground",
         disabled ? "cursor-not-allowed opacity-40" : "",
       )}
       onClick={onClick}
@@ -28,12 +28,12 @@ function SubTab({ label, active, disabled, onClick }) {
 export default function DataTabHeader({ table, facts, tabs, schema }) {
   return (
     <>
-      <div className="flex items-center justify-between gap-3 border-b border-ui-border/70 bg-ui-bg-muted/30 px-3 py-2">
+      <div className="flex items-center justify-between gap-3 border-b border-border/70 bg-accent/30 px-3 py-2">
         <div className="min-w-0">
-          <p className="truncate text-sm font-medium text-ui-text">
+          <p className="truncate text-sm font-medium text-foreground">
             {table.name || "No table selected"}
           </p>
-          <p className="text-xs text-ui-text-soft">
+          <p className="text-xs text-muted-foreground">
             {table.active
               ? `${table.active.schema} schema`
               : "Choose a table from the left or create a new one."}
@@ -41,14 +41,14 @@ export default function DataTabHeader({ table, facts, tabs, schema }) {
         </div>
         <div className="flex flex-wrap items-center justify-end gap-2">
           {table.active ? (
-            <div className="flex flex-wrap items-center justify-end gap-2 text-[11px] uppercase tracking-[0.14em] text-ui-text-soft">
-              <span className="rounded-full border border-ui-border/80 px-2 py-1">
+            <div className="flex flex-wrap items-center justify-end gap-2 text-[11px] uppercase tracking-[0.14em] text-muted-foreground">
+              <span className="rounded-full border border-border/80 px-2 py-1">
                 {table.active.rowCount || 0} rows
               </span>
-              <span className="rounded-full border border-ui-border/80 px-2 py-1">
+              <span className="rounded-full border border-border/80 px-2 py-1">
                 {facts.fieldCount} fields
               </span>
-              <span className="rounded-full border border-ui-border/80 px-2 py-1">
+              <span className="rounded-full border border-border/80 px-2 py-1">
                 {facts.indexCount} indexed
               </span>
             </div>
@@ -57,7 +57,7 @@ export default function DataTabHeader({ table, facts, tabs, schema }) {
             {schema.canSync ? (
               <button
                 type="button"
-                className="rounded border border-ui-border px-2 py-1 text-xs font-medium text-ui-text-soft hover:text-ui-text disabled:opacity-50"
+                className="rounded border border-border px-2 py-1 text-xs font-medium text-muted-foreground hover:text-foreground disabled:opacity-50"
                 disabled={schema.busy}
                 onClick={schema.onSync}
               >
@@ -68,7 +68,7 @@ export default function DataTabHeader({ table, facts, tabs, schema }) {
               <a
                 href={schema.exportHref}
                 download={schema.exportFilename}
-                className="rounded border border-ui-border px-2 py-1 text-xs font-medium text-ui-text-soft hover:text-ui-text"
+                className="rounded border border-border px-2 py-1 text-xs font-medium text-muted-foreground hover:text-foreground"
               >
                 Download schema
               </a>
@@ -78,12 +78,12 @@ export default function DataTabHeader({ table, facts, tabs, schema }) {
       </div>
 
       {schema.status ? (
-        <div className="border-b border-ui-border/70 px-3 py-1 text-xs text-ui-text-soft">
+        <div className="border-b border-border/70 px-3 py-1 text-xs text-muted-foreground">
           {schema.status}
         </div>
       ) : null}
 
-      <div className="flex items-center gap-1 border-b border-ui-border/70 px-3">
+      <div className="flex items-center gap-1 border-b border-border/70 px-3">
         <SubTab label="Data" active={tabs.current === "data"} onClick={() => tabs.onSelect("data")} />
         {tabs.showRelations ? (
           <SubTab

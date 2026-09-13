@@ -189,11 +189,7 @@ impl DslExecutor {
                         for m in &rows {
                             let name = truncate(&m.name, 26);
                             let trigger = truncate(&m.trigger_kind, 12);
-                            let status = if m.active_hash.is_some() {
-                                "active"
-                            } else {
-                                "draft"
-                            };
+                            let status = crate::platform::services::ops::pipeline_status(m);
                             out.push(DslLine::info(format!(
                                 "{:<26} {:<12} {:<8} {}",
                                 name, trigger, status, m.virtual_path
@@ -344,16 +340,7 @@ impl DslExecutor {
         };
 
         let mut out = DslOutput::new_ok();
-        let status = if meta
-            .active_hash
-            .as_deref()
-            .map(|h| !h.is_empty() && h == meta.hash)
-            .unwrap_or(false)
-        {
-            "active"
-        } else {
-            "draft"
-        };
+        let status = crate::platform::services::ops::pipeline_status(&meta);
         let hash_short = meta.hash.chars().take(8).collect::<String>();
 
         let hits = self

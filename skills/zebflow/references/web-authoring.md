@@ -9,11 +9,11 @@ Authoritative code and docs:
 - `src/platform/help/web/design-system.md`
 - `src/platform/help/web/libraries.md`
 - `src/platform/help/web/hooks.md`
-- `libraries/`
+- `src/platform/help/web/ui.md`
+- `blessed/source-libraries/ui/` (zeb/ui) and `blessed/rwe-libraries/` (zeb/* runtime libraries)
 
 Contract boundary:
 
-- `docs/usage/web.md`
 - `docs/developer/rwe.md`
 - `docs/contracts/project.md`
 - `docs/contracts/versioning.md`
@@ -23,9 +23,9 @@ Rules:
 - Use Zeb React and Zeb Tailwind.
 - Use `className`, not `class`.
 - Use `@/` alias for component imports.
-- Do not import Preact hooks from npm paths.
-- Entry pages may import from `zeb/react` for editor hints; component files should rely on injected globals.
-- Behavior `.ts` exports should be camelCase, not ALL_CAPS.
+- Every file imports what it uses from `"zeb/react"`, `"zeb/ui/<name>"` or `"@/…"`; there are no injected globals and a hook used without an import is refused (`src/rwe/core/zeb_react.rs` `EXPORTS` is the list).
+- Project pages use `zeb/ui/*`; the platform's own pages use `@/components/ui/*` (the studio kit). Do not mix the two on one page.
+- Colours are theme roles (`bg-primary`, `text-muted-foreground`), never palette classes.
 - Fix shared RWE/Tailwind/library behavior when the same issue appears in multiple pages.
 
 Project Studio surfaces:

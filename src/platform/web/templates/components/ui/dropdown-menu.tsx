@@ -34,7 +34,7 @@ export default function DropdownMenu({ trigger, align = "left", className, child
         <div
           className={cx(
             "absolute z-50 top-full mt-1 min-w-[8rem] overflow-hidden rounded-md p-1 shadow-md",
-            "border border-border bg-surface text-body",
+            "border border-border bg-card text-foreground",
             align === "right" ? "right-0" : "left-0"
           )}
           onClick={() => setOpen(false)}

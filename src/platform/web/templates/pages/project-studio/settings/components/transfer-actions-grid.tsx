@@ -5,7 +5,7 @@ import { requestJson } from "@/components/lib/http";
 
 const PRIMARY = "!rounded-none";
 const OUTLINE =
-  "!rounded-none !border !border-dark-border !bg-transparent !text-body hover:!bg-dark-border";
+  "!rounded-none !border !border-border !bg-transparent !text-foreground hover:!bg-border";
 
 const KINDS = [
   { key: "bundle", label: "Bundle", variant: "primary" },
@@ -59,9 +59,9 @@ export default function TransferActionsGrid({ api, onOperationsChanged, onStatus
 
   return (
     <div className="grid gap-3 md:grid-cols-2">
-      <section className="bg-dark-border px-4 py-4">
-        <p className="text-[0.8rem] font-medium text-body">Export</p>
-        <p className="mt-2 text-[0.78rem] leading-[1.45] text-body-soft">
+      <section className="bg-border px-4 py-4">
+        <p className="text-[0.8rem] font-medium text-foreground">Export</p>
+        <p className="mt-2 text-[0.78rem] leading-[1.45] text-muted-foreground">
           Credentials and DB connections stay platform-managed. Caches, installed hub content, logs,
           and recovery copies stay home and rebuild or regenerate.
         </p>
@@ -82,9 +82,9 @@ export default function TransferActionsGrid({ api, onOperationsChanged, onStatus
         </div>
       </section>
 
-      <section className="bg-dark-border px-4 py-4">
-        <p className="text-[0.8rem] font-medium text-body">Import</p>
-        <p className="mt-2 text-[0.78rem] leading-[1.45] text-body-soft">
+      <section className="bg-border px-4 py-4">
+        <p className="text-[0.8rem] font-medium text-foreground">Import</p>
+        <p className="mt-2 text-[0.78rem] leading-[1.45] text-muted-foreground">
           Apply one archive at a time to the current project. This replaces that scope on the target
           project.
         </p>

@@ -17,7 +17,7 @@ import { PROPERTY_SECTIONS } from "@/components/db/table-data";
  */
 function SectionRail({ section, onSelect }) {
   return (
-    <nav className="flex w-40 shrink-0 flex-col gap-0.5 overflow-y-auto border-r border-ui-border/70 bg-ui-bg-muted/20 p-2">
+    <nav className="flex w-40 shrink-0 flex-col gap-0.5 overflow-y-auto border-r border-border/70 bg-accent/20 p-2">
       {PROPERTY_SECTIONS.map((item) => (
         <button
           key={item.id}
@@ -27,7 +27,7 @@ function SectionRail({ section, onSelect }) {
           title={item.ready ? item.label : `${item.label} — not built yet`}
           className={cx(
             "flex items-center gap-2 rounded px-2 py-1 text-left text-xs transition-colors",
-            section === item.id ? "bg-ui-bg-muted text-ui-text" : "text-ui-text-soft hover:bg-ui-bg-muted/60",
+            section === item.id ? "bg-accent text-foreground" : "text-muted-foreground hover:bg-accent/60",
             !item.ready ? "cursor-not-allowed opacity-40" : "",
           )}
         >
@@ -48,11 +48,11 @@ function TableHeadline({ activeTable, engine, columnCount }) {
     ["Columns", columnCount],
   ];
   return (
-    <div className="mb-3 grid gap-x-6 gap-y-1 border-b border-ui-border/60 pb-3 text-xs sm:grid-cols-2">
+    <div className="mb-3 grid gap-x-6 gap-y-1 border-b border-border/60 pb-3 text-xs sm:grid-cols-2">
       {facts.map(([label, value]) => (
         <div key={label} className="flex gap-2">
-          <span className="w-20 shrink-0 text-ui-text-muted">{label}</span>
-          <span className="truncate text-ui-text">{value}</span>
+          <span className="w-20 shrink-0 text-muted-foreground">{label}</span>
+          <span className="truncate text-foreground">{value}</span>
         </div>
       ))}
     </div>
@@ -66,7 +66,7 @@ function ColumnsEditor({ properties, types }) {
     <form onSubmit={properties.submit} className="flex flex-col gap-5">
       <div className="flex flex-col gap-3">
         <div className="flex items-center justify-between">
-          <p className="text-xs font-medium uppercase tracking-[0.14em] text-ui-text-soft">Columns</p>
+          <p className="text-xs font-medium uppercase tracking-[0.14em] text-muted-foreground">Columns</p>
           <Button
             type="button"
             variant="outline"
@@ -77,7 +77,7 @@ function ColumnsEditor({ properties, types }) {
           </Button>
         </div>
         {attributes.length === 0 ? (
-          <p className="text-xs text-ui-text-soft">This table has no columns yet.</p>
+          <p className="text-xs text-muted-foreground">This table has no columns yet.</p>
         ) : (
           <>
             <AttributeEditorHeader />
@@ -99,7 +99,7 @@ function ColumnsEditor({ properties, types }) {
           {properties.busy ? "Saving…" : "Save Changes"}
         </Button>
         {properties.status ? (
-          <span className="text-xs text-ui-text-soft">{properties.status}</span>
+          <span className="text-xs text-muted-foreground">{properties.status}</span>
         ) : null}
       </div>
     </form>
@@ -187,8 +187,8 @@ export default function TablePropertiesPanel({
         {properties.section !== "columns" ? (
           <div className="flex flex-1 items-center justify-center px-6 py-10 text-center">
             <div className="max-w-sm">
-              <p className="text-sm text-ui-text">{chosen.label}</p>
-              <p className="mt-2 text-xs text-ui-text-soft">
+              <p className="text-sm text-foreground">{chosen.label}</p>
+              <p className="mt-2 text-xs text-muted-foreground">
                 Not built yet. The engine reports this, but nothing reads it back into the studio.
               </p>
             </div>

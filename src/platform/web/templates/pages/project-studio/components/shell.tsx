@@ -2,7 +2,7 @@
  * Project studio chrome only — not a global layout. Import from here:
  * `@/pages/project-studio/components/shell`. Shared UI for all apps stays under `@/components/`.
  *
- * Layout uses Tailwind utilities (RWE `data-rwe-tw`); `--studio-*` / `--zf-ui-*` come from `[data-studio-theme]` in `pages/project-studio/styles.css` (SSR-safe).
+ * Layout uses Tailwind utilities (RWE `data-rwe-tw`); colours are theme tokens (`.dark` on the root — docs/contracts/kinds/ui-theme).
  */
 import { useEffect, useState, Link, cx } from "zeb/react";
 import PlatformSidebar from "@/pages/project-studio/components/platform-sidebar";
@@ -31,15 +31,13 @@ function ConsoleSlot({ owner, project }) {
   return <ProjectConsole owner={owner} project={project} />;
 }
 
-function TerminalToggleButton({ isLight }) {
+function TerminalToggleButton() {
   const { toggleConsole, setActivePanel } = useStudioChrome();
   return (
     <button
       type="button"
       className={cx(
-        isLight
-          ? "bg-[#e9904e] text-white hover:bg-[#f6863c]"
-          : "bg-[#e9904e] text-white hover:bg-[#f6863c]",
+        "bg-[#e9904e] text-white hover:bg-[#f6863c]",
         "flex h-9 items-center justify-center gap-1.5 rounded-none px-2.5 font-mono text-[0.68rem] font-semibold tracking-widest",
       )}
       onClick={() => {
@@ -55,7 +53,7 @@ function TerminalToggleButton({ isLight }) {
   );
 }
 
-function HelpDialog({ owner, project, isLight, open, onClose }) {
+function HelpDialog({ owner, project, open, onClose }) {
   const [sections, setSections] = useState([]);
   const [activeSection, setActiveSection] = useState("start-here");
   const [loading, setLoading] = useState(false);
@@ -101,18 +99,18 @@ function HelpDialog({ owner, project, isLight, open, onClose }) {
         size="full"
         className={cx(
           "border shadow-2xl",
-          isLight ? "border-gray-200 bg-white" : "border-dark-border bg-dark-background",
+          "border-border bg-background",
         )}
       >
         <div className="flex min-h-0 w-full">
           <aside
             className={cx(
               "flex w-60 shrink-0 flex-col border-r",
-              isLight ? "border-gray-200 bg-gray-50" : "border-dark-border bg-dark-menus/60",
+              "border-border bg-popover/60",
             )}
           >
             <div className="border-b border-inherit px-3.5 py-2.5">
-              <p className={cx("text-[0.82rem] font-semibold", isLight ? "text-gray-900" : "text-dark-text1")}>Help</p>
+              <p className={cx("text-[0.82rem] font-semibold", "text-muted-foreground")}>Help</p>
             </div>
             <div className="flex-1 overflow-auto px-2 py-2">
               {sections.map((section) => (
@@ -121,7 +119,7 @@ function HelpDialog({ owner, project, isLight, open, onClose }) {
                   node={section}
                   level={0}
                   activeId={active?.id}
-                  isLight={isLight}
+                 
                   onSelect={setActiveSection}
                 />
               ))}
@@ -132,11 +130,11 @@ function HelpDialog({ owner, project, isLight, open, onClose }) {
             <div
               className={cx(
                 "flex items-center justify-between border-b px-5 py-3",
-                isLight ? "border-gray-200 bg-white" : "border-dark-border bg-dark-background",
+                "border-border bg-background",
               )}
             >
               <div>
-                <p className={cx("text-base font-semibold", isLight ? "text-gray-900" : "text-dark-text1")}>
+                <p className={cx("text-base font-semibold", "text-muted-foreground")}>
                   {active?.title || "Help"}
                 </p>
               </div>
@@ -145,19 +143,19 @@ function HelpDialog({ owner, project, isLight, open, onClose }) {
 
             <div className="min-h-0 flex-1 overflow-auto px-5 py-4">
               {loading ? (
-                <p className={cx("text-sm", isLight ? "text-gray-600" : "text-dark-text1")}>Loading help…</p>
+                <p className={cx("text-sm", "text-muted-foreground")}>Loading help…</p>
               ) : error ? (
                 <p className="text-sm text-red-400">{error}</p>
               ) : active ? (
                 <div
                   className={cx(
                     "max-w-none prose prose-sm",
-                    isLight ? "" : "prose-invert",
+                    "prose-invert",
                   )}
                   dangerouslySetInnerHTML={{ __html: renderMarkdown(active?.content || "") }}
                 />
               ) : (
-                <p className={cx("text-sm", isLight ? "text-gray-600" : "text-dark-text1")}>No help content available.</p>
+                <p className={cx("text-sm", "text-muted-foreground")}>No help content available.</p>
               )}
             </div>
           </div>
@@ -192,7 +190,7 @@ function findHelpSectionById(nodes, id) {
   return null;
 }
 
-function HelpTreeNode({ node, level, activeId, isLight, onSelect }) {
+function HelpTreeNode({ node, level, activeId, onSelect }) {
   const active = activeId === node?.id;
   const hasChildren = Array.isArray(node?.children) && node.children.length > 0;
   return (
@@ -204,12 +202,8 @@ function HelpTreeNode({ node, level, activeId, isLight, onSelect }) {
               "flex w-full items-center rounded-md px-3 py-1.5 text-left text-[0.78rem] transition-colors",
           level === 0 ? "font-semibold" : level === 1 ? "font-medium" : "",
           active
-            ? isLight
-              ? "bg-orange-500 text-white"
-              : "bg-dark-accent1/15 text-dark-accent1"
-            : isLight
-              ? "text-gray-700 hover:bg-gray-100"
-              : "text-dark-text1 hover:bg-dark-border",
+            ? "bg-primary/15 text-primary"
+            : "text-muted-foreground hover:bg-border",
         )}
         style={{ paddingLeft: `${0.75 + level * 0.85}rem` }}
       >
@@ -223,7 +217,7 @@ function HelpTreeNode({ node, level, activeId, isLight, onSelect }) {
               node={child}
               level={level + 1}
               activeId={activeId}
-              isLight={isLight}
+             
               onSelect={onSelect}
             />
           ))}
@@ -234,14 +228,12 @@ function HelpTreeNode({ node, level, activeId, isLight, onSelect }) {
 }
 
 export default function ProjectStudioShell(props) {
-  const [theme, setTheme] = useState("dark");
   const [helpOpen, setHelpOpen] = useState(false);
   const [preferencesOpen, setPreferencesOpen] = useState(false);
   const [editorPreferences, setEditorPreferences] = useState(getDefaultEditorPreferences());
   const nav = props?.nav ?? {};
   const owner = props?.owner ?? "";
   const project = props?.project ?? "";
-  const isLight = theme === "light";
 
   useEffect(() => {
     setEditorPreferences(readEditorPreferences());
@@ -251,28 +243,27 @@ export default function ProjectStudioShell(props) {
 
   return (
     <div
-      data-studio-theme={isLight ? "light" : "dark"}
+      data-studio-theme="dark"
       className={cx(
-        "flex h-screen w-screen flex-col overflow-hidden",
-        isLight ? "bg-gray-50" : "bg-dark-background",
+        "flex h-screen w-screen flex-col overflow-hidden bg-background text-foreground",
+        "dark",
       )}
     >
       <FileSearchProvider owner={owner} project={project}>
       <StudioChromeProvider>
         <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
-          <PlatformSidebar nav={nav} theme={theme} />
+          <PlatformSidebar nav={nav} />
 
           <main
             className={cx(
               "ml-16 flex h-screen min-h-0 min-w-0 flex-1 flex-col overflow-hidden",
-              isLight ? "bg-gray-50" : "bg-dark-background",
+              "bg-background",
             )}
-            tw-variants={"bg-gray-50 bg-dark-background"}
           >
             <header
               className={cx(
                 "relative z-10 flex h-10 shrink-0 items-center border-b px-4 backdrop-blur-md",
-                isLight ? "border-gray-200 bg-white/90" : "border-dark-border bg-dark-background",
+                "border-border bg-background",
               )}
             >
               <div className="flex h-full w-full items-center justify-between">
@@ -281,14 +272,14 @@ export default function ProjectStudioShell(props) {
                     href="/home"
                     className={cx(
                       "transition-colors",
-                      isLight ? "text-gray-500 hover:text-gray-900" : "text-dark-text1 hover:text-gray-100",
+                      "text-muted-foreground hover:text-foreground",
                     )}
                     aria-label="Go to home"
                   >
                     <HomeIcon />
                   </Link>
                   <span
-                    className={cx("select-none", isLight ? "text-gray-300" : "text-dark-text1")}
+                    className={cx("select-none", "text-muted-foreground")}
                   >
                     /
                   </span>
@@ -296,18 +287,18 @@ export default function ProjectStudioShell(props) {
                     href={props?.projectHref ?? "#"}
                     className={cx(
                       "truncate transition-colors",
-                      isLight ? "text-gray-500 hover:text-gray-900" : "text-dark-text1 hover:text-gray-100",
+                      "text-muted-foreground hover:text-foreground",
                     )}
                   >
                     {props?.projectLabel ?? "Project"}
                   </Link>
                   <span
-                    className={cx("select-none", isLight ? "text-gray-300" : "text-dark-text1")}
+                    className={cx("select-none", "text-muted-foreground")}
                   >
                     /
                   </span>
                   <span
-                    className={cx("font-medium", isLight ? "text-gray-900" : "text-dark-text1")}
+                    className={cx("font-medium", "text-muted-foreground")}
                     data-rwe-breadcrumb
                   >
                     {props?.currentMenu ?? "Workspace"}
@@ -317,10 +308,10 @@ export default function ProjectStudioShell(props) {
                 <div className="flex items-center gap-0.5">
                   <SessionPanel owner={owner} project={project} />
                   <GitRepoPanel owner={owner} project={project} />
-                  <TerminalToggleButton isLight={isLight} />
+                  <TerminalToggleButton />
                   <button
                     type="button"
-                    className="flex h-9 w-9 items-center justify-center rounded-none bg-white/[0.05] text-white transition-colors hover:bg-white/[0.1]"
+                    className="flex h-9 w-9 items-center justify-center rounded-none bg-foreground/5 text-foreground transition-colors hover:bg-foreground/10"
                     onClick={() => setHelpOpen(true)}
                     aria-label="Open help"
                     title="Help"
@@ -329,7 +320,7 @@ export default function ProjectStudioShell(props) {
                   </button>
                   <button
                     type="button"
-                    className="flex h-9 w-9 items-center justify-center rounded-none bg-white/[0.1] text-white transition-colors hover:bg-white/[0.15]"
+                    className="flex h-9 w-9 items-center justify-center rounded-none bg-foreground/10 text-foreground transition-colors hover:bg-foreground/15"
                     onClick={() => setPreferencesOpen(true)}
                     aria-label="Open preferences"
                     title="Preferences"
@@ -338,7 +329,7 @@ export default function ProjectStudioShell(props) {
                   </button>
                   <a
                     href="/profile"
-                    className="flex h-9 w-9 items-center justify-center rounded-none bg-white/[0.15] text-white transition-colors hover:bg-white/[0.2] hover:no-underline"
+                    className="flex h-9 w-9 items-center justify-center rounded-none bg-foreground/15 text-foreground transition-colors hover:bg-foreground/20 hover:no-underline"
                     aria-label="Profile"
                     title="Profile"
                   >
@@ -363,7 +354,7 @@ export default function ProjectStudioShell(props) {
               <DialogTitle>Preferences</DialogTitle>
             </DialogHeader>
             <div className="space-y-4 px-6 pb-6">
-              <label className="flex items-start gap-3 rounded-lg border border-border bg-surface-2 px-4 py-3">
+              <label className="flex items-start gap-3 rounded-lg border border-border bg-muted px-4 py-3">
                 <input
                   type="checkbox"
                   checked={!!editorPreferences.vim}
@@ -374,8 +365,8 @@ export default function ProjectStudioShell(props) {
                   className="mt-1 h-4 w-4 accent-orange-500"
                 />
                 <span className="min-w-0">
-                  <span className="block text-sm font-medium text-body">Enable Vim mode</span>
-                  <span className="block text-xs text-body-soft">
+                  <span className="block text-sm font-medium text-foreground">Enable Vim mode</span>
+                  <span className="block text-xs text-muted-foreground">
                     Applies to project-studio code editors and persists in this browser.
                   </span>
                 </span>
@@ -386,7 +377,7 @@ export default function ProjectStudioShell(props) {
         <HelpDialog
           owner={owner}
           project={project}
-          isLight={isLight}
+         
           open={helpOpen}
           onClose={() => setHelpOpen(false)}
         />

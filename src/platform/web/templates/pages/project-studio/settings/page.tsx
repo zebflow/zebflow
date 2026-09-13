@@ -83,13 +83,13 @@ export default function Page(input) {
           <section className="flex-1 min-h-0 overflow-auto flex flex-col">
             <div className="flex min-h-full flex-col">
               <section
-                className="border-b border-dark-border px-4 py-3"
+                className="border-b border-border px-4 py-3"
               >
                 <div>
-                  <p className="text-[0.68rem] font-medium uppercase tracking-[0.08em] text-body-soft">
+                  <p className="text-[0.68rem] font-medium uppercase tracking-[0.08em] text-muted-foreground">
                     {input.page_title}
                   </p>
-                  <p className="mt-1 text-[0.78rem] text-body-soft">
+                  <p className="mt-1 text-[0.78rem] text-muted-foreground">
                     {input.page_subtitle}
                   </p>
                 </div>
@@ -117,8 +117,8 @@ export default function Page(input) {
                     {/* Signposts to configuration that lives with its feature.
                         People look in Settings first; saying where a thing went
                         costs one card and saves the hunt. */}
-                    <div className="border-b border-dark-border px-4 py-4" data-settings-signposts="true">
-                      <p className="mb-3 text-[0.68rem] font-medium uppercase tracking-[0.08em] text-body-soft">
+                    <div className="border-b border-border px-4 py-4" data-settings-signposts="true">
+                      <p className="mb-3 text-[0.68rem] font-medium uppercase tracking-[0.08em] text-muted-foreground">
                         Configured elsewhere
                       </p>
                       <div className="project-card-grid cols-2">
@@ -194,7 +194,7 @@ export default function Page(input) {
                       initialConfig={assistant?.config ?? {}}
                     />
 
-                    <article className="border border-border rounded-lg bg-surface p-[0.85rem] mb-[0.9rem]">
+                    <article className="border border-border rounded-lg bg-card p-[0.85rem] mb-[0.9rem]">
                       <header className="flex items-start justify-between gap-3 mb-[0.65rem]">
                         <div>
                           <h3 className="project-card-title">MCP Session</h3>

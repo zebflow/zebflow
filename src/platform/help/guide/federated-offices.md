@@ -42,8 +42,13 @@ controller stores about an office forges nothing either.
 
 ### Mint one (controller, superadmin)
 
+The examples below use a session cookie jar: `POST /login` with `identifier`
+and `password`, `--cookie-jar /tmp/zf.txt`, then `-b /tmp/zf.txt` on every
+later call. `zebflow_session` is an opaque token minted at login, not the
+username.
+
 ```bash
-curl -H "Cookie: zebflow_session=superadmin" \
+curl -b /tmp/zf.txt \
   -X POST http://controller:10610/api/platform/cluster/join-tokens \
   -H "Content-Type: application/json" \
   -d '{"office_id":"office-a","label":"Office A","note":"sg-1 rack 4"}'
@@ -61,7 +66,7 @@ List what has been issued (office, status, and timestamps — never a secret and
 never the stored digest):
 
 ```bash
-curl -H "Cookie: zebflow_session=superadmin" \
+curl -b /tmp/zf.txt \
   http://controller:10610/api/platform/cluster/join-tokens
 ```
 
@@ -112,7 +117,7 @@ proxy log — could mint a vouch naming any identity at any office.
 ### Revoke one office
 
 ```bash
-curl -H "Cookie: zebflow_session=superadmin" \
+curl -b /tmp/zf.txt \
   -X POST http://controller:10610/api/platform/cluster/join-tokens/office-a/revoke
 ```
 
@@ -150,7 +155,7 @@ read. A caller who cannot get in learns nothing about who is here.
 
 **The state is on disk, not in the command line.** "Joined" means
 `<data-root>/platform/office-join-token` exists — the same file membership
-itself reads — so restarting a joined office as plain `zeb/react` does not reopen the
+itself reads — so restarting a joined office as plain `zeb` (standalone) does not reopen the
 local door. Starting in a different mode is not leaving, and leaving has its own
 command.
 
@@ -181,7 +186,7 @@ Two rules worth knowing before you need it:
 A break-glass is recorded in the office's own catalog and never expires there:
 
 ```bash
-curl -H "Cookie: zebflow_session=superadmin" \
+curl -b /tmp/zf.txt \
   http://office-a:10610/api/platform/office/local-authority
 ```
 
@@ -192,7 +197,7 @@ On the next successful registration the office reports it to the controller,
 where it lands at:
 
 ```bash
-curl -H "Cookie: zebflow_session=superadmin" \
+curl -b /tmp/zf.txt \
   http://controller:10610/api/platform/cluster/office-break-glass
 ```
 
@@ -266,12 +271,17 @@ seconds; if you need an office shut out now and cannot reach it, rotate.
 ### Mint one by hand
 
 ```bash
-curl -H "Cookie: zebflow_session=superadmin" \
+curl -b /tmp/zf.txt \
   -X POST http://controller:10610/api/platform/cluster/offices/office-a/vouch
 ```
 
 The response carries the vouch and a `redeem_url` on that office. The vouch
 names **your** session's identity; there is no field for naming somebody else.
+
+Minting itself refuses on an instance that is not a controller
+(`CLUSTER_VOUCH_NOT_A_CONTROLLER`) and refuses an empty identity
+(`CLUSTER_VOUCH_IDENTITY_INVALID`) — both would produce a vouch nothing could
+meaningfully redeem.
 
 ### Redeem it
 
@@ -294,8 +304,12 @@ of the party that would repair the relationship.
 
 It refuses a vouch that:
 
+- is not well-formed `zfjoin2v:…` (`CLUSTER_VOUCH_MALFORMED`)
 - names a different office (`CLUSTER_VOUCH_OFFICE_MISMATCH`)
 - does not verify under its own secret (`CLUSTER_VOUCH_INVALID`)
+- is presented to an instance that has joined no controller
+  (`CLUSTER_VOUCH_NOT_AN_OFFICE`) — nothing here holds a secret to verify it
+  against
 - has expired (`CLUSTER_VOUCH_EXPIRED`) — a vouch lives **120 seconds**,
   because it is a hand-off and not a session
 - has already been spent (`CLUSTER_VOUCH_ALREADY_REDEEMED`)
@@ -307,7 +321,7 @@ without bound.
 ### Revoking an office also stops vouching for it
 
 ```bash
-curl -H "Cookie: zebflow_session=superadmin" \
+curl -b /tmp/zf.txt \
   -X POST http://controller:10610/api/platform/cluster/join-tokens/office-a/revoke
 ```
 
@@ -330,7 +344,7 @@ identity write, and every one of them is logged where **this office's** operator
 can read it, with the controller uninvolved:
 
 ```bash
-curl -H "Cookie: zebflow_session=superadmin" \
+curl -b /tmp/zf.txt \
   http://office-a:10610/api/platform/office/identity-writes
 ```
 

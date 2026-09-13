@@ -42,7 +42,7 @@ export default function ConfirmDialog({
             in place, so content long enough to overflow still leaves the
             reader somewhere to click. */}
         <div className="min-h-0 max-h-[60vh] overflow-y-auto overscroll-contain px-6 py-4">
-          {message ? <p className="text-[0.82rem] text-body-soft">{message}</p> : null}
+          {message ? <p className="text-[0.82rem] text-muted-foreground">{message}</p> : null}
           {children}
         </div>
         <DialogFooter>

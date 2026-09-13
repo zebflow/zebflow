@@ -20,9 +20,9 @@ Authoritative code and docs:
 
 Contract boundary:
 
-- `docs/usage/databases.md`
-- `docs/usage/files.md`
-- `docs/usage/maps.md`
+- `src/platform/help/db/index.md`
+- `docs/contracts/kinds/file-ref/README.md` (FileRef) and `src/platform/help/pipeline/authoring.md` § What a webhook delivers
+- `src/platform/help/guide/mapserver.md`
 - `docs/developer/storage.md`
 - `docs/contracts/project.md`
 - `docs/contracts/formats.md`
