@@ -43,6 +43,7 @@ import PipelineSettingsDialog from "@/pages/project-studio/pipelines/registry/co
 import GitCommitDialog from "@/pages/project-studio/pipelines/registry/components/pipeline-editor/dialogs/git-commit-dialog";
 import { LockIcon, LockOpenIcon } from "@/pages/project-studio/components/icons";
 import { pePipelineDocument, pePipelineGraph } from "@/pages/project-studio/pipelines/registry/components/registry-helpers";
+import { devOrigin } from "@/components/lib/addressing";
 
 // ── graphui bundle loader (sets globalThis.PipelineGraph) ────────────────────
 let _graphuiPromise: Promise<void> | null = null;
@@ -1546,11 +1547,7 @@ export default function PipelineEditor({
         catalog={catalog}
         dataState={dataState}
         graphRef={graphRef}
-        webhookBaseUrl={
-          owner && project && typeof document !== "undefined"
-            ? new URL(`/wh/${owner}/${project}`, document.baseURI).href
-            : ""
-        }
+        webhookBaseUrl={devOrigin(owner, project)}
         onApply={handleNodeApply}
         onClose={() => setDialogNode(null)}
       />

@@ -13,6 +13,7 @@
 //! burying transport/security logic inside the web router or individual handlers.
 
 pub mod access;
+pub mod addressing;
 pub mod assistant_config;
 pub mod assistant_tools;
 pub mod auth;

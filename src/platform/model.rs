@@ -1708,7 +1708,10 @@ pub struct GitCommitRequest {
 /// The handler writes the section to `zebflow.yaml` then commits the file.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UpdateSettingsSectionRequest {
-    /// Git commit message. Shown in the commit dialog before save.
+    /// Git commit message. Shown in the commit dialog before save. Sections
+    /// stored in `zebflow.yaml` commit with it; instance-side sections
+    /// (`addressing`) have nothing to commit and send none.
+    #[serde(default)]
     pub commit_message: String,
     /// Section-specific payload. Deserialized per `{section}`.
     pub data: serde_json::Value,

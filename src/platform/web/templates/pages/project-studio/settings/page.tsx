@@ -13,6 +13,7 @@ import RwePanel from "@/pages/project-studio/settings/components/rwe-panel";
 import GitPanel from "@/pages/project-studio/settings/components/git-panel";
 import MembersPanel from "@/pages/project-studio/settings/components/members-panel";
 import LoggingPanel from "@/pages/project-studio/settings/components/logging-panel";
+import AddressingPanel from "@/pages/project-studio/settings/components/addressing/addressing-panel";
 
 export const page = {
   html: {
@@ -141,6 +142,18 @@ export default function Page(input) {
                       repairApi={input?.git?.repair_api ?? ""}
                     />
                     <GitBranchPanel owner={input.owner} project={input.project} />
+                  </div>
+                </section>
+              ) : null}
+
+              {tabFlags?.addressing ? (
+                <section className="flex flex-col">
+                  <div className="flex flex-col">
+                    <AddressingPanel
+                      api={input?.addressing?.api ?? ""}
+                      checkApi={input?.addressing?.check_api ?? ""}
+                      initialData={input?.addressing?.data ?? {}}
+                    />
                   </div>
                 </section>
               ) : null}

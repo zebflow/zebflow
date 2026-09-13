@@ -48,7 +48,8 @@ Facts live in `help(topic="pipeline")`, `pipeline/dsl`, `pipeline/authoring`,
   `setTimeout` / `fetch` are blocked in it. Branch with `logic.if --expr`,
   answer with `web.response`, call out with `http.request`.
 - **`web.response`** decides the response: nothing → JSON of the payload;
-  `--template pages/x.tsx` → the page; `--location` → redirect;
+  `--template pages/x.tsx` → the page; `--location /path` → redirect (always
+  root-relative — `/admin`, never `/wh/…/admin`; the project's host makes it right);
   `--status`, `--set-cookie "…"`, `--header K=V`. A 404 is a `logic.if` with
   two `web.response` nodes on its pins.
 - **A site-wide 404 is `trigger.weberror --code 404 | web.response --status 404 --template pages/not-found.tsx`.**

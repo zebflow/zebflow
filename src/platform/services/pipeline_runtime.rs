@@ -228,6 +228,18 @@ impl CompiledPipeline {
                         .and_then(serde_json::Value::as_str)
                         .unwrap_or("/")
                         .to_string();
+                    // `/_…` is where the platform's surfaces answer on a
+                    // project host (`addressing.md` §2); an app route there
+                    // would be shadowed on every host but the neutral one.
+                    if path.trim_start().starts_with(crate::platform::services::addressing::RESERVED_PREFIX) {
+                        return Err(PlatformError::new(
+                            "PIPELINE_ROUTE_RESERVED",
+                            format!(
+                                "pipeline '{}': webhook path '{}' starts with `/_`, which is reserved for the platform's surfaces on a project host (/_files, /_ws, …). Choose another path.",
+                                meta.file_rel_path, path
+                            ),
+                        ));
+                    }
                     let method = node
                         .config
                         .get("method")

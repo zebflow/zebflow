@@ -1291,9 +1291,9 @@ impl ZebflowMcpHandler {
 
     #[tool(
         description = "Fetch one of this project's own routes the way a browser would — the verification step. \
-        `path` is the route under the project (`/`, `/book`, `/api/slots?date=2026-09-14`); the tool prepends \
-        `/wh/{owner}/{project}` and goes through the real ingress, so auth, cookies, redirects and page rendering \
-        happen. Returns status, content_type, location, set_cookie, length, rwe_component_errors (every \
+        `path` is the route under the project (`/`, `/book`, `/api/slots?date=2026-09-14`); the request goes to \
+        the project's own host (`<project>.<owner>.localhost`) through the real ingress, so auth, cookies, \
+        redirects (`location: /admin` means the project's /admin) and page rendering happen exactly as in a browser. Returns status, content_type, location, set_cookie, length, rwe_component_errors (every \
         `<!-- RWE component error -->` in the body — a 200 with one of these is a broken page) and the body \
         (capped, `max_body_chars`). `method` GET|POST|PUT|DELETE; `form` posts url-encoded fields like a <form>; \
         `body` sends JSON (an object) or raw text (a string); `cookie` is a Cookie header value — copy it from a \

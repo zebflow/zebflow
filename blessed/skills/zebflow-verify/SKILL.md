@@ -23,8 +23,11 @@ route_fetch path="/posts" method=POST form={"title":"Hi","slug":"hi"}
 route_fetch path="/admin" cookie="zebflow_session=eyJ…"      (the value a login's set_cookie gave you)
 ```
 
-(`route_fetch` goes through the real ingress at `/wh/{owner}/{project}{path}`;
-from a shell the same thing is `curl -s -i http://<host>/wh/{owner}/{project}{path}`.)
+(`route_fetch` requests the project's own host, `<project>.<owner>.localhost`,
+so `location: /admin` and `href="/book"` mean what they will mean in
+production; from a shell the same thing is
+`curl -s -i -H "Host: <project>.<owner>.localhost" http://127.0.0.1:<port>{path}`,
+or the neutral form `http://<host>/wh/{owner}/{project}{path}`.)
 
 Read, do not skim:
 

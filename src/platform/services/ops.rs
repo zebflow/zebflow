@@ -122,7 +122,7 @@ impl PlatformOps {
             "# Start Here\n\n\
              Zebflow turns pipeline triggers into APIs, pages, and automations.\n\n\
              - Project: `{owner}/{project}`\n\
-             - Webhook base: `/wh/{owner}/{project}{{path}}` — fetch any route you built with `route_fetch path=\"{{path}}\"`\n\
+             - Site: `http://{project}.{owner}.localhost:<port>/` (every route you build, links and redirects written as `/path`); neutral form `/wh/{owner}/{project}{{path}}`. Fetch any route with `route_fetch path=\"{{path}}\"`\n\
              - Official nodes: `{node_count}`\n\
              - Pipeline examples: `{example_count}`\n\n\
              ## Core References\n\n\
@@ -327,7 +327,7 @@ impl PlatformOps {
         out.push_str(&format!(
             "# Zebflow MCP Start Here\n\n\
              Project scope: `{owner}/{project}`\n\
-             Webhook base: `/wh/{owner}/{project}{{path}}` — verify with `route_fetch path=\"{{path}}\"` (status, headers, body, RWE errors)\n\
+             Site: `http://{project}.{owner}.localhost:<port>/` — write links and redirects as `/path`; neutral form `/wh/{owner}/{project}{{path}}`; verify with `route_fetch path=\"{{path}}\"` (status, headers, body, RWE errors)\n\
              Mental model: pipelines connect triggers to nodes for APIs, pages, automations, and jobs.\n\n\
              ## First Moves\n\
              1. Read the embedded AGENTS.md and MEMORY.md below.\n\
@@ -2126,13 +2126,11 @@ impl PlatformOps {
             return OpsResult::err("route_fetch takes a project path such as /book or /api/slots?date=…, not a full URL — it only reaches this project's own routes");
         }
         let path = if path.starts_with('/') { path.to_string() } else { format!("/{path}") };
-        let url = format!(
-            "{}/wh/{}/{}{}",
-            crate::platform::boot::local_instance_url(),
-            self.owner,
-            self.project,
-            path
-        );
+        // The request goes to loopback with the project's dev host as `Host`,
+        // so it is routed exactly as a browser on that host would be — root-
+        // relative links and `Location: /admin` included (`addressing.md` §4).
+        let dev_host = crate::platform::services::addressing::AddressingService::dev_host(&self.owner, &self.project);
+        let url = format!("{}{}", crate::platform::boot::local_instance_url(), path);
         let method = method.unwrap_or_else(|| "GET".to_string()).to_ascii_uppercase();
         let method = match reqwest::Method::from_bytes(method.as_bytes()) {
             Ok(m) => m,
@@ -2151,7 +2149,7 @@ impl PlatformOps {
             Ok(c) => c,
             Err(e) => return OpsResult::err(e.to_string()),
         };
-        let mut request = client.request(method, &url);
+        let mut request = client.request(method, &url).header(reqwest::header::HOST, dev_host.clone());
         if let Some(headers) = headers {
             for (k, v) in headers {
                 let value = match v {
@@ -2214,7 +2212,7 @@ impl PlatformOps {
             (text, false)
         };
         let report = RouteFetchReport {
-            url,
+            url: format!("http://{dev_host}{path}"),
             status,
             content_type,
             location,

@@ -895,6 +895,10 @@ pub async fn router(platform: Arc<PlatformService>) -> Router {
             get(api_project_invocation_log_stats).delete(api_clear_project_invocation_logs),
         )
         .route(
+            "/api/projects/{owner}/{project}/settings/addressing/check",
+            post(api_check_addressing_host),
+        )
+        .route(
             "/api/projects/{owner}/{project}/settings/{section}",
             get(api_get_settings_section).put(api_upsert_settings_section),
         )
@@ -1309,13 +1313,112 @@ pub async fn router(platform: Arc<PlatformService>) -> Router {
         credential_change_gate,
     ));
 
-    let router = router.with_state(app_state);
+    let router = router.with_state(app_state.clone());
 
     // Debug-only: SSE reload endpoint added after with_state because it needs no app state.
     #[cfg(debug_assertions)]
     let router = router.route("/__dev/reload", get(dev_reload_sse));
 
-    router
+    // Addressing (`docs/contracts/addressing.md`): a request on a project's
+    // host is rewritten to the platform form before it is routed. The gate
+    // must run before routing, so it wraps the whole router rather than
+    // sitting on it as a route layer.
+    match app_state.platform.addressing.rebuild_index() {
+        Ok(hosts) => println!("✅ Addressing index built ({hosts} custom hosts)"),
+        Err(err) => eprintln!("warning: addressing index: {err}"),
+    }
+    Router::new()
+        .fallback_service(router)
+        .layer(axum::middleware::from_fn_with_state(app_state, addressing_gate))
+}
+
+/// The host a request arrived on, when it is a project's.
+#[derive(Debug, Clone)]
+pub struct ProjectHost {
+    pub host: String,
+    pub owner: String,
+    pub project: String,
+    pub dev_host: bool,
+}
+
+/// Rewrites a request on a project host to the platform form it is served
+/// as (`northside.superadmin.localhost/book` → `/wh/superadmin/northside/book`,
+/// `/_files/a.jpg` → `/files/superadmin/northside/a.jpg`), refuses a surface
+/// the project switched off, and leaves every other request alone.
+async fn addressing_gate(
+    State(state): State<PlatformAppState>,
+    mut request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    let path = request.uri().path().to_string();
+    let host = request
+        .headers()
+        .get(axum::http::header::HOST)
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string)
+        .or_else(|| request.uri().authority().map(|a| a.to_string()));
+    if let Some(host) = host
+        && let Some(resolution) = state.platform.addressing.resolve(&host, &path)
+    {
+        // The platform forms for this very project stay valid on its host:
+        // pages emit `/static/{o}/{p}/_rwe/…` and the Studio's API lives at
+        // `/api/projects/{o}/{p}/…`; neither is an app path.
+        let own_prefixes = [
+            format!("/wh/{}/{}", resolution.owner, resolution.project),
+            format!("/ws/{}/{}", resolution.owner, resolution.project),
+            format!("/files/{}/{}", resolution.owner, resolution.project),
+            format!("/static/{}/{}", resolution.owner, resolution.project),
+            format!("/ms/{}/{}", resolution.owner, resolution.project),
+            format!("/fs/{}/{}", resolution.owner, resolution.project),
+            format!("/api/projects/{}/{}", resolution.owner, resolution.project),
+        ];
+        let platform_form = path.starts_with("/assets/")
+            || own_prefixes
+                .iter()
+                .any(|p| path == *p || path.starts_with(&format!("{p}/")));
+        if !platform_form {
+            if resolution.rest.is_empty() {
+                return (
+                    StatusCode::NOT_FOUND,
+                    format!(
+                        "{} is switched off for this project (Settings → Addressing)",
+                        resolution.surface.title()
+                    ),
+                )
+                    .into_response();
+            }
+            let query = request
+                .uri()
+                .query()
+                .map(|q| format!("?{q}"))
+                .unwrap_or_default();
+            let target = format!("{}{}", resolution.platform_path(), query);
+            if let Ok(path_and_query) = target.parse::<axum::http::uri::PathAndQuery>() {
+                let mut parts = request.uri().clone().into_parts();
+                parts.path_and_query = Some(path_and_query);
+                if let Ok(uri) = Uri::from_parts(parts) {
+                    *request.uri_mut() = uri;
+                }
+            }
+        }
+        request.extensions_mut().insert(ProjectHost {
+            host: resolution.host.clone(),
+            owner: resolution.owner.clone(),
+            project: resolution.project.clone(),
+            dev_host: resolution.dev_host,
+        });
+        let mut response = next.run(request).await;
+        // The proof a proxy is wired right: Settings → Addressing → Verify
+        // reads this back through the public host.
+        if let Ok(value) = HeaderValue::from_str(&format!("{}/{}", resolution.owner, resolution.project)) {
+            response.headers_mut().insert("x-zebflow-project", value);
+        }
+        return response;
+    }
+    if state.platform.addressing.platform_form_disabled(&path) {
+        return (StatusCode::NOT_FOUND, "this surface is switched off for the project (Settings → Addressing)").into_response();
+    }
+    next.run(request).await
 }
 
 fn build_render_script_cache(data_root: &FsPath) -> Option<Arc<RenderScriptCache>> {
@@ -7176,6 +7279,7 @@ async fn render_settings_tab_page(
                 "tab_flags": {
                     "general": tab == "general",
                     "git": tab == "git",
+                    "addressing": tab == "addressing",
                     "members": tab == "members",
                     "policy": tab == "policy",
                     "automatons": tab == "automatons",
@@ -7212,6 +7316,16 @@ async fn render_settings_tab_page(
                     "api": format!("/api/projects/{owner}/{project}/settings/logging"),
                     "invocations_api": format!("/api/projects/{owner}/{project}/settings/logs/invocations"),
                     "config": zebflow_cfg.configs.pipelines.logging
+                },
+                "addressing": {
+                    "api": format!("/api/projects/{owner}/{project}/settings/addressing"),
+                    "check_api": format!("/api/projects/{owner}/{project}/settings/addressing/check"),
+                    "data": if tab == "addressing" {
+                        match addressing_section_json(&state, &owner, &project, &zebflow_cfg) {
+                            Ok(data) => data,
+                            Err(err) => return internal_error(err),
+                        }
+                    } else { Value::Null }
                 },
                 "members": {
                     "members_api": format!("/api/projects/{owner}/{project}/members"),
@@ -7314,6 +7428,7 @@ fn normalize_settings_tab(raw: &str) -> &'static str {
     match raw.trim().to_ascii_lowercase().as_str() {
         "" | "general" => "general",
         "git" => "git",
+        "addressing" => "addressing",
         "members" => "members",
         "policy" => "policy",
         "automatons" => "automatons",
@@ -7352,6 +7467,7 @@ fn grantable_role_options(
 fn settings_tab_title(tab: &str) -> &'static str {
     match tab {
         "git" => "Git",
+        "addressing" => "Addressing",
         "members" => "Members",
         "policy" => "Policy",
         "automatons" => "Automatons",
@@ -7363,6 +7479,7 @@ fn settings_tab_title(tab: &str) -> &'static str {
 fn settings_tab_subtitle(tab: &str) -> &'static str {
     match tab {
         "git" => "The remote this project pushes to, the branch it works on, and the health of its repository.",
+        "addressing" => "Where this project answers: its dev host, the domains you add, what each host serves, and the web server config to paste.",
         "members" => "Who works on this project, what each of them may do, and who has been invited.",
         "policy" => "Capability boundaries, runtime constraints, and session controls.",
         "automatons" => "Assistant and automation runtime configuration per project.",
@@ -7376,6 +7493,7 @@ fn settings_tab_items(owner: &str, project: &str, active: &str) -> Vec<Value> {
     let entries = [
         ("general", "General"),
         ("git", "Git"),
+        ("addressing", "Addressing"),
         ("members", "Members"),
         ("policy", "Policy"),
         ("automatons", "Automatons"),
@@ -16586,12 +16704,155 @@ async fn api_get_settings_section(
             "data": cfg.distribution.hub
         }))
         .into_response(),
+        "addressing" => match addressing_section_json(&state, &owner, &project, &cfg) {
+            Ok(data) => Json(json!({ "ok": true, "section": "addressing", "data": data })).into_response(),
+            Err(err) => internal_error(err),
+        },
         _ => (
             StatusCode::NOT_FOUND,
             Json(json!({"ok": false, "error": format!("unknown settings section '{section}'")})),
         )
             .into_response(),
     }
+}
+
+/// The Addressing section as the Studio and the API read it: what the
+/// operator set, the dev host every project has, and the proxy configs
+/// generated from it (`docs/contracts/addressing.md` §6).
+fn addressing_section_json(
+    state: &PlatformAppState,
+    owner: &str,
+    project: &str,
+    cfg: &crate::platform::model::ZebflowJson,
+) -> Result<Value, PlatformError> {
+    use crate::platform::services::addressing::{AddressingService, ProxyFacts, Surface};
+    let addressing = state.platform.addressing.read(owner, project)?;
+    let dev_host = AddressingService::dev_host(owner, project);
+    let port = crate::platform::boot::configured_port();
+    let upstream = format!("127.0.0.1:{port}");
+    let upload_mb = cfg.configs.files.uploads.effective_max_file_size_mb().max(cfg.configs.files.uploads.effective_webhook_body_max_mb());
+    let configs: Vec<Value> = crate::platform::services::addressing::server_configs(&ProxyFacts {
+        hosts: &addressing.hosts,
+        upstream: &upstream,
+        upload_mb,
+        owner,
+        project,
+    })
+    .into_iter()
+    .map(|(id, title, text)| json!({ "id": id, "title": title, "text": text }))
+    .collect();
+    let surfaces: Vec<Value> = Surface::ALL
+        .iter()
+        .map(|s| {
+            json!({
+                "key": s.key(),
+                "title": s.title(),
+                "enabled": addressing.is_enabled(*s),
+                "default_path": s.default_path(),
+                "platform_path": s.platform_prefix(owner, project),
+            })
+        })
+        .collect();
+    Ok(json!({
+        "config": addressing,
+        "dev_host": dev_host,
+        "dev_url": format!("http://{dev_host}:{port}/"),
+        "neutral_url": format!("/wh/{owner}/{project}"),
+        "upstream": upstream,
+        "upload_mb": upload_mb,
+        "surfaces": surfaces,
+        "configs": configs,
+    }))
+}
+
+#[derive(Debug, Deserialize)]
+struct AddressingCheckRequest {
+    host: String,
+}
+
+/// Does the world reach this project at `host`? Two facts, checked from the
+/// instance: what DNS says the host is, and what answers at it — verified by
+/// the `x-zebflow-project` header the addressing gate puts on every response
+/// it served for a project host. A proxy that drops the Host header shows up
+/// here as "answers, but not this project".
+async fn api_check_addressing_host(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((owner, project)): Path<(String, String)>,
+    Json(req): Json<AddressingCheckRequest>,
+) -> Response {
+    if let Err(response) = require_project_api_capability(
+        &state,
+        &headers,
+        &owner,
+        &project,
+        ProjectCapability::SettingsRead,
+    ) {
+        return response;
+    }
+    let host = crate::platform::services::addressing::normalize_host(&req.host);
+    if host.is_empty() {
+        return (StatusCode::BAD_REQUEST, Json(json!({"ok": false, "error": "host is required"}))).into_response();
+    }
+    let expected = format!("{}/{}", slug_segment(&owner), slug_segment(&project));
+    let dns_host = host.clone();
+    let resolved: Vec<String> = tokio::task::spawn_blocking(move || {
+        use std::net::ToSocketAddrs;
+        (dns_host.as_str(), 443u16)
+            .to_socket_addrs()
+            .map(|addrs| addrs.map(|a| a.ip().to_string()).collect::<Vec<_>>())
+            .unwrap_or_default()
+    })
+    .await
+    .unwrap_or_default();
+    let mut verify = json!({ "ok": false, "tried": [] });
+    if !resolved.is_empty() {
+        let client = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .timeout(std::time::Duration::from_secs(8))
+            .build();
+        if let Ok(client) = client {
+            let mut tried = Vec::new();
+            for scheme in ["https", "http"] {
+                let url = format!("{scheme}://{host}/");
+                match client.get(&url).send().await {
+                    Ok(resp) => {
+                        let served = resp
+                            .headers()
+                            .get("x-zebflow-project")
+                            .and_then(|v| v.to_str().ok())
+                            .unwrap_or("")
+                            .to_string();
+                        let ok = served == expected;
+                        tried.push(json!({ "url": url, "status": resp.status().as_u16(), "project": served }));
+                        if ok {
+                            verify = json!({ "ok": true, "url": format!("{scheme}://{host}/"), "status": resp.status().as_u16(), "tried": tried });
+                            break;
+                        }
+                        if scheme == "http" {
+                            verify = json!({ "ok": false, "tried": tried, "reason": if served.is_empty() { "answers, but not from Zebflow — is the proxy passing the Host header?" } else { "answers for another project" } });
+                        }
+                    }
+                    Err(err) => {
+                        tried.push(json!({ "url": url, "error": err.to_string() }));
+                        if scheme == "http" {
+                            verify = json!({ "ok": false, "tried": tried, "reason": "nothing answered — the proxy is not up yet, or a firewall is in the way" });
+                        }
+                    }
+                }
+            }
+        }
+    } else {
+        verify = json!({ "ok": false, "tried": [], "reason": "the name does not resolve yet" });
+    }
+    Json(json!({
+        "ok": true,
+        "host": host,
+        "expected_project": expected,
+        "dns": { "resolved": resolved, "ok": !resolved.is_empty() },
+        "verify": verify,
+    }))
+    .into_response()
 }
 
 async fn api_project_invocation_log_stats(
@@ -16773,7 +17034,9 @@ async fn api_upsert_settings_section(
         };
     }
 
-    if req.commit_message.trim().is_empty() {
+    // Sections stored in `zebflow.yaml` are committed with a message;
+    // `addressing` is instance configuration and has nothing to commit.
+    if section != "addressing" && req.commit_message.trim().is_empty() {
         return (
             StatusCode::BAD_REQUEST,
             Json(json!({"ok": false, "error": "commit_message must not be empty"})),
@@ -16970,6 +17233,38 @@ async fn api_upsert_settings_section(
                 }),
                 Err(err) => return internal_error(err),
             }
+        }
+        "addressing" => {
+            // Instance configuration, not `zebflow.yaml`: nothing to commit.
+            let payload: crate::platform::services::addressing::ProjectAddressing =
+                match serde_json::from_value(req.data.clone()) {
+                    Ok(payload) => payload,
+                    Err(err) => {
+                        return (
+                            StatusCode::BAD_REQUEST,
+                            Json(json!({"ok": false, "error": err.to_string()})),
+                        )
+                            .into_response();
+                    }
+                };
+            return match state.platform.addressing.write(&owner, &project, payload) {
+                Ok(_) => {
+                    let cfg = match state.platform.zebflow_cfg.read_or_default(&owner, &project) {
+                        Ok(config) => config,
+                        Err(err) => return internal_error(err),
+                    };
+                    match addressing_section_json(&state, &owner, &project, &cfg) {
+                        Ok(data) => Json(json!({ "ok": true, "section": "addressing", "data": data })).into_response(),
+                        Err(err) => internal_error(err),
+                    }
+                }
+                Err(err) if err.code.starts_with("ADDRESSING_") => (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({ "ok": false, "error": { "code": err.code, "message": err.message } })),
+                )
+                    .into_response(),
+                Err(err) => internal_error(err),
+            };
         }
         "distribution" => {
             #[derive(serde::Deserialize)]

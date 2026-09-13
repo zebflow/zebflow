@@ -66,8 +66,9 @@ worked.
 Done means witnessed on the running instance, not "the source looks right":
 
 1. The pipeline is `active` in `pipeline_list` (not `draft`, not `stale`).
-2. The route was fetched (`route_fetch path=…`, which goes through
-   `/wh/{owner}/{project}{path}`) and the body was read:
+2. The route was fetched (`route_fetch path=…`, which asks the project's own
+   host — write every link and redirect as `/path`, never with owner or
+   project in it) and the body was read:
    no `RWE component error`, the data you expected is there, the status is
    the one you meant.
 3. For a page, a browser opened it with no console error and the interaction

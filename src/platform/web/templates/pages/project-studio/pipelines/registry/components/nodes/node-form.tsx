@@ -1,6 +1,7 @@
 import NodeField from "@/pages/project-studio/pipelines/registry/components/nodes/node-field";
 import NodeLayout from "@/pages/project-studio/pipelines/registry/components/nodes/node-layout";
 import { useFileSearchOptional } from "@/pages/project-studio/components/file-search-context";
+import { projectRouteUrl } from "@/components/lib/addressing";
 import type {
   NodeFieldDef,
   SelectOptionDef,
@@ -58,11 +59,7 @@ function buildTemplateOptions(
 function webhookPublicUrlFor(dataState: EditorDataState, webhookPath: string): string {
   const owner = String(dataState?.owner || "").trim();
   const project = String(dataState?.project || "").trim();
-  if (!owner || !project || typeof window === "undefined") return "";
-  const base = `${window.location.origin}/wh/${owner}/${project}`;
-  const norm = (String(webhookPath || "/").trim() || "/");
-  const normalized = norm.startsWith("/") ? norm : `/${norm}`;
-  return normalized === "/" ? base : `${base}${normalized}`;
+  return projectRouteUrl(owner, project, webhookPath);
 }
 
 function defaultFor(type: NodeFieldType): unknown {

@@ -67,6 +67,8 @@ pub struct PlatformService {
     pub credentials: Arc<CredentialService>,
     /// Project assistant config service.
     pub assistant_configs: Arc<AssistantConfigService>,
+    /// Where each project answers: hosts, routes, surfaces (`addressing.md`).
+    pub addressing: Arc<crate::platform::services::addressing::AddressingService>,
     /// Portable project configuration (`zebflow.yaml`) service.
     pub zebflow_cfg: Arc<ProjectConfigurationService>,
     /// Project DB connection management service.
@@ -171,6 +173,10 @@ impl PlatformService {
         let project_members = Arc::new(ProjectMembershipService::new(data.clone(), authz.clone()));
         let project_invites = Arc::new(ProjectInviteService::new(data.clone()));
         let credentials = Arc::new(CredentialService::new(data.clone(), reqwest::Client::new()));
+        let addressing = Arc::new(crate::platform::services::addressing::AddressingService::new(
+            data.clone(),
+            file.clone(),
+        ));
         let assistant_configs = Arc::new(AssistantConfigService::new(
             data.clone(),
             zebflow_cfg.clone(),
@@ -302,6 +308,7 @@ impl PlatformService {
             cluster_runtime_sync,
             credentials,
             assistant_configs,
+            addressing,
             zebflow_cfg,
             db_connections,
             db_runtime,
