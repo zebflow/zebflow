@@ -16,7 +16,7 @@
 use serde::Deserialize;
 
 use crate::platform::error::PlatformError;
-use crate::platform::web::embedded::PLATFORM_LIBRARY_ASSETS;
+use crate::platform::web::embedded::{PLATFORM_LIBRARY_ASSETS, PLATFORM_SKILL_ASSETS};
 
 /// The one publisher id the seeder publishes as. Reserved: any publish under
 /// this id through the public publish surface is refused
@@ -49,7 +49,7 @@ pub struct BlessedPackage {
     pub version: String,
     pub title: String,
     pub description: String,
-    /// `rwe_library` or `template_bundle`.
+    /// `rwe_library`, `template_bundle` or `skill`.
     pub asset_kind: &'static str,
     /// Where in the blessed tree this package came from, recorded as the
     /// seeded release's `source_ref`.
@@ -147,13 +147,77 @@ fn blessed_rwe_library_packages() -> Result<Vec<BlessedPackage>, PlatformError> 
     Ok(packages)
 }
 
+/// The blessed skills as hub packages, one per `blessed/skills/<name>/`.
+///
+/// Every project already sees these skills through `skill_list` without
+/// installing anything; the shelf entry is the **clone-to-own** door — Add
+/// copies the folder to `skills/<name>/`, where the project's copy shadows
+/// the blessed one and can be edited. The version is the skill's own
+/// `metadata.version` plus a digest of its files, so an edited skill seeds
+/// as a new release and an unchanged one is skipped, with nothing to bump by
+/// hand.
+fn blessed_skill_packages() -> Result<Vec<BlessedPackage>, PlatformError> {
+    use sha2::{Digest, Sha256};
+    let mut names: Vec<&'static str> = Vec::new();
+    for asset in PLATFORM_SKILL_ASSETS {
+        if let Some(name) = asset.path.strip_suffix("/SKILL.md")
+            && !name.contains('/')
+        {
+            names.push(name);
+        }
+    }
+    names.sort_unstable();
+
+    let mut packages = Vec::with_capacity(names.len());
+    for name in names {
+        let prefix = format!("{name}/");
+        let mut files = Vec::new();
+        let mut hasher = Sha256::new();
+        let mut description = String::new();
+        let mut declared_version = "1".to_string();
+        for asset in PLATFORM_SKILL_ASSETS {
+            let Some(rest) = asset.path.strip_prefix(&prefix) else {
+                continue;
+            };
+            hasher.update(rest.as_bytes());
+            hasher.update(asset.bytes);
+            if rest == "SKILL.md" {
+                let fm = crate::platform::skills::parse_frontmatter(&String::from_utf8_lossy(asset.bytes));
+                description = fm.description.unwrap_or_default();
+                if let Some(v) = fm.extra.get("metadata.version") {
+                    declared_version = v.clone();
+                }
+            }
+            files.push(BlessedFile {
+                rel_path: format!("{}/{name}/{rest}", crate::platform::skills::PROJECT_SKILLS_DIR),
+                bytes: asset.bytes,
+            });
+        }
+        files.sort_by(|a, b| a.rel_path.cmp(&b.rel_path));
+        let digest = hex::encode(hasher.finalize());
+        let version = format!("{}-{}", declared_version.replace(['+', ' '], "-"), &digest[..8]);
+        packages.push(BlessedPackage {
+            package_id: format!("zebflow.skill-{name}"),
+            version,
+            title: name.to_string(),
+            description: description.lines().next().unwrap_or("").to_string(),
+            asset_kind: "skill",
+            source_ref: format!("blessed/skills/{name}"),
+            files,
+        });
+    }
+    Ok(packages)
+}
+
 /// Every package the binary blesses, in seeding order.
 pub fn blessed_packages() -> Result<Vec<BlessedPackage>, PlatformError> {
     // `zeb/ui` is not a hub package yet: it ships with the platform as source
     // the compiler inlines, and a project clones a component from it through
     // the catalog. It joins the hub when runtime libraries resolve from
     // `zeb.lock` rather than from the binary.
-    blessed_rwe_library_packages()
+    let mut packages = blessed_rwe_library_packages()?;
+    packages.extend(blessed_skill_packages()?);
+    Ok(packages)
 }
 
 #[cfg(test)]
@@ -209,7 +273,20 @@ mod tests {
         // library.json, excluded from the hub purely because it lacked a
         // manifest.json — an exclusion by missing file, which the next person to
         // notice would have "fixed" by adding one.
-        assert_eq!(packages.len(), 11);
+        //
+        // Plus one `skill` package per blessed skill — the clone-to-own door
+        // for `skills/<name>/`, seeded with a content-digest version.
+        let libraries = packages.iter().filter(|p| p.asset_kind == "rwe_library").count();
+        let skills = packages.iter().filter(|p| p.asset_kind == "skill").count();
+        assert_eq!(libraries, 11);
+        assert_eq!(skills, crate::platform::skills::blessed_skills().len());
+        assert_eq!(packages.len(), libraries + skills);
+        let basic = packages
+            .iter()
+            .find(|p| p.package_id == "zebflow.skill-zebflow-basic")
+            .expect("the basic skill is on the shelf");
+        assert!(basic.files.iter().any(|f| f.rel_path == "skills/zebflow-basic/SKILL.md"));
+        assert!(basic.version.starts_with("1-"), "version is metadata.version-digest: {}", basic.version);
         assert!(
             !packages
                 .iter()
@@ -253,6 +330,6 @@ mod tests {
             !packages.iter().any(|p| p.package_id.starts_with("zebflow.ui")),
             "zeb/ui ships as source the compiler inlines, not as a hub package"
         );
-        assert!(packages.iter().all(|p| p.asset_kind == "rwe_library"));
+        assert!(packages.iter().all(|p| matches!(p.asset_kind, "rwe_library" | "skill")));
     }
 }
