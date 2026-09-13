@@ -5,6 +5,7 @@
   "folders": [
     "src/platform/help",
     "blessed/skills",
+    "blessed/skill-extras",
     "docs/usage",
     "docs/contracts"
   ],

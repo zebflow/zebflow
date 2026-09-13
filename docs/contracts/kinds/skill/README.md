@@ -16,8 +16,9 @@ proves it worked. An agent loads one when a task matches its description.
 | Description | 1–1024 chars; says *when* to use the skill — it is the trigger, and the only part every session reads |
 | Body | ≤ 500 lines; detail goes in `references/`, recipes in `scripts/` (text; never executed by the platform) |
 | License | SPDX id (`MIT`, `Apache-2.0`, …) or `proprietary`. Blessed skills are MIT. A public hub accepts open licences only |
-| Blessed | `blessed/skills/<name>/`, embedded (`PLATFORM_SKILL_ASSETS`, `build.rs`); every project sees them; not deletable |
-| Project | `<source root>/skills/<name>/`; shadows a blessed skill of the same name — clone to own |
+| Core | `blessed/skills/zebflow-*/`, embedded (`PLATFORM_SKILL_ASSETS`, `build.rs`); the MCP's own — every project lists them, none can opt out, **never a hub item** |
+| Extra | `blessed/skill-extras/<name>/`, embedded (`PLATFORM_SKILL_EXTRA_ASSETS`); reach a project only as a shelf package (`zebflow.skill-<name>`, `src/platform/blessed.rs` `blessed_skill_packages`); not listed until added |
+| Project | `<source root>/skills/<name>/`; written by the project or added from the hub; shadows a core skill of the same name — clone to own |
 | Hub | `asset_kind: skill`, publish source `skill_folder` (`skills/<name>`); Add lands at `skills/<name>/` under the target's source root whatever folder was requested (`src/platform/services/hub.rs` `preview_skill`, `validate_skill_entries`, `HubInstallPlacement`) |
 | MCP | tier 1: `start_here` and `skill_list` (name + description); tier 2: `skill_read name=`; tier 3: `skill_read name= path=`; each skill also a prompt (`prompts/list`, `prompts/get`) — `src/platform/mcp/handler.rs` |
 | Code | `src/platform/skills/mod.rs` — parsing, listing, shadowing, path containment |
@@ -30,7 +31,8 @@ proves it worked. An agent loads one when a task matches its description.
    When the two disagree, the help (generated or guarded) wins and the skill
    is wrong.
 3. Every DSL fence in a skill builds and every MCP tool it names exists
-   (`tests/framework/help_matches_implementation.rs` scans `blessed/skills/`).
+   (`tests/framework/help_matches_implementation.rs` scans `blessed/skills/`
+   and `blessed/skill-extras/`).
 4. A skill carries no credential, token, URL of a private instance, or
    instruction to run a shell command against the host.
 5. Publish and install refuse the same malformed skill by the same check
@@ -43,6 +45,8 @@ proves it worked. An agent loads one when a task matches its description.
 
 - `src/platform/skills/mod.rs` tests: frontmatter, names, path containment,
   shadowing, every blessed skill well-formed.
+- `src/platform/blessed.rs` test `the_shelf_carries_the_blessed_libraries_and_skills`:
+  no `zebflow.skill-zebflow-*` package exists; the extras do.
 - `src/platform/services/hub.rs` tests: `a_skill_package_is_one_named_folder_with_a_complete_skill_md`,
   `a_skill_installs_at_skills_name_under_the_source_root_regardless_of_target_folder`.
 - Live: `skill_list`, `skill_read`, `prompts/list` over MCP against a running

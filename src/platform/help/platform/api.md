@@ -108,7 +108,7 @@ GET    /files/{owner}/{project}/{*path}           (root path) public/… anonymo
 GET    /fs/{owner}/{project}/{*path}              (root path) private objects
 ```
 
-Credential values are written but never read back.
+Credential values are returned only to the owner's session (`GET /credentials/{id}`, for the Studio's edit form); the list carries `has_secret` only, and MCP, pipelines and pages never see a value — nodes reference a credential by id.
 
 ## Project services
 

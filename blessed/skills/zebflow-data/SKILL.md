@@ -38,12 +38,15 @@ query nodes in `pipeline/nodes`.
   third state will come, `locale` and `translation_of` on anything a person
   reads, `slug` unique per locale. Store rich text as the editor's JSON
   (`body_json`) with derived `body_html`.
-- Sekejap DDL is its own dialect: `CREATE TABLE t (_key TEXT PRIMARY KEY, name TEXT, created_at TIMESTAMPTZ DEFAULT NOW()) WITH (hash: ['name'])`
-  — no `NOT NULL`/`UNIQUE`/`REFERENCES` in `CREATE TABLE`, indexes in the
-  `WITH (…)` clause, types `TEXT INTEGER REAL BOOLEAN JSON TIMESTAMPTZ VECTOR GEO`
-  (`help(topic="db/sekejap")` has the whole grammar). No `UPSERT`/`ON CONFLICT`:
-  select by key, then `logic.if` between `UPDATE` and `INSERT`. Enforce
-  "required" in the pipeline (`logic.if` on `input.body`), not in the schema.
+- Sekejap DDL is its own dialect: `CREATE TABLE t (_key TEXT PRIMARY KEY DEFAULT UUIDV4(), name TEXT, created_at TIMESTAMPTZ) WITH (hash: ['name'])`
+  — no `NOT NULL`/`UNIQUE`/`REFERENCES`/`DEFAULT NOW()` in `CREATE TABLE`
+  (the only default is a UUID on `_key`), indexes in the `WITH (…)` clause,
+  types `TEXT INTEGER REAL BOOLEAN JSON TIMESTAMPTZ VECTOR GEO`
+  (`help(topic="db/sekejap")` has the whole grammar). Timestamps come from
+  the pipeline: `--params "{{ [input.body.name, new Date().toISOString()] }}"`.
+  No `UPSERT`/`ON CONFLICT`: select by key, then `logic.if` between `UPDATE`
+  and `INSERT`. "Required" and "unique" are enforced in the pipeline
+  (`logic.if` on `input.body`, a `SELECT` before the `INSERT`), not in the schema.
 - Seeds go in `initial-data/` so a fresh install of the project (or of a
   bundle made from it) gets them.
 

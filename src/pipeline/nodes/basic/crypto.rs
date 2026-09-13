@@ -45,8 +45,8 @@
 //!
 //! # Output pins
 //!
-//! Hash / encode / decode operations replace the payload with `{ result }` and
-//! emit to the `out` pin.
+//! Hash / encode / decode operations add `result` to the payload (the rest of
+//! it flows on unchanged) and emit to the `out` pin.
 //!
 //! Verify operations (`bcrypt_verify`, `argon2_verify`) route to the `true`
 //! or `false` pin, forwarding the original payload unchanged — no extra
@@ -109,8 +109,8 @@ pub fn definition() -> NodeDefinition {
         kind: NODE_KIND.to_string(),
         title: "Crypto".to_string(),
         description: "Cryptographic primitives: hash, verify, HMAC, base64, random. \
-            Use --op to select the operation. Hash/encode ops replace the payload with \
-            { result } and emit to the 'out' pin. Verify ops (bcrypt_verify, argon2_verify) \
+            Use --op to select the operation. Hash/encode ops add `result` to the payload \
+            (everything else flows on unchanged) and emit to the 'out' pin. Verify ops (bcrypt_verify, argon2_verify) \
             route to 'true' or 'false' pin, forwarding the payload unchanged. \
             Input defaults to payload.input; override with --input-path. \
             Use $trigger or $nodes references for upstream data."
@@ -295,9 +295,22 @@ fn extract_str<'a>(payload: &'a Value, configured: &'a str, fallback_key: &str) 
         .unwrap_or_default()
 }
 
-/// Build a fresh output payload with only the `result` field (replace, not merge).
-fn with_result(result: impl Into<Value>) -> Value {
-    json!({ "result": result.into() })
+/// The payload with `result` added — merge, not replace.
+///
+/// It used to replace: a hash step answered `{ result }` alone, so a
+/// registration pipeline lost `input.body.email` at the very node that hashed
+/// the password and had to reach back through `$nodes.<id>` for everything it
+/// inserted next. Replacing protected nothing — the plaintext stays reachable
+/// as `$nodes.<trigger>.body.password` regardless — and every agent building
+/// auth rewrote the pipeline three times to discover it. A payload that is
+/// not an object (a bare string) still becomes `{ result }`.
+fn with_result(payload: &Value, result: impl Into<Value>) -> Value {
+    let mut object = match payload {
+        Value::Object(map) => map.clone(),
+        _ => serde_json::Map::new(),
+    };
+    object.insert("result".to_string(), result.into());
+    Value::Object(object)
 }
 
 // ── NodeHandler impl ───────────────────────────────────────────────────────
@@ -329,7 +342,7 @@ impl NodeHandler for Node {
                 let result = hex::encode(h.finalize());
                 Ok(NodeExecutionOutput {
                     output_pins: vec![OUTPUT_PIN_OUT.to_string()],
-                    payload: with_result(result),
+                    payload: with_result(&payload, result),
                     trace: vec!["n.crypto: sha256".to_string()],
                 })
             }
@@ -342,7 +355,7 @@ impl NodeHandler for Node {
                 let result = hex::encode(h.finalize());
                 Ok(NodeExecutionOutput {
                     output_pins: vec![OUTPUT_PIN_OUT.to_string()],
-                    payload: with_result(result),
+                    payload: with_result(&payload, result),
                     trace: vec!["n.crypto: sha512".to_string()],
                 })
             }
@@ -359,7 +372,7 @@ impl NodeHandler for Node {
                 .map_err(|e| PipelineError::new("FW_NODE_CRYPTO_BCRYPT_HASH", e))?;
                 Ok(NodeExecutionOutput {
                     output_pins: vec![OUTPUT_PIN_OUT.to_string()],
-                    payload: with_result(result),
+                    payload: with_result(&payload, result),
                     trace: vec![format!("n.crypto: bcrypt_hash cost={cost}")],
                 })
             }
@@ -404,7 +417,7 @@ impl NodeHandler for Node {
                 .map_err(|e| PipelineError::new("FW_NODE_CRYPTO_ARGON2_HASH", e))?;
                 Ok(NodeExecutionOutput {
                     output_pins: vec![OUTPUT_PIN_OUT.to_string()],
-                    payload: with_result(result),
+                    payload: with_result(&payload, result),
                     trace: vec!["n.crypto: argon2_hash".to_string()],
                 })
             }
@@ -451,7 +464,7 @@ impl NodeHandler for Node {
                 let result = hex::encode(mac.finalize().into_bytes());
                 Ok(NodeExecutionOutput {
                     output_pins: vec![OUTPUT_PIN_OUT.to_string()],
-                    payload: with_result(result),
+                    payload: with_result(&payload, result),
                     trace: vec!["n.crypto: hmac_sha256".to_string()],
                 })
             }
@@ -462,7 +475,7 @@ impl NodeHandler for Node {
                 let result = general_purpose::STANDARD.encode(input_val.as_bytes());
                 Ok(NodeExecutionOutput {
                     output_pins: vec![OUTPUT_PIN_OUT.to_string()],
-                    payload: with_result(result),
+                    payload: with_result(&payload, result),
                     trace: vec!["n.crypto: base64_encode".to_string()],
                 })
             }
@@ -479,7 +492,7 @@ impl NodeHandler for Node {
                     .map_err(|e| PipelineError::new("FW_NODE_CRYPTO_BASE64_UTF8", e.to_string()))?;
                 Ok(NodeExecutionOutput {
                     output_pins: vec![OUTPUT_PIN_OUT.to_string()],
-                    payload: with_result(result),
+                    payload: with_result(&payload, result),
                     trace: vec!["n.crypto: base64_decode".to_string()],
                 })
             }
@@ -497,7 +510,7 @@ impl NodeHandler for Node {
                 .map_err(|e| PipelineError::new("FW_NODE_CRYPTO_SPAWN", e.to_string()))?;
                 Ok(NodeExecutionOutput {
                     output_pins: vec![OUTPUT_PIN_OUT.to_string()],
-                    payload: with_result(result),
+                    payload: with_result(&payload, result),
                     trace: vec![format!("n.crypto: random_hex length={length}")],
                 })
             }

@@ -482,6 +482,10 @@ include!(concat!(env!("OUT_DIR"), "/source_libraries_gen.rs"));
 // shown without cloning; a project's own `skills/<name>/` shadows one by name.
 include!(concat!(env!("OUT_DIR"), "/skills_gen.rs"));
 
+// PLATFORM_SKILL_EXTRA_ASSETS — auto-generated from blessed/skill-extras/.
+// The optional skills: shelf packages a project adds, never listed until it does.
+include!(concat!(env!("OUT_DIR"), "/skill_extras_gen.rs"));
+
 pub const PLATFORM_LIBRARY_ASSETS: &[EmbeddedAsset] = &[
     EmbeddedAsset {
         path: "zeb/d3/0.1/library.json",

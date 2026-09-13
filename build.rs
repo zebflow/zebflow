@@ -6,6 +6,7 @@ fn main() {
     generate_platform_template_assets();
     generate_source_library_assets();
     generate_skill_assets();
+    generate_skill_extra_assets();
     generate_node_bundle_assets();
     generate_help_index();
 }
@@ -150,7 +151,8 @@ fn generate_source_library_assets() {
 
 /// Emits the asset table for the blessed skills — the `SKILL.md` folders every
 /// project's agent sees without cloning anything. Paths are
-/// `<skill>/<file>` under `blessed/skills/`; text files only, since a skill
+/// `<skill>/<file>` under `blessed/skills/` — the core set every project
+/// lists and none can opt out of; text files only, since a skill
 /// is instructions, references and recipes, never a binary. Drop a folder in
 /// and recompile.
 fn generate_skill_assets() {
@@ -177,6 +179,37 @@ fn generate_skill_assets() {
     }
     code.push_str("];\n");
     fs::write(&dest, code).expect("failed writing skills_gen.rs");
+    println!("cargo:rerun-if-changed={root}");
+}
+
+/// The optional skills: `blessed/skill-extras/<name>/`. Not listed by
+/// `skill_list` until a project adds one from the hub — the shelf is their
+/// only door, so a project chooses them the way it chooses a library. Same
+/// file rules as the core set.
+fn generate_skill_extra_assets() {
+    let root = "blessed/skill-extras";
+    let out_dir = std::env::var("OUT_DIR").expect("OUT_DIR not set");
+    let dest = Path::new(&out_dir).join("skill_extras_gen.rs");
+
+    let mut rel_paths: Vec<String> = Vec::new();
+    collect_files(Path::new(root), root, &mut rel_paths);
+    rel_paths.sort();
+
+    let text = [".md", ".json", ".yaml", ".yml", ".txt", ".ts", ".tsx", ".mjs", ".js", ".py", ".sh", ".sql", ".css"];
+    let mut code = String::from("pub const PLATFORM_SKILL_EXTRA_ASSETS: &[EmbeddedAsset] = &[\n");
+    for rel in &rel_paths {
+        if !text.iter().any(|ext| rel.ends_with(ext)) {
+            continue;
+        }
+        code.push_str(&format!(
+            "    EmbeddedAsset {{ \
+                path: {rel:?}, \
+                bytes: include_bytes!(concat!(env!(\"CARGO_MANIFEST_DIR\"), \"/{root}/{rel}\")) \
+            }},\n"
+        ));
+    }
+    code.push_str("];\n");
+    fs::write(&dest, code).expect("failed writing skill_extras_gen.rs");
     println!("cargo:rerun-if-changed={root}");
 }
 

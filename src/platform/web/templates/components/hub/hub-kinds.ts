@@ -1,8 +1,8 @@
 /**
- * The six kinds a hub package can be, in the order a reader looks for them:
+ * The seven kinds a hub package can be, in the order a reader looks for them:
  * the things you write and add first, the things you install last.
  *
- * The six kinds a hub package can be, from `docs/contracts/distribution.md §1`.
+ * The seven kinds a hub package can be, from `docs/contracts/distribution.md §1`.
  *
  * One place decides what each kind is called, how it looks, and — the part that
  * matters most — which verb applies to it:
@@ -77,6 +77,15 @@ export const HUB_KINDS = [
     tone: "text-info",
     chipOn: "border-info bg-info/10 text-info",
   },
+  {
+    id: "skill",
+    label: "Skills",
+    one: "skill",
+    verb: "add" as HubVerb,
+    glyph: "✦",
+    tone: "text-success",
+    chipOn: "border-success bg-success/10 text-success",
+  },
 ];
 
 /** The kind record for an asset, or a neutral fallback for one we do not know. */
@@ -99,9 +108,14 @@ export function verbOf(assetKind: string): HubVerb {
   return kindOf(assetKind).verb;
 }
 
-/** Add-kinds land in the repository, so they need somewhere to land. */
+/**
+ * Add-kinds land in the repository, so they need somewhere to land — except a
+ * skill, whose place is fixed: `skills/<name>/`, where the project's agent
+ * lists it and where it shadows a blessed skill. Asking for a folder there
+ * would offer a choice the install does not honour.
+ */
 export function needsDestination(assetKind: string): boolean {
-  return verbOf(assetKind) === "add";
+  return verbOf(assetKind) === "add" && assetKind !== "skill";
 }
 
 /**

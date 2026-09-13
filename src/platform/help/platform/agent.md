@@ -43,7 +43,7 @@ and the project's **skills**.
 | uploads, images, rich text | `zebflow-files-editor` |
 | proving it works | `zebflow-verify` |
 | adding or publishing a package | `zebflow-hub` |
-| drawing or modelling an asset — SVG, a Three.js mesh, a scene | `procedural-assets` |
+| drawing or modelling an asset — SVG, a Three.js mesh, a scene | `procedural-assets` (optional — add it from the hub first) |
 
 Read the help topic before writing in a domain you have not used this session:
 

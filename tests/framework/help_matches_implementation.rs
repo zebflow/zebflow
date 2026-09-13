@@ -134,6 +134,7 @@ fn every_pipeline_the_help_registers_builds() {
     let root = repo_root();
     let mut docs = read_tree(&root.join("src/platform/help"), &["md"], &[]);
     docs.extend(read_tree(&root.join("blessed/skills"), &["md"], &[]));
+    docs.extend(read_tree(&root.join("blessed/skill-extras"), &["md"], &[]));
 
     let is_illustration = |body: &str| body.contains('…') || body.contains("...") || body.contains('<') && body.contains('>');
 
@@ -236,6 +237,7 @@ fn every_mcp_tool_the_help_names_exists() {
     let mut docs = read_tree(&root.join("src/platform/help"), &["md"], &[]);
     docs.extend(read_tree(&root.join("skills"), &["md"], &[]));
     docs.extend(read_tree(&root.join("blessed/skills"), &["md"], &[]));
+    docs.extend(read_tree(&root.join("blessed/skill-extras"), &["md"], &[]));
     let mut failures = Vec::new();
     for (path, text) in &docs {
         let rel = path.strip_prefix(&root).unwrap_or(path).display().to_string();

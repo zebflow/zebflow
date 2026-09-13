@@ -8,12 +8,13 @@
 //! Two sources, one list:
 //!
 //! - **Blessed** skills ship inside the binary (`blessed/skills/<name>/`),
-//!   the way `zeb/ui` does. Every project sees them without cloning and a
-//!   project cannot delete them.
+//!   the way `zeb/ui` does. They are the MCP's own — every project lists
+//!   them, none can opt out, and they are never hub items.
 //! - **Project** skills live in the repository at `skills/<name>/SKILL.md`,
-//!   whether written by the project or cloned from the hub. A project skill
-//!   with a blessed skill's name shadows it — that is how "clone to own"
-//!   works for skills.
+//!   written by the project or added from the hub. The optional skills
+//!   (`blessed/skill-extras/<name>/`) arrive this way and only this way: a
+//!   project sees one after it added it. A project skill with a blessed
+//!   skill's name shadows it — that is how "clone to own" works for skills.
 //!
 //! Progressive disclosure is the contract: `list` is name + description only
 //! (tier 1, what an agent sees on every session); `read` is the body (tier

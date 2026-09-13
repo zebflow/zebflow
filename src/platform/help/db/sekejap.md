@@ -104,7 +104,7 @@ Plain SQL through the node creates a table. Sekejap's DDL is its own dialect —
 this is the whole of it:
 
 ```sql
-CREATE TABLE contacts (_key TEXT PRIMARY KEY, name TEXT, email TEXT, status TEXT, score REAL, created_at TIMESTAMPTZ DEFAULT NOW())
+CREATE TABLE contacts (_key TEXT PRIMARY KEY DEFAULT UUIDV4(), name TEXT, email TEXT, status TEXT, score REAL, created_at TIMESTAMPTZ)
   WITH (hash: ['email', 'status'], range: ['score'], fulltext: ['name'], bm25: ['bio'], spatial: ['location'])
 DROP TABLE [IF EXISTS] contacts
 DROP INDEX [IF EXISTS] ON contacts USING hash (email)
@@ -114,13 +114,17 @@ SHOW TABLES  |  SHOW EDGES [FROM a] [TO b]
 
 No `NOT NULL`, `UNIQUE`, `REFERENCES` or `CHECK` inside `CREATE TABLE`
 (`expected ), got Kw(Not)`); the only column constraint there is
-`_key TEXT PRIMARY KEY`, and the only default is `DEFAULT NOW()` /
-`DEFAULT UUIDV4()`. Indexes are declared in the `WITH (…)` clause, not as
-separate statements. Types: `TEXT`, `INTEGER`, `REAL`, `BOOLEAN`, `JSON`,
-`TIMESTAMPTZ`, `VECTOR`, `GEO`.
+`_key TEXT PRIMARY KEY`, and the only defaults are `DEFAULT UUIDV4()` /
+`DEFAULT UUIDV5('ns', 'name')` on `_key` — there is no `DEFAULT NOW()`
+(`got Ident("NOW")`): set `created_at` from the pipeline,
+`--params "{{ [..., new Date().toISOString()] }}"`. Indexes are declared in
+the `WITH (…)` clause, not as separate statements. Types: `TEXT`, `INTEGER`,
+`REAL`, `BOOLEAN`, `JSON`, `TIMESTAMPTZ`, `VECTOR`, `GEO`. Uniqueness and
+required fields are enforced in the pipeline (`logic.if`, a `SELECT` before
+the `INSERT`), not by the schema.
 
 ```
-| sekejap.query --read-only false -- "CREATE TABLE contacts (_key TEXT PRIMARY KEY, name TEXT, email TEXT, created_at TIMESTAMPTZ DEFAULT NOW()) WITH (hash: ['email'])"
+| sekejap.query --read-only false -- "CREATE TABLE contacts (_key TEXT PRIMARY KEY DEFAULT UUIDV4(), name TEXT, email TEXT, created_at TIMESTAMPTZ) WITH (hash: ['email'])"
 ```
 
 `SHOW TABLES` lists them. A *managed table* additionally declares attribute

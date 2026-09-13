@@ -17,8 +17,10 @@ cannot drift.
 
 Read them as files under [`src/platform/help/`](../../src/platform/help/), or
 run Zebflow and open Help. The **skills** — the procedures an agent follows
-for each kind of task — are under [`blessed/skills/`](../../blessed/skills/),
-served to every project over MCP (`skill_list`, `skill_read`) and published
+for each kind of task — are under [`blessed/skills/`](../../blessed/skills/)
+(the core set every project lists over MCP: `skill_list`, `skill_read`) and
+[`blessed/skill-extras/`](../../blessed/skill-extras/) (optional, added from
+the hub), and published
 as `zebflow/skills` for agents that read skills from a folder
 (`scripts/publish-skills.sh`).
 

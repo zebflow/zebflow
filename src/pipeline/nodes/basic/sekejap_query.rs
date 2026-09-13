@@ -226,12 +226,13 @@ impl NodeHandler for Node {
         let project = project.to_string();
         let limit = self.config.limit;
         let read_only = self.config.read_only;
+        let sql = query.clone();
         let result = tokio::task::spawn_blocking(move || {
             sekejap::execute_sql(
                 &data_root,
                 &owner,
                 &project,
-                &query,
+                &sql,
                 &param_values,
                 limit,
                 read_only,
@@ -244,7 +245,7 @@ impl NodeHandler for Node {
                 format!("sekejap query task failed: {err}"),
             )
         })?
-        .map_err(|err| PipelineError::new("FW_NODE_SEKEJAP_QUERY", err.to_string()))?;
+        .map_err(|err| PipelineError::new("FW_NODE_SEKEJAP_QUERY", with_ddl_hint(&query, err.to_string())))?;
 
         // The store answers positionally (columns + value arrays — the shape
         // the DB pages render). A pipeline reads `input.rows[0].title`, as it
@@ -267,6 +268,21 @@ impl NodeHandler for Node {
             ],
         })
     }
+}
+
+/// A `CREATE TABLE` that fails to parse is nearly always SQL-dialect DDL —
+/// `NOT NULL`, `UNIQUE`, `REFERENCES`, `DEFAULT NOW()` — which Sekejap's
+/// grammar does not have. Every agent tried each of those before reading the
+/// grammar, so the error says where the grammar is.
+fn with_ddl_hint(query: &str, message: String) -> String {
+    let upper = query.trim_start().to_ascii_uppercase();
+    if !upper.starts_with("CREATE TABLE") {
+        return message;
+    }
+    format!(
+        "{message} — Sekejap DDL: `CREATE TABLE t (_key TEXT PRIMARY KEY DEFAULT UUIDV4(), name TEXT, created_at TIMESTAMPTZ) WITH (hash: ['name'])`; \
+         no NOT NULL / UNIQUE / REFERENCES / DEFAULT NOW() (help topic db/sekejap)"
+    )
 }
 
 /// One object per row, keyed by column name. A duplicate column name (a join
@@ -292,13 +308,21 @@ fn rows_as_objects(
 
 #[cfg(test)]
 mod row_shape_tests {
-    use super::rows_as_objects;
+    use super::{rows_as_objects, with_ddl_hint};
     use crate::platform::model::DbQueryColumn;
     use serde_json::json;
 
     /// The store's positional rows become `input.rows[0].name`, which is what
     /// every pipeline, page and doc reads — and what pg.query and sqlite.query
     /// already deliver.
+    #[test]
+    fn a_failed_create_table_points_at_the_grammar() {
+        let hinted = with_ddl_hint("CREATE TABLE users (email TEXT NOT NULL)", "parse error".into());
+        assert!(hinted.contains("db/sekejap"), "{hinted}");
+        assert!(hinted.contains("UUIDV4()"), "{hinted}");
+        assert_eq!(with_ddl_hint("SELECT 1", "parse error".into()), "parse error");
+    }
+
     #[test]
     fn rows_are_objects_keyed_by_column_name() {
         let columns = vec![

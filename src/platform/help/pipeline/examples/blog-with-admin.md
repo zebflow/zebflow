@@ -28,15 +28,14 @@ CREATE TABLE posts (_key TEXT PRIMARY KEY, title TEXT, body TEXT, published BOOL
 CREATE TABLE users (_key TEXT PRIMARY KEY, password_hash TEXT, roles JSON)
 ```
 
-Seed one admin user. `crypto --op argon2_hash` replaces the whole payload with
-`{ result }`, so the hash is the next node's entire input:
+Seed one admin user. `crypto --op argon2_hash` adds `result` to the payload
+and keeps the rest, so the next node still sees `username` and `roles`:
 
 ```zf
 run
-| script -- "return { password: 'changeme' }"
-| crypto --op argon2_hash
-| script -- "return { username: 'admin', password_hash: input.result, roles: ['admin'] }"
-| sekejap.query --read-only false --params "{{ [input.username, input.password_hash, input.roles] }}" -- "INSERT INTO users (_key, password_hash, roles) VALUES ($1, $2, $3)"
+| script -- "return { username: 'admin', password: 'changeme', roles: ['admin'] }"
+| crypto --op argon2_hash --input "{{ input.password }}"
+| sekejap.query --read-only false --params "{{ [input.username, input.result, input.roles] }}" -- "INSERT INTO users (_key, password_hash, roles) VALUES ($1, $2, $3)"
 ```
 
 ---

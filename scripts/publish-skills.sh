@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Generate the public skills repository (github.com/zebflow/skills) from
-# blessed/skills/. The output is a complete repo working tree: skills, README,
+# blessed/skills/ (core) and blessed/skill-extras/ (optional). The output is a complete repo working tree: skills, README,
 # LICENSE, the Claude Code plugin marketplace manifests, and a context7
 # config. Nothing in the output is edited by hand — change blessed/skills/
 # and run this again.
@@ -17,6 +17,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SRC="$ROOT/blessed/skills"
+EXTRA="$ROOT/blessed/skill-extras"
 OUT="${1:-$ROOT/.ignored/skills-public}"
 VERSION="$(grep -m1 '^version' "$ROOT/Cargo.toml" | sed -E 's/.*"([^"]+)".*/\1/')"
 
@@ -29,11 +30,12 @@ mkdir -p "$OUT/skills" "$OUT/.claude-plugin"
 # Replace the skills wholesale so a removed blessed skill disappears here too.
 find "$OUT/skills" -mindepth 1 -maxdepth 1 -type d -exec rm -rf {} +
 cp -R "$SRC"/. "$OUT/skills/"
+[ -d "$EXTRA" ] && cp -R "$EXTRA"/. "$OUT/skills/"
 
 names=()
 while IFS= read -r dir; do
   names+=("$(basename "$dir")")
-done < <(find "$SRC" -mindepth 1 -maxdepth 1 -type d | sort)
+done < <(find "$SRC" "$EXTRA" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | sort)
 
 # ── README ───────────────────────────────────────────────────────────────────
 {
@@ -45,11 +47,13 @@ what, in what order, and what proves it worked. Each folder is one skill in
 the [Agent Skills](https://agentskills.io) format — `SKILL.md` with `name`,
 `description` (the trigger) and `license`.
 
-These are the **blessed** skills. Every Zebflow project already serves them to
-its agent over MCP (`skill_list`, `skill_read`, and as prompts), so an agent
-connected to a project needs nothing from this repository. This repository is
-for the agents that read skills from a folder instead — Claude Code, Codex,
-Cursor, Copilot, Gemini CLI — and for anyone who wants to fork one.
+The `zebflow-*` skills are the **core** set: every Zebflow project already
+serves them to its agent over MCP (`skill_list`, `skill_read`, and as
+prompts), so an agent connected to a project needs nothing from this
+repository. The others are **optional** — a project adds one from its Hub
+when the work calls for it. This repository is for the agents that read
+skills from a folder instead — Claude Code, Codex, Cursor, Copilot, Gemini
+CLI — and for anyone who wants to fork one.
 
 ## Install
 
@@ -69,7 +73,7 @@ Claude Code plugin marketplace:
 
 EOF
   for name in "${names[@]}"; do
-    desc="$(awk 'BEGIN{f=0} /^---/{f++; next} f==1 && /^description:/{sub(/^description:[ ]*/,""); gsub(/^"|"$/,""); print; exit}' "$SRC/$name/SKILL.md")"
+    desc="$(awk 'BEGIN{f=0} /^---/{f++; next} f==1 && /^description:/{sub(/^description:[ ]*/,""); gsub(/^"|"$/,""); print; exit}' "$OUT/skills/$name/SKILL.md")"
     echo "- [\`$name\`](./skills/$name/SKILL.md) — $desc"
   done
   cat <<EOF
@@ -85,7 +89,7 @@ A project can add its own skills at \`skills/<name>/SKILL.md\` in its
 repository, or clone one from the Zebflow Hub; a project skill with the same
 name as a blessed one replaces it for that project.
 
-Generated from \`blessed/skills/\` in the Zebflow repository at version
+Generated from \`blessed/skills/\` and \`blessed/skill-extras/\` in the Zebflow repository at version
 ${VERSION} by \`scripts/publish-skills.sh\`. Changes go there.
 
 ## License

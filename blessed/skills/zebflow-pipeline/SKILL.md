@@ -37,7 +37,8 @@ Facts live in `help(topic="pipeline")`, `pipeline/dsl`, `pipeline/authoring`,
   `input.files.<field>` (FileRef), `input.auth` when the trigger verified a
   token. After a query node: `{ columns, rows, … }` — the rows are
   `input.rows`, objects keyed by column (`input.rows[0].title`), never `input`.
-  After `crypto` hash ops: `{ result }` only. Reach an earlier node's output
+  After `crypto` hash/encode ops: the same payload plus `result`
+  (`input.result`, `input.body` still there). Reach an earlier node's output
   with `$nodes.<id>` in `{{ }}`.
 - **SQL in the body, values in `--params`:**
   `sekejap.query --params "{{ [input.body.email] }}" -- "SELECT * FROM users WHERE email = $1"`.

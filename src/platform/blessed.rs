@@ -16,7 +16,7 @@
 use serde::Deserialize;
 
 use crate::platform::error::PlatformError;
-use crate::platform::web::embedded::{PLATFORM_LIBRARY_ASSETS, PLATFORM_SKILL_ASSETS};
+use crate::platform::web::embedded::{PLATFORM_LIBRARY_ASSETS, PLATFORM_SKILL_EXTRA_ASSETS};
 
 /// The one publisher id the seeder publishes as. Reserved: any publish under
 /// this id through the public publish surface is refused
@@ -147,19 +147,20 @@ fn blessed_rwe_library_packages() -> Result<Vec<BlessedPackage>, PlatformError> 
     Ok(packages)
 }
 
-/// The blessed skills as hub packages, one per `blessed/skills/<name>/`.
+/// The optional skills as hub packages, one per `blessed/skill-extras/<name>/`.
 ///
-/// Every project already sees these skills through `skill_list` without
-/// installing anything; the shelf entry is the **clone-to-own** door — Add
-/// copies the folder to `skills/<name>/`, where the project's copy shadows
-/// the blessed one and can be edited. The version is the skill's own
-/// `metadata.version` plus a digest of its files, so an edited skill seeds
-/// as a new release and an unchanged one is skipped, with nothing to bump by
-/// hand.
+/// The core `zebflow-*` skills are not here: they ship inside the MCP, every
+/// project lists them, and a project cannot opt out of them — putting them on
+/// a shelf would say they are optional. The extras are the opposite: a
+/// project adds one when it wants it, and Add copies the folder to
+/// `skills/<name>/` where the project owns and edits it. The version is the
+/// skill's own `metadata.version` plus a digest of its files, so an edited
+/// skill seeds as a new release and an unchanged one is skipped, with nothing
+/// to bump by hand.
 fn blessed_skill_packages() -> Result<Vec<BlessedPackage>, PlatformError> {
     use sha2::{Digest, Sha256};
     let mut names: Vec<&'static str> = Vec::new();
-    for asset in PLATFORM_SKILL_ASSETS {
+    for asset in PLATFORM_SKILL_EXTRA_ASSETS {
         if let Some(name) = asset.path.strip_suffix("/SKILL.md")
             && !name.contains('/')
         {
@@ -175,7 +176,7 @@ fn blessed_skill_packages() -> Result<Vec<BlessedPackage>, PlatformError> {
         let mut hasher = Sha256::new();
         let mut description = String::new();
         let mut declared_version = "1".to_string();
-        for asset in PLATFORM_SKILL_ASSETS {
+        for asset in PLATFORM_SKILL_EXTRA_ASSETS {
             let Some(rest) = asset.path.strip_prefix(&prefix) else {
                 continue;
             };
@@ -202,7 +203,7 @@ fn blessed_skill_packages() -> Result<Vec<BlessedPackage>, PlatformError> {
             title: name.to_string(),
             description: description.lines().next().unwrap_or("").to_string(),
             asset_kind: "skill",
-            source_ref: format!("blessed/skills/{name}"),
+            source_ref: format!("blessed/skill-extras/{name}"),
             files,
         });
     }
@@ -279,14 +280,20 @@ mod tests {
         let libraries = packages.iter().filter(|p| p.asset_kind == "rwe_library").count();
         let skills = packages.iter().filter(|p| p.asset_kind == "skill").count();
         assert_eq!(libraries, 11);
-        assert_eq!(skills, crate::platform::skills::blessed_skills().len());
+        // The core `zebflow-*` skills are never on the shelf: they are the
+        // MCP's own, listed in every project, not something to opt into.
+        assert!(skills >= 1);
         assert_eq!(packages.len(), libraries + skills);
-        let basic = packages
+        assert!(
+            !packages.iter().any(|p| p.package_id.starts_with("zebflow.skill-zebflow-")),
+            "core zebflow-* skills must not be shelf packages"
+        );
+        let extra = packages
             .iter()
-            .find(|p| p.package_id == "zebflow.skill-zebflow-basic")
-            .expect("the basic skill is on the shelf");
-        assert!(basic.files.iter().any(|f| f.rel_path == "skills/zebflow-basic/SKILL.md"));
-        assert!(basic.version.starts_with("1-"), "version is metadata.version-digest: {}", basic.version);
+            .find(|p| p.package_id == "zebflow.skill-procedural-assets")
+            .expect("an optional skill is on the shelf");
+        assert!(extra.files.iter().any(|f| f.rel_path == "skills/procedural-assets/SKILL.md"));
+        assert!(extra.version.starts_with("1-"), "version is metadata.version-digest: {}", extra.version);
         assert!(
             !packages
                 .iter()
