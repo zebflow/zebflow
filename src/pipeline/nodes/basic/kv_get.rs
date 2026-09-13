@@ -132,6 +132,12 @@ pub fn definition() -> NodeDefinition {
         ],
         layout: vec![],
         ai_tool: Default::default(),
+        examples: vec![
+            crate::pipeline::model::NodeExample::dsl("Read a cached value with a fallback", r#"kv.get --key "settings:{{ $trigger.params.site }}" --out-key settings --default "{{ { theme: 'light' } }}""#)
+                .input(serde_json::json!({ "rows": [] }))
+                .output(serde_json::json!({ "rows": [], "settings": { "theme": "dark" } }))
+                .note("Merged in under `--out-key`; the rest of the payload stays."),
+        ],
         ..Default::default()
     }
 }

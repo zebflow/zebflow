@@ -25,10 +25,10 @@ pub fn definition() -> NodeDefinition {
         kind: NODE_KIND.to_string(),
         capabilities: vec![NodeCapability::Database, NodeCapability::Process],
         title: "SQLite Query".to_string(),
-        description: "Run a SQL SELECT query against the project's embedded SQLite database. \
-            Write the query in the body using `-- \"SELECT ...\"`. \
-            Use `{{ expr }}` placeholders anywhere in the SQL — they are resolved before the node \
-            runs. Output: `{ rows: [...] }` — use `input.rows` in downstream nodes or templates."
+        description: "Read from the project's built-in SQLite database (connection `default`; no credential). SQL in the body after `--`, \
+            values in `--params` bound as `?1, ?2, …`. Answers `{ rows: [ { column: value } ] }` — the next node and the page read \
+            `input.rows`. Reads only: an INSERT/UPDATE/DELETE/CREATE here fails; use `sqlite.mutate`. Standard SQLite DDL and \
+            constraints work (unlike Sekejap)."
             .to_string(),
         input_schema: json!({
             "type": "object",
@@ -104,6 +104,10 @@ pub fn definition() -> NodeDefinition {
                 "required": ["query"]
             }),
         },
+        examples: vec![
+            crate::pipeline::model::NodeExample::dsl("Read with a bound value", r#"sqlite.query --params "{{ [input.body.email] }}" -- "SELECT id, name FROM users WHERE email = ?1""#)
+                .output(serde_json::json!({ "rows": [{ "id": 1, "name": "Ana" }] })),
+        ],
         ..Default::default()
     }
 }

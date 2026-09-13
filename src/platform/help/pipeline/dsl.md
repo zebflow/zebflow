@@ -247,7 +247,9 @@ or by any `fs.*` node. `fs.save` keeps an uploaded file:
 | fs.thumbnail --width 320 --height 320 --fit cover --format webp --folder public/thumbs --source-key saved.path
 ```
 
-`fs.save` answers `{ saved: { path, url, original_name, content_type, size } }`.
+`fs.save` adds `saved: { path, url, original_name, content_type, size }` to
+the payload and `fs.thumbnail` adds `thumbnail` (a FileRef); the form's other
+fields (`input.body.caption`) stay beside them.
 Anything under `public/` is served anonymously at
 `/files/{owner}/{project}/<path>`; everything else needs a session
 (`/fs/{owner}/{project}/<path>`). Table files (`table.convert`, `table.query`)

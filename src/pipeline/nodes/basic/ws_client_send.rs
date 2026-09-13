@@ -94,6 +94,10 @@ pub fn definition() -> NodeDefinition {
         ],
         layout: vec![],
         ai_tool: Default::default(),
+        examples: vec![
+            crate::pipeline::model::NodeExample::dsl("Subscribe after connecting", r#"ws.client.send --connection n0 --message "{{ { op: 'subscribe', symbols: ['AUDUSD'] } }}""#)
+                .note("`--connection` is the id of the `trigger.ws.client` node that owns the socket (`n0` in pipe mode). Payload passes through unchanged."),
+        ],
         ..Default::default()
     }
 }

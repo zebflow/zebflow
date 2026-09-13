@@ -177,6 +177,11 @@ pub fn definition() -> NodeDefinition {
             LayoutItem::Field("payload".to_string()),
         ],
         ai_tool: Default::default(),
+        examples: vec![
+            crate::pipeline::model::NodeExample::dsl("Broadcast a chat line to the room", r#"ws.emit --event chat.message --to all --payload "{{ { from: input.session_id, text: input.payload.text } }}""#)
+                .note("After `trigger.ws`, the room is the one the event came from. Payload passes through unchanged."),
+            crate::pipeline::model::NodeExample::dsl("Push from a schedule to a fixed room", r#"ws.emit --room dashboard --event stats.tick --payload "{{ { online: input.online } }}""#),
+        ],
         ..Default::default()
     }
 }

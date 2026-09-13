@@ -71,11 +71,17 @@ pub fn definition() -> NodeDefinition {
         kind: NODE_KIND.to_string(),
         capabilities: vec![NodeCapability::Process],
         title: "Call Function".to_string(),
-        description: "Calls a function pipeline by slug and injects its output into the flow. \
-            Routes to 'out' on success, 'error' on failure or when the function is not found."
+        description: "Calls another active pipeline that starts with `trigger.function`. `--function` is that pipeline's slug — the file stem, \
+            `send-welcome` for `jobs/send-welcome`, not the path. What it receives: `--input-value` (a literal or `{{ expr }}`, e.g. \
+            `\"{{ { email: input.body.email } }}\"`), else `--input` (a static JSON string), else the whole current payload. The `out` \
+            payload is the function's last node's payload — the caller's payload is replaced, so keep what you still need in \
+            `$nodes.<id>`. `error` carries `{ error }` when the function is missing, inactive or failed."
             .to_string(),
         input_pins: vec!["in".to_string()],
         output_pins: vec!["out".to_string(), "error".to_string()],
+        output_schema: serde_json::json!({
+            "description": "On `out`: the called function's last node payload, whatever shape it declares. On `error`: { error: string }."
+        }),
         config_schema: serde_json::json!({
             "type": "object",
             "required": ["function"],
@@ -105,7 +111,7 @@ pub fn definition() -> NodeDefinition {
             DslFlag {
                 flag: "--input-value".to_string(),
                 config_key: "input_value".to_string(),
-                description: "JSON Pointer into the flowing payload to extract as function input. Ignored when --input is set.".to_string(),
+                description: "What the function receives — a literal or {{ expr }}, e.g. \"{{ { email: input.body.email } }}\". Omit to pass the whole payload. Ignored when --input is set.".to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
             },
@@ -139,6 +145,11 @@ pub fn definition() -> NodeDefinition {
                 ),
                 ..Default::default()
             },
+        ],
+        examples: vec![
+            crate::pipeline::model::NodeExample::dsl("Reuse a lookup function", r#"function.call --function find-user --input-value "{{ { email: input.body.email } }}""#)
+                .output(serde_json::json!({ "user": { "_key": "u_1", "email": "a@x.io" } }))
+                .note("Whatever `jobs/find-user`'s last node produced."),
         ],
         ..Default::default()
     }

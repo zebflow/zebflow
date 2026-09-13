@@ -1054,6 +1054,11 @@ pub struct NodeExample {
     /// Short label shown in generated documentation.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub title: String,
+    /// The node as it is written in a pipeline — one DSL segment, flags and
+    /// body, without the leading `|`. This is the line a reader copies; the
+    /// guard test parses it against the node's declared flags.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub dsl: String,
     /// Optional explanation of what the example demonstrates.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub description: String,
@@ -1066,6 +1071,31 @@ pub struct NodeExample {
     /// Expected output payload.
     #[serde(default, skip_serializing_if = "Value::is_null")]
     pub output: Value,
+}
+
+impl NodeExample {
+    /// The DSL line a reader copies — one node segment, no leading `|`.
+    pub fn dsl(title: &str, dsl: &str) -> Self {
+        Self { title: title.to_string(), dsl: dsl.to_string(), ..Default::default() }
+    }
+
+    /// The payload the node produces for this example.
+    pub fn output(mut self, output: Value) -> Self {
+        self.output = output;
+        self
+    }
+
+    /// The payload the node received for this example.
+    pub fn input(mut self, input: Value) -> Self {
+        self.input = input;
+        self
+    }
+
+    /// One sentence on what the example shows, when the DSL alone is not enough.
+    pub fn note(mut self, description: &str) -> Self {
+        self.description = description.to_string();
+        self
+    }
 }
 
 /// One documented runtime failure exposed by a node kind.

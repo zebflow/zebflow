@@ -188,6 +188,11 @@ pub fn definition() -> NodeDefinition {
             LayoutItem::Row { row: vec![LayoutItem::Field("value".to_string()), LayoutItem::Field("silent".to_string())] },
         ],
         ai_tool: Default::default(),
+        examples: vec![
+            crate::pipeline::model::NodeExample::dsl("Move a player", r#"ws.sync_state --op merge --path /players/{session_id} --value "{{ { x: input.payload.x, y: input.payload.y } }}" --silent"#)
+                .note("Every client in the room sees the same `state.players`; `--silent` batches at 30 Hz. `{session_id}` is filled from the payload."),
+            crate::pipeline::model::NodeExample::dsl("Remove on leave", "ws.sync_state --op delete --path /players/{session_id}"),
+        ],
         ..Default::default()
     }
 }

@@ -27,7 +27,9 @@ pub fn definition() -> NodeDefinition {
         capabilities: vec![NodeCapability::Process],
         title: "Match".to_string(),
         description:
-            "Evaluates a DSL expression using $input/$trigger/$nodes and routes to matching case pin, or default."
+            "Many-way branch. Evaluates `--expr` to a string and sends the payload, unchanged, down the pin named by the matching \
+             `--cases` value, or down the `--default` pin when nothing matches. Each case is an output pin you wire in graph mode \
+             (`[b]:create -> [c]`); a value with no case and no `--default` ends the run. For a yes/no decision use `logic.if`."
                 .to_string(),
         input_schema: serde_json::json!({ "type": "object" }),
         output_schema: serde_json::json!({ "type": "object" }),
@@ -85,6 +87,10 @@ pub fn definition() -> NodeDefinition {
             LayoutItem::Field("match_routes".to_string()),
         ],
         ai_tool: Default::default(),
+        examples: vec![
+            crate::pipeline::model::NodeExample::dsl("Route by event type", r#"logic.match --expr "input.body.type" --cases created,updated,deleted --default other"#)
+                .note("Pins: `created`, `updated`, `deleted`, `other`. Wire each: `[b]:created -> [c]`."),
+        ],
         ..Default::default()
     }
 }

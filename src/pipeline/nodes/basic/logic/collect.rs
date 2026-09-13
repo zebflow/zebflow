@@ -19,7 +19,10 @@ pub fn definition() -> NodeDefinition {
     NodeDefinition {
         kind: NODE_KIND.to_string(),
         title: "Collect".to_string(),
-        description: "Groups multiple named upstream results and forwards one combined payload."
+        description: "Fan-in. Waits until every node wired into it has delivered a payload, then fires once with all of them keyed by \
+             the upstream node id: `{ b: <b's payload>, c: <c's payload> }`. Graph mode only — it needs two or more incoming edges \
+             (`[b] -> [d]`, `[c] -> [d]`). It does not merge the payloads; a `script` after it composes what the next node needs. \
+             It is not a join for `logic.foreach` emissions — use `logic.reduce` for those."
             .to_string(),
         input_schema: serde_json::json!({ "type": "object" }),
         output_schema: serde_json::json!({ "type": "object" }),
@@ -37,6 +40,11 @@ pub fn definition() -> NodeDefinition {
         fields: vec![],
         layout: vec![],
         ai_tool: Default::default(),
+        examples: vec![
+            crate::pipeline::model::NodeExample::dsl("Wait for two fetches", "logic.collect")
+                .output(serde_json::json!({ "b": { "response": { "status": 200, "body": { "a": 1 } } }, "c": { "response": { "status": 200, "body": { "b": 2 } } } }))
+                .note("After `[b] -> [d]` and `[c] -> [d]`, node `d` sees both under the ids `b` and `c`."),
+        ],
         ..Default::default()
     }
 }

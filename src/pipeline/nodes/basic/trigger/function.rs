@@ -67,10 +67,11 @@ pub fn definition() -> NodeDefinition {
     NodeDefinition {
         kind: NODE_KIND.to_string(),
         title: "Function Trigger".to_string(),
-        description: "Marks this pipeline as a callable function. The pipeline can be invoked \
-            from other pipelines via n.function.call or exposed as a Project Operator tool. \
-            Declare title, description, input_schema, and output_schema so every caller sees \
-            the same typed contract."
+        description: "Makes this pipeline a function other pipelines call with `function.call --function <slug>` — the slug is the file's \
+            stem (`jobs/send-welcome` → `send-welcome`). The payload is exactly what the caller passed; the function's answer is its \
+            last node's payload. Declare the contract with `--input name:type! \"doc\"` / `--output name:type!` (or full \
+            `--input-schema` / `--output-schema` JSON) so callers and the assistant see typed fields. Also the trigger for one-off runs \
+            through `pipeline_run` (`| trigger.function | …`), where the `input` argument is the payload."
             .to_string(),
         input_pins: vec![],
         output_pins: vec!["out".to_string()],
@@ -211,6 +212,12 @@ pub fn definition() -> NodeDefinition {
                 span: Some("full".to_string()),
                 ..Default::default()
             },
+        ],
+        examples: vec![
+            crate::pipeline::model::NodeExample::dsl("A reusable lookup", r#"trigger.function --description "Find one user by email." --input email:string! "Address to look up." --output user:object "The row, or null.""#)
+                .input(serde_json::json!({ "email": "a@x.io" }))
+                .output(serde_json::json!({ "email": "a@x.io" }))
+                .note("Registered as `jobs/find-user`; called with `function.call --function find-user --input-value \"{{ { email: input.body.email } }}\"`."),
         ],
         ..Default::default()
     }

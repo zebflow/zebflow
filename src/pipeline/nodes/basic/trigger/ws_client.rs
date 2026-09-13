@@ -45,11 +45,11 @@ pub fn definition() -> NodeDefinition {
         kind: NODE_KIND.to_string(),
         capabilities: vec![NodeCapability::Network, NodeCapability::Credential],
         title: "WS Client".to_string(),
-        description: "Connect to an external WebSocket server on pipeline activate. \
-            Fires the pipeline for every received message. Auto-reconnects with \
-            exponential backoff on disconnect. \
-            Output payload: { trigger: \"ws_client\", url, node_id, message }. \
-            Access the received data via input.message in downstream nodes."
+        description: "Keeps an outbound WebSocket connection to another server open while the pipeline is active and runs the pipeline \
+            for every message it receives — price feeds, a broker, another Zebflow. `--url` is `ws://` or `wss://`; `--credential` \
+            supplies auth if the server needs it; reconnects with backoff by default. The payload is `{ trigger: \"ws_client\", url, \
+            node_id, message }` — the message is `input.message` (parsed JSON with `--message-format json`, a string with `text`). \
+            To send back on the same connection use `ws.client.send --connection <this node id>`. Not for browsers: that is `trigger.ws`."
             .to_string(),
         input_schema: json!({ "type": "object" }),
         output_schema: json!({
@@ -154,6 +154,10 @@ pub fn definition() -> NodeDefinition {
         ],
         layout: vec![],
         ai_tool: Default::default(),
+        examples: vec![
+            crate::pipeline::model::NodeExample::dsl("Follow a price feed", r#"trigger.ws.client --url wss://feed.example.com/ticks --message-format json"#)
+                .output(serde_json::json!({ "trigger": "ws_client", "url": "wss://feed.example.com/ticks", "node_id": "n0", "message": { "symbol": "AUDUSD", "bid": 0.6512 } })),
+        ],
         ..Default::default()
     }
 }

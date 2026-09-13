@@ -126,6 +126,11 @@ pub fn definition() -> NodeDefinition {
             ],
         }],
         ai_tool: Default::default(),
+        examples: vec![
+            crate::pipeline::model::NodeExample::dsl("What is in this file?", "geo.inspect --path uploads/suburbs.zip")
+                .output(serde_json::json!({ "inspect": { "driver": "ESRI Shapefile", "layers": [{ "name": "suburbs", "geometry": "Polygon", "crs": "EPSG:7844", "features": 312, "fields": ["name", "postcode"] }] }, "source": "uploads/suburbs.zip" }))
+                .note("Read `input.inspect.layers[0].crs` before deciding on `geo.convert --to-crs`."),
+        ],
         ..Default::default()
     }
 }

@@ -354,7 +354,7 @@ pub fn definition() -> NodeDefinition {
             DslFlag {
                 flag: "--template".to_string(),
                 config_key: "template".to_string(),
-                description: "TSX page file relative to repo/pipelines. Must end with .tsx, e.g. pages/lyrics.tsx".to_string(),
+                description: "TSX page file relative to the source root. Must end with .tsx, e.g. pages/post.tsx".to_string(),
                 kind: DslFlagKind::Scalar,
                 required: true,
             },
@@ -479,6 +479,10 @@ pub fn definition() -> NodeDefinition {
             LayoutItem::Field("route".to_string()),
         ],
         ai_tool: Default::default(),
+        examples: vec![
+            crate::pipeline::model::NodeExample::dsl("Render one post to a static file", r#"web.static.generate --template pages/post.tsx --output-path "site/posts/{{ input.rows[0].slug }}.html" --site-root site --route "/posts/{{ input.rows[0].slug }}""#)
+                .output(serde_json::json!({ "generated": { "status": "written", "path": "site/posts/hello.html", "url": "/fs/acme/shop/site/posts/hello.html", "route": "/posts/hello", "template": "pages/post.tsx" } })),
+        ],
         ..Default::default()
     }
 }

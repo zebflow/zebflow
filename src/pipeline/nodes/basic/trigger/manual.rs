@@ -17,7 +17,11 @@ pub fn definition() -> NodeDefinition {
     NodeDefinition {
         kind: NODE_KIND.to_string(),
         title: "Manual Trigger".to_string(),
-        description: "Start pipeline run from explicit manual execute requests.".to_string(),
+        description: "Starts the pipeline when someone runs it by hand — the Studio's Run button, `POST /pipelines/execute` with \
+            `trigger: \"manual\"`, or the console's `execute pipeline`. The payload is whatever `input` the caller sent, unchanged \
+            (`{}` when nothing was sent). Use it for one-off jobs and admin actions; a pipeline another pipeline should call is \
+            `trigger.function`, and one that runs on its own is `trigger.schedule`."
+            .to_string(),
         input_schema: serde_json::json!({
             "type":"object",
             "description":"Manual execution payload."
@@ -48,6 +52,12 @@ pub fn definition() -> NodeDefinition {
         }],
         layout: vec![LayoutItem::Field("__manual_note".to_string())],
         ai_tool: Default::default(),
+        examples: vec![
+            crate::pipeline::model::NodeExample::dsl("A job run from the Studio", "trigger.manual")
+                .input(serde_json::json!({ "dry_run": true }))
+                .output(serde_json::json!({ "dry_run": true }))
+                .note("The next node reads `input.dry_run`; with no input the payload is `{}`."),
+        ],
         ..Default::default()
     }
 }

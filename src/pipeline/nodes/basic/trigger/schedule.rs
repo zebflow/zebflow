@@ -17,7 +17,12 @@ pub fn definition() -> NodeDefinition {
     NodeDefinition {
         kind: NODE_KIND.to_string(),
         title: "Schedule Trigger".to_string(),
-        description: "Start pipeline run from schedule tick context.".to_string(),
+        description: "Starts the pipeline on a cron schedule once it is active: `--cron` is five fields (`0 7 * * *` = 07:00 daily), \
+            `--timezone` an IANA name (default UTC). The payload is `{ trigger: \"schedule\", fired_at: <RFC 3339>, node_id }` — \
+            there is no `body`, no request; anything the job needs it reads from the database or KV. A scheduled pipeline must not \
+            end in a page (`web.response --template`); it ends in a write, a mail, or a bare `web.response` summary. Runs show under \
+            `pipeline_get_invocations` with trigger `schedule`; the Studio's Schedules tab lists them."
+            .to_string(),
         input_schema: serde_json::json!({
             "type":"object",
             "description":"Schedule tick payload."
@@ -74,6 +79,11 @@ pub fn definition() -> NodeDefinition {
             ],
         }],
         ai_tool: Default::default(),
+        examples: vec![
+            crate::pipeline::model::NodeExample::dsl("Daily digest at 07:00 Melbourne time", r#"trigger.schedule --cron "0 7 * * *" --timezone Australia/Melbourne"#)
+                .output(serde_json::json!({ "trigger": "schedule", "fired_at": "2026-09-13T21:00:00+00:00", "node_id": "n0" })),
+            crate::pipeline::model::NodeExample::dsl("Every 15 minutes", r#"trigger.schedule --cron "*/15 * * * *""#),
+        ],
         ..Default::default()
     }
 }

@@ -76,8 +76,10 @@ pipeline_activate  file_rel_path="api/posts/create"              → active
 ```
 
 `file_rel_path` is relative to the source root (the repository root unless
-`zebflow.yaml` says otherwise): `api/…`, `pages/…`, `jobs/…` — no `pipelines/`
-prefix. To change one node later: `pipeline_describe` (node ids `n0, n1, …`)
+`zebflow.yaml` says otherwise) and is the pipeline's place in the project's
+layout (`docs/structure.md`): `api/…`, `pages/…`, `jobs/…` in a flat project,
+`modules/<domain>/api/…` in a domain one (`zebflow-engineering`) — never a
+`pipelines/` prefix. The URL is `--path`, independent of the file's folder. To change one node later: `pipeline_describe` (node ids `n0, n1, …`)
 → `pipeline_patch node_id=` → `pipeline_activate` again; until then the
 status is `stale` and traffic runs the old snapshot.
 

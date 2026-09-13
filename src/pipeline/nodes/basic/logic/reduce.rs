@@ -34,7 +34,11 @@ pub fn definition() -> NodeDefinition {
         kind: NODE_KIND.to_string(),
         capabilities: vec![NodeCapability::Process],
         title: "Reduce".to_string(),
-        description: "Accumulates an ordered emitted series into one final result.".to_string(),
+        description: "Fold. Placed after `logic.foreach` (directly or further down the branch), it runs `--init-expr` once and \
+             `--step-expr` for every emission, with `$acc` the accumulator so far and `$input` the arriving payload, then fires \
+             `out` once with the final `$acc` when the series is complete. Expressions are JavaScript object/values without `{{ }}`. \
+             The output is exactly the last `$acc` — wrap it (`{ total: … }`) if the next node expects an object."
+            .to_string(),
         input_schema: serde_json::json!({ "type": "object" }),
         output_schema: serde_json::json!({ "type": "object" }),
         input_pins: vec![INPUT_PIN_IN.to_string()],
@@ -85,6 +89,11 @@ pub fn definition() -> NodeDefinition {
             LayoutItem::Field("step_expr".to_string()),
         ],
         ai_tool: Default::default(),
+        examples: vec![
+            crate::pipeline::model::NodeExample::dsl("Sum a column", r#"logic.reduce --init-expr "{ total: 0, n: 0 }" --step-expr "{ total: $acc.total + $input.item.amount, n: $acc.n + 1 }""#)
+                .output(serde_json::json!({ "total": 42.5, "n": 3 }))
+                .note("After `logic.foreach --items-expr \"input.rows\"` over three rows."),
+        ],
         ..Default::default()
     }
 }

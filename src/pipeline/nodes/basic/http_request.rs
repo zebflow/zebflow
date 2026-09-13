@@ -50,9 +50,12 @@ pub fn definition() -> NodeDefinition {
         kind: NODE_KIND.to_string(),
         capabilities: vec![NodeCapability::Network, NodeCapability::Filesystem, NodeCapability::Credential],
         title: "HTTP Request".to_string(),
-        description: "Perform HTTP call with support for JSON, text, and binary (bytes) responses. \
-            Supports JSON, raw text, and multipart form-data request bodies including FileRef and __zf_bytes file parts. \
-            Returns normalized { request, response } envelope."
+        description: "Calls another server over HTTP — the only way a pipeline reaches the outside (a script's `fetch` is blocked). \
+            `--url`, `--method` (GET default), `--body \"{{ expr }}\"` (an object is sent as JSON; `--body-type form-data` for uploads, \
+            with a FileRef as a part), `--header K=V` repeatable, `--credential <id>` for an api_key / oauth2 / secure_request credential \
+            so secrets never sit in the pipeline. Replaces the payload with `{ request, response: { status, ok, headers, body } }` — \
+            the answer is `input.response.body` (parsed JSON with `--response-type json`, the default). A non-2xx does not fail the \
+            node: check `input.response.ok` with `logic.if`."
             .to_string(),
         input_schema: serde_json::json!({
             "type":"object",
@@ -145,6 +148,11 @@ pub fn definition() -> NodeDefinition {
                 "required": ["url"]
             }),
         },
+        examples: vec![
+            crate::pipeline::model::NodeExample::dsl("Fetch JSON", r#"http.request --url "https://api.example.com/rates?base={{ $trigger.params.currency }}" --method GET"#)
+                .output(serde_json::json!({ "request": { "url": "https://api.example.com/rates?base=AUD", "method": "GET" }, "response": { "status": 200, "ok": true, "headers": { "content-type": "application/json" }, "body": { "AUD": 1, "USD": 0.65 } } })),
+            crate::pipeline::model::NodeExample::dsl("POST with a credential", r#"http.request --url https://hooks.example.com/notify --method POST --credential notify_key --body "{{ { text: 'New order ' + input.rows[0]._key } }}""#),
+        ],
         ..Default::default()
     }
 }

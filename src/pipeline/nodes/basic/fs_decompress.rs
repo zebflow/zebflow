@@ -182,6 +182,11 @@ pub fn definition() -> NodeDefinition {
             ],
         }],
         ai_tool: Default::default(),
+        examples: vec![
+            crate::pipeline::model::NodeExample::dsl("Unpack an uploaded archive", "fs.decompress --output-dir imports/latest --delete-source")
+                .input(serde_json::json!({ "saved": { "path": "uploads/bundle.tar.gz" } }))
+                .output(serde_json::json!({ "decompressed": { "source_path": "uploads/bundle.tar.gz", "output_dir": "imports/latest", "format": "tar.gz", "extracted_count": 3, "entries": ["imports/latest/a.csv", "imports/latest/b.csv", "imports/latest/readme.md"] } })),
+        ],
         ..Default::default()
     }
 }

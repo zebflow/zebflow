@@ -24,11 +24,10 @@ pub fn definition() -> NodeDefinition {
         kind: NODE_KIND.to_string(),
         capabilities: vec![NodeCapability::Database, NodeCapability::Process],
         title: "SQLite Mutate".to_string(),
-        description: "Run a SQL mutation (INSERT INTO, UPDATE, DELETE FROM, CREATE TABLE) \
-            against the project's embedded SQLite database. Write the mutation in the body \
-            using `-- \"INSERT INTO ...\"`. \
-            Use `{{ expr }}` placeholders anywhere in the SQL — they are resolved before the node \
-            runs. Output: `{ ok: true, affected_rows: N }`."
+        description: "Write to the project's built-in SQLite database (connection `default`): INSERT, UPDATE, DELETE, CREATE TABLE, ALTER. \
+            SQL in the body after `--`, values in `--params` bound as `?1, ?2, …`. Answers `{ ok: true, affected_rows: N }` and nothing \
+            else — the inserted row is not returned; SELECT it afterwards with `sqlite.query`, or keep the values you inserted from \
+            the previous node with `$nodes.<id>`."
             .to_string(),
         input_schema: json!({
             "type": "object",
@@ -102,6 +101,12 @@ pub fn definition() -> NodeDefinition {
                 "required": ["query"]
             }),
         },
+        examples: vec![
+            crate::pipeline::model::NodeExample::dsl("Insert from a form", r#"sqlite.mutate --params "{{ [input.body.email, input.body.name] }}" -- "INSERT INTO users (email, name) VALUES (?1, ?2)""#)
+                .output(serde_json::json!({ "ok": true, "affected_rows": 1 })),
+            crate::pipeline::model::NodeExample::dsl("Create a table", r#"sqlite.mutate -- "CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY, email TEXT UNIQUE NOT NULL, name TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP)""#)
+                .output(serde_json::json!({ "ok": true, "affected_rows": 0 })),
+        ],
         ..Default::default()
     }
 }

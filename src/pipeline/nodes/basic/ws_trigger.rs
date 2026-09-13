@@ -87,10 +87,12 @@ pub fn definition() -> NodeDefinition {
     NodeDefinition {
         kind: NODE_KIND.to_string(),
         title: "WebSocket Trigger".to_string(),
-        description: "Triggers a pipeline when a WebSocket event arrives from a connected client. \
-            Use --room to scope to a specific room (empty = any room). \
-            Use --event to match a specific event name (empty = any event). \
-            Downstream nodes receive room_id, session_id, event, and payload fields."
+        description: "Runs when a browser connected to this project's WebSocket sends an event — the server half of a chat, a live \
+            board, a multiplayer scene. `--room` scopes it to one room (empty = any), `--event` to one event name (empty = any); the \
+            same `--auth-*` flags as `trigger.webhook` guard the connection. The payload is `{ room_id, session_id, event, payload }` \
+            — what the client sent is `input.payload`, not `input`. Answer with `ws.emit` (to the room or one session) or \
+            `ws.sync_state` (shared state every client mirrors); a `web.response` here answers nobody. The client side is \
+            `useSocket` / `useRoom` from `zeb/react` (help topic `web/hooks`)."
             .to_string(),
         input_schema: json!({
             "type": "object",
@@ -244,6 +246,11 @@ pub fn definition() -> NodeDefinition {
             LayoutItem::Row { row: vec![LayoutItem::Field("auth_credential".to_string()), LayoutItem::Field("auth_required_role".to_string())] },
         ],
         ai_tool: Default::default(),
+        examples: vec![
+            crate::pipeline::model::NodeExample::dsl("Chat message in", r#"trigger.ws --room lobby --event chat.send"#)
+                .output(serde_json::json!({ "room_id": "lobby", "session_id": "s_8f2", "event": "chat.send", "payload": { "text": "hello" } }))
+                .note("Then `| ws.emit --room lobby --event chat.message --payload \"{{ { from: input.session_id, text: input.payload.text } }}\"`."),
+        ],
         ..Default::default()
     }
 }

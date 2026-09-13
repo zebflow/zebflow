@@ -288,6 +288,12 @@ pub fn definition() -> NodeDefinition {
             ]},
         ],
         ai_tool: NodeAiToolDefinition::default(),
+        examples: vec![
+            crate::pipeline::model::NodeExample::dsl("Answer a support question with tools", r#"ai.agent --credential openai_main --mode direct --max-iterations 5 --system-prompt "You answer questions about orders. Use the tools; never guess.""#)
+                .input(serde_json::json!({ "message": "Where is order o_91?" }))
+                .output(serde_json::json!({ "response": "Order o_91 shipped yesterday and arrives Friday.", "tools_called": ["database_query"], "iterations": 2 }))
+                .note("The goal is read from `input.message` (or `body`, `text`, `query`). Tools are the project's function pipelines and node-provided tools; `--tools` narrows them."),
+        ],
         ..Default::default()
     }
 }

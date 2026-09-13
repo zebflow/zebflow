@@ -7793,40 +7793,37 @@ fn hub_asset_rows(
     only_mine: bool,
 ) -> Result<Vec<Value>, PlatformError> {
     // "Mine" is what this owner published, which lives in the Public Hub
-    // store; the plain listing is the blessed shelf a project installs from.
-    let packages = match if only_mine {
-        state.platform.hub.list_asset_packages_by_owner(owner)
+    // store; the plain listing is the blessed shelf a project installs from —
+    // the same set `hub_search` offers over MCP.
+    let packages: Vec<(crate::platform::model::HubAssetPackage, String)> = if only_mine {
+        let packages = match state.platform.hub.list_asset_packages_by_owner(owner) {
+            Ok(items) => items,
+            Err(err) if err.code == "HUB_SERVICE_DISABLED" => Vec::new(),
+            Err(err) => return Err(err),
+        };
+        let mut out = Vec::new();
+        for package in packages {
+            let latest_version = latest_installable_hub_version(
+                state
+                    .platform
+                    .hub
+                    .list_public_asset_versions(&package.package_id)?,
+            );
+            // Every version retracted means nothing here can be installed. The
+            // row stays in the store so its coordinates remain taken, but a
+            // listing that offers a package with no installable release is
+            // offering nothing.
+            if latest_version.is_empty() {
+                continue;
+            }
+            out.push((package, latest_version));
+        }
+        out
     } else {
-        state.platform.hub.list_asset_packages()
-    } {
-        Ok(items) => items,
-        Err(err) if err.code == "HUB_SERVICE_DISABLED" => Vec::new(),
-        Err(err) => return Err(err),
+        state.platform.hub.installable_packages(owner)?
     };
     let mut rows = Vec::new();
-    for package in packages {
-        if !only_mine && package.visibility == "private" && package.publisher_owner != owner {
-            continue;
-        }
-        let latest_version = latest_installable_hub_version(if only_mine {
-            state
-                .platform
-                .hub
-                .list_public_asset_versions(&package.package_id)?
-        } else {
-            state
-                .platform
-                .hub
-                .list_asset_versions(&package.package_id)?
-        });
-        // Every version retracted means nothing here can be installed. The row
-        // stays in the store so its coordinates remain taken, but a shelf that
-        // offers a package with no installable release is offering nothing:
-        // `zebflow.icons` was listed, and `review` described the files an
-        // install would write, after the package had left the build entirely.
-        if latest_version.is_empty() {
-            continue;
-        }
+    for (package, latest_version) in packages {
         let (summary, gallery) = hub_package_gallery_projection(&package);
         rows.push(json!({
             "package_id": package.package_id,

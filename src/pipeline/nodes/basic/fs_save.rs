@@ -18,7 +18,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use base64::Engine as _;
 use serde::{Deserialize, Serialize};
-use serde_json::json;
+use serde_json::{Value, json};
 use uuid::Uuid;
 
 use super::file_ref::{is_file_ref, read_file_ref_bytes};
@@ -247,11 +247,11 @@ pub fn definition() -> NodeDefinition {
         kind: NODE_KIND.to_string(),
         capabilities: vec![NodeCapability::Filesystem],
         title: "FS Save".to_string(),
-        description: "Save an uploaded file from a multipart webhook payload to Zebflow FS \
-            storage. Reads `input.files.{field}` (set by trigger.webhook), validates MIME type \
-            AND magic bytes (content inspection), checks size, then writes to an object path such as \
-            `uploads/{uuid}.{ext}`. \
-            Output: `{ saved: { path, url, original_name, content_type, size } }`."
+        description: "Store a file a browser uploaded. Reads `input.files.<field>` (a multipart form field, set by `trigger.webhook`; \
+            `--field` names it, default `file`), checks the kind by MIME and magic bytes (`--allowed-kinds images|documents|…`) and the \
+            size (`--max-size` MB), then writes it under `--folder` (default `uploads/`; under `public/` for anonymous access) or at \
+            an exact `--path`. Adds `saved: { path, url, original_name, content_type, size }` to the payload and keeps the rest, so \
+            `input.body.title` from the same form is still there for the INSERT. Store `saved.path` in the row, not the url."
             .to_string(),
         input_schema: serde_json::json!({
             "type": "object",
@@ -414,6 +414,12 @@ pub fn definition() -> NodeDefinition {
             LayoutItem::Field("allowed_kinds".to_string()),
             LayoutItem::Field("max_size_mb".to_string()),
             LayoutItem::Field("filename".to_string()),
+        ],
+        examples: vec![
+            crate::pipeline::model::NodeExample::dsl("Photo with a caption", "fs.save --field photo --folder public/uploads --allowed-kinds images --max-size 10")
+                .input(serde_json::json!({ "body": { "caption": "Sunset" }, "files": { "photo": { "__zf_type": "file_ref", "filename": "IMG_1.jpg", "mime": "image/jpeg", "size": 182331 } } }))
+                .output(serde_json::json!({ "body": { "caption": "Sunset" }, "files": { "photo": { "__zf_type": "file_ref", "filename": "IMG_1.jpg", "mime": "image/jpeg", "size": 182331 } }, "saved": { "path": "public/uploads/3f9c….jpg", "url": "/fs/acme/shop/public/uploads/3f9c….jpg", "original_name": "IMG_1.jpg", "content_type": "image/jpeg", "size": 182331 } }))
+                .note("Then `sekejap.query --read-only false --params \"{{ [input.body.caption, input.saved.path] }}\" -- \"INSERT INTO photos (caption, path) VALUES ($1, $2)\"`."),
         ],
         ..Default::default()
     }
@@ -689,17 +695,25 @@ impl NodeHandler for Node {
 
         let url = format!("/fs/{owner}/{project}/{rel_path}");
 
+        // The form's other fields ride along: an upload form has a title and a
+        // caption beside the file, and the INSERT after this node needs them.
+        let mut payload = match &input.payload {
+            Value::Object(map) => map.clone(),
+            _ => serde_json::Map::new(),
+        };
+        payload.insert(
+            "saved".to_string(),
+            json!({
+                "path": rel_path,
+                "url": url,
+                "original_name": original_name,
+                "content_type": effective_mime,
+                "size": bytes.len(),
+            }),
+        );
         Ok(NodeExecutionOutput {
             output_pins: vec![OUTPUT_PIN_OUT.to_string()],
-            payload: json!({
-                "saved": {
-                    "path": rel_path,
-                    "url": url,
-                    "original_name": original_name,
-                    "content_type": effective_mime,
-                    "size": bytes.len(),
-                }
-            }),
+            payload: Value::Object(payload),
             trace: vec![format!(
                 "node_kind={NODE_KIND} field={field} path={rel_path}"
             )],

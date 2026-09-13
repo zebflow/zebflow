@@ -26,12 +26,12 @@ pub fn definition() -> NodeDefinition {
         capabilities: vec![NodeCapability::Filesystem, NodeCapability::Process],
         title: "Script".to_string(),
         description:
-            "Execute sandboxed Deno logic with runtime signature async function(input, n, ctx). \
-            Signals: to emit real-time signals (progress, status, custom events), include a \
-            __signal key in the return value. The engine strips it from the downstream payload \
-            and routes it through the ExecutionBus. Supports string (\"processing…\"), \
-            object ({kind, message, data}), or array of either. Example: \
-            return { result: 42, __signal: {kind: \"progress\", message: \"step 2 done\"} };"
+            "Runs JavaScript in a sandbox: the body after `--` is the function body of `async function(input, n, ctx)`, and whatever it \
+             `return`s is the next node's entire payload. `input` is the current payload (after a webhook, `input.body.x`); \
+             `ctx.trigger.params/query/auth` is the request and `ctx.nodes.<id>` an earlier node's output. It cannot set a status or header \
+             (`web.response` does), `return null` does not stop the run (`logic.if` does), and `fetch`, `setTimeout`, `require` and \
+             `import` are blocked (`http.request` calls out). Keep it to shaping data: compose, rename, compute. A `__signal` key in \
+             the return is stripped and shown as live progress in the Studio."
                 .to_string(),
         input_schema: serde_json::json!({
             "type":"object",
@@ -154,6 +154,13 @@ pub fn definition() -> NodeDefinition {
                 "required": ["code"]
             }),
         },
+        examples: vec![
+            crate::pipeline::model::NodeExample::dsl("Shape rows for a page", r#"script -- "return { posts: input.rows.map(r => ({ ...r, when: r.created_at.slice(0, 10) })), total: input.row_count }""#)
+                .input(serde_json::json!({ "columns": ["title", "created_at"], "rows": [{ "title": "Hi", "created_at": "2026-09-13T04:00:00Z" }], "row_count": 1 }))
+                .output(serde_json::json!({ "posts": [{ "title": "Hi", "created_at": "2026-09-13T04:00:00Z", "when": "2026-09-13" }], "total": 1 })),
+            crate::pipeline::model::NodeExample::dsl("Combine two earlier nodes", r#"script -- "return { user: ctx.nodes.b.rows[0], orders: ctx.nodes.c.rows }""#)
+                .note("After `logic.collect`, or anywhere in graph mode where `b` and `c` already ran."),
+        ],
         ..Default::default()
     }
 }

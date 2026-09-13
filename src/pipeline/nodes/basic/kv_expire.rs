@@ -110,6 +110,9 @@ pub fn definition() -> NodeDefinition {
         ],
         layout: vec![],
         ai_tool: Default::default(),
+        examples: vec![
+            crate::pipeline::model::NodeExample::dsl("Extend a session on activity", r#"kv.expire --key "session:{{ $trigger.auth.sub }}" --ttl 1800"#),
+        ],
         ..Default::default()
     }
 }

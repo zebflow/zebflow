@@ -131,6 +131,13 @@ pub fn definition() -> NodeDefinition {
         ],
         layout: vec![],
         ai_tool: Default::default(),
+        examples: vec![
+            crate::pipeline::model::NodeExample::dsl("Count views", r#"kv.incr --key "views:{{ $trigger.params.slug }}" --out-key views --durable"#)
+                .output(serde_json::json!({ "views": 42 }))
+                .note("Merged into the payload; the counter starts at 0 when the key is new."),
+            crate::pipeline::model::NodeExample::dsl("Rate-limit a form", r#"kv.incr --key "contact:{{ $trigger.headers['x-forwarded-for'] }}" --out-key hits --amount 1"#)
+                .note("Pair with `kv.expire --ttl 60` and `logic.if --expr \"input.hits <= 5\"`."),
+        ],
         ..Default::default()
     }
 }

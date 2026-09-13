@@ -25,7 +25,11 @@ pub fn definition() -> NodeDefinition {
         capabilities: vec![NodeCapability::Database, NodeCapability::Process],
         title: "Sekejap Query".to_string(),
         description:
-            "Execute SQL against the project's embedded Sekejap multimodel store and return rows or affected count."
+            "Run SQL on the project's built-in database (connection `default-multimodel`; no credential, no setup). SQL goes in the body \
+             after `--`, values in `--params` as `$1, $2, …`; writes need `--read-only false`. A read answers \
+             `{ columns, rows, row_count, truncated }` with each row an object keyed by column (`input.rows[0].title`); a write answers \
+             `{ affected_rows }`. Sekejap's DDL is its own dialect — `CREATE TABLE t (_key TEXT PRIMARY KEY DEFAULT UUIDV4(), name TEXT) WITH (hash: ['name'])`, \
+             no NOT NULL/UNIQUE/REFERENCES/DEFAULT NOW(); see help topic `db/sekejap`. An unknown table or column fails at run time, not at register."
                 .to_string(),
         input_schema: json!({
             "type": "object",
@@ -141,6 +145,14 @@ pub fn definition() -> NodeDefinition {
                 }
             }),
         },
+        examples: vec![
+            crate::pipeline::model::NodeExample::dsl("Read with a bound value", r#"sekejap.query --params "{{ [$trigger.params.slug] }}" -- "SELECT _key, title, body FROM posts WHERE slug = $1""#)
+                .output(serde_json::json!({ "columns": ["_key", "title", "body"], "rows": [{ "_key": "8c1…", "title": "Hello", "body": "…" }], "row_count": 1, "truncated": false })),
+            crate::pipeline::model::NodeExample::dsl("Insert from a form", r#"sekejap.query --read-only false --params "{{ [input.body.title, input.body.slug, new Date().toISOString()] }}" -- "INSERT INTO posts (title, slug, created_at) VALUES ($1, $2, $3)""#)
+                .output(serde_json::json!({ "affected_rows": 1 })),
+            crate::pipeline::model::NodeExample::dsl("Create a table", r#"sekejap.query --read-only false -- "CREATE TABLE posts (_key TEXT PRIMARY KEY DEFAULT UUIDV4(), title TEXT, slug TEXT, created_at TIMESTAMPTZ) WITH (hash: ['slug'], range: ['created_at'])""#)
+                .note("Run once from `pipeline_run` or a `jobs/migrate` function pipeline; keep the SQL in `db/001_posts.sql`."),
+        ],
         ..Default::default()
     }
 }

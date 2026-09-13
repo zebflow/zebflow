@@ -35,6 +35,7 @@ and the project's **skills**.
 | Task | Skill |
 |---|---|
 | any session, any completion claim | `zebflow-basic` |
+| the first file of a project, a new domain or entity, "where does this go" | `zebflow-engineering` |
 | a route, an API, a form's POST, a job | `zebflow-pipeline` |
 | a page, a component, a script | `zebflow-rwe` |
 | a screen built from components | `zebflow-ui` |
@@ -43,7 +44,7 @@ and the project's **skills**.
 | uploads, images, rich text | `zebflow-files-editor` |
 | proving it works | `zebflow-verify` |
 | adding or publishing a package | `zebflow-hub` |
-| drawing or modelling an asset — SVG, a Three.js mesh, a scene | `procedural-assets` (optional — add it from the hub first) |
+| drawing or modelling an asset — SVG, a Three.js mesh, a scene | `procedural-assets` (optional — `hub_add package_id=zebflow.skill-procedural-assets` first) |
 
 Read the help topic before writing in a domain you have not used this session:
 
@@ -108,6 +109,7 @@ Project docs are files under `docs/` (`file_write rel_path="docs/schema.md"`).
 | `connection_describe` | tables and columns of a connection; `scope`, `schema`, `table` narrow it |
 | `credential_list` | credential ids, titles and kinds — values are never returned. `--credential`, `--auth-credential` and `mail.send --credential` take an **id from here**, not a connection slug |
 | `list_ui_catalog` / `install_ui_components` | the clone-to-own component catalog (`shared/ui/`); pages import `zeb/ui/*` without installing anything |
+| `hub_search` / `hub_review` / `hub_add` | the Hub shelf: what the project can add (optional skills, libraries, bundles), what an add would write, and the add itself — review before add, always |
 | `git_command` | `subcommand` = status · log · diff · add · commit (`args`, `message`); the commit author is the user's profile |
 | `skill_list` / `skill_read` | the skills: the list, one body, one reference file |
 | `help`, `help_search`, `version` | knowledge and the platform version |

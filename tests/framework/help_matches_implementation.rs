@@ -353,3 +353,49 @@ fn every_zeb_react_import_the_help_teaches_is_exported() {
     }
     assert!(failures.is_empty(), "help imports names zeb/react does not export:\n  {}", failures.join("\n  "));
 }
+
+/// Every node definition carries what a reader needs to use it without
+/// opening the source: a description that says what comes out, an output
+/// schema unless it is a trigger, and at least one example whose DSL line
+/// builds against the node's own declared flags.
+///
+/// `help(topic="pipeline/nodes/<kind>")` is generated from the definition and
+/// nothing else, so for an agent the definition *is* the node. Two dogfood
+/// rounds found every stumble at a node whose definition was one sentence:
+/// `--params` unseen, the output shape unstated, the DDL dialect unmentioned.
+#[test]
+fn every_node_definition_documents_itself_with_a_building_example() {
+    use zebflow::platform::shell::parser::build_pipeline_graph;
+
+    let mut failures = Vec::new();
+    for def in zebflow::pipeline::nodes::builtin_node_definitions() {
+        let kind = def.kind.as_str();
+        let is_trigger = def.input_pins.is_empty();
+        if def.description.trim().len() < 120 {
+            failures.push(format!("{kind}: description is {} chars; say what it needs, what comes out, and the usual mistake", def.description.trim().len()));
+        }
+        if !is_trigger && def.output_schema.is_null() {
+            failures.push(format!("{kind}: no output_schema"));
+        }
+        if def.examples.is_empty() {
+            failures.push(format!("{kind}: no example"));
+        }
+        for example in &def.examples {
+            let dsl = example.dsl.trim();
+            if dsl.is_empty() {
+                failures.push(format!("{kind}: example `{}` has no dsl", example.title));
+                continue;
+            }
+            let short = kind.strip_prefix("n.").unwrap_or(kind);
+            let first = dsl.split_whitespace().next().unwrap_or("");
+            if first != short && first != kind {
+                failures.push(format!("{kind}: example dsl starts with `{first}`, not the node"));
+            }
+            let body = if is_trigger { format!("| {dsl}") } else { format!("| trigger.function | {dsl}") };
+            if let Err(err) = build_pipeline_graph("example", &body) {
+                failures.push(format!("{kind}: example `{}` does not build: {err}", example.title));
+            }
+        }
+    }
+    assert!(failures.is_empty(), "node definitions that do not document themselves:\n  {}", failures.join("\n  "));
+}

@@ -52,10 +52,11 @@ pub fn definition() -> NodeDefinition {
         capabilities: vec![NodeCapability::Filesystem, NodeCapability::Process],
         title: "Web Response".to_string(),
         description:
-            "Terminate the HTTP request with an explicit response. \
-             Without --template: serves pipeline payload as JSON (default 200). \
-             With --template: renders a TSX page via the RWE engine. \
-             Use --status, --set-cookie, --header to control HTTP metadata."
+            "Ends the request with the response you mean — always the last node of a webhook pipeline. No flags: the payload as JSON, \
+             200. `--template pages/x.tsx` (exact `file_list` path, `.tsx` required): render the page with the payload as its `input`. \
+             `--location /path`: redirect (302 unless `--status 303`). `--status`, `--set-cookie \"name=…,value=…,http-only,max-age=…\"`, \
+             `--header K=V`, `--message \"text\"`, `--body \"{{ expr }}\"`. There is no `--route`; the route is the trigger's `--path`. \
+             A 404 or 400 is a `logic.if` whose `false` pin reaches a second `web.response` with that `--status` — a script cannot set one."
                 .to_string(),
         input_schema: json!({ "type": "object" }),
         output_schema: json!({
@@ -238,6 +239,13 @@ pub fn definition() -> NodeDefinition {
             LayoutItem::Field("load_scripts".to_string()),
         ],
         ai_tool: Default::default(),
+        examples: vec![
+            crate::pipeline::model::NodeExample::dsl("Render a page", "web.response --template pages/posts.tsx")
+                .note("The payload (e.g. `{ rows }`) is the page's `input`; the body must show no `RWE component error`."),
+            crate::pipeline::model::NodeExample::dsl("Redirect after a form POST", "web.response --location /admin/posts --status 303"),
+            crate::pipeline::model::NodeExample::dsl("JSON with a status", r#"web.response --status 400 --body "{{ { error: 'title is required' } }}""#),
+            crate::pipeline::model::NodeExample::dsl("Set the session cookie and go home", r#"web.response --location /home --set-cookie "name=zebflow_session,value={{ input.access_token }},http-only,max-age=86400,same-site=Lax""#),
+        ],
         ..Default::default()
     }
 }

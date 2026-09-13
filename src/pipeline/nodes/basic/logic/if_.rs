@@ -29,7 +29,10 @@ pub fn definition() -> NodeDefinition {
         capabilities: vec![NodeCapability::Process],
         title: "If".to_string(),
         description:
-            "Evaluates a DSL expression using $input/$trigger/$nodes. Routes to `true` pin when truthy, `false` otherwise."
+            "Two-way branch. Evaluates `--expr` (JavaScript over `input`, `$trigger`, `$nodes`) and sends the payload, unchanged, \
+             down the `true` pin or the `false` pin. This is how a pipeline validates, guards and answers 404/400: wire \
+             `[b]:true -> [c]` and `[b]:false -> [e]` in graph mode — in pipe mode only `true` continues and `false` ends the run silently. \
+             The expression sees the payload as `input` (after a webhook that is `input.body.x`), not `$input`."
                 .to_string(),
         input_schema: serde_json::json!({ "type": "object" }),
         output_schema: serde_json::json!({ "type": "object" }),
@@ -66,6 +69,13 @@ pub fn definition() -> NodeDefinition {
             LayoutItem::Field("expression".to_string()),
         ],
         ai_tool: Default::default(),
+        examples: vec![
+            crate::pipeline::model::NodeExample::dsl("Guard a form field", r#"logic.if --expr "typeof input.body?.title === 'string' && input.body.title.length > 0""#)
+                .note("`true` carries the same payload on; wire `false` to a `web.response --status 400`."),
+            crate::pipeline::model::NodeExample::dsl("Found or not found", r#"logic.if --expr "input.rows.length > 0""#)
+                .input(serde_json::json!({ "rows": [] }))
+                .note("Fires the `false` pin; the payload is unchanged."),
+        ],
         ..Default::default()
     }
 }

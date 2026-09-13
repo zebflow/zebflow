@@ -316,8 +316,9 @@ curl -s -b /tmp/zf.txt -X POST -F photo=@/tmp/test_img.png \
   http://localhost:10610/wh/superadmin/default/test/fs-thumb
 ```
 
-The answer is a FileRef, and with `--delete-source` there is **no** `saved` key
-— the source is gone, so only the thumbnail is reported:
+The answer is the request payload (`body`, `files`, …) plus `thumbnail`, a
+FileRef; with `--delete-source` there is **no** `saved` key — the source is
+gone, so its key is dropped. The FileRef:
 
 ```json
 {"thumbnail":{"__zf_type":"file_ref","backend":"zebfs",

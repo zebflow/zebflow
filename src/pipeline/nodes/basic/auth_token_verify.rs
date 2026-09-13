@@ -43,10 +43,11 @@ pub fn definition() -> NodeDefinition {
         kind: NODE_KIND.to_string(),
         capabilities: vec![NodeCapability::Process],
         title: "Verify Token".to_string(),
-        description: "Verify a JWT against a stored `jwt_signing_key` credential. Emits the \
-            token's claims on the `valid` pin, or the reason on `invalid`. The algorithm comes \
-            from the credential, never from the token's own header, so a token claiming \
-            `alg: none` is refused rather than believed."
+        description: "Checks a JWT that arrived as data — a password-reset or e-mail-confirmation link (`$trigger.query.token`), a token \
+            posted by another system (`input.body.token`) — against a `jwt_signing_key` credential. `valid` carries the payload plus \
+            `{ claims, sub }`; `invalid` carries `{ reason }`. The algorithm comes from the credential, never from the token's header, \
+            so `alg: none` is refused. To protect a route with the session cookie or a bearer header do not use this: put \
+            `--auth-type jwt --auth-credential <id>` on the trigger and read `input.auth`."
             .to_string(),
         input_schema: json!({
             "type": "object",
@@ -80,7 +81,7 @@ pub fn definition() -> NodeDefinition {
             DslFlag {
                 flag: "--token".to_string(),
                 config_key: "token".to_string(),
-                description: "The token — a literal or {{ expr }}, e.g. \"{{ input.cookies.session }}\""
+                description: "The token — a literal or {{ expr }}, e.g. \"{{ $trigger.query.token }}\" or \"{{ input.body.token }}\""
                     .to_string(),
                 kind: DslFlagKind::Scalar,
                 required: true,
@@ -137,6 +138,11 @@ pub fn definition() -> NodeDefinition {
             LayoutItem::Field("token".to_string()),
             LayoutItem::Field("issuer".to_string()),
             LayoutItem::Field("audience".to_string()),
+        ],
+        examples: vec![
+            crate::pipeline::model::NodeExample::dsl("Confirm an e-mail link", r#"auth.token.verify --credential jwt_main --token "{{ $trigger.query.token }}" --audience email-confirm"#)
+                .output(serde_json::json!({ "claims": { "sub": "u_1", "aud": "email-confirm", "exp": 1789000000 }, "sub": "u_1" }))
+                .note("`valid` → mark the user confirmed by `input.sub`; `invalid` → a page saying the link expired."),
         ],
         ..Default::default()
     }

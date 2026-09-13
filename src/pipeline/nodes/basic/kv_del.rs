@@ -21,7 +21,10 @@ pub fn definition() -> NodeDefinition {
         kind: NODE_KIND.to_string(),
         capabilities: vec![NodeCapability::Database],
         title: "KV Del".to_string(),
-        description: "Delete a key from the project-scoped KV store. Ephemeral by default, use --durable for persistence across restarts. Passes the payload through unchanged.".to_string(),
+        description: "Delete one key from the project's KV store (`--durable` for the disk-backed store, otherwise the in-memory one). \
+            Passes the payload through unchanged; deleting a key that is not there succeeds. Use it to consume a one-time value — \
+            an OAuth state, a reset token — right after `kv.get` read it, so it cannot be used twice."
+            .to_string(),
         input_schema: json!({ "type": "object" }),
         output_schema: json!({ "type": "object" }),
         input_pins: vec![INPUT_PIN_IN.to_string()],
@@ -67,6 +70,9 @@ pub fn definition() -> NodeDefinition {
         ],
         layout: vec![],
         ai_tool: Default::default(),
+        examples: vec![
+            crate::pipeline::model::NodeExample::dsl("Consume a one-time state", r#"kv.del --key "oauth:state:{{ $trigger.query.state }}""#),
+        ],
         ..Default::default()
     }
 }

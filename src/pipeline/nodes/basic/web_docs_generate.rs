@@ -192,7 +192,7 @@ pub fn definition() -> NodeDefinition {
                 "docs_root": { "type": "string", "description": "Folder under repo/docs containing the markdown doc tree." },
                 "output_dir": { "type": "string", "description": "Zebflow FS folder where the generated site will be written." },
                 "site_root": { "type": "string", "description": "Optional static site root under Zebflow FS. Defaults to output_dir." },
-                "template_folder": { "type": "string", "description": "Folder under repo/pipelines/. docs.template.tsx is auto-created here when missing." },
+                "template_folder": { "type": "string", "description": "Folder under the source root where docs.template.tsx lives; it is created there when missing." },
                 "site_title": { "type": "string" },
                 "deploy_base_url": { "type": "string", "description": "Optional absolute deployed site origin used for canonical URLs and sitemap entries." },
                 "deploy_base_path": { "type": "string", "description": "Optional deployed URL base path seen by generated pages. Defaults to /{output_dir}/." },
@@ -203,7 +203,7 @@ pub fn definition() -> NodeDefinition {
             DslFlag {
                 flag: "--docs-root".to_string(),
                 config_key: "docs_root".to_string(),
-                description: "Folder under repo/docs/ containing the documentation source tree.".to_string(),
+                description: "Folder under docs/ (source root) containing the Markdown tree.".to_string(),
                 kind: DslFlagKind::Scalar,
                 required: true,
             },
@@ -343,6 +343,11 @@ pub fn definition() -> NodeDefinition {
             LayoutItem::Field("meta_file".to_string()),
         ],
         ai_tool: Default::default(),
+        examples: vec![
+            crate::pipeline::model::NodeExample::dsl("Build the docs site nightly", r#"web.docs.generate --docs-root handbook --output-dir public/docs --site-title "Acme Handbook""#)
+                .output(serde_json::json!({ "docs_generated": { "status": "written", "site_title": "Acme Handbook", "template": "docs/docs.template.tsx", "docs_root": "docs/handbook", "output_dir": "public/docs", "site_root": "public/docs" } }))
+                .note("Markdown under `docs/handbook/` becomes HTML under `public/docs/`, served anonymously."),
+        ],
         ..Default::default()
     }
 }

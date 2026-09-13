@@ -180,6 +180,11 @@ pub fn definition() -> NodeDefinition {
             ],
         }],
         ai_tool: Default::default(),
+        examples: vec![
+            crate::pipeline::model::NodeExample::dsl("Archive an export folder", "fs.compress --source-key export.folder --output-path archives/export.tar.gz")
+                .input(serde_json::json!({ "export": { "folder": "exports/2026-09" } }))
+                .output(serde_json::json!({ "compressed": { "source_path": "exports/2026-09", "source_paths": ["exports/2026-09"], "items": 12, "archive_path": "archives/export.tar.gz", "archive_url": "/fs/acme/shop/archives/export.tar.gz" } })),
+        ],
         ..Default::default()
     }
 }

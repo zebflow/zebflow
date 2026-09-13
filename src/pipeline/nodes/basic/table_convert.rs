@@ -76,10 +76,11 @@ pub fn definition() -> NodeDefinition {
         kind: NODE_KIND.to_string(),
         capabilities: vec![NodeCapability::Filesystem, NodeCapability::Database, NodeCapability::Process],
         title: "Table Convert".to_string(),
-        description: "Convert table-shaped data between ZebFS objects and downstream JSON. \
-            Supports CSV, JSON, NDJSON, and Parquet. Reads from `--from` ZebFS path or \
-            `--from-expr` Deno expression such as `$input.rows`, writes to `--to`, and can emit \
-            rows with `--to-json`."
+        description: "Convert table-shaped data between formats and between the payload and the project's file store. `--from` is a file path \
+            or `{{ expr }}` giving a FileRef or the rows themselves (`{{ input.rows }}`); `--to <path>` writes CSV/JSON/NDJSON/Parquet \
+            (format from the extension or `--to-format`); `--to-json` puts the rows in the payload instead. Answers \
+            `{ table: { from, to, url, from_format, to_format, rows, columns, preview, data? } }` — rows are `input.table.data`. \
+            This is how a query result becomes a downloadable CSV, and how an uploaded CSV becomes rows a script can read."
             .to_string(),
         input_pins: vec![INPUT_PIN_IN.to_string()],
         output_pins: vec![OUTPUT_PIN_OUT.to_string()],
@@ -263,6 +264,12 @@ pub fn definition() -> NodeDefinition {
         script_available: false,
         script_bridge: None,
         ai_tool: Default::default(),
+        examples: vec![
+            crate::pipeline::model::NodeExample::dsl("Query result to CSV download", r#"table.convert --from "{{ input.rows }}" --to exports/orders.csv"#)
+                .output(serde_json::json!({ "table": { "from": "$expr", "to": "exports/orders.csv", "url": "/fs/acme/shop/exports/orders.csv", "from_format": "json", "to_format": "csv", "rows": 120, "columns": ["id", "total"], "preview": [] } })),
+            crate::pipeline::model::NodeExample::dsl("Uploaded CSV to rows", r#"table.convert --from "{{ input.files.sheet }}" --from-format csv --to-json --limit 500"#)
+                .note("After `trigger.webhook` with a multipart field `sheet`; the next node reads `input.table.data`."),
+        ],
         ..Default::default()
     }
 }

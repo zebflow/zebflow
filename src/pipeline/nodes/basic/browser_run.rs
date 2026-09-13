@@ -50,7 +50,12 @@ pub fn definition() -> NodeDefinition {
         kind: NODE_KIND.to_string(),
         capabilities: vec![NodeCapability::Network, NodeCapability::Credential, NodeCapability::Process],
         title: "Browser Run".to_string(),
-        description: "Execute a Playwright script via a Browserless-compatible HTTP endpoint and return the result.".to_string(),
+        description: "Runs a Playwright script in a headless browser reached through a `browser_*` credential (a Browserless-compatible \
+            endpoint the owner configured) — screenshots, PDF of a live page, scraping a page that needs JavaScript. The body after \
+            `--` is the script, an ESM `export default async ({ page }) => { … }`; put payload values into it with `{{ expr }}`. \
+            Whatever it returns replaces the payload as JSON. This is not for verifying your own pages during development — that \
+            is the agent's own browser (`zebflow-verify`)."
+            .to_string(),
         input_schema: json!({ "type": "object", "description": "Upstream payload available as context." }),
         output_schema: json!({ "type": "object", "description": "JSON result returned by the browser script." }),
         input_pins: vec![INPUT_PIN_IN.to_string()],
@@ -96,6 +101,11 @@ pub fn definition() -> NodeDefinition {
             LayoutItem::Field("code".to_string()),
         ],
         ai_tool: Default::default(),
+        examples: vec![
+            crate::pipeline::model::NodeExample::dsl("Title of a rendered page", r#"browser.run --credential browserless_main --timeout-ms 20000 -- "export default async ({ page }) => { await page.goto('{{ input.body.url }}'); return { title: await page.title() }; }""#)
+                .input(serde_json::json!({ "body": { "url": "https://example.com" } }))
+                .output(serde_json::json!({ "title": "Example Domain" })),
+        ],
         ..Default::default()
     }
 }

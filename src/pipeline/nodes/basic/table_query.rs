@@ -40,7 +40,12 @@ pub fn definition() -> NodeDefinition {
         kind: NODE_KIND.to_string(),
         capabilities: vec![NodeCapability::Network, NodeCapability::Filesystem, NodeCapability::Database, NodeCapability::Process],
         title: "Table Query".to_string(),
-        description: "Run SQL over multiple table sources using the selected table engine.".to_string(),
+        description: "Run SQL across files — CSV, JSON, NDJSON, Parquet objects in the project's file store — as if they were tables. \
+            Each `--from \"<path> as <alias>\"` binds one file; the SQL in the body queries the aliases; `--params` binds `$1, $2`. \
+            Answers `{ table: { engine, rows, columns, preview, data?, to?, url? } }` — rows are in `input.table.data` only with \
+            `--to-json`, otherwise they are written to `--to <path>` and only `preview` rows travel in the payload. For database \
+            tables use `sekejap.query` / `pg.query`; this node is for files and analytics over them."
+            .to_string(),
         input_pins: vec![INPUT_PIN_IN.to_string()],
         output_pins: vec![OUTPUT_PIN_OUT.to_string()],
         input_schema: json!({
@@ -234,6 +239,12 @@ pub fn definition() -> NodeDefinition {
             ] },
         ],
         ai_tool: Default::default(),
+        examples: vec![
+            crate::pipeline::model::NodeExample::dsl("Aggregate a CSV", r#"table.query --from "uploads/sales.csv as sales" --to-json -- "SELECT region, SUM(amount) AS total FROM sales GROUP BY region ORDER BY total DESC""#)
+                .output(serde_json::json!({ "table": { "engine": "geodatafusion", "rows": 2, "columns": ["region", "total"], "preview": [{ "region": "AU", "total": 1200 }], "data": [{ "region": "AU", "total": 1200 }, { "region": "NZ", "total": 300 }], "to": null, "url": null } })),
+            crate::pipeline::model::NodeExample::dsl("Join two files into Parquet", r#"table.query --from "datasets/orders.ndjson as o" --from "datasets/customers.csv as c" --to datasets/report.parquet --preview 5 -- "SELECT c.name, COUNT(*) AS orders FROM o JOIN c ON o.customer_id = c.id GROUP BY c.name""#)
+                .note("The full result is the file at `datasets/report.parquet`; the payload carries `table.preview` (5 rows) and `table.url`."),
+        ],
         ..Default::default()
     }
 }

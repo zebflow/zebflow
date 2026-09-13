@@ -22,7 +22,10 @@ worked.
    this skill and over the help.
 3. `docs_agent_read name="MEMORY.md"` — what earlier sessions did and left
    open. Write your goal there before you start.
-4. When the task names a domain you have not touched this session, read its
+4. `file_read rel_path="docs/structure.md"` — where things go in this
+   project. If it is missing and you are about to create files, read
+   `zebflow-engineering` first: it chooses the layout and writes that file.
+5. When the task names a domain you have not touched this session, read its
    skill (`skill_read name="zebflow-pipeline"`, `zebflow-rwe`, `zebflow-ui`,
    `zebflow-data`, `zebflow-auth`, `zebflow-files-editor`, `zebflow-hub`) and
    the help topic it points to. Skills say when and in what order; the help

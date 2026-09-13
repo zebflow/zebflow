@@ -20,7 +20,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use image::{DynamicImage, GenericImageView, ImageFormat, imageops::FilterType};
 use serde::{Deserialize, Serialize};
-use serde_json::json;
+use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
@@ -137,11 +137,11 @@ pub fn definition() -> NodeDefinition {
         capabilities: vec![NodeCapability::Filesystem],
         title: "Image Thumbnail".to_string(),
         description:
-            "Resize and compress an uploaded image to a small thumbnail. \
-             Reads the source path from `input.saved.path` (n.fs.save output) by default. \
-             Supports cover/contain/fill fit modes and jpg/png/webp output. \
-             Replaces the payload with { thumbnail: { path, url, width, height, format, size } }. \
-             Use $trigger or $nodes references for upstream data."
+            "Make a small image from a stored one. Reads the source path at `--source-key` (default `saved.path`, i.e. right after \
+             `fs.save`), resizes to `--width`×`--height` with `--fit cover|contain|fill`, writes `--format jpg|png|webp` into `--folder` \
+             (default `thumbnails/`; use `public/…` for a page to show it anonymously). Adds `thumbnail` (a FileRef: `ref`, `filename`, \
+             `width`, `height`, `format`, `size`) to the payload and keeps the rest; with `--delete-source` the original is removed \
+             and its key (`saved`) dropped. Store `thumbnail.ref` in the row."
             .to_string(),
         input_schema: json!({
             "type": "object",
@@ -328,6 +328,11 @@ pub fn definition() -> NodeDefinition {
             LayoutItem::Field("delete_source".to_string()),
             LayoutItem::Field("filename".to_string()),
         ],
+        examples: vec![
+            crate::pipeline::model::NodeExample::dsl("Avatar after an upload", "fs.thumbnail --width 320 --height 320 --fit cover --format webp --folder public/thumbs")
+                .input(serde_json::json!({ "body": { "caption": "Sunset" }, "saved": { "path": "uploads/3f9c….jpg", "size": 182331 } }))
+                .output(serde_json::json!({ "body": { "caption": "Sunset" }, "saved": { "path": "uploads/3f9c….jpg", "size": 182331 }, "thumbnail": { "__zf_type": "file_ref", "backend": "zebfs", "ref": "public/thumbs/9a1d….webp", "filename": "9a1d….webp", "mime": "image/webp", "width": 320, "height": 320, "format": "webp", "size": 8120 } })),
+        ],
         ..Default::default()
     }
 }
@@ -502,10 +507,20 @@ impl NodeHandler for Node {
             "format": format_label,
         });
 
-        // ── Replace payload with thumbnail result ──────────────────────────
-        let out_payload = json!({
-            "thumbnail": thumbnail
-        });
+        // Merge, do not replace: the form fields and `saved` are still needed by
+        // the INSERT that follows. With `--delete-source` the source's top-level
+        // key is dropped, because its path no longer points at anything.
+        let mut out = match &input.payload {
+            Value::Object(map) => map.clone(),
+            _ => serde_json::Map::new(),
+        };
+        if self.config.delete_source {
+            if let Some(top) = source_key.split('.').next() {
+                out.remove(top);
+            }
+        }
+        out.insert("thumbnail".to_string(), thumbnail);
+        let out_payload = Value::Object(out);
 
         Ok(NodeExecutionOutput {
             output_pins: vec![OUTPUT_PIN_OUT.to_string()],

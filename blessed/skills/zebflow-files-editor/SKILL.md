@@ -21,8 +21,10 @@ and **rich text is a JSON document, HTML is derived from it**. Facts:
    (`ref`, `filename`, `mime`, `kind`, `size`, `sha256`, `lifecycle: temporary`).
    It is discarded after the run unless a node keeps it.
 3. Keep it: `fs.save --field photo --folder public/uploads --allowed-kinds images --max-size 10`
-   → `{ saved: { path, url, original_name, content_type, size } }`.
-4. Derive what you need: `fs.thumbnail --width 320 --height 320 --fit cover --format webp --folder public/thumbs --source-key saved.path`.
+   adds `saved: { path, url, original_name, content_type, size }` to the
+   payload; `input.body.caption` from the same form is still there.
+4. Derive what you need: `fs.thumbnail --width 320 --height 320 --fit cover --format webp --folder public/thumbs --source-key saved.path`
+   adds `thumbnail` (a FileRef, `thumbnail.ref`) the same way.
 5. Store the **path** (`saved.path`) in your table, not a URL — URLs depend on
    owner, project and visibility.
 
@@ -31,7 +33,7 @@ and **rich text is a JSON document, HTML is derived from it**. Facts:
 | fs.save --field file --folder public/uploads --allowed-kinds images --max-size 10
 ```
 
-The response is `{ saved: { path, … } }`; the page builds the URL from a base
+The response carries `saved: { path, … }`; the page builds the URL from a base
 it already knows (`/files/{owner}/{project}/`) rather than the pipeline
 guessing it.
 

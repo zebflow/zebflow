@@ -118,8 +118,8 @@ is refused with the missing capability named.
 | Capability key | Tools |
 |---|---|
 | `project.read` | `start_here`, `help`, `help_search`, `skill_list`, `skill_read` |
-| `pipelines.read` | `pipeline_list`, `pipeline_get`, `pipeline_describe`, `pipeline_search`, `pipeline_get_invocations`, `list_ui_catalog` |
-| `pipelines.write` | `pipeline_register`, `pipeline_patch`, `pipeline_activate`, `pipeline_deactivate`, `git_command`, `install_ui_components`, `move_resource` |
+| `pipelines.read` | `pipeline_list`, `pipeline_get`, `pipeline_describe`, `pipeline_search`, `pipeline_get_invocations`, `list_ui_catalog`, `hub_search`, `hub_review` |
+| `pipelines.write` | `pipeline_register`, `pipeline_patch`, `pipeline_activate`, `pipeline_deactivate`, `git_command`, `install_ui_components`, `hub_add`, `move_resource` |
 | `pipelines.execute` | `pipeline_execute`, `pipeline_run` |
 | `templates.read` | `file_list`, `file_read`, `file_search`, `file_outline`, `file_deps` |
 | `templates.create` / `templates.write` | `file_create` / `file_write`, `file_edit`, `file_batch_edit` |

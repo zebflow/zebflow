@@ -149,6 +149,11 @@ pub fn definition() -> NodeDefinition {
             LayoutItem::Field("text".to_string()),
             LayoutItem::Field("html".to_string()),
         ],
+        examples: vec![
+            crate::pipeline::model::NodeExample::dsl("Confirmation after a form", r#"mail.send --credential smtp_main --to "{{ input.body.email }}" --subject "We got your message" --text "Thanks {{ input.body.name }}, we will reply within a day.""#)
+                .output(serde_json::json!({ "sent": true, "to": "a@x.io", "subject": "We got your message" }))
+                .note("Replaces the payload; keep what the redirect needs in `$nodes.<id>`. The credential is created by the owner in Studio → Credentials (kind smtp)."),
+        ],
         ..Default::default()
     }
 }

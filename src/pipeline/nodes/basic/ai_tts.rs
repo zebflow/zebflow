@@ -227,7 +227,11 @@ pub fn definition() -> NodeDefinition {
         kind: NODE_KIND.to_string(),
         capabilities: vec![NodeCapability::Filesystem, NodeCapability::Credential, NodeCapability::Process],
         title: "AI TTS".to_string(),
-        description: "Synthesize speech from text. First stable provider is local Piper. Model, config, and espeak data are resolved from the selected credential under Zebflow FS.".to_string(),
+        description: "Turns text into speech with a local Piper model named by a credential (the owner installs the voice files; the \
+            credential points at them). `--text \"{{ expr }}\"` is what to say; `--output-path audio/x.wav` writes the file, `--return file|blob|both` \
+            decides whether the payload carries a FileRef, the bytes, or both. Replaces the payload with `{ audio: { … FileRef … }, provider, format, mime_type }`; \
+            the page plays `input.audio` through its `/fs/…` url."
+            .to_string(),
         input_schema: json!({
             "type": "object",
             "description": "Current payload. Use --text-expr to choose what text to speak."
@@ -439,6 +443,10 @@ pub fn definition() -> NodeDefinition {
                 ],
             },
             LayoutItem::Field("text".to_string()),
+        ],
+        examples: vec![
+            crate::pipeline::model::NodeExample::dsl("Read a post aloud", r#"ai.tts --provider piper --credential piper_en --text "{{ input.rows[0].body }}" --output-path "audio/{{ $trigger.params.slug }}.wav" --return file"#)
+                .output(serde_json::json!({ "audio": { "__zf_type": "file_ref", "backend": "zebfs", "ref": "audio/hello.wav", "mime": "audio/wav" }, "provider": "piper", "format": "wav", "mime_type": "audio/wav" })),
         ],
         ..Default::default()
     }

@@ -528,7 +528,8 @@ impl PlatformOps {
                     .count();
                 out.push_str(&format!(
                     "\n## Skills\n\
-                     A skill is the procedure for one kind of task. Read `zebflow-basic` once, then only the \
+                     A skill is the procedure for one kind of task. Read `zebflow-basic` once, `zebflow-engineering` \
+                     before the first file you create, then only the \
                      two or three whose triggers match the task at hand (`skill_read name=\"…\"`) — a page and its \
                      route is `zebflow-pipeline` + `zebflow-rwe`; not the whole list. The blessed `zebflow-*` skills are the same text \
                      as github.com/zebflow/skills at {} — if your client already loaded them, skip those and \
@@ -1808,13 +1809,16 @@ impl PlatformOps {
 /// Single-letter type tag for a template file based on its path prefix.
 /// P=page, C=component, L=layout, S=script/behavior, F=other file.
 fn template_type_tag(rel_path: &str) -> &'static str {
-    if rel_path.starts_with("pages/") {
+    // A domain layout nests the kind folders (`modules/finance/pages/x.tsx`),
+    // so the kind is the nearest such segment, not the root prefix.
+    let in_kind = |kind: &str| rel_path.starts_with(&format!("{kind}/")) || rel_path.contains(&format!("/{kind}/"));
+    if in_kind("pages") {
         "P"
-    } else if rel_path.starts_with("components/") {
+    } else if in_kind("components") {
         "C"
-    } else if rel_path.starts_with("layout/") {
+    } else if in_kind("layout") {
         "L"
-    } else if rel_path.starts_with("scripts/") || rel_path.starts_with("behavior/") {
+    } else if in_kind("scripts") || in_kind("behavior") {
         "S"
     } else {
         "F"
@@ -2078,6 +2082,105 @@ impl PlatformOps {
                 .collect::<Vec<_>>()
                 .join("\n"),
         )
+    }
+}
+
+// ── Hub ───────────────────────────────────────────────────────────────────────
+
+impl PlatformOps {
+    /// The shelf, as an agent reads it: one line per package, filtered by a
+    /// word in the id, title, description or tags, and by kind. This is what
+    /// `hub_add` can install; remote repositories are the Studio's business.
+    pub fn hub_search(&self, query: Option<String>, kind: Option<String>) -> OpsResult {
+        let needle = query.unwrap_or_default().trim().to_lowercase();
+        let kind = kind.unwrap_or_default().trim().to_lowercase();
+        let packages = match self.platform.hub.installable_packages(&self.owner) {
+            Ok(items) => items,
+            Err(err) => return OpsResult::err(err.to_string()),
+        };
+        let rows: Vec<Value> = packages
+            .into_iter()
+            .filter(|(package, _)| kind.is_empty() || package.asset_kind == kind)
+            .filter(|(package, _)| {
+                needle.is_empty()
+                    || package.package_id.to_lowercase().contains(&needle)
+                    || package.title.to_lowercase().contains(&needle)
+                    || package.description.to_lowercase().contains(&needle)
+                    || package.tags.iter().any(|tag| tag.to_lowercase().contains(&needle))
+            })
+            .map(|(package, latest_version)| {
+                json!({
+                    "package_id": package.package_id,
+                    "asset_kind": package.asset_kind,
+                    "title": package.title,
+                    "description": package.description,
+                    "tags": package.tags,
+                    "latest_version": latest_version,
+                    "publisher": package.publisher_display_name,
+                })
+            })
+            .collect();
+        if rows.is_empty() {
+            return OpsResult::ok(
+                "No package matches. `hub_search` with no arguments lists everything this project can add.",
+            );
+        }
+        OpsResult::ok(serde_json::to_string_pretty(&rows).unwrap_or_default())
+    }
+
+    fn hub_version_or_latest(&self, package_id: &str, version: Option<String>) -> Result<String, String> {
+        if let Some(version) = version.map(|v| v.trim().to_string()).filter(|v| !v.is_empty()) {
+            return Ok(version);
+        }
+        match self.platform.hub.latest_live_asset_version(package_id) {
+            Ok(Some(version)) => Ok(version),
+            Ok(None) => Err(format!(
+                "`{package_id}` has no installable release on this shelf; `hub_search` lists what does"
+            )),
+            Err(err) => Err(err.to_string()),
+        }
+    }
+
+    /// What an add would do, before it does it: files added and overwritten,
+    /// pipelines registered, nodes, credentials, network and public endpoints.
+    pub fn hub_review(&self, package_id: String, version: Option<String>, target_folder: Option<String>) -> OpsResult {
+        let version = match self.hub_version_or_latest(&package_id, version) {
+            Ok(version) => version,
+            Err(message) => return OpsResult::err(message),
+        };
+        let target_folder = target_folder.unwrap_or_default().trim().to_string();
+        match self.platform.hub.review_asset_install(
+            &self.owner,
+            &self.project,
+            &package_id,
+            &version,
+            &target_folder,
+        ) {
+            Ok(review) => OpsResult::ok(serde_json::to_string_pretty(&review).unwrap_or_default()),
+            Err(err) => OpsResult::err(err.to_string()),
+        }
+    }
+
+    /// Add a shelf package to this project — the same door as the Studio's
+    /// Add button. Where it lands depends on the kind: a skill at
+    /// `skills/<name>/`, a library under `shared/`, a bundle under
+    /// `target_folder`. The result says what was written and registered.
+    pub fn hub_add(&self, package_id: String, version: Option<String>, target_folder: Option<String>) -> OpsResult {
+        let version = match self.hub_version_or_latest(&package_id, version) {
+            Ok(version) => version,
+            Err(message) => return OpsResult::err(message),
+        };
+        let target_folder = target_folder.unwrap_or_default().trim().to_string();
+        match self.platform.hub.install_asset(
+            &self.owner,
+            &self.project,
+            &package_id,
+            &version,
+            &target_folder,
+        ) {
+            Ok(result) => OpsResult::ok(serde_json::to_string_pretty(&result).unwrap_or_default()),
+            Err(err) => OpsResult::err(err.to_string()),
+        }
     }
 }
 

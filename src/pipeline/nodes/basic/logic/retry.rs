@@ -26,7 +26,10 @@ pub fn definition() -> NodeDefinition {
     NodeDefinition {
         kind: NODE_KIND.to_string(),
         title: "Retry".to_string(),
-        description: "Retries a failing upstream node input until the attempt budget is exhausted."
+        description: "Retry a failed node. Wire it from the failing node's `:error` pin (`[b]:error -> [r]`); it receives the failure \
+             envelope and fires `retry` with the original input (wire `[r]:retry -> [b]` to run it again) until `--max-attempts` \
+             is spent, then fires `failed` with the last error. `--delay-ms` waits between attempts. Only nodes with an `error` \
+             pin, or any node in graph mode with an `:error` edge, can feed it; a retry loop without a `failed` edge swallows the error."
             .to_string(),
         input_schema: serde_json::json!({ "type": "object" }),
         output_schema: serde_json::json!({ "type": "object" }),
@@ -79,6 +82,10 @@ pub fn definition() -> NodeDefinition {
             ],
         }],
         ai_tool: Default::default(),
+        examples: vec![
+            crate::pipeline::model::NodeExample::dsl("Three attempts at a flaky API", "logic.retry --max-attempts 3 --delay-ms 500")
+                .note("Graph: `[b] http.request …`, `[b]:error -> [r]`, `[r]:retry -> [b]`, `[r]:failed -> [e] web.response --status 502`."),
+        ],
         ..Default::default()
     }
 }

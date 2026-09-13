@@ -21,7 +21,7 @@ use crate::pipeline::model::NodeCapability;
 use crate::pipeline::nodes::basic::file_ref::{is_file_ref, read_file_ref_bytes};
 use crate::pipeline::{
     NodeDefinition, PipelineError,
-    model::{DslFlag, DslFlagKind, LayoutItem, NodeFieldDef, NodeFieldType, SelectOptionDef},
+    model::{DslFlag, DslFlagKind, LayoutItem, NodeExample, NodeFieldDef, NodeFieldType, SelectOptionDef},
     nodes::{NodeExecutionInput, NodeExecutionOutput, NodeHandler},
 };
 use crate::platform::services::PlatformService;
@@ -100,10 +100,12 @@ pub struct Config {
 }
 
 pub fn list_definition() -> NodeDefinition {
-    object_definition(
+    let mut def = object_definition(
         LIST_NODE_KIND,
         "FS List",
-        "List immediate children under a Zebflow FS prefix. Output: `{ fs: { operation, path, count, entries } }`.",
+        "List the immediate children of a folder in the project's file store (the same store `fs.save` writes to and `/fs/{owner}/{project}/…` serves). \
+         Needs `--path` (empty = project root). Replaces the payload with `{ fs: { operation, path, count, entries: [{ path, kind, size, modified, url }] } }` — \
+         the next node reads `input.fs.entries`, not `input.entries`. One level only; it does not recurse.",
         vec![
             scalar_flag(
                 "--path",
@@ -128,25 +130,41 @@ pub fn list_definition() -> NodeDefinition {
             LayoutItem::Field("path".to_string()),
             LayoutItem::Field("prefix".to_string()),
         ],
-    )
+    );
+    def.examples = vec![example(
+        "List a folder",
+        "fs.list --path uploads",
+        json!({ "fs": { "operation": "list", "path": "uploads", "count": 1, "entries": [{ "path": "uploads/a1.jpg", "kind": "object", "size": 1723, "modified": "2026-09-13T04:00:00Z", "url": "/fs/acme/shop/uploads/a1.jpg" }] } }),
+    )];
+    def
 }
 
 pub fn head_definition() -> NodeDefinition {
-    object_definition(
+    let mut def = object_definition(
         HEAD_NODE_KIND,
         "FS Head",
-        "Read metadata for one Zebflow FS object or prefix without reading content. Output: `{ fs: { object } }`.",
+        "Read one file's metadata (size, kind, modified, url, content_type) without reading its bytes. Needs `--path`. \
+         Replaces the payload with `{ fs: { operation, path, object } }`. Use it to check that a file exists before `fs.get`; \
+         a missing path fails the node, it does not return null.",
         vec![scalar_flag("--path", "path", "Object or prefix path.")],
         vec![text_field("path", "Path", "Object or prefix path.")],
         vec![LayoutItem::Field("path".to_string())],
-    )
+    );
+    def.examples = vec![example(
+        "Stat a file",
+        "fs.head --path uploads/a1.jpg",
+        json!({ "fs": { "operation": "head", "path": "uploads/a1.jpg", "object": { "path": "uploads/a1.jpg", "url": "/fs/acme/shop/uploads/a1.jpg", "size": 1723, "modified": "2026-09-13T04:00:00Z", "kind": "object", "content_type": "image/jpeg" } } }),
+    )];
+    def
 }
 
 pub fn get_definition() -> NodeDefinition {
     let mut def = object_definition(
         GET_NODE_KIND,
         "FS Get",
-        "Read a Zebflow FS object. Default output is UTF-8 text; use `--encoding base64` for binary objects.",
+        "Read one file's content from the project's file store. Needs `--path`; `--encoding text` (default) puts UTF-8 in `object.content`, \
+         `--encoding base64` puts bytes in `object.base64`. Replaces the payload with `{ fs: { operation, path, object: { content | base64, size, … } } }` — \
+         the text is `input.fs.object.content`. A binary file read as text fails with FW_NODE_FS_GET_UTF8; use base64.",
         vec![
             scalar_flag("--path", "path", "Object path."),
             scalar_flag("--encoding", "encoding", "text or base64. Default: text."),
@@ -197,14 +215,21 @@ pub fn get_definition() -> NodeDefinition {
             }
         }
     });
+    def.examples = vec![example(
+        "Read a text file",
+        "fs.get --path docs/notes.md",
+        json!({ "fs": { "operation": "get", "path": "docs/notes.md", "object": { "path": "docs/notes.md", "content": "# Notes\n…", "base64": null, "size": 42, "kind": "object" } } }),
+    )];
     def
 }
 
 pub fn put_definition() -> NodeDefinition {
-    object_definition(
+    let mut def = object_definition(
         PUT_NODE_KIND,
         "FS Put",
-        "Write one Zebflow FS object from literal text, base64, FileRef, or a payload dot-path. Output: `{ fs: { object } }`.",
+        "Write one file into the project's file store. Needs `--path` and one source: `--text` (literal or {{ expr }}), `--base64`, \
+         or `--from-key <dot.path>` (a string, a FileRef, or JSON in the payload). Replaces the payload with `{ fs: { operation, path, object } }`. \
+         For a browser upload use `fs.save`, not this; `fs.put` is for content the pipeline already has.",
         vec![
             scalar_flag("--path", "path", "Destination object path."),
             scalar_flag(
@@ -247,14 +272,22 @@ pub fn put_definition() -> NodeDefinition {
             LayoutItem::Field("text".to_string()),
             LayoutItem::Field("base64".to_string()),
         ],
-    )
+    );
+    def.examples = vec![example(
+        "Write a generated file",
+        "fs.put --path exports/report.json --from-key report",
+        json!({ "fs": { "operation": "put", "path": "exports/report.json", "object": { "path": "exports/report.json", "url": "/fs/acme/shop/exports/report.json", "size": 812, "kind": "object", "content_type": "application/json" } } }),
+    )];
+    def
 }
 
 pub fn delete_definition() -> NodeDefinition {
-    object_definition(
+    let mut def = object_definition(
         DELETE_NODE_KIND,
         "FS Delete",
-        "Delete one Zebflow FS object or prefix tree. Delete is idempotent when the path is absent.",
+        "Delete one file, or a whole folder tree, from the project's file store. Needs `--path`. Replaces the payload with \
+         `{ fs: { operation: \"delete\", path, deleted: true } }`; deleting a path that is already gone succeeds. \
+         There is no confirmation and no trash — a folder path removes everything under it.",
         vec![scalar_flag(
             "--path",
             "path",
@@ -266,30 +299,68 @@ pub fn delete_definition() -> NodeDefinition {
             "Object or prefix path to delete.",
         )],
         vec![LayoutItem::Field("path".to_string())],
-    )
+    );
+    def.examples = vec![example(
+        "Delete an upload",
+        "fs.delete --path \"{{ input.body.path }}\"",
+        json!({ "fs": { "operation": "delete", "path": "uploads/a1.jpg", "deleted": true } }),
+    )];
+    def
 }
 
 pub fn copy_definition() -> NodeDefinition {
-    copy_like_definition(COPY_NODE_KIND, "FS Copy", "Copy one Zebflow FS object.")
+    let mut def = copy_like_definition(
+        COPY_NODE_KIND,
+        "FS Copy",
+        "Copy one file inside the project's file store. Needs `--from` and `--to` (full object paths, not folders). \
+         Replaces the payload with `{ fs: { operation: \"copy\", path: <to>, object } }`. An existing `--to` is overwritten; \
+         to publish a private upload, copy it under `public/`.",
+    );
+    def.examples = vec![example(
+        "Publish a private upload",
+        "fs.copy --from \"{{ input.saved.ref }}\" --to \"public/images/{{ input.saved.filename }}\"",
+        json!({ "fs": { "operation": "copy", "path": "public/images/a1.jpg", "object": { "path": "public/images/a1.jpg", "url": "/fs/acme/shop/public/images/a1.jpg", "size": 1723, "kind": "object" } } }),
+    )];
+    def
 }
 
 pub fn move_definition() -> NodeDefinition {
-    copy_like_definition(
+    let mut def = copy_like_definition(
         MOVE_NODE_KIND,
         "FS Move",
-        "Move one Zebflow FS object by copying it then deleting the source.",
-    )
+        "Move one file inside the project's file store: copy to `--to`, then delete `--from`. Both are full object paths. \
+         Replaces the payload with `{ fs: { operation: \"move\", path: <to>, object } }`. Any FileRef still pointing at `--from` \
+         is now dangling — update the row that stored it.",
+    );
+    def.examples = vec![example(
+        "Archive a processed file",
+        "fs.move --from \"{{ input.fs.path }}\" --to \"archive/{{ input.fs.path }}\"",
+        json!({ "fs": { "operation": "move", "path": "archive/inbox/a1.csv", "object": { "path": "archive/inbox/a1.csv", "size": 9021, "kind": "object" } } }),
+    )];
+    def
 }
 
 pub fn mkdir_definition() -> NodeDefinition {
-    object_definition(
+    let mut def = object_definition(
         MKDIR_NODE_KIND,
         "FS Mkdir",
-        "Create a Zebflow FS prefix directory. Output: `{ fs: { object } }`.",
+        "Create a folder in the project's file store. Needs `--path`. Replaces the payload with `{ fs: { operation: \"mkdir\", path, object } }`. \
+         Rarely needed: `fs.put`, `fs.save` and `fs.copy` create the folders they write into; use this only for a folder that \
+         must exist before anything is in it (a listing page, an upload target).",
         vec![scalar_flag("--path", "path", "Prefix path to create.")],
         vec![text_field("path", "Path", "Prefix path to create.")],
         vec![LayoutItem::Field("path".to_string())],
-    )
+    );
+    def.examples = vec![example(
+        "Create an upload folder",
+        "fs.mkdir --path uploads/2026",
+        json!({ "fs": { "operation": "mkdir", "path": "uploads/2026", "object": { "path": "uploads/2026", "kind": "prefix" } } }),
+    )];
+    def
+}
+
+fn example(title: &str, dsl: &str, output: Value) -> NodeExample {
+    NodeExample::dsl(title, dsl).output(output)
 }
 
 fn copy_like_definition(kind: &str, title: &str, description: &str) -> NodeDefinition {

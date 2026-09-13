@@ -16,7 +16,7 @@ dependencies. Facts: `help(topic="guide/hub")`, `guide/hub/how-it-works`,
 | Kind | Add means | Tracked after? |
 |---|---|---|
 | `pipeline_bundle`, `template_bundle`, `folder_bundle`, `project_bundle` | files copied into the project (source under `hub/<package>/` unless the review says otherwise; assets under `static/`, docs under `docs/`) | no — it is your source now |
-| `skill` | `skills/<name>/` copied into the project; shadows a blessed skill of the same name | no — edit it freely |
+| `skill` | `skills/<name>/` copied into the project and listed by `skill_list` from then on; the optional skills (`procedural-assets`, the brand family) arrive this way, and a project skill shadows a core one of the same name | no — edit it freely |
 | `node_bundle` | node kinds `n.x.<bundle>.<node>` become available; materialized under `data/hub/nodes/` | yes — `zeb.lock` |
 | `rwe_library` | a `zeb/*` runtime library the project may load | yes — `zeb.lock` and `zebflow.yaml` |
 
@@ -25,8 +25,9 @@ from the platform into `shared/ui/`.
 
 ## Before you add anything
 
-1. **Review first, add second.** `POST /api/projects/{o}/{p}/hub/assets/{package}/{version}/review`
-   (or the Review button) lists every file the package writes, the node
+1. **Review first, add second.** `hub_search` (optionally `query=`, `kind=skill`)
+   gives the `package_id`; `hub_review package_id=…` (the Studio's Review
+   button, or `POST …/hub/assets/{package}/{version}/review`) lists every file the package writes, the node
    kinds it needs, credentials it expects, outbound URLs, database effects,
    schedules, public endpoints, large files, seed data, and a risk level.
    Read the whole list. A package that carries a credential, a schedule you
@@ -44,7 +45,7 @@ from the platform into `shared/ui/`.
    trustworthy as that hub. A remote hub's packages are reviewed the same
    way; the review is the trust boundary, not the source.
 
-After adding: `pipeline_list status=all` (what arrived, all `draft`),
+Then `hub_add package_id=…` (the Add button). After adding: `pipeline_list status=all` (what arrived, all `draft`),
 `file_list glob="hub/**"`, then read the package's README before activating.
 A cloned pipeline that references a credential id from the publisher's
 project will fail here until `credential_list` shows an equivalent and the

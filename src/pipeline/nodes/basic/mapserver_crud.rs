@@ -458,6 +458,11 @@ pub fn publish_definition() -> NodeDefinition {
             },
         ],
         ai_tool: Default::default(),
+        examples: vec![
+            crate::pipeline::model::NodeExample::dsl("Publish a GeoParquet layer", "ms.publish --name suburbs --path suburbs --source-path datasets/suburbs.parquet --source-kind geoparquet --min-zoom 8 --max-zoom 14")
+                .output(serde_json::json!({ "ms": { "operation": "publish", "layer": { "name": "suburbs", "path": "suburbs", "url": "/ms/acme/shop/suburbs", "source_kind": "geoparquet" } } }))
+                .note("A page loads it with `zeb/deckgl` from `/ms/{owner}/{project}/suburbs` (help topic `guide/mapserver`)."),
+        ],
         ..Default::default()
     }
 }
@@ -467,7 +472,10 @@ pub fn unpublish_definition() -> NodeDefinition {
         kind: UNPUBLISH_KIND.to_string(),
         capabilities: vec![NodeCapability::Filesystem],
         title: "MS Unpublish".to_string(),
-        description: "Remove a map layer from the project layer registry.".to_string(),
+        description: "Take a published map layer offline: removes `--name` from the project's layer registry so `/ms/{owner}/{project}/{path}` \
+            stops answering. The source file in the file store is left where it is. Replaces the payload with \
+            `{ ms: { operation: \"unpublish\", removed, layer_id } }`; an unknown name answers `removed: false` rather than failing."
+            .to_string(),
         input_schema: json!({"type": "object"}),
         output_schema: json!({
             "type": "object",
@@ -499,6 +507,10 @@ pub fn unpublish_definition() -> NodeDefinition {
         )],
         layout: vec![LayoutItem::Field("name".to_string())],
         ai_tool: Default::default(),
+        examples: vec![
+            crate::pipeline::model::NodeExample::dsl("Retire a layer", "ms.unpublish --name suburbs")
+                .output(serde_json::json!({ "ms": { "operation": "unpublish", "removed": true, "layer_id": "suburbs" } })),
+        ],
         ..Default::default()
     }
 }
@@ -508,7 +520,10 @@ pub fn get_definition() -> NodeDefinition {
         kind: GET_KIND.to_string(),
         capabilities: vec![NodeCapability::Filesystem],
         title: "MS Get".to_string(),
-        description: "Get metadata for a published map layer.".to_string(),
+        description: "Read one published map layer's registry entry by `--name`: its path, url, source, zoom range, style and cache \
+            settings. Replaces the payload with `{ ms: { operation: \"get\", layer } }`. Use it in an admin page's pipeline to show \
+            what is live, or before `ms.publish` to decide between create and update; a name that is not published fails the node."
+            .to_string(),
         input_schema: json!({"type": "object"}),
         output_schema: json!({
             "type": "object",
@@ -539,6 +554,10 @@ pub fn get_definition() -> NodeDefinition {
         )],
         layout: vec![LayoutItem::Field("name".to_string())],
         ai_tool: Default::default(),
+        examples: vec![
+            crate::pipeline::model::NodeExample::dsl("Show a layer's settings", "ms.get --name suburbs")
+                .output(serde_json::json!({ "ms": { "operation": "get", "layer": { "name": "suburbs", "path": "suburbs", "url": "/ms/acme/shop/suburbs", "source_kind": "geoparquet", "min_zoom": 8, "max_zoom": 14 } } })),
+        ],
         ..Default::default()
     }
 }
@@ -548,7 +567,10 @@ pub fn list_definition() -> NodeDefinition {
         kind: LIST_KIND.to_string(),
         capabilities: vec![NodeCapability::Filesystem],
         title: "MS List".to_string(),
-        description: "List all published map layers in the project registry.".to_string(),
+        description: "List every map layer this project has published, with the same registry fields `ms.get` returns for one. \
+            No flags. Replaces the payload with `{ ms: { operation: \"list\", count, layers } }` — a page reads `input.ms.layers`. \
+            This is the registry, not the file store: a GeoParquet file nobody published is not in it."
+            .to_string(),
         input_schema: json!({"type": "object"}),
         output_schema: json!({
             "type": "object",
@@ -572,6 +594,10 @@ pub fn list_definition() -> NodeDefinition {
         fields: vec![],
         layout: vec![],
         ai_tool: Default::default(),
+        examples: vec![
+            crate::pipeline::model::NodeExample::dsl("Layers for a map picker", "ms.list")
+                .output(serde_json::json!({ "ms": { "operation": "list", "count": 1, "layers": [{ "name": "suburbs", "path": "suburbs", "url": "/ms/acme/shop/suburbs" }] } })),
+        ],
         ..Default::default()
     }
 }

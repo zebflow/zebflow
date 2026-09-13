@@ -1456,6 +1456,39 @@ impl HubService {
         Ok(items)
     }
 
+    /// What a project of `owner` can add from this instance's shelf: every
+    /// package that is visible to the owner and still has a live release,
+    /// paired with that release's version. Private packages are only offered
+    /// to their own publisher; a package whose releases were all retracted is
+    /// left out — a shelf offering it would be offering nothing.
+    pub fn installable_packages(
+        &self,
+        owner: &str,
+    ) -> Result<Vec<(HubAssetPackage, String)>, PlatformError> {
+        let packages = match self.list_asset_packages() {
+            Ok(items) => items,
+            Err(err) if err.code == "HUB_SERVICE_DISABLED" => Vec::new(),
+            Err(err) => return Err(err),
+        };
+        let mut out = Vec::new();
+        for package in packages {
+            if package.visibility == "private" && package.publisher_owner != owner {
+                continue;
+            }
+            let latest = self
+                .list_asset_versions(&package.package_id)?
+                .into_iter()
+                .find(|item| item.retracted_at.is_none())
+                .map(|item| item.version)
+                .unwrap_or_default();
+            if latest.is_empty() {
+                continue;
+            }
+            out.push((package, latest));
+        }
+        Ok(out)
+    }
+
     /// The blessed shelf's releases of one package.
     pub fn list_asset_versions(
         &self,

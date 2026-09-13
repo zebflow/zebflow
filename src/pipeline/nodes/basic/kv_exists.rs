@@ -93,6 +93,11 @@ pub fn definition() -> NodeDefinition {
         ],
         layout: vec![],
         ai_tool: Default::default(),
+        examples: vec![
+            crate::pipeline::model::NodeExample::dsl("Cache hit before a slow call", r#"kv.exists --key "rates:{{ $trigger.params.currency }}" --out-key cached"#)
+                .output(serde_json::json!({ "cached": true }))
+                .note("Then `logic.if --expr \"input.cached\"` → `kv.get` on true, `http.request` + `kv.set` on false."),
+        ],
         ..Default::default()
     }
 }

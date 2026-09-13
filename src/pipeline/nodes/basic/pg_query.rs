@@ -26,7 +26,11 @@ pub fn definition() -> NodeDefinition {
         kind: NODE_KIND.to_string(),
         capabilities: vec![NodeCapability::Network, NodeCapability::Database, NodeCapability::Credential, NodeCapability::Process],
         title: "Postgres Query".to_string(),
-        description: "Execute SQL using project credential and return rows/affected count."
+        description: "Run SQL on a PostgreSQL database named by `--credential <credential id>` (from `credential_list`, kind postgres — an id, \
+             not a connection slug). SQL goes in the body after `--`, values in `--params` as `$1, $2, …`. A SELECT/WITH answers \
+             `{ rows: [ { column: value } ] }` (`input.rows[0].id`); any other statement answers `{ affected_rows }` — add `RETURNING` \
+             to get rows from an INSERT. Never build SQL text from input; bind it. Inside a DSL body write `concat()` rather than `||`, \
+             the parser reads `|` as a node separator."
             .to_string(),
         input_schema: serde_json::json!({
             "type":"object",
@@ -95,6 +99,12 @@ pub fn definition() -> NodeDefinition {
                 "required": ["query"]
             }),
         },
+        examples: vec![
+            crate::pipeline::model::NodeExample::dsl("Read with a bound value", r#"pg.query --credential pg_main --params "{{ [$trigger.auth.sub] }}" -- "SELECT id, email FROM accounts WHERE id = $1""#)
+                .output(serde_json::json!({ "rows": [{ "id": 7, "email": "a@x.io" }] })),
+            crate::pipeline::model::NodeExample::dsl("Insert and get the id back", r#"pg.query --credential pg_main --params "{{ [input.body.email] }}" -- "INSERT INTO accounts (email) VALUES ($1) RETURNING id""#)
+                .output(serde_json::json!({ "rows": [{ "id": 8 }] })),
+        ],
         ..Default::default()
     }
 }

@@ -174,6 +174,17 @@ pub fn definition() -> NodeDefinition {
             LayoutItem::Field("auth_required_role".to_string()),
         ],
         ai_tool: Default::default(),
+        examples: vec![
+            crate::pipeline::model::NodeExample::dsl("A public page", "trigger.webhook --path /blog --method GET")
+                .output(serde_json::json!({ "body": null, "params": {}, "query": { "page": "2" }, "path": "/blog", "method": "GET" }))
+                .note("Served at `/wh/{owner}/{project}/blog`. Then a query, then `web.response --template pages/blog.tsx`."),
+            crate::pipeline::model::NodeExample::dsl("A form POST", "trigger.webhook --path /contact --method POST")
+                .output(serde_json::json!({ "body": { "email": "a@x.io", "message": "Hi" }, "params": {}, "query": {}, "path": "/contact", "method": "POST" }))
+                .note("`<input name=\"email\">` arrives as `input.body.email`; a file field is `input.files.<name>`."),
+            crate::pipeline::model::NodeExample::dsl("A protected admin route", "trigger.webhook --path /admin/posts/:id --method GET --auth-type jwt --auth-credential jwt_main --auth-required-role editor")
+                .output(serde_json::json!({ "body": null, "params": { "id": "42" }, "query": {}, "path": "/admin/posts/42", "method": "GET", "auth": { "sub": "u_1", "roles": ["editor"] } }))
+                .note("Without a valid token the request is refused before any node runs, and the credential's `auth_redirect` decides where a browser goes."),
+        ],
         ..Default::default()
     }
 }

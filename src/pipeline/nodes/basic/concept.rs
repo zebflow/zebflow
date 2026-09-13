@@ -84,6 +84,10 @@ pub fn definition() -> NodeDefinition {
         }],
         layout: vec![LayoutItem::Field("text".to_string())],
         ai_tool: Default::default(),
+        examples: vec![
+            crate::pipeline::model::NodeExample::dsl("A step to build later", r#"concept --text "Enrich the lead with company data from Clearbit, then score it 1–5.""#)
+                .note("Passes the payload through unchanged so the pipeline runs end to end today; replace it with real nodes when ready."),
+        ],
         ..Default::default()
     }
 }

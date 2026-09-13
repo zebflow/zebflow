@@ -45,10 +45,10 @@ pub fn definition() -> NodeDefinition {
         kind: NODE_KIND.to_string(),
         capabilities: vec![NodeCapability::Database],
         title: "KV Subscribe".to_string(),
-        description: "Listen for messages published on a named KV channel. \
-            Fires whenever n.kv.publish sends a message on the same channel. \
-            Output payload: { trigger: \"kv.subscribe\", channel, node_id, message }. \
-            Access the published data via input.message in downstream nodes."
+        description: "Runs every time `kv.publish` sends a message on `--channel` — the project's in-process pub/sub, for work that \
+            should happen after a request answered (send the mail, resize the image, recompute a total) without making the request \
+            wait. The payload is `{ trigger: \"kv.subscribe\", channel, node_id, message }` — what was published is `input.message`, \
+            not `input`. Messages are not stored: a subscriber that is not active when the publish happens never sees it."
             .to_string(),
         input_schema: json!({ "type": "object" }),
         output_schema: json!({
@@ -86,6 +86,11 @@ pub fn definition() -> NodeDefinition {
         }],
         layout: vec![],
         ai_tool: Default::default(),
+        examples: vec![
+            crate::pipeline::model::NodeExample::dsl("Do the slow part after the request", "trigger.kv.subscribe --channel order.placed")
+                .output(serde_json::json!({ "trigger": "kv.subscribe", "channel": "order.placed", "node_id": "n0", "message": { "order_id": "o_91", "email": "a@x.io" } }))
+                .note("The publisher: `| kv.publish --channel order.placed --payload \"{{ { order_id: input.rows[0]._key, email: input.body.email } }}\"`."),
+        ],
         ..Default::default()
     }
 }

@@ -187,6 +187,16 @@ pub fn definition() -> NodeDefinition {
             LayoutItem::Field("length".to_string()),
         ],
         ai_tool: Default::default(),
+        examples: vec![
+            crate::pipeline::model::NodeExample::dsl("Hash a password at registration", r#"crypto --op argon2_hash --input "{{ input.body.password }}""#)
+                .input(serde_json::json!({ "body": { "email": "a@x.io", "password": "correct horse" } }))
+                .output(serde_json::json!({ "body": { "email": "a@x.io", "password": "correct horse" }, "result": "$argon2id$v=19$m=19456,t=2,p=1$…" }))
+                .note("`result` is added; `input.body.email` is still there for the INSERT."),
+            crate::pipeline::model::NodeExample::dsl("Check a password at login", r#"crypto --op argon2_verify --input "{{ $nodes.n0.body.password }}" --hash "{{ input.rows[0].password_hash }}""#)
+                .note("Fires `true` or `false`; the payload (the user row) passes through unchanged. Wire `false` to a 401."),
+            crate::pipeline::model::NodeExample::dsl("A random token", "crypto --op random_hex --length 16")
+                .output(serde_json::json!({ "result": "9f2c…" })),
+        ],
         ..Default::default()
     }
 }

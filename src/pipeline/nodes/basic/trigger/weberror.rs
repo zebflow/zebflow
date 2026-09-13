@@ -83,11 +83,11 @@ pub fn definition() -> NodeDefinition {
     NodeDefinition {
         kind: NODE_KIND.to_string(),
         title: "Web Error Trigger".to_string(),
-        description: "Triggers a pipeline when an HTTP error occurs. \
-            Use --code to scope to a specific error code (404, 401), \
-            a range (4xx, 5xx), or leave empty for a catch-all. \
-            The pipeline receives error_code, error_message, original_path, and method. \
-            Pair with n.web.response to serve custom HTML error pages."
+        description: "Runs when a request to this project ends in an HTTP error that no pipeline answered — a `/wh/…` path nobody \
+            registered (404), a refused auth (401/403), a failed node (500). `--code` picks which: `404`, `4xx`, `5xx`, or empty for \
+            all. The payload is `{ error_code, error_message, original_path, method }` — there is no `body`. End in \
+            `web.response --template pages/not-found.tsx --status 404` to serve a designed error page; without `--status` the page \
+            answers 200 and browsers and crawlers treat the error as a success. One pipeline per code range; the most specific wins."
             .to_string(),
         input_schema: json!({
             "type": "object",
@@ -148,6 +148,11 @@ pub fn definition() -> NodeDefinition {
         }],
         layout: vec![LayoutItem::Field("code".to_string())],
         ai_tool: Default::default(),
+        examples: vec![
+            crate::pipeline::model::NodeExample::dsl("A designed 404", "trigger.weberror --code 404")
+                .output(serde_json::json!({ "error_code": 404, "error_message": "no pipeline for GET /blog/old-post", "original_path": "/blog/old-post", "method": "GET" }))
+                .note("Then `| web.response --template pages/not-found.tsx --status 404`."),
+        ],
         ..Default::default()
     }
 }

@@ -246,6 +246,12 @@ pub fn definition() -> NodeDefinition {
             ],
         }],
         ai_tool: Default::default(),
+        examples: vec![
+            crate::pipeline::model::NodeExample::dsl("Text and page images from an uploaded PDF", "fs.pdf.convert --output-dir pdf/brief --dpi 110")
+                .input(serde_json::json!({ "saved": { "path": "uploads/brief.pdf" } }))
+                .output(serde_json::json!({ "pdf_convert": { "source_path": "uploads/brief.pdf", "output_dir": "pdf/brief", "manifest_path": "pdf/brief/manifest.json", "page_count": 4 } }))
+                .note("Each page's text is `pdf/brief/page-N/text.md`; read one back with `fs.get`."),
+        ],
         ..Default::default()
     }
 }

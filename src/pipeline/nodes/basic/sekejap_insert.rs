@@ -35,7 +35,11 @@ pub fn definition() -> NodeDefinition {
         kind: NODE_KIND.to_string(),
         capabilities: vec![NodeCapability::Database],
         title: "Sekejap Insert".to_string(),
-        description: "Bulk insert records and native edges into the project's embedded Sekejap store through the schema-driven typed write path. Vector fields are optimized automatically.".to_string(),
+        description: "Bulk-insert records (and optional graph edges) into a Sekejap collection. Reads an array at `--records-path` (default \
+            `records`), each `{ key, fields: { … } }`, writes them typed against the collection's declared schema into `--target`; \
+            vectors are indexed as they land. Answers `{ inserted_records, inserted_edges, … }` — the payload is replaced. For one row \
+            from a form use `sekejap.query … INSERT`; this node is for imports and seeds, up to `--max-records` (default 1000) per run."
+            .to_string(),
         input_schema: json!({
             "type": "object",
             "description": "Payload containing records and optional native edges. Each record must include a key and fields object.",
@@ -120,6 +124,11 @@ pub fn definition() -> NodeDefinition {
                 "required": ["target"]
             }),
         },
+        examples: vec![
+            crate::pipeline::model::NodeExample::dsl("Seed from a prepared array", r#"sekejap.insert --target products --records-path items"#)
+                .input(serde_json::json!({ "items": [{ "key": "sku-1", "fields": { "name": "Mug", "price": 12 } }] }))
+                .output(serde_json::json!({ "inserted_records": 1, "inserted_edges": 0 })),
+        ],
         ..Default::default()
     }
 }

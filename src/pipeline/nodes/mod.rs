@@ -591,6 +591,28 @@ pub fn format_node_definition_markdown(def: &NodeDefinition) -> String {
         }
         s.push_str("\n```\n\n");
     }
+    for example in &def.examples {
+        let title = if example.title.is_empty() { "Example" } else { example.title.as_str() };
+        s.push_str(&format!("**{title}:**\n"));
+        if !example.dsl.is_empty() {
+            s.push_str(&format!("```\n| {}\n```\n", example.dsl));
+        }
+        if !example.description.is_empty() {
+            s.push_str(example.description.trim());
+            s.push_str("\n");
+        }
+        if !example.input.is_null() || !example.output.is_null() {
+            s.push_str("```json\n");
+            if !example.input.is_null() {
+                s.push_str(&format!("// input\n{}\n", example.input));
+            }
+            if !example.output.is_null() {
+                s.push_str(&format!("// output\n{}\n", example.output));
+            }
+            s.push_str("```\n");
+        }
+        s.push_str("\n");
+    }
     s.push_str(&format!(
         "**MCP:** `help_nodes` with `kind=\"{}\"` for this section only.\n\n",
         def.kind

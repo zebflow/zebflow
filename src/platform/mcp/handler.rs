@@ -366,6 +366,28 @@ struct HelpSearchParams {
 }
 
 #[derive(serde::Deserialize, JsonSchema)]
+struct HubSearchParams {
+    /// A word to match in the package id, title, description or tags. Empty lists everything.
+    #[serde(default)]
+    query: Option<String>,
+    /// Restrict to one asset kind: skill, rwe_library, pipeline, template_pack, folder_bundle, project_bundle, node_bundle.
+    #[serde(default)]
+    kind: Option<String>,
+}
+
+#[derive(serde::Deserialize, JsonSchema)]
+struct HubPackageParams {
+    /// The package id from `hub_search`, e.g. `zebflow.skill-procedural-assets`.
+    package_id: String,
+    /// A release version from `hub_search`; omitted, the latest live release.
+    #[serde(default)]
+    version: Option<String>,
+    /// Where a bundle lands, relative to the source root. Ignored for skills and libraries, which have fixed homes.
+    #[serde(default)]
+    target_folder: Option<String>,
+}
+
+#[derive(serde::Deserialize, JsonSchema)]
 struct InstallUiComponentsParams {
     /// Component names to install, e.g. ["button", "card", "dialog"].
     names: Vec<String>,
@@ -1234,6 +1256,61 @@ impl ZebflowMcpHandler {
         let ops = PlatformOps::new(self.platform.clone(), &session.owner, &session.project);
         let result = ops.install_ui_components(params.names, params.overwrite);
         ok_or_err(result)
+    }
+
+    // ── Hub ───────────────────────────────────────────────────────────────────
+
+    #[tool(
+        description = "List what this project can add from the Hub shelf — optional skills, zeb/* libraries, \
+        pipeline and template bundles, node bundles. Filter with `query` (a word in the id, title, description \
+        or tags) and `kind` (skill, rwe_library, pipeline, template_pack, folder_bundle, project_bundle, node_bundle). \
+        Each row carries `package_id` and `latest_version`, which `hub_review` and `hub_add` take. \
+        The core zebflow-* skills are not here: every project already has them (`skill_list`)."
+    )]
+    async fn hub_search(
+        &self,
+        Parameters(params): Parameters<HubSearchParams>,
+        Extension(parts): Extension<http::request::Parts>,
+    ) -> Result<CallToolResult, McpError> {
+        let session = self.get_session_from_http_parts(&parts)?;
+        self.check_tool_capability(&session, "hub_search")?;
+        let ops = PlatformOps::new(self.platform.clone(), &session.owner, &session.project);
+        ok_or_err(ops.hub_search(params.query, params.kind))
+    }
+
+    #[tool(
+        description = "Review a Hub package before adding it: the files it would add or overwrite, pipelines it \
+        registers, nodes it uses, credentials it needs, outbound hosts, public endpoints, schedules, and any \
+        violation that makes it uninstallable. `version` defaults to the latest live release. Read the review, \
+        then `hub_add` — never the other way round."
+    )]
+    async fn hub_review(
+        &self,
+        Parameters(params): Parameters<HubPackageParams>,
+        Extension(parts): Extension<http::request::Parts>,
+    ) -> Result<CallToolResult, McpError> {
+        let session = self.get_session_from_http_parts(&parts)?;
+        self.check_tool_capability(&session, "hub_review")?;
+        let ops = PlatformOps::new(self.platform.clone(), &session.owner, &session.project);
+        ok_or_err(ops.hub_review(params.package_id, params.version, params.target_folder))
+    }
+
+    #[tool(
+        description = "Add a Hub package to this project (the Studio's Add button). A skill lands at \
+        `skills/<name>/` and appears in `skill_list`; a zeb/* library under `shared/`; a pipeline or template \
+        bundle under `target_folder` (default: the package's own folder). Pipelines arrive as drafts — \
+        `pipeline_activate` them. `version` defaults to the latest live release. Returns files written and \
+        pipelines registered; the dependency is recorded in zeb.lock."
+    )]
+    async fn hub_add(
+        &self,
+        Parameters(params): Parameters<HubPackageParams>,
+        Extension(parts): Extension<http::request::Parts>,
+    ) -> Result<CallToolResult, McpError> {
+        let session = self.get_session_from_http_parts(&parts)?;
+        self.check_tool_capability(&session, "hub_add")?;
+        let ops = PlatformOps::new(self.platform.clone(), &session.owner, &session.project);
+        ok_or_err(ops.hub_add(params.package_id, params.version, params.target_folder))
     }
 
     // ── Move Resource ─────────────────────────────────────────────────────────

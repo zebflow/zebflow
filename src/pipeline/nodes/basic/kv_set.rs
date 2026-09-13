@@ -69,7 +69,7 @@ pub fn definition() -> NodeDefinition {
             DslFlag {
                 flag: "--value".to_string(),
                 config_key: "value".to_string(),
-                description: "JSON pointer into payload to store. Empty = whole payload."
+                description: "What to store — a literal or {{ expr }} (e.g. \"{{ input.rows }}\"). Omit to store the whole payload."
                     .to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
@@ -127,6 +127,11 @@ pub fn definition() -> NodeDefinition {
         ],
         layout: vec![],
         ai_tool: Default::default(),
+        examples: vec![
+            crate::pipeline::model::NodeExample::dsl("Remember an OAuth state for ten minutes", r#"kv.set --key "oauth:state:{{ input.result }}" --value "{{ { started: new Date().toISOString() } }}" --ttl 600"#)
+                .note("Payload passes through unchanged; read it back with `kv.get --key … --out-key state`."),
+            crate::pipeline::model::NodeExample::dsl("Cache a query result across restarts", r#"kv.set --key "home:posts" --value "{{ input.rows }}" --ttl 300 --durable"#),
+        ],
         ..Default::default()
     }
 }

@@ -82,8 +82,10 @@ Every write follows the same four steps; skipping one is how a broken page
 gets reported as done.
 
 1. **Write.** `file_create kind=page name=posts parent_rel_path=pages` then
-   `file_write rel_path=pages/posts.tsx`. Components in `components/`,
-   scripts in `scripts/`. A save evicts every compiled page that inlined the
+   `file_write rel_path=pages/posts.tsx`. Where a file goes is the project's
+   layout (`docs/structure.md`, `zebflow-engineering`) — `pages/` and
+   `components/` at the root in a flat project, under `modules/<domain>/` in
+   a domain one. A save evicts every compiled page that inlined the
    file; if something still looks old, `POST /api/projects/{o}/{p}/rwe/cache/clear`.
 2. **Compile check.** The write itself reports a compiler refusal
    (`RWE_HOOK_NOT_IMPORTED`, `RWE_IMPORT_NOT_ALLOWED`, …); read it and fix

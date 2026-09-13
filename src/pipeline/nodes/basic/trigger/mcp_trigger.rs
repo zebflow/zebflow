@@ -59,10 +59,11 @@ pub fn definition() -> NodeDefinition {
     NodeDefinition {
         kind: NODE_KIND.to_string(),
         title: "MCP Tool Trigger".to_string(),
-        description: "Expose this pipeline as an MCP tool. When activated, the tool appears in \
-            tools/list. AI agents can call it, and the pipeline executes with the tool arguments \
-            as the input payload. Use --tool-name to set the tool identifier and --params to \
-            define the input schema (comma-separated name:type pairs, e.g. name:string,age:number)."
+        description: "Makes this pipeline a tool on the project's MCP endpoint: once active, `--tool-name` appears in `tools/list` and an \
+            agent calling it runs the pipeline with the tool arguments as the payload (`input.<param>`). `--params` declares the \
+            arguments as `name:type` pairs (`string`, `number`, `boolean`, `object`, `array`); `--tool-description` is what the agent \
+            reads to decide when to call it — write it as a trigger, not a label. The answer the agent receives is the last node's \
+            payload as JSON; do not end in a page."
             .to_string(),
         input_schema: json!({
             "type": "object",
@@ -162,6 +163,12 @@ pub fn definition() -> NodeDefinition {
             LayoutItem::Field("parameters".to_string()),
         ],
         ai_tool: Default::default(),
+        examples: vec![
+            crate::pipeline::model::NodeExample::dsl("A tool that looks up stock", r#"trigger.mcp --tool-name stock_lookup --tool-description "Current stock level for one SKU. Use before promising availability." --params sku:string"#)
+                .input(serde_json::json!({ "sku": "MUG-01" }))
+                .output(serde_json::json!({ "sku": "MUG-01" }))
+                .note("Then `| sekejap.query --params \"{{ [input.sku] }}\" -- \"SELECT sku, on_hand FROM stock WHERE sku = $1\"`."),
+        ],
         ..Default::default()
     }
 }

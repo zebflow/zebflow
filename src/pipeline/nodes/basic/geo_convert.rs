@@ -222,6 +222,11 @@ pub fn definition() -> NodeDefinition {
             },
         ],
         ai_tool: Default::default(),
+        examples: vec![
+            crate::pipeline::model::NodeExample::dsl("Shapefile to GeoParquet in WGS84", "geo.convert --input uploads/suburbs.zip --output datasets/suburbs.parquet --to-crs EPSG:4326 --hilbert")
+                .output(serde_json::json!({ "converted": { "input": "uploads/suburbs.zip", "output": "datasets/suburbs.parquet", "features": 312, "output_bytes": 918233, "elapsed_secs": 0.8 } }))
+                .note("Then `ms.publish --name suburbs --path suburbs --source-path datasets/suburbs.parquet --source-kind geoparquet`."),
+        ],
         ..Default::default()
     }
 }
