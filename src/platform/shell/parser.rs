@@ -1071,6 +1071,20 @@ fn build_graph_mode(
     Ok(graph)
 }
 
+/// The config key a node's `-- body` is stored under. One table, used by
+/// register, patch and the DSL renderer alike: `patch … -- "SELECT …"` on a
+/// `sekejap.query` once wrote `body` while the node read `query`, and the old
+/// SQL silently won.
+pub fn body_config_key(kind: &str) -> &'static str {
+    match kind {
+        "n.pg.query" | "n.sekejap.query" | "n.sqlite.query" | "n.sqlite.mutate" | "n.table.query" => "query",
+        "n.script" => "source",
+        "n.logic.match" | "n.logic.if" => "expression",
+        "n.browser.run" => "code",
+        _ => "body",
+    }
+}
+
 fn graph_mode_statements(body: &str) -> Vec<String> {
     let joined = body.replace("\\\r\n", " ").replace("\\\n", " ");
     let mut statements = Vec::new();
@@ -1631,19 +1645,8 @@ fn parse_graph_node(
         .unwrap_or(&[]);
     let (mut config, body_val) = parse_node_config(&tokens[1..], rest, dsl_flags)?;
     if let Some(bval) = body_val {
-        let body_key = match full_kind {
-            "n.pg.query" => "query",
-            "n.sekejap.query" => "query",
-            "n.sqlite.query" => "query",
-            "n.sqlite.mutate" => "query",
-            "n.table.query" => "query",
-            "n.script" => "source",
-            "n.logic.match" | "n.logic.if" => "expression",
-            "n.browser.run" => "code",
-            _ => "body",
-        };
         if let Value::Object(ref mut map) = config {
-            map.insert(body_key.to_string(), json!(bval));
+            map.insert(body_config_key(full_kind).to_string(), json!(bval));
         }
     }
     // For logic.match, output pins are dynamic: the declared cases + the default pin.
@@ -1840,16 +1843,7 @@ fn node_to_segment(node: &PipelineNode) -> String {
     }
 
     // Body (SQL / script source / generic body) — stored under a kind-specific key.
-    let body_key = match node.kind.as_str() {
-        "n.pg.query" => "query",
-        "n.sekejap.query" => "query",
-        "n.sqlite.query" => "query",
-        "n.sqlite.mutate" => "query",
-        "n.table.query" => "query",
-        "n.script" => "source",
-        "n.logic.match" | "n.logic.if" => "expression",
-        _ => "body",
-    };
+    let body_key = body_config_key(&node.kind);
     if let Some(body) = node.config.get(body_key).and_then(|v| v.as_str()) {
         let body = body.trim();
         if !body.is_empty() {

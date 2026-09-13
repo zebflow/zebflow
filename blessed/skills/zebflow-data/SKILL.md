@@ -45,7 +45,10 @@ query nodes in `pipeline/nodes`.
   (`help(topic="db/sekejap")` has the whole grammar). Timestamps come from
   the pipeline: `--params "{{ [input.body.name, new Date().toISOString()] }}"`.
   No `UPSERT`/`ON CONFLICT`: select by key, then `logic.if` between `UPDATE`
-  and `INSERT`. "Required" and "unique" are enforced in the pipeline
+  and `INSERT`. **Range predicates are numeric only**: `>=`, `<`, `BETWEEN`
+  on a `TEXT` or `TIMESTAMPTZ` column silently match nothing — store a
+  date you filter by as `INTEGER` (`20260914`, or epoch seconds), or keep
+  calendar tables in SQLite where `date >= '2026-09-13'` works. "Required" and "unique" are enforced in the pipeline
   (`logic.if` on `input.body`, a `SELECT` before the `INSERT`), not in the schema.
 - Seeds go in `initial-data/` so a fresh install of the project (or of a
   bundle made from it) gets them.

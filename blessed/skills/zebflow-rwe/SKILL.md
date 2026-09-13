@@ -90,9 +90,9 @@ gets reported as done.
 2. **Compile check.** The write itself reports a compiler refusal
    (`RWE_HOOK_NOT_IMPORTED`, `RWE_IMPORT_NOT_ALLOWED`, …); read it and fix
    it before going further. `POST /templates/diagnostics` checks without saving.
-3. **Fetch.** Get the route and read the body. Search it for
-   `RWE component error` — a throwing component is replaced by that comment
-   and the response is still 200. Check the data you expected is in the HTML.
+3. **Fetch.** `route_fetch path=…` and read the body. `rwe_component_errors`
+   must be empty — a throwing component is replaced by that comment and the
+   response is still 200. Check the data you expected is in the HTML.
 4. **Open.** A browser, with the console visible. A console error means
    hydration failed even though the server HTML was right — the usual causes
    are a missing import in a component and `window`/`document` during

@@ -366,6 +366,35 @@ struct HelpSearchParams {
 }
 
 #[derive(serde::Deserialize, JsonSchema)]
+struct RouteFetchParams {
+    /// The route under this project, e.g. "/book" or "/api/slots?date=2026-09-14". Not a full URL.
+    path: String,
+    /// GET (default), POST, PUT, PATCH, DELETE.
+    #[serde(default)]
+    method: Option<String>,
+    /// JSON body (an object) or raw text (a string). Ignored when `form` is given.
+    #[serde(default)]
+    body: Option<serde_json::Value>,
+    /// Fields to post as application/x-www-form-urlencoded, like a browser <form>.
+    #[serde(default)]
+    form: Option<serde_json::Map<String, serde_json::Value>>,
+    /// Extra request headers.
+    #[serde(default)]
+    headers: Option<serde_json::Map<String, serde_json::Value>>,
+    /// Cookie header value, e.g. "zebflow_session=eyJ…" — from a login response's set_cookie.
+    #[serde(default)]
+    cookie: Option<String>,
+    /// Follow up to 5 redirects. Default false, so a 302/303 and its location are visible.
+    #[serde(default)]
+    #[schemars(with = "bool")]
+    follow_redirects: Option<bool>,
+    /// Cap on returned body characters (200–60000, default 6000).
+    #[serde(default)]
+    #[schemars(with = "u32")]
+    max_body_chars: Option<usize>,
+}
+
+#[derive(serde::Deserialize, JsonSchema)]
 struct HubSearchParams {
     /// A word to match in the package id, title, description or tags. Empty lists everything.
     #[serde(default)]
@@ -1256,6 +1285,42 @@ impl ZebflowMcpHandler {
         let ops = PlatformOps::new(self.platform.clone(), &session.owner, &session.project);
         let result = ops.install_ui_components(params.names, params.overwrite);
         ok_or_err(result)
+    }
+
+    // ── Route fetch ───────────────────────────────────────────────────────────
+
+    #[tool(
+        description = "Fetch one of this project's own routes the way a browser would — the verification step. \
+        `path` is the route under the project (`/`, `/book`, `/api/slots?date=2026-09-14`); the tool prepends \
+        `/wh/{owner}/{project}` and goes through the real ingress, so auth, cookies, redirects and page rendering \
+        happen. Returns status, content_type, location, set_cookie, length, rwe_component_errors (every \
+        `<!-- RWE component error -->` in the body — a 200 with one of these is a broken page) and the body \
+        (capped, `max_body_chars`). `method` GET|POST|PUT|DELETE; `form` posts url-encoded fields like a <form>; \
+        `body` sends JSON (an object) or raw text (a string); `cookie` is a Cookie header value — copy it from a \
+        login's set_cookie (`name=value`) to reach protected routes; `follow_redirects` is off by default so you \
+        see the 302/303 and its location. Fetch every route you built, and every failure path, before saying done."
+    )]
+    async fn route_fetch(
+        &self,
+        Parameters(params): Parameters<RouteFetchParams>,
+        Extension(parts): Extension<http::request::Parts>,
+    ) -> Result<CallToolResult, McpError> {
+        let session = self.get_session_from_http_parts(&parts)?;
+        self.check_tool_capability(&session, "route_fetch")?;
+        let ops = PlatformOps::new(self.platform.clone(), &session.owner, &session.project);
+        ok_or_err(
+            ops.route_fetch(
+                params.path,
+                params.method,
+                params.body,
+                params.form,
+                params.headers,
+                params.cookie,
+                params.follow_redirects,
+                params.max_body_chars,
+            )
+            .await,
+        )
     }
 
     // ── Hub ───────────────────────────────────────────────────────────────────

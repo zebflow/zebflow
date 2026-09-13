@@ -77,7 +77,12 @@ pub fn definition() -> NodeDefinition {
         output_pins: vec!["out".to_string()],
         config_schema: serde_json::json!({
             "type": "object",
-            "required": ["description", "input_schema", "output_schema"],
+            // Only the description is required: the runtime already defaults a
+            // missing input schema to an open object and a missing output schema
+            // to `{ ok }` (`input_schema_from_config`, `output_schema_from_config`),
+            // and every agent's first `jobs/…` function hit three activation
+            // refusals in a row before reaching that default.
+            "required": ["description"],
             "properties": {
                 "description": {
                     "type": "string",

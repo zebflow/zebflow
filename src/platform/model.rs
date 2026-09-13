@@ -4197,6 +4197,7 @@ pub fn mcp_tool_capability(tool_name: &str) -> Option<ProjectCapability> {
         "hub_search" => Some(ProjectCapability::PipelinesRead),
         "hub_review" => Some(ProjectCapability::PipelinesRead),
         "hub_add" => Some(ProjectCapability::PipelinesWrite),
+        "route_fetch" => Some(ProjectCapability::PipelinesExecute),
         // Move resource (requires both pipelines write + templates write — use higher capability)
         "move_resource" => Some(ProjectCapability::PipelinesWrite),
         _ => None,

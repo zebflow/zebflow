@@ -47,7 +47,7 @@ worked.
   pipeline `draft` or `stale`; nothing serves until `pipeline_activate`.
 - **A 200 is not a page.** A component that throws is replaced by
   `<!-- RWE component error: … -->` and the response is still 200; a page
-  whose hydration failed still serves correct HTML. Fetch and read the body;
+  whose hydration failed still serves correct HTML. `route_fetch` and read the body;
   open it in a browser. `skill_read name="zebflow-verify"` has the checks.
 - **Webhook data is under `input.body`.** A form field is `input.body.email`;
   the route's parameters are `input.params`, the query `input.query`. In `{{ }}`
@@ -66,7 +66,8 @@ worked.
 Done means witnessed on the running instance, not "the source looks right":
 
 1. The pipeline is `active` in `pipeline_list` (not `draft`, not `stale`).
-2. The route was fetched (`/wh/{owner}/{project}{path}`) and the body was read:
+2. The route was fetched (`route_fetch path=…`, which goes through
+   `/wh/{owner}/{project}{path}`) and the body was read:
    no `RWE component error`, the data you expected is there, the status is
    the one you meant.
 3. For a page, a browser opened it with no console error and the interaction

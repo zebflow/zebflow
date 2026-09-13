@@ -18,25 +18,32 @@ and asserting the state an action should produce.
 
 ```
 pipeline_list status=all                     → the pipeline is active, not draft or stale
-curl -s -i http://<host>/wh/{owner}/{project}{path}
+route_fetch path="/posts"                    → status, location, set_cookie, rwe_component_errors, body
+route_fetch path="/posts" method=POST form={"title":"Hi","slug":"hi"}
+route_fetch path="/admin" cookie="zebflow_session=eyJ…"      (the value a login's set_cookie gave you)
 ```
+
+(`route_fetch` goes through the real ingress at `/wh/{owner}/{project}{path}`;
+from a shell the same thing is `curl -s -i http://<host>/wh/{owner}/{project}{path}`.)
 
 Read, do not skim:
 
-- the status you meant (`200`, `303` with `Location`, `400` with the message);
-- for a page, `grep -c "RWE component error"` is `0` — a throwing component is
+- the status you meant (`200`, `303` with `location`, `400` with the message);
+- for a page, `rwe_component_errors` is empty — a throwing component is
   replaced by that comment and the response is still 200;
 - the data is in the HTML (the title you inserted, the row count);
-- the failure paths: the unauthenticated request, the invalid body.
+- the failure paths: the request without a cookie, the invalid body, the
+  second POST that must be refused.
 
 Then `pipeline_get_invocations file_rel_path=…`: one run, no error, the nodes
 you expected in the trace. A schedule that rendered HTML, a webhook that ran
 a node twice, a script that returned `null` into a query — this is where they
 show.
 
-Use a cookie jar for browser-style calls (`--cookie-jar` on `POST /login`,
-`-b` after) and `-H "Authorization: Bearer …"` for API-style calls; the two
-get different answers on purpose (303 vs 401).
+A login answers `set_cookie: ["zebflow_session=…; HttpOnly; …"]`; pass the
+`name=value` part back as `cookie=` on the next `route_fetch` (a cookie jar
+in curl). API-style calls send `headers={"Authorization":"Bearer …"}`; the
+two get different answers on purpose (303 vs 401).
 
 ## 2. The page in a browser
 

@@ -22105,17 +22105,15 @@ fn verify_webhook_auth(
             let claims = token_data.claims;
 
             // Role check — only applies when the trigger specifies required roles.
-            // Contract: JWT must carry a "roles" claim as an array of strings.
-            // Wrap your DB role value(s) into an array in a script node before auth.token.create.
+            // The claim is meant to be an array of strings; a string is read as
+            // one role or a comma-separated list, because `--claim "roles=admin"`
+            // and `--claim "roles=['admin']"` are what people actually write, and
+            // both used to authorise nobody.
             if !required_roles.is_empty() {
-                let user_roles: Vec<&str> = claims
-                    .get("roles")
-                    .and_then(|v| v.as_array())
-                    .map(|arr| arr.iter().filter_map(|v| v.as_str()).collect())
-                    .unwrap_or_default();
+                let user_roles = token_roles(claims.get("roles"));
                 let authorized = required_roles
                     .iter()
-                    .any(|r| user_roles.contains(&r.as_str()));
+                    .any(|r| user_roles.iter().any(|u| u == r));
                 if !authorized {
                     return Err(AuthError::Forbidden {
                         message: format!("roles {:?} are not permitted for this route", user_roles),
@@ -24393,6 +24391,26 @@ fn mapserver_record_to_manifest(
 
 /// Extract a safe subset of request headers for the trigger snapshot.
 /// Excludes Authorization and Cookie to avoid leaking credentials downstream.
+/// The roles a token carries: an array of strings, or a string holding one
+/// role or a comma-separated list, with stray quotes and brackets removed.
+fn token_roles(claim: Option<&Value>) -> Vec<String> {
+    let clean = |s: &str| s.trim_matches(|c: char| c.is_whitespace() || matches!(c, '[' | ']' | '\'' | '"')).to_string();
+    match claim {
+        Some(Value::Array(items)) => items
+            .iter()
+            .filter_map(|v| v.as_str())
+            .map(clean)
+            .filter(|s| !s.is_empty())
+            .collect(),
+        Some(Value::String(s)) => s
+            .split(',')
+            .map(clean)
+            .filter(|s| !s.is_empty())
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
 fn safe_headers(headers: &HeaderMap) -> Value {
     const SAFE: &[&str] = &[
         "content-type",

@@ -76,6 +76,18 @@ Logout is `--set-cookie "name=session,value=,max-age=0"`.
 [c]:false -> [e]
 ```
 
+**A designed 404 for paths nobody registered** — a `trigger.weberror`
+pipeline, not a webhook. A webhook `--path /*` or `/:path` is not a
+catch-all; it never sees a path that matched nothing.
+
+```
+| trigger.weberror --code 404
+| web.response --status 404 --template pages/not-found.tsx
+```
+
+`--code 4xx`, `5xx` or empty widen it; the most specific active one wins.
+The payload is `{ error_code, error_message, original_path, method }`.
+
 **Redirect**
 
 ```

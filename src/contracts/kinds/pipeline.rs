@@ -577,7 +577,8 @@ pub fn validate_pipeline_graph(graph: &PipelineGraph) -> Result<(), ContractErro
     PipelineContract::validate(&metadata, &graph.clone().into())
 }
 
-/// Requires a valid source graph to contain at least one executable node.
+/// Requires a valid source graph to contain at least one executable node,
+/// every one of them reachable from a trigger.
 pub fn validate_pipeline_activation(graph: &PipelineGraph) -> Result<(), ContractError> {
     validate_pipeline_graph(graph)?;
     if graph.nodes.is_empty() {
@@ -586,7 +587,45 @@ pub fn validate_pipeline_activation(graph: &PipelineGraph) -> Result<(), Contrac
             graph.id
         )));
     }
+    if let Some(node_id) = first_unreachable_node(graph) {
+        return Err(ContractError::invalid(format!(
+            "pipeline '{}': node '{}' is not reachable from the trigger — it has no incoming edge. \
+             Wire it (`[from] -> [{}]`, or `[from]:pin -> [{}]`) or remove it; an unwired node never runs, \
+             and the run ends with the previous node's payload as the response.",
+            graph.id, node_id, node_id, node_id
+        )));
+    }
     Ok(())
+}
+
+/// The first non-trigger node no trigger can reach, if any. Graphs without a
+/// trigger node (ad-hoc bodies) are not judged: they have nothing to be
+/// reachable from.
+fn first_unreachable_node(graph: &PipelineGraph) -> Option<String> {
+    let is_trigger = |kind: &str| kind.contains(".trigger");
+    let triggers: Vec<&str> = graph
+        .nodes
+        .iter()
+        .filter(|n| is_trigger(&n.kind))
+        .map(|n| n.id.as_str())
+        .collect();
+    if triggers.is_empty() {
+        return None;
+    }
+    let mut reached: std::collections::HashSet<&str> = triggers.iter().copied().collect();
+    let mut frontier: Vec<&str> = triggers;
+    while let Some(id) = frontier.pop() {
+        for edge in graph.edges.iter().filter(|e| e.from_node == id) {
+            if reached.insert(edge.to_node.as_str()) {
+                frontier.push(edge.to_node.as_str());
+            }
+        }
+    }
+    graph
+        .nodes
+        .iter()
+        .find(|n| !reached.contains(n.id.as_str()))
+        .map(|n| n.id.clone())
 }
 
 #[cfg(test)]
@@ -595,6 +634,40 @@ mod tests {
 
     const V1_COMPLETE: &[u8] =
         include_bytes!("../../../tests/fixtures/contracts/pipeline/v1-complete.json");
+
+    /// Luna wrote a seven-node login pipeline and forgot `[e] -> [f]`; the
+    /// run ended at `e` and the browser got the token as JSON instead of the
+    /// redirect. Activation refuses the graph now and names the node.
+    #[test]
+    fn a_node_no_trigger_reaches_cannot_be_activated() {
+        use crate::pipeline::model::{PipelineEdge, PipelineNode};
+        let node = |id: &str, kind: &str| PipelineNode {
+            id: id.to_string(),
+            kind: kind.to_string(),
+            input_pins: vec!["in".to_string()],
+            output_pins: vec!["out".to_string()],
+            config: serde_json::json!({}),
+        };
+        let edge = |from: &str, to: &str| PipelineEdge {
+            from_node: from.to_string(),
+            from_pin: "out".to_string(),
+            to_node: to.to_string(),
+            to_pin: "in".to_string(),
+        };
+        let mut graph = PipelineGraph {
+            id: "login".to_string(),
+            description: None,
+            metadata: None,
+            entry_nodes: vec!["a".to_string()],
+            nodes: vec![node("a", "n.trigger.webhook"), node("b", "n.script"), node("f", "n.web.response")],
+            edges: vec![edge("a", "b")],
+            notes: Vec::new(),
+        };
+        let err = validate_pipeline_activation(&graph).expect_err("f is unreachable");
+        assert!(err.to_string().contains("node 'f' is not reachable"), "{err}");
+        graph.edges.push(edge("b", "f"));
+        validate_pipeline_activation(&graph).expect("wired graph activates");
+    }
 
     #[test]
     fn golden_v1_roundtrips_without_schema_drift() {

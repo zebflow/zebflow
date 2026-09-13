@@ -776,13 +776,7 @@ impl DslExecutor {
                 }
             }
             if let Some(body_val) = body {
-                let body_key = if node.kind.contains("pg.query") {
-                    "query"
-                } else if node.kind.contains("script") {
-                    "source"
-                } else {
-                    "body"
-                };
+                let body_key = crate::platform::shell::parser::body_config_key(&node.kind);
                 cfg.insert(body_key.to_string(), json!(body_val));
             }
         }
@@ -1839,5 +1833,44 @@ mod git_policy_tests {
         let error = review_git_arguments("diff", &args(&["--no-index"])).unwrap_err();
         assert!(error.contains("--no-index"), "{error}");
         assert!(error.contains("--stat"), "{error}");
+    }
+}
+
+#[cfg(test)]
+mod patch_body_tests {
+    use std::sync::Arc;
+
+    use crate::platform::{PlatformConfig, PlatformService};
+
+    /// Sonnet patched a `sekejap.query` node's SQL through `pipeline_patch`'s
+    /// `body` twice and the old SQL won both times: the patch wrote `body`
+    /// while the node reads `query`. The body key is the parser's table now,
+    /// for every kind, and this is the repro.
+    #[tokio::test]
+    async fn a_patched_body_replaces_the_sql_a_query_node_reads() {
+        let data_root = tempfile::tempdir().expect("temp data root");
+        let platform = Arc::new(
+            PlatformService::from_config(PlatformConfig {
+                data_root: data_root.path().to_path_buf(),
+                default_password: "secret".to_string(),
+                default_project: "patchbody".to_string(),
+                ..Default::default()
+            })
+            .expect("platform"),
+        );
+        let owner = platform.config.default_owner.clone();
+        let executor = super::DslExecutor::new(platform.clone(), &owner, "patchbody");
+        let out = executor
+            .execute_dsl(r#"register api/rows -- | trigger.webhook --path /rows --method GET | sekejap.query -- "SELECT 1 AS one""#)
+            .await;
+        assert!(out.lines.iter().any(|l| l.text.contains("registered")), "{:?}", out.lines.iter().map(|l| l.text.clone()).collect::<Vec<_>>());
+        let out = executor
+            .execute_dsl(r#"patch pipeline api/rows node n1 -- SELECT 2 AS two"#)
+            .await;
+        assert!(!out.lines.iter().any(|l| l.text.starts_with("Error")), "{:?}", out.lines.iter().map(|l| l.text.clone()).collect::<Vec<_>>());
+        let ops = crate::platform::services::ops::PlatformOps::new(platform.clone(), &owner, "patchbody");
+        let described = ops.pipeline_describe("api/rows", false).await;
+        assert!(described.text.contains("SELECT 2 AS two"), "the node reads the new SQL:\n{}", described.text);
+        assert!(!described.text.contains("SELECT 1 AS one"), "the old SQL is gone:\n{}", described.text);
     }
 }

@@ -81,7 +81,7 @@ A pipeline's `file_rel_path` is its location in this tree
    `shared/` folder with one consumer is a mistake; a module with no
    submodules and no sibling sharing has no `shared/` at all.
 3. **Written twice is in the wrong place.** Before writing a component, a
-   query or a script, `file_search query="<its name or its key phrase>"`. If
+   query or a script, `file_search pattern="<its name or its key phrase>"`. If
    it exists, import it or lift it; do not write a second one. The same for
    pipelines: `pipeline_list` before a new route.
 4. **One shell.** `shared/components/page-shell.tsx` renders header,
@@ -134,9 +134,9 @@ be two) before adding more.
 ## Prove it
 
 - `file_list` of the module shows only kind folders, `shared/`, `modules/`.
-- `file_search query="PageShell"` matches every page; a page without it is
+- `file_search pattern="PageShell"` matches every page; a page without it is
   a defect.
-- `file_search query="bg-slate"` (and `text-gray`, `#`, `style={{`) finds
+- `file_search pattern="bg-slate"` (and `text-gray`, `#`, `style={{`) finds
   nothing under `pages/` or `components/`.
 - Two pages of the same kind (two lists, two forms) in different modules
   look like the same application. If they do not, the shared component is

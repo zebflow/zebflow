@@ -80,6 +80,16 @@ ORDER BY score DESC
 LIMIT 20
 ```
 
+**Ranges are numeric only.** `<`, `>`, `<=`, `>=` and `BETWEEN` compare
+numbers; on a `TEXT` or `TIMESTAMPTZ` column they match nothing (an empty
+result, not an error), and `BETWEEN` on text fails with `expected number`.
+Equality on text works. So a value you will filter or sort by range — a
+date, a time, a price — is stored as a number: a day as `INTEGER`
+`20260914`, an instant as epoch seconds, and the ISO string beside it for
+display if you like. Numbers come back as floats (`20260914.0`); compare,
+do not string-match. A calendar-heavy table is often simpler in SQLite
+(`sqlite.query`), where `date >= '2026-09-13'` works as expected.
+
 Full-text search:
 
 ```sql

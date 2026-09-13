@@ -122,7 +122,7 @@ impl PlatformOps {
             "# Start Here\n\n\
              Zebflow turns pipeline triggers into APIs, pages, and automations.\n\n\
              - Project: `{owner}/{project}`\n\
-             - Webhook base: `/wh/{owner}/{project}{{path}}`\n\
+             - Webhook base: `/wh/{owner}/{project}{{path}}` — fetch any route you built with `route_fetch path=\"{{path}}\"`\n\
              - Official nodes: `{node_count}`\n\
              - Pipeline examples: `{example_count}`\n\n\
              ## Core References\n\n\
@@ -327,7 +327,7 @@ impl PlatformOps {
         out.push_str(&format!(
             "# Zebflow MCP Start Here\n\n\
              Project scope: `{owner}/{project}`\n\
-             Webhook base: `/wh/{owner}/{project}{{path}}`\n\
+             Webhook base: `/wh/{owner}/{project}{{path}}` — verify with `route_fetch path=\"{{path}}\"` (status, headers, body, RWE errors)\n\
              Mental model: pipelines connect triggers to nodes for APIs, pages, automations, and jobs.\n\n\
              ## First Moves\n\
              1. Read the embedded AGENTS.md and MEMORY.md below.\n\
@@ -2082,6 +2082,149 @@ impl PlatformOps {
                 .collect::<Vec<_>>()
                 .join("\n"),
         )
+    }
+}
+
+// ── Route fetch ───────────────────────────────────────────────────────────────
+
+/// What `route_fetch` answers with: enough to judge a route without a browser.
+#[derive(Debug, Serialize)]
+pub struct RouteFetchReport {
+    pub url: String,
+    pub status: u16,
+    pub content_type: String,
+    pub location: String,
+    pub set_cookie: Vec<String>,
+    pub length: usize,
+    pub rwe_component_errors: Vec<String>,
+    pub body: String,
+    pub truncated: bool,
+}
+
+impl PlatformOps {
+    /// Fetch one of this project's own routes over loopback, the way a browser
+    /// or a curl would: the request goes through the real webhook ingress, so
+    /// auth, cookies, redirects and rendering all happen. The report carries
+    /// the status, the headers a verifier reads, the body (capped) and every
+    /// `<!-- RWE component error: … -->` found in it — the one line a 200 hides.
+    ///
+    /// This exists because an agent that only has MCP had no way to fetch
+    /// what it built; every rung of the model ladder stopped at "cannot verify".
+    pub async fn route_fetch(
+        &self,
+        path: String,
+        method: Option<String>,
+        body: Option<Value>,
+        form: Option<serde_json::Map<String, Value>>,
+        headers: Option<serde_json::Map<String, Value>>,
+        cookie: Option<String>,
+        follow_redirects: Option<bool>,
+        max_body_chars: Option<usize>,
+    ) -> OpsResult {
+        let path = path.trim();
+        if path.starts_with("http://") || path.starts_with("https://") {
+            return OpsResult::err("route_fetch takes a project path such as /book or /api/slots?date=…, not a full URL — it only reaches this project's own routes");
+        }
+        let path = if path.starts_with('/') { path.to_string() } else { format!("/{path}") };
+        let url = format!(
+            "{}/wh/{}/{}{}",
+            crate::platform::boot::local_instance_url(),
+            self.owner,
+            self.project,
+            path
+        );
+        let method = method.unwrap_or_else(|| "GET".to_string()).to_ascii_uppercase();
+        let method = match reqwest::Method::from_bytes(method.as_bytes()) {
+            Ok(m) => m,
+            Err(_) => return OpsResult::err(format!("unknown method {method}")),
+        };
+        let policy = if follow_redirects.unwrap_or(false) {
+            reqwest::redirect::Policy::limited(5)
+        } else {
+            reqwest::redirect::Policy::none()
+        };
+        let client = match reqwest::Client::builder()
+            .redirect(policy)
+            .timeout(std::time::Duration::from_secs(60))
+            .build()
+        {
+            Ok(c) => c,
+            Err(e) => return OpsResult::err(e.to_string()),
+        };
+        let mut request = client.request(method, &url);
+        if let Some(headers) = headers {
+            for (k, v) in headers {
+                let value = match v {
+                    Value::String(s) => s,
+                    other => other.to_string(),
+                };
+                request = request.header(k, value);
+            }
+        }
+        if let Some(cookie) = cookie.filter(|c| !c.trim().is_empty()) {
+            request = request.header(reqwest::header::COOKIE, cookie.trim().to_string());
+        }
+        if let Some(form) = form {
+            let pairs: Vec<(String, String)> = form
+                .into_iter()
+                .map(|(k, v)| (k, match v { Value::String(s) => s, other => other.to_string() }))
+                .collect();
+            request = request.form(&pairs);
+        } else if let Some(body) = body {
+            request = match body {
+                Value::String(s) => request.body(s),
+                other => request.json(&other),
+            };
+        }
+        let response = match request.send().await {
+            Ok(r) => r,
+            Err(e) => return OpsResult::err(format!("fetch failed: {e}")),
+        };
+        let status = response.status().as_u16();
+        let header = |name: reqwest::header::HeaderName| {
+            response
+                .headers()
+                .get(&name)
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("")
+                .to_string()
+        };
+        let content_type = header(reqwest::header::CONTENT_TYPE);
+        let location = header(reqwest::header::LOCATION);
+        let set_cookie: Vec<String> = response
+            .headers()
+            .get_all(reqwest::header::SET_COOKIE)
+            .iter()
+            .filter_map(|v| v.to_str().ok().map(str::to_string))
+            .collect();
+        let text = response.text().await.unwrap_or_default();
+        let length = text.len();
+        let rwe_component_errors: Vec<String> = text
+            .match_indices("<!-- RWE component error:")
+            .map(|(i, _)| {
+                let rest = &text[i..];
+                let end = rest.find("-->").unwrap_or(rest.len().min(300));
+                rest[..end].trim().to_string()
+            })
+            .collect();
+        let cap = max_body_chars.unwrap_or(6000).clamp(200, 60_000);
+        let (body, truncated) = if text.chars().count() > cap {
+            (text.chars().take(cap).collect::<String>(), true)
+        } else {
+            (text, false)
+        };
+        let report = RouteFetchReport {
+            url,
+            status,
+            content_type,
+            location,
+            set_cookie,
+            length,
+            rwe_component_errors,
+            body,
+            truncated,
+        };
+        OpsResult::ok(serde_json::to_string_pretty(&report).unwrap_or_default())
     }
 }
 

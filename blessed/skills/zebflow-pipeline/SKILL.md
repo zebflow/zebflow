@@ -51,6 +51,9 @@ Facts live in `help(topic="pipeline")`, `pipeline/dsl`, `pipeline/authoring`,
   `--template pages/x.tsx` → the page; `--location` → redirect;
   `--status`, `--set-cookie "…"`, `--header K=V`. A 404 is a `logic.if` with
   two `web.response` nodes on its pins.
+- **A site-wide 404 is `trigger.weberror --code 404 | web.response --status 404 --template pages/not-found.tsx`.**
+  A webhook with `--path /*` or `/:path` does not catch unknown routes — four
+  of five models tried; none of them worked.
 - **Forms are two pipelines.** `GET` renders the page; `POST` validates
   `input.body`, writes, then `--location` back (browser) or answers JSON
   (fetch). Both carry the same `--auth-*` flags.
@@ -86,7 +89,8 @@ status is `stale` and traffic runs the old snapshot.
 **The gate — none of these may be skipped:**
 
 1. `pipeline_list status=all` shows the pipeline as `active`.
-2. Fetch the route and read what came back:
+2. `route_fetch path=…` (POST with `form=`, protected routes with `cookie=`)
+   and read what came back:
    - a page: the body has no `RWE component error` and shows the data;
    - JSON: the shape you documented, with the status you meant;
    - a redirect: `303`/`302` to the right place, with the cookie if you set one;
