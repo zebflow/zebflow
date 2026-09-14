@@ -4201,6 +4201,7 @@ pub fn mcp_tool_capability(tool_name: &str) -> Option<ProjectCapability> {
         "hub_review" => Some(ProjectCapability::PipelinesRead),
         "hub_add" => Some(ProjectCapability::PipelinesWrite),
         "route_fetch" => Some(ProjectCapability::PipelinesExecute),
+        "theme_generate" => Some(ProjectCapability::ProjectRead),
         // Move resource (requires both pipelines write + templates write — use higher capability)
         "move_resource" => Some(ProjectCapability::PipelinesWrite),
         _ => None,

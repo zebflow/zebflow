@@ -5,6 +5,8 @@
 //! `docs/contracts/kinds/ui-theme` for the profile a replacement must meet
 //! (complete colour values, both blocks, the three status pairs).
 
+pub mod generate;
+
 /// `:root` (light) and `.dark`, every token the compiler accepts.
 pub const THEME_CSS: &str = r#":root {
   --background: #e9edf3;

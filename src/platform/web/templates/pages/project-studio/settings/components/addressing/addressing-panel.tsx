@@ -53,7 +53,7 @@ export default function AddressingPanel({ api, checkApi, initialData }) {
     const ok = typeof window === "undefined" ? true : window.confirm(`Remove ${host}? Browsers on it get 404 from this instance until you add it back; routes on it are removed too.`);
     if (!ok) return;
     save(
-      { ...config, hosts: hosts.filter((h) => h !== host), routes: routes.filter((r) => r.host !== host) },
+      { ...config, hosts: hosts.filter((name) => name !== host), routes: routes.filter((r) => r.host !== host) },
       `Removed ${host}.`,
     );
   }

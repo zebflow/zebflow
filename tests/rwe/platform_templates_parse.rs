@@ -158,3 +158,54 @@ fn no_template_borrows_a_binding_it_never_declared() {
         borrowed.join("\n")
     );
 }
+
+/// No template may declare a binding named `h` where JSX appears.
+///
+/// The compiler lowers every JSX element to a call of `h(...)`. A local named
+/// `h` — `hosts.map((h) => <option>{h}</option>)` — shadows the factory inside
+/// its own scope, the server markup shows `<!-- RWE component error: TypeError:
+/// h is not a function -->`, and the response is still 200. The Addressing
+/// tab shipped exactly that; this refuses it at test time.
+#[test]
+fn no_template_declares_a_binding_named_h() {
+    use oxc_semantic::SemanticBuilder;
+
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/platform/web/templates");
+    let mut files = Vec::new();
+    template_files(&root, &mut files);
+    files.sort();
+
+    let mut offenders: Vec<String> = Vec::new();
+    for path in &files {
+        // Only a .tsx file can contain JSX; a `.ts` helper may call its
+        // hours `h` in peace.
+        if path.extension().and_then(|e| e.to_str()) != Some("tsx") {
+            continue;
+        }
+        let source = std::fs::read_to_string(path).expect("read template");
+        let allocator = Allocator::default();
+        let source_type = SourceType::default()
+            .with_module(true)
+            .with_jsx(true)
+            .with_typescript(true);
+        let parsed = Parser::new(&allocator, &source, source_type).parse();
+        if parsed.panicked {
+            continue;
+        }
+        let semantic = SemanticBuilder::new().build(&parsed.program).semantic;
+        let scoping = semantic.scoping();
+        let shadows = scoping
+            .symbol_ids()
+            .any(|symbol| scoping.symbol_name(symbol) == "h");
+        if shadows {
+            let rel = path.strip_prefix(&root).unwrap_or(path).display().to_string();
+            offenders.push(rel);
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "{} template(s) declare a binding named `h`, the JSX factory:\n{}",
+        offenders.len(),
+        offenders.join("\n")
+    );
+}

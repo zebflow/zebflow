@@ -94,7 +94,7 @@ budget).
 | Name | Meaning |
 |---|---|
 | `input`, `$input` | the payload flowing into this node |
-| `$trigger` | the trigger snapshot: `params`, `query`, `search`, `pathname`, `headers`, `auth` — never `body` |
+| `$trigger` | the trigger snapshot: `params`, `query`, `search`, `pathname`, `headers` (`host`, `x-forwarded-proto`, `content-type`, `user-agent`, `referer`, `origin`, …), `auth` — never `body` |
 | `$nodes.<id>` | the output of an upstream node by its id (in pipe mode `n0`, `n1`, …). The trigger's own output — including `body` — is `$nodes.<trigger id>` |
 | `$item`, `$index`, `$count` | inside a `logic.foreach` branch |
 

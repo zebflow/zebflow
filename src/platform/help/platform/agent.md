@@ -109,6 +109,7 @@ Project docs are files under `docs/` (`file_write rel_path="docs/schema.md"`).
 | `connection_describe` | tables and columns of a connection; `scope`, `schema`, `table` narrow it |
 | `credential_list` | credential ids, titles and kinds — values are never returned. `--credential`, `--auth-credential` and `mail.send --credential` take an **id from here**, not a connection slug |
 | `list_ui_catalog` / `install_ui_components` | the clone-to-own component catalog (`shared/ui/`); pages import `zeb/ui/*` without installing anything |
+| `theme_generate` | a complete contrast-checked theme from a seed colour and a mood: tokens, `globals.css` blocks, fonts, geometry, contrast table (skill `brand-system`) |
 | `route_fetch` | fetch one of the project's routes through the real ingress — status, `location`, `set_cookie`, `rwe_component_errors`, body; `method`, `form`, `body`, `cookie`, `headers`; the verification step |
 | `hub_search` / `hub_review` / `hub_add` | the Hub shelf: what the project can add (optional skills, libraries, bundles), what an add would write, and the add itself — review before add, always |
 | `git_command` | `subcommand` = status · log · diff · add · commit (`args`, `message`); the commit author is the user's profile |

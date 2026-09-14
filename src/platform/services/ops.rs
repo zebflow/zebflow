@@ -2085,6 +2085,33 @@ impl PlatformOps {
     }
 }
 
+// ── Theme ─────────────────────────────────────────────────────────────────────
+
+impl PlatformOps {
+    /// A complete, contrast-checked theme from a seed and a mood — the
+    /// `brand-system` skill's engine (`crate::platform::theme::generate`).
+    /// The answer is JSON: tokens for both modes, the CSS blocks to paste,
+    /// the mood's type and geometry, the contrast table, and notes.
+    pub fn theme_generate(&self, seed: Option<String>, mood: Option<String>) -> OpsResult {
+        use crate::platform::theme::generate::{generate, Mood};
+        let mood_raw = mood.unwrap_or_else(|| "calm".to_string());
+        let Some(mood) = Mood::parse(&mood_raw) else {
+            return OpsResult::err(format!(
+                "unknown mood `{mood_raw}`; one of {}",
+                Mood::ALL.iter().map(|m| m.key()).collect::<Vec<_>>().join(", ")
+            ));
+        };
+        let seed = seed
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| mood.default_seed().to_string());
+        match generate(&seed, mood) {
+            Ok(theme) => OpsResult::ok(serde_json::to_string_pretty(&theme).unwrap_or_default()),
+            Err(message) => OpsResult::err(message),
+        }
+    }
+}
+
 // ── Route fetch ───────────────────────────────────────────────────────────────
 
 /// What `route_fetch` answers with: enough to judge a route without a browser.

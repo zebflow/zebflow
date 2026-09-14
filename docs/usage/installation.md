@@ -35,6 +35,29 @@ cargo build
 ./target/debug/zebflow
 ```
 
+To install the release binaries on this machine (`zebflow` and `zeb` in
+`~/.cargo/bin`):
+
+```bash
+cargo install --path . --bin zebflow --bin zeb --force --locked
+```
+
+`--locked` matters: without it `cargo install` re-resolves dependencies and
+can pick a version the toolchain cannot build.
+
+The release profile links with LTO in one codegen unit, which needs several
+GB at the end. On a machine with 16 GB or less, or one that is already busy,
+build one crate at a time without LTO — same features, a somewhat larger and
+slightly slower binary:
+
+```bash
+CARGO_PROFILE_RELEASE_LTO=false CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16 \
+  cargo install --path . --bin zebflow --bin zeb --force --locked -j 1
+```
+
+Two parallel jobs were enough to be killed by macOS on an 18 GB machine
+with a VM running; one job went through.
+
 ## Open Zebflow
 
 The default address is:

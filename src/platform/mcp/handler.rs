@@ -366,6 +366,16 @@ struct HelpSearchParams {
 }
 
 #[derive(serde::Deserialize, JsonSchema)]
+struct ThemeGenerateParams {
+    /// The brand's main colour as #RRGGBB. Omit to use the mood's default seed.
+    #[serde(default)]
+    seed: Option<String>,
+    /// calm | warm | serious | energetic | playful | luxurious | technical (default calm).
+    #[serde(default)]
+    mood: Option<String>,
+}
+
+#[derive(serde::Deserialize, JsonSchema)]
 struct RouteFetchParams {
     /// The route under this project, e.g. "/book" or "/api/slots?date=2026-09-14". Not a full URL.
     path: String,
@@ -1285,6 +1295,27 @@ impl ZebflowMcpHandler {
         let ops = PlatformOps::new(self.platform.clone(), &session.owner, &session.project);
         let result = ops.install_ui_components(params.names, params.overwrite);
         ok_or_err(result)
+    }
+
+    // ── Theme ─────────────────────────────────────────────────────────────────
+
+    #[tool(
+        description = "Generate a complete theme from one seed colour and one mood — every colour token for light \
+        and dark as hex, contrast-checked (text 4.5:1, marks 3:1 against every surface), the `:root` / `.dark` \
+        blocks to paste into globals.css, the mood's fonts (with the Google Fonts link), sizes, radius, spacing \
+        and shadow, a contrast table, and notes on anything adjusted. `seed` is #RRGGBB (omit for the mood's \
+        default); `mood` is calm | warm | serious | energetic | playful | luxurious | technical. Never pick \
+        colours by hand — call this, paste `css`, record the notes in docs/brand.md (skill: brand-system)."
+    )]
+    async fn theme_generate(
+        &self,
+        Parameters(params): Parameters<ThemeGenerateParams>,
+        Extension(parts): Extension<http::request::Parts>,
+    ) -> Result<CallToolResult, McpError> {
+        let session = self.get_session_from_http_parts(&parts)?;
+        self.check_tool_capability(&session, "theme_generate")?;
+        let ops = PlatformOps::new(self.platform.clone(), &session.owner, &session.project);
+        ok_or_err(ops.theme_generate(params.seed, params.mood))
     }
 
     // ── Route fetch ───────────────────────────────────────────────────────────

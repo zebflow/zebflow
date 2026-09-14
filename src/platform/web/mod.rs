@@ -24708,6 +24708,11 @@ fn token_roles(claim: Option<&Value>) -> Vec<String> {
 
 fn safe_headers(headers: &HeaderMap) -> Value {
     const SAFE: &[&str] = &[
+        // Where the request arrived (`addressing.md`): a sitemap or an e-mail
+        // link needs an absolute URL, and the project must not store one.
+        "host",
+        "x-forwarded-host",
+        "x-forwarded-proto",
         "content-type",
         "accept",
         "user-agent",

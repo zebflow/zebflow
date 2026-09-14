@@ -76,8 +76,8 @@ export default function AddressingRoutes({ data, hosts, routes, disabled, onAddR
             ) : null}
             <form onSubmit={submit} className="mt-3 flex flex-wrap items-center gap-2">
               <Select value={host} onChange={(e) => setHost(e.target.value)} className="w-[16rem] font-mono">
-                {allHosts.map((h) => (
-                  <option key={h} value={h}>{h}</option>
+                {allHosts.map((name) => (
+                  <option key={name} value={name}>{name}</option>
                 ))}
               </Select>
               <Input id="addressing-route-path" value={path} onChange={(e) => setPath(e.target.value)} placeholder="/service/" className="w-[10rem] font-mono" />

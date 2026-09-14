@@ -117,7 +117,7 @@ is refused with the missing capability named.
 
 | Capability key | Tools |
 |---|---|
-| `project.read` | `start_here`, `help`, `help_search`, `skill_list`, `skill_read` |
+| `project.read` | `start_here`, `help`, `help_search`, `skill_list`, `skill_read`, `theme_generate` |
 | `pipelines.read` | `pipeline_list`, `pipeline_get`, `pipeline_describe`, `pipeline_search`, `pipeline_get_invocations`, `list_ui_catalog`, `hub_search`, `hub_review` |
 | `pipelines.write` | `pipeline_register`, `pipeline_patch`, `pipeline_activate`, `pipeline_deactivate`, `git_command`, `install_ui_components`, `hub_add`, `move_resource` |
 | `pipelines.execute` | `pipeline_execute`, `pipeline_run`, `route_fetch` |
