@@ -32,7 +32,7 @@ the measurement, and the rule.
 | S3 | landmarks | `header`, `nav`, `main`, `footer` present once each (`PageShell`) |
 | S4 | images | every `img` has `alt`; decorative ones `alt=""`; `width`/`height` set |
 | S5 | controls | every input has a label; every icon-only button an `aria-label`; every link text says where it goes |
-| S6 | metadata | `<title>` and `<meta name="description">` present and specific to this page |
+| S6 | metadata | from `route_fetch`'s `seo`: `title` present and specific, `description_chars` 120–155 on public pages, `canonical_absolute`, `og.absolute`, the archetype's type in `jsonld_types`, `images_without_alt == 0` |
 
 **Legibility (screenshot + computed styles)**
 | # | Check | Rule |

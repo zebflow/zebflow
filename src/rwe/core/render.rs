@@ -212,7 +212,8 @@ pub fn render(
         escape_json_script(&payload_json)
     );
 
-    let mut html = build_document_shell(&ssr.page_config, &body_content);
+    let site = SiteContext::from_state(vars);
+    let mut html = build_document_shell(&ssr.page_config, &body_content, &site);
     for (idx, css) in compiled.inline_styles.iter().enumerate() {
         if css.trim().is_empty() {
             continue;
@@ -827,9 +828,18 @@ fn stable_hash_u64(input: &str) -> u64 {
 /// - `og`          → Open Graph `{ title, description, image, url, type, siteName, locale }`
 /// - `twitter`     → Twitter Card `{ card, title, description, image, site, creator }`
 /// - `extra`       → raw HTML string injected verbatim at end of `<head>` (trusted escape hatch)
-fn build_document_shell(page_config: &Option<Value>, body_content: &str) -> String {
+/// - `titleSuffix` → appended to `<title>` (the site name, set once in the shell)
+/// - `jsonld`      → an object or array → `<script type="application/ld+json">` per object
+/// - `alternates`  → `{ en: "/x", id: "/id/x", "x-default": "/x" }` → `<link rel="alternate" hreflang>`
+///
+/// URLs in `canonical`, `og.url`, `og.image`, `twitter.image` and `alternates`
+/// that start with `/` are made absolute with the request origin; `og:*` and
+/// `twitter:card` are defaulted from title, description and image
+/// (`docs/contracts/discoverability.md` §1).
+fn build_document_shell(page_config: &Option<Value>, body_content: &str, site: &SiteContext) -> String {
     let pc = page_config.as_ref();
     let hd = pc.and_then(|p| p.get("head"));
+    let abs = |v: &str| site.absolute(v);
 
     let lang = pc
         .and_then(|p| p.get("html"))
@@ -847,12 +857,18 @@ fn build_document_shell(page_config: &Option<Value>, body_content: &str) -> Stri
     head.push_str("<meta charset=\"utf-8\">");
     head.push_str("<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">");
 
-    // title
-    if let Some(v) = hd.and_then(|h| h.get("title")).and_then(Value::as_str) {
-        if !v.is_empty() {
-            head.push_str(&format!("<title>{}</title>", escape_html(v)));
-        }
+    // title (+ the site's suffix, set once in the shell's page config)
+    let title = hd.and_then(|h| h.get("title")).and_then(Value::as_str).unwrap_or("");
+    let suffix = hd.and_then(|h| h.get("titleSuffix")).and_then(Value::as_str).unwrap_or("");
+    if !title.is_empty() {
+        // The suffix is the site name with its separator (" — RESEARCHSITE"); the
+        // home page's title is the site name itself, so it takes none.
+        let suffix_name = suffix.trim_start_matches(|c: char| c.is_whitespace() || matches!(c, '—' | '–' | '-' | '|' | '·' | ':')).trim();
+        let already = suffix.is_empty() || title.trim() == suffix_name || title.ends_with(suffix.trim());
+        let full = if already { title.to_string() } else { format!("{title}{suffix}") };
+        head.push_str(&format!("<title>{}</title>", escape_html(&full)));
     }
+    let description = hd.and_then(|h| h.get("description")).and_then(Value::as_str).unwrap_or("");
 
     // description
     if let Some(v) = hd
@@ -887,13 +903,26 @@ fn build_document_shell(page_config: &Option<Value>, body_content: &str) -> Stri
         }
     }
 
-    // canonical
-    if let Some(v) = hd.and_then(|h| h.get("canonical")).and_then(Value::as_str) {
-        if !v.is_empty() {
-            head.push_str(&format!(
-                "<link rel=\"canonical\" href=\"{}\">",
-                escape_attr(v)
-            ));
+    // canonical — absolute, so the same page under three URLs claims one
+    let canonical = hd
+        .and_then(|h| h.get("canonical"))
+        .and_then(Value::as_str)
+        .filter(|v| !v.is_empty())
+        .map(abs);
+    if let Some(v) = &canonical {
+        head.push_str(&format!("<link rel=\"canonical\" href=\"{}\">", escape_attr(v)));
+    }
+
+    // alternates — one link per language, plus x-default
+    if let Some(alternates) = hd.and_then(|h| h.get("alternates")).and_then(Value::as_object) {
+        for (lang, href) in alternates {
+            if let Some(href) = href.as_str().filter(|h| !h.is_empty()) {
+                head.push_str(&format!(
+                    "<link rel=\"alternate\" hreflang=\"{}\" href=\"{}\">",
+                    escape_attr(lang),
+                    escape_attr(&abs(href))
+                ));
+            }
         }
     }
 
@@ -1000,47 +1029,70 @@ fn build_document_shell(page_config: &Option<Value>, body_content: &str) -> Stri
         }
     }
 
-    // Open Graph
-    if let Some(og) = hd.and_then(|h| h.get("og")) {
-        for (prop, key) in &[
-            ("og:title", "title"),
-            ("og:description", "description"),
-            ("og:image", "image"),
-            ("og:url", "url"),
-            ("og:type", "type"),
-            ("og:site_name", "siteName"),
-            ("og:locale", "locale"),
-        ] {
-            if let Some(v) = og.get(*key).and_then(Value::as_str) {
-                if !v.is_empty() {
-                    head.push_str(&format!(
-                        "<meta property=\"{}\" content=\"{}\">",
-                        prop,
-                        escape_attr(v)
-                    ));
-                }
+    // Open Graph — explicit values win; the rest come from title,
+    // description, canonical and the request. A page that set those three
+    // gets a complete card without repeating itself.
+    let og = hd.and_then(|h| h.get("og"));
+    let og_str = |key: &str| og.and_then(|o| o.get(key)).and_then(Value::as_str).filter(|v| !v.is_empty()).map(str::to_string);
+    let og_image = og_str("image").map(|v| abs(&v));
+    let has_card_source = og.is_some() || !title.is_empty();
+    if has_card_source {
+        let og_title = og_str("title").unwrap_or_else(|| title.to_string());
+        let og_description = og_str("description").unwrap_or_else(|| description.to_string());
+        let og_url = og_str("url").map(|v| abs(&v)).or_else(|| canonical.clone()).or_else(|| site.page_url());
+        let og_type = og_str("type").unwrap_or_else(|| "website".to_string());
+        let pairs: [(&str, Option<String>); 7] = [
+            ("og:title", (!og_title.is_empty()).then_some(og_title)),
+            ("og:description", (!og_description.is_empty()).then_some(og_description)),
+            ("og:image", og_image.clone()),
+            ("og:url", og_url),
+            ("og:type", Some(og_type)),
+            ("og:site_name", og_str("siteName")),
+            ("og:locale", og_str("locale")),
+        ];
+        for (prop, value) in pairs {
+            if let Some(v) = value {
+                head.push_str(&format!("<meta property=\"{}\" content=\"{}\">", prop, escape_attr(&v)));
             }
         }
     }
 
-    // Twitter Card
-    if let Some(tw) = hd.and_then(|h| h.get("twitter")) {
-        for (name, key) in &[
-            ("twitter:card", "card"),
-            ("twitter:title", "title"),
-            ("twitter:description", "description"),
-            ("twitter:image", "image"),
-            ("twitter:site", "site"),
-            ("twitter:creator", "creator"),
-        ] {
-            if let Some(v) = tw.get(*key).and_then(Value::as_str) {
-                if !v.is_empty() {
-                    head.push_str(&format!(
-                        "<meta name=\"{}\" content=\"{}\">",
-                        name,
-                        escape_attr(v)
-                    ));
-                }
+    // Twitter Card — defaults from Open Graph; `summary_large_image` when
+    // there is an image to show.
+    let tw = hd.and_then(|h| h.get("twitter"));
+    let tw_str = |key: &str| tw.and_then(|t| t.get(key)).and_then(Value::as_str).filter(|v| !v.is_empty()).map(str::to_string);
+    let tw_image = tw_str("image").map(|v| abs(&v)).or_else(|| og_image.clone());
+    if tw.is_some() || tw_image.is_some() {
+        let card = tw_str("card").unwrap_or_else(|| if tw_image.is_some() { "summary_large_image".into() } else { "summary".into() });
+        let pairs: [(&str, Option<String>); 6] = [
+            ("twitter:card", Some(card)),
+            ("twitter:title", tw_str("title").or_else(|| og_str("title")).or_else(|| (!title.is_empty()).then(|| title.to_string()))),
+            ("twitter:description", tw_str("description").or_else(|| og_str("description")).or_else(|| (!description.is_empty()).then(|| description.to_string()))),
+            ("twitter:image", tw_image),
+            ("twitter:site", tw_str("site")),
+            ("twitter:creator", tw_str("creator")),
+        ];
+        for (name, value) in pairs {
+            if let Some(v) = value {
+                head.push_str(&format!("<meta name=\"{}\" content=\"{}\">", name, escape_attr(&v)));
+            }
+        }
+    }
+
+    // JSON-LD — an object or an array of objects, one block each. The
+    // renderer serialises and escapes; a page never builds this as a string.
+    if let Some(jsonld) = hd.and_then(|h| h.get("jsonld")) {
+        let blocks: Vec<&Value> = match jsonld {
+            Value::Array(items) => items.iter().filter(|v| v.is_object()).collect(),
+            Value::Object(_) => vec![jsonld],
+            _ => Vec::new(),
+        };
+        for block in blocks {
+            if let Ok(text) = serde_json::to_string(block) {
+                head.push_str(&format!(
+                    "<script type=\"application/ld+json\">{}</script>",
+                    escape_json_script(&text)
+                ));
             }
         }
     }
@@ -1116,6 +1168,32 @@ fn escape_attr(s: &str) -> String {
         .replace('"', "&quot;")
 }
 
+/// Puts the engine's Tailwind block — preflight first, then the utilities —
+/// into the head **before** the project's own stylesheets.
+///
+/// Order is the whole point. The preflight resets `border: 0 solid`, which
+/// resets border *colour* to `currentColor`; shadcn's base rule
+/// `* { border-color: var(--border) }` lives in the project's `globals.css`
+/// and has to come after that reset to win. Every project stylesheet is a
+/// `<style data-rwe-style>` block written by [`render`], so the engine block
+/// goes in front of the first one, or before `</head>` when there is none.
+/// The same order a Tailwind build produces: preflight, utilities, your CSS.
+pub fn insert_engine_styles(html: &str, css: &str) -> String {
+    if css.trim().is_empty() {
+        return html.to_string();
+    }
+    let block = format!("<style data-rwe-tw>{css}</style>");
+    let mut html = html.to_string();
+    if let Some(pos) = html.find("<style data-rwe-style") {
+        html.insert_str(pos, &block);
+    } else if let Some(pos) = html.find("</head>") {
+        html.insert_str(pos, &block);
+    } else {
+        html = format!("{block}{html}");
+    }
+    html
+}
+
 fn escape_json_script(input: &str) -> String {
     input
         .replace("<", "\\u003c")
@@ -1123,11 +1201,150 @@ fn escape_json_script(input: &str) -> String {
         .replace("&", "\\u0026")
 }
 
+/// Where this render is being served from, read off the page state the
+/// pipeline injected (`headers.host`, `x-forwarded-*`, `route`). The project
+/// never writes its own address (`addressing.md` §0); the renderer knows it
+/// from the request and makes the head's URLs absolute with it.
+#[derive(Debug, Clone, Default)]
+pub struct SiteContext {
+    /// `https://research.example`, or `None` when no host header reached the render
+    /// (previews, tests) — relative URLs are then left as they are.
+    pub origin: Option<String>,
+    /// The browser path being rendered, for `og:url` when no canonical is set.
+    pub route: Option<String>,
+}
+
+impl SiteContext {
+    pub fn from_state(state: &Value) -> Self {
+        let headers = state.get("headers");
+        let header = |name: &str| {
+            headers
+                .and_then(|h| h.get(name))
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|v| !v.is_empty())
+                .map(str::to_string)
+        };
+        let host = header("x-forwarded-host").or_else(|| header("host"));
+        let proto = header("x-forwarded-proto").unwrap_or_else(|| "http".to_string());
+        let origin = host.map(|h| format!("{}://{}", proto.split(',').next().unwrap_or("http").trim(), h.split(',').next().unwrap_or("").trim()));
+        let route = state
+            .get("route")
+            .and_then(Value::as_str)
+            .filter(|r| r.starts_with('/'))
+            .map(str::to_string);
+        Self { origin, route }
+    }
+
+    /// A root-relative URL made absolute; anything else unchanged.
+    pub fn absolute(&self, url: &str) -> String {
+        match (&self.origin, url.starts_with('/') && !url.starts_with("//")) {
+            (Some(origin), true) => format!("{origin}{url}"),
+            _ => url.to_string(),
+        }
+    }
+
+    pub fn page_url(&self) -> Option<String> {
+        match (&self.origin, &self.route) {
+            (Some(origin), Some(route)) => Some(format!("{origin}{route}")),
+            _ => None,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::rwe::core::model::HydrateMode;
     use serde_json::json;
+
+    fn site() -> SiteContext {
+        SiteContext::from_state(&json!({
+            "headers": { "host": "research.example", "x-forwarded-proto": "https" },
+            "route": "/researchers/jane-doe"
+        }))
+    }
+
+    /// `discoverability.md` §1: the page declares a few values; the renderer
+    /// writes the tags, resolves the URLs and fills the defaults.
+    #[test]
+    fn engine_styles_go_before_the_project_stylesheet() {
+        let html = "<html><head><title>x</title><style data-rwe-style=\"0\">*{border-color:var(--border)}</style></head><body></body></html>";
+        let out = insert_engine_styles(html, "*{border:0 solid}");
+        let tw = out.find("<style data-rwe-tw>").expect("engine block");
+        let mine = out.find("<style data-rwe-style").expect("project block");
+        assert!(tw < mine, "preflight first, the project's base rules after it: {out}");
+        let bare = insert_engine_styles("<html><head></head></html>", ".a{}");
+        assert!(bare.contains("<style data-rwe-tw>.a{}</style></head>"));
+        assert_eq!(insert_engine_styles("<p>", "  "), "<p>");
+    }
+
+    #[test]
+    fn head_urls_become_absolute_and_cards_are_defaulted() {
+        let page = json!({ "head": {
+            "title": "Jane Doe", "titleSuffix": " — RESEARCHSITE", "description": "Maternal health in eastern Indonesia.",
+            "canonical": "/researchers/jane-doe",
+            "og": { "image": "/files/photos/jane.webp" }
+        }});
+        let html = build_document_shell(&Some(page), "<div></div>", &site());
+        assert!(html.contains("<title>Jane Doe — RESEARCHSITE</title>"), "{html}");
+        assert!(html.contains(r#"<link rel="canonical" href="https://research.example/researchers/jane-doe">"#), "{html}");
+        assert!(html.contains(r#"<meta property="og:title" content="Jane Doe">"#), "og:title from title");
+        assert!(html.contains(r#"<meta property="og:description" content="Maternal health in eastern Indonesia.">"#));
+        assert!(html.contains(r#"<meta property="og:image" content="https://research.example/files/photos/jane.webp">"#), "absolute image");
+        assert!(html.contains(r#"<meta property="og:url" content="https://research.example/researchers/jane-doe">"#), "og:url from canonical");
+        assert!(html.contains(r#"<meta property="og:type" content="website">"#));
+        assert!(html.contains(r#"<meta name="twitter:card" content="summary_large_image">"#), "card from image");
+        assert!(html.contains(r#"<meta name="twitter:image" content="https://research.example/files/photos/jane.webp">"#));
+    }
+
+    #[test]
+    fn explicit_card_values_win_and_a_suffix_is_never_doubled() {
+        let page = json!({ "head": {
+            "title": "RESEARCHSITE", "titleSuffix": " — RESEARCHSITE",
+            "og": { "title": "Custom", "type": "profile", "url": "https://elsewhere.example/x" },
+            "twitter": { "card": "summary" }
+        }});
+        let html = build_document_shell(&Some(page), "<div></div>", &site());
+        assert!(html.contains("<title>RESEARCHSITE</title>"), "{html}");
+        assert!(html.contains(r#"<meta property="og:title" content="Custom">"#));
+        assert!(html.contains(r#"<meta property="og:type" content="profile">"#));
+        assert!(html.contains(r#"<meta property="og:url" content="https://elsewhere.example/x">"#));
+        assert!(html.contains(r#"<meta name="twitter:card" content="summary">"#));
+    }
+
+    #[test]
+    fn jsonld_and_alternates_are_emitted_and_escaped() {
+        let page = json!({ "head": {
+            "title": "x",
+            "jsonld": [
+                { "@context": "https://schema.org", "@type": "Person", "name": "Jane </script> Doe" },
+                { "@context": "https://schema.org", "@type": "BreadcrumbList" }
+            ],
+            "alternates": { "en": "/researchers/jane-doe", "id": "/id/researchers/jane-doe", "x-default": "/researchers/jane-doe" }
+        }});
+        let html = build_document_shell(&Some(page), "<div></div>", &site());
+        assert_eq!(html.matches(r#"<script type="application/ld+json">"#).count(), 2);
+        assert!(!html.contains("</script> Sari"), "the closing tag inside the JSON is escaped: {html}");
+        assert!(html.contains(r#""@type":"Person""#));
+        assert!(html.contains(r#"<link rel="alternate" hreflang="id" href="https://research.example/id/researchers/jane-doe">"#), "{html}");
+        assert_eq!(html.matches(r#"rel="alternate" hreflang="#).count(), 3);
+        let single = json!({ "head": { "jsonld": { "@type": "Organization", "name": "RESEARCHSITE" } } });
+        let html = build_document_shell(&Some(single), "<div></div>", &SiteContext::default());
+        assert_eq!(html.matches("application/ld+json").count(), 1);
+    }
+
+    #[test]
+    fn without_a_host_relative_urls_are_left_alone() {
+        let page = json!({ "head": { "title": "x", "canonical": "/p", "og": { "image": "/i.png" } } });
+        let html = build_document_shell(&Some(page), "<div></div>", &SiteContext::default());
+        assert!(html.contains(r#"href="/p""#) && html.contains(r#"content="/i.png""#), "{html}");
+        assert!(html.contains(r#"<meta property="og:url" content="/p">"#), "canonical still feeds og:url, relative as given");
+        let bare = build_document_shell(&Some(json!({ "head": { "title": "x" } })), "<div></div>", &SiteContext::default());
+        assert!(!bare.contains("og:url"), "no canonical, no origin, no route → no og:url guessed: {bare}");
+        let forwarded = SiteContext::from_state(&json!({ "headers": { "host": "127.0.0.1:10611", "x-forwarded-host": "research.example", "x-forwarded-proto": "https" } }));
+        assert_eq!(forwarded.absolute("/p"), "https://research.example/p");
+    }
 
     /// A page saying which stylesheet it needs must get it.
     ///
@@ -1151,7 +1368,7 @@ mod tests {
                 ]
             }
         });
-        let html = build_document_shell(&Some(page), "<div></div>");
+        let html = build_document_shell(&Some(page), "<div></div>", &SiteContext::default());
 
         assert!(
             html.contains(
@@ -1182,7 +1399,7 @@ mod tests {
                 ]
             }
         });
-        let html = build_document_shell(&Some(page), "<div></div>");
+        let html = build_document_shell(&Some(page), "<div></div>", &SiteContext::default());
 
         assert!(
             html.contains(r#"<link rel="stylesheet" href="/assets/platform/db-suite.css">"#),
@@ -1206,7 +1423,7 @@ mod tests {
     /// Declaring nothing adds nothing.
     #[test]
     fn a_page_without_links_gets_no_stylesheet_tags() {
-        let html = build_document_shell(&Some(json!({ "head": { "title": "x" } })), "<div></div>");
+        let html = build_document_shell(&Some(json!({ "head": { "title": "x" } })), "<div></div>", &SiteContext::default());
         assert!(!html.contains("rel=\"stylesheet\""), "{html}");
     }
 

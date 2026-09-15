@@ -18,7 +18,7 @@ and asserting the state an action should produce.
 
 ```
 pipeline_list status=all                     → the pipeline is active, not draft or stale
-route_fetch path="/posts"                    → status, location, set_cookie, rwe_component_errors, body
+route_fetch path="/posts"                    → status, location, set_cookie, rwe_component_errors, seo, body
 route_fetch path="/posts" method=POST form={"title":"Hi","slug":"hi"}
 route_fetch path="/admin" cookie="zebflow_session=eyJ…"      (the value a login's set_cookie gave you)
 ```
@@ -34,6 +34,9 @@ Read, do not skim:
 - the status you meant (`200`, `303` with `location`, `400` with the message);
 - for a page, `rwe_component_errors` is empty — a throwing component is
   replaced by that comment and the response is still 200;
+- for a public page, `seo` reads right: `h1_count` is 1, `title` is the
+  page's, `og.absolute` is true when there is an image (the `growth-rules`
+  skill has the full list);
 - the data is in the HTML (the title you inserted, the row count);
 - the failure paths: the request without a cookie, the invalid body, the
   second POST that must be refused.

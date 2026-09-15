@@ -102,7 +102,17 @@ export default function DeckMap(props) {
 
     const attachHost = (node) => {
       hostRef.current = node;
-      if (!node || instanceRef.current || node._zebDeckPatched) return;
+      if (!node || instanceRef.current) return;
+      // The runtime mounts the server-rendered host from `data-config` before
+      // hydration. The hydrated wrapper must adopt that instance, not walk
+      // away from it: with `instanceRef` empty every later `setOptions` is a
+      // no-op and a layer built from page state never reaches the deck.
+      if (node._zdInstance) {
+        instanceRef.current = node._zdInstance;
+        instanceRef.current.setOptions?.(config);
+        return;
+      }
+      if (node._zebDeckPatched) return;
       if (typeof globalThis.createDeckMapRuntime !== "function") return;
       instanceRef.current?.destroy?.();
       instanceRef.current = globalThis.createDeckMapRuntime(node, config);

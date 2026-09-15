@@ -1325,8 +1325,10 @@ impl ZebflowMcpHandler {
         `path` is the route under the project (`/`, `/book`, `/api/slots?date=2026-09-14`); the request goes to \
         the project's own host (`<project>.<owner>.localhost`) through the real ingress, so auth, cookies, \
         redirects (`location: /admin` means the project's /admin) and page rendering happen exactly as in a browser. Returns status, content_type, location, set_cookie, length, rwe_component_errors (every \
-        `<!-- RWE component error -->` in the body — a 200 with one of these is a broken page) and the body \
-        (capped, `max_body_chars`). `method` GET|POST|PUT|DELETE; `form` posts url-encoded fields like a <form>; \
+        `<!-- RWE component error -->` in the body — a 200 with one of these is a broken page), for HTML an \
+        `seo` object (title, description_chars, canonical, h1_count, og completeness and whether og:image is \
+        absolute, twitter_card, jsonld_types, hreflang, images_without_alt, robots, lang — compare these against \
+        the growth-rules skill instead of reading HTML) and the body (capped, `max_body_chars`). `method` GET|POST|PUT|DELETE; `form` posts url-encoded fields like a <form>; \
         `body` sends JSON (an object) or raw text (a string); `cookie` is a Cookie header value — copy it from a \
         login's set_cookie (`name=value`) to reach protected routes; `follow_redirects` is off by default so you \
         see the 302/303 and its location. Fetch every route you built, and every failure path, before saying done."

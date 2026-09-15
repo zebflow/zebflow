@@ -175,8 +175,15 @@ pub struct Resolution {
 
 impl Resolution {
     /// The platform-form path this request is served as.
+    ///
+    /// `files` is the *public* files surface: `/_files/photos/a.webp` is the
+    /// object at `public/photos/a.webp`, so the store's `public/` folder is
+    /// inserted here and never written by a page.
     pub fn platform_path(&self) -> String {
-        let prefix = self.surface.platform_prefix(&self.owner, &self.project);
+        let mut prefix = self.surface.platform_prefix(&self.owner, &self.project);
+        if self.surface == Surface::Files {
+            prefix.push_str("/public");
+        }
         if self.rest == "/" {
             match self.surface {
                 Surface::Pages | Surface::Mcp => prefix,
@@ -604,7 +611,7 @@ mod tests {
             host: "p.o.localhost".into(),
             dev_host: true,
         };
-        assert_eq!(r.platform_path(), "/files/o/p/a.jpg");
+        assert_eq!(r.platform_path(), "/files/o/p/public/a.jpg", "the public surface adds the store's public/ folder");
         let r = Resolution { surface: Surface::Pages, rest: "/".into(), ..r };
         assert_eq!(r.platform_path(), "/wh/o/p");
         let r = Resolution { surface: Surface::Pages, rest: "/book?x=1".into(), ..r };

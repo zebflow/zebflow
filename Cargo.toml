@@ -100,10 +100,12 @@ object_store = { version = "0.13", features = ["aws", "http"] }
 tokio-tungstenite = { version = "0.24", features = ["native-tls"] }
 wasmtime = { version = "36.0.2", default-features = false, features = ["cranelift", "runtime", "std"] }
 lettre = { version = "0.11.23", default-features = false, features = ["smtp-transport", "tokio1", "tokio1-rustls-tls", "builder", "hostname"] }
+# The route_fetch SEO scan reads a rendered page's head; regex is already in
+# the dependency graph, so this promotes it from dev-only to runtime.
+regex = "1"
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
-regex = "1"
 
 # Debug info dominates the dev target directory: every integration-test binary
 # statically links v8, wasmtime and oxc, and each copy carried full symbols.

@@ -30,7 +30,8 @@ pub fn definition() -> NodeDefinition {
              `return`s is the next node's entire payload. `input` is the current payload (after a webhook, `input.body.x`); \
              `ctx.trigger.params/query/auth` is the request and `ctx.nodes.<id>` an earlier node's output. It cannot set a status or header \
              (`web.response` does), `return null` does not stop the run (`logic.if` does), and `fetch`, `setTimeout`, `require` and \
-             `import` are blocked (`http.request` calls out). Keep it to shaping data: compose, rename, compute. A `__signal` key in \
+             `import` are blocked (`http.request` calls out). Keep it to shaping data: compose, rename, compute — a run has 1 s and \
+             its return 256 KB (`DenoSandboxError: timeout exceeded` means do less here or split the work). A `__signal` key in \
              the return is stripped and shown as live progress in the Studio."
                 .to_string(),
         input_schema: serde_json::json!({

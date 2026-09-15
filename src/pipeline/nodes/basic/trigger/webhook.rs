@@ -67,8 +67,9 @@ pub fn definition() -> NodeDefinition {
             input.path (request path), input.method (HTTP method). \
             Also available via $trigger: $trigger.query, $trigger.params, $trigger.auth, $trigger.headers. \
             Use --auth-type jwt/hmac/api_key and --auth-credential <id> to protect the route. \
-            jwt auth checks Authorization: Bearer header first, then Cookie: zebflow_session fallback — \
-            verified claims are injected into input.auth. \
+            jwt auth checks Authorization: Bearer header first, then the cookie the credential names (`cookie_name`, default zebflow_session) — \
+            verified claims are injected into input.auth. Add --auth-optional for a public page that only wants to know \
+            who is signed in: a valid token fills input.auth, anything else leaves it null and the page renders for the guest. \
             Streaming: clients that send Accept: text/event-stream receive an SSE stream \
             instead of a single response. Nodes that emit signals via the ExecutionBus \
             (or return __signal in their output) are forwarded as event: signal messages. \
@@ -113,6 +114,10 @@ pub fn definition() -> NodeDefinition {
                     "type": "array",
                     "items": { "type": "string" },
                     "description": "Required roles for this route. One entry of the JWT 'roles' array claim must match. Empty = any authenticated user."
+                },
+                "auth_optional": {
+                    "type": "boolean",
+                    "description": "With auth_type jwt: a public route that knows who is signed in. A valid token fills input.auth; no token, an expired one or a missing role leaves input.auth null and the run proceeds — never 401 or 403."
                 }
             }
         }),
@@ -128,6 +133,7 @@ pub fn definition() -> NodeDefinition {
             ], help: Some("Trigger-level auth. On failure returns 401.".to_string()), ..Default::default() },
             NodeFieldDef { name: "auth_credential".to_string(), label: "Auth Credential".to_string(), field_type: NodeFieldType::Select, data_source: Some(NodeFieldDataSource::CredentialsWebhookAuth), help: Some("Credential for signing key / secret / api_key.".to_string()), ..Default::default() },
             NodeFieldDef { name: "auth_required_role".to_string(), label: "Required Role".to_string(), field_type: NodeFieldType::MultiCheckbox, data_source: Some(NodeFieldDataSource::CredentialJwtRoles), help: Some("Roles allowed to access this route. Populated from the selected JWT credential's registered roles. Empty = any authenticated user.".to_string()), ..Default::default() },
+            NodeFieldDef { name: "auth_optional".to_string(), label: "Auth Optional".to_string(), field_type: NodeFieldType::Checkbox, default_value: Some(serde_json::json!(false)), help: Some("Public route that knows who is signed in: a valid token fills input.auth, anything else leaves it null and the page still renders. Never 401.".to_string()), ..Default::default() },
         ],
         dsl_flags: vec![
             DslFlag {
@@ -165,6 +171,13 @@ pub fn definition() -> NodeDefinition {
                 kind: DslFlagKind::CommaSeparatedList,
                 required: false,
             },
+            DslFlag {
+                flag: "--auth-optional".to_string(),
+                config_key: "auth_optional".to_string(),
+                description: "With --auth-type jwt: the route stays public; a valid token fills input.auth, no token or a bad one leaves input.auth null instead of answering 401. For a public page that greets a signed-in user.".to_string(),
+                kind: DslFlagKind::Bool,
+                required: false,
+            },
         ],
         layout: vec![
             LayoutItem::Field("path".to_string()),
@@ -172,6 +185,7 @@ pub fn definition() -> NodeDefinition {
             LayoutItem::Field("__webhook_public_url".to_string()),
             LayoutItem::Row { row: vec![LayoutItem::Field("auth_type".to_string()), LayoutItem::Field("auth_credential".to_string())] },
             LayoutItem::Field("auth_required_role".to_string()),
+            LayoutItem::Field("auth_optional".to_string()),
         ],
         ai_tool: Default::default(),
         examples: vec![

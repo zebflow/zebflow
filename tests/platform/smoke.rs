@@ -6737,3 +6737,146 @@ async fn instance_scope_is_one_prefix_and_never_answers_an_anonymous_caller() {
         );
     }
 }
+
+/// `--auth-optional`: a public page that knows who is signed in. The same
+/// route answers a guest with `input.auth` null and a member with the claims;
+/// an expired or foreign token is a guest, never a 401.
+#[tokio::test]
+async fn an_auth_optional_webhook_answers_guests_and_reads_a_valid_token() {
+    let mut config = PlatformConfig::default();
+    config.data_root = temp_test_dir("auth-optional");
+    config.default_password = "test-pass".to_string();
+    let app = build_router(config).await.expect("platform router");
+    let cookie = login_cookie(app.clone(), "superadmin", "test-pass").await;
+
+    let cred = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/projects/superadmin/default/credentials")
+                .method("POST")
+                .header(header::COOKIE, &cookie)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({
+                        "credential_id": "auth_member",
+                        "title": "Member sessions",
+                        "kind": "jwt_signing_key",
+                        "notes": "",
+                        "secret": { "algorithm": "HS256", "secret": "test-secret-at-least-32-bytes-long!!", "cookie_name": "site_member", "auth_redirect": "/login" }
+                    })
+                    .to_string(),
+                ))
+                .expect("request"),
+        )
+        .await
+        .expect("credential response");
+    assert_eq!(cred.status(), StatusCode::OK);
+
+    for dsl in [
+        r#"register pipelines/tests/whoami -- | trigger.webhook --path /whoami --method GET --auth-type jwt --auth-credential auth_member --auth-optional | script -- "return { who: input.auth ? input.auth.sub : 'guest' }" | web.response"#,
+        "activate pipeline pipelines/tests/whoami.zf.json",
+    ] {
+        let dsl_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/projects/superadmin/default/pipelines/dsl")
+                    .method("POST")
+                    .header(header::COOKIE, &cookie)
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(json!({ "dsl": dsl }).to_string()))
+                    .expect("request"),
+            )
+            .await
+            .expect("dsl response");
+        let dsl_json = response_json(dsl_response).await;
+        assert_eq!(dsl_json["ok"], json!(true), "dsl output: {dsl_json}");
+    }
+
+    let ask = |cookie_header: Option<String>| {
+        let app = app.clone();
+        async move {
+            let mut req = Request::builder()
+                .uri("/wh/superadmin/default/whoami")
+                .method("GET");
+            if let Some(c) = cookie_header {
+                req = req.header(header::COOKIE, c);
+            }
+            let response = app
+                .oneshot(req.body(Body::empty()).expect("request"))
+                .await
+                .expect("response");
+            let status = response.status();
+            (status, response_json(response).await)
+        }
+    };
+
+    let (status, body) = ask(None).await;
+    assert_eq!(status, StatusCode::OK, "a guest is answered: {body}");
+    assert_eq!(body["who"], json!("guest"));
+
+    use jsonwebtoken::{EncodingKey, Header, encode};
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("clock")
+        .as_secs() as i64;
+    let key = EncodingKey::from_secret(b"test-secret-at-least-32-bytes-long!!");
+    let valid = encode(&Header::default(), &json!({ "sub": "m_1", "exp": now + 600 }), &key).expect("jwt");
+    let (status, body) = ask(Some(format!("site_member={valid}"))).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["who"], json!("m_1"), "a valid token fills input.auth: {body}");
+
+    let expired = encode(&Header::default(), &json!({ "sub": "m_1", "exp": now - 600 }), &key).expect("jwt");
+    let (status, body) = ask(Some(format!("site_member={expired}"))).await;
+    assert_eq!(status, StatusCode::OK, "an expired token is a guest, not a 401: {body}");
+    assert_eq!(body["who"], json!("guest"));
+
+    let foreign = encode(&Header::default(), &json!({ "sub": "p_1", "exp": now + 600 }), &EncodingKey::from_secret(b"another-key-entirely-for-participants"))
+        .expect("jwt");
+    let (status, body) = ask(Some(format!("site_member={foreign}"))).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["who"], json!("guest"), "a token under another key is a guest: {body}");
+
+    // Without --auth-optional the same credential refuses a guest — and a
+    // browser navigation is sent to the credential's auth_redirect carrying
+    // the page it wanted, so the sign-in can bring the visitor back.
+    for dsl in [
+        r#"register pipelines/tests/mine -- | trigger.webhook --path /mine/:slug --method GET --auth-type jwt --auth-credential auth_member | web.response --message ok"#,
+        "activate pipeline pipelines/tests/mine.zf.json",
+    ] {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/projects/superadmin/default/pipelines/dsl")
+                    .method("POST")
+                    .header(header::COOKIE, &cookie)
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(json!({ "dsl": dsl }).to_string()))
+                    .expect("request"),
+            )
+            .await
+            .expect("dsl response");
+        assert_eq!(response_json(response).await["ok"], json!(true));
+    }
+    let nav = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/wh/superadmin/default/mine/abc?tab=2")
+                .method("GET")
+                .header(header::ACCEPT, "text/html,application/xhtml+xml")
+                .header("sec-fetch-mode", "navigate")
+                .header("sec-fetch-dest", "document")
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    assert_eq!(nav.status(), StatusCode::SEE_OTHER, "a navigation is redirected to sign in");
+    assert_eq!(
+        nav.headers().get(header::LOCATION).and_then(|v| v.to_str().ok()),
+        Some("/login?next=%2Fmine%2Fabc%3Ftab%3D2")
+    );
+}

@@ -37,7 +37,7 @@ A host that carries any custom route serves only its routes.
 |---|---|---|---|
 | `pages` — active `trigger.webhook` routes | on | `/` (**root**; the only surface that can be) | `/wh/{o}/{p}/…` |
 | `ws` — `trigger.ws` rooms | on | `/_ws/rooms/{room}` | `/ws/{o}/{p}/rooms/{room}` |
-| `files` — public objects | on | `/_files/…` | `/files/{o}/{p}/…` |
+| `files` — public objects (the store's `public/` folder) | yes | `/_files/…` → `public/…` | `/files/{o}/{p}/public/…` |
 | `static` — project assets, `_rwe/lib`, `_rwe/scripts` | on | `/_static/…` | `/static/{o}/{p}/…` |
 | `ms` — published map layers | **off** | `/_ms/…` | `/ms/{o}/{p}/…` |
 | `fs` — private objects (session) | **off** | `/_fs/…` | `/fs/{o}/{p}/…` |

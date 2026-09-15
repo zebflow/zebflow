@@ -1744,15 +1744,8 @@ fn render_page(
     // fall back to Latin-1 when no DOCTYPE or explicit encoding is in the fragment.
     html = ensure_meta_charset(html);
 
-    if let Some(css) = out.hydration_payload.get("css").and_then(Value::as_str)
-        && !css.trim().is_empty()
-    {
-        let style_block = format!("<style data-rwe-tw>{css}</style>");
-        if let Some(pos) = html.find("</head>") {
-            html.insert_str(pos, &style_block);
-        } else {
-            html = format!("{style_block}{html}");
-        }
+    if let Some(css) = out.hydration_payload.get("css").and_then(Value::as_str) {
+        html = crate::rwe::core::render::insert_engine_styles(&html, css);
     }
 
     // All platform pages depend on shared design tokens and reset CSS.
@@ -22716,14 +22709,7 @@ async fn dispatch_weberror(
             .and_then(|hp| hp.get("css"))
             .and_then(Value::as_str)
         {
-            if !css.trim().is_empty() {
-                let style_block = format!("<style data-rwe-tw>{css}</style>");
-                if let Some(pos) = html.find("</head>") {
-                    html.insert_str(pos, &style_block);
-                } else {
-                    html = format!("{style_block}{html}");
-                }
-            }
+            html = crate::rwe::core::render::insert_engine_styles(&html, css);
         }
         let scripts = output
             .value
@@ -22814,6 +22800,7 @@ async fn public_webhook_ingress(
         auth_type: String,
         auth_credential: String,
         auth_required_role: Vec<String>,
+        auth_optional: bool,
     }
 
     let mut candidates = Vec::<Candidate>::new();
@@ -22833,6 +22820,7 @@ async fn public_webhook_ingress(
                 auth_type: trigger.auth_type.clone(),
                 auth_credential: trigger.auth_credential.clone(),
                 auth_required_role: trigger.auth_required_role.clone(),
+                auth_optional: trigger.auth_optional,
                 compiled: compiled.clone(),
                 path_params: path_match.params,
                 static_segments: path_match.static_segments,
@@ -22873,7 +22861,7 @@ async fn public_webhook_ingress(
     let auth_claims = if is_controller_call(&state, &headers) {
         Ok(None)
     } else {
-        verify_webhook_auth(
+        let verified = verify_webhook_auth(
             &headers,
             &body,
             &selected.auth_type,
@@ -22882,7 +22870,19 @@ async fn public_webhook_ingress(
             &state.platform.credentials,
             &owner,
             &project,
-        )
+        );
+        // `--auth-optional`: the route is public and only wants to know who is
+        // signed in. A missing, expired or role-less token is a guest, not a
+        // refusal; the page reads `input.auth` and decides. A misconfigured
+        // credential is still an error — that is the operator's, not the visitor's.
+        match verified {
+            Err(AuthError::Unauthenticated { .. }) | Err(AuthError::Forbidden { .. })
+                if selected.auth_optional =>
+            {
+                Ok(None)
+            }
+            other => other,
+        }
     };
     let auth_claims = match auth_claims {
         Ok(claims) => claims,
@@ -22901,6 +22901,21 @@ async fn public_webhook_ingress(
 
             if is_page_navigation(&headers) {
                 if let Some(url) = redirect_url {
+                    // Carry the page the visitor wanted: a member who opens
+                    // the WA group's event link, signs in, and lands back on
+                    // that event, not on a generic home. `next` is the name
+                    // every login form already reads (Django, Rails' return_to);
+                    // a redirect that already carries a query gets `&next=`.
+                    let wanted = {
+                        let mut wanted = path.clone();
+                        if let Some(q) = uri.query().filter(|q| !q.is_empty()) {
+                            wanted.push('?');
+                            wanted.push_str(q);
+                        }
+                        wanted
+                    };
+                    let sep = if url.contains('?') { '&' } else { '?' };
+                    let url = format!("{url}{sep}next={}", url_query_encode(&wanted));
                     return axum::response::Redirect::to(&url).into_response();
                 }
             }
@@ -23299,14 +23314,7 @@ async fn public_webhook_ingress(
                 .and_then(|hp| hp.get("css"))
                 .and_then(Value::as_str)
             {
-                if !css.trim().is_empty() {
-                    let style_block = format!("<style data-rwe-tw>{css}</style>");
-                    if let Some(pos) = html.find("</head>") {
-                        html.insert_str(pos, &style_block);
-                    } else {
-                        html = format!("{style_block}{html}");
-                    }
-                }
+                html = crate::rwe::core::render::insert_engine_styles(&html, css);
             }
             let scripts = resp_cfg
                 .get("compiled_scripts")
@@ -23397,14 +23405,7 @@ async fn public_webhook_ingress(
             .and_then(|hp| hp.get("css"))
             .and_then(Value::as_str)
         {
-            if !css.trim().is_empty() {
-                let style_block = format!("<style data-rwe-tw>{css}</style>");
-                if let Some(pos) = html.find("</head>") {
-                    html.insert_str(pos, &style_block);
-                } else {
-                    html = format!("{style_block}{html}");
-                }
-            }
+            html = crate::rwe::core::render::insert_engine_styles(&html, css);
         }
         let scripts = output
             .value
@@ -28015,15 +28016,8 @@ async fn preview_page(
     let mut html = ensure_meta_charset(out.html);
 
     // Inject Tailwind CSS extracted by the RWE engine.
-    if let Some(css) = out.hydration_payload.get("css").and_then(Value::as_str)
-        && !css.trim().is_empty()
-    {
-        let style_block = format!("<style data-rwe-tw>{css}</style>");
-        if let Some(pos) = html.find("</head>") {
-            html.insert_str(pos, &style_block);
-        } else {
-            html = format!("{style_block}{html}");
-        }
+    if let Some(css) = out.hydration_payload.get("css").and_then(Value::as_str) {
+        html = crate::rwe::core::render::insert_engine_styles(&html, css);
     }
 
     // Platform design tokens + reset.

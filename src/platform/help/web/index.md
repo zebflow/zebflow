@@ -85,9 +85,18 @@ export function getPage(input) {
 | `icons` | `[{ rel, href, type?, sizes? }]` → `<link>` tags (favicons, apple-touch-icon) |
 | `links` | `[{ rel, href, type?, sizes?, media?, crossorigin? }]` → `<link>` tags — a stylesheet the page needs |
 | `scripts` | `[{ src, defer?, async?, nomodule?, type?, crossorigin?, integrity?, referrerpolicy? }]` → `<script>` tags |
-| `og` | `{ title, description, image, url, type, siteName, locale }` → `og:*` |
-| `twitter` | `{ card, title, description, image, site, creator }` → `twitter:*` |
+| `og` | `{ title, description, image, url, type, siteName, locale }` → `og:*`. **Defaults**: `og.title` ← `title`, `og.description` ← `description`, `og.url` ← `canonical` or the page's URL, `og.type` ← `website` — set only what differs |
+| `twitter` | `{ card, title, description, image, site, creator }` → `twitter:*`; `card` defaults to `summary_large_image` when there is an image |
+| `titleSuffix` | appended to `<title>` (`" — RESEARCHSITE"`); set once in the shell's page config; a title equal to the site name takes none |
+| `jsonld` | an object or an array of objects → one `<script type="application/ld+json">` each, serialised and escaped by the renderer (`{ "@context": "https://schema.org", "@type": "Person", … }`) |
+| `alternates` | `{ en: "/x", id: "/id/x", "x-default": "/x" }` → `<link rel="alternate" hreflang>` per entry |
 | `extra` | a raw HTML string appended to `<head>`, unescaped |
+
+**URLs are made absolute for you.** `canonical`, `og.url`, `og.image`,
+`twitter.image` and `alternates` written as `/path` come out as
+`https://<the host the request came in on>/path`, so the same page is right
+in dev and in production and the project never stores its address
+(`docs/contracts/addressing.md`, `discoverability.md`).
 
 `html.lang` and `body.className` set the two outer elements. Use
 `className`, never `class`.

@@ -33,12 +33,17 @@ pub struct DenoSandboxConfig {
 
 impl Default for DenoSandboxConfig {
     fn default() -> Self {
+        // A script is a page's data provider as often as it is a one-line
+        // transform: reading a 250 KB JSON fixture and shaping it for a page
+        // took over 100 ms on a loaded machine, and the answer it builds is
+        // routinely larger than 64 KB. The budget is what such a script needs
+        // on a slow day; the `normalize_limits` clamp is still the ceiling.
         Self {
-            timeout_ms: 100,
-            host_kill_timeout_ms: 1_500,
+            timeout_ms: 1_000,
+            host_kill_timeout_ms: 2_500,
             max_ops: 1_000_000,
             max_source_bytes: 128 * 1024,
-            max_output_bytes: 64 * 1024,
+            max_output_bytes: 256 * 1024,
             local_fetch_root: String::new(),
             allow_list: DenoSandboxAllowList::default(),
             capabilities: vec!["time.now".into(), "math.imul".into(), "math.u32".into()],

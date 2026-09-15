@@ -2124,8 +2124,86 @@ pub struct RouteFetchReport {
     pub set_cookie: Vec<String>,
     pub length: usize,
     pub rwe_component_errors: Vec<String>,
+    /// What search and answer engines will read, as numbers and booleans —
+    /// present for HTML responses (`docs/contracts/discoverability.md` §4).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub seo: Option<Value>,
     pub body: String,
     pub truncated: bool,
+}
+
+/// Read the machine-facing facts off a rendered page. This is deliberately a
+/// scan, not a parse: the builder compares `h1_count == 1` and
+/// `og.absolute == true` against the skills' rules instead of judging HTML.
+pub fn seo_facts(html: &str) -> Value {
+    use regex::Regex;
+    fn first<'a>(re: &Regex, html: &'a str) -> Option<String> {
+        re.captures(html).and_then(|c| c.get(1)).map(|m| m.as_str().trim().to_string())
+    }
+    let title_re = Regex::new(r"(?is)<title[^>]*>(.*?)</title>").unwrap();
+    let meta_name = |name: &str| Regex::new(&format!(r#"(?is)<meta\s+[^>]*name=["']{name}["'][^>]*content=["']([^"']*)["']"#)).unwrap();
+    let meta_prop = |prop: &str| Regex::new(&format!(r#"(?is)<meta\s+[^>]*property=["']{prop}["'][^>]*content=["']([^"']*)["']"#)).unwrap();
+    let canonical_re = Regex::new(r#"(?is)<link\s+[^>]*rel=["']canonical["'][^>]*href=["']([^"']*)["']"#).unwrap();
+    let hreflang_re = Regex::new(r#"(?is)<link\s+[^>]*hreflang=["']([^"']*)["']"#).unwrap();
+    let h1_re = Regex::new(r"(?is)<h1[\s>]").unwrap();
+    let lang_re = Regex::new(r#"(?is)<html[^>]*\slang=["']([^"']*)["']"#).unwrap();
+    let ld_re = Regex::new(r#"(?is)<script[^>]*type=["']application/ld\+json["'][^>]*>(.*?)</script>"#).unwrap();
+    let img_re = Regex::new(r"(?is)<img\b[^>]*>").unwrap();
+    let alt_re = Regex::new(r"(?is)\salt\s*=").unwrap();
+
+    let og_image = first(&meta_prop("og:image"), html);
+    let absolute = |u: &Option<String>| u.as_deref().map(|u| u.starts_with("http://") || u.starts_with("https://")).unwrap_or(false);
+    let mut jsonld_types: Vec<String> = Vec::new();
+    for cap in ld_re.captures_iter(html) {
+        let raw = cap.get(1).map(|m| m.as_str()).unwrap_or("");
+        let text = raw.replace("\\u003c", "<").replace("\\u003e", ">").replace("\\u0026", "&");
+        if let Ok(value) = serde_json::from_str::<Value>(&text) {
+            fn collect(v: &Value, out: &mut Vec<String>) {
+                match v {
+                    Value::Array(items) => items.iter().for_each(|i| collect(i, out)),
+                    Value::Object(map) => {
+                        if let Some(t) = map.get("@type") {
+                            match t {
+                                Value::String(s) => out.push(s.clone()),
+                                Value::Array(ts) => ts.iter().filter_map(|x| x.as_str()).for_each(|s| out.push(s.to_string())),
+                                _ => {}
+                            }
+                        }
+                        if let Some(graph) = map.get("@graph") {
+                            collect(graph, out);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            collect(&value, &mut jsonld_types);
+        } else {
+            jsonld_types.push("INVALID_JSON".to_string());
+        }
+    }
+    let description = first(&meta_name("description"), html);
+    let canonical = first(&canonical_re, html);
+    serde_json::json!({
+        "title": first(&title_re, html),
+        "description_chars": description.as_ref().map(|d| d.chars().count()).unwrap_or(0),
+        "canonical": canonical,
+        "canonical_absolute": absolute(&canonical),
+        "h1_count": h1_re.find_iter(html).count(),
+        "lang": first(&lang_re, html),
+        "robots": first(&meta_name("robots"), html),
+        "og": {
+            "title": first(&meta_prop("og:title"), html).is_some(),
+            "description": first(&meta_prop("og:description"), html).is_some(),
+            "image": og_image,
+            "absolute": absolute(&og_image),
+            "url": first(&meta_prop("og:url"), html),
+            "type": first(&meta_prop("og:type"), html),
+        },
+        "twitter_card": first(&meta_name("twitter:card"), html),
+        "jsonld_types": jsonld_types,
+        "hreflang": hreflang_re.captures_iter(html).filter_map(|c| c.get(1)).map(|m| m.as_str().to_string()).collect::<Vec<_>>(),
+        "images_without_alt": img_re.find_iter(html).filter(|m| !alt_re.is_match(m.as_str())).count(),
+    })
 }
 
 impl PlatformOps {
@@ -2156,7 +2234,13 @@ impl PlatformOps {
         // The request goes to loopback with the project's dev host as `Host`,
         // so it is routed exactly as a browser on that host would be — root-
         // relative links and `Location: /admin` included (`addressing.md` §4).
-        let dev_host = crate::platform::services::addressing::AddressingService::dev_host(&self.owner, &self.project);
+        // With the port, as a browser on this machine would send it, so the
+        // absolute URLs the page emits are the ones a person can click.
+        let dev_host = format!(
+            "{}:{}",
+            crate::platform::services::addressing::AddressingService::dev_host(&self.owner, &self.project),
+            crate::platform::boot::configured_port()
+        );
         let url = format!("{}{}", crate::platform::boot::local_instance_url(), path);
         let method = method.unwrap_or_else(|| "GET".to_string()).to_ascii_uppercase();
         let method = match reqwest::Method::from_bytes(method.as_bytes()) {
@@ -2232,6 +2316,7 @@ impl PlatformOps {
                 rest[..end].trim().to_string()
             })
             .collect();
+        let seo = if content_type.starts_with("text/html") { Some(seo_facts(&text)) } else { None };
         let cap = max_body_chars.unwrap_or(6000).clamp(200, 60_000);
         let (body, truncated) = if text.chars().count() > cap {
             (text.chars().take(cap).collect::<String>(), true)
@@ -2246,10 +2331,40 @@ impl PlatformOps {
             set_cookie,
             length,
             rwe_component_errors,
+            seo,
             body,
             truncated,
         };
         OpsResult::ok(serde_json::to_string_pretty(&report).unwrap_or_default())
+    }
+}
+
+#[cfg(test)]
+mod seo_facts_tests {
+    use super::seo_facts;
+
+    #[test]
+    fn a_page_is_read_as_numbers_and_booleans() {
+        let html = r#"<!DOCTYPE html><html lang="en"><head><title>Jane Doe — RESEARCHSITE</title>
+            <meta name="description" content="Maternal health in eastern Indonesia.">
+            <link rel="canonical" href="https://research.example/researchers/jane-doe">
+            <meta property="og:title" content="Jane Doe"><meta property="og:description" content="x">
+            <meta property="og:image" content="/files/photos/jane.webp"><meta name="twitter:card" content="summary_large_image">
+            <link rel="alternate" hreflang="en" href="https://research.example/r"><link rel="alternate" hreflang="id" href="https://research.example/id/r">
+            <script type="application/ld+json">{"@context":"https://schema.org","@type":"Person","name":"Jane \u003c/script\u003e Doe"}</script>
+            <script type="application/ld+json">[{"@type":"BreadcrumbList"},{"@graph":[{"@type":"WebSite"}]}]</script>
+            </head><body><h1>Jane</h1><h1>Twice</h1><img src="a.png"><img src="b.png" alt=""></body></html>"#;
+        let facts = seo_facts(html);
+        assert_eq!(facts["title"], "Jane Doe — RESEARCHSITE");
+        assert_eq!(facts["description_chars"], 37);
+        assert_eq!(facts["canonical_absolute"], true);
+        assert_eq!(facts["h1_count"], 2);
+        assert_eq!(facts["og"]["absolute"], false, "a relative og:image is the finding");
+        assert_eq!(facts["twitter_card"], "summary_large_image");
+        assert_eq!(facts["jsonld_types"], serde_json::json!(["Person", "BreadcrumbList", "WebSite"]));
+        assert_eq!(facts["hreflang"], serde_json::json!(["en", "id"]));
+        assert_eq!(facts["images_without_alt"], 1);
+        assert_eq!(facts["lang"], "en");
     }
 }
 

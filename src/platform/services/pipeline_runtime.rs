@@ -34,6 +34,10 @@ pub struct WebhookTriggerSpec {
     /// Required roles — JWT claim `role` must match one. Empty = any authenticated user.
     #[serde(default)]
     pub auth_required_role: Vec<String>,
+    /// A public route that knows who is signed in: auth failure means
+    /// `input.auth` is null, not a 401.
+    #[serde(default)]
+    pub auth_optional: bool,
 }
 
 /// One extracted weberror trigger from an active compiled pipeline.
@@ -268,6 +272,11 @@ impl CompiledPipeline {
                                 .collect()
                         })
                         .unwrap_or_default();
+                    let auth_optional = node
+                        .config
+                        .get("auth_optional")
+                        .and_then(serde_json::Value::as_bool)
+                        .unwrap_or(false);
                     webhook_triggers.push(WebhookTriggerSpec {
                         node_id: node.id.clone(),
                         path,
@@ -275,6 +284,7 @@ impl CompiledPipeline {
                         auth_type,
                         auth_credential,
                         auth_required_role,
+                        auth_optional,
                     });
                 }
                 "n.trigger.weberror" => {
@@ -487,6 +497,7 @@ impl CompiledPipeline {
                         auth_type: String::new(),
                         auth_credential: String::new(),
                         auth_required_role: Vec::new(),
+                        auth_optional: false,
                     });
                 }
                 _ => {}

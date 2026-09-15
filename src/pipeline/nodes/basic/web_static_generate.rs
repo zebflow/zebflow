@@ -216,13 +216,8 @@ pub fn build_static_html(
         }
     }
 
-    if let Some(css) = hydration_payload.get("css").and_then(Value::as_str)
-        && !css.trim().is_empty()
-    {
-        html = inject_before_head_end(
-            &html,
-            &format!("<style data-rwe-tw>{}</style>", escape_style_block(css)),
-        );
+    if let Some(css) = hydration_payload.get("css").and_then(Value::as_str) {
+        html = crate::rwe::core::render::insert_engine_styles(&html, &escape_style_block(css));
     }
 
     if !compiled_scripts.is_empty() {

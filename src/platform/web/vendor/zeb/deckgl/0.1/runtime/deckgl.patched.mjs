@@ -167,7 +167,7 @@ function buildGeoJsonLayers(cfg) {
   if (polygons.length && (filled || stroked)) {
     layers.push(
       ...flattenBuiltLayers(
-        originalBuildLayer?.({
+        originalBuildLayer?.(withoutUndefined({
           id: `${baseId}__polygons`,
           type: "PolygonLayer",
           data: polygons,
@@ -187,7 +187,7 @@ function buildGeoJsonLayers(cfg) {
           getLineWidth: resolveFeatureAccessor(cfg.getLineWidth, () => 1),
           getElevation: resolveFeatureAccessor(cfg.getElevation, () => 0),
           updateTriggers: cfg.updateTriggers,
-        }) || [],
+        })) || [],
       ),
     );
   }
@@ -195,7 +195,7 @@ function buildGeoJsonLayers(cfg) {
   if (lines.length && stroked) {
     layers.push(
       ...flattenBuiltLayers(
-        originalBuildLayer?.({
+        originalBuildLayer?.(withoutUndefined({
           id: `${baseId}__lines`,
           type: "PathLayer",
           data: lines,
@@ -212,7 +212,7 @@ function buildGeoJsonLayers(cfg) {
           jointRounded: cfg.jointRounded,
           billboard: cfg.billboard,
           updateTriggers: cfg.updateTriggers,
-        }) || [],
+        })) || [],
       ),
     );
   }
@@ -274,7 +274,7 @@ function buildGeoJsonLayers(cfg) {
     } else if (pointType.includes("icon") || cfg.getIcon || cfg.iconAtlas || cfg.iconMapping) {
       layers.push(
         ...flattenBuiltLayers(
-          originalBuildLayer?.({
+          originalBuildLayer?.(withoutUndefined({
             id: `${baseId}__icons`,
             type: "IconLayer",
             ...commonPointProps,
@@ -289,13 +289,13 @@ function buildGeoJsonLayers(cfg) {
             getSize: "size",
             getAngle: "angle",
             getColor: "color",
-          }) || [],
+          })) || [],
         ),
       );
     } else {
       layers.push(
         ...flattenBuiltLayers(
-          originalBuildLayer?.({
+          originalBuildLayer?.(withoutUndefined({
             id: `${baseId}__points`,
             type: "ScatterplotLayer",
             ...commonPointProps,
@@ -312,7 +312,7 @@ function buildGeoJsonLayers(cfg) {
             getLineColor: "lineColor",
             getLineWidth: "lineWidth",
             getRadius: "radius",
-          }) || [],
+          })) || [],
         ),
       );
     }
@@ -323,7 +323,7 @@ function buildGeoJsonLayers(cfg) {
 
 function buildTripsLayer(cfg) {
   return flattenBuiltLayers(
-    originalBuildLayer?.({
+    originalBuildLayer?.(withoutUndefined({
       ...cfg,
       type: "PathLayer",
       widthUnits: cfg.widthUnits || cfg.lineWidthUnits,
@@ -335,7 +335,7 @@ function buildTripsLayer(cfg) {
         ((row) => row?.path || row?.coordinates || row?.waypoints || []),
       getColor: cfg.getColor || cfg.getLineColor || (() => [255, 255, 255, 255]),
       getWidth: cfg.getWidth || cfg.getLineWidth || (() => 2),
-    }) || [],
+    })) || [],
   );
 }
 
@@ -503,8 +503,17 @@ export function DeckMap(props) {
 
     const attachHost = (node) => {
       hostRef.current = node;
-      if (!node || instanceRef.current || node._zebDeckPatched) return;
-      instanceRef.current?.destroy?.();
+      if (!node || instanceRef.current) return;
+      // The runtime mounts the server-rendered host from `data-config` before
+      // hydration. The hydrated wrapper must adopt that instance, not walk
+      // away from it: with `instanceRef` empty every later `setOptions` is a
+      // no-op and a layer built from page state never reaches the deck.
+      if (node._zdInstance) {
+        instanceRef.current = node._zdInstance;
+        instanceRef.current.setOptions?.(config);
+        return;
+      }
+      if (node._zebDeckPatched) return;
       instanceRef.current = createPatchedDeckMapRuntime(node, config);
     };
 

@@ -11,6 +11,27 @@ The file named "patched" is a Zebflow wrapper around the bundle, not an edit of
 deck.gl's source. It adds layer construction from a declarative spec, tooltip
 handling, and instance bookkeeping. deck.gl's own code is imported, not altered.
 
+Hydration adopts the mounted instance (0.1.4)
+---------------------------------------------
+
+The runtime mounts a server-rendered `<div data-zeb-lib="deckgl">` from its
+`data-config` before the page hydrates, and marks the host patched. The
+hydrated DeckMap wrapper then saw that mark in its ref callback and returned
+without an instance of its own, so every later `setOptions` — the effect that
+runs when `layers` change — was a no-op: a layer built from page state (a
+GeoJSON fetched on the client, a highlight that follows a timer) never reached
+the deck, while the same state changed the DOM around it. The wrapper now
+adopts the instance the runtime left on the host and pushes its current config
+into it once. Both copies of the wrapper (DeckMap.tsx and the one inside the
+patched runtime) carry the change; the bundle is untouched.
+
+Same release: a `GeoJsonLayer` spec is split into Polygon, Path and point
+sub-layers, and those specs copied optional props verbatim — `opacity:
+cfg.opacity`, `extruded`, `material` — so an unset one reached deck.gl as an
+own `undefined`, which shadows the layer's default. A polygon with
+`opacity: undefined` renders nothing, silently. Every sub-layer spec now goes
+through `withoutUndefined`, as the icon path already did.
+
 Network behaviour: workers off by default (0.1.3)
 -------------------------------------------------
 

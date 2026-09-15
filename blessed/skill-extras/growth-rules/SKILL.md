@@ -24,6 +24,14 @@ when it comes from data:
 | `canonical` | the page's own URL without query string; lists: the first page only |
 | `og.title`, `og.description`, `og.image`, `og.type` | title and description as above; image 1200×630 (a real photo or a generated card, never blank); `article` for articles, `website` otherwise |
 | `robots` | `noindex` on auth, settings, admin, thank-you, search-result and paginated pages ≥ 2; nothing on the rest |
+| `jsonld` | an object (or array) from the page's data: `Person` on a profile, `Article`/`NewsArticle` on an article, `Event` on an event, `Organization` on home/about, `BreadcrumbList` on anything below the root — never a string, the renderer serialises it |
+| `alternates` | when the page exists in more than one language: `{ en, id, "x-default" }` |
+| `titleSuffix` | in the shell's page config once (`" — <Site>"`), not per page |
+
+`canonical`, `og.image` and `alternates` are written as `/path`; the
+renderer makes them absolute for the host the request came in on. `og.title`,
+`og.description`, `og.url`, `og.type` and `twitter.card` default from
+title, description, canonical and the image — set them only to differ.
 
 A page with no `head` is a defect, not a default. Three profiles cover
 every route:
@@ -126,7 +134,12 @@ analytics tag only if the brief asks.
 
 ## Prove it
 
-- `route_fetch` each v1 page: `<title>` and `<meta name="description">` present and distinct; `og:image` resolves (`route_fetch` it: 200, image content type).
+- `route_fetch` each v1 page and read its `seo` object — the rules are numbers:
+  `seo.title` present and distinct per page · `seo.description_chars` 120–155 (public pages) ·
+  `seo.h1_count == 1` · `seo.canonical_absolute == true` · `seo.og.image` set and `seo.og.absolute == true` on shareable pages ·
+  `seo.jsonld_types` contains the archetype's type (`Person`, `Article`, `Event`, `Organization`) ·
+  `seo.hreflang` lists every language the page has · `seo.images_without_alt == 0` · `seo.robots` is `noindex…` exactly on the NOINDEX routes.
+  Then `route_fetch` the `og:image` URL itself: 200 and an image content type.
 - `route_fetch path=/sitemap.xml` → 200 XML listing every public page; `/robots.txt` → 200 with the Sitemap line; an unknown path → 404 with the designed page.
 - Submit the primary form once: 303 → thank-you (noindex), the row exists, refreshing the thank-you does nothing.
 - One screenshot at 390px of each archetype: the CTA visible on landing without scrolling.

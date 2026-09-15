@@ -33,19 +33,20 @@ and **rich text is a JSON document, HTML is derived from it**. Facts:
 | fs.save --field file --folder public/uploads --allowed-kinds images --max-size 10
 ```
 
-The response carries `saved: { path, … }`; the page builds the URL from a base
-it already knows (`/files/{owner}/{project}/`) rather than the pipeline
-guessing it.
+The response carries `saved: { path, … }`. Store the **path**; a page
+writes the URL as a root-relative path on the project's own host and the
+renderer makes it absolute (`docs/contracts/addressing.md`).
 
 ## Where a file is reachable
 
-| Stored under | URL | Who |
+| Stored under | Path a page writes | Who |
 |---|---|---|
-| `public/…` | `/files/{owner}/{project}/public/…` | anyone |
-| anything else | `/fs/{owner}/{project}/…` | a signed-in session with files access |
+| `public/…` | `/_files/…` (the part after `public/`) — e.g. `public/photos/jane.webp` → `/_files/photos/jane.webp` | anyone; the only kind an `og:image` or an `<img>` on a public page may use |
+| anything else | `/_fs/…` | a signed-in session with files access |
+| either, from outside a page (a tool, a mail) | the platform form `/files/{owner}/{project}/public/…` · `/fs/{owner}/{project}/…` — valid on every host, but it carries owner and project, so not in pages |
 
-`saved.url` is the private form. Decide visibility by folder when you save,
-not afterwards. Never put `input.files` or base64 into a payload, a script
+`saved.url` is the private platform form. Decide visibility by folder when
+you save, not afterwards. Never put `input.files` or base64 into a payload, a script
 return, or a database column.
 
 ## Rich text: the editor
