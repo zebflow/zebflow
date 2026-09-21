@@ -25,8 +25,9 @@
 //!    [`MAX_DEPTH`](super::MAX_DEPTH) because every walker over the tree —
 //!    usvg's, resvg's, the layout report's and the tree's own destructor —
 //!    recurses. One input is **not** bounded: an SVG filter can cost
-//!    unbounded CPU, and the node renders inline, so it holds an async
-//!    worker. See the last test.
+//!    unbounded CPU, so a filter region, a turbulence's octaves, a blur's
+//!    deviation and the length of a filter chain are all capped. See
+//!    [`limits`](super::limits) for the measurements those caps came from.
 //!
 //! What these tests do **not** cover, deliberately: the SVG *text* is still
 //! dangerous to serve to a browser. Nothing here makes a stored `.svg` safe
@@ -189,10 +190,11 @@ fn the_work_is_bounded_in_source_size_canvas_and_nesting() {
 }
 
 #[test]
-fn a_filter_cannot_run_away_with_the_thread() {
-    // A turbulence and a wide blur over a poster-sized canvas: the expensive
-    // end of what a hostile file can ask for with no custom code. This
-    // records what it costs, so a regression that makes it unbounded shows.
+fn a_filter_that_would_run_away_with_the_thread_is_refused_before_it_starts() {
+    // Measured before the caps existed: this file cost 45 seconds of one
+    // core. The node renders on the calling thread, so that was 45 seconds
+    // no engine timeout could reclaim. The region is what dominates — see
+    // the table in `limits` — so it is refused, by name, in milliseconds.
     let bomb = r#"<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="1350">
         <filter id="f" x="-100%" y="-100%" width="300%" height="300%">
             <feTurbulence baseFrequency="0.002" numOctaves="8"/>
@@ -201,15 +203,64 @@ fn a_filter_cannot_run_away_with_the_thread() {
         <rect width="1080" height="1350" filter="url(#f)" fill="rgb(255,0,0)"/>
     </svg>"#;
     let started = std::time::Instant::now();
-    let out = png(bomb).expect("renders");
+    let err = png(bomb).unwrap_err();
+    assert_eq!(err.kind, ConvertErrorKind::Source);
+    assert!(err.message.contains("filter #f"), "{}", err.message);
+    assert!(started.elapsed().as_millis() < 500, "refusing took {:?}", started.elapsed());
+}
+
+#[test]
+fn the_most_expensive_filter_still_allowed_stays_within_its_budget() {
+    // The budget is a product, so the worst file is the one that spends all
+    // of it: the widest region the score still permits, with the heaviest
+    // primitives that fit underneath. This is the promise the cap makes.
+    //
+    // The first version of these caps was four separate limits, and a file
+    // obeying every one of them cost 54 seconds — worse than the bomb they
+    // were written to stop — because ten cheap primitives over a wide region
+    // multiply exactly as well as one expensive primitive. Hence the score.
+    let worst = format!(
+        r#"<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="1350">
+        <filter id="f" x="-50%" y="-50%" width="200%" height="200%">
+            <feTurbulence baseFrequency="0.002" numOctaves="{octaves}"/>
+            <feOffset dx="1" dy="1"/>
+        </filter>
+        <rect width="1080" height="1350" filter="url(#f)" fill="rgb(255,0,0)"/>
+    </svg>"#,
+        octaves = MAX_TURBULENCE_OCTAVES,
+    );
+    // 200% region is 4x the area, turbulence at 4 octaves plus one offset is
+    // 5 units of work: 20, exactly the cap.
+    let started = std::time::Instant::now();
+    let out = png(&worst).expect("the worst allowed file still renders");
     let took = started.elapsed();
-    eprintln!("filter bomb 1080x1350: {took:?}, {} bytes", out.bytes.len());
-    // MEASURED, NOT SOLVED. On this machine the render above takes about 45
-    // seconds of one core, and the node does its work inline, so a hostile
-    // file holds an async worker for that long and no engine timeout can
-    // interrupt it. Filters are the one input whose cost is not bounded by
-    // the caps in the test above. The fix is a wall-clock budget around the
-    // render — a decision the owner has not made — so this asserts only
-    // that the cost has not grown by an order of magnitude.
-    assert!(took.as_secs() < 180, "a filter took {took:?}: the cost has run away");
+    eprintln!("worst filter still allowed, 1080x1350: {took:?}, {} bytes", out.bytes.len());
+    assert!(took.as_secs() < 20, "the worst allowed filter took {took:?}");
+
+    // One unit more is refused, and the refusal explains the arithmetic.
+    let over = worst.replace(r#"<feOffset dx="1" dy="1"/>"#, r#"<feOffset dx="1" dy="1"/><feOffset dx="2" dy="2"/>"#);
+    let err = png(&over).unwrap_err();
+    assert!(err.message.contains("costs about") && err.message.contains("limit is 30"), "{}", err.message);
+}
+
+#[test]
+fn many_modest_filters_are_bounded_even_though_each_one_passes() {
+    // Every filter here is ordinary. Together they are not, because each
+    // filtered element pays its filter's price again.
+    let one = r#"<filter id="f{i}" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="20"/></filter><rect width="1080" height="1350" filter="url(#f{i})" fill="rgb(0,0,255)"/>"#;
+    let mut body = String::new();
+    for i in 0..6 {
+        body.push_str(&one.replace("{i}", &i.to_string()));
+    }
+    let many = format!(r#"<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="1350">{body}</svg>"#);
+    let err = png(&many).unwrap_err();
+    assert!(err.message.contains("together"), "{}", err.message);
+
+    // Two of them is a normal design and still renders.
+    let mut body = String::new();
+    for i in 0..2 {
+        body.push_str(&one.replace("{i}", &i.to_string()));
+    }
+    let couple = format!(r#"<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="1350">{body}</svg>"#);
+    assert!(png(&couple).is_ok());
 }

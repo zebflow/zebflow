@@ -84,6 +84,7 @@ use crate::platform::services::PlatformService;
 mod error;
 mod fonts;
 pub mod layout;
+mod limits;
 mod raster;
 #[cfg(test)]
 mod security;
@@ -96,7 +97,8 @@ pub use error::{ConvertError, ConvertErrorKind};
 pub use fonts::FontSet;
 pub use raster::{Fit, OutputFormat, Rendered, Target, render};
 pub use layout::report as layout_report;
-pub use sources::{MAX_DEPTH, MAX_SVG_BYTES, MemoryStore, Resolver, Source, SourceStore, check_depth, looks_like_svg, strip_safe_doctype};
+pub use limits::{MAX_BLUR_DEVIATION, MAX_DEPTH, MAX_FILTER_PRIMITIVES, MAX_FILTER_REGION_PERCENT, MAX_TURBULENCE_OCTAVES, check_depth, check_filters};
+pub use sources::{MAX_SVG_BYTES, MemoryStore, Resolver, Source, SourceStore, looks_like_svg, strip_safe_doctype};
 #[cfg(test)]
 pub(crate) use tests::test_support;
 
@@ -290,9 +292,12 @@ pub fn convert(
     }
     // Depth first, off the text: every parser and walker below recurses,
     // roxmltree's own included, so a post-parse check would never run.
-    sources::check_depth(svg)?;
+    limits::check_depth(svg)?;
     let svg = sources::strip_safe_doctype(svg)?;
     let doc = roxmltree::Document::parse(&svg).map_err(|e| ConvertError::source(format!("svg does not parse: {e}")))?;
+    // Filters are the one input whose cost the canvas caps do not bound.
+    let declared = declared_size(&doc);
+    limits::check_filters(&doc, declared)?;
     for href in sources::image_hrefs(&doc) {
         if let Some(source) = Source::parse_href(&href)? {
             resolver.prefetch(&source)?;
@@ -300,6 +305,34 @@ pub fn convert(
     }
     let prepared = text::prepare(&doc, fonts)?;
     render(&prepared, fonts, resolver, target, format, quality)
+}
+
+/// The page size the root element declares, for reading a filter region
+/// given in absolute lengths. Zero when it says nothing, which only makes
+/// such a region unmeasurable and therefore unrefused.
+fn declared_size(doc: &roxmltree::Document<'_>) -> (f32, f32) {
+    let root = doc.root_element();
+    let side = |name: &str| {
+        root.attribute(name)
+            .and_then(|v| v.trim().trim_end_matches("px").parse::<f32>().ok())
+            .unwrap_or(0.0)
+    };
+    let (w, h) = (side("width"), side("height"));
+    if w > 0.0 && h > 0.0 {
+        return (w, h);
+    }
+    // No width/height: fall back to the viewBox's own extent.
+    if let Some(vb) = root.attribute("viewBox") {
+        let n: Vec<f32> = vb
+            .split(|c: char| c == ',' || c.is_whitespace())
+            .filter(|s| !s.is_empty())
+            .filter_map(|s| s.parse::<f32>().ok())
+            .collect();
+        if n.len() == 4 {
+            return (n[2], n[3]);
+        }
+    }
+    (w, h)
 }
 
 pub struct Node {

@@ -239,93 +239,6 @@ impl Resolver {
 /// itself, an XML declaration, a comment or a doctype all count — real files
 /// from a drawing program lead with any of the four — while JSON, plain text
 /// and a raster's magic bytes do not.
-/// How deeply elements may nest.
-///
-/// Every stage that touches the tree recurses: roxmltree's own parser first,
-/// then usvg's converter, resvg's renderer, the layout report and the tree's
-/// destructor. A file 4000 groups deep overflowed the stack and aborted the
-/// process — the whole server, not the node. Real drawings nest tens of
-/// levels at most, so a hundred is already generous.
-pub const MAX_DEPTH: usize = 100;
-
-fn find_from(haystack: &[u8], from: usize, needle: &[u8]) -> Option<usize> {
-    if from >= haystack.len() {
-        return None;
-    }
-    haystack[from..].windows(needle.len()).position(|w| w == needle).map(|i| i + from)
-}
-
-/// Refuses a source that nests elements deeper than [`MAX_DEPTH`].
-///
-/// This reads the **text**, before any parser sees it, because roxmltree's
-/// parser is itself recursive: a post-parse check would never run. Comments,
-/// CDATA, processing instructions and declarations are skipped, quoted
-/// attribute values are stepped over so a `>` inside one does not end a tag,
-/// and a self-closing tag opens and closes in one step.
-pub fn check_depth(svg: &str) -> Result<(), ConvertError> {
-    let b = svg.as_bytes();
-    let refuse = || {
-        ConvertError::source(format!("the svg nests elements more than {MAX_DEPTH} deep; flatten the groups"))
-    };
-    let mut i = 0usize;
-    let mut depth: usize = 0;
-    while i < b.len() {
-        if b[i] != b'<' {
-            i += 1;
-            continue;
-        }
-        let rest = &b[i..];
-        if rest.starts_with(b"<!--") {
-            match find_from(b, i + 4, b"-->") {
-                Some(j) => { i = j + 3; continue; }
-                None => break,
-            }
-        }
-        if rest.starts_with(b"<![CDATA[") {
-            match find_from(b, i + 9, b"]]>") {
-                Some(j) => { i = j + 3; continue; }
-                None => break,
-            }
-        }
-        let declaration = rest.starts_with(b"<?") || rest.starts_with(b"<!");
-        let closing = rest.starts_with(b"</");
-
-        // To the end of this tag, stepping over quoted attribute values.
-        let mut j = i + 1;
-        let mut quote = 0u8;
-        let mut self_closing = false;
-        while j < b.len() {
-            let c = b[j];
-            if quote != 0 {
-                if c == quote {
-                    quote = 0;
-                }
-            } else if c == b'"' || c == b'\'' {
-                quote = c;
-            } else if c == b'>' {
-                self_closing = b[j - 1] == b'/';
-                break;
-            }
-            j += 1;
-        }
-        if !declaration {
-            if closing {
-                depth = depth.saturating_sub(1);
-            } else {
-                depth += 1;
-                if depth > MAX_DEPTH {
-                    return Err(refuse());
-                }
-                if self_closing {
-                    depth -= 1;
-                }
-            }
-        }
-        i = j + 1;
-    }
-    Ok(())
-}
-
 /// A doctype with no internal subset, removed; one with a subset, refused.
 ///
 /// roxmltree refuses every DTD, which is the right instinct — an internal
@@ -383,32 +296,6 @@ pub fn looks_like_svg(bytes: &[u8]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn nesting_is_counted_off_the_text_before_any_parser_sees_it() {
-        // roxmltree's own parser overflows the stack on this, so the check
-        // must come first. It answers in milliseconds.
-        let deep = format!("<svg xmlns=\"http://www.w3.org/2000/svg\">{}<rect/>{}</svg>", "<g>".repeat(4000), "</g>".repeat(4000));
-        let started = std::time::Instant::now();
-        assert!(check_depth(&deep).unwrap_err().message.contains("deep"));
-        assert!(started.elapsed().as_millis() < 500, "{:?}", started.elapsed());
-
-        // `<svg>` is itself depth 1, so MAX_DEPTH - 2 groups put the `<rect/>`
-        // exactly at the limit. One more group is one too many.
-        let at = format!("<svg>{}<rect/>{}</svg>", "<g>".repeat(MAX_DEPTH - 2), "</g>".repeat(MAX_DEPTH - 2));
-        assert!(check_depth(&at).is_ok());
-        let past = format!("<svg>{}<rect/>{}</svg>", "<g>".repeat(MAX_DEPTH - 1), "</g>".repeat(MAX_DEPTH - 1));
-        assert!(check_depth(&past).is_err());
-
-        // Self-closing tags do not accumulate depth, however many there are.
-        let flat = format!("<svg>{}</svg>", "<rect/>".repeat(5000));
-        assert!(check_depth(&flat).is_ok());
-
-        // A `>` inside an attribute, a comment, CDATA and a declaration are
-        // not tags: none of them counts as nesting.
-        let tricky = "<?xml version=\"1.0\"?><!DOCTYPE svg><svg><!-- <g><g><g> --><text data-x=\"a>b\">x</text><![CDATA[<g><g>]]></svg>";
-        assert!(check_depth(tricky).is_ok());
-    }
 
     #[test]
     fn a_plain_doctype_is_cut_out_and_one_with_an_internal_subset_is_refused() {
