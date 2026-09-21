@@ -1,18 +1,27 @@
-//! Text that wraps. SVG 2 gives a `<text>` a width with `inline-size`;
-//! resvg does not implement it, so the node breaks the lines before resvg
-//! sees the file: the element becomes one `<tspan>` per line, each at the
-//! element's `x`, advancing by the line height.
+//! Text, made drawable: families resolved and lines wrapped, before resvg
+//! sees the file.
 //!
-//! Each candidate line is measured by usvg itself — a one-element SVG with
-//! the same family, weight, size and letter-spacing as the final render, its
-//! ink width read back — so a line that measures as fitting renders as
-//! fitting. Font properties are read from the element and its ancestors
-//! (attributes, then `style="…"`); a `<style>` block is not consulted.
-//! `<tspan>` children of a wrapped element are flattened into its text.
+//! **Families.** usvg draws a `<text>` whose `font-family` it cannot find
+//! as nothing — it never falls back for a *named* family, only for an
+//! element with none. So every `font-family` (attribute or `style`) is
+//! rewritten to the name the font database registers (`Inter` →
+//! `Inter 24pt`), a stack to its first known family, and a family nobody
+//! has is refused with the list. See [`FontSet::resolve_stack`].
+//!
+//! **Wrapping.** SVG 2 gives a `<text>` a width with `inline-size`; resvg
+//! does not implement it, so the element becomes one `<tspan>` per line,
+//! each at the element's `x`, advancing by the line height. Each candidate
+//! line is measured by usvg itself — a one-element SVG with the same family,
+//! weight, size and letter-spacing as the final render, its ink width read
+//! back — so a line that measures as fitting renders as fitting. Font
+//! properties are read from the element and its ancestors (attributes, then
+//! `style="…"`); a `<style>` block is not consulted. `<tspan>` children of a
+//! wrapped element are flattened into its text.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fmt::Write as _;
+use std::ops::Range;
 
 use roxmltree::{Document, Node};
 
@@ -79,24 +88,25 @@ pub fn wrap(text: &str, max_w: f32, measure: impl Fn(&str) -> f32) -> Vec<String
     lines
 }
 
-/// A property as the element sees it: its own attribute, else its own
-/// `style`, else the nearest ancestor's.
-fn inherited(node: Node<'_, '_>, name: &str) -> Option<String> {
-    for n in node.ancestors().filter(|n| n.is_element()) {
-        if let Some(v) = n.attribute(name) {
-            return Some(v.trim().to_string());
-        }
-        if let Some(style) = n.attribute("style") {
-            for decl in style.split(';') {
-                if let Some((k, v)) = decl.split_once(':') {
-                    if k.trim().eq_ignore_ascii_case(name) {
-                        return Some(v.trim().to_string());
-                    }
-                }
-            }
-        }
-    }
-    None
+/// One `name: value` declaration of a `style` attribute, if present.
+fn style_decl(style: &str, name: &str) -> Option<String> {
+    style.split(';').find_map(|decl| {
+        let (k, v) = decl.split_once(':')?;
+        k.trim().eq_ignore_ascii_case(name).then(|| v.trim().to_string())
+    })
+}
+
+/// The `style` with one declaration replaced (`Some`) or dropped (`None`).
+fn style_with(style: &str, name: &str, value: Option<&str>) -> String {
+    style
+        .split(';')
+        .filter(|d| !d.trim().is_empty())
+        .filter_map(|d| match d.split_once(':') {
+            Some((k, _)) if k.trim().eq_ignore_ascii_case(name) => value.map(|v| format!("{}: {v}", k.trim())),
+            _ => Some(d.trim().to_string()),
+        })
+        .collect::<Vec<_>>()
+        .join("; ")
 }
 
 /// The element's own value of a property, attribute or `style`, not inherited.
@@ -104,12 +114,12 @@ fn own(node: Node<'_, '_>, name: &str) -> Option<String> {
     if let Some(v) = node.attribute(name) {
         return Some(v.trim().to_string());
     }
-    node.attribute("style").and_then(|style| {
-        style.split(';').find_map(|decl| {
-            let (k, v) = decl.split_once(':')?;
-            k.trim().eq_ignore_ascii_case(name).then(|| v.trim().to_string())
-        })
-    })
+    node.attribute("style").and_then(|style| style_decl(style, name))
+}
+
+/// A property as the element sees it: its own, else the nearest ancestor's.
+fn inherited(node: Node<'_, '_>, name: &str) -> Option<String> {
+    node.ancestors().filter(|n| n.is_element()).find_map(|n| own(n, name))
 }
 
 /// `40`, `40px`, `30pt` → pixels.
@@ -133,24 +143,35 @@ fn weight_of(raw: &str) -> u16 {
     }
 }
 
-/// Every `font-family` the document names must be one the project has, so
-/// no text silently falls back to another face.
-pub fn check_families(doc: &Document<'_>, fonts: &FontSet) -> Result<(), ConvertError> {
-    for node in doc.descendants().filter(|n| n.is_element()) {
-        if let Some(stack) = own(node, "font-family") {
-            fonts.resolve_stack(&stack)?;
-        }
-    }
-    Ok(())
-}
-
-/// The document with every `<text inline-size="…">` broken into lines.
-/// Answers the input unchanged when nothing declares a width.
-pub fn wrap_inline_size(doc: &Document<'_>, fonts: &FontSet) -> Result<String, ConvertError> {
+/// The document made drawable: every `font-family` resolved to a family the
+/// database registers (an unknown one refused), every `<text
+/// inline-size="…">` broken into lines. Answers the input unchanged when
+/// nothing needs either.
+pub fn prepare(doc: &Document<'_>, fonts: &FontSet) -> Result<String, ConvertError> {
     let source = doc.input_text();
     let m = TextMeasurer::new(fonts);
-    let mut edits: Vec<(std::ops::Range<usize>, String)> = Vec::new();
-    for node in doc.descendants().filter(|n| n.is_element() && n.tag_name().name() == "text") {
+    let mut edits: Vec<(Range<usize>, String)> = Vec::new();
+
+    for node in doc.descendants().filter(|n| n.is_element()) {
+        // 1. Families, on every element that names one.
+        for attr in node.attributes() {
+            if attr.name() == "font-family" {
+                let mut v = String::new();
+                escape_attr_into(&mut v, fonts.resolve_stack(attr.value())?);
+                edits.push((attr.range_value(), v));
+            } else if attr.name() == "style" {
+                if let Some(stack) = style_decl(attr.value(), "font-family") {
+                    let mut v = String::new();
+                    escape_attr_into(&mut v, &style_with(attr.value(), "font-family", Some(fonts.resolve_stack(&stack)?)));
+                    edits.push((attr.range_value(), v));
+                }
+            }
+        }
+
+        // 2. Wrapping, on a <text> with a width.
+        if node.tag_name().name() != "text" {
+            continue;
+        }
         let Some(max_w) = own(node, "inline-size").and_then(|v| length_px(&v)).filter(|w| *w > 0.0) else {
             continue;
         };
@@ -182,14 +203,16 @@ pub fn wrap_inline_size(doc: &Document<'_>, fonts: &FontSet) -> Result<String, C
                 out.push_str("xml:");
             }
             out.push_str(name);
-            let value = if name == "style" {
-                attr.value()
-                    .split(';')
-                    .filter(|d| !d.split_once(':').is_some_and(|(k, _)| k.trim().eq_ignore_ascii_case("inline-size")))
-                    .collect::<Vec<_>>()
-                    .join(";")
-            } else {
-                attr.value().to_string()
+            let value = match name {
+                "font-family" => family.to_string(),
+                "style" => {
+                    let without = style_with(attr.value(), "inline-size", None);
+                    match style_decl(&without, "font-family") {
+                        Some(_) => style_with(&without, "font-family", Some(family)),
+                        None => without,
+                    }
+                }
+                _ => attr.value().to_string(),
             };
             out.push_str("=\"");
             escape_attr_into(&mut out, &value);
@@ -205,15 +228,17 @@ pub fn wrap_inline_size(doc: &Document<'_>, fonts: &FontSet) -> Result<String, C
         out.push_str("</text>");
         edits.push((node.range(), out));
     }
+
     if edits.is_empty() {
         return Ok(source.to_string());
     }
-    edits.sort_by_key(|(r, _)| r.start);
+    // Earliest first; an edit inside an element already replaced whole (its
+    // own font-family, rewritten in the rebuilt tag) is dropped.
+    edits.sort_by(|(a, _), (b, _)| a.start.cmp(&b.start).then(b.end.cmp(&a.end)));
     let mut result = String::with_capacity(source.len() + edits.len() * 64);
     let mut cursor = 0;
     for (range, replacement) in edits {
         if range.start < cursor {
-            // A <text> inside a <text> is not SVG; keep the outer edit.
             continue;
         }
         result.push_str(&source[cursor..range.start]);
@@ -252,14 +277,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn inline_size_becomes_tspans_that_each_fit_the_width() {
+    fn inline_size_becomes_tspans_that_each_fit_the_width_and_the_family_is_the_registered_name() {
         let fonts = FontSet::bundled();
-        let svg = r##"<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="600"><g font-family="Inter" font-weight="800"><text x="540" y="200" font-size="80" text-anchor="middle" inline-size="900" fill="#fff">a chill trance night with slow builds, warm pads and a room that never rushes</text></g><text x="10" y="500">left alone</text></svg>"##;
+        let svg = r##"<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="600"><g font-family="Inter" font-weight="800"><text x="540" y="200" font-size="80" text-anchor="middle" inline-size="900" fill="#fff">a chill trance night with slow builds, warm pads and a room that never rushes</text></g><text x="10" y="500" font-family="Inter, sans-serif">left alone</text></svg>"##;
         let doc = Document::parse(svg).unwrap();
-        let out = wrap_inline_size(&doc, &fonts).unwrap();
+        let out = prepare(&doc, &fonts).unwrap();
         assert!(!out.contains("inline-size"), "{out}");
+        assert!(out.contains(r#"<g font-family="Inter 24pt" font-weight="800">"#), "{out}");
         assert!(out.contains(r#"<tspan x="540" dy="0">"#) && out.contains(r#"<tspan x="540" dy="96">"#), "{out}");
-        assert!(out.contains(r#"<text x="10" y="500">left alone</text>"#));
+        assert!(out.contains(r#"<text x="10" y="500" font-family="Inter 24pt">left alone</text>"#), "{out}");
         let m = TextMeasurer::new(&fonts);
         let family = fonts.resolve("Inter").unwrap();
         let lines: Vec<&str> = out.split("<tspan").skip(1).map(|s| s.split_once('>').unwrap().1.split("</tspan>").next().unwrap()).collect();
@@ -272,23 +298,25 @@ mod tests {
     }
 
     #[test]
-    fn style_declared_properties_and_a_pixel_line_height_are_read_and_inline_size_is_dropped_from_style() {
+    fn style_declared_properties_are_read_rewritten_and_inline_size_dropped_from_style() {
         let fonts = FontSet::bundled();
-        let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" width="400" height="200"><text x="20 30" y="40" style="font-size: 20px; inline-size: 100px; line-height: 30px; font-family: sans-serif">one two three four five six seven eight</text></svg>"#;
+        let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" width="400" height="200"><text x="20 30" y="40" style="font-size: 20px; inline-size: 100px; line-height: 30px; font-family: sans-serif">one two three four five six seven eight</text><rect style="fill:#000; font-family: 'Inter'"/></svg>"#;
         let doc = Document::parse(svg).unwrap();
-        let out = wrap_inline_size(&doc, &fonts).unwrap();
-        assert!(out.contains(r#"style="font-size: 20px; line-height: 30px; font-family: sans-serif""#), "{out}");
+        let out = prepare(&doc, &fonts).unwrap();
+        assert!(out.contains(r#"style="font-size: 20px; line-height: 30px; font-family: Inter 24pt""#), "{out}");
         assert!(out.contains(r#"<tspan x="20" dy="30">"#), "{out}");
+        assert!(out.contains(r#"<rect style="fill:#000; font-family: Inter 24pt"/>"#), "{out}");
     }
 
     #[test]
-    fn a_document_without_inline_size_is_answered_unchanged_and_unknown_families_are_refused() {
+    fn a_document_naming_no_family_is_answered_unchanged_and_an_unknown_family_is_refused() {
         let fonts = FontSet::bundled();
-        let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><text font-family="Inter">x</text></svg>"#;
+        let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><text>x</text></svg>"#;
         let doc = Document::parse(svg).unwrap();
-        assert_eq!(wrap_inline_size(&doc, &fonts).unwrap(), svg);
-        check_families(&doc, &fonts).unwrap();
+        assert_eq!(prepare(&doc, &fonts).unwrap(), svg);
         let bad = Document::parse(r#"<svg xmlns="http://www.w3.org/2000/svg"><g style="font-family: Fraunces"><text>x</text></g></svg>"#).unwrap();
-        assert!(check_families(&bad, &fonts).unwrap_err().message.contains("Fraunces"));
+        assert!(prepare(&bad, &fonts).unwrap_err().message.contains("Fraunces"));
+        let bad = Document::parse(r#"<svg xmlns="http://www.w3.org/2000/svg"><text font-family="Georgia, serif">x</text></svg>"#).unwrap();
+        assert!(prepare(&bad, &fonts).unwrap_err().message.contains("Georgia"));
     }
 }

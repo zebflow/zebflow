@@ -257,14 +257,13 @@ pub fn convert(
         return Err(ConvertError::source("the source is not an SVG: it does not start with <svg or <?xml"));
     }
     let doc = roxmltree::Document::parse(svg).map_err(|e| ConvertError::source(format!("svg does not parse: {e}")))?;
-    text::check_families(&doc, fonts)?;
     for href in sources::image_hrefs(&doc) {
         if let Some(source) = Source::parse_href(&href)? {
             resolver.prefetch(&source)?;
         }
     }
-    let wrapped = text::wrap_inline_size(&doc, fonts)?;
-    render(&wrapped, fonts, resolver, target, format, quality)
+    let prepared = text::prepare(&doc, fonts)?;
+    render(&prepared, fonts, resolver, target, format, quality)
 }
 
 pub struct Node {

@@ -44,6 +44,12 @@ mod convert_end_to_end {
         eprintln!("poster 1080x1350: {:?} ({:?})", started.elapsed(), out.timing);
         assert_eq!((out.width, out.height), (1080, 1350));
         assert_eq!(png_size(&out.bytes), (1080, 1350));
+        // The headline drew: white ink inside the title band. usvg draws
+        // nothing for a named family it cannot find, so this is the proof
+        // that `Inter` reached the registered face.
+        let img = image::load_from_memory(&out.bytes).unwrap().to_rgba8();
+        let white = (300..780).flat_map(|x| (380..620).map(move |y| (x, y))).filter(|&(x, y)| img.get_pixel(x, y).0[0] > 240).count();
+        assert!(white > 2000, "only {white} white pixels in the headline band");
         let jpg = convert(POSTER, &fonts, &resolver, &Target::default(), OutputFormat::Jpg, 80).unwrap();
         assert!(jpg.bytes.starts_with(&[0xFF, 0xD8]));
         let webp = convert(POSTER, &fonts, &resolver, &Target::default(), OutputFormat::Webp, 80).unwrap();
