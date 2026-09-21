@@ -57,6 +57,61 @@ mod convert_end_to_end {
     }
 
     #[test]
+    fn pdf_is_one_page_with_the_text_as_text_and_the_layout_reports_every_box() {
+        let fonts = FontSet::bundled();
+        let resolver = resolver_with(vec![]);
+        let out = convert(POSTER, &fonts, &resolver, &Target::default(), OutputFormat::Pdf, 82).expect("pdf");
+        assert!(out.bytes.starts_with(b"%PDF-"), "pdf header");
+        assert_eq!((out.width, out.height), (1080, 1350));
+        let text = String::from_utf8_lossy(&out.bytes);
+        assert!(text.contains("/Font"), "a font is embedded: the text is text, not paths");
+        assert!(text.contains("/MediaBox"), "{}", &text[..200]);
+        assert!(out.bytes.len() < 400_000, "{} bytes", out.bytes.len());
+        // The layout: two texts, none overlapping, all inside.
+        let layout = &out.layout;
+        assert_eq!(layout["canvas"], serde_json::json!({ "w": 1080.0, "h": 1350.0 }));
+        assert_eq!(layout["texts"].as_array().unwrap().len(), 2, "{layout}");
+        assert!(layout["texts"][0]["lines"].as_u64().unwrap() >= 2, "the headline wrapped: {layout}");
+        assert!(layout["overlaps"].as_array().unwrap().is_empty() && layout["ok"] == true, "{layout}");
+    }
+
+    #[test]
+    fn the_layout_names_overlaps_and_boxes_off_the_canvas() {
+        let fonts = FontSet::bundled();
+        let png = test_support::solid_png(4, 4, [0, 0, 255]);
+        let resolver = resolver_with(vec![(Source::Store("hero.png".into()), png)]);
+        let svg = r##"<svg xmlns="http://www.w3.org/2000/svg" width="600" height="400">
+  <image id="hero" href="hero.png" x="200" y="100" width="300" height="300"/>
+  <text id="title" x="100" y="200" font-family="Inter" font-size="60">Overlapping title</text>
+  <text x="500" y="390" font-family="Inter" font-size="40">Off the edge</text>
+</svg>"##;
+        let out = convert(svg, &fonts, &resolver, &Target::default(), OutputFormat::Png, 82).unwrap();
+        let l = &out.layout;
+        assert_eq!(l["images"][0]["label"], "image 1");
+        assert_eq!(l["images"][0]["box"], serde_json::json!({ "x": 200.0, "y": 100.0, "w": 300.0, "h": 300.0 }));
+        let overlaps = l["overlaps"].as_array().unwrap();
+        assert!(overlaps.iter().any(|o| o["a"] == "image 1" && o["b"].as_str().unwrap().contains("Overlapping title") && o["area"].as_f64().unwrap() > 1000.0), "{l}");
+        let outside = l["outside"].as_array().unwrap();
+        assert!(outside.iter().any(|o| o["label"].as_str().unwrap().contains("Off the edge") && o["by"] == serde_json::json!(["right"])), "{l}");
+        assert_eq!(l["ok"], false);
+    }
+
+    #[test]
+    fn effects_are_svg_filters_and_resvg_draws_them() {
+        let fonts = FontSet::bundled();
+        let resolver = resolver_with(vec![]);
+        let svg = r##"<svg xmlns="http://www.w3.org/2000/svg" width="200" height="200">
+  <defs><filter id="shadow" x="-50%" y="-50%" width="200%" height="200%"><feDropShadow dx="0" dy="20" stdDeviation="8" flood-color="#000" flood-opacity="1"/></filter></defs>
+  <rect x="50" y="50" width="100" height="60" fill="#ff0000" filter="url(#shadow)"/>
+</svg>"##;
+        let out = convert(svg, &fonts, &resolver, &Target::default(), OutputFormat::Png, 82).unwrap();
+        let img = image::load_from_memory(&out.bytes).unwrap().to_rgba8();
+        assert_eq!(img.get_pixel(100, 80).0, [255, 0, 0, 255], "the rect itself");
+        let below = img.get_pixel(100, 125).0;
+        assert!(below[3] > 40 && below[0] < 60, "the shadow falls below the rect: {below:?}");
+    }
+
+    #[test]
     fn width_height_and_fit_size_the_canvas() {
         let fonts = FontSet::bundled();
         let resolver = resolver_with(vec![]);

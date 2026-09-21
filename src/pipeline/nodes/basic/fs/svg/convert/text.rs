@@ -17,6 +17,14 @@
 //! properties are read from the element and its ancestors (attributes, then
 //! `style="…"`); a `<style>` block is not consulted. `<tspan>` children of a
 //! wrapped element are flattened into its text.
+//!
+//! **Shrinking.** `data-fit="shrink"` on a `<text>` that has `inline-size`
+//! steps the font size down (2 px at a time, never below `data-min-size`,
+//! default 8) until the text fits in `data-max-lines` lines (default 1) of
+//! that width — a name on a certificate, a headline that must stay on one
+//! line. The rebuilt element carries the size it landed at. `data-*`
+//! attributes are SVG 2's own extension point, so no namespace declaration
+//! is needed and a file that carries them is still plain SVG.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -30,6 +38,10 @@ use super::fonts::FontSet;
 
 const DEFAULT_FONT_SIZE: f32 = 16.0;
 const DEFAULT_LINE_HEIGHT: f32 = 1.2;
+const DEFAULT_MIN_SIZE: f32 = 8.0;
+const SHRINK_STEP: f32 = 2.0;
+/// Attributes the node consumes; they do not reach resvg.
+const CONSUMED: &[&str] = &["inline-size", "data-fit", "data-min-size", "data-max-lines"];
 
 pub struct TextMeasurer<'a> {
     opt: usvg::Options<'a>,
@@ -181,21 +193,38 @@ pub fn prepare(doc: &Document<'_>, fonts: &FontSet) -> Result<String, ConvertErr
         }
         let family = fonts.resolve_stack(&inherited(node, "font-family").unwrap_or_else(|| fonts.default_family().to_string()))?;
         let weight = inherited(node, "font-weight").map(|w| weight_of(&w)).unwrap_or(400);
-        let size = inherited(node, "font-size").and_then(|s| length_px(&s)).unwrap_or(DEFAULT_FONT_SIZE).max(1.0);
+        let declared = inherited(node, "font-size").and_then(|s| length_px(&s)).unwrap_or(DEFAULT_FONT_SIZE).max(1.0);
         let letter_spacing = inherited(node, "letter-spacing").and_then(|s| length_px(&s)).unwrap_or(0.0);
+        let shrink = own(node, "data-fit").is_some_and(|f| f.eq_ignore_ascii_case("shrink"));
+        let (size, lines) = if shrink {
+            let min = own(node, "data-min-size").and_then(|v| length_px(&v)).unwrap_or(DEFAULT_MIN_SIZE).max(1.0);
+            let max_lines = own(node, "data-max-lines").and_then(|v| v.trim().parse::<usize>().ok()).unwrap_or(1).max(1);
+            let mut size = declared;
+            loop {
+                let ls = letter_spacing * size / declared;
+                let lines = wrap(&text, max_w, |t| m.width(t, family, weight, size, ls));
+                let fits = lines.len() <= max_lines && lines.iter().all(|l| m.width(l, family, weight, size, ls) <= max_w);
+                if fits || size - SHRINK_STEP < min {
+                    break (size, lines);
+                }
+                size -= SHRINK_STEP;
+            }
+        } else {
+            (declared, wrap(&text, max_w, |t| m.width(t, family, weight, declared, letter_spacing)))
+        };
         let line_height = match inherited(node, "line-height") {
             Some(raw) if raw.ends_with("px") => length_px(&raw).unwrap_or(size * DEFAULT_LINE_HEIGHT),
             Some(raw) => raw.trim().parse::<f32>().map(|r| r * size).unwrap_or(size * DEFAULT_LINE_HEIGHT),
             None => size * DEFAULT_LINE_HEIGHT,
         };
-        let lines = wrap(&text, max_w, |t| m.width(t, family, weight, size, letter_spacing));
         let x = node.attribute("x").and_then(|x| x.split_whitespace().next()).unwrap_or("0").to_string();
 
         let mut out = String::with_capacity(text.len() + 128);
         out.push_str("<text");
+        let mut wrote_size = false;
         for attr in node.attributes() {
             let name = attr.name();
-            if name == "inline-size" {
+            if CONSUMED.contains(&name) {
                 continue;
             }
             out.push(' ');
@@ -205,18 +234,29 @@ pub fn prepare(doc: &Document<'_>, fonts: &FontSet) -> Result<String, ConvertErr
             out.push_str(name);
             let value = match name {
                 "font-family" => family.to_string(),
+                "font-size" if shrink => {
+                    wrote_size = true;
+                    size.to_string()
+                }
                 "style" => {
-                    let without = style_with(attr.value(), "inline-size", None);
-                    match style_decl(&without, "font-family") {
-                        Some(_) => style_with(&without, "font-family", Some(family)),
-                        None => without,
+                    let mut s = style_with(attr.value(), "inline-size", None);
+                    if style_decl(&s, "font-family").is_some() {
+                        s = style_with(&s, "font-family", Some(family));
                     }
+                    if shrink && style_decl(&s, "font-size").is_some() {
+                        wrote_size = true;
+                        s = style_with(&s, "font-size", Some(&size.to_string()));
+                    }
+                    s
                 }
                 _ => attr.value().to_string(),
             };
             out.push_str("=\"");
             escape_attr_into(&mut out, &value);
             out.push('"');
+        }
+        if shrink && !wrote_size {
+            let _ = write!(out, r#" font-size="{size}""#);
         }
         out.push('>');
         for (i, line) in lines.iter().enumerate() {
@@ -306,6 +346,27 @@ mod tests {
         assert!(out.contains(r#"style="font-size: 20px; line-height: 30px; font-family: Inter 24pt""#), "{out}");
         assert!(out.contains(r#"<tspan x="20" dy="30">"#), "{out}");
         assert!(out.contains(r#"<rect style="fill:#000; font-family: Inter 24pt"/>"#), "{out}");
+    }
+
+    #[test]
+    fn data_fit_shrink_lands_a_long_name_on_one_line_and_writes_the_size_it_landed_at() {
+        let fonts = FontSet::bundled();
+        let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="200"><text x="500" y="100" font-family="Inter" font-weight="600" font-size="96" text-anchor="middle" inline-size="800" data-fit="shrink" data-min-size="20">Alexandra Josephine Montgomery Whitfield</text></svg>"#;
+        let doc = Document::parse(svg).unwrap();
+        let out = prepare(&doc, &fonts).unwrap();
+        assert!(!out.contains("data-fit") && !out.contains("inline-size"), "{out}");
+        assert_eq!(out.matches("<tspan").count(), 1, "one line: {out}");
+        let size: f32 = out.split("font-size=\"").nth(1).unwrap().split('"').next().unwrap().parse().unwrap();
+        assert!(size < 96.0 && size >= 20.0, "size {size}");
+        let m = TextMeasurer::new(&fonts);
+        assert!(m.width("Alexandra Josephine Montgomery Whitfield", fonts.resolve("Inter").unwrap(), 600, size, 0.0) <= 800.0);
+        assert!(m.width("Alexandra Josephine Montgomery Whitfield", fonts.resolve("Inter").unwrap(), 600, size + SHRINK_STEP, 0.0) > 800.0, "one step larger would not fit");
+        // Short text keeps its size; two lines allowed shrinks less.
+        let short = prepare(&Document::parse(r#"<svg xmlns="http://www.w3.org/2000/svg"><text font-size="96" inline-size="800" data-fit="shrink">Ana</text></svg>"#).unwrap(), &fonts).unwrap();
+        assert!(short.contains(r#"font-size="96""#), "{short}");
+        let two = prepare(&Document::parse(r#"<svg xmlns="http://www.w3.org/2000/svg"><text font-size="96" inline-size="800" data-fit="shrink" data-max-lines="2">Alexandra Josephine Montgomery Whitfield</text></svg>"#).unwrap(), &fonts).unwrap();
+        let size2: f32 = two.split("font-size=\"").nth(1).unwrap().split('"').next().unwrap().parse().unwrap();
+        assert!(size2 > size, "two lines shrink less: {size2} vs {size}");
     }
 
     #[test]

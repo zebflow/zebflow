@@ -30,18 +30,35 @@
 //!   line at the element's `x`, `line-height` (a multiplier or `px`, default
 //!   1.2) apart. `text-anchor` still applies per line. resvg has no
 //!   `inline-size` of its own. See [`text`].
+//! - **Text that shrinks.** `data-fit="shrink"` beside `inline-size` steps
+//!   the font size down until the text fits in `data-max-lines` lines
+//!   (default 1), never below `data-min-size` (default 8): a name on a
+//!   certificate stays on its line. See [`text`].
 //! - **A size.** With neither `--width` nor `--height` the canvas is the
 //!   SVG's own `width`×`height`; one of them scales the other in proportion;
 //!   both go through `--fit cover|contain|fill`, the same three words as
 //!   `fs.image.thumbnail`. See [`raster`].
+//! - **PDF.** `--format pdf` writes one page the SVG's size in points through
+//!   svg2pdf: vector shapes stay vector and text stays text with the font
+//!   subset embedded, so it can be selected and searched. Size and fit flags
+//!   do not apply and are refused with pdf.
+//! - **The layout report.** Beside `image` the answer carries `layout`: every
+//!   text and picture with its box in canvas pixels, the pairs that overlap
+//!   with the overlap area, the boxes that leave the canvas, and `ok`. A
+//!   script turns it into a verdict for `logic.retry`, so an agent can fix
+//!   its composition without anyone looking at pixels. See [`layout`].
+//! - **Effects.** Shadows, blur, glow, colour grading are SVG filters
+//!   (`<filter>` with `feDropShadow`, `feGaussianBlur`, `feColorMatrix`,
+//!   `feTurbulence` for grain); resvg renders them, the PDF keeps them. No
+//!   node needed.
 //!
 //! # The answer
 //!
 //! The payload plus `image`: a durable FileRef (`origin: fs.svg.convert`,
 //! `trust: generated`) with `width`, `height` and `format` beside the eleven
 //! contract fields, written under `--folder` (default `images/`) as
-//! `--filename` or a UUID. `--format png|jpg|webp` (default png; `--quality`
-//! is JPEG's). With `--delete-source` a stored source is removed and the
+//! `--filename` or a UUID, plus `layout`. `--format png|jpg|webp|pdf`
+//! (default png; `--quality` is JPEG's). With `--delete-source` a stored source is removed and the
 //! source key dropped from the payload.
 
 use std::path::{Path, PathBuf};
@@ -66,6 +83,7 @@ use crate::platform::services::PlatformService;
 
 mod error;
 mod fonts;
+pub mod layout;
 mod raster;
 mod sources;
 mod text;
@@ -75,6 +93,7 @@ mod tests;
 pub use error::{ConvertError, ConvertErrorKind};
 pub use fonts::FontSet;
 pub use raster::{Fit, OutputFormat, Rendered, Target, render};
+pub use layout::report as layout_report;
 pub use sources::{MAX_SVG_BYTES, MemoryStore, Resolver, Source, SourceStore, looks_like_svg};
 #[cfg(test)]
 pub(crate) use tests::test_support;
@@ -138,10 +157,12 @@ pub fn definition() -> NodeDefinition {
         title: "SVG Convert".to_string(),
         description: "Draw an SVG as a picture, no browser. Reads the SVG at `--source-key` (default `svg`): SVG text, a store path, or a FileRef of a stored .svg. \
             Pictures inside it come from the project only — `<image href>` is a store path or `repo://static/…`, never a URL or a data URI. Text is shaped with the bundled Inter \
-            or a family the project has under `static/fonts/` (named by family; an unknown one is refused with the list), and `<text inline-size=\"900\">` wraps its lines. \
-            With no `--width`/`--height` the canvas is the SVG's own size; one side scales the other; both use `--fit cover|contain|fill`. Writes `--format png|jpg|webp` \
-            (default png, `--quality` for jpg) into `--folder` (default `images/`) and adds `image` — a durable FileRef with `width`, `height`, `format` — to the payload; \
-            `--delete-source` removes a stored source. Look at it with `--preview image`."
+            or a family the project has under `static/fonts/` (named by family; an unknown one is refused with the list); `<text inline-size=\"900\">` wraps its lines and \
+            `data-fit=\"shrink\"` beside it shrinks the size until the text fits `data-max-lines` (default 1). Effects are SVG filters. \
+            With no `--width`/`--height` the canvas is the SVG's own size; one side scales the other; both use `--fit cover|contain|fill`. Writes `--format png|jpg|webp|pdf` \
+            (default png, `--quality` for jpg; pdf keeps text as text and takes no size flags) into `--folder` (default `images/`) and adds `image` — a durable FileRef with \
+            `width`, `height`, `format` — plus `layout` (every text and picture box, the overlaps, what leaves the canvas, `ok`) to the payload; `--delete-source` removes a stored source. \
+            Look at it with `--preview image`."
             .to_string(),
         input_schema: json!({
             "type": "object",
@@ -160,9 +181,14 @@ pub fn definition() -> NodeDefinition {
                         "format": { "type": "string" },
                         "size":   { "type": "integer" }
                     }
+                },
+                "layout": {
+                    "type": "object",
+                    "description": "The layout report: canvas {w,h}; texts[] and images[] with label and box {x,y,w,h} in canvas pixels (texts also lines); overlaps[] {a,b,area,w,h}; outside[] {label,by}; ok when both are empty.",
+                    "required": ["canvas", "texts", "images", "overlaps", "outside", "ok"]
                 }
             },
-            "required": ["image"]
+            "required": ["image", "layout"]
         }),
         input_pins: vec![INPUT_PIN_IN.to_string()],
         output_pins: vec![OUTPUT_PIN_OUT.to_string()],
@@ -172,7 +198,7 @@ pub fn definition() -> NodeDefinition {
                 "width":         { "type": "integer", "description": "Canvas width; absent = the SVG's own." },
                 "height":        { "type": "integer", "description": "Canvas height; absent = the SVG's own." },
                 "fit":           { "type": "string", "enum": ["cover", "contain", "fill"] },
-                "format":        { "type": "string", "enum": ["png", "jpg", "webp"] },
+                "format":        { "type": "string", "enum": ["png", "jpg", "webp", "pdf"] },
                 "quality":       { "type": "integer", "description": "JPEG quality 1–100 (default 82)." },
                 "folder":        { "type": "string", "description": "Destination store folder (default images)." },
                 "source_key":    { "type": "string", "description": "Dot-path to the SVG in the payload (default svg)." },
@@ -184,7 +210,7 @@ pub fn definition() -> NodeDefinition {
             DslFlag { flag: "--width".into(), config_key: "width".into(), description: "Canvas width in pixels (default: the SVG's own; alone, height follows in proportion)".into(), kind: DslFlagKind::Scalar, required: false },
             DslFlag { flag: "--height".into(), config_key: "height".into(), description: "Canvas height in pixels (default: the SVG's own; alone, width follows in proportion)".into(), kind: DslFlagKind::Scalar, required: false },
             DslFlag { flag: "--fit".into(), config_key: "fit".into(), description: "cover | contain | fill (default: cover) — how the SVG reaches --width × --height".into(), kind: DslFlagKind::Scalar, required: false },
-            DslFlag { flag: "--format".into(), config_key: "format".into(), description: "png | jpg | webp (default: png)".into(), kind: DslFlagKind::Scalar, required: false },
+            DslFlag { flag: "--format".into(), config_key: "format".into(), description: "png | jpg | webp | pdf (default: png; pdf keeps text selectable and takes no --width/--height/--fit)".into(), kind: DslFlagKind::Scalar, required: false },
             DslFlag { flag: "--quality".into(), config_key: "quality".into(), description: "JPEG quality 1–100 (default: 82)".into(), kind: DslFlagKind::Scalar, required: false },
             DslFlag { flag: "--folder".into(), config_key: "folder".into(), description: "Destination store folder (default: images)".into(), kind: DslFlagKind::Scalar, required: false },
             DslFlag { flag: "--source-key".into(), config_key: "source_key".into(), description: "Dot-path to the SVG in the payload: SVG text, a store path, or a FileRef (default: `svg`)".into(), kind: DslFlagKind::Scalar, required: false },
@@ -199,10 +225,11 @@ pub fn definition() -> NodeDefinition {
                 SelectOptionDef { value: "contain".into(), label: "Contain (fit within)".into() },
                 SelectOptionDef { value: "fill".into(), label: "Fill (stretch exact)".into() },
             ], ..Default::default() },
-            NodeFieldDef { name: "format".into(), label: "Output format".into(), field_type: NodeFieldType::Select, default_value: Some(json!("png")), help: Some("png (default, keeps transparency), jpg (quality-controlled), webp (lossless).".into()), options: vec![
+            NodeFieldDef { name: "format".into(), label: "Output format".into(), field_type: NodeFieldType::Select, default_value: Some(json!("png")), help: Some("png (default, keeps transparency), jpg (quality-controlled), webp (lossless), pdf (one page, text stays text; no size or fit).".into()), options: vec![
                 SelectOptionDef { value: "png".into(), label: "PNG (lossless)".into() },
                 SelectOptionDef { value: "jpg".into(), label: "JPEG (quality-controlled)".into() },
                 SelectOptionDef { value: "webp".into(), label: "WebP (lossless)".into() },
+                SelectOptionDef { value: "pdf".into(), label: "PDF (vector, selectable text)".into() },
             ], ..Default::default() },
             NodeFieldDef { name: "quality".into(), label: "JPEG quality".into(), field_type: NodeFieldType::Text, default_value: Some(json!("82")), help: Some("1–100, default 82. Only applies to JPEG output.".into()), ..Default::default() },
             NodeFieldDef { name: "folder".into(), label: "Folder".into(), field_type: NodeFieldType::Text, default_value: Some(json!(DEFAULT_FOLDER)), help: Some("Destination store folder (default: images). Under public/ for a page to show it anonymously.".into()), ..Default::default() },
@@ -222,7 +249,7 @@ pub fn definition() -> NodeDefinition {
             LayoutItem::Field("delete_source".into()),
         ],
         failure_semantics: vec![
-            NodeFailureSemantic { code: "FW_NODE_FS_SVG_CONVERT_CONFIG".into(), description: "A --fit that is not cover, contain or fill; a --format that is not png, jpg or webp; a --width, --height or --quality that is not a whole number in range.".into(), ..Default::default() },
+            NodeFailureSemantic { code: "FW_NODE_FS_SVG_CONVERT_CONFIG".into(), description: "A --fit that is not cover, contain or fill; a --format that is not png, jpg, webp or pdf; a --width, --height or --quality that is not a whole number in range; --width, --height or --fit given with --format pdf.".into(), ..Default::default() },
             NodeFailureSemantic { code: "FS_SVG_CONVERT_SOURCE".into(), description: "Nothing at --source-key, or it is not SVG; the SVG does not parse or has no size; an <image href> that is a URL, a data URI or a path outside the project, or a picture over its cap. The message names the href.".into(), ..Default::default() },
             NodeFailureSemantic { code: "FS_SVG_CONVERT_FONT".into(), description: "A font-family the SVG names is neither the bundled Inter nor a face the project has under static/fonts/; the message lists what exists.".into(), ..Default::default() },
             NodeFailureSemantic { code: "FS_SVG_CONVERT_RASTER".into(), description: "resvg, the encoder or the store write failed.".into(), retryable: true, ..Default::default() },
@@ -232,6 +259,9 @@ pub fn definition() -> NodeDefinition {
                 .input(json!({ "data": { "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"1080\" height=\"1350\"><rect width=\"1080\" height=\"1350\" fill=\"#012169\"/><text x=\"540\" y=\"640\" font-family=\"Inter\" font-weight=\"800\" font-size=\"120\" fill=\"#fff\" text-anchor=\"middle\" inline-size=\"918\">RESEARCH SHOWCASE NIGHT</text></svg>" } }))
                 .output(json!({ "data": { "svg": "<svg …>" }, "image": { "__zf_type": "file_ref", "backend": "zebfs", "ref": "sandbox/posters/out/9f2c….png", "filename": "9f2c….png", "mime": "image/png", "kind": "image", "size": 412300, "sha256": "sha256:…", "lifecycle": "durable", "origin": "fs.svg.convert", "trust": "generated", "width": 1080, "height": 1350, "format": "png" } }))
                 .note("`ai.agent --schema '{\"type\":\"object\",\"required\":[\"svg\"],\"properties\":{\"svg\":{\"type\":\"string\"}}}'` before it answers the SVG as `data.svg`. `inline-size` wraps the headline; pictures are `<image href=\"sandbox/posters/photos/venue.jpg\">`."),
+            NodeExample::dsl("A certificate as a PDF, the name shrunk to its line", "fs.svg.convert --source-key svg --format pdf --folder certificates --filename cert-2026-0412")
+                .input(json!({ "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"1123\" height=\"794\">…<text x=\"561\" y=\"420\" font-family=\"Inter\" font-size=\"64\" text-anchor=\"middle\" inline-size=\"900\" data-fit=\"shrink\" data-min-size=\"28\">Alexandra Josephine Montgomery Whitfield</text>…</svg>" }))
+                .note("A `fs.get` of the template .svg and a `script` that fills the placeholders come before it. The name is real text in the PDF; a long one shrinks instead of wrapping. `--width/--height/--fit` are refused with pdf."),
             NodeExample::dsl("A stored SVG at a size", "fs.svg.convert --source-key saved --width 512 --height 512 --fit contain --format webp --folder public/logos")
                 .input(json!({ "saved": { "__zf_type": "file_ref", "backend": "zebfs", "ref": "uploads/logo.svg", "filename": "logo.svg", "mime": "image/svg+xml", "kind": "image", "size": 2210, "sha256": "sha256:…", "lifecycle": "durable", "origin": "fs.save", "trust": "untrusted" } }))
                 .note("After `fs.save --allowed-kinds images`. `contain` keeps the proportions, so a wide logo answers 512×n."),
@@ -299,6 +329,9 @@ impl Node {
             Some(q @ 1..=100) => q as u8,
             Some(_) => return Err(config_error("--quality must be a whole number from 1 to 100")),
         };
+        if format == OutputFormat::Pdf && (width.is_some() || height.is_some() || config.fit.as_deref().is_some_and(|f| !f.trim().is_empty())) {
+            return Err(config_error("--format pdf is the SVG's own size: it takes no --width, --height or --fit"));
+        }
         Ok(Self { config, platform, target: Target { width, height, fit }, format, quality })
     }
 
@@ -444,6 +477,7 @@ impl NodeHandler for Node {
             }
         }
         out.insert("image".to_string(), image);
+        out.insert("layout".to_string(), rendered.layout);
 
         let total_ms = started.elapsed().as_millis() as u64;
         Ok(NodeExecutionOutput {
@@ -485,6 +519,7 @@ mod node_tests {
         let bad = |config: Value| Node::new(serde_json::from_value(config).unwrap(), platform.clone()).map(|_| ()).unwrap_err();
         assert!(bad(json!({ "fit": "stretch" })).message.contains("stretch"));
         assert!(bad(json!({ "format": "gif" })).message.contains("gif"));
+        assert!(bad(json!({ "format": "pdf", "width": 500 })).message.contains("pdf"));
         assert!(bad(json!({ "width": "wide" })).message.contains("--width"));
         assert!(bad(json!({ "height": 0 })).message.contains("--height"));
         assert!(bad(json!({ "quality": 101 })).message.contains("--quality"));

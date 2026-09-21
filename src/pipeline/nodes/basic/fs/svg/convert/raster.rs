@@ -1,6 +1,9 @@
 //! SVG → pixels → bytes. resvg draws into a tiny-skia pixmap sized by the
 //! SVG's own `width`/`height` or by `--width`/`--height` with `--fit`; the
-//! `image` crate encodes PNG, JPEG or WebP.
+//! `image` crate encodes PNG, JPEG or WebP. SVG → PDF goes through svg2pdf
+//! on the same parsed tree: one page the SVG's size in points, vector shapes
+//! kept, text kept as text with the font subset embedded, so it can be
+//! selected and searched.
 
 use std::io::Cursor;
 use std::time::Instant;
@@ -21,6 +24,7 @@ pub enum OutputFormat {
     Png,
     Jpg,
     Webp,
+    Pdf,
 }
 
 impl OutputFormat {
@@ -29,14 +33,15 @@ impl OutputFormat {
             "png" => Some(Self::Png),
             "jpg" | "jpeg" => Some(Self::Jpg),
             "webp" => Some(Self::Webp),
+            "pdf" => Some(Self::Pdf),
             _ => None,
         }
     }
     pub fn extension(self) -> &'static str {
-        match self { Self::Png => "png", Self::Jpg => "jpg", Self::Webp => "webp" }
+        match self { Self::Png => "png", Self::Jpg => "jpg", Self::Webp => "webp", Self::Pdf => "pdf" }
     }
     pub fn mime(self) -> &'static str {
-        match self { Self::Png => "image/png", Self::Jpg => "image/jpeg", Self::Webp => "image/webp" }
+        match self { Self::Png => "image/png", Self::Jpg => "image/jpeg", Self::Webp => "image/webp", Self::Pdf => "application/pdf" }
     }
 }
 
@@ -86,6 +91,8 @@ pub struct Rendered {
     pub width: u32,
     pub height: u32,
     pub timing: Timing,
+    /// Where every text and picture landed — see [`super::layout`].
+    pub layout: serde_json::Value,
 }
 
 impl std::fmt::Debug for Rendered {
@@ -147,6 +154,20 @@ pub fn render(
     let opt = resolver.options(fonts.options());
     let tree = usvg::Tree::from_str(svg, &opt).map_err(|e| ConvertError::source(format!("svg does not parse: {e}")))?;
     let parse_ms = t.elapsed().as_millis() as u64;
+    let layout = super::layout::report(&tree);
+
+    if format == OutputFormat::Pdf {
+        let t = Instant::now();
+        let (width, height, _) = place((tree.size().width(), tree.size().height()), &Target::default())?;
+        let bytes = svg2pdf::to_pdf(
+            &tree,
+            svg2pdf::ConversionOptions { compress: true, raster_scale: 1.5, embed_text: true, pdfa: false },
+            svg2pdf::PageOptions { dpi: 72.0 },
+        )
+        .map_err(|e| ConvertError::raster(format!("pdf: {e}")))?;
+        let encode_ms = t.elapsed().as_millis() as u64;
+        return Ok(Rendered { bytes, width, height, timing: Timing { parse_ms, raster_ms: 0, encode_ms }, layout });
+    }
     let (width, height, transform) = place((tree.size().width(), tree.size().height()), target)?;
 
     let t = Instant::now();
@@ -181,9 +202,10 @@ pub fn render(
                 .write_image(img.as_raw(), width, height, image::ExtendedColorType::Rgba8)
                 .map_err(|e| ConvertError::raster(format!("webp encode: {e}")))?;
         }
+        OutputFormat::Pdf => unreachable!("pdf answered above"),
     }
     let encode_ms = t.elapsed().as_millis() as u64;
-    Ok(Rendered { bytes: out.into_inner(), width, height, timing: Timing { parse_ms, raster_ms, encode_ms } })
+    Ok(Rendered { bytes: out.into_inner(), width, height, timing: Timing { parse_ms, raster_ms, encode_ms }, layout })
 }
 
 #[cfg(test)]

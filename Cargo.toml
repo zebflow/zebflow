@@ -70,6 +70,8 @@ tiny-skia = "0.11"
 # stays off here: the node shapes text with the platform's fontdb only.
 resvg = { version = "0.45", default-features = false, features = ["text", "raster-images"] }
 usvg = { version = "0.45", default-features = false, features = ["text"] }
+# SVG -> PDF with the text kept as text (subset fonts embedded); same resvg/usvg/fontdb as above.
+svg2pdf = { version = "0.13", default-features = false, features = ["text", "image", "filters"] }
 roxmltree = "0.20"
 multer = "3"
 serde_urlencoded = "0.7"

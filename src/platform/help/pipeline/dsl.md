@@ -538,7 +538,23 @@ go through `--fit cover|contain|fill`. `--format png|jpg|webp` (default
 png), `--quality` for jpg, `--folder` (default `images/`), `--filename`,
 `--delete-source`. The answer adds `image` — a durable FileRef
 (`origin: fs.svg.convert`) with `width`, `height`, `format` — and keeps the
-rest of the payload, so `data.svg` is still there for the next node.
+rest of the payload, so `data.svg` is still there for the next node, and
+`layout`: every text and picture with its box, the pairs that overlap, what
+leaves the canvas, and `ok`. A `script` turns that into a verdict —
+`retry: !input.layout.ok` with the overlaps as notes — and `logic.retry`
+sends the agent round again with the notes, so a composition is corrected
+without anyone looking at pixels; the picture nodes stay upstream of the
+loop and are not paid for twice.
+
+`--format pdf` writes the same SVG as one PDF page: vector shapes stay
+vector and text stays text with the font subset embedded, so a name is
+selectable. `data-fit="shrink"` beside `inline-size` shrinks a `<text>` until
+it fits `data-max-lines` (default 1) — a certificate is a stored template
+`.svg`, a `fs.get`, a `script` that fills the placeholders, then
+`fs.svg.convert --format pdf --folder certificates --filename cert-<number>`.
+Effects — shadow, blur, glow, grain, colour grading — are SVG filters
+(`feDropShadow`, `feGaussianBlur`, `feColorMatrix`, `feTurbulence`); resvg
+draws them and the PDF keeps them.
 
 **A generated picture inside the poster.** Ask the image model for the
 subject "on a solid flat #00ff00 green screen background", `fs.save` it,
