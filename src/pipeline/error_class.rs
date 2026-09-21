@@ -225,6 +225,13 @@ pub const ERROR_CLASS_REGISTRY: &[(&str, ErrorClass)] = &[
     ("FW_NODE_LOGIC_RETRY_WHEN_PARSE", ErrorClass::Refused),
     ("FW_NODE_LOGIC_RETRY_WHEN_RUN", ErrorClass::Failed),
     ("FW_NODE_MAIL_ADDRESS", ErrorClass::Refused),
+    // The relay's own two refusals, which are not the same refusal. A 4xx
+    // is "not now" — greylisting says this, and the answer is to try again.
+    // A rejected password is not going to become right by itself.
+    ("FW_NODE_MAIL_DEFERRED", ErrorClass::Failed),
+    ("FW_NODE_MAIL_AUTH", ErrorClass::Refused),
+    // A path that names no stored file is the author's to fix.
+    ("FW_NODE_MAIL_ATTACH", ErrorClass::Refused),
     ("FW_NODE_MAIL_BUILD", ErrorClass::Refused),
     ("FW_NODE_MAIL_CONFIG", ErrorClass::Refused),
     ("FW_NODE_MAIL_CREDENTIAL", ErrorClass::Refused),

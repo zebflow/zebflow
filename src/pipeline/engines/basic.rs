@@ -1503,6 +1503,7 @@ impl BasicPipelineEngine {
                         PipelineError::new("FW_NODE_MAIL_CONFIG", err.to_string())
                     })?,
                     credentials.clone(),
+                    self.platform.clone(),
                 )?))
             }
             weberror::NODE_KIND => Ok(NodeDispatch::WebError(weberror::Node::new(

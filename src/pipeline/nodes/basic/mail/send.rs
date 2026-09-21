@@ -3,8 +3,12 @@
 //! Submission only: this node hands one message to a relay the credential
 //! names (port 587 STARTTLS by default). It is deliberately not a mail
 //! server — no queueing, no retries, no DKIM. Deliverability belongs to the
-//! relay; when Mailbourne exists it becomes one more relay this node can
-//! point at, and nothing here changes.
+//! relay.
+//!
+//! The message and the SMTP conversation are **mailbourne's**, the same
+//! engine that runs the relay this may be pointing at. What stays here is
+//! only what a mail engine cannot decide for its caller: which credential,
+//! and what wraps the socket (see [`transport`](super::transport)).
 //!
 //! | Use | DSL |
 //! |---|---|
@@ -21,10 +25,10 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use lettre::message::{Mailbox, MultiPart};
-use lettre::transport::smtp::authentication::Credentials as SmtpCredentials;
-use lettre::transport::smtp::client::{Tls, TlsParameters};
-use lettre::{AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor};
+use mailbourne::send::conversation::{Credentials, Outcome, Step};
+use mailbourne::shared::compose;
+use mailbourne::shared::core::{EmailAddress, Envelope};
+use mailbourne::shared::mime::Attachment;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -76,7 +80,8 @@ pub fn definition() -> NodeDefinition {
                 "text":     { "type": "string", "description": "Plain-text body — literal or {{ expr }}." },
                 "html":     { "type": "string", "description": "HTML body — literal or {{ expr }}. With text, sent as multipart/alternative." },
                 "from":     { "type": "string", "description": "Override the credential's From." },
-                "reply_to": { "type": "string", "description": "Reply-To address." }
+                "reply_to": { "type": "string", "description": "Reply-To address." },
+                "attach":   { "type": "object", "description": "Displayed filename → store path or FileRef, one entry per attachment." }
             }
         }),
         dsl_flags: vec![
@@ -123,6 +128,15 @@ pub fn definition() -> NodeDefinition {
                 required: false,
             },
             crate::pipeline::model::DslFlag {
+                flag: "--attach".to_string(),
+                config_key: "attach".to_string(),
+                description: "A file to attach: displayed name = store path or FileRef. Repeat for several. \
+                    e.g. --attach \"Certificate.pdf={{ input.image.ref }}\". Leave the name empty to keep the file's own."
+                    .to_string(),
+                kind: crate::pipeline::model::DslFlagKind::KeyValuePairs,
+                required: false,
+            },
+            crate::pipeline::model::DslFlag {
                 flag: "--reply-to".to_string(),
                 config_key: "reply_to".to_string(),
                 description: "Reply-To address.".to_string(),
@@ -137,7 +151,9 @@ pub fn definition() -> NodeDefinition {
                 NodeFieldDef { name: "to".to_string(), label: "To".to_string(), field_type: NodeFieldType::Text, help: Some("Literal address or {{ expr }}.".to_string()), ..Default::default() },
                 NodeFieldDef { name: "subject".to_string(), label: "Subject".to_string(), field_type: NodeFieldType::Text, help: Some("Literal or {{ expr }}.".to_string()), ..Default::default() },
                 NodeFieldDef { name: "text".to_string(), label: "Text Body".to_string(), field_type: NodeFieldType::Textarea, help: Some("Plain-text body — literal or {{ expr }}.".to_string()), ..Default::default() },
-                NodeFieldDef { name: "html".to_string(), label: "HTML Body".to_string(), field_type: NodeFieldType::Textarea, help: Some("HTML body — with a text body, sent as multipart/alternative.".to_string()), ..Default::default() },
+                NodeFieldDef { name: "html_section".to_string(), label: "HTML version (optional)".to_string(), field_type: NodeFieldType::Section, help: Some("An email carries the text above and, optionally, an HTML rendering of the same words. A reader's client shows one or the other — never both — so this is an addition, not a choice.".to_string()), ..Default::default() },
+                NodeFieldDef { name: "html".to_string(), label: "HTML Body".to_string(), field_type: NodeFieldType::CodeEditor, language: Some("html".to_string()), rows: Some(12), help: Some("Leave empty to send plain text only. Email clients are not browsers: use tables and inline styles, and expect no JavaScript, no flexbox and no external stylesheet.".to_string()), ..Default::default() },
+                NodeFieldDef { name: "attach".to_string(), label: "Attachments".to_string(), field_type: NodeFieldType::KeyValuePairs, help: Some("Each row: the name the recipient sees, and the store path or FileRef it comes from. Leave the name empty to keep the file's own — otherwise a certificate arrives called 9f2c-4d1a-….pdf.".to_string()), ..Default::default() },
                 NodeFieldDef { name: "from".to_string(), label: "From".to_string(), field_type: NodeFieldType::Text, help: Some("Overrides the credential's From address.".to_string()), ..Default::default() },
                 NodeFieldDef { name: "reply_to".to_string(), label: "Reply-To".to_string(), field_type: NodeFieldType::Text, help: Some("Where replies should go when that is not the From address — literal or {{ expr }}.".to_string()), ..Default::default() },
             ]
@@ -171,15 +187,100 @@ pub struct Config {
     pub from: Option<String>,
     #[serde(default)]
     pub reply_to: Option<String>,
+    /// Files to attach: displayed name → store path or FileRef. An entry
+    /// with an empty name takes the file's own.
+    #[serde(default)]
+    pub attach: std::collections::BTreeMap<String, String>,
+}
+
+
+/// An address string onto mailbourne's, keeping any display name out of it.
+///
+/// A credential's `from` is conventionally `Zebflow <mail@example.com>`,
+fn to_mailbourne(raw: &str, what: &str) -> Result<EmailAddress, PipelineError> {
+    let inner = match (raw.rfind('<'), raw.rfind('>')) {
+        (Some(open), Some(close)) if close > open => &raw[open + 1..close],
+        _ => raw,
+    };
+    EmailAddress::parse(inner.trim()).map_err(|e| {
+        PipelineError::new("FW_NODE_MAIL_ADDRESS", format!("{what} address '{raw}' is not valid: {e:?}"))
+    })
+}
+
+/// Where in the SMTP conversation something happened, in words.
+fn step_name(step: Step) -> &'static str {
+    match step {
+        Step::Greeting => "the greeting",
+        Step::Ehlo => "the introduction",
+        Step::Auth => "the password",
+        Step::StartTls => "going private",
+        Step::MailFrom => "the sender",
+        Step::RcptTo => "the recipient",
+        Step::Data => "asking to send",
+        Step::Payload => "the letter itself",
+    }
 }
 
 pub struct Node {
     config: Config,
     credentials: Arc<CredentialService>,
+    /// Only attachments need it, so an engine without one can still send.
+    platform: Option<Arc<crate::platform::services::PlatformService>>,
 }
 
 impl Node {
-    pub fn new(config: Config, credentials: Arc<CredentialService>) -> Result<Self, PipelineError> {
+    /// Reads every attachment out of the project's store.
+    ///
+    /// Each value is a store path or a FileRef, resolved the way every other
+    /// node resolves one. The key is the name the recipient sees; an empty
+    /// key takes the file's own, so the common case stays short and nobody
+    /// receives `9f2c-4d1a-….pdf`.
+    async fn resolve_attachments(
+        &self,
+        input: &NodeExecutionInput,
+    ) -> Result<Vec<Attachment>, PipelineError> {
+        if self.config.attach.is_empty() {
+            return Ok(Vec::new());
+        }
+        let (owner, project, ..) = metadata_scope(&input.metadata)?;
+        let platform = self.platform.as_ref().ok_or_else(|| {
+            PipelineError::new(
+                "FW_NODE_MAIL_ATTACH",
+                "attachments need the platform's file store, which this engine context has not got",
+            )
+        })?;
+        let layout = platform
+            .file
+            .ensure_project_layout(owner, project)
+            .map_err(|e| PipelineError::new("FW_NODE_MAIL_ATTACH", e.to_string()))?;
+        let zebfs = layout.open_files();
+
+        let mut out = Vec::with_capacity(self.config.attach.len());
+        for (name, source) in &self.config.attach {
+            let source = source.trim();
+            if source.is_empty() {
+                continue;
+            }
+            let rel = crate::zebfs::normalize_object_path(source.trim_start_matches('/'))
+                .map_err(|e| PipelineError::new("FW_NODE_MAIL_ATTACH", format!("attachment '{source}': {e}")))?;
+            let object = zebfs.get(&rel).map_err(|e| {
+                PipelineError::new("FW_NODE_MAIL_ATTACH", format!("attachment '{rel}': {}", e.message))
+            })?;
+            let filename = if name.trim().is_empty() {
+                rel.rsplit('/').next().unwrap_or(&rel).to_string()
+            } else {
+                name.trim().to_string()
+            };
+            out.push(Attachment::new(filename, object.bytes));
+        }
+        Ok(out)
+    }
+
+    pub fn new(
+        config: Config,
+        credentials: Arc<CredentialService>,
+        platform: Option<Arc<crate::platform::services::PlatformService>>,
+    ) -> Result<Self, PipelineError> {
         if config.credential_id.trim().is_empty() {
             return Err(PipelineError::new(
                 "FW_NODE_MAIL_CONFIG",
@@ -195,18 +296,11 @@ impl Node {
         Ok(Self {
             config,
             credentials,
+            platform,
         })
     }
 }
 
-fn parse_mailbox(value: &str, what: &str) -> Result<Mailbox, PipelineError> {
-    value.parse::<Mailbox>().map_err(|err| {
-        PipelineError::new(
-            "FW_NODE_MAIL_ADDRESS",
-            format!("{what} address '{value}' is not a valid mailbox: {err}"),
-        )
-    })
-}
 
 fn secret_str<'a>(secret: &'a Value, key: &str) -> &'a str {
     secret.get(key).and_then(|v| v.as_str()).unwrap_or("")
@@ -269,111 +363,112 @@ impl NodeHandler for Node {
 
         // --- Resolve the message from config + payload ---
         let to_raw = self.config.to.clone();
-        let to = parse_mailbox(&to_raw, "recipient")?;
         let from_raw = self
             .config
             .from
             .clone()
             .filter(|s| !s.trim().is_empty())
             .unwrap_or_else(|| secret_str(secret, "from").to_string());
-        let from = parse_mailbox(&from_raw, "from")?;
         let subject = self.config.subject.clone();
         let text = self.config.text.clone();
         let html = self.config.html.clone();
 
-        let mut builder = Message::builder()
-            .from(from)
-            .to(to.clone())
-            .subject(subject.clone());
-        if let Some(reply_to) = self.config.reply_to.clone().filter(|s| !s.trim().is_empty()) {
-            builder = builder.reply_to(parse_mailbox(&reply_to, "reply-to")?);
+        // ── The message, built by mailbourne ──
+        let from_address = to_mailbourne(&from_raw, "sender")?;
+        let to_address = to_mailbourne(&to_raw, "recipient")?;
+        let text = text.unwrap_or_default();
+        if text.trim().is_empty() && html.as_deref().unwrap_or("").trim().is_empty() {
+            return Err(PipelineError::new(
+                "FW_NODE_MAIL_CONFIG",
+                "one of --text or --html is required",
+            ));
         }
-        let message = match (text, html) {
-            (Some(text), Some(html)) => builder
-                .multipart(MultiPart::alternative_plain_html(text, html)),
-            (None, Some(html)) => builder
-                .header(lettre::message::header::ContentType::TEXT_HTML)
-                .body(html),
-            (Some(text), None) => builder.body(text),
-            (None, None) => {
+        // A letter always carries text. When only HTML was given, the text
+        // part would otherwise be empty for every reader whose client shows
+        // no HTML, so say where the content went rather than nothing.
+        let text = if text.trim().is_empty() {
+            "This message is formatted as HTML. Open it in a mail reader that shows HTML.".to_string()
+        } else {
+            text
+        };
+
+        let attachments = self.resolve_attachments(&input).await?;
+        let attached: Vec<String> = attachments.iter().map(|a| a.filename.clone()).collect();
+
+        let hostname = from_address.domain().to_string();
+        let message = compose::rich(
+            &from_address,
+            &to_address,
+            &subject,
+            &text,
+            html.as_deref().filter(|h| !h.trim().is_empty()),
+            &attachments,
+            &format!("mail.{hostname}"),
+        );
+
+        // ── Over to the relay ──
+        let channel = super::transport::Channel::parse(&tls_mode)?;
+        // No user means no AUTH: a relay on localhost that carries mail for
+        // anyone who can reach it, which is what a test sink is. A real
+        // relay will refuse the envelope, and say so, which is the right
+        // place to find out rather than here.
+        let user = secret_str(secret, "user").to_string();
+        let credentials = (!user.is_empty()).then(|| Credentials {
+            user,
+            password: secret_str(secret, "password").to_string(),
+        });
+        let envelope = Envelope { mail_from: from_address.clone(), rcpt_to: vec![to_address.clone()] };
+
+        let outcome = super::transport::deliver_to_relay(
+            &host,
+            port,
+            channel,
+            &format!("mail.{hostname}"),
+            credentials.as_ref(),
+            &envelope,
+            &message,
+        )
+        .await?;
+
+        match outcome {
+            Outcome::Delivered { .. } => {}
+            // Both refusals are the node's failure, but they are different
+            // failures and the message says which: a 4xx is worth retrying,
+            // a 5xx never is, and a refusal at `Auth` is the credential
+            // rather than the letter.
+            Outcome::Deferred { at, reply } => {
                 return Err(PipelineError::new(
-                    "FW_NODE_MAIL_CONFIG",
-                    "one of --text or --html is required",
+                    "FW_NODE_MAIL_DEFERRED",
+                    format!(
+                        "the relay said not now at {}: {} {}",
+                        step_name(at),
+                        reply.code,
+                        reply.lines.join(" ")
+                    ),
                 ));
             }
-        }
-        .map_err(|err| {
-            PipelineError::new("FW_NODE_MAIL_BUILD", format!("building message: {err}"))
-        })?;
-
-        // --- Transport per the credential's TLS mode ---
-        let mut transport = match tls_mode.as_str() {
-            // Port 587: plaintext connect, upgrade via STARTTLS, refuse to
-            // continue without it.
-            "starttls" => AsyncSmtpTransport::<Tokio1Executor>::starttls_relay(&host).map_err(
-                |err| PipelineError::new("FW_NODE_MAIL_TRANSPORT", err.to_string()),
-            )?,
-            // Port 465: TLS from the first byte.
-            "tls" => AsyncSmtpTransport::<Tokio1Executor>::relay(&host)
-                .map_err(|err| PipelineError::new("FW_NODE_MAIL_TRANSPORT", err.to_string()))?,
-            // Encrypted, but the certificate is not checked.
-            //
-            // This exists for one real case: a mail server you run yourself,
-            // before it has a certificate a public authority signed — a fresh
-            // mailbourne, for instance, whose STARTTLS is self-signed on first
-            // boot. Such a server refuses to accept a password over a plain
-            // connection, quite rightly, so "none" cannot reach it and the
-            // choice would otherwise be between no encryption and no test.
-            //
-            // What it costs: the traffic is encrypted against a passive
-            // listener, and defenceless against an active one, who can present
-            // any certificate and read the password. Use it on a private
-            // network — a localhost, a tunnel, a VPN — and replace it with
-            // `starttls` the moment the server has a real certificate.
-            "starttls-insecure" => {
-                // Both waivers, because they fail separately: a self-signed
-                // certificate is an invalid *cert*, and reaching that server
-                // through a tunnel or an IP makes the name not match either.
-                let parameters = TlsParameters::builder(host.clone())
-                    .dangerous_accept_invalid_certs(true)
-                    .dangerous_accept_invalid_hostnames(true)
-                    .build()
-                    .map_err(|err| {
-                        PipelineError::new("FW_NODE_MAIL_TRANSPORT", err.to_string())
-                    })?;
-                AsyncSmtpTransport::<Tokio1Executor>::builder_dangerous(&host)
-                    .tls(Tls::Required(parameters))
-            }
-            // Test sinks only — a localhost mailpit/smtp4dev. Never a real relay.
-            "none" => AsyncSmtpTransport::<Tokio1Executor>::builder_dangerous(&host),
-            other => {
+            Outcome::Rejected { at, reply } => {
                 return Err(PipelineError::new(
-                    "FW_NODE_MAIL_CREDENTIAL",
+                    if at == Step::Auth {
+                        "FW_NODE_MAIL_AUTH"
+                    } else {
+                        "FW_NODE_MAIL_SEND"
+                    },
                     format!(
-                        "unknown tls mode '{other}': use starttls, tls, starttls-insecure, or none"
+                        "the relay refused at {}: {} {}",
+                        step_name(at),
+                        reply.code,
+                        reply.lines.join(" ")
                     ),
                 ));
             }
         }
-        .port(port);
-        let user = secret_str(secret, "user");
-        let password = secret_str(secret, "password");
-        if !user.is_empty() {
-            transport = transport.credentials(SmtpCredentials::new(
-                user.to_string(),
-                password.to_string(),
-            ));
-        }
-        let transport = transport.build();
-
-        transport.send(message).await.map_err(|err| {
-            PipelineError::new("FW_NODE_MAIL_SEND", format!("smtp send failed: {err}"))
-        })?;
 
         Ok(NodeExecutionOutput {
             output_pins: vec![OUTPUT_PIN_OUT.to_string()],
             payload: json!({
                 "sent": true,
+                "attached": attached,
                 "to": to_raw,
                 "subject": subject,
             }),
@@ -492,6 +587,7 @@ mod tests {
                 ..Default::default()
             },
             platform.credentials.clone(),
+            None,
         )
         .expect("node");
 
@@ -563,6 +659,7 @@ mod tests {
                 ..Default::default()
             },
             platform.credentials.clone(),
+            None,
         )
         .expect("node");
 
@@ -615,6 +712,7 @@ mod tests {
                 ..Default::default()
             },
             platform.credentials.clone(),
+            None,
         )
         .expect("node");
 

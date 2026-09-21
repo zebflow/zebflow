@@ -108,7 +108,13 @@ parquet = "58.3.0"
 object_store = { version = "0.13", features = ["aws", "http"] }
 tokio-tungstenite = { version = "0.24", features = ["native-tls"] }
 wasmtime = { version = "36.0.2", default-features = false, features = ["cranelift", "runtime", "std"] }
-lettre = { version = "0.11.23", default-features = false, features = ["smtp-transport", "tokio1", "tokio1-rustls-tls", "builder", "hostname"] }
+# Mail is mailbourne's: it builds the message and speaks SMTP, the same
+# engine that runs the relay this may be pointing at. Only the socket and
+# what wraps it stay here, because that is a question about a deployment,
+# not about mail.
+mailbourne = { version = "0.0.7", default-features = false, features = ["send"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
+webpki-roots = "0.26"
 # The route_fetch SEO scan reads a rendered page's head; regex is already in
 # the dependency graph, so this promotes it from dev-only to runtime.
 regex = "1"
