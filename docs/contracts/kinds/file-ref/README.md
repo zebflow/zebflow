@@ -45,7 +45,7 @@ All eleven fields are required.
 | `size` | byte count, verified before bytes are returned |
 | `sha256` | `sha256:` + exactly 64 lowercase hex digits, verified before bytes are returned |
 | `lifecycle` | `temporary` — deleted after the run — or `durable`, a project file that stays |
-| `origin` | where it entered: `webhook`, `manual` (a signed-in operator's run — an upload on the Run form, or a store path named in the JSON form), `http.response`, `node-output`, `fs.image.thumbnail`, `fs.svg.convert`, `fs.save`, `fs.put`, `fs.copy`, `fs.move`, `fs.compress`, `project.files.upload`. Open: a new producer adds a word |
+| `origin` | where it entered: `webhook`, `manual` (a signed-in operator's run — an upload on the Run form, or a store path named in the JSON form), `http.response`, `node-output`, `fs.image.thumbnail`, `fs.image.chromakey`, `fs.svg.convert`, `fs.save`, `fs.put`, `fs.copy`, `fs.move`, `fs.compress`, `project.files.upload`. Open: a new producer adds a word |
 | `trust` | how far the bytes are trusted: `untrusted` (arrived from outside), `sanitized` (re-encoded by a node that discards what it did not understand), `generated` (a node produced them), `user` (a signed-in operator uploaded them). Open: no consumer branches on it yet |
 
 ## Why it has no envelope

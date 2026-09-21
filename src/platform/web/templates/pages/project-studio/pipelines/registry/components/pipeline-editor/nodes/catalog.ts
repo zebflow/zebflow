@@ -52,6 +52,7 @@ const NODE_KIND_COLORS: Record<string, string> = {
   "n.fs.decompress": "#0c4a6e",
   "n.fs.pdf.convert": "#0c4a6e",
   "n.fs.image.thumbnail": "#4a1d96",
+  "n.fs.image.chromakey": "#4a1d96",
   "n.fs.svg.convert": "#4a1d96",
   "n.kv.set": "#b45309",
   "n.kv.get": "#b45309",

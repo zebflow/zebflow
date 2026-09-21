@@ -1729,6 +1729,17 @@ impl BasicPipelineEngine {
                 };
                 Ok(NodeDispatch::SvgConvert(fs::svg::convert::Node::new(config, platform.clone())?))
             }
+            fs::image::chromakey::NODE_KIND => {
+                let config: fs::image::chromakey::Config =
+                    serde_json::from_value(node.config.clone()).unwrap_or_default();
+                let Some(platform) = &self.platform else {
+                    return Err(PipelineError::new(
+                        "FW_NODE_FS_IMAGE_CHROMAKEY_CONFIG",
+                        "platform service not available in this engine context",
+                    ));
+                };
+                Ok(NodeDispatch::ImgChromakey(fs::image::chromakey::Node::new(config, platform.clone())?))
+            }
             fs::image::thumbnail::NODE_KIND => {
                 let config: fs::image::thumbnail::Config =
                     serde_json::from_value(node.config.clone()).unwrap_or_default();
@@ -2990,6 +3001,7 @@ impl BasicPipelineEngine {
                         node.execute_many_async(input_for_exec).await
                     }
                     NodeDispatch::SvgConvert(node) => node.execute_many_async(input_for_exec).await,
+                    NodeDispatch::ImgChromakey(node) => node.execute_many_async(input_for_exec).await,
                     NodeDispatch::Input(node) => node.execute_many_async(input_for_exec).await,
                     NodeDispatch::KvSet(node) => node.execute_many_async(input_for_exec).await,
                     NodeDispatch::KvGet(node) => node.execute_many_async(input_for_exec).await,
@@ -5887,6 +5899,7 @@ enum NodeDispatch {
     FilePdfConvert(fs::pdf::convert::Node),
     ImgThumbnail(fs::image::thumbnail::Node),
     SvgConvert(fs::svg::convert::Node),
+    ImgChromakey(fs::image::chromakey::Node),
     /// Any `n.input.*` kind — a pass-through validator of one envelope field.
     Input(input::Node),
     KvSet(kv::set::Node),

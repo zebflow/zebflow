@@ -366,6 +366,7 @@ pub fn expand_kind(short: &str) -> Option<&'static str> {
         "fs.decompress" | "n.fs.decompress" => Some("n.fs.decompress"),
         "fs.pdf.convert" | "n.fs.pdf.convert" => Some("n.fs.pdf.convert"),
         "fs.image.thumbnail" | "n.fs.image.thumbnail" => Some("n.fs.image.thumbnail"),
+        "fs.image.chromakey" | "n.fs.image.chromakey" => Some("n.fs.image.chromakey"),
         "fs.svg.convert" | "n.fs.svg.convert" => Some("n.fs.svg.convert"),
         "fs.list" | "n.fs.list" => Some("n.fs.list"),
         "fs.head" | "n.fs.head" => Some("n.fs.head"),

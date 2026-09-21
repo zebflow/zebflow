@@ -176,6 +176,11 @@ pub const ERROR_CLASS_REGISTRY: &[(&str, ErrorClass)] = &[
     ("FS_SVG_CONVERT_SOURCE", ErrorClass::Refused),
     ("FS_SVG_CONVERT_FONT", ErrorClass::Refused),
     ("FS_SVG_CONVERT_RASTER", ErrorClass::Failed),
+    // `fs.image.chromakey`: the key, the source and its limits are the author's.
+    ("FW_NODE_FS_IMAGE_CHROMAKEY_CONFIG", ErrorClass::Refused),
+    ("FS_IMAGE_CHROMAKEY_SOURCE", ErrorClass::Refused),
+    ("FS_IMAGE_CHROMAKEY_RASTER", ErrorClass::Failed),
+    ("FS_IMAGE_DECODE", ErrorClass::Refused),
     // The `input.*` family: every one of these is the caller's envelope
     // disagreeing with the pipeline's declaration, so none is retryable.
     ("FW_NODE_INPUT_CONFIG", ErrorClass::Refused),

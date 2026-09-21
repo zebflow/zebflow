@@ -180,6 +180,15 @@
         "n.fs.save"
       ]
     },
+    "n.fs.image.chromakey": {
+      "label": "KEY",
+      "method": "direct-svg",
+      "path": "/assets/node-icons/zebflow/n.fs.image.chromakey.svg",
+      "source_url": "",
+      "supports": [
+        "n.fs.image.chromakey"
+      ]
+    },
     "n.fs.image.thumbnail": {
       "label": "IMG",
       "method": "direct-svg",

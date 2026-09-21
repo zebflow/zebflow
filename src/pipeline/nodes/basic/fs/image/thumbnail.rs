@@ -11,8 +11,8 @@
 //!
 //! Formats: jpg (quality-controlled, default), png (lossless), webp (lossless)
 //!
-//! Decompression-bomb protection: image dimensions capped at 16 000 px per side,
-//! allocation capped at 128 MB.
+//! Decompression-bomb protection: the family's `load_with_limits` (16 000 px a
+//! side, 128 MB decoded).
 
 use std::io::Cursor;
 use std::sync::Arc;
@@ -24,6 +24,7 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
+use super::load_with_limits;
 use crate::pipeline::nodes::shared::file_ref::{BACKEND_ZEBFS, FILE_REF_TYPE, LIFECYCLE_DURABLE, zebfs_rel_path_or_string};
 use crate::pipeline::nodes::shared::util::{filename_stem, metadata_scope, resolve_path};
 use crate::pipeline::model::NodeCapability;
@@ -37,11 +38,6 @@ use crate::platform::services::PlatformService;
 pub const NODE_KIND: &str = "n.fs.image.thumbnail";
 const INPUT_PIN_IN: &str = "in";
 const OUTPUT_PIN_OUT: &str = "out";
-
-/// Max decompressed image side (px) — prevents decompression bombs.
-const MAX_DIM: u32 = 16_000;
-/// Max memory allocated for image decode (128 MB).
-const MAX_ALLOC: u64 = 128 * 1024 * 1024;
 
 fn default_width() -> u32 {
     256
@@ -533,47 +529,6 @@ impl NodeHandler for Node {
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────
-
-/// Load an image with hard dimension + allocation limits (decompression bomb protection).
-///
-/// Strategy: read only the image header first via `into_dimensions()` (fast, no full decode),
-/// reject if too large, then do the full decode. This prevents PNG/WebP bombs where a tiny
-/// file expands to gigabytes in memory.
-fn load_with_limits(bytes: &[u8]) -> Result<DynamicImage, PipelineError> {
-    // Step 1: read header only — check dimensions before decoding.
-    let (w, h) = image::ImageReader::new(Cursor::new(bytes))
-        .with_guessed_format()
-        .map_err(|e| PipelineError::new("IMG_THUMBNAIL", format!("format detection: {e}")))?
-        .into_dimensions()
-        .map_err(|e| PipelineError::new("IMG_THUMBNAIL", format!("image header read: {e}")))?;
-
-    if w > MAX_DIM || h > MAX_DIM {
-        return Err(PipelineError::new(
-            "IMG_THUMBNAIL",
-            format!("image dimensions {w}x{h} exceed maximum {MAX_DIM}x{MAX_DIM}"),
-        ));
-    }
-
-    // Rough allocation check: width × height × 4 bytes (RGBA worst case).
-    let approx_alloc = (w as u64) * (h as u64) * 4;
-    if approx_alloc > MAX_ALLOC {
-        return Err(PipelineError::new(
-            "IMG_THUMBNAIL",
-            format!(
-                "image would require ~{} MB decoded, exceeding limit of {} MB",
-                approx_alloc / 1_048_576,
-                MAX_ALLOC / 1_048_576,
-            ),
-        ));
-    }
-
-    // Step 2: full decode — safe now that dimensions are checked.
-    image::ImageReader::new(Cursor::new(bytes))
-        .with_guessed_format()
-        .map_err(|e| PipelineError::new("IMG_THUMBNAIL", format!("format detection: {e}")))?
-        .decode()
-        .map_err(|e| PipelineError::new("IMG_THUMBNAIL", format!("image decode: {e}")))
-}
 
 /// Resize to fill target box exactly, crop center to target size (aspect-preserving).
 fn resize_cover(img: &DynamicImage, target_w: u32, target_h: u32) -> DynamicImage {

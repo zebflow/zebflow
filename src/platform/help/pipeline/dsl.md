@@ -540,6 +540,15 @@ png), `--quality` for jpg, `--folder` (default `images/`), `--filename`,
 (`origin: fs.svg.convert`) with `width`, `height`, `format` — and keeps the
 rest of the payload, so `data.svg` is still there for the next node.
 
+**A generated picture inside the poster.** Ask the image model for the
+subject "on a solid flat #00ff00 green screen background", `fs.save` it,
+then `fs.image.chromakey --folder sandbox/posters/cutouts` turns the screen
+transparent (plain pixel maths, no model; the default key is broadcast
+green `#00b140`, which is what the models paint) and answers
+`image`, a PNG with alpha. The agent places it with
+`<image href="{{ input.image.ref }}" x="…" y="…" width="…" height="…"/>`
+and `fs.svg.convert` composites it over the background.
+
 **Temporary previews.** The bytes of a temporary FileRef (an
 `http.request --response-type bytes` answer, a Run-form upload) are deleted
 with the run, so a preview of one used to say only "temporary file — gone".
