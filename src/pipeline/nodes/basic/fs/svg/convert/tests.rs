@@ -97,6 +97,24 @@ mod convert_end_to_end {
     }
 
     #[test]
+    fn adjacent_headline_lines_are_not_an_overlap_and_a_meet_picture_reports_its_drawn_rect() {
+        let fonts = FontSet::bundled();
+        let png = test_support::solid_png(4, 8, [0, 0, 255]);
+        let resolver = resolver_with(vec![(Source::Store("tall.png".into()), png)]);
+        let svg = r##"<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="1350">
+  <text x="540" y="200" font-family="Inter" font-weight="800" font-size="120" text-anchor="middle">RESEARCHSITE</text>
+  <text x="540" y="332" font-family="Inter" font-weight="800" font-size="120" text-anchor="middle">MEMBER</text>
+  <image href="tall.png" x="0" y="750" width="1080" height="600" preserveAspectRatio="xMidYMax meet"/>
+</svg>"##;
+        let out = convert(svg, &fonts, &resolver, &Target::default(), OutputFormat::Png, 82).unwrap();
+        let l = &out.layout;
+        assert!(l["overlaps"].as_array().unwrap().is_empty(), "two lines at 1.1 leading: {l}");
+        // A 4×8 picture in a 1080×600 box, meet, bottom-aligned: 300 wide, 600 tall, centred.
+        assert_eq!(l["images"][0]["box"], serde_json::json!({ "x": 390.0, "y": 750.0, "w": 300.0, "h": 600.0 }), "{l}");
+        assert_eq!(l["ok"], true, "{l}");
+    }
+
+    #[test]
     fn effects_are_svg_filters_and_resvg_draws_them() {
         let fonts = FontSet::bundled();
         let resolver = resolver_with(vec![]);

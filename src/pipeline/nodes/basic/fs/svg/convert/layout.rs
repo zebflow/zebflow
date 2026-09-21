@@ -5,8 +5,13 @@
 //! Read off the parsed tree after wrapping and shrinking, in canvas pixels:
 //! each `<text>` (its first words, its box, how many lines), each `<image>`
 //! (numbered in document order — usvg keeps no ids), every pair of boxes
-//! that overlap with the overlap area, and every box that leaves the canvas. Boxes are the shaped ink of
-//! the text and the placed rectangle of the picture, after transforms.
+//! that overlap with the overlap area, and every box that leaves the canvas.
+//!
+//! A text box is the line box, ascent plus descent, so two lines of one
+//! headline at tight leading overlap by a sliver; a text–text overlap
+//! thinner than a quarter of the smaller box's height is adjacent lines,
+//! not a collision, and is not reported. A picture's box is the rectangle
+//! actually drawn after `preserveAspectRatio`, not the declared one.
 
 use serde_json::{Value, json};
 
@@ -37,10 +42,12 @@ fn collect(group: &usvg::Group, out: &mut Vec<Item>) {
             }
             usvg::Node::Image(i) => {
                 let label = format!("image {}", out.iter().filter(|it| it.kind == "image").count() + 1);
-                // The placement rect in the parent's space, through the parent's
-                // transform: an image's own absolute box also carries the
-                // raster-to-placement scale, which is not where it sits.
-                let b = i.bounding_box().transform(group.abs_transform()).unwrap_or(i.bounding_box());
+                // The drawn rectangle: the picture's pixel size through the transform
+                // usvg built from the placement and preserveAspectRatio.
+                let s = i.size();
+                let b = tiny_skia::Rect::from_xywh(0.0, 0.0, s.width(), s.height())
+                    .and_then(|r| r.transform(i.abs_transform()))
+                    .unwrap_or(i.bounding_box());
                 out.push(Item { label, kind: "image", x: b.x(), y: b.y(), w: b.width(), h: b.height(), lines: 0 });
             }
             usvg::Node::Path(_) => {}
@@ -71,7 +78,8 @@ pub fn report(tree: &usvg::Tree) -> Value {
         for b in items.iter().skip(i + 1) {
             let ox = (a.x + a.w).min(b.x + b.w) - a.x.max(b.x);
             let oy = (a.y + a.h).min(b.y + b.h) - a.y.max(b.y);
-            if ox > 0.5 && oy > 0.5 {
+            let leading = if a.kind == "text" && b.kind == "text" { 0.25 * a.h.min(b.h) } else { 0.0 };
+            if ox > 0.5 && oy > 0.5 + leading {
                 overlaps.push(json!({ "a": a.label, "b": b.label, "area": round(ox * oy), "w": round(ox), "h": round(oy) }));
             }
         }
