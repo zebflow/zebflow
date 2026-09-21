@@ -85,6 +85,8 @@ mod error;
 mod fonts;
 pub mod layout;
 mod raster;
+#[cfg(test)]
+mod security;
 mod sources;
 mod text;
 #[cfg(test)]
@@ -94,7 +96,7 @@ pub use error::{ConvertError, ConvertErrorKind};
 pub use fonts::FontSet;
 pub use raster::{Fit, OutputFormat, Rendered, Target, render};
 pub use layout::report as layout_report;
-pub use sources::{MAX_SVG_BYTES, MemoryStore, Resolver, Source, SourceStore, looks_like_svg};
+pub use sources::{MAX_DEPTH, MAX_SVG_BYTES, MemoryStore, Resolver, Source, SourceStore, check_depth, looks_like_svg, strip_safe_doctype};
 #[cfg(test)]
 pub(crate) use tests::test_support;
 
@@ -286,7 +288,11 @@ pub fn convert(
     if !looks_like_svg(svg.as_bytes()) {
         return Err(ConvertError::source("the source is not an SVG: it does not start with <svg or <?xml"));
     }
-    let doc = roxmltree::Document::parse(svg).map_err(|e| ConvertError::source(format!("svg does not parse: {e}")))?;
+    // Depth first, off the text: every parser and walker below recurses,
+    // roxmltree's own included, so a post-parse check would never run.
+    sources::check_depth(svg)?;
+    let svg = sources::strip_safe_doctype(svg)?;
+    let doc = roxmltree::Document::parse(&svg).map_err(|e| ConvertError::source(format!("svg does not parse: {e}")))?;
     for href in sources::image_hrefs(&doc) {
         if let Some(source) = Source::parse_href(&href)? {
             resolver.prefetch(&source)?;

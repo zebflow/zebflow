@@ -235,16 +235,218 @@ impl Resolver {
     }
 }
 
+/// Is this XML with an `<svg>` in it? Markup that opens with the element
+/// itself, an XML declaration, a comment or a doctype all count — real files
+/// from a drawing program lead with any of the four — while JSON, plain text
+/// and a raster's magic bytes do not.
+/// How deeply elements may nest.
+///
+/// Every stage that touches the tree recurses: roxmltree's own parser first,
+/// then usvg's converter, resvg's renderer, the layout report and the tree's
+/// destructor. A file 4000 groups deep overflowed the stack and aborted the
+/// process — the whole server, not the node. Real drawings nest tens of
+/// levels at most, so a hundred is already generous.
+pub const MAX_DEPTH: usize = 100;
+
+fn find_from(haystack: &[u8], from: usize, needle: &[u8]) -> Option<usize> {
+    if from >= haystack.len() {
+        return None;
+    }
+    haystack[from..].windows(needle.len()).position(|w| w == needle).map(|i| i + from)
+}
+
+/// Refuses a source that nests elements deeper than [`MAX_DEPTH`].
+///
+/// This reads the **text**, before any parser sees it, because roxmltree's
+/// parser is itself recursive: a post-parse check would never run. Comments,
+/// CDATA, processing instructions and declarations are skipped, quoted
+/// attribute values are stepped over so a `>` inside one does not end a tag,
+/// and a self-closing tag opens and closes in one step.
+pub fn check_depth(svg: &str) -> Result<(), ConvertError> {
+    let b = svg.as_bytes();
+    let refuse = || {
+        ConvertError::source(format!("the svg nests elements more than {MAX_DEPTH} deep; flatten the groups"))
+    };
+    let mut i = 0usize;
+    let mut depth: usize = 0;
+    while i < b.len() {
+        if b[i] != b'<' {
+            i += 1;
+            continue;
+        }
+        let rest = &b[i..];
+        if rest.starts_with(b"<!--") {
+            match find_from(b, i + 4, b"-->") {
+                Some(j) => { i = j + 3; continue; }
+                None => break,
+            }
+        }
+        if rest.starts_with(b"<![CDATA[") {
+            match find_from(b, i + 9, b"]]>") {
+                Some(j) => { i = j + 3; continue; }
+                None => break,
+            }
+        }
+        let declaration = rest.starts_with(b"<?") || rest.starts_with(b"<!");
+        let closing = rest.starts_with(b"</");
+
+        // To the end of this tag, stepping over quoted attribute values.
+        let mut j = i + 1;
+        let mut quote = 0u8;
+        let mut self_closing = false;
+        while j < b.len() {
+            let c = b[j];
+            if quote != 0 {
+                if c == quote {
+                    quote = 0;
+                }
+            } else if c == b'"' || c == b'\'' {
+                quote = c;
+            } else if c == b'>' {
+                self_closing = b[j - 1] == b'/';
+                break;
+            }
+            j += 1;
+        }
+        if !declaration {
+            if closing {
+                depth = depth.saturating_sub(1);
+            } else {
+                depth += 1;
+                if depth > MAX_DEPTH {
+                    return Err(refuse());
+                }
+                if self_closing {
+                    depth -= 1;
+                }
+            }
+        }
+        i = j + 1;
+    }
+    Ok(())
+}
+
+/// A doctype with no internal subset, removed; one with a subset, refused.
+///
+/// roxmltree refuses every DTD, which is the right instinct — an internal
+/// subset is the only place an XML entity can be declared, and entities are
+/// how an SVG reads `/etc/passwd` or expands to a gigabyte. But the standard
+/// SVG 1.1 doctype every drawing program writes declares nothing at all:
+///
+/// ```text
+/// <!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "…/svg11.dtd">
+/// ```
+///
+/// Refusing that would reject most files saved by Illustrator or Inkscape.
+/// So a doctype carrying `[` is refused by name, and one without is cut out
+/// before the parser sees it. The external identifier is never fetched: it
+/// is dropped, not resolved.
+pub fn strip_safe_doctype(svg: &str) -> Result<std::borrow::Cow<'_, str>, ConvertError> {
+    let start = match svg.find("<!DOCTYPE") {
+        Some(i) => i,
+        None => return Ok(std::borrow::Cow::Borrowed(svg)),
+    };
+    // Only a doctype in the prologue counts; after the root element it is
+    // not a doctype at all, and the parser will say so.
+    if svg[..start].contains("<svg") {
+        return Ok(std::borrow::Cow::Borrowed(svg));
+    }
+    let mut quote: Option<char> = None;
+    for (offset, ch) in svg[start..].char_indices() {
+        match (quote, ch) {
+            (Some(q), c) if c == q => quote = None,
+            (Some(_), _) => {}
+            (None, '"') | (None, '\'') => quote = Some(ch),
+            (None, '[') => {
+                return Err(ConvertError::source(
+                    "the svg declares an internal DTD subset, which is where XML entities live; remove the <!DOCTYPE …[…]> block (a plain SVG 1.1 doctype is fine)",
+                ));
+            }
+            (None, '>') => {
+                let mut out = String::with_capacity(svg.len());
+                out.push_str(&svg[..start]);
+                out.push_str(&svg[start + offset + 1..]);
+                return Ok(std::borrow::Cow::Owned(out));
+            }
+            _ => {}
+        }
+    }
+    Err(ConvertError::source("the svg has an unterminated <!DOCTYPE"))
+}
+
 pub fn looks_like_svg(bytes: &[u8]) -> bool {
-    let head = &bytes[..bytes.len().min(512)];
-    let text = String::from_utf8_lossy(head);
-    let text = text.trim_start();
-    text.starts_with("<svg") || text.starts_with("<?xml") && text.contains("<svg") || text.starts_with("<!--") && text.contains("<svg")
+    let head = String::from_utf8_lossy(&bytes[..bytes.len().min(8192)]);
+    let head = head.trim_start();
+    head.starts_with('<') && head.contains("<svg")
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn nesting_is_counted_off_the_text_before_any_parser_sees_it() {
+        // roxmltree's own parser overflows the stack on this, so the check
+        // must come first. It answers in milliseconds.
+        let deep = format!("<svg xmlns=\"http://www.w3.org/2000/svg\">{}<rect/>{}</svg>", "<g>".repeat(4000), "</g>".repeat(4000));
+        let started = std::time::Instant::now();
+        assert!(check_depth(&deep).unwrap_err().message.contains("deep"));
+        assert!(started.elapsed().as_millis() < 500, "{:?}", started.elapsed());
+
+        // `<svg>` is itself depth 1, so MAX_DEPTH - 2 groups put the `<rect/>`
+        // exactly at the limit. One more group is one too many.
+        let at = format!("<svg>{}<rect/>{}</svg>", "<g>".repeat(MAX_DEPTH - 2), "</g>".repeat(MAX_DEPTH - 2));
+        assert!(check_depth(&at).is_ok());
+        let past = format!("<svg>{}<rect/>{}</svg>", "<g>".repeat(MAX_DEPTH - 1), "</g>".repeat(MAX_DEPTH - 1));
+        assert!(check_depth(&past).is_err());
+
+        // Self-closing tags do not accumulate depth, however many there are.
+        let flat = format!("<svg>{}</svg>", "<rect/>".repeat(5000));
+        assert!(check_depth(&flat).is_ok());
+
+        // A `>` inside an attribute, a comment, CDATA and a declaration are
+        // not tags: none of them counts as nesting.
+        let tricky = "<?xml version=\"1.0\"?><!DOCTYPE svg><svg><!-- <g><g><g> --><text data-x=\"a>b\">x</text><![CDATA[<g><g>]]></svg>";
+        assert!(check_depth(tricky).is_ok());
+    }
+
+    #[test]
+    fn a_plain_doctype_is_cut_out_and_one_with_an_internal_subset_is_refused() {
+        let illustrator = "<?xml version=\"1.0\"?>\n<!DOCTYPE svg PUBLIC \"-//W3C//DTD SVG 1.1//EN\" \"http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd\">\n<svg xmlns=\"http://www.w3.org/2000/svg\"/>";
+        let out = strip_safe_doctype(illustrator).unwrap();
+        assert!(!out.contains("DOCTYPE") && out.contains("<svg"), "{out}");
+        // A `>` inside the quoted public identifier does not end it early.
+        let tricky = "<!DOCTYPE svg PUBLIC \"a>b\" \"c>d\"><svg/>";
+        assert_eq!(strip_safe_doctype(tricky).unwrap(), "<svg/>");
+        // An internal subset is refused by name, whatever it holds.
+        for bad in [
+            "<!DOCTYPE svg [<!ENTITY x SYSTEM \"file:///etc/passwd\">]><svg/>",
+            "<!DOCTYPE svg [ ]><svg/>",
+        ] {
+            assert!(strip_safe_doctype(bad).unwrap_err().message.contains("internal DTD subset"), "{bad}");
+        }
+        // No doctype: borrowed, untouched.
+        assert_eq!(strip_safe_doctype("<svg/>").unwrap(), "<svg/>");
+        // The word inside the drawing is not a prologue doctype.
+        let inner = "<svg><text>&lt;!DOCTYPE svg [x]&gt;</text></svg>";
+        assert_eq!(strip_safe_doctype(inner).unwrap(), inner);
+    }
+
+    #[test]
+    fn the_four_ways_a_real_svg_file_opens_are_all_recognised() {
+        for good in [
+            "<svg xmlns=\"http://www.w3.org/2000/svg\"/>",
+            "<?xml version=\"1.0\"?><svg/>",
+            "<!-- Generator: Illustrator --><svg/>",
+            "<!DOCTYPE svg PUBLIC \"-//W3C//DTD SVG 1.1//EN\" \"http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd\"><svg/>",
+            "\n  <svg/>",
+        ] {
+            assert!(looks_like_svg(good.as_bytes()), "{good}");
+        }
+        for bad in ["{\"svg\": \"x\"}", "plain text", "<html><body/></html>", "\u{89}PNG\r\n"] {
+            assert!(!looks_like_svg(bad.as_bytes()), "{bad}");
+        }
+    }
 
     #[test]
     fn a_store_path_a_zebfs_href_and_a_repo_static_file_parse_and_the_rest_is_refused() {
