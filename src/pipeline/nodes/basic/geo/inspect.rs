@@ -1,0 +1,284 @@
+//! n.geo.inspect — report schema, CRS, extent, and fields of a spatial dataset.
+//!
+//! Delegates to `geonative_convert::inspect()`. Supports `.gdb`, `.shp`,
+//! `.parquet`, and `.geojson` inputs.
+
+use std::sync::Arc;
+
+use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
+use serde_json::json;
+
+use crate::pipeline::nodes::shared::file_ref::zebfs_rel_path_or_string;
+use crate::pipeline::nodes::shared::util::metadata_scope;
+use crate::pipeline::model::NodeCapability;
+use crate::pipeline::{
+    NodeDefinition, PipelineError,
+    model::{DslFlag, DslFlagKind, LayoutItem, NodeFieldDef, NodeFieldType},
+    nodes::{NodeExecutionInput, NodeExecutionOutput, NodeHandler},
+};
+use crate::platform::services::PlatformService;
+
+pub const NODE_KIND: &str = "n.geo.inspect";
+const INPUT_PIN_IN: &str = "in";
+const OUTPUT_PIN_OUT: &str = "out";
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Config {
+    #[serde(default)]
+    pub path: String,
+    #[serde(default)]
+    pub path_value: serde_json::Value,
+    #[serde(default)]
+    pub layer: String,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            path: String::new(),
+            path_value: serde_json::Value::Null,
+            layer: String::new(),
+        }
+    }
+}
+
+pub fn definition() -> NodeDefinition {
+    NodeDefinition {
+        kind: NODE_KIND.to_string(),
+        capabilities: vec![NodeCapability::Filesystem],
+        title: "Geo Inspect".to_string(),
+        description: "Inspect a spatial dataset and return its schema, CRS, geometry type, \
+            declared extent, and field definitions. Supports .gdb, .shp, .parquet, .geojson."
+            .to_string(),
+        input_schema: json!({
+            "type": "object",
+            "description": "Payload optionally contains a project-relative path at the configured path_expr key."
+        }),
+        output_schema: json!({
+            "type": "object",
+            "properties": {
+                "inspect": {
+                    "type": "object",
+                    "description": "DatasetInspection report from geonative"
+                }
+            }
+        }),
+        input_pins: vec![INPUT_PIN_IN.to_string()],
+        output_pins: vec![OUTPUT_PIN_OUT.to_string()],
+        script_available: false,
+        script_bridge: None,
+        config_schema: Default::default(),
+        dsl_flags: vec![
+            DslFlag {
+                flag: "--path".to_string(),
+                config_key: "path".to_string(),
+                description: "Project-relative path to the spatial file".to_string(),
+                kind: DslFlagKind::Scalar,
+                required: false,
+            },
+            DslFlag {
+                flag: "--path-value".to_string(),
+                config_key: "path_value".to_string(),
+                description: "Dot-path into upstream payload resolving to the file path"
+                    .to_string(),
+                kind: DslFlagKind::Scalar,
+                required: false,
+            },
+            DslFlag {
+                flag: "--layer".to_string(),
+                config_key: "layer".to_string(),
+                description: "Layer name for multi-layer sources (e.g. FileGDB)".to_string(),
+                kind: DslFlagKind::Scalar,
+                required: false,
+            },
+        ],
+        fields: vec![
+            NodeFieldDef {
+                name: "path".to_string(),
+                label: "Path".to_string(),
+                field_type: NodeFieldType::Text,
+                help: Some("Project-relative path to the spatial file.".to_string()),
+                ..Default::default()
+            },
+            NodeFieldDef {
+                name: "path_value".to_string(),
+                label: "Path Expression".to_string(),
+                field_type: NodeFieldType::Text,
+                help: Some(
+                    "Dot-path into upstream payload resolving to the file path.".to_string(),
+                ),
+                ..Default::default()
+            },
+            NodeFieldDef {
+                name: "layer".to_string(),
+                label: "Layer".to_string(),
+                field_type: NodeFieldType::Text,
+                help: Some("Layer name for multi-layer FileGDB sources.".to_string()),
+                ..Default::default()
+            },
+        ],
+        layout: vec![LayoutItem::Col {
+            col: vec![
+                LayoutItem::Field("path".to_string()),
+                LayoutItem::Field("path_value".to_string()),
+                LayoutItem::Field("layer".to_string()),
+            ],
+        }],
+        ai_tool: Default::default(),
+        examples: vec![
+            crate::pipeline::model::NodeExample::dsl("What is in this file?", "geo.inspect --path uploads/suburbs.zip")
+                .output(serde_json::json!({ "inspect": { "driver": "ESRI Shapefile", "layers": [{ "name": "suburbs", "geometry": "Polygon", "crs": "EPSG:7844", "features": 312, "fields": ["name", "postcode"] }] }, "source": "uploads/suburbs.zip" }))
+                .note("Read `input.inspect.layers[0].crs` before deciding on `geo.convert --to-crs`."),
+        ],
+        ..Default::default()
+    }
+}
+
+pub struct Node {
+    config: Config,
+    platform: Arc<PlatformService>,
+}
+
+impl Node {
+    pub fn new(config: Config, platform: Arc<PlatformService>) -> Result<Self, PipelineError> {
+        Ok(Self { config, platform })
+    }
+}
+
+#[async_trait]
+impl NodeHandler for Node {
+    fn kind(&self) -> &'static str {
+        NODE_KIND
+    }
+
+    fn input_pins(&self) -> &'static [&'static str] {
+        &[INPUT_PIN_IN]
+    }
+
+    fn output_pins(&self) -> &'static [&'static str] {
+        &[OUTPUT_PIN_OUT]
+    }
+
+    async fn execute_async(
+        &self,
+        input: NodeExecutionInput,
+    ) -> Result<NodeExecutionOutput, PipelineError> {
+        let (owner, project, ..) = metadata_scope(&input.metadata)?;
+
+        let rel_path = resolve_input_path(&self.config)?;
+
+        let layout = self
+            .platform
+            .file
+            .ensure_project_layout(owner, project)
+            .map_err(|err| PipelineError::new("FW_NODE_GEO_INSPECT", err.to_string()))?;
+
+        let abs_path = layout.files_dir.join(&rel_path);
+        if !abs_path.exists() {
+            return Err(PipelineError::new(
+                "FW_NODE_GEO_INSPECT",
+                format!("file not found: {rel_path}"),
+            ));
+        }
+
+        let path_for_task = abs_path.clone();
+        let report =
+            tokio::task::spawn_blocking(move || geonative_convert::inspect(&path_for_task))
+                .await
+                .map_err(|err| {
+                    PipelineError::new(
+                        "FW_NODE_GEO_INSPECT",
+                        format!("inspect task panicked: {err}"),
+                    )
+                })?
+                .map_err(|err| PipelineError::new("FW_NODE_GEO_INSPECT", err.to_string()))?;
+
+        let report_json = serde_json::to_value(&report).map_err(|err| {
+            PipelineError::new("FW_NODE_GEO_INSPECT", format!("serialising report: {err}"))
+        })?;
+
+        Ok(NodeExecutionOutput {
+            output_pins: vec![OUTPUT_PIN_OUT.to_string()],
+            payload: json!({
+                "inspect": report_json,
+                "source": rel_path,
+            }),
+            trace: vec![format!("node_kind={NODE_KIND} path={rel_path}")],
+        })
+    }
+}
+
+fn resolve_input_path(
+    config: &Config,
+) -> Result<String, PipelineError> {
+    // 1. Static --path takes priority.
+    if !config.path.trim().is_empty() {
+        return Ok(sanitize_rel_path(config.path.trim()));
+    }
+    // 2. --path-value arrives final — a literal or a resolved `{{ expr }}`.
+    // Typed, not a string: a FileRef is a legal answer, so
+    // `{{ input.saved }}` hands this the whole reference.
+    if !config.path_value.is_null() {
+        let val = zebfs_rel_path_or_string(&config.path_value)?.ok_or_else(|| {
+            PipelineError::new(
+                "FW_NODE_GEO_INSPECT",
+                format!(
+                    "--path-value is not a path or a FileRef: {}",
+                    config.path_value
+                ),
+            )
+        })?;
+        return Ok(sanitize_rel_path(&val));
+    }
+    Err(PipelineError::new(
+        "FW_NODE_GEO_INSPECT",
+        "no input path configured — set --path or --path-value",
+    ))
+}
+
+fn sanitize_rel_path(path: &str) -> String {
+    path.split('/')
+        .filter(|s| !s.is_empty() && *s != "." && *s != "..")
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::{Config, resolve_input_path};
+
+    #[test]
+    fn path_value_accepts_a_file_ref() {
+        let config = Config {
+            path_value: json!({
+                "__zf_type": "file_ref",
+                "backend": "zebfs",
+                "ref": "tmp/runs/r/files/data.geojson",
+                "sha256": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "mime": "application/geo+json",
+                "size": 1,
+                "lifecycle": "temporary"
+            }),
+            ..Default::default()
+        };
+        let payload = json!({
+            "source": {
+                "__zf_type": "file_ref",
+                "backend": "zebfs",
+                "ref": "tmp/runs/r/files/data.geojson",
+                "sha256": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "mime": "application/geo+json",
+                "size": 1,
+                "lifecycle": "temporary"
+            }
+        });
+
+        assert_eq!(
+            resolve_input_path(&config).expect("input path"),
+            "tmp/runs/r/files/data.geojson"
+        );
+    }
+}

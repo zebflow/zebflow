@@ -231,8 +231,10 @@ fn every_mcp_tool_the_help_names_exists() {
     assert!(tools.contains("start_here") && tools.contains("pipeline_register"), "tool scan is broken: {tools:?}");
 
     let domains = ["pipeline_", "file_", "template_", "docs_", "connection_", "credential_", "help_", "list_ui", "install_ui", "git_", "move_", "start_", "run_", "read_", "write_", "list_", "describe_"];
-    // Field and flag names that share a prefix with a tool domain but are not tools.
-    let not_tools = ["file_rel_path", "credential_id", "pipeline_node_timeout_secs", "git_name", "git_email", "pipeline_bundle", "template_bundle", "list_style", "file_ref", "read_only", "execute_async"];
+    // Field, flag and event names that share a prefix with a tool domain but
+    // are not tools: `start_url` is a web-manifest field; `run_start` and
+    // `run_done` are the SSE lifecycle kinds a run streams.
+    let not_tools = ["file_rel_path", "credential_id", "pipeline_node_timeout_secs", "git_name", "git_email", "pipeline_bundle", "template_bundle", "list_style", "file_ref", "read_only", "execute_async", "start_url", "run_start", "run_done"];
 
     let mut docs = read_tree(&root.join("src/platform/help"), &["md"], &[]);
     docs.extend(read_tree(&root.join("skills"), &["md"], &[]));

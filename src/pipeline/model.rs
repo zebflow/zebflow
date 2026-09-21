@@ -115,11 +115,12 @@
 //! 2. A `pub struct Config` with `#[derive(Serialize, Deserialize, JsonSchema)]` documenting
 //!    accepted config fields via doc comments.
 //! 3. A `pub struct Node` that implements [`crate::pipeline::nodes::NodeHandler`].
-//! 4. Register the `definition()` call in `pipeline/nodes/basic/mod.rs →
-//!    builtin_node_definitions()`.
+//! 4. Register the `definition()` call in the family list,
+//!    `pipeline/nodes/basic/<family>/mod.rs → definitions()`, which
+//!    `basic/mod.rs → builtin_node_definitions()` reads.
 //!
 //! ```rust,ignore
-//! // my_node.rs
+//! // basic/<family>/my_node.rs
 //! use schemars::JsonSchema;
 //! use serde::{Deserialize, Serialize};
 //!
@@ -330,6 +331,27 @@ pub fn engine_common_dsl_flags() -> Vec<DslFlag> {
             description: "Engine-level execution timeout for this node in seconds. \
                 Overrides the project-level pipeline_node_timeout_secs. \
                 Clamped to 5–3600s."
+                .to_string(),
+            kind: DslFlagKind::Scalar,
+            required: false,
+        },
+        DslFlag {
+            flag: "--preview".to_string(),
+            config_key: "preview.out".to_string(),
+            description: "Render this node's output under its box on the canvas: \
+                `<as>[:<path>]` where as is image|video|audio|pdf|json|text|table|html \
+                and path is a dot path into the payload. `off` removes it. \
+                Presentation only — never read by the engine."
+                .to_string(),
+            kind: DslFlagKind::Scalar,
+            required: false,
+        },
+        DslFlag {
+            flag: "--preview-in".to_string(),
+            config_key: "preview.in".to_string(),
+            description: "Render this node's input under its box on the canvas: \
+                `<as>[:<path>]`, same kinds and path rule as `--preview`. \
+                `off` removes it. Presentation only — never read by the engine."
                 .to_string(),
             kind: DslFlagKind::Scalar,
             required: false,
@@ -775,7 +797,7 @@ pub struct PipelineNode {
 
 /// One annotation on the canvas. Presentation only — never executed, never
 /// reachable by an edge, and carried through read and write untouched.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct PipelineNote {
     /// Unique id within this graph, so an editor can move one note without
@@ -1039,6 +1061,12 @@ pub struct NodeDefinition {
     /// a level shapes the record, never the run.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub secret_paths: Vec<String>,
+    /// The config key a bare first token fills in the DSL: `input.text prompt`
+    /// is `input.text --name prompt`. The key must also be a declared flag, so
+    /// the flag form always works and `graph_to_dsl` renders the bare form.
+    /// `None` for every kind that has no positional.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub positional: Option<String>,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub ui_category: String,
     /// Human-readable label for the leaf subcategory.
@@ -1528,11 +1556,26 @@ pub struct NodeTraceEntry {
     /// `refused` (caller's fault), or `failed` (world's fault). Records
     /// written before the word existed read as `ok`, which is what they
     /// meant.
+    ///
+    /// Two engine words on top, since 2026-09-21. `retry`: a wait — a
+    /// failure an `:error` edge handed to `logic.retry` (the node failed, the
+    /// run did not; `error` and `error_code` still say why), or a
+    /// `logic.retry` that sent a verdict round again (no error at all). The
+    /// attempt is the count of `retry` entries for that node so far.
+    /// `error_routed`: a failure an `:error` edge handed to anything else.
     #[serde(default = "default_trace_status")]
     pub status: String,
     /// The registered error code, when status is refused/failed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error_code: Option<String>,
+    /// A small JPEG of a **temporary** image FileRef this node's declared
+    /// `--preview image` / `--preview-in image` would draw, so the canvas can
+    /// show it after the run's files are deleted:
+    /// `{ slot, mime, width, height, data_base64 }` (longest side 540 px,
+    /// ≤ 64 KB) or `{ slot, snapshot_skipped }`. Beside the payload, never in
+    /// it. See `trace_capture::preview_snapshot`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preview_snapshot: Option<Value>,
 }
 
 fn default_trace_status() -> String {

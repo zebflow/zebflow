@@ -100,9 +100,11 @@ impl Surface {
     }
 
     /// Off unless the project turned it on: tiles need a published layer,
-    /// private files need a reason to be reachable at all.
+    /// private files need a reason to be reachable at all, and the agent
+    /// endpoint on a public host is a door nobody asked for — agents work
+    /// through the platform address, which this switch never touches.
     pub fn enabled_by_default(self) -> bool {
-        !matches!(self, Surface::Ms | Surface::Fs)
+        !matches!(self, Surface::Ms | Surface::Fs | Surface::Mcp)
     }
 
     pub fn title(self) -> &'static str {
@@ -141,6 +143,25 @@ pub struct ProjectAddressing {
     /// so switching one on is removing it from here.
     #[serde(default = "default_disabled")]
     pub disabled: Vec<Surface>,
+    /// The platform API (`/api/projects/{o}/{p}/…`) answers on the project's
+    /// hosts. Off by default; the platform address always serves it
+    /// (`addressing.md` §2a). Authentication applies either way.
+    #[serde(default)]
+    pub api_on_hosts: bool,
+    /// What a 5xx shows on the project's hosts: `hidden` (the error page with a
+    /// reference) or `shown` (plus code, message, node id, run link). A webhook
+    /// overrides it for its own routes (`--errors`). Status codes never change.
+    #[serde(default)]
+    pub errors: ErrorDetail,
+}
+
+/// `addressing.md` §2a, `errors`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum ErrorDetail {
+    #[default]
+    Hidden,
+    Shown,
 }
 
 fn default_disabled() -> Vec<Surface> {
@@ -149,7 +170,7 @@ fn default_disabled() -> Vec<Surface> {
 
 impl Default for ProjectAddressing {
     fn default() -> Self {
-        Self { hosts: Vec::new(), routes: Vec::new(), disabled: default_disabled() }
+        Self { hosts: Vec::new(), routes: Vec::new(), disabled: default_disabled(), api_on_hosts: false, errors: ErrorDetail::Hidden }
     }
 }
 

@@ -1,6 +1,6 @@
 ---
 name: zebflow-files-editor
-description: Uploads, images, files and rich text in a Zebflow project — FileRef, fs.save and fs.thumbnail, public vs private URLs, the zeb/ui editor and how its document is stored and rendered. Use before building an upload form, an image field, a media library, or any page with authored rich content.
+description: Uploads, images, files and rich text in a Zebflow project — FileRef, fs.save and fs.image.thumbnail, public vs private URLs, the zeb/ui editor and how its document is stored and rendered. Use before building an upload form, an image field, a media library, or any page with authored rich content.
 license: MIT
 metadata:
   version: "1"
@@ -21,19 +21,22 @@ and **rich text is a JSON document, HTML is derived from it**. Facts:
    (`ref`, `filename`, `mime`, `kind`, `size`, `sha256`, `lifecycle: temporary`).
    It is discarded after the run unless a node keeps it.
 3. Keep it: `fs.save --field photo --folder public/uploads --allowed-kinds images --max-size 10`
-   adds `saved: { path, url, original_name, content_type, size }` to the
-   payload; `input.body.caption` from the same form is still there.
-4. Derive what you need: `fs.thumbnail --width 320 --height 320 --fit cover --format webp --folder public/thumbs --source-key saved.path`
-   adds `thumbnail` (a FileRef, `thumbnail.ref`) the same way.
-5. Store the **path** (`saved.path`) in your table, not a URL — URLs depend on
-   owner, project and visibility.
+   adds `saved` — a durable FileRef and nothing else (`ref`, `filename`,
+   `mime`, `kind`, `size`, `sha256`, `lifecycle: durable`, `origin: fs.save`,
+   `trust`) — to the payload; `input.body.caption` from the same form is
+   still there.
+4. Derive what you need: `fs.image.thumbnail --width 320 --height 320 --fit cover --format webp --folder public/thumbs`
+   reads `saved` (its default `--source-key`) and adds `thumbnail` (a FileRef,
+   `thumbnail.ref`) the same way.
+5. Store the **store path** (`saved.ref`) in your table, not a URL — URLs
+   depend on owner, project and visibility.
 
 ```
 | trigger.webhook --path /api/upload --method POST --auth-type jwt --auth-credential jwt_main
 | fs.save --field file --folder public/uploads --allowed-kinds images --max-size 10
 ```
 
-The response carries `saved: { path, … }`. Store the **path**; a page
+The response carries `saved` (a FileRef). Store its **`ref`**; a page
 writes the URL as a root-relative path on the project's own host and the
 renderer makes it absolute (`docs/contracts/addressing.md`).
 
@@ -45,8 +48,8 @@ renderer makes it absolute (`docs/contracts/addressing.md`).
 | anything else | `/_fs/…` | a signed-in session with files access |
 | either, from outside a page (a tool, a mail) | the platform form `/files/{owner}/{project}/public/…` · `/fs/{owner}/{project}/…` — valid on every host, but it carries owner and project, so not in pages |
 
-`saved.url` is the private platform form. Decide visibility by folder when
-you save, not afterwards. Never put `input.files` or base64 into a payload, a script
+No node answers a URL — `saved` carries only `ref`. Decide visibility by
+folder when you save, not afterwards. Never put `input.files` or base64 into a payload, a script
 return, or a database column.
 
 ## Rich text: the editor
@@ -65,7 +68,7 @@ async function uploadImage(file) {                       // the page decides whe
   const form = new FormData();
   form.append("file", file);
   const { saved } = await (await fetch(`${input.base}/api/upload`, { method: "POST", body: form })).json();
-  return { src: `${input.files}/${saved.path}`, ref: saved.path, alt: file.name };
+  return { src: `${input.files}/${saved.ref}`, ref: saved.ref, alt: file.name };
 }
 
 <Editor value={doc} onChange={setDoc} uploadImage={uploadImage} placeholder="Write…" />

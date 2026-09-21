@@ -3,7 +3,7 @@
 //! Pipeline webhook ingress is normalized in [`build_webhook_ingress_input`].
 //! Keep the wire-to-pipeline payload contract there in sync with
 //! `src/pipeline/nodes/basic/trigger/mod.rs` and
-//! `src/pipeline/nodes/basic/file_ref.rs`: user body data lives under
+//! `src/pipeline/nodes/shared/file_ref.rs`: user body data lives under
 //! `input.body`, request context at root, and multipart files under
 //! `input.files` as FileRef metadata.
 
@@ -41,7 +41,9 @@ use crate::infra::mem::subscriber::KvSubscriber;
 use crate::infra::scheduler::PipelineScheduler;
 use crate::infra::ws_client::WsClientManager;
 use crate::language::{DenoSandboxEngine, LanguageEngine, NoopLanguageEngine};
-use crate::pipeline::model::{ExecuteOptions, ExecutionBus};
+use crate::pipeline::model::{
+    ExecuteOptions, ExecutionBus, PipelineError, PipelineOutput, Signal,
+};
 use crate::pipeline::{BasicPipelineEngine, PipelineContext, PipelineEngine, PipelineGraph};
 use crate::platform::error::PlatformError;
 use crate::platform::model::NodePackageManifest;
@@ -88,6 +90,7 @@ use crate::platform::model::{
     UpsertProjectCredentialRequest,
     UpsertProjectDbConnectionRequest,
     now_ts,
+    resolve_invocation_retention,
     slug_segment,
 };
 use crate::platform::sekejap;
@@ -787,6 +790,12 @@ pub async fn router(platform: Arc<PlatformService>) -> Router {
             "/api/projects/{owner}/{project}/git/branches",
             get(api_git_list_branches).post(api_git_checkout_branch),
         )
+        .route("/api/projects/{owner}/{project}/git/fetch", post(api_git_fetch))
+        .route("/api/projects/{owner}/{project}/git/sync", post(api_git_sync))
+        .route("/api/projects/{owner}/{project}/git/push", post(api_git_push))
+        .route("/api/projects/{owner}/{project}/git/resolve", post(api_git_resolve))
+        .route("/api/projects/{owner}/{project}/git/continue", post(api_git_continue))
+        .route("/api/projects/{owner}/{project}/git/abort", post(api_git_abort))
         .route(
             "/api/projects/{owner}/{project}/pipelines/activate",
             post(api_activate_pipeline_definition),
@@ -795,9 +804,12 @@ pub async fn router(platform: Arc<PlatformService>) -> Router {
             "/api/projects/{owner}/{project}/pipelines/deactivate",
             post(api_deactivate_pipeline_definition),
         )
+        // A manual run may carry files as multipart, so it takes the same
+        // ceiling as the files upload route rather than the 2 MB default.
         .route(
             "/api/projects/{owner}/{project}/pipelines/execute",
-            post(api_execute_pipeline),
+            post(api_execute_pipeline)
+                .layer(axum::extract::DefaultBodyLimit::max(1024 * 1024 * 1024)),
         )
         .route(
             "/api/projects/{owner}/{project}/pipelines/dsl",
@@ -810,6 +822,10 @@ pub async fn router(platform: Arc<PlatformService>) -> Router {
         .route(
             "/api/projects/{owner}/{project}/pipelines/invocations",
             get(api_pipeline_invocations),
+        )
+        .route(
+            "/api/projects/{owner}/{project}/pipelines/errors",
+            get(api_pipeline_error_groups),
         )
         // One repository file surface. `kinds/project-configuration/layout.md`
         // §8 decides what a repository may hold from the path alone, so there
@@ -850,6 +866,10 @@ pub async fn router(platform: Arc<PlatformService>) -> Router {
         .route(
             "/api/projects/{owner}/{project}/files/list",
             get(api_files_list),
+        )
+        .route(
+            "/api/projects/{owner}/{project}/files/object",
+            get(api_files_object),
         )
         .route(
             "/api/projects/{owner}/{project}/files/mkdir",
@@ -1363,15 +1383,28 @@ async fn addressing_gate(
         // The platform forms for this very project stay valid on its host:
         // pages emit `/static/{o}/{p}/_rwe/…` and the Studio's API lives at
         // `/api/projects/{o}/{p}/…`; neither is an app path.
-        let own_prefixes = [
+        // The platform API (`/api/projects/{o}/{p}/…`, which includes the MCP
+        // platform form) answers on a project's hosts only when the project
+        // switched `api_on_hosts` on — the dev host like any other, because
+        // there is no dev mode (`addressing.md` §2a). The platform address
+        // always serves it; that is where the Studio lives.
+        let api_allowed = state
+            .platform
+            .addressing
+            .read(&resolution.owner, &resolution.project)
+            .map(|a| a.api_on_hosts)
+            .unwrap_or(false);
+        let mut own_prefixes = vec![
             format!("/wh/{}/{}", resolution.owner, resolution.project),
             format!("/ws/{}/{}", resolution.owner, resolution.project),
             format!("/files/{}/{}", resolution.owner, resolution.project),
             format!("/static/{}/{}", resolution.owner, resolution.project),
             format!("/ms/{}/{}", resolution.owner, resolution.project),
             format!("/fs/{}/{}", resolution.owner, resolution.project),
-            format!("/api/projects/{}/{}", resolution.owner, resolution.project),
         ];
+        if api_allowed {
+            own_prefixes.push(format!("/api/projects/{}/{}", resolution.owner, resolution.project));
+        }
         let platform_form = path.starts_with("/assets/")
             || own_prefixes
                 .iter()
@@ -2075,7 +2108,6 @@ struct PipelineRegistryQuery {
     file: Option<String>,
     line: Option<u32>,
     scope: Option<String>,
-    id: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2509,7 +2541,7 @@ async fn project_asset(
     if !abs.starts_with(&root) {
         return (StatusCode::BAD_REQUEST, "invalid asset path").into_response();
     }
-    // Try compiled web-assets first; fall back to repo/pipelines/assets/.
+    // Try compiled web-assets first; fall back to the layout's static dir (`repo/static/` by default).
     let (serve_bytes, serve_path) = if abs.is_file() {
         match std::fs::read(&abs) {
             Ok(b) => (b, abs),
@@ -2550,7 +2582,7 @@ async fn project_asset(
     resp
 }
 
-/// Serves static project assets from `repo/pipelines/assets/{*path}`.
+/// Serves static project assets from the layout's static dir (`repo/static/{*path}` by default).
 /// Route: GET /p/{owner}/{project}/assets/{*path}
 async fn project_static_asset(
     State(state): State<PlatformAppState>,
@@ -4989,7 +5021,6 @@ async fn project_root_page(
         project,
         "registry",
         query.path.as_deref(),
-        None,
         query.editor_type.as_deref(),
         query.file.as_deref(),
         query.line,
@@ -5012,7 +5043,6 @@ async fn project_pipelines_page(
         project,
         &tab,
         query.path.as_deref(),
-        query.id.as_deref(),
         query.editor_type.as_deref(),
         query.file.as_deref(),
         query.line,
@@ -5028,7 +5058,6 @@ async fn render_project_pipelines_with_tab(
     project: String,
     tab: &str,
     registry_path: Option<&str>,
-    editor_id: Option<&str>,
     registry_type: Option<&str>,
     registry_file: Option<&str>,
     registry_line: Option<u32>,
@@ -5054,7 +5083,6 @@ async fn render_project_pipelines_with_tab(
     };
 
     let is_registry = tab == "registry";
-    let is_editor = tab == "editor";
 
     // Registry tab now delegates to the unified editor with nav_sub="registry"
     if is_registry {
@@ -5074,13 +5102,6 @@ async fn render_project_pipelines_with_tab(
             "Browse pipelines by project path.",
             Vec::new(),
         ))
-    } else if is_editor {
-        Some((
-            "editor",
-            "Pipeline Editor",
-            "Create and edit pipeline graph + node configuration.",
-            Vec::new(),
-        ))
     } else {
         pipeline_tab_payload(tab)
     };
@@ -5098,7 +5119,7 @@ async fn render_project_pipelines_with_tab(
             let route = format!("/projects/{owner}/{project}/pipelines/{tab_key}");
             let editor_base = format!("/projects/{owner}/{project}/pipelines/registry");
             let route_base = format!("/projects/{owner}/{project}/pipelines/registry");
-            let pipeline_items = if is_registry || is_editor {
+            let pipeline_items = if is_registry {
                 items
             } else {
                 let trigger_filter = match tab_key {
@@ -5277,290 +5298,6 @@ async fn render_project_pipelines_with_tab(
                 })
             };
 
-            let editor_payload = if is_editor {
-                let all_rows = match state
-                    .platform
-                    .projects
-                    .list_pipeline_meta_rows(&owner, &project)
-                {
-                    Ok(rows) => rows,
-                    Err(err) => return internal_error(err),
-                };
-
-                let wanted_id = editor_id
-                    .map(str::trim)
-                    .filter(|raw| !raw.is_empty())
-                    .map(str::to_string)
-                    .or_else(|| all_rows.first().map(|meta| meta.file_rel_path.clone()));
-
-                let selected_any = wanted_id
-                    .as_deref()
-                    .and_then(|id| all_rows.iter().find(|row| row.file_rel_path == id))
-                    .cloned()
-                    .or_else(|| all_rows.first().cloned());
-
-                let scope_path = registry_path
-                    .map(crate::platform::model::normalize_virtual_path)
-                    .unwrap_or_else(|| {
-                        selected_any
-                            .as_ref()
-                            .map(|meta| {
-                                crate::platform::model::normalize_virtual_path(&meta.virtual_path)
-                            })
-                            .unwrap_or_else(|| "/".to_string())
-                    });
-
-                let rows = all_rows
-                    .iter()
-                    .filter(|meta| {
-                        crate::platform::model::normalize_virtual_path(&meta.virtual_path)
-                            == scope_path
-                    })
-                    .cloned()
-                    .collect::<Vec<_>>();
-                let project_config =
-                    match state.platform.zebflow_cfg.read_or_default(&owner, &project) {
-                        Ok(config) => config,
-                        Err(err) => return internal_error(err),
-                    };
-                let pipeline_logging_defaults = pipeline_logging_defaults(&project_config);
-
-                let selected = wanted_id
-                    .as_deref()
-                    .and_then(|id| rows.iter().find(|row| row.file_rel_path == id))
-                    .cloned()
-                    .or_else(|| rows.first().cloned());
-                let selected_id_effective =
-                    selected.as_ref().map(|meta| meta.file_rel_path.clone());
-
-                let mut lock_map = std::collections::HashMap::new();
-                for meta in &rows {
-                    let locked = match state.platform.projects.read_pipeline_source(
-                        &owner,
-                        &project,
-                        &meta.file_rel_path,
-                    ) {
-                        Ok(source) => pipeline_source_is_locked(&source),
-                        Err(_) => false,
-                    };
-                    lock_map.insert(meta.file_rel_path.clone(), locked);
-                }
-
-                let (source, graph_json, parse_error, hit_stats, selected_locked) =
-                    if let Some(meta) = &selected {
-                        let source = match state.platform.projects.read_pipeline_source(
-                            &owner,
-                            &project,
-                            &meta.file_rel_path,
-                        ) {
-                            Ok(source) => source,
-                            Err(err) => return internal_error(err),
-                        };
-                        let (graph_json, parse_error) = match serde_json::from_str::<Value>(&source)
-                        {
-                            Ok(value) => (value, Value::Null),
-                            Err(err) => (
-                                Value::Null,
-                                Value::String(format!("pipeline JSON parse error: {err}")),
-                            ),
-                        };
-                        let stats =
-                            state
-                                .platform
-                                .pipeline_hits
-                                .get(&owner, &project, &meta.file_rel_path);
-                        let locked = lock_map
-                            .get(&meta.file_rel_path)
-                            .copied()
-                            .unwrap_or_else(|| pipeline_source_is_locked(&source));
-                        (
-                            Value::String(source),
-                            graph_json,
-                            parse_error,
-                            json!(stats),
-                            Value::Bool(locked),
-                        )
-                    } else {
-                        (
-                            Value::Null,
-                            Value::Null,
-                            Value::Null,
-                            Value::Null,
-                            Value::Bool(false),
-                        )
-                    };
-
-                let node_catalog = state
-                    .platform
-                    .node_registry
-                    .merged_definitions(&owner, &project)
-                    .into_iter()
-                    .map(|def| {
-                        json!({
-                            "kind": def.kind,
-                            "title": def.title,
-                            "description": def.description,
-                            "input_pins": def.input_pins,
-                            "output_pins": def.output_pins,
-                            "input_schema": def.input_schema,
-                            "output_schema": def.output_schema
-                        })
-                    })
-                    .collect::<Vec<_>>();
-
-                let mut folder_counts = std::collections::BTreeMap::<String, usize>::new();
-                for meta in &all_rows {
-                    let vpath = crate::platform::model::normalize_virtual_path(&meta.virtual_path);
-                    *folder_counts.entry(vpath).or_insert(0) += 1;
-                }
-                // Also count template files so folder badges reflect all items, not just pipelines.
-                // Skip .zf.json files — they are pipeline definitions already counted above.
-                if let Ok(workspace) = state.platform.projects.list_repo_tree(&owner, &project, &RepoTreeScope::all()) {
-                    for item in &workspace.items {
-                        if item.kind == "file" && !item.rel_path.ends_with(".zf.json") {
-                            let parent = std::path::Path::new(&item.rel_path)
-                                .parent()
-                                .and_then(|p| p.to_str())
-                                .unwrap_or("");
-                            let vpath = crate::platform::model::normalize_virtual_path(parent);
-                            *folder_counts.entry(vpath).or_insert(0) += 1;
-                        }
-                    }
-                }
-                let scope_folders = folder_counts
-                    .into_iter()
-                    .map(|(vpath, count)| {
-                        json!({
-                            "virtual_path": vpath,
-                            "count": count,
-                            "href": format!("{editor_base}?path={vpath}")
-                        })
-                    })
-                    .collect::<Vec<_>>();
-
-                let mut scope_hierarchy = vec![json!({
-                    "name": "root",
-                    "virtual_path": "/",
-                    "href": format!("{editor_base}?path=/")
-                })];
-                if scope_path != "/" {
-                    let mut accum = String::new();
-                    for seg in scope_path.trim_start_matches('/').split('/') {
-                        if seg.trim().is_empty() {
-                            continue;
-                        }
-                        accum.push('/');
-                        accum.push_str(seg);
-                        scope_hierarchy.push(json!({
-                            "name": seg,
-                            "virtual_path": accum,
-                            "href": format!("{editor_base}?path={accum}")
-                        }));
-                    }
-                }
-
-                let pipelines = rows
-                    .iter()
-                    .map(|meta| {
-                        let file_id = meta.file_rel_path.clone();
-                        let is_active = meta
-                            .active_hash
-                            .as_deref()
-                            .map(|hash| hash == meta.hash)
-                            .unwrap_or(false);
-                        let has_draft = meta
-                            .active_hash
-                            .as_deref()
-                            .map(|hash| hash != meta.hash)
-                            .unwrap_or(false);
-                        let locked = lock_map.get(&file_id).copied().unwrap_or(false);
-                        json!({
-                            "id": file_id,
-                            "name": meta.name,
-                            "title": meta.title,
-                            "description": meta.description,
-                            "trigger_kind": meta.trigger_kind,
-                            "virtual_path": meta.virtual_path,
-                            "file_rel_path": meta.file_rel_path,
-                            "is_active": is_active,
-                            "has_draft": has_draft,
-                            "is_locked": locked,
-                            "status_label": if is_active { "active" } else if has_draft { "draft" } else { "inactive" },
-                            "editor_href": format!("{editor_base}?type=pipeline&path={scope_path}&file={file_id}")
-                        })
-                    })
-                    .collect::<Vec<_>>();
-
-                // Template/script files at the current scope folder
-                let editor_template_files: Vec<Value> =
-                    match state.platform.projects.list_pipeline_registry(
-                        &owner,
-                        &project,
-                        &scope_path,
-                        &route_base,
-                        &editor_base,
-                    ) {
-                        Ok(listing) => listing
-                            .files
-                            .into_iter()
-                            .map(|f| {
-                                let template_path =
-                                    template_display_path(&repo_layout, &f.rel_path);
-                                let git_status = registry_git_map.get(&f.rel_path).cloned();
-                                json!({
-                                    "name": f.name,
-                                    "rel_path": template_path,
-                                    "kind": f.kind,
-                                    "template_path": template_path,
-                                    "git_status": git_status,
-                                })
-                            })
-                            .collect(),
-                        Err(_) => Vec::new(),
-                    };
-
-                json!({
-                    "scope_path": scope_path,
-                    "scope_hierarchy": scope_hierarchy,
-                    "scope_folders": scope_folders,
-                    "selected_id": selected_id_effective,
-                    "selected_locked": selected_locked,
-                    "selected_meta": selected,
-                    "selected_source": source,
-                    "selected_graph": graph_json,
-                    "parse_error": parse_error,
-                    "hits": hit_stats,
-                    "logging_defaults": pipeline_logging_defaults,
-                    "pipelines": pipelines,
-                    "template_files": editor_template_files,
-                    "nodes": node_catalog,
-                    "api": {
-                        "registry": format!("/api/projects/{owner}/{project}/pipelines/registry"),
-                        "list": format!("/api/projects/{owner}/{project}/pipelines"),
-                        "by_id": format!("/api/projects/{owner}/{project}/pipelines/by-id"),
-                        "definition": format!("/api/projects/{owner}/{project}/pipelines/definition"),
-                        "activate": format!("/api/projects/{owner}/{project}/pipelines/activate"),
-                        "deactivate": format!("/api/projects/{owner}/{project}/pipelines/deactivate"),
-                        "execute": format!("/api/projects/{owner}/{project}/pipelines/execute"),
-                        "hits": format!("/api/projects/{owner}/{project}/pipelines/hits"),
-                        "invocations": format!("/api/projects/{owner}/{project}/pipelines/invocations"),
-                        "nodes": format!("/api/projects/{owner}/{project}/nodes"),
-                        "credentials": format!("/api/projects/{owner}/{project}/credentials"),
-                        // The repository tree. `/templates/workspace` was removed and this kept
-                // pointing at it, so both readers 404'd and silently showed nothing.
-                "templates_workspace": format!("/api/projects/{owner}/{project}/repo"),
-                        "template_file": format!("/api/projects/{owner}/{project}/templates/file"),
-                        "template_save": format!("/api/projects/{owner}/{project}/templates/file"),
-                        "template_outline": format!("/api/projects/{owner}/{project}/templates/outline"),
-                    },
-                    "graphui": {
-                        "runtime_src": "/assets/libraries/zeb/graphui/0.1/runtime/graphui.bundle.mjs",
-                        "package_label": "zeb/graphui@0.1"
-                    }
-                })
-            } else {
-                Value::Null
-            };
             let input = json!({
                 "seo": {
                     "title": format!("{} - Pipelines", info.title),
@@ -5575,11 +5312,9 @@ async fn render_project_pipelines_with_tab(
                 "page_subtitle": tab_desc,
                 "pipeline_items": pipeline_items,
                 "is_registry": is_registry,
-                "is_editor": is_editor,
                 "is_non_registry": !is_registry,
                 "is_webhooks": tab_key == "webhooks",
                 "registry": registry,
-                "editor": editor_payload,
                 "nav": nav,
             });
 
@@ -6968,7 +6703,7 @@ async fn render_files_page(
                                             "modified": modified,
                                             "access": access,
                                             "public": access == "public_read",
-                                            "url": format!("/fs/{owner}/{project}/{path}"),
+                                            "url": studio_file_object_url(&owner, &project, &path),
                                         }));
                                     }
                                 }
@@ -7772,7 +7507,6 @@ fn nav_classes(owner: &str, project: &str, main: &str, pipeline_sub: Option<&str
             "todo": if main == "todo" { "is-active" } else { "" },
             "settings": if main == "settings" { "is-active" } else { "" },
             "pipeline_registry": if pipeline_sub == Some("registry") { "is-active" } else { "" },
-            "pipeline_editor": if pipeline_sub == Some("editor") { "is-active" } else { "" },
             "pipeline_webhooks": if pipeline_sub == Some("webhooks") { "is-active" } else { "" },
             "pipeline_schedules": if pipeline_sub == Some("schedules") { "is-active" } else { "" },
             "pipeline_manual": if pipeline_sub == Some("manual") { "is-active" } else { "" },
@@ -8211,28 +7945,6 @@ fn bearer_token_from_headers(headers: &HeaderMap) -> Option<String> {
     }
 }
 
-/// Strip `https?://user:token@` from git stderr before returning to the client.
-fn redact_auth_urls(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    let mut rest = s;
-    while let Some(proto_end) = rest.find("://") {
-        let before = &rest[..proto_end + 3];
-        let after = &rest[proto_end + 3..];
-        if let Some(at_pos) = after.find('@') {
-            // Only redact if there's no whitespace between :// and @ (i.e. it's really a URL)
-            if !after[..at_pos].contains(|c: char| c.is_whitespace()) {
-                out.push_str(before);
-                out.push_str("[redacted]@");
-                rest = &after[at_pos + 1..];
-                continue;
-            }
-        }
-        out.push_str(before);
-        rest = after;
-    }
-    out.push_str(rest);
-    out
-}
 
 fn content_type_for_path(path: &FsPath) -> &'static str {
     match path.extension().and_then(|ext| ext.to_str()) {
@@ -11076,7 +10788,7 @@ async fn api_internal_runtime_execute_pipeline(
     if let Err(response) = require_controller_call(&state, &headers) {
         return response;
     }
-    execute_pipeline_local(&state, &owner, &project, &req).await
+    execute_pipeline_local(&state, &owner, &project, &req, new_manual_run_id(), false).await
 }
 
 async fn api_internal_runtime_webhook(
@@ -13011,7 +12723,13 @@ async fn api_repo_git_status(
                 .projects
                 .get_repo_git_branch(&owner, &project)
                 .unwrap_or_default();
-            Json(json!({ "branch": branch, "files": items })).into_response()
+            // Where the project stands against its remote, without a fetch:
+            // unpushed commits, a rebase left in progress, the conflicted files.
+            let sync = crate::platform::services::git_sync::GitSyncService::new(state.platform.clone())
+                .state(&owner, &project)
+                .ok();
+            let word = sync.as_ref().map(|s| s.word()).unwrap_or("unknown");
+            Json(json!({ "branch": branch, "files": items, "sync": sync, "sync_word": word })).into_response()
         }
         Err(err) => internal_error(err),
     }
@@ -13343,153 +13061,29 @@ async fn api_git_commit(
         )
             .into_response();
     }
-    // optional push
+    // `push`: commit → sync → push, stopping at the first step that cannot
+    // proceed. A conflict answers 409 with the conflicted files and leaves the
+    // rebase in progress for the Studio to resolve — the commit is safe either way.
     if req.push {
-        // Resolve push target: prefer explicit request fields, fall back to zebflow.yaml remote
-        let zebflow_cfg = match state
-            .platform
-            .zebflow_cfg
-            .read_or_default(&owner_slug, &project_slug)
-        {
-            Ok(config) => config,
-            Err(err) => return internal_error(err),
+        let svc = git_sync_service(&state);
+        if !req.repo_url.clone().unwrap_or_default().trim().is_empty() || !req.credential_id.clone().unwrap_or_default().trim().is_empty() || !req.branch.clone().unwrap_or_default().trim().is_empty() {
+            // The request may carry a remote the project has not saved yet (the panel's first sync).
+            let branch = req.branch.clone().filter(|b| !b.trim().is_empty()).unwrap_or_else(|| "main".to_string());
+            if let Err(e) = state.platform.zebflow_cfg.update(&owner_slug, &project_slug, |cfg| {
+                if let Some(u) = req.repo_url.clone().filter(|u| !u.trim().is_empty()) { cfg.configs.git.remote.repo_url = u.trim().to_string(); }
+                if let Some(c) = req.credential_id.clone().filter(|c| !c.trim().is_empty()) { cfg.configs.git.remote.credential_id = c.trim().to_string(); }
+                cfg.configs.git.remote.branch = branch.clone();
+            }) {
+                return internal_error(e);
+            }
+        }
+        return match svc.sync(&owner_slug, &project_slug, actor_user.as_deref()) {
+            Ok(crate::platform::services::git_sync::SyncOutcome::Ok { .. }) => git_sync_reply(svc.push(&owner_slug, &project_slug)),
+            other => git_outcome_reply(other),
         };
-        let (cred_id, repo_url, branch) = {
-            let remote_cfg = &zebflow_cfg.configs.git.remote;
-            let cid = req
-                .credential_id
-                .clone()
-                .filter(|s| !s.is_empty())
-                .unwrap_or_else(|| remote_cfg.credential_id.clone());
-            let url = req
-                .repo_url
-                .clone()
-                .filter(|s| !s.is_empty())
-                .unwrap_or_else(|| remote_cfg.repo_url.clone());
-            let br = req
-                .branch
-                .clone()
-                .filter(|s| !s.is_empty())
-                .unwrap_or_else(|| {
-                    if remote_cfg.branch.is_empty() {
-                        "main".to_string()
-                    } else {
-                        remote_cfg.branch.clone()
-                    }
-                });
-            (cid, url, br)
-        };
-
-        if cred_id.is_empty() || repo_url.is_empty() {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(json!({"ok": false, "error": "No remote configured. Connect a remote in the Git panel first."})),
-            )
-                .into_response();
-        }
-
-        // Build authenticated push URL
-        let auth_url = {
-            let cred = state
-                .platform
-                .credentials
-                .get_project_credential(&owner, &project, &cred_id)
-                .ok()
-                .flatten();
-            let mut url_opt: Option<String> = None;
-            if let Some(c) = cred {
-                let username = c.secret["username"].as_str().unwrap_or("");
-                let token = c.secret["token"].as_str().unwrap_or("");
-                if !username.is_empty() && !token.is_empty() {
-                    if let Ok(mut parsed) = reqwest::Url::parse(&repo_url) {
-                        let _ = parsed.set_username(username);
-                        let _ = parsed.set_password(Some(token));
-                        url_opt = Some(parsed.to_string());
-                    }
-                }
-            }
-            match url_opt {
-                Some(u) => u,
-                None => {
-                    return (
-                        StatusCode::BAD_REQUEST,
-                        Json(json!({"ok": false, "error": "Could not build authenticated push URL — check credential username/token."})),
-                    )
-                        .into_response();
-                }
-            }
-        };
-
-        // Pull --rebase before push to handle diverged remote
-        let mut pull_cmd = std::process::Command::new("git");
-        for arg in &identity_args {
-            pull_cmd.arg(arg);
-        }
-        let pull_out = pull_cmd
-            .arg("-C")
-            .arg(&layout.repo_dir)
-            .arg("pull")
-            .arg("--rebase")
-            .arg(&auth_url)
-            .arg(&branch)
-            .output();
-        match pull_out {
-            Err(e) => {
-                return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(json!({"ok": false, "error": format!("pull --rebase failed: {}", e)})),
-                )
-                    .into_response();
-            }
-            Ok(ref o) if !o.status.success() => {
-                // Abort the rebase so the repo is not left mid-rebase
-                let _ = std::process::Command::new("git")
-                    .arg("-C")
-                    .arg(&layout.repo_dir)
-                    .arg("rebase")
-                    .arg("--abort")
-                    .output();
-                let raw = git_failure_message(o);
-                let safe = redact_auth_urls(&raw);
-                return (
-                    StatusCode::CONFLICT,
-                    Json(json!({"ok": false, "error": format!("Rebase conflict — resolve locally and try again: {safe}")})),
-                )
-                    .into_response();
-            }
-            Ok(_) => {}
-        }
-
-        // Push --set-upstream so future pushes work without tracking config
-        let push_out = std::process::Command::new("git")
-            .arg("-C")
-            .arg(&layout.repo_dir)
-            .arg("push")
-            .arg("--set-upstream")
-            .arg(&auth_url)
-            .arg(format!("HEAD:{}", branch))
-            .output();
-        match push_out {
-            Err(e) => {
-                return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(json!({"ok": false, "error": e.to_string()})),
-                )
-                    .into_response();
-            }
-            Ok(ref o) if !o.status.success() => {
-                let raw = git_failure_message(o);
-                let safe = redact_auth_urls(&raw);
-                return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(json!({"ok": false, "error": safe})),
-                )
-                    .into_response();
-            }
-            Ok(_) => {}
-        }
     }
-    Json(json!({"ok": true})).into_response()
+    let sync = git_sync_service(&state).state(&owner_slug, &project_slug).ok();
+    Json(json!({ "ok": true, "outcome": "ok", "pushed": false, "state": sync })).into_response()
 }
 
 /// Request body for `PUT /api/projects/{owner}/{project}/git/remote`.
@@ -13545,6 +13139,100 @@ async fn api_git_get_remote(
         "branch": cfg.configs.git.remote.branch,
     }))
     .into_response()
+}
+
+// ── Git sync verbs (docs/contracts/project.md "Git"; services/git_sync.rs) ──
+// Each answers `{ ok, outcome?, state }`; a conflict is 409 with the state,
+// never an aborted rebase. The remote office runs them when the project lives
+// there, like every other git verb.
+
+fn git_sync_service(state: &PlatformAppState) -> crate::platform::services::git_sync::GitSyncService {
+    crate::platform::services::git_sync::GitSyncService::new(state.platform.clone())
+}
+
+fn git_sync_reply(result: Result<crate::platform::services::git_sync::SyncState, PlatformError>) -> Response {
+    match result {
+        Ok(state) => Json(json!({ "ok": true, "outcome": "ok", "state": state, "sync_word": state.word() })).into_response(),
+        Err(err) => {
+            let status = match err.code {
+                "GIT_BEHIND" | "GIT_CONFLICT" | "GIT_NO_CONFLICT" => StatusCode::CONFLICT,
+                "GIT_NO_REMOTE" | "GIT_RESOLVE" => StatusCode::BAD_REQUEST,
+                _ => StatusCode::INTERNAL_SERVER_ERROR,
+            };
+            (status, Json(json!({ "ok": false, "code": err.code, "error": err.message }))).into_response()
+        }
+    }
+}
+
+fn git_outcome_reply(result: Result<crate::platform::services::git_sync::SyncOutcome, PlatformError>) -> Response {
+    use crate::platform::services::git_sync::SyncOutcome;
+    match result {
+        Ok(SyncOutcome::Ok { state }) => Json(json!({ "ok": true, "outcome": "ok", "state": state, "sync_word": state.word() })).into_response(),
+        Ok(SyncOutcome::Conflict { state }) => (
+            StatusCode::CONFLICT,
+            Json(json!({ "ok": false, "outcome": "conflict", "code": "GIT_CONFLICT", "state": state, "sync_word": state.word(),
+                "error": format!("{} file(s) conflict — resolve each (mine / theirs / edit), then continue", state.conflicts.len()) })),
+        )
+            .into_response(),
+        Err(err) => git_sync_reply(Err(err)),
+    }
+}
+
+macro_rules! git_verb {
+    ($name:ident, $cap:expr, |$state:ident, $owner:ident, $project:ident, $actor:ident| $body:expr) => {
+        async fn $name(
+            State($state): State<PlatformAppState>,
+            headers: HeaderMap,
+            Path(($owner, $project)): Path<(String, String)>,
+            uri: Uri,
+        ) -> Response {
+            if let Err(r) = require_project_api_capability(&$state, &headers, &$owner, &$project, $cap) {
+                return r;
+            }
+            if let Ok(Some(worker_id)) = remote_project_worker_id(&$state, &$owner, &$project) {
+                return match forward_project_json_request_to_worker(&$state, &uri, &headers, Method::POST, &json!({}), &worker_id).await {
+                    Ok(response) => response,
+                    Err(err) => internal_error(err),
+                };
+            }
+            let $actor = session_owner(&$state, &headers);
+            $body
+        }
+    };
+}
+
+git_verb!(api_git_fetch, ProjectCapability::PipelinesWrite, |state, owner, project, _actor| git_sync_reply(git_sync_service(&state).fetch(&owner, &project)));
+git_verb!(api_git_sync, ProjectCapability::PipelinesWrite, |state, owner, project, actor| git_outcome_reply(git_sync_service(&state).sync(&owner, &project, actor.as_deref())));
+git_verb!(api_git_push, ProjectCapability::PipelinesWrite, |state, owner, project, _actor| git_sync_reply(git_sync_service(&state).push(&owner, &project)));
+git_verb!(api_git_continue, ProjectCapability::PipelinesWrite, |state, owner, project, actor| git_outcome_reply(git_sync_service(&state).continue_rebase(&owner, &project, actor.as_deref())));
+git_verb!(api_git_abort, ProjectCapability::PipelinesWrite, |state, owner, project, _actor| git_sync_reply(git_sync_service(&state).abort(&owner, &project)));
+
+#[derive(serde::Deserialize, serde::Serialize)]
+struct GitResolveRequest {
+    path: String,
+    /// `mine` (keep this project's version), `theirs` (take the remote's), or `content`.
+    resolution: crate::platform::services::git_sync::Resolution,
+    #[serde(default)]
+    content: Option<String>,
+}
+
+async fn api_git_resolve(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((owner, project)): Path<(String, String)>,
+    uri: Uri,
+    Json(req): Json<GitResolveRequest>,
+) -> Response {
+    if let Err(r) = require_project_api_capability(&state, &headers, &owner, &project, ProjectCapability::PipelinesWrite) {
+        return r;
+    }
+    if let Ok(Some(worker_id)) = remote_project_worker_id(&state, &owner, &project) {
+        return match forward_project_json_request_to_worker(&state, &uri, &headers, Method::POST, &req, &worker_id).await {
+            Ok(response) => response,
+            Err(err) => internal_error(err),
+        };
+    }
+    git_sync_reply(git_sync_service(&state).resolve(&owner, &project, &req.path, req.resolution, req.content.as_deref()))
 }
 
 /// `PUT /api/projects/{owner}/{project}/git/remote` — saves remote config.
@@ -14029,11 +13717,21 @@ async fn run_composite_lifecycle_hooks(
     }
 }
 
+/// `POST /api/projects/{owner}/{project}/pipelines/execute`
+///
+/// A manual run delivers the same envelope a webhook does: `body` (fields)
+/// and `files` (FileRefs). The request is **either** JSON — the
+/// `ExecutePipelineRequest` shape, where `input.files.<name>` may be a store
+/// path that becomes the durable FileRef of that object — **or**
+/// `multipart/form-data`, where text parts become `input.body.<name>`, file
+/// parts become temporary FileRefs at `input.files.<name>`, and a text part
+/// `file_rel_path` names the pipeline. Temporary files are deleted after the
+/// run, as a webhook's are.
 async fn api_execute_pipeline(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
     Path((owner, project)): Path<(String, String)>,
-    Json(req): Json<ExecutePipelineRequest>,
+    body: Bytes,
 ) -> Response {
     if let Err(response) = require_project_api_capability(
         &state,
@@ -14044,28 +13742,203 @@ async fn api_execute_pipeline(
     ) {
         return response;
     }
+    let request_id = new_manual_run_id();
+    // Whatever the multipart reader wrote under `tmp/runs/{request_id}/`
+    // lives for this request and no longer: a refused request (no pipeline
+    // named, a store path that does not exist, a pipeline that is missing or
+    // inactive) must not leave a file behind any more than a run does.
+    let cleanup = |state: &PlatformAppState| {
+        crate::pipeline::nodes::shared::file_ref::remove_run_temporary_files(
+            &state.platform, &owner, &project, &request_id,
+        );
+    };
+    let req = match parse_execute_request(&state.platform, &owner, &project, &request_id, &headers, &body).await {
+        Ok(req) => req,
+        Err(response) => {
+            cleanup(&state);
+            return response;
+        }
+    };
+    let mut forwarded = None;
     if let Ok(Some(placement)) = state.platform.cluster_placement.get(&owner, &project) {
         if placement.target == ProjectRuntimePlacementTarget::Worker {
             if let Some(worker_id) = placement.worker_id.as_deref() {
-                return match forward_runtime_execute_to_worker(
-                    &state, &owner, &project, &req, worker_id,
-                )
-                .await
-                {
-                    Ok(response) => response,
-                    Err(err) => internal_error(err),
-                };
+                forwarded = Some(
+                    match forward_runtime_execute_to_worker(&state, &owner, &project, &req, worker_id).await {
+                        Ok(response) => response,
+                        Err(err) => internal_error(err),
+                    },
+                );
             }
         }
     }
-    execute_pipeline_local(&state, &owner, &project, &req).await
+    let response = match forwarded {
+        Some(response) => response,
+        None => {
+            execute_pipeline_local(
+                &state,
+                &owner,
+                &project,
+                &req,
+                request_id.clone(),
+                wants_event_stream(&headers),
+            )
+            .await
+        }
+    };
+    // A streamed run is still going when this returns; it cleans up on its
+    // own task once the engine is done. Everything else — the run is over,
+    // or the request was refused — cleans up here.
+    if !is_event_stream_response(&response) {
+        cleanup(&state);
+    }
+    response
 }
 
+fn new_manual_run_id() -> String {
+    format!(
+        "pipeline-exec-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis()
+    )
+}
+
+fn execute_request_error(status: StatusCode, code: &str, message: impl Into<String>) -> Response {
+    (
+        status,
+        Json(json!({"ok": false, "error": {"code": code, "message": message.into()}})),
+    )
+        .into_response()
+}
+
+/// The execute request, from either spelling, with every `files` entry a
+/// FileRef by the time it returns.
+async fn parse_execute_request(
+    platform: &Arc<PlatformService>,
+    owner: &str,
+    project: &str,
+    request_id: &str,
+    headers: &HeaderMap,
+    body: &Bytes,
+) -> Result<ExecutePipelineRequest, Response> {
+    let content_type = headers
+        .get(CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+    let mut req = if content_type.to_ascii_lowercase().contains("multipart/form-data") {
+        let parsed = parse_multipart_envelope(
+            platform, owner, project, request_id, &content_type, body, "manual", "user",
+        )
+        .await
+        .map_err(|err| execute_request_error(StatusCode::BAD_REQUEST, err.code, err.message))?;
+        let Some((mut text_fields, files)) = parsed else {
+            return Err(execute_request_error(
+                StatusCode::BAD_REQUEST,
+                "PLATFORM_EXECUTE_BODY",
+                "multipart body has no boundary",
+            ));
+        };
+        let file_rel_path = text_fields
+            .remove("file_rel_path")
+            .and_then(|v| v.as_str().map(str::trim).map(str::to_string))
+            .filter(|v| !v.is_empty())
+            .ok_or_else(|| {
+                execute_request_error(
+                    StatusCode::BAD_REQUEST,
+                    "PLATFORM_EXECUTE_BODY",
+                    "multipart run needs a text part `file_rel_path` naming the pipeline",
+                )
+            })?;
+        // The Studio tries a webhook form from the canvas through this same
+        // route: `trigger=webhook` with the route's path and method, matched
+        // against the active graph exactly as the JSON form is.
+        let take_text = |fields: &mut serde_json::Map<String, Value>, key: &str| {
+            fields
+                .remove(key)
+                .and_then(|v| v.as_str().map(str::trim).map(str::to_string))
+                .filter(|v| !v.is_empty())
+        };
+        // Absent, the trigger is inferred from the graph exactly as the JSON
+        // form's missing `trigger` is (`resolve_execute_trigger`).
+        let trigger = match take_text(&mut text_fields, "trigger").as_deref() {
+            Some("webhook") => Some(PipelineExecuteTrigger::Webhook),
+            Some("schedule") => Some(PipelineExecuteTrigger::Schedule),
+            Some("manual") => Some(PipelineExecuteTrigger::Manual),
+            _ => None,
+        };
+        let webhook_path = take_text(&mut text_fields, "webhook_path");
+        let webhook_method = take_text(&mut text_fields, "webhook_method");
+        let schedule_cron = take_text(&mut text_fields, "schedule_cron");
+        let mut input = serde_json::Map::new();
+        input.insert("body".to_string(), Value::Object(text_fields));
+        if !files.is_empty() {
+            input.insert("files".to_string(), Value::Object(files));
+        }
+        ExecutePipelineRequest {
+            file_rel_path,
+            trigger,
+            webhook_path,
+            webhook_method,
+            schedule_cron,
+            input: Value::Object(input),
+        }
+    } else {
+        let mut raw: Value = serde_json::from_slice(body).map_err(|err| {
+            execute_request_error(
+                StatusCode::BAD_REQUEST,
+                "PLATFORM_EXECUTE_BODY",
+                format!("request body is not JSON: {err}"),
+            )
+        })?;
+        // `"files": { "photo": "uploads/cat.png" }` beside `input` is the
+        // agent's spelling; it lands where the multipart one does.
+        let top_files = raw.as_object_mut().and_then(|m| m.remove("files"));
+        let mut req: ExecutePipelineRequest = serde_json::from_value(raw).map_err(|err| {
+            execute_request_error(
+                StatusCode::BAD_REQUEST,
+                "PLATFORM_EXECUTE_BODY",
+                format!("request body: {err}"),
+            )
+        })?;
+        if let Some(Value::Object(top)) = top_files {
+            if !req.input.is_object() {
+                req.input = json!({});
+            }
+            let input = req.input.as_object_mut().expect("object");
+            let files = input
+                .entry("files".to_string())
+                .or_insert_with(|| Value::Object(serde_json::Map::new()));
+            if let Value::Object(files) = files {
+                for (name, value) in top {
+                    files.insert(name, value);
+                }
+            }
+        }
+        req
+    };
+    crate::pipeline::nodes::shared::file_ref::resolve_manual_input_files(
+        platform, owner, project, &mut req.input,
+    )
+    .map_err(|err| {
+        execute_request_error(StatusCode::BAD_REQUEST, "PLATFORM_EXECUTE_FILE_MISSING", err.message)
+    })?;
+    Ok(req)
+}
+
+/// Runs one active pipeline on this office. With `streaming` the answer is
+/// an SSE stream (`event: signal` per bus signal, `event: result` last);
+/// without, the JSON answer once the run is over. A request refused before
+/// the run starts answers JSON either way.
 async fn execute_pipeline_local(
     state: &PlatformAppState,
     owner: &str,
     project: &str,
     req: &ExecutePipelineRequest,
+    request_id: String,
+    streaming: bool,
 ) -> Response {
     let exec_start = std::time::Instant::now();
     let project_cfg = match state.platform.zebflow_cfg.read_or_default(owner, project) {
@@ -14073,13 +13946,6 @@ async fn execute_pipeline_local(
         Err(err) => return internal_error(err),
     };
     let project_retention = resolve_invocation_retention(&project_cfg, None);
-    let request_id = format!(
-        "pipeline-exec-{}",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis()
-    );
 
     let meta = match state.platform.projects.get_pipeline_meta_by_file_id(
         owner,
@@ -14268,7 +14134,7 @@ async fn execute_pipeline_local(
         request_id: request_id.clone(),
         route: Default::default(),
         input: req.input.clone(),
-        trigger: None,
+        trigger: Some(crate::pipeline::nodes::basic::trigger::manual::trigger_snapshot(&req.input)),
         placeholder: None,
     };
     let engine = BasicPipelineEngine::new(
@@ -14283,75 +14149,127 @@ async fn execute_pipeline_local(
     .with_ws_client_manager(state.ws_client_manager.clone())
     .with_state_bus(state.platform.state_bus.clone())
     .with_data_root(state.platform.config.data_root.clone());
-    match engine.execute_async(&graph_for_run, &ctx).await {
-        Ok(output) => {
-            state
-                .platform
-                .pipeline_hits
-                .record_success(owner, project, &meta.file_rel_path);
-            let _ = state.platform.data.log_pipeline_invocation(
-                owner,
-                project,
-                &meta.file_rel_path,
-                &PipelineInvocationEntry {
-                    run_id: request_id.clone(),
-                    at: std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .unwrap_or_default()
-                        .as_secs() as i64,
-                    duration_ms: exec_start.elapsed().as_millis() as u64,
-                    status: "ok".to_string(),
-                    trigger: "manual".to_string(),
-                    error: None,
-                    trace: output.node_trace.clone(),
-                },
-                retention.max_invocations,
-                retention.max_age_secs,
-            );
-            Json(json!({
-                "ok": true,
-                "run_id": request_id,
-                "meta": meta,
-                "output": output.value,
-                "trace": output.trace
-            }))
-            .into_response()
-        }
-        Err(err) => {
-            state.platform.pipeline_hits.record_failure(
-                owner,
-                project,
-                &meta.file_rel_path,
-                "api.execute",
-                err.code,
-                &err.message,
-            );
-            let _ = state.platform.data.log_pipeline_invocation(
-                owner,
-                project,
-                &meta.file_rel_path,
-                &PipelineInvocationEntry {
-                    run_id: request_id.clone(),
-                    at: std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .unwrap_or_default()
-                        .as_secs() as i64,
-                    duration_ms: exec_start.elapsed().as_millis() as u64,
+    // The one place a manual run is recorded, streamed or not: the record is
+    // written exactly as before, and a stream's closing `result` event is
+    // the JSON answer the route would otherwise have sent.
+    let platform = state.platform.clone();
+    let scope = (owner.to_string(), project.to_string(), meta.file_rel_path.clone());
+    let meta_out = meta.clone();
+    let run_id = request_id.clone();
+    let error_group_bounds = project_cfg.configs.pipelines.logging.error_group_bounds();
+    let finish = move |run: Result<PipelineOutput, PipelineError>| -> (StatusCode, Value) {
+        let at = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+        let duration_ms = exec_start.elapsed().as_millis() as u64;
+        match run {
+            Ok(output) => {
+                platform
+                    .pipeline_hits
+                    .record_success(&scope.0, &scope.1, &scope.2);
+                let _ = platform.data.log_pipeline_invocation(
+                    &scope.0,
+                    &scope.1,
+                    &scope.2,
+                    &PipelineInvocationEntry {
+                        run_id: run_id.clone(),
+                        at,
+                        duration_ms,
+                        status: "ok".to_string(),
+                        trigger: "manual".to_string(),
+                        error: None,
+                        trace: output.node_trace.clone(),
+                    },
+                    retention.max_invocations,
+                    retention.max_age_secs,
+                );
+                (
+                    StatusCode::OK,
+                    json!({
+                        "ok": true,
+                        "run_id": run_id,
+                        "meta": meta_out,
+                        "output": output.value,
+                        "trace": output.trace
+                    }),
+                )
+            }
+            Err(err) => {
+                platform.pipeline_hits.record_failure(
+                    &scope.0,
+                    &scope.1,
+                    &scope.2,
+                    "api.execute",
+                    err.code,
+                    &err.message,
+                );
+                let entry = PipelineInvocationEntry {
+                    run_id: run_id.clone(),
+                    at,
+                    duration_ms,
                     status: "error".to_string(),
                     trigger: "manual".to_string(),
                     error: Some(err.message.clone()),
                     trace: err.node_trace.clone(),
-                },
-                retention.max_invocations,
-                retention.max_age_secs,
-            );
-            (
-                StatusCode::BAD_REQUEST,
-                Json(json!({"ok": false, "error": {"code": err.code, "message": err.message}})),
-            )
-                .into_response()
+                };
+                let _ = platform.data.log_pipeline_invocation(
+                    &scope.0,
+                    &scope.1,
+                    &scope.2,
+                    &entry,
+                    retention.max_invocations,
+                    retention.max_age_secs,
+                );
+                // Counted like a webhook's failure: one group per distinct
+                // error, this run in its occurrence ring. A manual run's
+                // failure was not counted before; a retry loop that gives up
+                // from the Run button is the case that made it matter.
+                if let Err(e) = platform.data.record_pipeline_error(
+                    &scope.0,
+                    &scope.1,
+                    &scope.2,
+                    &entry,
+                    error_group_bounds,
+                ) {
+                    eprintln!(
+                        "warning: error group not recorded for {}/{}: {}",
+                        scope.0, scope.1, e.message
+                    );
+                }
+                (
+                    StatusCode::BAD_REQUEST,
+                    json!({"ok": false, "run_id": run_id, "error": {"code": err.code, "message": err.message}}),
+                )
+            }
         }
+    };
+    if streaming {
+        // `Accept: text/event-stream`: every signal as it happens, then
+        // `event: result`. The run's temporary files are removed on the
+        // run's own task, once the engine is done — not by the handler,
+        // which returns while the run is still going.
+        let platform_run = state.platform.clone();
+        let scope_run = (owner.to_string(), project.to_string(), request_id.clone());
+        return pipeline_run_sse_response(
+            engine,
+            graph_for_run,
+            ctx,
+            move || {
+                crate::pipeline::nodes::shared::file_ref::remove_run_temporary_files(
+                    &platform_run, &scope_run.0, &scope_run.1, &scope_run.2,
+                );
+            },
+            move |run| ("result", finish(run).1),
+        );
     }
+    let run = engine.execute_async(&graph_for_run, &ctx).await;
+    // A file that arrived with the run lived for the run.
+    crate::pipeline::nodes::shared::file_ref::remove_run_temporary_files(
+        &state.platform, owner, project, &request_id,
+    );
+    let (status, body) = finish(run);
+    (status, Json(body)).into_response()
 }
 
 /// POST /api/projects/{owner}/{project}/pipelines/dsl
@@ -14463,6 +14381,38 @@ async fn api_pipeline_hits(
 }
 
 /// GET /api/projects/{owner}/{project}/pipelines/invocations?pipeline=<file_rel_path>
+/// `GET …/pipelines/errors[?file_rel_path=…][&run_id=<prefix>]` — the error
+/// groups (`kinds/invocation-record`): every distinct failure with its count,
+/// or the one group a quoted reference belongs to.
+async fn api_pipeline_error_groups(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((owner, project)): Path<(String, String)>,
+    uri: Uri,
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> Response {
+    if let Err(r) = require_project_api_capability(&state, &headers, &owner, &project, ProjectCapability::PipelinesRead) {
+        return r;
+    }
+    if let Ok(Some(worker_id)) = remote_project_worker_id(&state, &owner, &project) {
+        return match forward_project_api_request_to_worker(&state, &uri, &Method::GET, &headers, Bytes::new(), &worker_id).await {
+            Ok(response) => response,
+            Err(err) => internal_error(err),
+        };
+    }
+    if let Some(prefix) = params.get("run_id").map(|s| s.trim()).filter(|s| !s.is_empty()) {
+        return match state.platform.data.find_pipeline_error_group_by_run(&owner, &project, prefix) {
+            Ok(Some(group)) => Json(json!({ "ok": true, "group": group })).into_response(),
+            Ok(None) => (StatusCode::NOT_FOUND, Json(json!({ "ok": false, "error": "no error group holds a run with that reference (a prefix of at least eight characters)" }))).into_response(),
+            Err(err) => internal_error(err),
+        };
+    }
+    match state.platform.data.list_pipeline_error_groups(&owner, &project, params.get("file_rel_path").map(String::as_str)) {
+        Ok(groups) => Json(json!({ "ok": true, "count": groups.len(), "groups": groups })).into_response(),
+        Err(err) => internal_error(err),
+    }
+}
+
 async fn api_pipeline_invocations(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
@@ -14555,6 +14505,10 @@ async fn api_pipeline_invocations(
 #[derive(Debug, Deserialize)]
 struct RepoPathQuery {
     path: Option<String>,
+    /// `base64` when the body is a binary file encoded for transport (an icon
+    /// under `static/`); otherwise the body is the file's text.
+    #[serde(default)]
+    encoding: Option<String>,
 }
 
 /// Query for `GET /repo`.
@@ -14762,12 +14716,25 @@ async fn api_repo_write(
         Ok(path) => path,
         Err(response) => return response,
     };
-    let content = String::from_utf8(body.to_vec()).unwrap_or_default();
-    match state
-        .platform
-        .projects
-        .write_repo_file(&owner, &project, &path, &content)
-    {
+    // A binary file arrives base64-encoded (`?encoding=base64`) or as raw
+    // bytes that are not UTF-8; either way it is written as bytes. Text is
+    // written as text, as before.
+    let base64_body = query.encoding.as_deref().is_some_and(|e| e.eq_ignore_ascii_case("base64"));
+    let written = if base64_body {
+        use base64::Engine as _;
+        match base64::engine::general_purpose::STANDARD.decode(body.as_ref().iter().filter(|b| !b.is_ascii_whitespace()).copied().collect::<Vec<u8>>()) {
+            Ok(bytes) => state.platform.projects.write_repo_bytes(&owner, &project, &path, &bytes),
+            Err(_) => {
+                return (StatusCode::BAD_REQUEST, Json(json!({"ok": false, "error": "body is not valid base64"}))).into_response();
+            }
+        }
+    } else {
+        match String::from_utf8(body.to_vec()) {
+            Ok(content) => state.platform.projects.write_repo_file(&owner, &project, &path, &content),
+            Err(_) => state.platform.projects.write_repo_bytes(&owner, &project, &path, body.as_ref()),
+        }
+    };
+    match written {
         Ok(payload) => {
             evict_cached_pages_for(&state, &owner, &project, &path);
             Json(json!({"ok": true, "file": payload})).into_response()
@@ -15088,12 +15055,232 @@ async fn api_files_list(
                 "modified": modified,
                 "access": access,
                 "public": access == "public_read",
-                "url": format!("/fs/{owner}/{project}/{}", path),
+                "url": studio_file_object_url(&owner, &project, &path),
             }));
         }
     }
 
     Json(json!({ "path": rel, "folders": folders, "files": files })).into_response()
+}
+
+/// Percent-encodes a store path for a query value: unreserved bytes and `/`
+/// pass through, everything else is `%XX`, so a name with a space or an `&`
+/// survives the round trip through the browser.
+fn encode_query_value(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    for byte in raw.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' | b'/' => {
+                out.push(byte as char)
+            }
+            _ => out.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    out
+}
+
+/// The Studio's URL for one stored object: the authenticated read route,
+/// which serves private and public objects alike to a signed-in reader of the
+/// project. Never the public `/fs/` surface — that is off by default and
+/// exists for sites, and a Studio link built on it was a 404 on a fresh
+/// project.
+fn studio_file_object_url(owner: &str, project: &str, path: &str) -> String {
+    format!(
+        "/api/projects/{owner}/{project}/files/object?ref={}",
+        encode_query_value(path)
+    )
+}
+
+/// Like [`require_project_api_capability`], and also accepts the bearer token
+/// of this project's MCP session when that session carries the capability.
+///
+/// An agent that only has MCP follows a preview it built with `route_fetch`;
+/// the Studio sends its cookie. Both are a signed-in reader of the same
+/// project. A token for another project, a disabled or expired one, or one
+/// without the capability is not a session here: the cookie path decides
+/// then, and answers 401 when there is none.
+fn require_project_api_capability_or_mcp_bearer(
+    state: &PlatformAppState,
+    headers: &HeaderMap,
+    owner: &str,
+    project: &str,
+    capability: ProjectCapability,
+) -> Result<ProjectAccessSubject, Response> {
+    if let Some(token) = bearer_token_from_headers(headers)
+        && let Some(session) = state.platform.mcp_sessions.lookup(&token)
+        && session.owner == owner
+        && session.project == project
+        && session.capabilities.contains(&capability)
+    {
+        return Ok(ProjectAccessSubject::user(&session.owner));
+    }
+    require_project_api_capability(state, headers, owner, project, capability)
+}
+
+/// A `ref` this route will look at: a store path inside the project. Never
+/// `..`, never absolute, never `.zebfs/` (the ACL metadata).
+fn file_object_ref(raw: &str) -> Result<String, &'static str> {
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return Err("ref is required");
+    }
+    if raw.starts_with('/') || raw.starts_with('\\') || raw.contains("..") || raw.contains('\0') {
+        return Err("invalid ref");
+    }
+    let rel = crate::zebfs::normalize_object_path(raw).map_err(|_| "invalid ref")?;
+    if rel.is_empty() || crate::zebfs::acl::is_reserved_acl_path(&rel) {
+        return Err("invalid ref");
+    }
+    Ok(rel)
+}
+
+/// The bytes of one object, inline, with the name the store keeps, and
+/// never cached: this is a private read on behalf of one signed-in person.
+fn file_object_response(object: crate::zebfs::ZebFsObject) -> Response {
+    let content_type = content_type_for_path(FsPath::new(&object.path));
+    let file_name = FsPath::new(&object.path)
+        .file_name()
+        .map(|name| name.to_string_lossy().replace('"', ""))
+        .unwrap_or_default();
+    let mut resp = Response::new(Body::from(object.bytes));
+    *resp.status_mut() = StatusCode::OK;
+    if let Ok(value) = HeaderValue::from_str(content_type) {
+        resp.headers_mut().insert(CONTENT_TYPE, value);
+    }
+    let disposition = HeaderValue::from_str(&format!("inline; filename=\"{file_name}\""))
+        .unwrap_or_else(|_| HeaderValue::from_static("inline"));
+    resp.headers_mut().insert(CONTENT_DISPOSITION, disposition);
+    resp.headers_mut()
+        .insert(CACHE_CONTROL, HeaderValue::from_static("private, no-store"));
+    resp.headers_mut().insert(
+        "x-content-type-options",
+        HeaderValue::from_static("nosniff"),
+    );
+    resp
+}
+
+/// GET /api/projects/{owner}/{project}/files/object?ref=uploads/a.png
+///
+/// The Studio's read of one stored object: a preview cell, an input widget's
+/// result, a link on the Files page. Private and public objects alike, a
+/// run's temporary files included while they still exist. The reader is the
+/// signed-in person (or this project's MCP session) with `FilesRead`, so the
+/// object's ACL is not the question here — that is what the public surfaces
+/// answer. Anonymous is 401 before the path is looked at, so nothing on this
+/// route tells a stranger whether a name exists.
+async fn api_files_object(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((owner, project)): Path<(String, String)>,
+    uri: Uri,
+    Query(params): Query<std::collections::HashMap<String, String>>,
+) -> Response {
+    if let Err(r) = require_project_api_capability_or_mcp_bearer(
+        &state,
+        &headers,
+        &owner,
+        &project,
+        ProjectCapability::FilesRead,
+    ) {
+        return r;
+    }
+    let rel = match file_object_ref(params.get("ref").map(String::as_str).unwrap_or("")) {
+        Ok(rel) => rel,
+        Err(message) => {
+            return (StatusCode::BAD_REQUEST, Json(json!({ "error": message }))).into_response();
+        }
+    };
+    if let Ok(Some(worker_id)) = remote_project_worker_id(&state, &owner, &project) {
+        return match forward_project_api_request_to_worker(
+            &state,
+            &uri,
+            &Method::GET,
+            &headers,
+            Bytes::new(),
+            &worker_id,
+        )
+        .await
+        {
+            Ok(response) => response,
+            Err(err) => internal_error(err),
+        };
+    }
+    let layout = match state.platform.file.ensure_project_layout(&owner, &project) {
+        Ok(layout) => layout,
+        Err(err) => return internal_error(err),
+    };
+    let object = match layout.open_files().get(&rel) {
+        Ok(object) => object,
+        Err(err) if err.code == "ZEBFS_NOT_FOUND" => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(json!({ "error": "object not found" })),
+            )
+                .into_response();
+        }
+        Err(err) if err.code == "ZEBFS_INVALID_PATH" || err.code == "ZEBFS_RESERVED_PATH" => {
+            return (StatusCode::BAD_REQUEST, Json(json!({ "error": "invalid ref" }))).into_response();
+        }
+        Err(err) => return internal_error(PlatformError::new(err.code, err.message)),
+    };
+    file_object_response(object)
+}
+
+#[cfg(test)]
+mod file_object_tests {
+    use super::*;
+
+    #[test]
+    fn a_ref_stays_inside_the_project_and_off_the_acl_metadata() {
+        assert_eq!(file_object_ref("uploads/a.png").unwrap(), "uploads/a.png");
+        assert_eq!(
+            file_object_ref(" tmp/runs/abc/files/x.jpg ").unwrap(),
+            "tmp/runs/abc/files/x.jpg"
+        );
+        assert_eq!(file_object_ref("public/logo.svg").unwrap(), "public/logo.svg");
+        for bad in [
+            "",
+            "/etc/passwd",
+            "\\windows",
+            "../secret",
+            "uploads/../../x",
+            "uploads/./../x",
+            ".zebfs",
+            ".zebfs/acl.json",
+            "a\0b",
+        ] {
+            assert!(file_object_ref(bad).is_err(), "{bad:?} must be refused");
+        }
+    }
+
+    #[test]
+    fn the_studio_url_is_the_api_route_with_the_ref_encoded() {
+        assert_eq!(
+            studio_file_object_url("o", "p", "uploads/a b&c.png"),
+            "/api/projects/o/p/files/object?ref=uploads/a%20b%26c.png"
+        );
+        assert!(!studio_file_object_url("o", "p", "x.png").contains("/fs/"));
+    }
+
+    #[test]
+    fn the_object_answer_is_inline_and_never_cached() {
+        let resp = file_object_response(crate::zebfs::ZebFsObject {
+            path: "thumbs/one.jpg".to_string(),
+            bytes: vec![1, 2, 3],
+            stat: crate::zebfs::ZebFsStat {
+                path: "thumbs/one.jpg".to_string(),
+                size: 3,
+                modified: None,
+                kind: crate::zebfs::ZebFsEntryKind::Object,
+            },
+        });
+        assert_eq!(resp.status(), StatusCode::OK);
+        let header = |name: &str| resp.headers().get(name).unwrap().to_str().unwrap().to_string();
+        assert_eq!(header("content-type"), "image/jpeg");
+        assert_eq!(header("content-disposition"), "inline; filename=\"one.jpg\"");
+        assert_eq!(header("cache-control"), "private, no-store");
+        assert_eq!(header("x-content-type-options"), "nosniff");
+    }
 }
 
 /// POST /api/projects/{owner}/{project}/files/mkdir  { "path": "photos" }
@@ -15353,15 +15540,15 @@ async fn api_files_upload(
     // the ref.
     Json(json!({
         "ok": true,
-        "__zf_type": crate::pipeline::nodes::basic::file_ref::FILE_REF_TYPE,
-        "backend": crate::pipeline::nodes::basic::file_ref::BACKEND_ZEBFS,
+        "__zf_type": crate::pipeline::nodes::shared::file_ref::FILE_REF_TYPE,
+        "backend": crate::pipeline::nodes::shared::file_ref::BACKEND_ZEBFS,
         "ref": entry_rel,
         "filename": filename,
         "mime": content_type,
-        "kind": crate::pipeline::nodes::basic::file_ref::infer_kind(&content_type, &filename),
+        "kind": crate::pipeline::nodes::shared::file_ref::infer_kind(&content_type, &filename),
         "size": bytes.len(),
         "sha256": format!("sha256:{:x}", <sha2::Sha256 as sha2::Digest>::digest(bytes.as_ref())),
-        "lifecycle": crate::pipeline::nodes::basic::file_ref::LIFECYCLE_DURABLE,
+        "lifecycle": crate::pipeline::nodes::shared::file_ref::LIFECYCLE_DURABLE,
         "origin": "project.files.upload",
         "trust": "user"
     }))
@@ -15524,7 +15711,7 @@ fn set_project_file_access(
         access: access.as_str().to_string(),
         public: access == crate::zebfs::ZebFsAccess::PublicRead,
         scope: scope.as_str().to_string(),
-        url: format!("/fs/{owner}/{project}/{path}"),
+        url: studio_file_object_url(&owner, &project, &path),
     })
 }
 
@@ -22251,6 +22438,119 @@ fn wants_event_stream(headers: &HeaderMap) -> bool {
         .unwrap_or(false)
 }
 
+/// `true` for a response that is an SSE stream — the run behind it is still
+/// going when the handler returns, so per-request cleanup must not run yet.
+fn is_event_stream_response(response: &Response) -> bool {
+    response
+        .headers()
+        .get(CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .map(|value| value.starts_with("text/event-stream"))
+        .unwrap_or(false)
+}
+
+fn signal_event_data(signal: &Signal) -> String {
+    serde_json::to_string(signal).unwrap_or_else(|_| "{}".to_string())
+}
+
+/// The events of one streamed run, in order: every [`Signal`] the bus
+/// carries as `("signal", json)`, then the one closing event `finish` names,
+/// built from the run's result.
+///
+/// `finish` is where a caller records the invocation, so it runs exactly
+/// once — on whichever comes first, the result or the bus closing. (An
+/// earlier shape of this loop answered the result arm without recording,
+/// which skipped the record whenever the result landed before the engine
+/// dropped its sender.) Signals still queued when the result lands are
+/// drained before the closing event; the engine emits `run_done` before it
+/// answers, so it is never lost.
+fn pipeline_run_events<T, F>(
+    mut signal_rx: tokio::sync::broadcast::Receiver<Signal>,
+    mut result_rx: tokio::sync::oneshot::Receiver<T>,
+    finish: F,
+) -> impl futures::Stream<Item = (&'static str, String)>
+where
+    T: Send + 'static,
+    F: FnOnce(T) -> (&'static str, Value) + Send + 'static,
+{
+    async_stream::stream! {
+        let mut result = None;
+        loop {
+            tokio::select! {
+                biased;
+                sig = signal_rx.recv() => {
+                    match sig {
+                        Ok(signal) => {
+                            yield ("signal", signal_event_data(&signal));
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                    }
+                }
+                res = &mut result_rx => {
+                    result = Some(res);
+                    break;
+                }
+            }
+        }
+        loop {
+            match signal_rx.try_recv() {
+                Ok(signal) => {
+                    yield ("signal", signal_event_data(&signal));
+                }
+                Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_)) => continue,
+                Err(_) => break,
+            }
+        }
+        let result = match result {
+            Some(result) => result,
+            None => result_rx.await,
+        };
+        if let Ok(value) = result {
+            let (event, data) = finish(value);
+            yield (event, data.to_string());
+        }
+    }
+}
+
+/// One pipeline run as an SSE response.
+///
+/// The engine runs on its own task with a fresh [`ExecutionBus`]; every
+/// signal on it becomes `event: signal`; `after_run` (the temporary-file
+/// cleanup) runs on that task once the engine returns; `finish` turns the
+/// result into the closing event and writes the record. Shared by the
+/// webhook ingress (`done` / `error`) and the execute route (`result`).
+fn pipeline_run_sse_response<A, F>(
+    engine: BasicPipelineEngine,
+    graph: PipelineGraph,
+    ctx: PipelineContext,
+    after_run: A,
+    finish: F,
+) -> Response
+where
+    A: FnOnce() + Send + 'static,
+    F: FnOnce(Result<PipelineOutput, PipelineError>) -> (&'static str, Value) + Send + 'static,
+{
+    use futures::StreamExt as _;
+    let bus = std::sync::Arc::new(ExecutionBus::new(256));
+    let signal_rx = bus.subscribe();
+    let options = ExecuteOptions { bus: Some(bus) };
+    let (result_tx, result_rx) = tokio::sync::oneshot::channel();
+    tokio::spawn(async move {
+        let result = engine
+            .execute_with_options_async(&graph, &ctx, &options)
+            .await;
+        after_run();
+        let _ = result_tx.send(result);
+    });
+    let stream = pipeline_run_events(signal_rx, result_rx, finish).map(|(event, data)| {
+        Ok::<_, Infallible>(Event::default().event(event).data(data))
+    });
+    Sse::new(stream)
+        .keep_alive(KeepAlive::default())
+        .into_response()
+}
+
 /// Verifies the auth requirement of a webhook trigger spec.
 ///
 /// Returns:
@@ -22643,6 +22943,54 @@ fn verify_webhook_auth(
 
 /// Finds and runs the best matching weberror pipeline.
 ///
+/// A *JSON request* (`discoverability.md` §6a): `Accept` names JSON and not
+/// HTML. A browser navigation is never one; a `fetch` from a page usually is.
+fn accepts_json_only(headers: &HeaderMap) -> bool {
+    let accept = headers
+        .get(axum::http::header::ACCEPT)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    accept.contains("application/json") && !accept.contains("text/html")
+}
+
+/// The platform's own error page, for a project that registered no
+/// `weberror` page for this code: unbranded, one sentence, the reference a
+/// person can read out. With `detail` (errors shown) the failure follows.
+fn neutral_error_page(code: u16, request_id: &str, detail: Option<&Value>) -> Response {
+    let reason = StatusCode::from_u16(code).ok().and_then(|s| s.canonical_reason()).unwrap_or("Error");
+    let reference = request_id.get(..8).unwrap_or(request_id);
+    let sentence = match code {
+        404 => "There is nothing at this address.".to_string(),
+        401 | 403 => "You need to sign in to see this.".to_string(),
+        _ => "Something went wrong on our side. If you tell us, quote the reference below.".to_string(),
+    };
+    let detail_html = detail
+        .map(|d| {
+            format!(
+                "<pre style=\"margin-top:1.5rem;padding:1rem;background:#f4f4f5;border-radius:6px;white-space:pre-wrap;font:13px/1.5 ui-monospace,monospace\">{}</pre>",
+                escape_html(&serde_json::to_string_pretty(d).unwrap_or_default())
+            )
+        })
+        .unwrap_or_default();
+    let html = format!(
+        "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><meta name=\"robots\" content=\"noindex\"><title>{code} {reason}</title></head>\
+         <body style=\"margin:0;font:16px/1.5 system-ui,sans-serif;color:#1b1f24;background:#fff\"><main style=\"max-width:36rem;margin:15vh auto;padding:0 1.5rem\">\
+         <p style=\"font-size:13px;letter-spacing:.08em;text-transform:uppercase;color:#6b7280\">{code} · {reason}</p>\
+         <h1 style=\"font-size:1.75rem;margin:.25rem 0 .75rem\">{sentence_head}</h1><p style=\"color:#4b5563\">{sentence_rest}</p>\
+         <p style=\"margin-top:1.5rem;font-size:14px;color:#6b7280\">Reference <code style=\"font:14px ui-monospace,monospace\">{reference}</code></p>{detail_html}</main></body></html>",
+        sentence_head = escape_html(sentence.split(". ").next().unwrap_or(&sentence)),
+        sentence_rest = escape_html(sentence.split_once(". ").map(|(_, r)| r).unwrap_or("")),
+    );
+    let mut resp = Html(html).into_response();
+    *resp.status_mut() = StatusCode::from_u16(code).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+    resp
+}
+
+fn escape_html(s: &str) -> String {
+    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;")
+}
+
 /// Returns a rendered response (HTML or JSON with the error status code) if a
 /// matching pipeline is found and executes successfully, `None` otherwise.
 async fn dispatch_weberror(
@@ -22671,6 +23019,17 @@ async fn dispatch_weberror(
     }
     let (_, compiled) = best?;
 
+    // A designed error page is `web.response --template …`, and a template
+    // renders only once its markup is on the graph — the same step the
+    // webhook and manual-execute paths take. Without it the run failed with
+    // "--template set but markup not loaded", the error was swallowed, and
+    // the visitor got the JSON fallback instead of the page.
+    let mut graph = compiled.graph.clone();
+    if let Err(err) = hydrate_template_markup(state, owner, project, &mut graph) {
+        eprintln!("⚠ weberror page {owner}/{project} {error_code}: template not loaded: {}", err.message);
+        return None;
+    }
+
     let credentials = state.platform.credentials.clone();
     let engine = BasicPipelineEngine::new(
         Arc::new(state.platform.project_sandbox(owner, project)),
@@ -22685,34 +23044,60 @@ async fn dispatch_weberror(
     .with_state_bus(state.platform.state_bus.clone())
     .with_data_root(state.platform.config.data_root.clone());
 
+    // The page gets what `trigger.weberror` documents — `error_code`,
+    // `error_message`, `original_path`, `method`, `request_id` — on top of
+    // whatever the caller passed (`discoverability.md` §6a). Before this the
+    // documented names were promised and never set.
+    let mut input = error_payload;
+    if let Value::Object(ref mut map) = input {
+        map.entry("error_code".to_string()).or_insert(json!(error_code));
+        map.entry("error_message".to_string()).or_insert(json!(StatusCode::from_u16(error_code).ok().and_then(|s| s.canonical_reason()).unwrap_or("Error")));
+        if let Some(path) = map.get("path").cloned() {
+            map.entry("original_path".to_string()).or_insert(path);
+        }
+        map.entry("request_id".to_string()).or_insert(json!(format!("weberror-{error_code}")));
+    }
+    let request_id = input.get("request_id").and_then(Value::as_str).unwrap_or("").to_string();
     let ctx = PipelineContext {
         owner: owner.to_string(),
         project: project.to_string(),
         pipeline: compiled.graph.id.clone(),
-        request_id: format!("weberror-{error_code}"),
+        request_id,
         route: Default::default(),
-        input: error_payload,
+        input,
         trigger: None,
         placeholder: None,
     };
 
-    let output = engine.execute_async(&compiled.graph, &ctx).await.ok()?;
+    let output = match engine.execute_async(&graph, &ctx).await {
+        Ok(output) => output,
+        Err(err) => {
+            eprintln!("⚠ weberror page {owner}/{project} {error_code} failed, answering with the plain error: {}", err.message);
+            return None;
+        }
+    };
 
     let status = StatusCode::from_u16(error_code).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
 
+    // `web.response` wraps what it built under `__zf_response`, the way the
+    // webhook ingress reads it; a bare value is an older graph's shape.
+    let value = output
+        .value
+        .get("__zf_response")
+        .cloned()
+        .unwrap_or_else(|| output.value.clone());
+
     // Prefer rendered HTML output.
-    if let Some(html) = output.value.get("html").and_then(Value::as_str) {
+    if let Some(html) = value.get("html").and_then(Value::as_str) {
         let mut html = html.to_string();
-        if let Some(css) = output
-            .value
+        if let Some(css) = value
             .get("hydration_payload")
             .and_then(|hp| hp.get("css"))
             .and_then(Value::as_str)
         {
             html = crate::rwe::core::render::insert_engine_styles(&html, css);
         }
-        let scripts = output
-            .value
+        let scripts = value
             .get("compiled_scripts")
             .cloned()
             .and_then(|v| serde_json::from_value::<Vec<CompiledScript>>(v).ok())
@@ -22726,18 +23111,51 @@ async fn dispatch_weberror(
     }
 
     // JSON fallback.
-    Some((status, Json(output.value)).into_response())
+    Some((status, Json(value)).into_response())
 }
 
 // ────────────────────────────────────────────────────────────────────────────
 
+/// The run id of a webhook request (`kinds/invocation-record`, Request id):
+/// an inbound `X-Request-Id` in the canonical form is adopted so a proxy's
+/// log names the same run; anything else is minted — 16 random bytes as hex,
+/// never a timestamp.
+fn webhook_run_id(headers: &HeaderMap) -> String {
+    if let Some(inbound) = headers.get("x-request-id").and_then(|v| v.to_str().ok()) {
+        let t = inbound.trim();
+        if t.len() == 32 && t.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)) {
+            return t.to_string();
+        }
+    }
+    uuid::Uuid::new_v4().simple().to_string()
+}
+
+/// Every webhook response carries the run id as `X-Request-Id`, success or
+/// failure, so a caller can quote what a visitor sees on an error page.
 async fn public_webhook_ingress(
+    state: State<PlatformAppState>,
+    path: Path<(String, String, String)>,
+    method: Method,
+    uri: Uri,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    let request_id = webhook_run_id(&headers);
+    let mut response = public_webhook_ingress_run(state, path, method, uri, headers, body, request_id.clone()).await;
+    if let Ok(v) = HeaderValue::from_str(&request_id) {
+        response.headers_mut().insert("x-request-id", v);
+    }
+    response
+}
+
+async fn public_webhook_ingress_run(
     State(state): State<PlatformAppState>,
     Path((owner, project, tail)): Path<(String, String, String)>,
     method: Method,
     uri: Uri,
     headers: HeaderMap,
     body: Bytes,
+    request_id: String,
 ) -> Response {
     let owner = crate::platform::model::slug_segment(&owner);
     let project = crate::platform::model::slug_segment(&project);
@@ -22768,14 +23186,6 @@ async fn public_webhook_ingress(
         )
             .into_response();
     }
-    let request_id = format!(
-        "webhook-{}",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis()
-    );
-
     if let Ok(Some(placement)) = state.platform.cluster_placement.get(&owner, &project) {
         if placement.target == ProjectRuntimePlacementTarget::Worker {
             if let Some(worker_id) = placement.worker_id.as_deref() {
@@ -22801,6 +23211,7 @@ async fn public_webhook_ingress(
         auth_credential: String,
         auth_required_role: Vec<String>,
         auth_optional: bool,
+        errors: String,
     }
 
     let mut candidates = Vec::<Candidate>::new();
@@ -22821,6 +23232,7 @@ async fn public_webhook_ingress(
                 auth_credential: trigger.auth_credential.clone(),
                 auth_required_role: trigger.auth_required_role.clone(),
                 auth_optional: trigger.auth_optional,
+                errors: trigger.errors.clone(),
                 compiled: compiled.clone(),
                 path_params: path_match.params,
                 static_segments: path_match.static_segments,
@@ -22844,15 +23256,18 @@ async fn public_webhook_ingress(
             &owner,
             &project,
             404,
-            json!({"error": "not found", "path": path, "method": method_key}),
+            json!({"error": "not found", "path": path, "method": method_key, "request_id": request_id}),
         )
         .await
         {
             return err_resp;
         }
+        if !accepts_json_only(&headers) {
+            return neutral_error_page(404, &request_id, None);
+        }
         return (
             StatusCode::NOT_FOUND,
-            Json(json!({"ok": false, "error": "not found"})),
+            Json(json!({"ok": false, "error": {"code": "not_found", "request_id": request_id}})),
         )
             .into_response();
     };
@@ -23020,8 +23435,13 @@ async fn public_webhook_ingress(
     }
 
     // Build immutable trigger snapshot — available to every node via metadata.
+    // `body` and `files` ride along: the envelope is what an `input.*` node
+    // declared, and `$trigger.body.x` must still answer after a node has
+    // replaced the payload (`kinds/node-io`, "reachable forever via `$trigger`").
     let trigger = json!({
         "auth": input.get("auth").cloned().unwrap_or(Value::Null),
+        "body": input.get("body").cloned().unwrap_or(Value::Null),
+        "files": input.get("files").cloned().unwrap_or(json!({})),
         "params": input.get("params").cloned().unwrap_or(json!({})),
         "query": input.get("query").cloned().unwrap_or(json!({})),
         // Preserve the original query for SSR URL hooks; the legacy query map
@@ -23065,87 +23485,33 @@ async fn public_webhook_ingress(
     .with_data_root(state.platform.config.data_root.clone());
 
     // ── SSE streaming path (ExecutionBus) ──────────────────────────────────────
-    // When the caller explicitly sends `Accept: text/event-stream`, create an
-    // ExecutionBus, subscribe an SSE receiver, and forward Signal values as SSE
-    // `event: signal` messages.  The final result is `event: done` / `event: error`.
-    // Normal webhook behavior is completely unchanged — this branch returns early.
+    // When the caller explicitly sends `Accept: text/event-stream`, the run
+    // streams every `Signal` as `event: signal` — node-emitted ones and the
+    // engine's own lifecycle — and ends with `event: done` / `event: error`.
+    // Normal webhook behaviour is completely unchanged: this branch returns
+    // early. The plumbing is `pipeline_run_sse_response`, shared with the
+    // execute route.
     if wants_event_stream(&headers) {
-        let bus = std::sync::Arc::new(ExecutionBus::new(256));
-        let mut signal_rx = bus.subscribe();
-        let options = ExecuteOptions { bus: Some(bus) };
-
+        let platform_run = state.platform.clone();
+        let scope_run = (owner.clone(), project.clone(), request_id.clone());
+        let after_run = move || {
+            crate::pipeline::nodes::shared::file_ref::remove_run_temporary_files(
+                &platform_run, &scope_run.0, &scope_run.1, &scope_run.2,
+            );
+        };
         let platform_sse = state.platform.clone();
         let file_rel_path_sse = file_rel_path.clone();
         let request_id_sse = request_id.clone();
         let owner_sse = owner.clone();
         let project_sse = project.clone();
-
-        // One-shot channel for the final pipeline result.
-        let (result_tx, mut result_rx) = tokio::sync::oneshot::channel();
-
-        tokio::spawn(async move {
-            let result = engine
-                .execute_with_options_async(&graph_for_run, &ctx, &options)
-                .await;
-            let _ = result_tx.send(result);
-        });
-
-        let stream = async_stream::stream! {
-            // Drain signals until the bus closes or the result arrives.
-            loop {
-                tokio::select! {
-                    biased;
-                    sig = signal_rx.recv() => {
-                        match sig {
-                            Ok(signal) => {
-                                let payload = serde_json::to_string(&signal)
-                                    .unwrap_or_else(|_| "{}".to_string());
-                                yield Ok::<_, Infallible>(Event::default()
-                                    .event("signal")
-                                    .data(payload));
-                            }
-                            Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
-                            Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
-                        }
-                    }
-                    result = &mut result_rx => {
-                        match result {
-                            Ok(Ok(output)) => {
-                                let done = json!({ "ok": true, "value": output.value });
-                                yield Ok(Event::default().event("done").data(done.to_string()));
-                            }
-                            Ok(Err(err)) => {
-                                let error = json!({
-                                    "ok": false,
-                                    "error": { "code": err.code, "message": err.message }
-                                });
-                                yield Ok(Event::default().event("error").data(error.to_string()));
-                            }
-                            Err(_) => {}
-                        }
-                        return;
-                    }
-                }
-            }
-
-            // Bus closed — drain remaining signals.
-            loop {
-                match signal_rx.try_recv() {
-                    Ok(signal) => {
-                        let payload = serde_json::to_string(&signal)
-                            .unwrap_or_else(|_| "{}".to_string());
-                        yield Ok::<_, Infallible>(Event::default()
-                            .event("signal")
-                            .data(payload));
-                    }
-                    Err(_) => break,
-                }
-            }
-
-            // Collect the final pipeline result.
-            match result_rx.await {
-                Ok(Ok(output)) => {
-                    let elapsed_ms = exec_start.elapsed().as_millis() as u64;
+        let finish = move |result: Result<PipelineOutput, PipelineError>| {
+            let elapsed_ms = exec_start.elapsed().as_millis() as u64;
+            let at = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs() as i64;
+            match result {
+                Ok(output) => {
                     platform_sse.pipeline_hits.record_success(
                         &owner_sse, &project_sse, &file_rel_path_sse,
                     );
@@ -23153,9 +23519,7 @@ async fn public_webhook_ingress(
                         &owner_sse, &project_sse, &file_rel_path_sse,
                         &PipelineInvocationEntry {
                             run_id: request_id_sse.clone(),
-                            at: std::time::SystemTime::now()
-                                .duration_since(std::time::UNIX_EPOCH)
-                                .unwrap_or_default().as_secs() as i64,
+                            at,
                             duration_ms: elapsed_ms,
                             status: "ok".to_string(),
                             trigger: "webhook".to_string(),
@@ -23165,11 +23529,9 @@ async fn public_webhook_ingress(
                         retention.max_invocations,
                         retention.max_age_secs,
                     );
-                    let done = json!({ "ok": true, "value": output.value });
-                    yield Ok(Event::default().event("done").data(done.to_string()));
+                    ("done", json!({ "ok": true, "value": output.value }))
                 }
-                Ok(Err(err)) => {
-                    let elapsed_ms = exec_start.elapsed().as_millis() as u64;
+                Err(err) => {
                     platform_sse.pipeline_hits.record_failure(
                         &owner_sse, &project_sse, &file_rel_path_sse,
                         "webhook.ingress", err.code, &err.message,
@@ -23178,9 +23540,7 @@ async fn public_webhook_ingress(
                         &owner_sse, &project_sse, &file_rel_path_sse,
                         &PipelineInvocationEntry {
                             run_id: request_id_sse.clone(),
-                            at: std::time::SystemTime::now()
-                                .duration_since(std::time::UNIX_EPOCH)
-                                .unwrap_or_default().as_secs() as i64,
+                            at,
                             duration_ms: elapsed_ms,
                             status: "error".to_string(),
                             trigger: "webhook".to_string(),
@@ -23190,22 +23550,26 @@ async fn public_webhook_ingress(
                         retention.max_invocations,
                         retention.max_age_secs,
                     );
-                    let error = json!({
-                        "ok": false,
-                        "error": { "code": err.code, "message": err.message }
-                    });
-                    yield Ok(Event::default().event("error").data(error.to_string()));
+                    (
+                        "error",
+                        json!({
+                            "ok": false,
+                            "error": { "code": err.code, "message": err.message }
+                        }),
+                    )
                 }
-                Err(_) => {}
             }
         };
-
-        return Sse::new(stream)
-            .keep_alive(KeepAlive::default())
-            .into_response();
+        return pipeline_run_sse_response(engine, graph_for_run, ctx, after_run, finish);
     }
 
-    let output = match engine.execute_async(&graph_for_run, &ctx).await {
+    let run = engine.execute_async(&graph_for_run, &ctx).await;
+    // `lifecycle: temporary` — the upload lived for the run. What `fs.save`
+    // made durable is elsewhere by now; what nothing kept is gone.
+    crate::pipeline::nodes::shared::file_ref::remove_run_temporary_files(
+        &state.platform, &owner, &project, &request_id,
+    );
+    let output = match run {
         Ok(output) => output,
         Err(err) => {
             state.platform.pipeline_hits.record_failure(
@@ -23235,22 +23599,67 @@ async fn public_webhook_ingress(
                 retention.max_invocations,
                 retention.max_age_secs,
             );
-            if let Some(err_resp) = dispatch_weberror(
-                &state,
+            // The same failure, counted: one group per distinct error, this run
+            // in its occurrence ring (`kinds/invocation-record`, Error group).
+            if let Err(e) = state.platform.data.record_pipeline_error(
                 &owner,
                 &project,
-                500,
-                json!({"error": err.message, "code": err.code}),
-            )
-            .await
-            {
-                return err_resp;
+                &file_rel_path,
+                &PipelineInvocationEntry {
+                    run_id: request_id.clone(),
+                    at: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs() as i64,
+                    duration_ms: exec_start.elapsed().as_millis() as u64,
+                    status: "error".to_string(),
+                    trigger: "webhook".to_string(),
+                    error: Some(err.message.clone()),
+                    trace: err.node_trace.clone(),
+                },
+                project_cfg.configs.pipelines.logging.error_group_bounds(),
+            ) {
+                eprintln!("warning: error group not recorded for {owner}/{project}: {}", e.message);
             }
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"ok": false, "error": {"code": err.code, "message": err.message}})),
-            )
-                .into_response();
+            // What the caller learns about an uncaught failure is a switch,
+            // never the host: the route's `--errors`, else the project's
+            // `errors` (`addressing.md` §2a). The status is 500 either way,
+            // and the full failure is in the invocation log whatever is shown.
+            let shown = match selected.errors.as_str() {
+                "show" => true,
+                "hide" => false,
+                _ => state
+                    .platform
+                    .addressing
+                    .read(&owner, &project)
+                    .map(|a| a.errors == crate::platform::services::addressing::ErrorDetail::Shown)
+                    .unwrap_or(false),
+            };
+            let node_id = crate::platform::model::failing_trace_entry(&err.node_trace).map(|t| t.node_id.clone());
+            // The registry opens a pipeline by its folder and file; the run is
+            // in its Runs panel, found by the id. There is no /editor route.
+            let folder = format!("/{}", file_rel_path.rsplit_once('/').map(|(d, _)| d).unwrap_or(""));
+            // Plain slashes: a file path is a slug path, and the link should read as one.
+            let run_url = format!(
+                "/projects/{owner}/{project}/pipelines/registry?type=pipeline&path={folder}&file={file_rel_path}&run={request_id}"
+            );
+            let detail = json!({ "code": err.code, "message": err.message, "node_id": node_id, "run_url": run_url });
+            let mut error_input = json!({ "request_id": request_id, "path": path, "method": method_key });
+            if shown {
+                error_input["detail"] = detail.clone();
+                // The older keys the page archetypes read before `detail` existed.
+                error_input["error"] = json!(err.message);
+                error_input["code"] = json!(err.code);
+            }
+            if !accepts_json_only(&headers) {
+                if let Some(err_resp) = dispatch_weberror(&state, &owner, &project, 500, error_input).await {
+                    return err_resp;
+                }
+                return neutral_error_page(500, &request_id, if shown { Some(&detail) } else { None });
+            }
+            let body = if shown {
+                json!({ "ok": false, "error": { "code": err.code, "message": err.message, "node_id": node_id, "request_id": request_id, "run_url": run_url } })
+            } else {
+                json!({ "ok": false, "error": { "code": "internal", "request_id": request_id } })
+            };
+            return (StatusCode::INTERNAL_SERVER_ERROR, Json(body)).into_response();
         }
     };
     state
@@ -23338,6 +23747,16 @@ async fn public_webhook_ingress(
             if let Ok(v) = HeaderValue::from_str(loc) {
                 resp.headers_mut().insert(LOCATION, v);
             }
+            apply_zf_extras(&mut resp, &zf_cookie, &zf_headers);
+            return resp;
+        }
+
+        // Bytes (`web.response --file` on an image, font, pdf): base64 in the
+        // envelope because it travels as JSON; the declared header sets the type.
+        if let Some(b64) = resp_cfg.get("body_base64").and_then(Value::as_str) {
+            use base64::Engine as _;
+            let bytes = base64::engine::general_purpose::STANDARD.decode(b64).unwrap_or_default();
+            let mut resp = (status, bytes).into_response();
             apply_zf_extras(&mut resp, &zf_cookie, &zf_headers);
             return resp;
         }
@@ -24586,7 +25005,7 @@ fn list_mapserver_source_files(
                 "name": name,
                 "path": rel,
                 "size": meta.as_ref().map(|m| m.len()).unwrap_or(0),
-                "url": format!("/fs/{owner}/{project}/{rel}")
+                "url": studio_file_object_url(owner, project, &rel)
             }));
         }
     }
@@ -24836,47 +25255,12 @@ async fn build_webhook_ingress_input(
     }
 
     // Multipart → text fields under .body, files at root .files.
-    // Repeated names and common frontend array names (`field[]`, `field[0]`)
-    // become JSON arrays so dot paths like `files.photos.0` are stable.
     if content_type_lc.contains("multipart/form-data") {
-        if let Ok(boundary) = multer::parse_boundary(&content_type) {
-            let body_clone = body.clone();
-            let stream = futures::stream::once(async move { Ok::<_, std::io::Error>(body_clone) });
-            let mut mp = multer::Multipart::new(stream, boundary);
-            let mut text_fields = serde_json::Map::new();
-            let mut files = serde_json::Map::new();
-            while let Ok(Some(mut field)) = mp.next_field().await {
-                let name = field.name().unwrap_or("").to_string();
-                let filename = field.file_name().map(|s| s.to_string());
-                let field_ct = field.content_type().map(|ct| ct.to_string());
-                let mut data: Vec<u8> = Vec::new();
-                while let Ok(Some(chunk)) = field.chunk().await {
-                    data.extend_from_slice(&chunk);
-                }
-                if let Some(filename) = filename {
-                    let mime = field_ct
-                        .as_deref()
-                        .filter(|value| !value.trim().is_empty())
-                        .unwrap_or("application/octet-stream");
-                    let file_ref = crate::pipeline::nodes::basic::file_ref::write_tmp_file_ref(
-                        platform,
-                        crate::pipeline::nodes::basic::file_ref::FileRefInput {
-                            owner,
-                            project,
-                            request_id,
-                            bytes: &data,
-                            filename: Some(&filename),
-                            mime: Some(mime),
-                            origin: "webhook",
-                            trust: "untrusted",
-                        },
-                    )?;
-                    insert_multipart_value(&mut files, &name, file_ref);
-                } else {
-                    let text = String::from_utf8_lossy(&data).to_string();
-                    insert_multipart_value(&mut text_fields, &name, Value::String(text));
-                }
-            }
+        if let Some((text_fields, files)) = parse_multipart_envelope(
+            platform, owner, project, request_id, &content_type, body, "webhook", "untrusted",
+        )
+        .await?
+        {
             let files_val = if files.is_empty() {
                 None
             } else {
@@ -24903,6 +25287,69 @@ async fn build_webhook_ingress_input(
         method_str,
         None,
     ))
+}
+
+/// One multipart body, read once for every trigger that takes one.
+///
+/// Text parts become `body` fields; file parts become **temporary** FileRefs
+/// written under `tmp/runs/{request_id}/files/` with the given `origin` and
+/// `trust` — `webhook` / `untrusted` for a request from outside, `manual` /
+/// `user` for a signed-in operator's Run. Repeated names and common frontend
+/// array names (`field[]`, `field[0]`) become JSON arrays so dot paths like
+/// `files.photos.0` are stable. `Ok(None)` when the content type carries no
+/// boundary, so a caller can fall back to reading the body as text.
+async fn parse_multipart_envelope(
+    platform: &Arc<PlatformService>,
+    owner: &str,
+    project: &str,
+    request_id: &str,
+    content_type: &str,
+    body: &Bytes,
+    origin: &'static str,
+    trust: &'static str,
+) -> Result<Option<(serde_json::Map<String, Value>, serde_json::Map<String, Value>)>, crate::pipeline::PipelineError>
+{
+    let Ok(boundary) = multer::parse_boundary(content_type) else {
+        return Ok(None);
+    };
+    let body_clone = body.clone();
+    let stream = futures::stream::once(async move { Ok::<_, std::io::Error>(body_clone) });
+    let mut mp = multer::Multipart::new(stream, boundary);
+    let mut text_fields = serde_json::Map::new();
+    let mut files = serde_json::Map::new();
+    while let Ok(Some(mut field)) = mp.next_field().await {
+        let name = field.name().unwrap_or("").to_string();
+        let filename = field.file_name().map(|s| s.to_string());
+        let field_ct = field.content_type().map(|ct| ct.to_string());
+        let mut data: Vec<u8> = Vec::new();
+        while let Ok(Some(chunk)) = field.chunk().await {
+            data.extend_from_slice(&chunk);
+        }
+        if let Some(filename) = filename {
+            let mime = field_ct
+                .as_deref()
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or("application/octet-stream");
+            let file_ref = crate::pipeline::nodes::shared::file_ref::write_tmp_file_ref(
+                platform,
+                crate::pipeline::nodes::shared::file_ref::FileRefInput {
+                    owner,
+                    project,
+                    request_id,
+                    bytes: &data,
+                    filename: Some(&filename),
+                    mime: Some(mime),
+                    origin,
+                    trust,
+                },
+            )?;
+            insert_multipart_value(&mut files, &name, file_ref);
+        } else {
+            let text = String::from_utf8_lossy(&data).to_string();
+            insert_multipart_value(&mut text_fields, &name, Value::String(text));
+        }
+    }
+    Ok(Some((text_fields, files)))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -25040,6 +25487,11 @@ mod webhook_ingress_tests {
     }
 }
 
+/// The query string as the pipeline's `query` object: keys and values
+/// percent-decoded, `+` read as a space, the last value winning when a key
+/// repeats — the same reading `serde_urlencoded` gives a form body, so
+/// `?email=a%40x.io` and a posted `email=a%40x.io` arrive as the same string.
+/// A pair the decoder rejects (a lone `%`) is kept raw rather than dropped.
 fn parse_query_to_json(raw_query: Option<&str>) -> Value {
     let mut map = serde_json::Map::new();
     let Some(raw_query) = raw_query else {
@@ -25049,15 +25501,49 @@ fn parse_query_to_json(raw_query: Option<&str>) -> Value {
         if pair.is_empty() {
             continue;
         }
-        let mut split = pair.splitn(2, '=');
-        let key = split.next().unwrap_or_default().trim();
+        let (key, value) = match serde_urlencoded::from_str::<Vec<(String, String)>>(pair) {
+            Ok(mut decoded) if !decoded.is_empty() => decoded.swap_remove(0),
+            _ => {
+                let mut split = pair.splitn(2, '=');
+                let key = split.next().unwrap_or_default().to_string();
+                (key, split.next().unwrap_or_default().to_string())
+            }
+        };
+        let key = key.trim();
         if key.is_empty() {
             continue;
         }
-        let value = split.next().unwrap_or_default().trim();
-        map.insert(key.to_string(), Value::String(value.to_string()));
+        map.insert(key.to_string(), Value::String(value));
     }
     Value::Object(map)
+}
+
+#[cfg(test)]
+mod query_string_tests {
+    use super::parse_query_to_json;
+
+    #[test]
+    fn query_values_are_percent_decoded_like_a_form_body() {
+        let q = parse_query_to_json(Some("email=member%40research.test&q=solar%20energy%2Bwind&next="));
+        assert_eq!(q["email"], "member@research.test");
+        assert_eq!(q["q"], "solar energy+wind");
+        assert_eq!(q["next"], "");
+    }
+
+    #[test]
+    fn plus_is_a_space_and_the_last_repeat_wins() {
+        let q = parse_query_to_json(Some("q=a+b&page=1&page=2&&=ignored"));
+        assert_eq!(q["q"], "a b");
+        assert_eq!(q["page"], "2");
+        assert!(q.get("").is_none());
+    }
+
+    #[test]
+    fn a_pair_the_decoder_rejects_is_kept_raw() {
+        let q = parse_query_to_json(Some("bad=100%&ok=1"));
+        assert_eq!(q["bad"], "100%");
+        assert_eq!(q["ok"], "1");
+    }
 }
 
 fn quote_sql_identifier_path(raw: &str, dialect: SqlDialect) -> String {
@@ -25257,12 +25743,6 @@ fn pipeline_source_is_locked(source: &str) -> bool {
         .unwrap_or(false)
 }
 
-#[derive(Debug, Clone, Copy)]
-struct EffectivePipelineInvocationRetention {
-    max_invocations: usize,
-    max_age_secs: Option<i64>,
-}
-
 /// Both registry/editor entry routes expose the same resolved logging defaults.
 /// These are display hints; execution resolves overrides from its own snapshot.
 fn pipeline_logging_defaults(config: &crate::platform::model::ZebflowJson) -> Value {
@@ -25271,31 +25751,6 @@ fn pipeline_logging_defaults(config: &crate::platform::model::ZebflowJson) -> Va
         "max_invocations": logging.effective_max_invocations(),
         "trace_capture": logging.trace_capture.as_ref().cloned().unwrap_or_default().resolve(None),
     })
-}
-
-fn resolve_invocation_retention(
-    project_cfg: &crate::platform::model::ZebflowJson,
-    graph: Option<&crate::pipeline::PipelineGraph>,
-) -> EffectivePipelineInvocationRetention {
-    let project_max_invocations = project_cfg
-        .configs
-        .pipelines
-        .logging
-        .effective_max_invocations();
-    let pipeline_retention = graph
-        .and_then(|graph| graph.metadata.as_ref())
-        .and_then(|metadata| metadata.settings.invocation_retention.as_ref());
-    let max_invocations = pipeline_retention
-        .and_then(|retention| retention.max_invocations)
-        .map(|value| value.max(1) as usize)
-        .unwrap_or(project_max_invocations);
-    let max_age_secs = pipeline_retention
-        .and_then(|retention| retention.max_age_secs)
-        .map(|value| value.max(1) as i64);
-    EffectivePipelineInvocationRetention {
-        max_invocations,
-        max_age_secs,
-    }
 }
 
 fn resolve_pipeline_registry_scope(
@@ -25867,14 +26322,64 @@ fn canonical_pipeline_node_kind(kind: &str) -> &str {
     kind
 }
 
+/// The trigger a run is validated against once `trigger` is resolved: an
+/// explicit value as given; absent, `manual` — unless the graph's first
+/// trigger is a webhook, whose own path and method then stand in for the
+/// `webhook_path` / `webhook_method` the caller did not send.
+struct ResolvedExecuteTrigger {
+    trigger: PipelineExecuteTrigger,
+    webhook_path: Option<String>,
+    webhook_method: Option<String>,
+}
+
+fn resolve_execute_trigger(
+    graph: &PipelineGraph,
+    req: &ExecutePipelineRequest,
+) -> ResolvedExecuteTrigger {
+    if let Some(trigger) = req.trigger {
+        return ResolvedExecuteTrigger {
+            trigger,
+            webhook_path: req.webhook_path.clone(),
+            webhook_method: req.webhook_method.clone(),
+        };
+    }
+    // "First" by connectivity, the way the engine picks its roots — never by
+    // source order.
+    let first_trigger = graph
+        .entry_node_ids()
+        .into_iter()
+        .filter_map(|id| graph.nodes.iter().find(|node| node.id == id))
+        .find(|node| canonical_pipeline_node_kind(&node.kind).starts_with("n.trigger."));
+    let webhook = first_trigger
+        .filter(|node| canonical_pipeline_node_kind(&node.kind) == "n.trigger.webhook")
+        .and_then(|node| {
+            crate::platform::services::project::webhook_triggers_from_graph(graph)
+                .into_iter()
+                .find(|trigger| trigger.node_id == node.id)
+        });
+    match webhook {
+        Some(route) => ResolvedExecuteTrigger {
+            trigger: PipelineExecuteTrigger::Webhook,
+            webhook_path: Some(req.webhook_path.clone().unwrap_or(route.path)),
+            webhook_method: Some(req.webhook_method.clone().unwrap_or(route.method)),
+        },
+        None => ResolvedExecuteTrigger {
+            trigger: PipelineExecuteTrigger::Manual,
+            webhook_path: None,
+            webhook_method: None,
+        },
+    }
+}
+
 fn validate_execute_trigger(
     graph: &PipelineGraph,
     req: &ExecutePipelineRequest,
 ) -> Result<(), String> {
-    match req.trigger {
+    let resolved = resolve_execute_trigger(graph, req);
+    match resolved.trigger {
         PipelineExecuteTrigger::Webhook => {
-            let wanted_path = req.webhook_path.as_deref().unwrap_or("/").trim();
-            let wanted_method = req
+            let wanted_path = resolved.webhook_path.as_deref().unwrap_or("/").trim();
+            let wanted_method = resolved
                 .webhook_method
                 .as_deref()
                 .unwrap_or("POST")
@@ -27384,7 +27889,7 @@ struct AssetQuery {
     subfolder: Option<String>,
 }
 
-/// `GET /api/projects/{owner}/{project}/assets` — list files in `repo/pipelines/assets/`.
+/// `GET /api/projects/{owner}/{project}/assets` — list files in the layout's static dir (`repo/static/` by default).
 async fn api_list_assets(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
@@ -28225,7 +28730,9 @@ mod webhook_sse_tests {
     use axum::http::{HeaderMap, HeaderValue, StatusCode};
 
     use super::{
-        optional_bounded_settings_u64, reject_unknown_settings_fields, wants_event_stream,
+        ExecutePipelineRequest, ExecutionBus, PipelineExecuteTrigger, PipelineGraph,
+        optional_bounded_settings_u64, pipeline_run_events, reject_unknown_settings_fields,
+        resolve_execute_trigger, validate_execute_trigger, wants_event_stream,
     };
 
     #[test]
@@ -28358,72 +28865,48 @@ mod webhook_sse_tests {
 
     // ── SSE stream integration (channel-level, no HTTP server) ────────────────
 
-    #[tokio::test]
-    async fn signals_forwarded_then_done() {
-        use crate::pipeline::model::{ExecutionBus, Signal};
-        use futures::StreamExt;
-
-        let bus = std::sync::Arc::new(ExecutionBus::new(64));
-        let mut signal_rx = bus.subscribe();
-        let (result_tx, mut result_rx) =
-            tokio::sync::oneshot::channel::<Result<serde_json::Value, String>>();
-
-        // Simulate: 2 signals, then result.
-        bus.emit(Signal {
-            kind: "query".to_string(),
-            message: "running SQL".to_string(),
-            node_id: "n0".to_string(),
+    fn test_signal(kind: &str, node_id: &str) -> crate::pipeline::model::Signal {
+        crate::pipeline::model::Signal {
+            kind: kind.to_string(),
+            message: format!("{node_id} {kind}"),
+            node_id: node_id.to_string(),
             node_kind: "n.db.query".to_string(),
             data: None,
-            at: "00:00:01".to_string(),
-        });
-        bus.emit(Signal {
-            kind: "render".to_string(),
-            message: "rendering template".to_string(),
-            node_id: "n1".to_string(),
-            node_kind: "n.web.response".to_string(),
-            data: None,
-            at: "00:00:02".to_string(),
-        });
+            at: "1ms".to_string(),
+        }
+    }
+
+    async fn collect(
+        stream: impl futures::Stream<Item = (&'static str, String)>,
+    ) -> Vec<(&'static str, serde_json::Value)> {
+        use futures::StreamExt;
+        tokio::pin!(stream);
+        let mut collected = Vec::new();
+        while let Some((event, data)) = stream.next().await {
+            collected.push((event, serde_json::from_str(&data).unwrap()));
+        }
+        collected
+    }
+
+    /// The production stream: signals in order, then the closing event
+    /// `finish` names, built from the result.
+    #[tokio::test]
+    async fn signals_forwarded_then_done() {
+        let bus = std::sync::Arc::new(ExecutionBus::new(64));
+        let signal_rx = bus.subscribe();
+        let (result_tx, result_rx) =
+            tokio::sync::oneshot::channel::<Result<serde_json::Value, String>>();
+
+        bus.emit(test_signal("query", "n0"));
+        bus.emit(test_signal("render", "n1"));
         drop(bus); // no more senders
         let _ = result_tx.send(Ok(serde_json::json!({"html": "<h1>hi</h1>"})));
 
-        // Build the stream exactly as the production SSE code does.
-        let stream = async_stream::stream! {
-            loop {
-                tokio::select! {
-                    biased;
-                    sig = signal_rx.recv() => {
-                        match sig {
-                            Ok(s) => {
-                                yield ("signal", serde_json::to_value(&s).unwrap());
-                            }
-                            Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
-                            Err(_) => break,
-                        }
-                    }
-                    result = &mut result_rx => {
-                        match result {
-                            Ok(Ok(val)) => yield ("done", serde_json::json!({"ok": true, "value": val})),
-                            Ok(Err(msg)) => yield ("error", serde_json::json!({"ok": false, "error": msg})),
-                            Err(_) => {}
-                        }
-                        return;
-                    }
-                }
-            }
-            match result_rx.await {
-                Ok(Ok(val)) => yield ("done", serde_json::json!({"ok": true, "value": val})),
-                Ok(Err(msg)) => yield ("error", serde_json::json!({"ok": false, "error": msg})),
-                Err(_) => {}
-            }
-        };
-
-        tokio::pin!(stream);
-        let mut collected = Vec::new();
-        while let Some(item) = stream.next().await {
-            collected.push(item);
-        }
+        let collected = collect(pipeline_run_events(signal_rx, result_rx, |result| match result {
+            Ok(value) => ("done", serde_json::json!({"ok": true, "value": value})),
+            Err(message) => ("error", serde_json::json!({"ok": false, "error": message})),
+        }))
+        .await;
 
         assert_eq!(collected.len(), 3);
         assert_eq!(collected[0].0, "signal");
@@ -28437,62 +28920,136 @@ mod webhook_sse_tests {
 
     #[tokio::test]
     async fn error_result_emits_error_event() {
-        use crate::pipeline::model::ExecutionBus;
-        use futures::StreamExt;
-
         let bus = std::sync::Arc::new(ExecutionBus::new(64));
-        let mut signal_rx = bus.subscribe();
-        let (result_tx, mut result_rx) =
+        let signal_rx = bus.subscribe();
+        let (result_tx, result_rx) =
             tokio::sync::oneshot::channel::<Result<serde_json::Value, String>>();
 
         drop(bus);
         let _ = result_tx.send(Err("connection refused".to_string()));
 
-        let stream = async_stream::stream! {
-            loop {
-                tokio::select! {
-                    biased;
-                    sig = signal_rx.recv() => {
-                        match sig {
-                            Ok(s) => {
-                                yield ("signal", serde_json::to_value(&s).unwrap());
-                            }
-                            Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
-                            Err(_) => break,
-                        }
-                    }
-                    result = &mut result_rx => {
-                        match result {
-                            Ok(Ok(val)) => yield ("done", serde_json::json!({"ok": true, "value": val})),
-                            Ok(Err(msg)) => yield ("error", serde_json::json!({"ok": false, "error": msg})),
-                            Err(_) => {}
-                        }
-                        return;
-                    }
-                }
-            }
-            match result_rx.await {
-                Ok(Ok(val)) => yield ("done", serde_json::json!({"ok": true, "value": val})),
-                Ok(Err(msg)) => yield ("error", serde_json::json!({"ok": false, "error": msg})),
-                Err(_) => {}
-            }
-        };
-
-        tokio::pin!(stream);
-        let mut collected = Vec::new();
-        while let Some(item) = stream.next().await {
-            collected.push(item);
-        }
+        let collected = collect(pipeline_run_events(signal_rx, result_rx, |result| match result {
+            Ok(value) => ("done", serde_json::json!({"ok": true, "value": value})),
+            Err(message) => ("error", serde_json::json!({"ok": false, "error": message})),
+        }))
+        .await;
 
         assert_eq!(collected.len(), 1);
         assert_eq!(collected[0].0, "error");
         assert_eq!(collected[0].1["ok"], false);
-        assert!(
-            collected[0].1["error"]
-                .as_str()
-                .unwrap()
-                .contains("connection refused")
+        assert!(collected[0].1["error"].as_str().unwrap().contains("connection refused"));
+    }
+
+    /// The result landing while the bus is still open — the engine has
+    /// answered but not yet dropped its sender — still ends the stream with
+    /// the closing event, after the signals already queued. `finish` is
+    /// where the record is written, so this is the record not being skipped.
+    #[tokio::test]
+    async fn result_before_the_bus_closes_still_finishes_after_queued_signals() {
+        let bus = std::sync::Arc::new(ExecutionBus::new(64));
+        let signal_rx = bus.subscribe();
+        let (result_tx, result_rx) = tokio::sync::oneshot::channel::<Result<u32, String>>();
+
+        bus.emit(test_signal("node_ok", "n0"));
+        bus.emit(test_signal("run_done", ""));
+        let _ = result_tx.send(Ok(7));
+        // `bus` is deliberately alive for the whole read.
+        let finished = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counter = finished.clone();
+        let collected = collect(pipeline_run_events(signal_rx, result_rx, move |result| {
+            counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            ("result", serde_json::json!({"ok": result.is_ok(), "value": result.ok()}))
+        }))
+        .await;
+        drop(bus);
+
+        assert_eq!(finished.load(std::sync::atomic::Ordering::SeqCst), 1);
+        let events: Vec<&str> = collected.iter().map(|(event, _)| *event).collect();
+        assert_eq!(events, ["signal", "signal", "result"]);
+        assert_eq!(collected[1].1["kind"], "run_done");
+        assert_eq!(collected[2].1["value"], 7);
+    }
+
+    // ── execute: the trigger a run is validated against ────────────────────
+
+    fn execute_graph(first_kind: &str, config: serde_json::Value) -> PipelineGraph {
+        serde_json::from_value(serde_json::json!({
+            "id": "t",
+            "nodes": [
+                { "id": "n0", "kind": first_kind, "config": config },
+                { "id": "n1", "kind": "n.script", "config": { "source": "return input" } }
+            ],
+            "edges": [ { "from_node": "n0", "from_pin": "out", "to_node": "n1", "to_pin": "in" } ]
+        }))
+        .expect("graph")
+    }
+
+    fn execute_request(trigger: Option<PipelineExecuteTrigger>) -> ExecutePipelineRequest {
+        ExecutePipelineRequest {
+            file_rel_path: "pipelines/t.zf.json".to_string(),
+            trigger,
+            webhook_path: None,
+            webhook_method: None,
+            schedule_cron: None,
+            input: serde_json::json!({}),
+        }
+    }
+
+    #[test]
+    fn a_missing_trigger_is_manual_unless_the_first_trigger_is_a_webhook() {
+        let manual = execute_graph("n.trigger.manual", serde_json::json!({}));
+        let resolved = resolve_execute_trigger(&manual, &execute_request(None));
+        assert_eq!(resolved.trigger, PipelineExecuteTrigger::Manual);
+        assert!(validate_execute_trigger(&manual, &execute_request(None)).is_ok());
+
+        let webhook = execute_graph(
+            "n.trigger.webhook",
+            serde_json::json!({ "path": "/hook", "method": "post" }),
         );
+        let resolved = resolve_execute_trigger(&webhook, &execute_request(None));
+        assert_eq!(resolved.trigger, PipelineExecuteTrigger::Webhook);
+        assert_eq!(resolved.webhook_path.as_deref(), Some("/hook"));
+        assert_eq!(resolved.webhook_method.as_deref(), Some("POST"));
+        assert!(validate_execute_trigger(&webhook, &execute_request(None)).is_ok());
+
+        // A schedule first: nothing to infer a webhook from, so manual — and
+        // the graph has no manual trigger, which is the refusal it always was.
+        let schedule = execute_graph("n.trigger.schedule", serde_json::json!({ "cron": "0 * * * *" }));
+        let resolved = resolve_execute_trigger(&schedule, &execute_request(None));
+        assert_eq!(resolved.trigger, PipelineExecuteTrigger::Manual);
+        assert_eq!(
+            validate_execute_trigger(&schedule, &execute_request(None)).unwrap_err(),
+            "pipeline has no manual trigger"
+        );
+    }
+
+    #[test]
+    fn an_explicit_trigger_and_route_still_win() {
+        let webhook = execute_graph(
+            "n.trigger.webhook",
+            serde_json::json!({ "path": "/hook", "method": "POST" }),
+        );
+        // Explicit manual on a webhook graph is validated as manual, as today.
+        let explicit = execute_request(Some(PipelineExecuteTrigger::Manual));
+        assert_eq!(resolve_execute_trigger(&webhook, &explicit).trigger, PipelineExecuteTrigger::Manual);
+        assert_eq!(
+            validate_execute_trigger(&webhook, &explicit).unwrap_err(),
+            "pipeline has no manual trigger"
+        );
+        // A route given without a trigger word is matched, not replaced.
+        let mut routed = execute_request(None);
+        routed.webhook_path = Some("/other".to_string());
+        let resolved = resolve_execute_trigger(&webhook, &routed);
+        assert_eq!(resolved.trigger, PipelineExecuteTrigger::Webhook);
+        assert_eq!(resolved.webhook_path.as_deref(), Some("/other"));
+        assert!(validate_execute_trigger(&webhook, &routed)
+            .unwrap_err()
+            .contains("no webhook trigger matched path='/other'"));
+        // The JSON body may leave `trigger` out altogether.
+        let parsed: ExecutePipelineRequest =
+            serde_json::from_value(serde_json::json!({ "file_rel_path": "pipelines/t.zf.json" }))
+                .expect("trigger is optional");
+        assert_eq!(parsed.trigger, None);
     }
 }
 

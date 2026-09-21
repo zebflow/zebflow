@@ -62,6 +62,23 @@ pub fn definition() -> NodeDefinition {
     }
 }
 
+/// The `$trigger` snapshot of a manual run.
+///
+/// `kinds/node-io`: the trigger's context is the initial payload and "the
+/// originals are reachable forever via `$trigger`". A manual run has no
+/// route, so `params`, `query` and `auth` are empty — but its envelope,
+/// `body` and `files`, is what an `input.*` node declared and what a script
+/// reads back after a node has replaced the payload.
+pub fn trigger_snapshot(input: &serde_json::Value) -> serde_json::Value {
+    serde_json::json!({
+        "body": input.get("body").cloned().unwrap_or(serde_json::Value::Null),
+        "files": input.get("files").cloned().unwrap_or_else(|| serde_json::json!({})),
+        "params": {},
+        "query": {},
+        "auth": serde_json::Value::Null,
+    })
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Config {}
 

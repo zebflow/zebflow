@@ -11,7 +11,7 @@
  *  - Opens GitCommitDialog after save
  *  - Exposes addNode, save, activate, deactivate
  */
-import { useState, useEffect, useRef, useCallback, useRouter, cx } from "zeb/react";
+import { useState, useEffect, useRef, useCallback, useMemo, useRouter, cx } from "zeb/react";
 import { notifyStudioRepoChanged } from "@/pages/project-studio/components/studio-chrome-bridge";
 import Button from "@/components/ui/button";
 import Badge from "@/components/ui/badge";
@@ -41,6 +41,27 @@ import NodeDialog from "@/pages/project-studio/pipelines/registry/components/pip
 import WebRenderDialog from "@/pages/project-studio/pipelines/registry/components/pipeline-editor/dialogs/web-render-dialog";
 import PipelineSettingsDialog from "@/pages/project-studio/pipelines/registry/components/pipeline-editor/dialogs/pipeline-settings-dialog";
 import GitCommitDialog from "@/pages/project-studio/pipelines/registry/components/pipeline-editor/dialogs/git-commit-dialog";
+import PreviewDialog from "@/pages/project-studio/pipelines/registry/components/pipeline-editor/dialogs/preview-dialog";
+import RunDialog from "@/pages/project-studio/pipelines/registry/components/pipeline-editor/dialogs/run-dialog";
+import { useNodePreviews, effectiveCaptureLevel } from "@/pages/project-studio/pipelines/registry/components/pipeline-editor/preview-data";
+import { applyPreviewSize } from "@/pages/project-studio/pipelines/registry/components/pipeline-editor/preview-size";
+import {
+  collectInputNodes,
+  missingRequiredInputs,
+  buildRunRequest,
+  webhookRouteOf,
+  useInputWidgets,
+  applyWidgetSize,
+} from "@/pages/project-studio/pipelines/registry/components/pipeline-editor/run-form";
+import CanvasStatusLine from "@/pages/project-studio/pipelines/registry/components/pipeline-editor/canvas-status-line";
+import {
+  useRunStatus,
+  pendingFor,
+  applySignal,
+  settleAfterResult,
+  statusLineForSignal,
+  streamExecute,
+} from "@/pages/project-studio/pipelines/registry/components/pipeline-editor/run-status";
 import { LockIcon, LockOpenIcon } from "@/pages/project-studio/components/icons";
 import { pePipelineDocument, pePipelineGraph } from "@/pages/project-studio/pipelines/registry/components/registry-helpers";
 import { devOrigin } from "@/components/lib/addressing";
@@ -101,6 +122,21 @@ const CAT_ICONS: Record<string, any> = {
     <svg viewBox="0 0 24 24" fill="none" className="w-4 h-4">
       <path d="M12 2L3 7v10l9 5 9-5V7l-9-5z" stroke="currentColor" strokeWidth="1.7" strokeLinejoin="round"/>
       <path d="M12 12L3 7M12 12l9-5M12 12v10" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round"/>
+    </svg>
+  ),
+  // The trigger's declaration: a tray a value drops into.
+  input: (
+    <svg viewBox="0 0 24 24" fill="none" className="w-4 h-4">
+      <path d="M12 3v10M8.5 9.5 12 13l3.5-3.5" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"/>
+      <path d="M4 13v5a2 2 0 002 2h12a2 2 0 002-2v-5" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"/>
+      <path d="M4 15h4l1.5 2h5L16 15h4" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"/>
+    </svg>
+  ),
+  // Mail, Telegram, and every node that talks to a person or another service.
+  communication: (
+    <svg viewBox="0 0 24 24" fill="none" className="w-4 h-4">
+      <path d="M4 5h16a1 1 0 011 1v12a1 1 0 01-1 1H4a1 1 0 01-1-1V6a1 1 0 011-1z" stroke="currentColor" strokeWidth="1.7" strokeLinejoin="round"/>
+      <path d="M3.5 7l8.5 6 8.5-6" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"/>
     </svg>
   ),
 };
@@ -218,7 +254,10 @@ export default function PipelineEditor({
     const response = await fetch(url, {
       headers: {
         Accept: "application/json",
-        ...(options.body ? { "Content-Type": "application/json" } : {}),
+        // A FormData body sets its own boundary; naming a type here would break it.
+        ...(options.body && !(typeof FormData !== "undefined" && options.body instanceof FormData)
+          ? { "Content-Type": "application/json" }
+          : {}),
       },
       ...options,
     });
@@ -289,6 +328,53 @@ export default function PipelineEditor({
   const [runBusy, setRunBusy] = useState(false);
   const [runStatus, setRunStatus] = useState("");
   const pollRef = useRef<any>(null);
+
+  // ── Node previews ───────────────────────────────────────────────────────────
+  // Drawn under a node box from the latest invocation. Presentation only: the
+  // editor reads `config.preview`, the engine only records the payload it names.
+  // At capture level `none` nothing is recorded, and the cell says so.
+  const previewData = useNodePreviews(
+    currentGraph,
+    invocations,
+    owner,
+    project,
+    effectiveCaptureLevel(pipelineMetadata, projectDefaultTraceCapture)
+  );
+  const [openPreview, setOpenPreview] = useState<{ nodeId: string; which: "in" | "out" } | null>(null);
+  // A panel dragged to a new size: written to the live node (Save Draft
+  // reads it) and the loaded graph, like a node drag — nothing until Save.
+  const handlePreviewResize = useCallback(
+    (nodeId: string, which: "in" | "out", size: { width: number; height: number }) => {
+      const liveNodes = graphRef.current?.getApp?.()?.graph?.nodes || [];
+      applyPreviewSize(currentGraph, liveNodes, nodeId, which, size);
+    },
+    [currentGraph]
+  );
+
+  // ── Run form ────────────────────────────────────────────────────────────────
+  // Every `n.input.*` node draws a field under its box; the values live here
+  // and only here — never in the pipeline file. Run collects them.
+  const inputSpecs = useMemo(() => collectInputNodes(currentGraph), [currentGraph]);
+  const [inputValues, setInputValues] = useState<Record<string, unknown>>({});
+  const [invalidInputs, setInvalidInputs] = useState<string[]>([]);
+  const [runDialogOpen, setRunDialogOpen] = useState(false);
+  const inputWidgets = useInputWidgets(inputSpecs, invocations, inputValues, invalidInputs, owner, project);
+  // Run badges: the last record's outcome on open, the execute stream while
+  // a run is live (`run-status.ts`).
+  const [nodeStatus, setNodeStatus] = useRunStatus(invocations, runBusy);
+  const handleInputChange = useCallback((nodeId: string, value: unknown) => {
+    setInputValues((prev) => ({ ...prev, [nodeId]: value }));
+    setInvalidInputs((prev) => (prev.includes(nodeId) ? prev.filter((id) => id !== nodeId) : prev));
+  }, []);
+  // A widget dragged to a new size: `config.ui.widget` on the live node (Save
+  // Draft reads it) and the loaded graph — the preview resize's path.
+  const handleInputResize = useCallback(
+    (nodeId: string, size: { width: number; height: number }) => {
+      const liveNodes = graphRef.current?.getApp?.()?.graph?.nodes || [];
+      applyWidgetSize(currentGraph, liveNodes, nodeId, size);
+    },
+    [currentGraph]
+  );
 
   // ── Multi-select & clipboard state ─────────────────────────────────────────
   const [multiSelected, setMultiSelected] = useState<Set<number>>(new Set());
@@ -477,7 +563,10 @@ export default function PipelineEditor({
     if (!rawNode) { setDialogNode(null); setWebRenderNode(null); return; }
 
     rawNode.zfPipelineNodeId = slug;
-    rawNode.zfConfig = config;
+    // The dialog owns every key but `ui` — the box's position and a
+    // widget's dragged size are the canvas's, and stay.
+    const ui = rawNode.zfConfig?.ui;
+    rawNode.zfConfig = ui && typeof ui === "object" ? { ...config, ui } : config;
 
     // Update canvas label
     const kind = nodeData.zfKind || "";
@@ -648,29 +737,61 @@ export default function PipelineEditor({
     } catch {}
   }
 
-  async function handleRunManual() {
-    if (!currentMeta || !api.execute || currentLocked || !currentMeta.active_hash) return;
+  /** Post one execute request — JSON or multipart — then refresh what the canvas draws. */
+  async function runPipeline(body: FormData | string) {
+    if (!api.execute) return;
     setRunBusy(true);
     setRunStatus("Running active pipeline…");
     setLogsOpen(true);
+    setNodeStatus(pendingFor(currentGraph));
     try {
-      const payload = await requestJson(api.execute, {
-        method: "POST",
-        body: JSON.stringify({
-          file_rel_path: currentMeta.file_rel_path,
-          trigger: "manual",
-          input: {},
-        }),
+      const payload = await streamExecute(api.execute, body, (signal) => {
+        setNodeStatus((prev) => applySignal(prev, signal));
+        const line = statusLineForSignal(signal);
+        if (line) setRunStatus(line);
       });
+      setNodeStatus((prev) => settleAfterResult(prev, true));
       await Promise.all([refreshPipelineSummary(), fetchInvocations(true)]);
       const runId = typeof payload?.run_id === "string" ? payload.run_id : "";
       setRunStatus(runId ? `Manual run completed. ${runId}` : "Manual run completed.");
     } catch (err: any) {
+      setNodeStatus((prev) => settleAfterResult(prev, false, err?.message || String(err)));
       await Promise.all([refreshPipelineSummary(), fetchInvocations(true)]);
       setRunStatus(`Run failed: ${err?.message || String(err)}`);
     } finally {
       setRunBusy(false);
     }
+  }
+
+  /**
+   * The Run button. With input nodes: collect their values, refuse inline
+   * (no request) when a required one is empty, then post multipart when a
+   * file is present and JSON otherwise. Without: today's empty input, through
+   * a small JSON dialog.
+   */
+  async function handleRunManual() {
+    if (!currentMeta || !api.execute || currentLocked || !currentMeta.active_hash || runBusy) return;
+    if (inputSpecs.length === 0) {
+      setRunDialogOpen(true);
+      return;
+    }
+    const missing = missingRequiredInputs(inputSpecs, inputValues);
+    if (missing.length > 0) {
+      setInvalidInputs(missing);
+      const names = inputSpecs.filter((s) => missing.includes(s.nodeId)).map((s) => s.label);
+      setRunStatus(`Run refused: ${names.join(", ")} ${names.length === 1 ? "is" : "are"} required.`);
+      return;
+    }
+    setInvalidInputs([]);
+    const route = isManualTrigger ? null : webhookRouteOf(currentGraph);
+    const request = buildRunRequest(currentMeta.file_rel_path, inputSpecs, inputValues, route);
+    await runPipeline(request.body);
+  }
+
+  async function handleRunDialog(input: unknown) {
+    if (!currentMeta) return;
+    setRunDialogOpen(false);
+    await runPipeline(JSON.stringify({ file_rel_path: currentMeta.file_rel_path, trigger: "manual", input }));
   }
 
   useEffect(() => {
@@ -679,6 +800,13 @@ export default function PipelineEditor({
     pollRef.current = setInterval(fetchInvocations, 5000);
     return () => clearInterval(pollRef.current);
   }, [logsOpen, currentMeta?.file_rel_path]);
+
+  // One request on open, so a node that declares a preview has something to
+  // draw without anyone touching the Logs panel.
+  useEffect(() => {
+    if (!currentMeta?.file_rel_path) return;
+    fetchInvocations();
+  }, [currentMeta?.file_rel_path]);
 
   // ── Add node from category ────────────────────────────────────────────────
   function handleAddNode(kind: string) {
@@ -868,12 +996,17 @@ export default function PipelineEditor({
       ? `${hits.latest_errors[0].code}: ${hits.latest_errors[0].message}`
       : "-";
   const isManualTrigger = String(currentMeta?.trigger_kind || "").toLowerCase() === "manual";
-  const manualRunDisabled = !isManualTrigger || currentLocked || !currentMeta?.active_hash || runBusy;
+  // A webhook pipeline with input nodes gets the same Run: the form posts to
+  // the execute route, which runs the active version against its route.
+  const canRun = isManualTrigger || (inputSpecs.length > 0 && !!webhookRouteOf(currentGraph));
+  const manualRunDisabled = !canRun || currentLocked || !currentMeta?.active_hash || runBusy;
   const manualRunTitle = !currentMeta?.active_hash
     ? "Activate pipeline before running"
     : hasDraft
       ? "Runs the active version, not the unsaved draft"
-      : "Run active manual pipeline";
+      : inputSpecs.length > 0
+        ? "Run the active pipeline with the form values under its input nodes"
+        : "Run active manual pipeline";
   const retention = pipelineMetadata?.settings?.invocation_retention || null;
   const retentionSummary = retention?.max_age_secs
     ? `retain for ${Math.max(1, Math.round(Number(retention.max_age_secs) / 86400))} day(s)`
@@ -1241,7 +1374,7 @@ export default function PipelineEditor({
               </span>
             </div>
             <div className="flex shrink-0 items-center gap-2">
-              {isManualTrigger && (
+              {canRun && (
                 <Button
                   size="icon"
                   disabled={manualRunDisabled}
@@ -1300,14 +1433,6 @@ export default function PipelineEditor({
             </div>
           </div>
         </div>
-        {runStatus ? (
-          <div className={cx(
-            "text-[0.72rem]",
-            runStatus.startsWith("Run failed:") ? "text-red-400" : "text-muted-foreground",
-          )}>
-            {runStatus}
-          </div>
-        ) : null}
         {saveError && (
           <div className="pipeline-editor-save-error" role="alert">
             <span>⚠ {saveError}</span>
@@ -1346,6 +1471,20 @@ export default function PipelineEditor({
               </button>
             );
           })}
+          {/* A canvas note — presentation only, never executed */}
+          <button
+            key="note"
+            type="button"
+            className="w-8 h-8 shrink-0 rounded-md border border-border bg-muted text-muted-foreground flex items-center justify-center p-0 hover:bg-accent hover:text-foreground hover:border-border transition-colors disabled:opacity-40 disabled:cursor-default"
+            title="Note: a sticky note on the canvas (double-click to edit, drag to move, Delete to remove)"
+            disabled={currentLocked || !currentMeta}
+            onClick={() => (graphRef.current as any)?.addNote?.("")}
+          >
+            <svg viewBox="0 0 24 24" fill="none" className="w-4 h-4">
+              <path d="M5 4.5h14v9.5l-5 5H5z" stroke="currentColor" strokeWidth="1.7" strokeLinejoin="round"/>
+              <path d="M14 19v-5h5M8.5 9h7M8.5 12.5h4" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round"/>
+            </svg>
+          </button>
         </div>
 
         {/* PipelineGraph canvas */}
@@ -1362,6 +1501,13 @@ export default function PipelineEditor({
             className="w-full h-full"
             onNodeEdit={currentLocked ? undefined : handleNodeEdit}
             onOutputAdd={currentLocked ? undefined : handleOutputAdd}
+            previewData={previewData}
+            onPreviewOpen={(nodeId: string, which: "in" | "out") => setOpenPreview({ nodeId, which })}
+            onPreviewResize={currentLocked ? undefined : handlePreviewResize}
+            inputWidgets={inputWidgets}
+            onInputChange={handleInputChange}
+            onInputResize={currentLocked ? undefined : handleInputResize}
+            nodeStatus={nodeStatus}
             selectionMode={selectionMode}
             onSelectionModeChange={(mode: "normal" | "box") => {
               setSelectionMode(mode);
@@ -1393,6 +1539,9 @@ export default function PipelineEditor({
             {selectionToast}
           </div>
         )}
+
+        {/* How the last Run went — over the canvas, so the header stays two rows */}
+        <CanvasStatusLine status={runStatus} />
       </div>
 
       {/* Log panel */}
@@ -1568,6 +1717,24 @@ export default function PipelineEditor({
         allGraphNodes={currentGraph?.nodes || []}
         onApply={handleNodeApply}
         onClose={() => setWebRenderNode(null)}
+      />
+
+      {/* PreviewDialog — the clicked canvas preview, at full size */}
+      {openPreview ? (
+        <PreviewDialog
+          nodeId={openPreview.nodeId}
+          which={openPreview.which}
+          cell={previewData[openPreview.nodeId]?.[openPreview.which] || null}
+          onClose={() => setOpenPreview(null)}
+        />
+      ) : null}
+
+      {/* RunDialog — the JSON box for a pipeline with no input nodes */}
+      <RunDialog
+        open={runDialogOpen}
+        busy={runBusy}
+        onRun={handleRunDialog}
+        onClose={() => setRunDialogOpen(false)}
       />
 
       {/* GitCommitDialog */}

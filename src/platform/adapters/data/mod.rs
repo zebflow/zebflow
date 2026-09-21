@@ -10,7 +10,7 @@ use std::sync::Arc;
 use crate::infra::cluster::registry::WorkerRegistryRecord;
 use crate::infra::execution::placement::ProjectRuntimePlacement;
 use crate::platform::error::PlatformError;
-use crate::platform::model::{
+use crate::platform::model::{ErrorGroupBounds, PipelineErrorGroup, 
     CredentialKeyringReport, CredentialSweepReport, DataAdapterKind, HubAccessGrant,
     HubAssetPackage, HubAssetVersion, HubAuthority, HubPublisher, HubToken, McpSession,
     PipelineInvocationEntry, PipelineInvocationLogStats, PipelineMeta, PlatformHubRepository,
@@ -847,6 +847,42 @@ pub trait DataAdapter: Send + Sync {
         _max_age_secs: Option<i64>,
     ) -> Result<(), PlatformError> {
         Ok(())
+    }
+
+    /// Count a failed run into its error group (`kinds/invocation-record`,
+    /// Error group): the group's `first` is kept, `latest` replaced, the
+    /// occurrence ring advanced. A successful run never reaches this.
+    fn record_pipeline_error(
+        &self,
+        _owner: &str,
+        _project: &str,
+        _file_rel_path: &str,
+        _entry: &PipelineInvocationEntry,
+        _bounds: ErrorGroupBounds,
+    ) -> Result<(), PlatformError> {
+        Ok(())
+    }
+
+    /// The project's error groups, most recently seen first; with a
+    /// `file_rel_path`, one pipeline's.
+    fn list_pipeline_error_groups(
+        &self,
+        _owner: &str,
+        _project: &str,
+        _file_rel_path: Option<&str>,
+    ) -> Result<Vec<PipelineErrorGroup>, PlatformError> {
+        Ok(vec![])
+    }
+
+    /// The group an occurrence belongs to, by the run id a visitor quoted —
+    /// a prefix of at least eight characters is accepted.
+    fn find_pipeline_error_group_by_run(
+        &self,
+        _owner: &str,
+        _project: &str,
+        _run_id_prefix: &str,
+    ) -> Result<Option<PipelineErrorGroup>, PlatformError> {
+        Ok(None)
     }
 
     /// Return stored invocation log for a pipeline (most-recent first).

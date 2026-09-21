@@ -1,9 +1,14 @@
 # InvocationRecord
 
-Status: **review** — spec settled 2026-08-29; secret handling re-decided and the code caught up 2026-09-01; capture levels added and implemented 2026-09-10; rule 3 implemented 2026-09-10, by value and by position. The entries under Open are open, not owed.
+Status: **review** — spec settled 2026-08-29; secret handling re-decided and the code caught up 2026-09-01; capture levels added and implemented 2026-09-10; rule 3 implemented 2026-09-10, by value and by position. Run id form, the request id and the error group decided and implemented 2026-09-17 for webhook runs (`tests/platform/smoke.rs` `an_uncaught_failure_hides_by_default_and_is_one_error_group`); schedule, function and WebSocket runs still write the invocation record only and are owed the group. The entries under Open are open, not owed.
 
-One row per pipeline run: when it ran, how long it took, whether it worked, and
-what each node received and returned. This is a project's run history.
+Two records. The **invocation record**: one row per pipeline run — when it
+ran, how long it took, whether it worked, what each node received and
+returned; recent and complete, bounded by newest N. The **error group**: one
+row per distinct failure — first and latest occurrence in full, a count, and
+the id and time of every occurrence; durable, bounded by distinct errors, not
+by how often one repeats. A thousand devices failing the same way cost one
+group and a count, never a thousand payloads.
 
 ## Identity
 
@@ -30,7 +35,7 @@ what each node received and returned. This is a project's run history.
       "config": { "folder": "uploads", "access": "private" },
       "duration_ms": 180,
       "input": { "photo": { "__zf_type": "file_ref", "…": "…" } },
-      "output": { "saved": { "path": "uploads/9f2c.jpg" } }
+      "output": { "saved": { "__zf_type": "file_ref", "ref": "uploads/9f2c.jpg", "…": "…" } }
     }
   ]
 }
@@ -38,7 +43,7 @@ what each node received and returned. This is a project's run history.
 
 | Field | Rule |
 | --- | --- |
-| `run_id` | stable identifier for one execution |
+| `run_id` | the identifier of one execution: 16 random bytes as 32 lowercase hex, opaque, never a timestamp or a counter. A webhook run **adopts** an inbound `X-Request-Id` when the proxy in front sent one, so the proxy's log and this one name the same run; otherwise the engine mints it. The same value is the run's `X-Request-Id` on the way out (see Request id) |
 | `at` | unix seconds when the run started |
 | `duration_ms` | wall clock for the whole run |
 | `status` | `ok` or `error` |
@@ -47,8 +52,36 @@ what each node received and returned. This is a project's run history.
 | `trace` | one entry per node, in execution order |
 
 A trace entry carries `node_id`, `node_kind`, the effective `config` after
-expressions resolved, `duration_ms`, `input`, `output` (null on error), and
-`error`.
+expressions resolved, `duration_ms`, `input`, `output` (null on error),
+`error`, and `status`: the node's NodeIO word (`ok`, `skip`, `refused`,
+`failed`) or, since 2026-09-21, one of two engine words. `retry` is a wait:
+a failure an `:error` edge handed to `logic.retry` (the entry keeps `error`
+and `error_code` so the log says why), or a `logic.retry` that sent a
+verdict round again (no error at all); the attempt is the count of that
+node's `retry` entries so far. `error_routed` is a failure an `:error` edge
+handed to anything else. Neither failed the run: the run's `status` is
+unaffected, and an error group's key is the last entry whose failure nothing
+consumed. The NodeIO record itself still has four words; these are the
+record's account of what the engine did, not a fifth outcome a node can
+produce.
+
+An entry may carry `preview_snapshot`, since 2026-09-21. It is written when
+the node declares `--preview image` (or `--preview-in image`) **and** the
+value that preview would draw — the declared path, or the first image
+FileRef the editor's own pick would find — is a **temporary** FileRef, whose
+bytes are deleted with the run. The engine keeps a small copy beside the
+payload, never inside it: `{ slot: "out" | "in", mime: "image/jpeg", width,
+height, data_base64 }`, the longest side 540 px, JPEG quality 70, at most
+64 KB; over that, `{ slot, snapshot_skipped: "too large" }` (or the reason a
+read or decode failed). The declared `out` half is tried first, then `in`;
+one snapshot per entry. A durable file gets none — the Studio reads it from
+the store. The snapshot is written at every capture level that records the
+entry's payload for that preview (a declared preview records it even at
+`on-error`), and at `none` nothing is written. Writer:
+`src/pipeline/trace_capture/preview_snapshot.rs`; reader: the canvas preview
+(`preview-data.ts`, `snapshotCell`), which draws it from a data URI with the
+caption "temporary — not saved". JPEG rather than WebP because the tree's
+`image` crate encodes WebP lossless only.
 
 ## What must never appear
 
@@ -84,6 +117,59 @@ credentials — was available and was bypassed. No redaction rule can tell a
 secret from ordinary text inside a field whose whole purpose is free text, and
 a rule that tried would have to redact script source, which would make the
 history useless.
+
+## Request id
+
+A run id is the run's name inside; `X-Request-Id` is the same value when it
+crosses HTTP, the header the outside world already knows. There is no second
+identifier.
+
+| Where | Rule |
+| --- | --- |
+| Every webhook response, success or failure | header `X-Request-Id: <run_id>` |
+| The error page a hidden 5xx shows (`project-configuration`, `errors`) | the first eight characters of `run_id`, readable aloud; lookups accept a prefix |
+| Every outbound `http.request` a run makes, whatever its trigger | header `X-Request-Id: <run_id>` forwarded, so a failure in another service traces back to the run that caused it |
+| Schedule, function, WebSocket, KV triggers | the run has the same `run_id`; nothing to answer, so no header |
+| The MCP endpoint | an agent's call is a request: the same header on its response |
+
+The name says nothing about the framework on purpose; `x-zebflow-project` is
+the operator's verification header (`addressing.md`) and is not sent to a
+visitor for tracing.
+
+## Error group
+
+One per distinct failure per pipeline. The signature is `(file_rel_path,
+node_id, error code, message with runs of digits and quoted values blanked)`:
+`column "x" does not exist` and `column "y" does not exist` are two groups;
+`row 4521` and `row 4522` are one. The node id and code keep the grouping
+from swallowing distinct faults that share a phrasing.
+
+```json
+{
+  "signature": "modules/events/pages/event.zf.json · n2 · FW_NODE_PG_QUERY · column \"?\" does not exist",
+  "count": 1043,
+  "first_seen": 1789430000,
+  "last_seen": 1789516400,
+  "reopened_at": null,
+  "first": { "run_id": "…", "…": "the full invocation record" },
+  "latest": { "run_id": "…", "…": "the full invocation record, replaced on every occurrence" },
+  "occurrences": [ { "run_id": "…", "at": 1789516400 }, "… the newest N (run_id, at) pairs" ],
+  "capture": "first-latest"
+}
+```
+
+| Field | Rule |
+| --- | --- |
+| `first`, `latest` | full invocation records, held by the group even after the invocation log's newest-N has rolled them off; `latest` is replaced on every occurrence |
+| `count`, `first_seen`, `last_seen` | every occurrence counts, none is sampled away |
+| `occurrences` | `(run_id, at)` for the newest `occurrence_ring` occurrences (default 500). About forty bytes each: this is what lets a visitor's reference id resolve to its group after the full record is gone |
+| `capture` | `first-latest` (default) or `all`: with `all` the group keeps the full record of every occurrence up to `capture_cap` (default 200), for the one error someone is chasing; flipped per group, or per pipeline for groups not yet seen |
+| `reopened_at` | set when an occurrence arrives after the group was quiet for longer than `reopen_after` (default 7 days), so a bug fixed and reintroduced is not counted as the old one |
+
+A run with `status: ok` never touches a group. The invocation record and the
+group share `run_id`: a run links to its group; an occurrence links to its
+record while the record is still within newest N, and says "rolled off; first
+and latest kept" when it is not.
 
 ## Capture Level
 
@@ -156,15 +242,26 @@ History is bounded, never infinite.
 
 | Bound | Where it is set | Default |
 | --- | --- | --- |
-| Newest N runs kept | project configuration, or per pipeline in its graph metadata | 20 |
+| Newest N runs kept (`max_invocations`) | project configuration, or per pipeline in its graph metadata | 20 |
 | Maximum age | per pipeline in its graph metadata | none |
+| Distinct error groups kept (`max_error_groups`) | project configuration, or per pipeline | 200 |
+| Occurrences remembered per group (`occurrence_ring`) | project configuration | 500 |
+| Full records per group under `capture: all` (`capture_cap`) | the group, or the pipeline | 200 |
 
 The per-pipeline setting wins over the project setting when both are present.
+Repetition never spends these bounds: the invocation log costs
+`max_invocations` payloads, the error log two payloads per distinct error
+plus forty bytes per occurrence. A device fleet at a hundred thousand runs a
+day with `max_invocations: 1` costs one row per pipeline and one write per
+run; whether that write is batched at higher rates is the open item below.
 
 ## Rejections
 
-An empty `run_id`. A `status` other than `ok` or `error`. An `error` present on
-a successful run, or absent from a failed one.
+An empty `run_id`, or one that is not 32 lowercase hex characters (an adopted
+`X-Request-Id` that is not is replaced by a minted one and the inbound value
+kept in the trace). A `status` other than `ok` or `error`. An `error` present
+on a successful run, or absent from a failed one. An error group whose `first`
+is missing.
 
 ## Open
 
@@ -177,4 +274,9 @@ a successful run, or absent from a failed one.
 - **Who may read it.** A trace can contain personal data from a form
   submission. Nothing states which project roles may open the history.
 - **High throughput.** A pipeline running hundreds of times a minute writes a
-  row each time; whether writes are batched or sampled is undefined.
+  row each time. Decided 2026-09-17: writes are never sampled — repetition is
+  grouped (Error group) and counted. Whether the per-run write is batched
+  above some rate is still undefined.
+- **Who may read it** is no longer a quiet question: a reference id is printed
+  on a public error page, so a role rule for opening the history that id
+  names is owed before a project prints one.

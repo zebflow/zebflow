@@ -45,5 +45,13 @@ Do not keep separate hand written copies of one schema. Node forms, DSL help,
 MCP help, validation, and reference should read the same node definition. The
 same rule applies to packages, APIs, errors, and stored formats.
 
+For the help this is enforced, not asked: a prose page that needs a node's
+flags writes `<!-- node-flags:web.response -->` and the table is rendered from
+`definition()` when the page is read; `<!-- node-families -->` renders the
+catalogue by family. Three tests refuse a build whose help drifts
+(`src/platform/help/mod.rs`, `help_lint`): every DSL example in a fenced block
+must register against the live catalogue, every backticked node name must
+exist, and every marker must name a real node.
+
 A public feature is not complete until its owner, definition, validation,
 reference, tests, and version effect are clear.

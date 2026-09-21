@@ -525,7 +525,7 @@ function SecretFields({ kind, secret, onChange, credentialTypes }: { kind: strin
           />
         </Field>
 
-        <Field label="Body Template" description="Optional raw request body template. Leave blank for no body.">
+        <Field label="Body Template" description="Optional raw request body template. Leave blank and the node's own --body is sent (or none).">
           <textarea
             value={requestBody}
             onChange={(e) => updateRequest({ body: e.target.value })}

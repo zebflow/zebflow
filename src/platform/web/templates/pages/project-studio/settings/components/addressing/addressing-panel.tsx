@@ -4,6 +4,7 @@ import SettingsSection from "@/pages/project-studio/settings/components/settings
 import { settingsStatusToneClass } from "@/pages/project-studio/settings/components/settings-lib";
 import AddressingHosts from "@/pages/project-studio/settings/components/addressing/addressing-hosts";
 import AddressingRoutes from "@/pages/project-studio/settings/components/addressing/addressing-routes";
+import AddressingSwitches from "@/pages/project-studio/settings/components/addressing/addressing-switches";
 import AddressingConfigs from "@/pages/project-studio/settings/components/addressing/addressing-configs";
 
 /**
@@ -114,6 +115,7 @@ export default function AddressingPanel({ api, checkApi, initialData }) {
           onToggleSurface={toggleSurface}
           busy={busy}
         />
+        <AddressingSwitches config={config} onChange={(next, msg) => save(next, msg)} busy={busy} />
         <AddressingConfigs configs={data?.configs ?? []} />
         <p className={`text-[0.76rem] ${settingsStatusToneClass(statusTone)}`} aria-live="polite">{statusMsg}</p>
       </div>

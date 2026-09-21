@@ -258,7 +258,12 @@ struct PipelinePatchParams {
     #[serde(alias = "name")]
     file_rel_path: String,
     /// Node ID to patch — get IDs from pipeline_describe output (e.g. "n0", "b", "trigger").
+    /// With target "note" this is the note id (created when it does not exist yet).
     node_id: String,
+    /// What to patch: "node" (default) or "note" — a canvas note. Note flags:
+    /// --text, --at x,y, --size WxH, --color amber|blue|green|rose|violet|slate, --remove.
+    #[schemars(with = "String")]
+    target: Option<String>,
     /// Space-separated --flag value pairs to update in the node config.
     /// Example: "--credential new-db --path /updated"
     #[schemars(with = "String")]
@@ -296,7 +301,8 @@ struct PipelineExecuteParams {
     /// Also accepted as "name" for backward compatibility.
     #[serde(alias = "name")]
     file_rel_path: String,
-    /// Optional JSON input payload string (e.g. "{\"order_id\": 42}").
+    /// Optional JSON input payload (object or string). For a pipeline with `input.*` nodes:
+    /// `{"body": {"<field>": …}, "files": {"<field>": "<store path>"}}` — a store path becomes the FileRef.
     #[serde(default)]
     input: Option<serde_json::Value>,
 }
@@ -323,9 +329,11 @@ struct PipelineGetInvocationsParams {
 
 #[derive(serde::Deserialize, JsonSchema)]
 struct GitCommandParams {
-    /// Git subcommand: status, log, diff, add, commit
+    /// Git subcommand: status, log, diff, add, commit — and the remote verbs state, fetch, sync, push, resolve, continue, abort.
+    /// `sync` rebases local commits on the remote and, on a conflict, leaves it in progress and lists the files;
+    /// `resolve <path> mine|theirs` settles one (or `content` with the file's text in `message`), then `continue`; `abort` puts everything back.
     subcommand: String,
-    /// Additional arguments as a space-separated string (e.g. "path/to/file" for add/diff, "--limit 10" for log).
+    /// Additional arguments as a space-separated string (e.g. "path/to/file" for add/diff, "--limit 10" for log, "<path> mine" for resolve).
     #[schemars(with = "String")]
     args: Option<String>,
     /// Commit message — only used when subcommand is "commit".
@@ -742,6 +750,7 @@ impl ZebflowMcpHandler {
         let result = ops
             .pipeline_patch(
                 &params.file_rel_path,
+                params.target.as_deref().unwrap_or("node"),
                 &params.node_id,
                 params.flags.as_deref(),
                 params.body.as_deref(),
@@ -811,7 +820,10 @@ impl ZebflowMcpHandler {
                        Pipeline must be activated first — use pipeline_activate if status is draft or stale. \
                        Use pipeline_list to see pipeline names and activation status. \
                        For function pipelines (n.trigger.function) always pass `input` to test with real data; \
-                       without it the pipeline receives an empty payload {}."
+                       without it the pipeline receives an empty payload {}. \
+                       A pipeline with input.* nodes expects the trigger envelope: \
+                       input={\"body\": {\"prompt\": \"x\"}, \"files\": {\"photo\": \"uploads/cat.png\"}} — \
+                       a `files` value is a store path (project files, private or public) that becomes the FileRef of that object."
     )]
     async fn pipeline_execute(
         &self,
@@ -1670,15 +1682,23 @@ impl ZebflowMcpHandler {
     }
 }
 
+/// The MCP `initialize` instructions. Kept under 1 KB on purpose.
+pub const MCP_INSTRUCTIONS: &str = "\
+Zebflow is a unified full-stack runtime: one running instance, many projects. \
+This MCP server is scoped to ONE project — its repository, store, databases, credentials and hosts. \
+Project knowledge lives in the project's files (docs/, AGENTS.md, MEMORY.md); Zebflow knowledge lives in `help` and the skills. Do not confuse the two.\n\n\
+Call `start_here` first. It names the project, lists what to read in order, and maps each kind of task to the one help topic or skill to open — open one thing at a time, per need, not the whole catalogue.\n\n\
+Work only through the tools: `pipeline_register` then `pipeline_activate` for routes and jobs, `file_write` for pages, `route_fetch` to prove a route works (a 200 with a component error is not done), `docs_agent_write name=\"MEMORY.md\"` to record what you learned. \
+Never write to the filesystem behind the tools, never commit or push unless the user asks (`git_command`).";
+
 impl ServerHandler for ZebflowMcpHandler {
     fn get_info(&self) -> ServerInfo {
-        let instructions = crate::platform::help::get_help_content("platform/agent")
-            .unwrap_or_else(|| {
-                "Zebflow project management tools. Call start_here first. \
-                 Use help(topic) for docs — no topic = full index. \
-                 Use help_search(query) to search across all docs."
-                    .to_string()
-            });
+        // Read by every client before its first tool call, so it is the
+        // frame and one instruction — not the 10 KB agent guide, which stays
+        // one `help topic="platform/agent"` away. The frame is the shape the
+        // start_here ablation (2026-09-18) showed the weakest models need:
+        // platform vs project, then where each kind of knowledge lives.
+        let instructions = MCP_INSTRUCTIONS.to_string();
         ServerInfo {
             instructions: Some(instructions.into()),
             capabilities: ServerCapabilities::builder()

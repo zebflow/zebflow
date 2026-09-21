@@ -1,13 +1,13 @@
-//! Automaton infrastructure — plumbing only, not agents, not capabilities.
+//! Plumbing under the loop: the call interface, the one HTTP client, the
+//! Studio assistant's settings loader.
 //!
-//! Contains LLM clients, HTTP adapters, REPL utilities, and shell execution tools.
-//! Everything the agents layer BUILDS ON TOP OF, but nothing that constitutes intelligence itself.
+//! - [`llm_interface`] — `LlmCall` and the types on its wire (`ToolDef`,
+//!   `ToolCall`, `CallResult`, `Usage`, `Message`, `MessageRole`).
+//! - [`http_client`] — `OpenAiHttpClient` (Responses for `openai`, Chat
+//!   Completions for `openrouter`) and the credential-driven factories.
+//! - [`assistant_config`] — `load_project_assistant_llm` for the Studio
+//!   assistant.
 
 pub mod assistant_config;
 pub mod http_client;
-pub mod interface;
-pub mod llm;
 pub mod llm_interface;
-pub mod model;
-pub mod registry;
-pub mod shell_tools;

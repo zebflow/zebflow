@@ -51,7 +51,7 @@ Read the help topic before writing in a domain you have not used this session:
 | Domain | Topic |
 |---|---|
 | pipelines and the DSL | `help(topic="pipeline")` → `pipeline/dsl`, `pipeline/authoring`, `pipeline/web` |
-| nodes and their flags | `help(topic="pipeline/nodes")`, one node: `help(topic="pipeline/nodes/n.fs.save")` |
+| which node does what | `help(topic="pipeline/nodes")` — one line per kind; one node in full: `help(topic="pipeline/nodes/fs.save")` |
 | pages | `help(topic="web")` → `web/hooks`, `web/ui`, `web/tailwind`, `web/libraries` |
 | databases | `help(topic="db")`, `help(topic="db/sekejap")` |
 | script helpers | `help(topic="tool")` |
@@ -112,7 +112,7 @@ Project docs are files under `docs/` (`file_write rel_path="docs/schema.md"`).
 | `theme_generate` | a complete contrast-checked theme from a seed colour and a mood: tokens, `globals.css` blocks, fonts, geometry, contrast table (skill `brand-system`) |
 | `route_fetch` | fetch one of the project's routes through the real ingress — status, `location`, `set_cookie`, `rwe_component_errors`, body; `method`, `form`, `body`, `cookie`, `headers`; the verification step |
 | `hub_search` / `hub_review` / `hub_add` | the Hub shelf: what the project can add (optional skills, libraries, bundles), what an add would write, and the add itself — review before add, always |
-| `git_command` | `subcommand` = status · log · diff · add · commit (`args`, `message`); the commit author is the user's profile |
+| `git_command` | `subcommand` = status · log · diff · add · commit (`args`, `message`; the author is the user's profile) — and the remote verbs `state` · `fetch` · `sync` · `push` · `resolve <path> mine\|theirs` · `continue` · `abort`. A commit is local; `sync` rebases on the remote and, on a conflict, keeps it and lists the files; settle each with `resolve`, then `continue`; `push` refuses while behind, so sync first |
 | `skill_list` / `skill_read` | the skills: the list, one body, one reference file |
 | `help`, `help_search`, `version` | knowledge and the platform version |
 

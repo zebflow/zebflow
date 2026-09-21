@@ -24,6 +24,8 @@ pub mod credential;
 pub mod db_connection;
 pub mod db_runtime;
 pub mod dependency_lock;
+pub mod fonts;
+pub mod git_sync;
 pub mod hub;
 pub mod hub_repository;
 pub mod library;
@@ -54,6 +56,7 @@ pub use cluster::{
 pub use credential::CredentialService;
 pub use db_connection::DbConnectionService;
 pub use db_runtime::DbRuntimeService;
+pub use fonts::{DEFAULT_FONT_FAMILY, FontFamily, FontRef, FontService, FontSource, PROJECT_FONTS_DIR};
 pub use dependency_lock::{
     DependencyLockMigration, DependencyLockService, DependencyResolutionStatus,
     DependencyStatusItem, DependencyStatusReport,

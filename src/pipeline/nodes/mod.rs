@@ -1,7 +1,10 @@
 //! Pipeline node interfaces and built-in node implementations.
 //!
 //! This module is the **single source of truth** for how nodes are authored in Zebflow.
-//! Every built-in node lives under [`basic`].  This doc is the living specification —
+//! Every built-in node lives under [`basic`], in the folder of its DSL family:
+//! `n.fs.save` is `basic/fs/save.rs`, `n.kv.get` is `basic/kv/get.rs`, and a
+//! family with one node keeps it in that folder's `mod.rs`. Helpers several
+//! families use live in [`shared`]. This doc is the living specification —
 //! read it before creating or modifying any node.
 //!
 //! ---
@@ -11,14 +14,15 @@
 //! A complete node module exposes exactly four things:
 //!
 //! ```text
-//! my_node.rs
+//! basic/<family>/<node>.rs
 //! ├── pub fn definition() -> NodeDefinition   ← kind-level contract (schemas, flags, docs)
 //! ├── pub struct Config { ... }               ← typed config with JsonSchema derive
 //! ├── pub struct Node { ... }                 ← runtime instance
 //! └── impl NodeHandler for Node               ← execution logic
 //! ```
 //!
-//! Then register in `basic/mod.rs → builtin_node_definitions()`.  That's it.
+//! Then add it to the family's `definitions()` in `basic/<family>/mod.rs`, which
+//! `basic/mod.rs → builtin_node_definitions()` reads.  That's it.
 //!
 //! ---
 //!
@@ -261,12 +265,16 @@
 //!
 //! # 8. Registration
 //!
-//! Add your `definition()` call to `src/pipeline/nodes/basic/mod.rs`:
+//! Declare the file and add your `definition()` call to the family list in
+//! `src/pipeline/nodes/basic/<family>/mod.rs` (a new family is a new folder,
+//! declared in `basic/mod.rs` and appended to `family_definitions()` there):
 //!
 //! ```rust,ignore
-//! pub fn builtin_node_definitions() -> Vec<NodeDefinition> {
+//! pub mod my_node;
+//!
+//! pub fn definitions() -> Vec<NodeDefinition> {
 //!     vec![
-//!         // ... existing nodes ...
+//!         // ... the family's other nodes ...
 //!         my_node::definition(),
 //!     ]
 //! }
@@ -361,6 +369,7 @@
 
 pub mod basic;
 mod interface;
+pub mod shared;
 
 pub use interface::{NodeExecutionInput, NodeExecutionOutput, NodeHandler};
 
@@ -678,6 +687,86 @@ mod tests {
             "incomplete node definitions:\n{}",
             failures.join("\n")
         );
+    }
+
+    /// The canvas-preview flags are injected into every node, the two table
+    /// nodes included: their row sample moved to `--preview-rows` /
+    /// `preview_rows`, so `--preview` means one thing everywhere.
+    #[test]
+    fn every_node_takes_the_canvas_preview_flags() {
+        let defs = super::builtin_node_definitions();
+        let flags_of = |kind: &str| {
+            defs.iter()
+                .find(|d| d.kind == kind)
+                .unwrap_or_else(|| panic!("{kind} missing"))
+                .dsl_flags
+                .iter()
+                .map(|f| (f.flag.clone(), f.config_key.clone()))
+                .collect::<Vec<_>>()
+        };
+
+        for kind in ["n.table.query", "n.table.convert", "n.script"] {
+            let flags = flags_of(kind);
+            assert!(
+                flags.iter().any(|(flag, key)| flag == "--preview" && key == "preview.out"),
+                "{kind} takes --preview: {flags:?}"
+            );
+            assert!(
+                flags.iter().any(|(flag, key)| flag == "--preview-in" && key == "preview.in"),
+                "{kind} takes --preview-in: {flags:?}"
+            );
+            assert!(
+                !flags.iter().any(|(_, key)| key == "preview"),
+                "{kind} no longer stores anything flat at `preview`: {flags:?}"
+            );
+        }
+        for kind in ["n.table.query", "n.table.convert"] {
+            let flags = flags_of(kind);
+            assert!(
+                flags.iter().any(|(flag, key)| flag == "--preview-rows" && key == "preview_rows"),
+                "{kind} samples rows with --preview-rows: {flags:?}"
+            );
+        }
+    }
+
+    /// The source layout is the catalogue's family list: one folder per DSL
+    /// family under `basic/`, one file per node, nothing loose beside
+    /// `basic/mod.rs`. A family with one node keeps it in that folder's
+    /// `mod.rs`; helpers several families share live in `nodes/shared/`.
+    #[test]
+    fn every_node_file_lives_in_its_family_folder() {
+        let basic = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/pipeline/nodes/basic");
+        let families: std::collections::BTreeSet<String> = super::builtin_node_definitions()
+            .iter()
+            .filter_map(|def| def.kind.strip_prefix("n."))
+            .map(|rest| rest.split('.').next().unwrap_or(rest).to_string())
+            .collect();
+
+        let mut failures = Vec::new();
+        let mut folders = std::collections::BTreeSet::new();
+        for entry in std::fs::read_dir(&basic).expect("basic/ is readable") {
+            let entry = entry.expect("entry");
+            let name = entry.file_name().to_string_lossy().to_string();
+            if entry.path().is_dir() {
+                if !families.contains(&name) {
+                    failures.push(format!(
+                        "basic/{name}/ is not a DSL family of the catalogue (families: {})",
+                        families.iter().cloned().collect::<Vec<_>>().join(", ")
+                    ));
+                }
+                folders.insert(name);
+            } else if name != "mod.rs" {
+                failures.push(format!(
+                    "basic/{name} sits beside mod.rs; a node file is basic/<family>/<node>.rs"
+                ));
+            }
+        }
+        for family in &families {
+            if !folders.contains(family) {
+                failures.push(format!("family `{family}` has nodes in the catalogue but no basic/{family}/ folder"));
+            }
+        }
+        assert!(failures.is_empty(), "node layout:\n{}", failures.join("\n"));
     }
 
     #[test]

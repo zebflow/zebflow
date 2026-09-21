@@ -11,17 +11,11 @@ request, `web.static.generate` renders the same templates
 
 ## Flags
 
-| Flag | Meaning |
-|---|---|
-| *(none)* | answer the upstream payload as JSON, status 200 |
-| `--template pages/post.tsx` | render the TSX page; the payload becomes its `input`. Path relative to the source root, `.tsx` required |
-| `--status 404` | status code (default 200; 302 when `--location` is set) |
-| `--location "/x"` | redirect; a `{{ }}` value is resolved from the payload |
-| `--body "{{ input.rows }}"` | answer this value instead of the whole payload |
-| `--message "text"` | a plain-text body |
-| `--set-cookie "spec"` | one cookie, spec below |
-| `--header K=V` | extra response header, repeatable |
-| `--load-scripts url,url` | external scripts injected into a template response |
+The table is rendered from the node's definition when this page is read, so
+it cannot lag behind the code; `help("pipeline/nodes/web.response")` has the
+same rows with their schemas and examples.
+
+<!-- node-flags:web.response -->
 
 Quote any value that contains `{{ }}` or a space as one argument;
 `--location {{ input.url }}` unquoted is cut at the first space and refused.
@@ -171,3 +165,36 @@ export default function Dashboard(input) {
 ```
 
 Scope: `input`, `$trigger`, `$nodes` — `help("pipeline/dsl")`.
+
+## Project files and an installable app — `--file`
+
+`web.response --file` answers a project file: content type by extension, a
+`.ts` compiled to JavaScript, everything else byte for byte. That is how a
+robots.txt, a sitemap, an icon or a web-app manifest is served, and how a
+service worker is: every script served this way starts with
+`self.__ZF = { version, source }` (the build and the file's hash) so a
+worker can key its cache on them.
+
+```text
+register pipelines/pwa/manifest -- | trigger.webhook --path /manifest.webmanifest --method GET | web.response --file pwa/manifest.webmanifest
+register pipelines/pwa/worker   -- | trigger.webhook --path /sw.js --method GET               | web.response --file pwa/site.sw.ts
+register pipelines/pwa/icons    -- | trigger.webhook --path /pwa/{file} --method GET          | web.response --folder pwa/icons --file "{{ input.params.file }}"
+```
+
+- The manifest is a JSON file you write (`name`, `id`, `start_url`, `scope`
+  ending in `/`, `display: standalone`, `icons` at 192 and 512). A second app
+  (a member area at `/member/`) is a second file and route.
+- A worker controls only pages under the directory it is served from, so the
+  site's worker answers at `/sw.js`; from deeper, add
+  `--header Service-Worker-Allowed=/`. A store object at `/_files/sw.js`
+  would control nothing.
+- With `--folder`, `--file` is a bare filename, usually from the route, and can
+  never leave that folder — safe to expose.
+- Every page carries the manifest and the Apple icon in `page.head.links` and
+  its colour in `page.head.themeColor`. A component in the shell registers the
+  worker once (`navigator.serviceWorker.register("/sw.js")`) and shows the
+  install offer as a quiet card, never a modal.
+- Check it: `route_fetch path="/"` answers a `pwa` block — `installable: true`
+  or the `reasons` that stop it. Localhost is a secure origin, so all of this
+  works on the dev host; only the install button itself needs a real
+  (non-headless) Chrome.

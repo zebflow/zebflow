@@ -16,7 +16,7 @@ zebflow/
 ├── libraries/     Zeb React and RWE libraries available to projects
 ├── npm/           npm package that installs or runs Zebflow
 ├── pip/           Python package that installs or runs Zebflow
-├── runtime/       runtime support files that are not Rust source
+├── runtime/       runtime support files that are not Rust source (`runtime/fonts/` — the bundled default faces)
 ├── skills/        task guidance for working with Zebflow repositories
 ├── src/           Rust platform and runtime source
 └── tests/         tests and fixtures that cross module boundaries
@@ -84,10 +84,10 @@ src/
 │   ├── engines/
 │   ├── expr/
 │   ├── nodes/
-│   │   └── basic/
-│   │       ├── logic/
-│   │       ├── trigger/
-│   │       └── web_response/
+│   │   ├── basic/     one folder per DSL family (`fs/`, `kv/`, `trigger/`, …),
+│   │   │              one file per node: `n.fs.save` is `basic/fs/save.rs`
+│   │   ├── bundled/
+│   │   └── shared/    helpers several families use (`file_ref.rs`, `util.rs`)
 │   └── prototypes/
 ├── platform/
 │   ├── adapters/

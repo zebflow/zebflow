@@ -1,5 +1,34 @@
 //! Pattern matching: maps a DSL command string to a navigation URL.
 
+use crate::platform::model::PIPELINE_DEFINITION_EXTENSION;
+use crate::platform::services::project::virtual_path_from_file_rel_path;
+
+/// The one page that opens a pipeline: the registry with the unified editor
+/// scoped to the pipeline's folder and the pipeline selected. This is the URL
+/// the editor itself navigates to after a save (`redirectUrl` in
+/// `pipeline-editor/index.tsx`) and the registry rows link to; there is no
+/// other pipeline page. `/pipelines/editor?name=…` used to be one and rendered
+/// an empty outlet, which is where every agent following `navigate` landed.
+pub fn pipeline_editor_url(owner: &str, project: &str, name: &str) -> String {
+    let file_rel_path = pipeline_file_id(name);
+    let virtual_path = virtual_path_from_file_rel_path(&file_rel_path);
+    format!(
+        "/projects/{owner}/{project}/pipelines/registry?type=pipeline&path={virtual_path}&file={file_rel_path}"
+    )
+}
+
+/// The identity a DSL name resolves to, the way `register` spells it: the
+/// `.zf.json` extension is replaced rather than appended, so `api/foo`,
+/// `api/foo.json` and `api/foo.zf.json` are one pipeline.
+fn pipeline_file_id(name: &str) -> String {
+    let rel = name.trim().trim_start_matches('/');
+    if rel.ends_with(PIPELINE_DEFINITION_EXTENSION) {
+        return rel.to_string();
+    }
+    let stem = rel.strip_suffix(".json").unwrap_or(rel);
+    format!("{stem}{PIPELINE_DEFINITION_EXTENSION}")
+}
+
 /// Match a DSL string against known patterns and return a navigation URL if matched.
 /// Only inspects the first command when chained with `&&`.
 pub fn match_patterns(dsl: &str, owner: &str, project: &str) -> Option<String> {
@@ -12,39 +41,17 @@ pub fn match_patterns(dsl: &str, owner: &str, project: &str) -> Option<String> {
     if lower.starts_with("register ") {
         let name = tokens.get(1).copied().unwrap_or("");
         if !name.is_empty() {
-            return Some(format!(
-                "/projects/{owner}/{project}/pipelines/editor?name={name}"
-            ));
+            return Some(pipeline_editor_url(owner, project, name));
         }
     }
 
-    // activate pipeline <name>
-    if lower.starts_with("activate pipeline ") {
-        let name = tokens.get(2).copied().unwrap_or("");
-        if !name.is_empty() {
-            return Some(format!(
-                "/projects/{owner}/{project}/pipelines/editor?name={name}&tab=status"
-            ));
-        }
-    }
-
-    // describe pipeline <name>
-    if lower.starts_with("describe pipeline ") {
-        let name = tokens.get(2).copied().unwrap_or("");
-        if !name.is_empty() {
-            return Some(format!(
-                "/projects/{owner}/{project}/pipelines/editor?name={name}"
-            ));
-        }
-    }
-
-    // patch pipeline <name>
-    if lower.starts_with("patch pipeline ") {
-        let name = tokens.get(2).copied().unwrap_or("");
-        if !name.is_empty() {
-            return Some(format!(
-                "/projects/{owner}/{project}/pipelines/editor?name={name}"
-            ));
+    // activate | deactivate | describe | patch | execute pipeline <name>
+    for verb in ["activate", "deactivate", "describe", "patch", "execute"] {
+        if lower.starts_with(&format!("{verb} pipeline ")) {
+            let name = tokens.get(2).copied().unwrap_or("");
+            if !name.is_empty() {
+                return Some(pipeline_editor_url(owner, project, name));
+            }
         }
     }
 
@@ -101,30 +108,41 @@ pub fn match_patterns(dsl: &str, owner: &str, project: &str) -> Option<String> {
         return Some(format!("/projects/{owner}/{project}/build/nodes"));
     }
 
-    // execute pipeline <name>
-    if lower.starts_with("execute pipeline ") {
-        let name = tokens.get(2).copied().unwrap_or("");
-        if !name.is_empty() {
-            return Some(format!(
-                "/projects/{owner}/{project}/pipelines/editor?name={name}&tab=logs"
-            ));
-        }
-    }
-
-    // deactivate pipeline <name>
-    if lower.starts_with("deactivate pipeline ") {
-        let name = tokens.get(2).copied().unwrap_or("");
-        if !name.is_empty() {
-            return Some(format!(
-                "/projects/{owner}/{project}/pipelines/editor?name={name}&tab=status"
-            ));
-        }
-    }
-
     // git <subcommand>
     if lower.starts_with("git ") {
         return Some(format!("/projects/{owner}/{project}/files"));
     }
 
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_pipeline_command_opens_the_pipeline_in_the_unified_editor() {
+        let expected = "/projects/o/p/pipelines/registry?type=pipeline&path=/pipelines/test&file=pipelines/test/demo.zf.json";
+        assert_eq!(
+            match_patterns("register pipelines/test/demo | trigger.manual", "o", "p").as_deref(),
+            Some(expected)
+        );
+        for dsl in [
+            "activate pipeline pipelines/test/demo",
+            "deactivate pipeline pipelines/test/demo.zf.json",
+            "describe pipeline pipelines/test/demo.json",
+            "patch pipeline pipelines/test/demo node b --optional",
+            "execute pipeline pipelines/test/demo --input '{}'",
+            "register pipelines/test/demo | trigger.manual && activate pipeline pipelines/test/demo",
+        ] {
+            assert_eq!(match_patterns(dsl, "o", "p").as_deref(), Some(expected), "{dsl}");
+        }
+        assert_eq!(
+            pipeline_editor_url("o", "p", "demo"),
+            "/projects/o/p/pipelines/registry?type=pipeline&path=/&file=demo.zf.json"
+        );
+        assert!(!match_patterns("register x | trigger.manual", "o", "p")
+            .unwrap()
+            .contains("pipelines/editor"));
+    }
 }

@@ -94,7 +94,7 @@ edge is a second entry and runs on every request.
 ## Nodes
 
 - **Triggers** start a run: `trigger.webhook`, `trigger.schedule`, `trigger.function`, `trigger.manual`, `trigger.ws`, `trigger.ws.client`, `trigger.kv.subscribe`, `trigger.mcp`, `trigger.weberror`.
-- **Middle nodes** read, transform or decide: `sekejap.query`, `sekejap.insert`, `pg.query`, `sqlite.query`, `sqlite.mutate`, `script`, `http.request`, `kv.get`, `kv.set`, `kv.incr`, `logic.if`, `logic.match`, `logic.foreach`, `logic.collect`, `logic.reduce`, `logic.retry`, `crypto`, `auth.token.create`, `auth.token.verify`, `fs.save`, `fs.thumbnail`, `fs.*`, `table.query`, `table.convert`, `geo.*`, `mail.send`, `ai.agent`, `ai.embedding`, `ai.tts`, `browser.run`, …
+- **Middle nodes** read, transform or decide: `sekejap.query`, `sekejap.insert`, `pg.query`, `sqlite.query`, `sqlite.mutate`, `script`, `http.request`, `kv.get`, `kv.set`, `kv.incr`, `logic.if`, `logic.match`, `logic.foreach`, `logic.collect`, `logic.reduce`, `logic.retry`, `crypto`, `auth.token.create`, `auth.token.verify`, `fs.save`, `fs.image.thumbnail`, `fs.*`, `table.query`, `table.convert`, `geo.*`, `mail.send`, `ai.agent`, `ai.embedding`, `ai.tts`, `browser.run`, …
 - **Last nodes** answer: `web.response` (JSON, page, redirect, cookie — `help(topic="pipeline/web")`), or push: `ws.emit`, `ws.sync_state`, `kv.publish`, `telegram.send`, `ms.publish`.
 
 Flags are declared per node and an undeclared flag is a parse error, so read
@@ -102,7 +102,8 @@ the node before guessing:
 
 | Call | What you get |
 |---|---|
-| `help(topic="pipeline/nodes")` | the whole catalog, generated from the node definitions |
+| `help(topic="pipeline/nodes")` | the index: every kind on one line, by family — find the name first |
+| `help(topic="pipeline/nodes/all")` | the whole catalogue with every flag table and schema (large) |
 | `help(topic="pipeline/nodes/n.fs.save")` | one node: description, pins, every flag with its config key, required or not |
 | `help_search query="thumbnail"` | search across the help files **and** every node's description and flags |
 

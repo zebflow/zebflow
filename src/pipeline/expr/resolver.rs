@@ -18,7 +18,7 @@
 //! | `$item`        | Current foreach item (`input.item` when present)           |
 //! | `$index`       | Current foreach index (`input.index` when present)         |
 //! | `$count`       | Current foreach count (`input.count` when present)         |
-//! | `$trigger`     | Immutable trigger snapshot (`auth`, `params`, `query`, `headers`) |
+//! | `$trigger`     | Immutable trigger snapshot (`body`, `files`, `auth`, `params`, `query`, `headers`) |
 //! | `$nodes`       | Map of completed node IDs → their output payloads          |
 //! | `$placeholder` | Opaque credential references for composite/WASM nodes. Values are placeholder strings resolved only by platform consumers (HTTP client, script sandbox), never in traces or logs. |
 //!

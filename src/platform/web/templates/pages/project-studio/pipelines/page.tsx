@@ -391,7 +391,7 @@ export default function Page(input) {
             </div>
           ) : null}
 
-          {input?.is_non_registry && !input?.is_editor && !input?.is_webhooks ? (
+          {input?.is_non_registry && !input?.is_webhooks ? (
             <div className="flex-1 min-h-0 overflow-auto flex flex-col">
               <div className="shrink-0 flex items-start justify-between gap-3 px-[0.875rem] py-[0.625rem] border-b border-border bg-card">
                 <div>

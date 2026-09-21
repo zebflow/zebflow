@@ -51,7 +51,8 @@ const NODE_KIND_COLORS: Record<string, string> = {
   "n.fs.compress": "#0c4a6e",
   "n.fs.decompress": "#0c4a6e",
   "n.fs.pdf.convert": "#0c4a6e",
-  "n.fs.thumbnail": "#4a1d96",
+  "n.fs.image.thumbnail": "#4a1d96",
+  "n.fs.svg.convert": "#4a1d96",
   "n.kv.set": "#b45309",
   "n.kv.get": "#b45309",
   "n.kv.exists": "#b45309",
@@ -100,7 +101,7 @@ export function categoryForNodeKind(kind: string): string {
   // Installed nodes carry their own ui_category. This fallback only runs when a
   // bundle left it empty, and the kind never encodes the implementation.
   if (canonical.startsWith("n.x.")) return "installed";
-  if (canonical === "n.script") return "logic";
+  if (canonical === "n.script" || canonical === "n.concept") return "logic";
   return "other";
 }
 

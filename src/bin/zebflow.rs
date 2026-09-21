@@ -73,6 +73,15 @@ async fn shutdown_signal(health_state: Option<Arc<HealthState>>) {
         state.mark_shutdown_requested();
     }
     eprintln!("Zebflow: graceful shutdown initiated; draining in-flight requests...");
+    // A drain that never ends is a process that never exits: a live-reload
+    // stream or a WebSocket held by a browser tab is "in flight" forever, and
+    // whatever supervises the process waits on it. Ordinary requests finish
+    // well within five seconds; a stream still open after that is cut.
+    tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+        eprintln!("Zebflow: drain deadline passed with connections still open; exiting.");
+        std::process::exit(0);
+    });
 }
 
 fn configured_health_addr(default_host: &str) -> Result<Option<SocketAddr>, io::Error> {

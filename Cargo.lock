@@ -8947,8 +8947,10 @@ dependencies = [
  "rand 0.10.0",
  "regex",
  "reqwest",
+ "resvg",
  "ring",
  "rmcp",
+ "roxmltree",
  "rusqlite",
  "saphyr-parser",
  "sekejap",
@@ -8972,6 +8974,7 @@ dependencies = [
  "tokio-util",
  "tower",
  "ureq",
+ "usvg",
  "uuid",
  "wasmtime",
 ]

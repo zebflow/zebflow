@@ -64,6 +64,13 @@ base64 = "0.22"
 infer = "0.16"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif", "bmp"] }
 tiny-skia = "0.11"
+# fs.svg.convert: SVG -> pixels without a browser. resvg 0.45 is the version already
+# in the tree through pdfwrangler and it is built against tiny-skia 0.11, the
+# same one the mapserver uses, so there is one copy of each. `system-fonts`
+# stays off here: the node shapes text with the platform's fontdb only.
+resvg = { version = "0.45", default-features = false, features = ["text", "raster-images"] }
+usvg = { version = "0.45", default-features = false, features = ["text"] }
+roxmltree = "0.20"
 multer = "3"
 serde_urlencoded = "0.7"
 sha1 = "0.10"

@@ -131,13 +131,23 @@ impl DslExecutor {
             }
             DslVerb::Patch {
                 file_rel_path,
+                target,
                 node_id,
                 flags,
                 body,
-            } => {
-                self.cmd_patch(&file_rel_path, &node_id, flags, body.as_deref())
-                    .await
-            }
+            } => match target.as_str() {
+                "node" => {
+                    self.cmd_patch(&file_rel_path, &node_id, flags, body.as_deref())
+                        .await
+                }
+                "note" => {
+                    self.cmd_patch_note(&file_rel_path, &node_id, flags, body.as_deref())
+                        .await
+                }
+                other => DslOutput::err(format!(
+                    "patch: unknown target `{other}` — usage: patch pipeline <path> node <id> [--flag v]… | patch pipeline <path> note <id> [--text t] [--at x,y] [--size WxH] [--color c] [--remove]"
+                )),
+            },
             DslVerb::Run { body, dry_run } => self.cmd_run(&body, dry_run, None).await,
             DslVerb::Delete { kind, name } => self.cmd_delete(&kind, &name).await,
             DslVerb::Git {
@@ -148,6 +158,7 @@ impl DslExecutor {
             DslVerb::NodeHelp { kind } => self.cmd_node_help(&kind),
             DslVerb::CredentialBlocked { reason } => self.cmd_credential_blocked(&reason),
             DslVerb::Write { .. } => DslOutput::err("write/create is not yet implemented via DSL"),
+            DslVerb::Invalid { message } => DslOutput::err(message),
             DslVerb::Unknown { raw } => {
                 let verb_word = raw.split_whitespace().next().unwrap_or("?");
                 DslOutput::err(format!(
@@ -375,6 +386,10 @@ impl DslExecutor {
                         let seg = crate::platform::shell::parser::node_to_segment_no_body(node);
                         out.push(DslLine::info(format!("  {:6}  {}", node.id, seg)));
                     }
+                    for note in &graph.notes {
+                        let first = note.text.lines().next().unwrap_or("").chars().take(70).collect::<String>();
+                        out.push(DslLine::muted(format!("  {:6}  note \"{}\"", note.id, first)));
+                    }
                 } else {
                     let dsl = crate::platform::shell::parser::graph_to_dsl(&graph);
                     out.push(DslLine::blank());
@@ -398,6 +413,10 @@ impl DslExecutor {
                             .join("  ");
                         out.push(DslLine::blank());
                         out.push(DslLine::muted(format!("node ids (for patch): {}", ids)));
+                    }
+                    if !graph.notes.is_empty() {
+                        let ids = graph.notes.iter().map(|n| n.id.as_str()).collect::<Vec<_>>().join("  ");
+                        out.push(DslLine::muted(format!("note ids (for patch … note): {}", ids)));
                     }
                 }
             }
@@ -499,6 +518,10 @@ impl DslExecutor {
                     if !description.trim().is_empty() {
                         graph.description = Some(description.trim().to_string());
                     }
+                    // A register replaces the nodes and edges, never the notes a
+                    // person or an earlier agent left on the canvas: existing
+                    // notes stay unless the body declares the same id.
+                    self.keep_existing_notes(file_rel_path, &mut graph);
                     match encode_pipeline_graph(graph).and_then(|bytes| {
                         String::from_utf8(bytes).map_err(|err| {
                             crate::contracts::ContractError::invalid(err.to_string())
@@ -593,6 +616,166 @@ impl DslExecutor {
                 for w in validate_graph_flags(&graph, &node_definitions) {
                     out.push(DslLine::muted(format!("⚠ {}", w)));
                 }
+                out
+            }
+            Err(e) => DslOutput::err(format!("Error: {}", e.message)),
+        }
+    }
+
+    /// Merges the notes of the pipeline already stored at `file_rel_path`
+    /// into `graph`: a note the body did not redeclare is kept as it was.
+    fn keep_existing_notes(&self, file_rel_path: &str, graph: &mut crate::pipeline::model::PipelineGraph) {
+        let Ok(Some(meta)) = self.platform.projects.get_pipeline_meta_by_file_id(
+            &self.owner,
+            &self.project,
+            file_rel_path,
+        ) else {
+            return;
+        };
+        let Ok(source) = self.platform.projects.read_pipeline_source(
+            &self.owner,
+            &self.project,
+            &meta.file_rel_path,
+        ) else {
+            return;
+        };
+        let Ok(existing) = decode_pipeline_graph(source.as_bytes()) else {
+            return;
+        };
+        for note in existing.spec.notes {
+            if !graph.notes.iter().any(|n| n.id == note.id) {
+                graph.notes.push(note);
+            }
+        }
+    }
+
+    /// `patch pipeline <path> note <id> [--text t] [--at x,y] [--size WxH] [--color c] [-- text]`
+    /// creates or changes one note; `--remove` deletes it.
+    async fn cmd_patch_note(
+        &self,
+        file_rel_path: &str,
+        note_id: &str,
+        flags: HashMap<String, Value>,
+        body: Option<&str>,
+    ) -> DslOutput {
+        if file_rel_path.is_empty() || note_id.is_empty() {
+            return DslOutput::err(
+                "patch: usage: patch pipeline <file_rel_path> note <id> [--text t] [--at x,y] [--size WxH] [--color c] [--remove]",
+            );
+        }
+        let meta = match self.platform.projects.get_pipeline_meta_by_file_id(
+            &self.owner,
+            &self.project,
+            file_rel_path,
+        ) {
+            Ok(Some(m)) => m,
+            Ok(None) => return DslOutput::err(format!("Pipeline '{file_rel_path}' not found")),
+            Err(e) => return DslOutput::err(format!("Error: {}", e.message)),
+        };
+        let source = match self.platform.projects.read_pipeline_source(
+            &self.owner,
+            &self.project,
+            &meta.file_rel_path,
+        ) {
+            Ok(s) => s,
+            Err(e) => return DslOutput::err(format!("Error reading pipeline: {}", e.message)),
+        };
+        let mut graph = match decode_pipeline_graph(source.as_bytes()) {
+            Ok(document) => document.spec,
+            Err(e) => return DslOutput::err(format!("Parse error: {e}")),
+        };
+
+        let verb;
+        if flags.contains_key("remove") {
+            let before = graph.notes.len();
+            graph.notes.retain(|n| n.id != note_id);
+            if graph.notes.len() == before {
+                return DslOutput::err(format!("Note '{note_id}' not found in '{file_rel_path}'"));
+            }
+            verb = "removed";
+        } else {
+            let flag_str = |key: &str| -> Option<String> {
+                flags.get(key).map(|v| match v {
+                    Value::String(s) => s.clone(),
+                    other => other.to_string(),
+                })
+            };
+            let at = match flag_str("at").map(|v| parse_note_pair(&v, ',', "--at expects x,y")).transpose() {
+                Ok(v) => v,
+                Err(e) => return DslOutput::err(e),
+            };
+            let size = match flag_str("size").map(|v| parse_note_pair(&v, 'x', "--size expects WIDTHxHEIGHT")).transpose() {
+                Ok(v) => v,
+                Err(e) => return DslOutput::err(e),
+            };
+            let text = body.map(str::to_string).or_else(|| flag_str("text"));
+            let color = flag_str("color");
+            let allowed = ["text", "at", "size", "color"];
+            if let Some(unknown) = flags.keys().find(|k| !allowed.contains(&k.as_str())) {
+                return DslOutput::err(format!(
+                    "patch note: unknown flag `--{unknown}` (flags: --text, --at x,y, --size WxH, --color, --remove)"
+                ));
+            }
+            let existing = graph.notes.iter().position(|n| n.id == note_id);
+            let idx = match existing {
+                Some(i) => {
+                    verb = "updated";
+                    i
+                }
+                None => {
+                    // A new note lands below the last one so it is visible without a
+                    // position; `--at` overrides.
+                    let y = graph.notes.iter().map(|n| n.y + n.height.max(120.0) + 24.0).fold(40.0, f64::max);
+                    graph.notes.push(crate::pipeline::model::PipelineNote {
+                        id: note_id.to_string(),
+                        text: String::new(),
+                        x: 40.0,
+                        y,
+                        width: 280.0,
+                        height: 120.0,
+                        color: String::new(),
+                    });
+                    verb = "created";
+                    graph.notes.len() - 1
+                }
+            };
+            let note = &mut graph.notes[idx];
+            if let Some(t) = text {
+                note.text = t;
+            }
+            if let Some((x, y)) = at {
+                note.x = x;
+                note.y = y;
+            }
+            if let Some((w, h)) = size {
+                note.width = w;
+                note.height = h;
+            }
+            if let Some(c) = color {
+                note.color = c;
+            }
+        }
+
+        let new_source = match encode_pipeline_graph(graph.clone()).and_then(|bytes| {
+            String::from_utf8(bytes).map_err(|err| crate::contracts::ContractError::invalid(err.to_string()))
+        }) {
+            Ok(s) => s,
+            Err(e) => return DslOutput::err(format!("Serialize error: {e}")),
+        };
+        match self.platform.projects.upsert_pipeline_definition(
+            &self.owner,
+            &self.project,
+            &meta.file_rel_path,
+            &meta.title,
+            &meta.description,
+            &meta.trigger_kind,
+            &new_source,
+        ) {
+            Ok(_) => {
+                let mut out = DslOutput::new_ok();
+                out.push(DslLine::success(format!(
+                    "Note '{note_id}' in pipeline '{file_rel_path}' {verb}."
+                )));
                 out
             }
             Err(e) => DslOutput::err(format!("Error: {}", e.message)),
@@ -772,6 +955,26 @@ impl DslExecutor {
                         .get(k)
                         .cloned()
                         .unwrap_or_else(|| k.clone());
+                    // `--preview image:body` / `--preview off` write under the
+                    // nested `config.preview` object, and `off` *deletes* that
+                    // half rather than storing the string "off".
+                    if let Some(slot) =
+                        crate::platform::shell::parser::preview_slot_for_config_key(&config_key)
+                    {
+                        let raw = match v {
+                            Value::String(s) => s.clone(),
+                            other => other.to_string(),
+                        };
+                        let flag = format!("--{}", k.replace('_', "-"));
+                        match crate::platform::shell::parser::parse_preview_flag_value(&flag, &raw)
+                        {
+                            Ok(cell) => {
+                                crate::platform::shell::parser::set_preview_config(cfg, slot, cell)
+                            }
+                            Err(message) => return DslOutput::err(message),
+                        }
+                        continue;
+                    }
                     cfg.insert(config_key, v.clone());
                 }
             }
@@ -914,6 +1117,19 @@ impl DslExecutor {
             Err(e) => return DslOutput::err(format!("Parse error: {e}")),
         };
 
+        // `--input '{"files": {"photo": "uploads/cat.png"}}'` — a store path
+        // stands for the file, as it does on the JSON execute route, so an
+        // agent with no multipart can still feed an `input.image`.
+        let mut input = input;
+        if let Err(e) = crate::pipeline::nodes::shared::file_ref::resolve_manual_input_files(
+            &self.platform,
+            &self.owner,
+            &self.project,
+            &mut input,
+        ) {
+            return DslOutput::err(format!("execute: {}", e.message));
+        }
+
         let ctx = crate::pipeline::PipelineContext {
             owner: self.owner.clone(),
             project: self.project.clone(),
@@ -926,8 +1142,8 @@ impl DslExecutor {
                     .as_millis()
             ),
             route: Default::default(),
+            trigger: Some(crate::pipeline::nodes::basic::trigger::manual::trigger_snapshot(&input)),
             input,
-            trigger: None,
             placeholder: None,
         };
 
@@ -948,7 +1164,50 @@ impl DslExecutor {
         );
 
         use crate::pipeline::PipelineEngine;
-        match engine.execute_async(&graph, &ctx).await {
+        let exec_start = std::time::Instant::now();
+        let run = engine.execute_async(&graph, &ctx).await;
+        // What the API route does after a run, this path does too: the
+        // run's temporary files are removed, and the invocation is recorded
+        // under the same retention — a DSL run used to leave both undone,
+        // so `tmp/runs/dsl-exec-…` stayed on disk and the Runs panel showed
+        // nothing.
+        crate::pipeline::nodes::shared::file_ref::remove_run_temporary_files(
+            &self.platform,
+            &self.owner,
+            &self.project,
+            &ctx.request_id,
+        );
+        let project_cfg = self
+            .platform
+            .zebflow_cfg
+            .read_or_default(&self.owner, &self.project)
+            .unwrap_or_default();
+        let retention =
+            crate::platform::model::resolve_invocation_retention(&project_cfg, Some(&graph));
+        let (status, error, trace) = match &run {
+            Ok(output) => ("ok", None, output.node_trace.clone()),
+            Err(e) => ("error", Some(e.message.clone()), e.node_trace.clone()),
+        };
+        let _ = self.platform.data.log_pipeline_invocation(
+            &self.owner,
+            &self.project,
+            &meta.file_rel_path,
+            &crate::platform::model::PipelineInvocationEntry {
+                run_id: ctx.request_id.clone(),
+                at: std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs() as i64,
+                duration_ms: exec_start.elapsed().as_millis() as u64,
+                status: status.to_string(),
+                trigger: "manual".to_string(),
+                error,
+                trace,
+            },
+            retention.max_invocations,
+            retention.max_age_secs,
+        );
+        match run {
             Ok(output) => {
                 self.platform.pipeline_hits.record_success(
                     &self.owner,
@@ -957,8 +1216,8 @@ impl DslExecutor {
                 );
                 let mut out = DslOutput::new_ok();
                 out.push(DslLine::success(format!(
-                    "Pipeline '{}' executed.",
-                    meta.file_rel_path
+                    "Pipeline '{}' executed (run {}).",
+                    meta.file_rel_path, ctx.request_id
                 )));
                 let result_str = serde_json::to_string_pretty(&output.value)
                     .unwrap_or_else(|_| output.value.to_string());
@@ -1132,11 +1391,76 @@ impl DslExecutor {
         ))
     }
 
+    /// `git state · fetch · sync · push · resolve <path> mine|theirs · continue · abort`
+    /// — `None` when the subcommand is one of git's own.
+    async fn cmd_git_sync(&self, subcommand: &str, args: &[String], body: Option<&str>) -> Option<DslOutput> {
+        use crate::platform::services::git_sync::{GitSyncService, Resolution, SyncOutcome, SyncState};
+        let svc = GitSyncService::new(self.platform.clone());
+        let actor = Some(self.owner.as_str());
+        let describe = |s: &SyncState| -> String {
+            let mut line = format!(
+                "{} — branch {} · remote {}",
+                s.word(),
+                s.branch,
+                if s.remote_configured { s.remote_branch.as_str() } else { "(none)" }
+            );
+            if let (Some(a), Some(b)) = (s.ahead, s.behind) {
+                line.push_str(&format!(" · {a} to push · {b} to pull"));
+            }
+            if s.dirty > 0 {
+                line.push_str(&format!(" · {} uncommitted", s.dirty));
+            }
+            if s.rebase_in_progress {
+                line.push_str(&format!(
+                    "\nconflicts ({}): {}\nresolve each: git resolve <path> mine|theirs (or write the file and `git add`), then: git continue — or: git abort",
+                    s.conflicts.len(),
+                    s.conflicts.join(", ")
+                ));
+            }
+            line
+        };
+        let reply = |r: Result<SyncState, crate::platform::error::PlatformError>| match r {
+            Ok(s) => DslOutput::ok_line(describe(&s)),
+            Err(e) => DslOutput::err(format!("git {subcommand}: {} ({})", e.message, e.code)),
+        };
+        let reply_outcome = |r: Result<SyncOutcome, crate::platform::error::PlatformError>| match r {
+            Ok(SyncOutcome::Ok { state }) => DslOutput::ok_line(describe(&state)),
+            Ok(SyncOutcome::Conflict { state }) => DslOutput::err(format!("git {subcommand}: conflict\n{}", describe(&state))),
+            Err(e) => DslOutput::err(format!("git {subcommand}: {} ({})", e.message, e.code)),
+        };
+        Some(match subcommand {
+            "state" => reply(svc.state(&self.owner, &self.project)),
+            "fetch" => reply(svc.fetch(&self.owner, &self.project)),
+            "sync" => reply_outcome(svc.sync(&self.owner, &self.project, actor)),
+            "push" => reply(svc.push(&self.owner, &self.project)),
+            "continue" => reply_outcome(svc.continue_rebase(&self.owner, &self.project, actor)),
+            "abort" => reply(svc.abort(&self.owner, &self.project)),
+            "resolve" => {
+                let path = args.first().cloned().unwrap_or_default();
+                let how = args.get(1).map(|s| s.to_lowercase()).unwrap_or_default();
+                let (resolution, content) = match how.as_str() {
+                    "mine" => (Resolution::Mine, None),
+                    "theirs" => (Resolution::Theirs, None),
+                    "content" => (Resolution::Content, body),
+                    _ => return Some(DslOutput::err("git resolve <path> mine|theirs  — or: git resolve <path> content -- <the file's content>")),
+                };
+                reply(svc.resolve(&self.owner, &self.project, &path, resolution, content))
+            }
+            _ => return None,
+        })
+    }
+
     async fn cmd_git(&self, subcommand: &str, args: Vec<String>, body: Option<&str>) -> DslOutput {
+        // The remote-facing verbs never reach the git binary from here: they go
+        // through GitSyncService, the same road the Studio panel uses, so an
+        // agent sees the same state words and the same conflict list.
+        if let Some(out) = self.cmd_git_sync(subcommand, &args, body).await {
+            return out;
+        }
         let allowed = ["status", "log", "diff", "add", "commit"];
         if !allowed.contains(&subcommand) {
             return DslOutput::err(format!(
-                "git: '{}' is not allowed. Allowed subcommands: status, log, diff, add, commit",
+                "git: '{}' is not allowed. Allowed subcommands: status, log, diff, add, commit, state, fetch, sync, push, resolve, continue, abort",
                 subcommand
             ));
         }
@@ -1322,7 +1646,11 @@ const GLOBAL_CONFIG_KEYS: &[&str] = &[
     "params_expr",
     "room",
     "event",
+    // Canvas presentation the engine never reads. `preview` is the nested
+    // object `--preview` / `--preview-in` write to, so it never matches a flat
+    // flag key and has to be named here beside `ui`.
     "ui",
+    "preview",
 ];
 
 /// Validate node config keys against declared DSL flags for each node kind.
@@ -1661,6 +1989,192 @@ fn review_git_flag_value(flag: &str, value: &str) -> Result<(), String> {
     Ok(())
 }
 
+#[cfg(test)]
+mod note_tests {
+    use super::decode_pipeline_graph;
+
+    fn executor() -> (tempfile::TempDir, super::DslExecutor) {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let mut config = crate::platform::PlatformConfig::default();
+        config.data_root = tmp.path().join("platform");
+        config.default_password = "secret".to_string();
+        let platform = std::sync::Arc::new(
+            crate::platform::services::PlatformService::from_config(config).expect("platform"),
+        );
+        platform
+            .file
+            .ensure_project_layout("superadmin", "default")
+            .expect("layout");
+        (tmp, super::DslExecutor::new(platform, "superadmin", "default"))
+    }
+
+    fn texts(out: &crate::platform::shell::DslOutput) -> Vec<String> {
+        out.lines.iter().map(|l| l.text.clone()).collect()
+    }
+
+    /// `execute pipeline` leaves the same two things behind as the API
+    /// route: the invocation record, and no `tmp/runs/<run>` directory. The
+    /// pipeline writes into its own run's temporary folder on purpose, so
+    /// the cleanup has something to remove.
+    #[tokio::test]
+    async fn execute_pipeline_records_the_run_and_removes_its_temporary_files() {
+        let (_tmp, ex) = executor();
+        let out = ex
+            .execute_dsl(
+                r#"register pipelines/test/dsl-exec -- | trigger.manual | script -- "return { p: 'tmp/runs/' + ctx.request_id + '/files/x.txt' }" | fs.put --path "{{ $input.p }}" --text hi"#,
+            )
+            .await;
+        assert!(out.ok, "{:?}", texts(&out));
+        let out = ex.execute_dsl("activate pipeline pipelines/test/dsl-exec").await;
+        assert!(out.ok, "{:?}", texts(&out));
+        let out = ex.execute_dsl("execute pipeline pipelines/test/dsl-exec").await;
+        assert!(out.ok, "{:?}", texts(&out));
+        assert!(
+            texts(&out).iter().any(|t| t.contains("(run dsl-exec-")),
+            "{:?}",
+            texts(&out)
+        );
+
+        let records = ex
+            .platform
+            .data
+            .get_pipeline_invocations("superadmin", "default", "pipelines/test/dsl-exec.zf.json", None)
+            .expect("records");
+        assert_eq!(records.len(), 1, "one record for one run");
+        assert_eq!(records[0].status, "ok");
+        assert_eq!(records[0].trigger, "manual");
+        assert!(records[0].run_id.starts_with("dsl-exec-"), "{}", records[0].run_id);
+        assert_eq!(records[0].trace.len(), 3, "trigger, script, fs.put");
+
+        let layout = ex
+            .platform
+            .file
+            .ensure_project_layout("superadmin", "default")
+            .expect("layout");
+        let runs = layout.files_dir.join("tmp").join("runs");
+        let leftovers: Vec<String> = std::fs::read_dir(&runs)
+            .map(|dir| dir.flatten().map(|e| e.file_name().to_string_lossy().to_string()).collect())
+            .unwrap_or_default();
+        assert!(leftovers.is_empty(), "tmp/runs still holds {leftovers:?}");
+    }
+
+    async fn notes_of(ex: &super::DslExecutor, path: &str) -> Vec<crate::pipeline::model::PipelineNote> {
+        let meta = ex
+            .platform
+            .projects
+            .get_pipeline_meta_by_file_id("superadmin", "default", path)
+            .expect("meta")
+            .expect("registered");
+        let source = ex
+            .platform
+            .projects
+            .read_pipeline_source("superadmin", "default", &meta.file_rel_path)
+            .expect("source");
+        decode_pipeline_graph(source.as_bytes()).expect("decode").spec.notes
+    }
+
+    fn text(out: &super::DslOutput) -> String {
+        out.lines.iter().map(|l| l.text.clone()).collect::<Vec<_>>().join("\n")
+    }
+
+    /// The reason the DSL had to learn notes at all: `register` rebuilds the
+    /// pipeline from text, and used to write `notes: []` over whatever the
+    /// canvas held.
+    #[tokio::test]
+    async fn register_keeps_the_notes_it_did_not_redeclare() {
+        let (_tmp, ex) = executor();
+        let out = ex
+            .execute_dsl("register api/notes-keep | trigger.webhook --path /nk | web.response --template pages/x.tsx | note --id why --text \"first\" --color amber")
+            .await;
+        assert!(out.ok, "{}", text(&out));
+        assert_eq!(notes_of(&ex, "api/notes-keep").await.len(), 1);
+
+        // Re-register without any note: the note survives.
+        let out = ex
+            .execute_dsl("register api/notes-keep | trigger.webhook --path /nk | web.response --template pages/y.tsx")
+            .await;
+        assert!(out.ok, "{}", text(&out));
+        let notes = notes_of(&ex, "api/notes-keep").await;
+        assert_eq!(notes.len(), 1);
+        assert_eq!(notes[0].text, "first");
+
+        // Re-register redeclaring the same id: the body wins for that id.
+        let out = ex
+            .execute_dsl("register api/notes-keep | trigger.webhook --path /nk | web.response --template pages/y.tsx | note --id why --text \"second\" | note --id more --text \"another\"")
+            .await;
+        assert!(out.ok, "{}", text(&out));
+        let mut ids: Vec<(String, String)> = notes_of(&ex, "api/notes-keep")
+            .await
+            .into_iter()
+            .map(|n| (n.id, n.text))
+            .collect();
+        ids.sort();
+        assert_eq!(ids, vec![("more".to_string(), "another".to_string()), ("why".to_string(), "second".to_string())]);
+    }
+
+    #[tokio::test]
+    async fn patch_note_creates_updates_and_removes() {
+        let (_tmp, ex) = executor();
+        let out = ex
+            .execute_dsl("register api/notes-patch | trigger.webhook --path /np | web.response --template pages/x.tsx")
+            .await;
+        assert!(out.ok, "{}", text(&out));
+
+        let out = ex
+            .execute_dsl("patch pipeline api/notes-patch note why --text \"Create the smtp credential first\" --at 100,40 --size 300x120 --color amber")
+            .await;
+        assert!(out.ok, "{}", text(&out));
+        assert!(text(&out).contains("created"), "{}", text(&out));
+        let notes = notes_of(&ex, "api/notes-patch").await;
+        assert_eq!(notes.len(), 1);
+        assert_eq!((notes[0].x, notes[0].y, notes[0].width, notes[0].height), (100.0, 40.0, 300.0, 120.0));
+        assert_eq!(notes[0].color, "amber");
+
+        // A body after `--` is the text; other fields keep their values.
+        let out = ex
+            .execute_dsl("patch pipeline api/notes-patch note why -- Longer text, with a comma and --dashes")
+            .await;
+        assert!(out.ok, "{}", text(&out));
+        let notes = notes_of(&ex, "api/notes-patch").await;
+        assert_eq!(notes[0].text, "Longer text, with a comma and --dashes");
+        assert_eq!(notes[0].color, "amber");
+
+        // Second note without --at lands below the first.
+        let out = ex.execute_dsl("patch pipeline api/notes-patch note two --text \"two\"").await;
+        assert!(out.ok, "{}", text(&out));
+        let notes = notes_of(&ex, "api/notes-patch").await;
+        assert_eq!(notes.len(), 2);
+        assert!(notes[1].y > notes[0].y + notes[0].height, "{:?}", notes[1]);
+
+        let out = ex.execute_dsl("patch pipeline api/notes-patch note why --remove").await;
+        assert!(out.ok, "{}", text(&out));
+        let notes = notes_of(&ex, "api/notes-patch").await;
+        assert_eq!(notes.len(), 1);
+        assert_eq!(notes[0].id, "two");
+
+        let out = ex.execute_dsl("patch pipeline api/notes-patch note why --remove").await;
+        assert!(!out.ok);
+        let out = ex.execute_dsl("patch pipeline api/notes-patch note two --colour red").await;
+        assert!(!out.ok);
+        assert!(text(&out).contains("unknown flag `--colour`"), "{}", text(&out));
+
+        // describe lists the surviving note id for the next patch.
+        let out = ex.execute_dsl("describe pipeline api/notes-patch").await;
+        assert!(text(&out).contains("note ids (for patch … note): two"), "{}", text(&out));
+        let out = ex.execute_dsl("describe pipeline api/notes-patch --compact").await;
+        assert!(text(&out).contains("note \"two\""), "{}", text(&out));
+    }
+}
+
+fn parse_note_pair(value: &str, sep: char, what: &str) -> Result<(f64, f64), String> {
+    let (a, b) = value
+        .split_once(sep)
+        .ok_or_else(|| format!("patch note: {what}, got `{value}`"))?;
+    let a: f64 = a.trim().parse().map_err(|_| format!("patch note: {what}, got `{value}`"))?;
+    let b: f64 = b.trim().parse().map_err(|_| format!("patch note: {what}, got `{value}`"))?;
+    Ok((a, b))
+}
+
 fn review_git_positional(arg: &str) -> Result<(), String> {
     if git_path_escapes(arg) {
         return Err(format!(
@@ -1872,5 +2386,70 @@ mod patch_body_tests {
         let described = ops.pipeline_describe("api/rows", false).await;
         assert!(described.text.contains("SELECT 2 AS two"), "the node reads the new SQL:\n{}", described.text);
         assert!(!described.text.contains("SELECT 1 AS one"), "the old SQL is gone:\n{}", described.text);
+    }
+
+    /// `--preview off` has to delete the preview, not store the word "off" —
+    /// the flag writes into a nested `config.preview`, so the generic scalar
+    /// path would have left `preview.out = "off"` behind and drawn a preview
+    /// of a kind nothing recognises.
+    #[tokio::test]
+    async fn patching_a_preview_sets_it_and_off_removes_it() {
+        let data_root = tempfile::tempdir().expect("temp data root");
+        let platform = Arc::new(
+            PlatformService::from_config(PlatformConfig {
+                data_root: data_root.path().to_path_buf(),
+                default_password: "secret".to_string(),
+                default_project: "patchpreview".to_string(),
+                ..Default::default()
+            })
+            .expect("platform"),
+        );
+        let owner = platform.config.default_owner.clone();
+        let executor = super::DslExecutor::new(platform.clone(), &owner, "patchpreview");
+        let out = executor
+            .execute_dsl(r#"register api/preview -- | trigger.manual | script -- return input"#)
+            .await;
+        assert!(out.lines.iter().any(|l| l.text.contains("registered")), "{:?}", out.lines.iter().map(|l| l.text.clone()).collect::<Vec<_>>());
+
+        let out = executor
+            .execute_dsl("patch pipeline api/preview node script --preview table:rows")
+            .await;
+        assert!(!out.lines.iter().any(|l| l.text.starts_with("Error")), "{:?}", out.lines.iter().map(|l| l.text.clone()).collect::<Vec<_>>());
+
+        let ops = crate::platform::services::ops::PlatformOps::new(platform.clone(), &owner, "patchpreview");
+        let described = ops.pipeline_describe("api/preview", false).await;
+        assert!(described.text.contains("--preview table:rows"), "the preview is set:\n{}", described.text);
+
+        // A size rides on the same value; the value is the whole cell, so
+        // patching without the suffix puts the panel back at its default.
+        let out = executor
+            .execute_dsl("patch pipeline api/preview node script --preview image@420x300")
+            .await;
+        assert!(!out.lines.iter().any(|l| l.text.starts_with("Error")), "{:?}", out.lines.iter().map(|l| l.text.clone()).collect::<Vec<_>>());
+        let described = ops.pipeline_describe("api/preview", false).await;
+        assert!(described.text.contains("--preview image@420x300"), "the size is stored:\n{}", described.text);
+        assert!(!described.text.contains("table:rows"), "the old cell is replaced whole:\n{}", described.text);
+
+        let out = executor
+            .execute_dsl("patch pipeline api/preview node script --preview image@huge")
+            .await;
+        assert!(out.lines.iter().any(|l| l.text.contains("bad size")), "{:?}", out.lines.iter().map(|l| l.text.clone()).collect::<Vec<_>>());
+
+        let out = executor
+            .execute_dsl("patch pipeline api/preview node script --preview image")
+            .await;
+        assert!(!out.lines.iter().any(|l| l.text.starts_with("Error")), "{:?}", out.lines.iter().map(|l| l.text.clone()).collect::<Vec<_>>());
+        let described = ops.pipeline_describe("api/preview", false).await;
+        assert!(described.text.contains("--preview image"), "{}", described.text);
+        assert!(!described.text.contains('@'), "no size is stored any more:\n{}", described.text);
+
+        let out = executor
+            .execute_dsl("patch pipeline api/preview node script --preview off")
+            .await;
+        assert!(!out.lines.iter().any(|l| l.text.starts_with("Error")), "{:?}", out.lines.iter().map(|l| l.text.clone()).collect::<Vec<_>>());
+
+        let described = ops.pipeline_describe("api/preview", false).await;
+        assert!(!described.text.contains("--preview"), "the preview is gone:\n{}", described.text);
+        assert!(!described.text.contains("off"), "and \"off\" was never stored:\n{}", described.text);
     }
 }

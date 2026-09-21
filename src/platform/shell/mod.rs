@@ -92,6 +92,13 @@ impl DslOutput {
     }
 
     /// Convenience: create an error output from a message string.
+    /// One success line, the common answer of a verb that reports a state.
+    pub fn ok_line(text: impl Into<String>) -> Self {
+        let mut out = Self::new_ok();
+        out.push(DslLine::success(text));
+        out
+    }
+
     pub fn err(msg: impl Into<String>) -> Self {
         Self::new_err(msg)
     }

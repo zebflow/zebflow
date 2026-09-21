@@ -20,7 +20,7 @@ use crate::infra::secrets::keyring::{
 use crate::platform::adapters::data::DataAdapter;
 use crate::platform::error::PlatformError;
 use crate::platform::model::{
-    CREDENTIAL_STATE_CHOSEN, CredentialKeyGeneration, CredentialKeyringReport,
+    CREDENTIAL_STATE_CHOSEN, CredentialKeyGeneration, CredentialKeyringReport, ErrorGroupBounds, PipelineErrorGroup,
     CredentialSweepReport, HubAccessGrant, HubAssetPackage, HubAssetVersion, HubAuthority,
     HubPublisher, HubToken, LOCAL_AUTHORITY_EVENT_BREAK_GLASS, McpSession, PipelineInvocationEntry,
     PipelineInvocationLogPipelineStats, PipelineInvocationLogStats, PipelineMeta,
@@ -774,10 +774,52 @@ impl SqliteDataAdapter {
             );
             CREATE INDEX IF NOT EXISTS idx_pipeline_invocations_project_pipeline
                 ON pipeline_invocations (file_rel_path, at DESC);
+            CREATE TABLE IF NOT EXISTS pipeline_error_groups (
+                file_rel_path    TEXT NOT NULL,
+                signature        TEXT NOT NULL,
+                node_id          TEXT NOT NULL DEFAULT '',
+                code             TEXT NOT NULL DEFAULT '',
+                message_pattern  TEXT NOT NULL DEFAULT '',
+                count            INTEGER NOT NULL DEFAULT 0,
+                first_seen       INTEGER NOT NULL,
+                last_seen        INTEGER NOT NULL,
+                reopened_at      INTEGER,
+                first_json       TEXT NOT NULL,
+                latest_json      TEXT NOT NULL,
+                occurrences_json TEXT NOT NULL DEFAULT '[]',
+                capture          TEXT NOT NULL DEFAULT 'first-latest',
+                captured_json    TEXT NOT NULL DEFAULT '[]',
+                PRIMARY KEY (file_rel_path, signature)
+            );
+            CREATE INDEX IF NOT EXISTS idx_pipeline_error_groups_seen
+                ON pipeline_error_groups (last_seen DESC);
             ",
         )
         .map_err(|e| PlatformError::new("PLATFORM_INVOCATION_LOG_SCHEMA", e.to_string()))?;
         Ok(Some(conn))
+    }
+
+    fn error_group_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<PipelineErrorGroup> {
+        let first: String = row.get("first_json")?;
+        let latest: String = row.get("latest_json")?;
+        let occurrences: String = row.get("occurrences_json")?;
+        let captured: String = row.get("captured_json")?;
+        Ok(PipelineErrorGroup {
+            file_rel_path: row.get("file_rel_path")?,
+            signature: row.get("signature")?,
+            node_id: row.get("node_id")?,
+            code: row.get("code")?,
+            message_pattern: row.get("message_pattern")?,
+            count: row.get::<_, i64>("count")? as u64,
+            first_seen: row.get("first_seen")?,
+            last_seen: row.get("last_seen")?,
+            reopened_at: row.get("reopened_at")?,
+            first: serde_json::from_str(&first).unwrap_or_else(|_| PipelineInvocationEntry::default()),
+            latest: serde_json::from_str(&latest).unwrap_or_else(|_| PipelineInvocationEntry::default()),
+            occurrences: serde_json::from_str(&occurrences).unwrap_or_default(),
+            capture: row.get("capture")?,
+            captured: serde_json::from_str(&captured).unwrap_or_default(),
+        })
     }
 
     fn sha256_hex(input: &str) -> String {
@@ -7253,6 +7295,105 @@ impl DataAdapter for SqliteDataAdapter {
         Ok(())
     }
 
+    fn record_pipeline_error(
+        &self,
+        owner: &str,
+        project: &str,
+        file_rel_path: &str,
+        entry: &PipelineInvocationEntry,
+        bounds: ErrorGroupBounds,
+    ) -> Result<(), PlatformError> {
+        if entry.status != "error" {
+            return Ok(());
+        }
+        let Some(conn) = self.open_project_invocations_conn(owner, project)? else {
+            return Ok(());
+        };
+        let (node_id, code, message) = crate::platform::model::error_group_parts(entry);
+        let pattern = crate::platform::model::error_message_pattern(&message);
+        let signature = format!("{file_rel_path} · {node_id} · {code} · {pattern}");
+        let entry_json = serde_json::to_string(entry)?;
+        let existing = conn
+            .query_row(
+                "SELECT count, first_seen, last_seen, occurrences_json, capture, captured_json FROM pipeline_error_groups WHERE file_rel_path = ?1 AND signature = ?2",
+                params![file_rel_path, signature],
+                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?, row.get::<_, i64>(2)?, row.get::<_, String>(3)?, row.get::<_, String>(4)?, row.get::<_, String>(5)?)),
+            )
+            .optional()
+            .map_err(|e| PlatformError::new("PLATFORM_ERROR_GROUP_READ", e.to_string()))?;
+        match existing {
+            Some((count, _first_seen, last_seen, occurrences_json, capture, captured_json)) => {
+                let mut occurrences: Vec<(String, i64)> = serde_json::from_str(&occurrences_json).unwrap_or_default();
+                occurrences.push((entry.run_id.clone(), entry.at));
+                if occurrences.len() > bounds.occurrence_ring {
+                    let drop = occurrences.len() - bounds.occurrence_ring;
+                    occurrences.drain(..drop);
+                }
+                let mut captured: Vec<PipelineInvocationEntry> = if capture == "all" { serde_json::from_str(&captured_json).unwrap_or_default() } else { Vec::new() };
+                if capture == "all" && captured.len() < bounds.capture_cap {
+                    captured.push(entry.clone());
+                }
+                // Quiet for longer than the threshold, then back: a reintroduced bug, not the old count continuing unremarked.
+                let reopened = if entry.at - last_seen > bounds.reopen_after_secs { Some(entry.at) } else { None };
+                conn.execute(
+                    "UPDATE pipeline_error_groups SET count = ?3, last_seen = ?4, latest_json = ?5, occurrences_json = ?6, captured_json = ?7, reopened_at = COALESCE(?8, reopened_at) WHERE file_rel_path = ?1 AND signature = ?2",
+                    params![file_rel_path, signature, count + 1, entry.at, entry_json, serde_json::to_string(&occurrences)?, serde_json::to_string(&captured)?, reopened],
+                )
+                .map_err(|e| PlatformError::new("PLATFORM_ERROR_GROUP_WRITE", e.to_string()))?;
+            }
+            None => {
+                conn.execute(
+                    "INSERT INTO pipeline_error_groups (file_rel_path, signature, node_id, code, message_pattern, count, first_seen, last_seen, first_json, latest_json, occurrences_json) VALUES (?1, ?2, ?3, ?4, ?5, 1, ?6, ?6, ?7, ?7, ?8)",
+                    params![file_rel_path, signature, node_id, code, pattern, entry.at, entry_json, serde_json::to_string(&vec![(entry.run_id.clone(), entry.at)])?],
+                )
+                .map_err(|e| PlatformError::new("PLATFORM_ERROR_GROUP_WRITE", e.to_string()))?;
+                // Bounded by distinct errors: the groups least recently seen go first.
+                conn.execute(
+                    "DELETE FROM pipeline_error_groups WHERE rowid IN (SELECT rowid FROM pipeline_error_groups ORDER BY last_seen DESC LIMIT -1 OFFSET ?1)",
+                    params![bounds.max_groups as i64],
+                )
+                .map_err(|e| PlatformError::new("PLATFORM_ERROR_GROUP_WRITE", e.to_string()))?;
+            }
+        }
+        Ok(())
+    }
+
+    fn list_pipeline_error_groups(
+        &self,
+        owner: &str,
+        project: &str,
+        file_rel_path: Option<&str>,
+    ) -> Result<Vec<PipelineErrorGroup>, PlatformError> {
+        let Some(conn) = self.open_project_invocations_conn(owner, project)? else {
+            return Ok(vec![]);
+        };
+        let sql = match file_rel_path {
+            Some(_) => "SELECT * FROM pipeline_error_groups WHERE file_rel_path = ?1 ORDER BY last_seen DESC",
+            None => "SELECT * FROM pipeline_error_groups WHERE ?1 = ?1 ORDER BY last_seen DESC",
+        };
+        let mut stmt = conn.prepare(sql).map_err(|e| PlatformError::new("PLATFORM_ERROR_GROUP_READ", e.to_string()))?;
+        let rows = stmt
+            .query_map(params![file_rel_path.unwrap_or("")], Self::error_group_from_row)
+            .map_err(|e| PlatformError::new("PLATFORM_ERROR_GROUP_READ", e.to_string()))?;
+        Ok(rows.filter_map(Result::ok).collect())
+    }
+
+    fn find_pipeline_error_group_by_run(
+        &self,
+        owner: &str,
+        project: &str,
+        run_id_prefix: &str,
+    ) -> Result<Option<PipelineErrorGroup>, PlatformError> {
+        let prefix = run_id_prefix.trim().to_ascii_lowercase();
+        if prefix.len() < 8 {
+            return Ok(None);
+        }
+        Ok(self
+            .list_pipeline_error_groups(owner, project, None)?
+            .into_iter()
+            .find(|g| g.occurrences.iter().any(|(id, _)| id.starts_with(&prefix)) || g.first.run_id.starts_with(&prefix) || g.latest.run_id.starts_with(&prefix)))
+    }
+
     fn get_pipeline_invocations(
         &self,
         owner: &str,
@@ -8025,6 +8166,7 @@ mod tests {
                 error: None,
                 status: "ok".to_string(),
                 error_code: None,
+                preview_snapshot: None,
             }],
         };
 

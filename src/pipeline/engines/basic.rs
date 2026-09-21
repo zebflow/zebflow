@@ -30,22 +30,18 @@ use crate::language::{DenoSandboxEngine, LanguageEngine};
 use crate::pipeline::expr::{resolve_config_expressions, scanner::scan as scan_exprs};
 use crate::pipeline::interface::PipelineEngine;
 use crate::pipeline::model::{
-    ExecuteOptions, NodeTraceEntry, PipelineContext, PipelineError, PipelineGraph, PipelineNode,
-    PipelineOutput, Signal,
+    ExecuteOptions, ExecutionBus, NodeTraceEntry, PipelineContext, PipelineError, PipelineGraph,
+    PipelineNode, PipelineOutput, Signal,
 };
-use crate::pipeline::nodes::basic::file_ref::{BACKEND_ZEBFS, FILE_REF_TYPE, LIFECYCLE_DURABLE};
+use crate::pipeline::nodes::shared::file_ref::{BACKEND_ZEBFS, FILE_REF_TYPE, LIFECYCLE_DURABLE};
 use crate::pipeline::nodes::basic::{
-    agent, ai_tts, auth_token_create, auth_token_verify, browser_run, concept, crypto, mail_send, fs_compress, fs_decompress, fs_object,
-    fs_pdf_convert, fs_save, fs_thumbnail, function_call, geo_convert, geo_inspect, http_request,
-    kv_del, kv_exists, kv_expire, kv_get, kv_incr, kv_publish, kv_set, logic, mapserver_crud,
-    pg_query, script, sekejap_insert, sekejap_query, sqlite_mutate, sqlite_query, table_convert,
-    table_query,
+    ai, auth, browser, concept, crypto, fs, function, geo, http, input, kv, logic, mail, ms, pg,
+    script, sekejap, sqlite, table,
     trigger::{
         function as trigger_function, kv_subscribe, manual, mcp_trigger, schedule, weberror,
         webhook, ws_client as trigger_ws_client,
     },
-    web_docs_generate, web_response, web_static_generate, web_static_site, ws_client_send, ws_emit,
-    ws_sync_state, ws_trigger,
+    web, ws,
 };
 use crate::pipeline::nodes::{NodeExecutionInput, NodeExecutionOutput, NodeHandler};
 use crate::pipeline::trace_capture::{TraceCapture, redact_literal_secrets};
@@ -60,7 +56,7 @@ use crate::rwe::{ReactiveWebEngine, TemplateSource, resolve_engine_or_default};
 /// enabling dependency-aware eviction when a component is edited.
 pub struct CacheEntry {
     /// The compiled page artifact.
-    pub page: Arc<web_response::CompiledPage>,
+    pub page: Arc<web::response::CompiledPage>,
     /// Absolute filesystem paths of all component files inlined during compilation.
     /// Populated from `CompiledTemplate.dependency_paths` (the `visited` set of
     /// `collect_inlined_module`). When any of these paths change on disk,
@@ -133,7 +129,23 @@ fn build_nodes_retention_plan(graph: &PipelineGraph) -> Result<NodesRetentionPla
     let mut plan = NodesRetentionPlan::default();
 
     for node in &graph.nodes {
-        let access = scan_node_nodes_access(node)?;
+        let mut access = scan_node_nodes_access(node)?;
+        // A retry node counts its own attempts from its last output
+        // (`$nodes.<self>.__zf_retry`), so it is always retained and always
+        // in its own scope. Without this, a loop whose payload is replaced
+        // on the way round (`http.request` answers with a fresh body) would
+        // sit at attempt 1 for ever — the poll loops needed a script whose
+        // only job was to copy the count back.
+        if node.kind == logic::retry::NODE_KIND {
+            plan.retained_nodes.insert(node.id.clone());
+            access = match access {
+                NodesAccess::None => NodesAccess::Exact(HashSet::from([node.id.clone()])),
+                NodesAccess::Exact(mut ids) => {
+                    ids.insert(node.id.clone());
+                    NodesAccess::Exact(ids)
+                }
+            };
+        }
         match &access {
             NodesAccess::None => {}
             NodesAccess::Exact(ids) => {
@@ -459,8 +471,35 @@ fn retry_attempt_from_payload(payload: &Value) -> usize {
         .unwrap_or(0)
 }
 
-fn build_retry_error_payload(input_payload: &Value, error: &PipelineError) -> Value {
-    let attempt = retry_attempt_from_payload(input_payload) + 1;
+/// The attempt a retry node has already counted to, read from its last
+/// output (`nodes_output[<retry id>].__zf_retry.attempt`); 0 before it has
+/// run. Kept beside the payload's own count because a payload that was
+/// replaced on the way round the loop has forgotten it.
+fn retry_last_attempt(nodes_output: &serde_json::Map<String, Value>, retry_node_id: &str) -> usize {
+    nodes_output
+        .get(retry_node_id)
+        .map(retry_attempt_from_payload)
+        .unwrap_or(0)
+}
+
+/// A retry node's `--max-attempts` as the graph declares it — the DSL coerces
+/// the scalar to a number, an edited JSON may still hold a string.
+fn retry_max_attempts(node: &PipelineNode) -> Option<u64> {
+    let raw = node.config.get("max_attempts")?;
+    raw.as_u64()
+        .or_else(|| raw.as_str().and_then(|s| s.trim().parse().ok()))
+}
+
+/// The failure envelope an `:error` edge carries: the failing node's input
+/// under `input`, the error, and the retry state. `last_attempt` is what the
+/// consuming retry node counted to on the previous round (0 when there is
+/// none, or it has not run yet); the payload's own count wins when higher.
+fn build_retry_error_payload(
+    input_payload: &Value,
+    error: &PipelineError,
+    last_attempt: usize,
+) -> Value {
+    let attempt = retry_attempt_from_payload(input_payload).max(last_attempt) + 1;
     json!({
         "input": input_payload,
         "error": {
@@ -495,6 +534,10 @@ pub(crate) fn is_sensitive_trace_config_key(key: &str) -> bool {
             | "idtoken"
             | "authorization"
             | "apikey"
+            // `--header X-API-Key=…` typed on an http.request is a key in the
+            // node's config, and the recorded config is the snapshot the
+            // record keeps of it.
+            | "xapikey"
             // A node outside this tree may name a field plainly. `accesstoken`
             // was matched and `token` was not, which is the gap a third-party
             // node would fall into.
@@ -873,7 +916,7 @@ fn materialize_node_output_files(
             "ref": stat.path,
             "filename": name,
             "mime": content_type,
-            "kind": crate::pipeline::nodes::basic::file_ref::infer_kind(content_type, &rel_path),
+            "kind": crate::pipeline::nodes::shared::file_ref::infer_kind(content_type, &rel_path),
             "size": bytes.len(),
             "sha256": format!("sha256:{:x}", Sha256::digest(&bytes)),
             "lifecycle": LIFECYCLE_DURABLE,
@@ -1205,7 +1248,7 @@ impl BasicPipelineEngine {
                     .map_err(|err| PipelineError::new("FW_NODE_SCRIPT_CONFIG", err.to_string()))?,
                 self.language.clone(),
             )?)),
-            http_request::NODE_KIND => Ok(NodeDispatch::HttpRequest(http_request::Node::new(
+            http::request::NODE_KIND => Ok(NodeDispatch::HttpRequest(http::request::Node::new(
                 serde_json::from_value(node.config.clone()).map_err(|err| {
                     PipelineError::new("FW_NODE_HTTP_REQUEST_CONFIG", err.to_string())
                 })?,
@@ -1214,70 +1257,70 @@ impl BasicPipelineEngine {
                 self.platform.clone(),
                 self.bundle_egress.clone(),
             )?)),
-            sqlite_query::NODE_KIND => {
+            sqlite::query::NODE_KIND => {
                 let Some(data_root) = &self.data_root else {
                     return Err(PipelineError::new(
                         "FW_NODE_SQLITE_UNAVAILABLE",
                         "data_root is not configured on this pipeline engine",
                     ));
                 };
-                Ok(NodeDispatch::SqliteQuery(sqlite_query::Node::new(
+                Ok(NodeDispatch::SqliteQuery(sqlite::query::Node::new(
                     serde_json::from_value(node.config.clone()).map_err(|err| {
                         PipelineError::new("FW_NODE_SQLITE_QUERY_CONFIG", err.to_string())
                     })?,
                     data_root.clone(),
                 )?))
             }
-            sekejap_query::NODE_KIND => {
+            sekejap::query::NODE_KIND => {
                 let Some(data_root) = &self.data_root else {
                     return Err(PipelineError::new(
                         "FW_NODE_SEKEJAP_UNAVAILABLE",
                         "data_root is not configured on this pipeline engine",
                     ));
                 };
-                Ok(NodeDispatch::SekejapQuery(sekejap_query::Node::new(
+                Ok(NodeDispatch::SekejapQuery(sekejap::query::Node::new(
                     serde_json::from_value(node.config.clone()).map_err(|err| {
                         PipelineError::new("FW_NODE_SEKEJAP_QUERY_CONFIG", err.to_string())
                     })?,
                     data_root.clone(),
                 )?))
             }
-            sekejap_insert::NODE_KIND => {
+            sekejap::insert::NODE_KIND => {
                 let Some(data_root) = &self.data_root else {
                     return Err(PipelineError::new(
                         "FW_NODE_SEKEJAP_UNAVAILABLE",
                         "data_root is not configured on this pipeline engine",
                     ));
                 };
-                Ok(NodeDispatch::SekejapInsert(sekejap_insert::Node::new(
+                Ok(NodeDispatch::SekejapInsert(sekejap::insert::Node::new(
                     serde_json::from_value(node.config.clone()).map_err(|err| {
                         PipelineError::new("FW_NODE_SEKEJAP_INSERT_CONFIG", err.to_string())
                     })?,
                     data_root.clone(),
                 )?))
             }
-            sqlite_mutate::NODE_KIND => {
+            sqlite::mutate::NODE_KIND => {
                 let Some(data_root) = &self.data_root else {
                     return Err(PipelineError::new(
                         "FW_NODE_SQLITE_UNAVAILABLE",
                         "data_root is not configured on this pipeline engine",
                     ));
                 };
-                Ok(NodeDispatch::SqliteMutate(sqlite_mutate::Node::new(
+                Ok(NodeDispatch::SqliteMutate(sqlite::mutate::Node::new(
                     serde_json::from_value(node.config.clone()).map_err(|err| {
                         PipelineError::new("FW_NODE_SQLITE_MUTATE_CONFIG", err.to_string())
                     })?,
                     data_root.clone(),
                 )?))
             }
-            browser_run::NODE_KIND => {
+            browser::run::NODE_KIND => {
                 let Some(credentials) = &self.credentials else {
                     return Err(PipelineError::new(
                         "FW_NODE_BROWSER_RUN_UNAVAILABLE",
                         "credential service is not configured on this framework engine",
                     ));
                 };
-                Ok(NodeDispatch::BrowserRun(browser_run::Node::new(
+                Ok(NodeDispatch::BrowserRun(browser::run::Node::new(
                     serde_json::from_value(node.config.clone()).map_err(|e| {
                         PipelineError::new("FW_NODE_BROWSER_RUN_CONFIG", e.to_string())
                     })?,
@@ -1285,27 +1328,27 @@ impl BasicPipelineEngine {
                     self.bundle_egress.clone(),
                 )?))
             }
-            pg_query::NODE_KIND => {
+            pg::query::NODE_KIND => {
                 let Some(credentials) = &self.credentials else {
                     return Err(PipelineError::new(
                         "FW_NODE_PG_UNAVAILABLE",
                         "credential service is not configured on this framework engine",
                     ));
                 };
-                Ok(NodeDispatch::Postgres(pg_query::Node::new(
+                Ok(NodeDispatch::Postgres(pg::query::Node::new(
                     serde_json::from_value(node.config.clone())
                         .map_err(|err| PipelineError::new("FW_NODE_PG_CONFIG", err.to_string()))?,
                     credentials.clone(),
                 )?))
             }
-            table_query::NODE_KIND => {
+            table::query::NODE_KIND => {
                 let Some(platform) = &self.platform else {
                     return Err(PipelineError::new(
                         "FW_NODE_TABLE_QUERY_UNAVAILABLE",
                         "platform service is not configured on this pipeline engine",
                     ));
                 };
-                Ok(NodeDispatch::TableQuery(table_query::Node::new(
+                Ok(NodeDispatch::TableQuery(table::query::Node::new(
                     serde_json::from_value(node.config.clone()).map_err(|err| {
                         PipelineError::new("FW_NODE_TABLE_QUERY_CONFIG", err.to_string())
                     })?,
@@ -1313,8 +1356,8 @@ impl BasicPipelineEngine {
                     self.language.clone(),
                 )?))
             }
-            web_response::NODE_KIND => {
-                let config: web_response::Config = serde_json::from_value(node.config.clone())
+            web::response::NODE_KIND => {
+                let config: web::response::Config = serde_json::from_value(node.config.clone())
                     .map_err(|err| {
                         PipelineError::new("FW_NODE_WEB_RESPONSE_CONFIG", err.to_string())
                     })?;
@@ -1324,17 +1367,17 @@ impl BasicPipelineEngine {
                         config,
                     })
                 } else {
-                    Ok(NodeDispatch::WebResponse(web_response::Node::new(config)))
+                    Ok(NodeDispatch::WebResponse(web::response::Node::new(config, self.template_root.clone())))
                 }
             }
-            web_static_generate::NODE_KIND => {
+            web::static_generate::NODE_KIND => {
                 if self.data_root.is_none() {
                     return Err(PipelineError::new(
                         "FW_NODE_WEB_STATIC_UNAVAILABLE",
                         "data_root is not configured on this pipeline engine",
                     ));
                 }
-                let config: web_static_generate::Config =
+                let config: web::static_generate::Config =
                     serde_json::from_value(node.config.clone()).map_err(|err| {
                         PipelineError::new("FW_NODE_WEB_STATIC_CONFIG", err.to_string())
                     })?;
@@ -1343,14 +1386,14 @@ impl BasicPipelineEngine {
                     config,
                 })
             }
-            web_docs_generate::NODE_KIND => {
+            web::docs_generate::NODE_KIND => {
                 if self.data_root.is_none() {
                     return Err(PipelineError::new(
                         "FW_NODE_WEB_DOCS_UNAVAILABLE",
                         "data_root is not configured on this pipeline engine",
                     ));
                 }
-                let config: web_docs_generate::Config = serde_json::from_value(node.config.clone())
+                let config: web::docs_generate::Config = serde_json::from_value(node.config.clone())
                     .map_err(|err| {
                         PipelineError::new("FW_NODE_WEB_DOCS_CONFIG", err.to_string())
                     })?;
@@ -1359,19 +1402,19 @@ impl BasicPipelineEngine {
                     config,
                 })
             }
-            agent::NODE_KIND => {
-                let config: agent::Config = serde_json::from_value(node.config.clone())
+            ai::agent::NODE_KIND => {
+                let config: ai::agent::Config = serde_json::from_value(node.config.clone())
                     .map_err(|err| PipelineError::new("FW_NODE_AGENT_CONFIG", err.to_string()))?;
-                Ok(NodeDispatch::Agent(agent::Node::new(
+                Ok(NodeDispatch::Agent(ai::agent::Node::new(
                     config,
                     self.credentials.clone(),
                     self.platform.clone(),
                 )))
             }
-            ai_tts::NODE_KIND => {
-                let config: ai_tts::Config = serde_json::from_value(node.config.clone())
+            ai::tts::NODE_KIND => {
+                let config: ai::tts::Config = serde_json::from_value(node.config.clone())
                     .map_err(|err| PipelineError::new("FW_NODE_AI_TTS_CONFIG", err.to_string()))?;
-                Ok(NodeDispatch::AiTts(ai_tts::Node::new(
+                Ok(NodeDispatch::AiTts(ai::tts::Node::new(
                     config,
                     self.credentials.clone(),
                     self.platform.clone(),
@@ -1410,31 +1453,33 @@ impl BasicPipelineEngine {
                 self.language.clone(),
             )?)),
             logic::retry::NODE_KIND => Ok(NodeDispatch::LogicRetry(logic::retry::Node::new(
+                &node.id,
                 serde_json::from_value(node.config.clone())
                     .map_err(|e| PipelineError::new("FW_NODE_LOGIC_RETRY_CONFIG", e.to_string()))?,
+                self.language.clone(),
             )?)),
-            auth_token_create::NODE_KIND => {
+            auth::token_create::NODE_KIND => {
                 let Some(credentials) = &self.credentials else {
                     return Err(PipelineError::new(
                         "FW_NODE_AUTH_TOKEN_UNAVAILABLE",
                         "credential service is not configured on this framework engine",
                     ));
                 };
-                Ok(NodeDispatch::AuthTokenCreate(auth_token_create::Node::new(
+                Ok(NodeDispatch::AuthTokenCreate(auth::token_create::Node::new(
                     serde_json::from_value(node.config.clone()).map_err(|err| {
                         PipelineError::new("FW_NODE_AUTH_TOKEN_CONFIG", err.to_string())
                     })?,
                     credentials.clone(),
                 )?))
             }
-            auth_token_verify::NODE_KIND => {
+            auth::token_verify::NODE_KIND => {
                 let Some(credentials) = &self.credentials else {
                     return Err(PipelineError::new(
                         "FW_NODE_AUTH_VERIFY_UNAVAILABLE",
                         "credential service is not configured on this framework engine",
                     ));
                 };
-                Ok(NodeDispatch::AuthTokenVerify(auth_token_verify::Node::new(
+                Ok(NodeDispatch::AuthTokenVerify(auth::token_verify::Node::new(
                     serde_json::from_value(node.config.clone()).map_err(|err| {
                         PipelineError::new("FW_NODE_AUTH_VERIFY_CONFIG", err.to_string())
                     })?,
@@ -1446,14 +1491,14 @@ impl BasicPipelineEngine {
                     PipelineError::new("FW_NODE_CONCEPT_CONFIG", err.to_string())
                 })?,
             ))),
-            mail_send::NODE_KIND => {
+            mail::send::NODE_KIND => {
                 let Some(credentials) = &self.credentials else {
                     return Err(PipelineError::new(
                         "FW_NODE_MAIL_UNAVAILABLE",
                         "credential service is not configured on this framework engine",
                     ));
                 };
-                Ok(NodeDispatch::MailSend(mail_send::Node::new(
+                Ok(NodeDispatch::MailSend(mail::send::Node::new(
                     serde_json::from_value(node.config.clone()).map_err(|err| {
                         PipelineError::new("FW_NODE_MAIL_CONFIG", err.to_string())
                     })?,
@@ -1465,33 +1510,33 @@ impl BasicPipelineEngine {
                     PipelineError::new("FW_NODE_WEBERROR_CONFIG", err.to_string())
                 })?,
             ))),
-            ws_trigger::NODE_KIND => Ok(NodeDispatch::WsTrigger(ws_trigger::Node::new(
+            ws::trigger::NODE_KIND => Ok(NodeDispatch::WsTrigger(ws::trigger::Node::new(
                 serde_json::from_value(node.config.clone()).map_err(|err| {
                     PipelineError::new("FW_NODE_WS_TRIGGER_CONFIG", err.to_string())
                 })?,
             ))),
-            ws_sync_state::NODE_KIND => {
+            ws::sync_state::NODE_KIND => {
                 let Some(ws_hub) = &self.ws_hub else {
                     return Err(PipelineError::new(
                         "FW_NODE_WS_SYNC_STATE_UNAVAILABLE",
                         "ws hub is not configured on this framework engine",
                     ));
                 };
-                Ok(NodeDispatch::WsSyncState(ws_sync_state::Node::new(
+                Ok(NodeDispatch::WsSyncState(ws::sync_state::Node::new(
                     serde_json::from_value(node.config.clone()).map_err(|err| {
                         PipelineError::new("FW_NODE_WS_SYNC_STATE_CONFIG", err.to_string())
                     })?,
                     ws_hub.clone(),
                 )?))
             }
-            ws_emit::NODE_KIND => {
+            ws::emit::NODE_KIND => {
                 let Some(ws_hub) = &self.ws_hub else {
                     return Err(PipelineError::new(
                         "FW_NODE_WS_EMIT_UNAVAILABLE",
                         "ws hub is not configured on this framework engine",
                     ));
                 };
-                Ok(NodeDispatch::WsEmit(ws_emit::Node::new(
+                Ok(NodeDispatch::WsEmit(ws::emit::Node::new(
                     serde_json::from_value(node.config.clone()).map_err(|err| {
                         PipelineError::new("FW_NODE_WS_EMIT_CONFIG", err.to_string())
                     })?,
@@ -1509,16 +1554,16 @@ impl BasicPipelineEngine {
                     config,
                 )))
             }
-            function_call::NODE_KIND => {
-                let config: function_call::Config =
+            function::call::NODE_KIND => {
+                let config: function::call::Config =
                     serde_json::from_value(node.config.clone()).unwrap_or_default();
-                Ok(NodeDispatch::FunctionCall(function_call::Node::new(
+                Ok(NodeDispatch::FunctionCall(function::call::Node::new(
                     config,
                     self.platform.clone(),
                 )))
             }
-            fs_save::NODE_KIND => {
-                let config: fs_save::Config =
+            fs::save::NODE_KIND => {
+                let config: fs::save::Config =
                     serde_json::from_value(node.config.clone()).unwrap_or_default();
                 let Some(platform) = &self.platform else {
                     return Err(PipelineError::new(
@@ -1526,20 +1571,20 @@ impl BasicPipelineEngine {
                         "platform service not available in this engine context",
                     ));
                 };
-                Ok(NodeDispatch::FileSave(fs_save::Node::new(
+                Ok(NodeDispatch::FileSave(fs::save::Node::new(
                     config,
                     platform.clone(),
                 )?))
             }
-            fs_object::LIST_NODE_KIND
-            | fs_object::HEAD_NODE_KIND
-            | fs_object::GET_NODE_KIND
-            | fs_object::PUT_NODE_KIND
-            | fs_object::DELETE_NODE_KIND
-            | fs_object::COPY_NODE_KIND
-            | fs_object::MOVE_NODE_KIND
-            | fs_object::MKDIR_NODE_KIND => {
-                let config: fs_object::Config =
+            fs::object::LIST_NODE_KIND
+            | fs::object::HEAD_NODE_KIND
+            | fs::object::GET_NODE_KIND
+            | fs::object::PUT_NODE_KIND
+            | fs::object::DELETE_NODE_KIND
+            | fs::object::COPY_NODE_KIND
+            | fs::object::MOVE_NODE_KIND
+            | fs::object::MKDIR_NODE_KIND => {
+                let config: fs::object::Config =
                     serde_json::from_value(node.config.clone()).unwrap_or_default();
                 let Some(platform) = &self.platform else {
                     return Err(PipelineError::new(
@@ -1548,27 +1593,27 @@ impl BasicPipelineEngine {
                     ));
                 };
                 let operation = match node.kind.as_str() {
-                    fs_object::LIST_NODE_KIND => fs_object::Operation::List,
-                    fs_object::HEAD_NODE_KIND => fs_object::Operation::Head,
-                    fs_object::GET_NODE_KIND => fs_object::Operation::Get,
-                    fs_object::PUT_NODE_KIND => fs_object::Operation::Put,
-                    fs_object::DELETE_NODE_KIND => fs_object::Operation::Delete,
-                    fs_object::COPY_NODE_KIND => fs_object::Operation::Copy,
-                    fs_object::MOVE_NODE_KIND => fs_object::Operation::Move,
-                    fs_object::MKDIR_NODE_KIND => fs_object::Operation::Mkdir,
+                    fs::object::LIST_NODE_KIND => fs::object::Operation::List,
+                    fs::object::HEAD_NODE_KIND => fs::object::Operation::Head,
+                    fs::object::GET_NODE_KIND => fs::object::Operation::Get,
+                    fs::object::PUT_NODE_KIND => fs::object::Operation::Put,
+                    fs::object::DELETE_NODE_KIND => fs::object::Operation::Delete,
+                    fs::object::COPY_NODE_KIND => fs::object::Operation::Copy,
+                    fs::object::MOVE_NODE_KIND => fs::object::Operation::Move,
+                    fs::object::MKDIR_NODE_KIND => fs::object::Operation::Mkdir,
                     _ => unreachable!(),
                 };
-                Ok(NodeDispatch::FsObject(fs_object::Node::new(
+                Ok(NodeDispatch::FsObject(fs::object::Node::new(
                     config,
                     platform.clone(),
                     operation,
                 )?))
             }
-            mapserver_crud::PUBLISH_KIND
-            | mapserver_crud::UNPUBLISH_KIND
-            | mapserver_crud::GET_KIND
-            | mapserver_crud::LIST_KIND => {
-                let config: mapserver_crud::Config =
+            ms::crud::PUBLISH_KIND
+            | ms::crud::UNPUBLISH_KIND
+            | ms::crud::GET_KIND
+            | ms::crud::LIST_KIND => {
+                let config: ms::crud::Config =
                     serde_json::from_value(node.config.clone()).unwrap_or_default();
                 let Some(platform) = &self.platform else {
                     return Err(PipelineError::new(
@@ -1577,20 +1622,20 @@ impl BasicPipelineEngine {
                     ));
                 };
                 let operation = match node.kind.as_str() {
-                    mapserver_crud::PUBLISH_KIND => mapserver_crud::Operation::Publish,
-                    mapserver_crud::UNPUBLISH_KIND => mapserver_crud::Operation::Unpublish,
-                    mapserver_crud::GET_KIND => mapserver_crud::Operation::Get,
-                    mapserver_crud::LIST_KIND => mapserver_crud::Operation::List,
+                    ms::crud::PUBLISH_KIND => ms::crud::Operation::Publish,
+                    ms::crud::UNPUBLISH_KIND => ms::crud::Operation::Unpublish,
+                    ms::crud::GET_KIND => ms::crud::Operation::Get,
+                    ms::crud::LIST_KIND => ms::crud::Operation::List,
                     _ => unreachable!(),
                 };
-                Ok(NodeDispatch::MapserverCrud(mapserver_crud::Node::new(
+                Ok(NodeDispatch::MapserverCrud(ms::crud::Node::new(
                     config,
                     platform.clone(),
                     operation,
                 )?))
             }
-            table_convert::NODE_KIND => {
-                let config: table_convert::Config =
+            table::convert::NODE_KIND => {
+                let config: table::convert::Config =
                     serde_json::from_value(node.config.clone()).unwrap_or_default();
                 let Some(platform) = &self.platform else {
                     return Err(PipelineError::new(
@@ -1598,13 +1643,13 @@ impl BasicPipelineEngine {
                         "platform service not available in this engine context",
                     ));
                 };
-                Ok(NodeDispatch::TableConvert(table_convert::Node::new(
+                Ok(NodeDispatch::TableConvert(table::convert::Node::new(
                     config,
                     platform.clone(),
                 )?))
             }
-            fs_compress::NODE_KIND => {
-                let config: fs_compress::Config =
+            fs::compress::NODE_KIND => {
+                let config: fs::compress::Config =
                     serde_json::from_value(node.config.clone()).unwrap_or_default();
                 let Some(platform) = &self.platform else {
                     return Err(PipelineError::new(
@@ -1612,13 +1657,13 @@ impl BasicPipelineEngine {
                         "platform service not available in this engine context",
                     ));
                 };
-                Ok(NodeDispatch::FileCompress(fs_compress::Node::new(
+                Ok(NodeDispatch::FileCompress(fs::compress::Node::new(
                     config,
                     platform.clone(),
                 )?))
             }
-            fs_decompress::NODE_KIND => {
-                let config: fs_decompress::Config =
+            fs::decompress::NODE_KIND => {
+                let config: fs::decompress::Config =
                     serde_json::from_value(node.config.clone()).unwrap_or_default();
                 let Some(platform) = &self.platform else {
                     return Err(PipelineError::new(
@@ -1626,13 +1671,13 @@ impl BasicPipelineEngine {
                         "platform service not available in this engine context",
                     ));
                 };
-                Ok(NodeDispatch::FileDecompress(fs_decompress::Node::new(
+                Ok(NodeDispatch::FileDecompress(fs::decompress::Node::new(
                     config,
                     platform.clone(),
                 )?))
             }
-            geo_inspect::NODE_KIND => {
-                let config: geo_inspect::Config =
+            geo::inspect::NODE_KIND => {
+                let config: geo::inspect::Config =
                     serde_json::from_value(node.config.clone()).unwrap_or_default();
                 let Some(platform) = &self.platform else {
                     return Err(PipelineError::new(
@@ -1640,13 +1685,13 @@ impl BasicPipelineEngine {
                         "platform service not available in this engine context",
                     ));
                 };
-                Ok(NodeDispatch::GeoInspect(geo_inspect::Node::new(
+                Ok(NodeDispatch::GeoInspect(geo::inspect::Node::new(
                     config,
                     platform.clone(),
                 )?))
             }
-            geo_convert::NODE_KIND => {
-                let config: geo_convert::Config =
+            geo::convert::NODE_KIND => {
+                let config: geo::convert::Config =
                     serde_json::from_value(node.config.clone()).unwrap_or_default();
                 let Some(platform) = &self.platform else {
                     return Err(PipelineError::new(
@@ -1654,13 +1699,13 @@ impl BasicPipelineEngine {
                         "platform service not available in this engine context",
                     ));
                 };
-                Ok(NodeDispatch::GeoConvert(geo_convert::Node::new(
+                Ok(NodeDispatch::GeoConvert(geo::convert::Node::new(
                     config,
                     platform.clone(),
                 )?))
             }
-            fs_pdf_convert::NODE_KIND => {
-                let config: fs_pdf_convert::Config =
+            fs::pdf::convert::NODE_KIND => {
+                let config: fs::pdf::convert::Config =
                     serde_json::from_value(node.config.clone()).unwrap_or_default();
                 let Some(platform) = &self.platform else {
                     return Err(PipelineError::new(
@@ -1668,13 +1713,24 @@ impl BasicPipelineEngine {
                         "platform service not available in this engine context",
                     ));
                 };
-                Ok(NodeDispatch::FilePdfConvert(fs_pdf_convert::Node::new(
+                Ok(NodeDispatch::FilePdfConvert(fs::pdf::convert::Node::new(
                     config,
                     platform.clone(),
                 )?))
             }
-            fs_thumbnail::NODE_KIND => {
-                let config: fs_thumbnail::Config =
+            fs::svg::convert::NODE_KIND => {
+                let config: fs::svg::convert::Config = serde_json::from_value(node.config.clone())
+                    .map_err(|e| PipelineError::new("FW_NODE_FS_SVG_CONVERT_CONFIG", e.to_string()))?;
+                let Some(platform) = &self.platform else {
+                    return Err(PipelineError::new(
+                        "FW_NODE_FS_SVG_CONVERT_CONFIG",
+                        "platform service not available in this engine context",
+                    ));
+                };
+                Ok(NodeDispatch::SvgConvert(fs::svg::convert::Node::new(config, platform.clone())?))
+            }
+            fs::image::thumbnail::NODE_KIND => {
+                let config: fs::image::thumbnail::Config =
                     serde_json::from_value(node.config.clone()).unwrap_or_default();
                 let Some(platform) = &self.platform else {
                     return Err(PipelineError::new(
@@ -1682,99 +1738,106 @@ impl BasicPipelineEngine {
                         "platform service not available in this engine context",
                     ));
                 };
-                Ok(NodeDispatch::ImgThumbnail(fs_thumbnail::Node::new(
+                Ok(NodeDispatch::ImgThumbnail(fs::image::thumbnail::Node::new(
                     config,
                     platform.clone(),
                 )?))
             }
-            kv_set::NODE_KIND => {
+            kv::set::NODE_KIND => {
                 let Some(state_bus) = &self.state_bus else {
                     return Err(PipelineError::new(
                         "FW_NODE_MEM_UNAVAILABLE",
                         "state bus is not configured on this pipeline engine",
                     ));
                 };
-                Ok(NodeDispatch::KvSet(kv_set::Node::new(
+                Ok(NodeDispatch::KvSet(kv::set::Node::new(
                     serde_json::from_value(node.config.clone())
                         .map_err(|e| PipelineError::new("FW_NODE_KV_SET_CONFIG", e.to_string()))?,
                     state_bus.clone(),
                 )))
             }
-            kv_get::NODE_KIND => {
+            // The whole `input.*` family builds through one door: the kind
+            // picks the check, the config names the field.
+            kind if input::is_input_kind(kind) => {
+                let node = input::Node::for_kind(kind, &node.config)
+                    .expect("guard says this is an input kind")?;
+                Ok(NodeDispatch::Input(node))
+            }
+            kv::get::NODE_KIND => {
                 let Some(state_bus) = &self.state_bus else {
                     return Err(PipelineError::new(
                         "FW_NODE_MEM_UNAVAILABLE",
                         "state bus is not configured on this pipeline engine",
                     ));
                 };
-                Ok(NodeDispatch::KvGet(kv_get::Node::new(
+                Ok(NodeDispatch::KvGet(kv::get::Node::new(
                     serde_json::from_value(node.config.clone())
                         .map_err(|e| PipelineError::new("FW_NODE_KV_GET_CONFIG", e.to_string()))?,
                     state_bus.clone(),
                 )))
             }
-            kv_del::NODE_KIND => {
+            kv::del::NODE_KIND => {
                 let Some(state_bus) = &self.state_bus else {
                     return Err(PipelineError::new(
                         "FW_NODE_MEM_UNAVAILABLE",
                         "state bus is not configured on this pipeline engine",
                     ));
                 };
-                Ok(NodeDispatch::KvDel(kv_del::Node::new(
+                Ok(NodeDispatch::KvDel(kv::del::Node::new(
                     serde_json::from_value(node.config.clone())
                         .map_err(|e| PipelineError::new("FW_NODE_KV_DEL_CONFIG", e.to_string()))?,
                     state_bus.clone(),
                 )))
             }
-            kv_incr::NODE_KIND => {
+            kv::incr::NODE_KIND => {
                 let Some(state_bus) = &self.state_bus else {
                     return Err(PipelineError::new(
                         "FW_NODE_MEM_UNAVAILABLE",
                         "state bus is not configured on this pipeline engine",
                     ));
                 };
-                Ok(NodeDispatch::KvIncr(kv_incr::Node::new(
+                Ok(NodeDispatch::KvIncr(kv::incr::Node::new(
                     serde_json::from_value(node.config.clone())
                         .map_err(|e| PipelineError::new("FW_NODE_KV_INCR_CONFIG", e.to_string()))?,
                     state_bus.clone(),
                 )))
             }
-            kv_publish::NODE_KIND => {
+            kv::publish::NODE_KIND => {
                 let Some(state_bus) = &self.state_bus else {
                     return Err(PipelineError::new(
                         "FW_NODE_MEM_UNAVAILABLE",
                         "state bus is not configured on this pipeline engine",
                     ));
                 };
-                Ok(NodeDispatch::KvPublish(kv_publish::Node::new(
+                Ok(NodeDispatch::KvPublish(kv::publish::Node::new(
                     serde_json::from_value(node.config.clone()).map_err(|e| {
                         PipelineError::new("FW_NODE_KV_PUBLISH_CONFIG", e.to_string())
                     })?,
                     state_bus.clone(),
                 )))
             }
-            kv_exists::NODE_KIND => {
+            kv::exists::NODE_KIND => {
                 let Some(state_bus) = &self.state_bus else {
                     return Err(PipelineError::new(
                         "FW_NODE_MEM_UNAVAILABLE",
                         "state bus is not configured on this pipeline engine",
                     ));
                 };
-                Ok(NodeDispatch::KvExists(kv_exists::Node::new(
+                Ok(NodeDispatch::KvExists(kv::exists::Node::new(
                     serde_json::from_value(node.config.clone()).map_err(|e| {
                         PipelineError::new("FW_NODE_KV_EXISTS_CONFIG", e.to_string())
                     })?,
                     state_bus.clone(),
                 )))
             }
-            kv_expire::NODE_KIND => {
+            kv::expire::NODE_KIND => {
                 let Some(state_bus) = &self.state_bus else {
                     return Err(PipelineError::new(
                         "FW_NODE_MEM_UNAVAILABLE",
                         "state bus is not configured on this pipeline engine",
                     ));
                 };
-                Ok(NodeDispatch::KvExpire(kv_expire::Node::new(
+                Ok(NodeDispatch::KvExpire(kv::expire::Node::new(
                     serde_json::from_value(node.config.clone()).map_err(|e| {
                         PipelineError::new("FW_NODE_KV_EXPIRE_CONFIG", e.to_string())
                     })?,
@@ -1796,14 +1859,14 @@ impl BasicPipelineEngine {
                     |e| PipelineError::new("FW_NODE_WS_CLIENT_TRIGGER_CONFIG", e.to_string()),
                 )?),
             )),
-            ws_client_send::NODE_KIND => {
+            ws::client_send::NODE_KIND => {
                 let Some(ws_client_manager) = &self.ws_client_manager else {
                     return Err(PipelineError::new(
                         "FW_NODE_WS_CLIENT_SEND_UNAVAILABLE",
                         "ws client manager is not configured on this framework engine",
                     ));
                 };
-                Ok(NodeDispatch::WsClientSend(ws_client_send::Node::new(
+                Ok(NodeDispatch::WsClientSend(ws::client_send::Node::new(
                     serde_json::from_value(node.config.clone()).map_err(|e| {
                         PipelineError::new("FW_NODE_WS_CLIENT_SEND_CONFIG", e.to_string())
                     })?,
@@ -1873,7 +1936,107 @@ impl PipelineEngine for BasicPipelineEngine {
         ctx: &PipelineContext,
         options: &ExecuteOptions,
     ) -> Result<PipelineOutput, PipelineError> {
+        // The run is bracketed on the bus: `run_start` before the first node,
+        // `run_done` after the last, whatever the outcome — the n8n-style
+        // canvas badges read these, and so may any SSE client.
+        let started = std::time::Instant::now();
+        emit_lifecycle(
+            &options.bus,
+            "run_start",
+            format!("run {} start", ctx.request_id),
+            None,
+            Some(json!({ "run_id": ctx.request_id })),
+            &started,
+        );
+        let result = self.run_graph(graph, ctx, options).await;
+        let status = if result.is_ok() { "ok" } else { "error" };
+        let duration_ms = started.elapsed().as_millis() as u64;
+        emit_lifecycle(
+            &options.bus,
+            "run_done",
+            format!("run {} {} {} ms", ctx.request_id, status, duration_ms),
+            None,
+            Some(json!({ "run_id": ctx.request_id, "status": status, "duration_ms": duration_ms })),
+            &started,
+        );
+        result
+    }
+}
+
+/// One engine lifecycle signal on the run's bus, when the run has one.
+///
+/// The engine announces `run_start`, then per node `node_start` followed by
+/// exactly one of `node_ok` / `node_skip` / `node_fail` / `node_retry` /
+/// `node_error_routed`, then `run_done`. The last two are a failure an
+/// `:error` edge consumed: `node_retry` when the edge reaches `logic.retry`
+/// (`data: { attempt, max_attempts, duration_ms, error_code, message }`),
+/// `node_error_routed` for any other consumer (`{ duration_ms, error_code,
+/// message, to_node }`); `node_fail` is the unrouted failure only. Every
+/// consumer of the bus forwards every signal, so a client that only cared
+/// for node-emitted ones (an agent's steps) now sees these too — the SSE
+/// help says so.
+fn emit_lifecycle(
+    bus: &Option<Arc<ExecutionBus>>,
+    kind: &str,
+    message: String,
+    node: Option<(&str, &str)>,
+    data: Option<Value>,
+    run_started: &std::time::Instant,
+) {
+    let Some(bus) = bus else { return };
+    let (node_id, node_kind) = node.unwrap_or(("", ""));
+    bus.emit(Signal {
+        kind: kind.to_string(),
+        message,
+        node_id: node_id.to_string(),
+        node_kind: node_kind.to_string(),
+        data,
+        at: format!("{}ms", run_started.elapsed().as_millis()),
+    });
+}
+
+/// `node_fail` for one node, whether the failure came from the node itself
+/// or from resolving its config or building it.
+fn emit_node_fail(
+    bus: &Option<Arc<ExecutionBus>>,
+    node_id: &str,
+    node_kind: &str,
+    error: &PipelineError,
+    node_start: &std::time::Instant,
+    run_started: &std::time::Instant,
+) {
+    let duration_ms = node_start.elapsed().as_millis() as u64;
+    emit_lifecycle(
+        bus,
+        "node_fail",
+        format!("{node_id} {} fail {duration_ms} ms", short_kind_word(node_kind)),
+        Some((node_id, node_kind)),
+        Some(json!({
+            "duration_ms": duration_ms,
+            "error_code": error.code,
+            "error_class": crate::pipeline::error_class::class_of(error.code).as_status_word(),
+            "error": error.message,
+        })),
+        run_started,
+    );
+}
+
+/// `http.request` for `n.http.request` — the message is for a human.
+fn short_kind_word(kind: &str) -> &str {
+    kind.strip_prefix("n.").unwrap_or(kind)
+}
+
+impl BasicPipelineEngine {
+    /// The run itself. `execute_with_options_async` brackets it with
+    /// `run_start` / `run_done` on the bus.
+    async fn run_graph(
+        &self,
+        graph: &PipelineGraph,
+        ctx: &PipelineContext,
+        options: &ExecuteOptions,
+    ) -> Result<PipelineOutput, PipelineError> {
         self.validate_graph(graph)?;
+        let run_started = std::time::Instant::now();
 
         let node_map: HashMap<&str, &PipelineNode> = graph
             .nodes
@@ -1982,16 +2145,44 @@ impl PipelineEngine for BasicPipelineEngine {
                 PipelineError::new("FW_EXEC_NODE", format!("node '{}' missing", input.node_id))
             })?;
 
+            // The node's clock starts here, before its config is resolved and
+            // it is built, so a failure in either is announced as this
+            // node's `node_fail` and the badge never stays "running".
+            let node_start = std::time::Instant::now();
+            emit_lifecycle(
+                &bus,
+                "node_start",
+                format!("{} {} start", node.id, short_kind_word(&node.kind)),
+                Some((&node.id, &node.kind)),
+                None,
+                &run_started,
+            );
+
             // Resolve {{ expr }} placeholders in the node's config before building.
             // Uses input.metadata["nodes"] (snapshot at queue-time) for $nodes scope,
             // so each node only sees outputs of its transitive predecessors.
-            let effective_config = resolve_config_expressions(
+            let effective_config = match resolve_config_expressions(
                 node.config.clone(),
                 &input.payload,
                 &input.metadata,
                 &self.language,
-            )?;
+            ) {
+                Ok(config) => config,
+                Err(e) => {
+                    emit_node_fail(&bus, &node.id, &node.kind, &e, &node_start, &run_started);
+                    return Err(e);
+                }
+            };
             trace_capture.begin_node();
+            // A declared canvas preview asks for that payload in the record —
+            // see `TraceCapture::records_payload_for`. Read off the stored
+            // config: `preview` is presentation, never expression-resolved.
+            // An input node's widget is its input view — the Run form shows
+            // what went in from the record — so the family asks for its input
+            // payload the way a declared `--preview-in` does.
+            let preview_in =
+                node.config["preview"]["in"].is_object() || input::is_input_kind(&node.kind);
+            let preview_out = node.config["preview"]["out"].is_object();
             // Captured before the node runs, because the error path needs it and
             // the outcome is not known yet. At `on-error` a successful node
             // drops it below; at `none` it is never taken at all.
@@ -2000,20 +2191,26 @@ impl PipelineEngine for BasicPipelineEngine {
             } else {
                 None
             };
-            let dispatch = if effective_config == node.config {
+            let built = if effective_config == node.config {
                 // No expressions resolved — use original node directly (common fast path).
-                self.build_node(node)?
+                self.build_node(node)
             } else {
                 self.build_node(&PipelineNode {
                     config: effective_config.clone(),
                     ..(*node).clone()
-                })?
+                })
+            };
+            let dispatch = match built {
+                Ok(dispatch) => dispatch,
+                Err(e) => {
+                    emit_node_fail(&bus, &node.id, &node.kind, &e, &node_start, &run_started);
+                    return Err(e);
+                }
             };
 
             // Capture context for per-node trace before consuming `input`.
             let trace_node_id = node.id.clone();
             let trace_node_kind = node.kind.clone();
-            let node_start = std::time::Instant::now();
             let input_snapshot = input.payload.clone();
 
             // Per-node timeout: prevents slow HTTP/DB nodes from hanging pipelines.
@@ -2074,7 +2271,7 @@ impl PipelineEngine for BasicPipelineEngine {
                             let cookie = config
                                 .set_cookie
                                 .as_deref()
-                                .and_then(web_response::parse_cookie_spec);
+                                .and_then(web::response::parse_cookie_spec);
                             let headers = config.headers.clone();
 
                             let template_id = config.template.clone().unwrap_or_default();
@@ -2103,7 +2300,7 @@ impl PipelineEngine for BasicPipelineEngine {
                             {
                                 Ok(hit)
                             } else {
-                                let fresh = web_response::compile_page(
+                                let fresh = web::response::compile_page(
                                     &node_id,
                                     &TemplateSource {
                                         id: template_id,
@@ -2139,7 +2336,7 @@ impl PipelineEngine for BasicPipelineEngine {
                                 .map(|libs| libs.into_keys().collect())
                                 .unwrap_or_default();
 
-                            let render_out = web_response::render_compiled_page(
+                            let render_out = web::response::render_compiled_page(
                                 &compiled,
                                 input.payload,
                                 input.metadata,
@@ -2193,7 +2390,7 @@ impl PipelineEngine for BasicPipelineEngine {
                             ));
                         };
                         let site =
-                            web_docs_generate::load_site(&config, template_root, &docs_root)?;
+                            web::docs_generate::load_site(&config, template_root, &docs_root)?;
                         let options = crate::rwe::ReactiveWebOptions {
                             templates: crate::rwe::TemplateOptions {
                                 template_root: self.template_root.clone(),
@@ -2214,7 +2411,7 @@ impl PipelineEngine for BasicPipelineEngine {
                             if let Some(hit) = cached {
                                 Ok(hit)
                             } else {
-                                let fresh = web_response::compile_page(
+                                let fresh = web::response::compile_page(
                                     &node_id,
                                     &site.template_source,
                                     &options,
@@ -2241,7 +2438,7 @@ impl PipelineEngine for BasicPipelineEngine {
                             let mut generated_files = 0usize;
                             let mut skipped_files = 0usize;
                             let mut urls = Vec::new();
-                            let asset_group = web_static_site::asset_group_id(
+                            let asset_group = web::static_site::asset_group_id(
                                 &site.template_rel_path,
                                 &site.template_source.markup,
                             );
@@ -2274,15 +2471,15 @@ impl PipelineEngine for BasicPipelineEngine {
                                 if let Some(map) = metadata.as_object_mut() {
                                     map.insert(
                                         "route".to_string(),
-                                        Value::String(web_docs_generate::default_route(page)),
+                                        Value::String(web::docs_generate::default_route(page)),
                                     );
                                 }
-                                let payload = web_docs_generate::page_payload(
+                                let payload = web::docs_generate::page_payload(
                                     &site,
                                     page_index,
                                     input.payload.clone(),
                                 )?;
-                                let render_out = web_response::render_compiled_page(
+                                let render_out = web::response::render_compiled_page(
                                     &compiled,
                                     payload,
                                     metadata,
@@ -2313,17 +2510,17 @@ impl PipelineEngine for BasicPipelineEngine {
                                     .cloned()
                                     .and_then(|value| serde_json::from_value::<Vec<crate::rwe::CompiledScript>>(value).ok())
                                     .unwrap_or_default();
-                                let final_html = web_static_generate::build_static_html(
+                                let final_html = web::static_generate::build_static_html(
                                     html,
                                     &hydration_payload,
                                     &compiled_scripts,
                                     self.template_root.as_deref(),
                                 );
-                                let localized = web_static_site::localize_static_html_assets(
+                                let localized = web::static_site::localize_static_html_assets(
                                     &site_root_abs,
                                     &page.output_rel_path,
                                     &final_html,
-                                    web_static_site::StaticAssetSources {
+                                    web::static_site::StaticAssetSources {
                                         owner: Some(&ctx.owner),
                                         project: Some(&ctx.project),
                                         project_asset_root_abs: project_asset_root.as_deref(),
@@ -2331,20 +2528,20 @@ impl PipelineEngine for BasicPipelineEngine {
                                     &asset_group,
                                 )?;
                                 asset_records.extend(localized.assets.iter().cloned());
-                                let final_html = web_docs_generate::apply_page_seo(
+                                let final_html = web::docs_generate::apply_page_seo(
                                     localized.html,
                                     &site,
                                     page_index,
                                 );
                                 let rel_path =
-                                    web_docs_generate::output_rel_path(page, &site.site_root_rel)?;
+                                    web::docs_generate::output_rel_path(page, &site.site_root_rel)?;
                                 let abs_path = data_root
                                     .join("users")
                                     .join(&ctx.owner)
                                     .join(&ctx.project)
                                     .join("files")
                                     .join(&rel_path);
-                                let status = web_static_generate::write_generated_html(
+                                let status = web::static_generate::write_generated_html(
                                     &abs_path,
                                     &final_html,
                                     "overwrite",
@@ -2355,25 +2552,25 @@ impl PipelineEngine for BasicPipelineEngine {
                                     generated_files += 1;
                                 }
                                 urls.push(page.route_path.clone());
-                                page_records.push(web_static_site::StaticPageRecord {
+                                page_records.push(web::static_site::StaticPageRecord {
                                     path: page.output_rel_path.clone(),
                                     route: page.route_path.clone(),
                                     template: site.template_rel_path.clone(),
                                     asset_group: asset_group.clone(),
-                                    generator: web_docs_generate::NODE_KIND.to_string(),
+                                    generator: web::docs_generate::NODE_KIND.to_string(),
                                 });
                             }
 
                             if !site.sitemap_xml.trim().is_empty() {
                                 let sitemap_rel =
-                                    web_docs_generate::sitemap_rel_path(&site.site_root_rel);
+                                    web::docs_generate::sitemap_rel_path(&site.site_root_rel);
                                 let sitemap_abs = data_root
                                     .join("users")
                                     .join(&ctx.owner)
                                     .join(&ctx.project)
                                     .join("files")
                                     .join(&sitemap_rel);
-                                let status = web_static_generate::write_generated_html(
+                                let status = web::static_generate::write_generated_html(
                                     &sitemap_abs,
                                     &site.sitemap_xml,
                                     "overwrite",
@@ -2386,14 +2583,14 @@ impl PipelineEngine for BasicPipelineEngine {
                             }
 
                             let search_index_rel =
-                                web_docs_generate::search_index_rel_path(&site.site_root_rel);
+                                web::docs_generate::search_index_rel_path(&site.site_root_rel);
                             let search_index_abs = data_root
                                 .join("users")
                                 .join(&ctx.owner)
                                 .join(&ctx.project)
                                 .join("files")
                                 .join(&search_index_rel);
-                            let status = web_static_generate::write_generated_html(
+                            let status = web::static_generate::write_generated_html(
                                 &search_index_abs,
                                 &site.search_index_json,
                                 "overwrite",
@@ -2405,19 +2602,19 @@ impl PipelineEngine for BasicPipelineEngine {
                             }
 
                             let manifest_rel =
-                                web_static_site::site_manifest_rel_path(&site.site_root_rel);
+                                web::static_site::site_manifest_rel_path(&site.site_root_rel);
                             let manifest_abs = data_root
                                 .join("users")
                                 .join(&ctx.owner)
                                 .join(&ctx.project)
                                 .join("files")
                                 .join(&manifest_rel);
-                            let _manifest = web_static_site::update_site_manifest(
+                            let _manifest = web::static_site::update_site_manifest(
                                 &manifest_abs,
                                 &site.site_root_rel,
                                 site.deploy_base_url.as_deref(),
                                 &site.deploy_base_path,
-                                web_docs_generate::NODE_KIND,
+                                web::docs_generate::NODE_KIND,
                                 &site.template_rel_path,
                                 &asset_group,
                                 &page_records,
@@ -2426,7 +2623,7 @@ impl PipelineEngine for BasicPipelineEngine {
                             )?;
 
                             Ok(vec![NodeExecutionOutput {
-                                output_pins: vec![web_docs_generate::OUTPUT_PIN_OUT.to_string()],
+                                output_pins: vec![web::docs_generate::OUTPUT_PIN_OUT.to_string()],
                                 payload: json!({
                                     "docs_generated": {
                                         "status": "ok",
@@ -2442,14 +2639,14 @@ impl PipelineEngine for BasicPipelineEngine {
                                         "page_count": site.pages.len(),
                                         "generated_files": generated_files,
                                         "skipped_files": skipped_files,
-                                        "sitemap_path": if site.sitemap_xml.trim().is_empty() { Value::Null } else { Value::String(web_docs_generate::sitemap_rel_path(&site.site_root_rel)) },
+                                        "sitemap_path": if site.sitemap_xml.trim().is_empty() { Value::Null } else { Value::String(web::docs_generate::sitemap_rel_path(&site.site_root_rel)) },
                                         "search_index_path": search_index_rel,
                                         "urls": urls,
                                     }
                                 }),
                                 trace: vec![
                                     format!("node={node_id}"),
-                                    format!("node_kind={}", web_docs_generate::NODE_KIND),
+                                    format!("node_kind={}", web::docs_generate::NODE_KIND),
                                     format!("pages={}", site.pages.len()),
                                 ],
                             }])
@@ -2463,7 +2660,7 @@ impl PipelineEngine for BasicPipelineEngine {
                             ));
                         };
 
-                        let template_source = web_static_generate::resolve_template_source(
+                        let template_source = web::static_generate::resolve_template_source(
                             &node_id,
                             &config,
                             self.template_root.as_deref(),
@@ -2489,7 +2686,7 @@ impl PipelineEngine for BasicPipelineEngine {
                             if let Some(hit) = cached {
                                 Ok(hit)
                             } else {
-                                let fresh = web_response::compile_page(
+                                let fresh = web::response::compile_page(
                                     &node_id,
                                     &template_source,
                                     &options,
@@ -2513,7 +2710,7 @@ impl PipelineEngine for BasicPipelineEngine {
                             };
 
                         compiled_result.and_then(|compiled| {
-                            let rel_path = web_static_generate::effective_output_rel_path(&config)?;
+                            let rel_path = web::static_generate::effective_output_rel_path(&config)?;
                             let abs_path = data_root
                                 .join("users")
                                 .join(&ctx.owner)
@@ -2526,16 +2723,16 @@ impl PipelineEngine for BasicPipelineEngine {
                                 {
                                     explicit_route
                                 } else if let Some(deploy_base_path) =
-                                    web_static_generate::effective_deploy_base_path(&config)?
+                                    web::static_generate::effective_deploy_base_path(&config)?
                                 {
                                     let page_output_path =
-                                        web_static_generate::effective_page_output_path(&config)?;
-                                    web_static_site::route_path_for_output_path(
+                                        web::static_generate::effective_page_output_path(&config)?;
+                                    web::static_site::route_path_for_output_path(
                                         &deploy_base_path,
                                         &page_output_path,
                                     )?
                                 } else {
-                                    web_static_generate::default_route(
+                                    web::static_generate::default_route(
                                         &ctx.owner,
                                         &ctx.project,
                                         &rel_path,
@@ -2558,7 +2755,7 @@ impl PipelineEngine for BasicPipelineEngine {
                                 .map(|libs| libs.into_keys().collect())
                                 .unwrap_or_default();
 
-                            let render_out = web_response::render_compiled_page(
+                            let render_out = web::response::render_compiled_page(
                                 &compiled,
                                 input.payload,
                                 metadata,
@@ -2595,13 +2792,13 @@ impl PipelineEngine for BasicPipelineEngine {
                                 })
                                 .unwrap_or_default();
 
-                            let final_html = web_static_generate::build_static_html(
+                            let final_html = web::static_generate::build_static_html(
                                 html,
                                 &hydration_payload,
                                 &compiled_scripts,
                                 self.template_root.as_deref(),
                             );
-                            let asset_group = web_static_site::asset_group_id(
+                            let asset_group = web::static_site::asset_group_id(
                                 &template_source.id,
                                 &template_source.markup,
                             );
@@ -2610,7 +2807,7 @@ impl PipelineEngine for BasicPipelineEngine {
                                 .as_ref()
                                 .map(|layout| layout.repo_static_dir());
                             let localized = if let Some(site_root_rel) =
-                                web_static_generate::effective_site_root_rel_path(&config)?
+                                web::static_generate::effective_site_root_rel_path(&config)?
                             {
                                 let site_root_abs = data_root
                                     .join("users")
@@ -2618,13 +2815,13 @@ impl PipelineEngine for BasicPipelineEngine {
                                     .join(&ctx.project)
                                     .join("files")
                                     .join(&site_root_rel);
-                                web_static_site::localize_static_html_assets(
+                                web::static_site::localize_static_html_assets(
                                     &site_root_abs,
-                                    &web_static_site::normalize_page_output_path(
+                                    &web::static_site::normalize_page_output_path(
                                         &config.output_path,
                                     )?,
                                     &final_html,
-                                    web_static_site::StaticAssetSources {
+                                    web::static_site::StaticAssetSources {
                                         owner: Some(&ctx.owner),
                                         project: Some(&ctx.project),
                                         project_asset_root_abs: project_asset_root.as_deref(),
@@ -2647,11 +2844,11 @@ impl PipelineEngine for BasicPipelineEngine {
                                         )
                                     })?
                                     .to_string();
-                                web_static_site::localize_static_html_assets(
+                                web::static_site::localize_static_html_assets(
                                     &page_dir_abs,
                                     &page_file_name,
                                     &final_html,
-                                    web_static_site::StaticAssetSources {
+                                    web::static_site::StaticAssetSources {
                                         owner: Some(&ctx.owner),
                                         project: Some(&ctx.project),
                                         project_asset_root_abs: project_asset_root.as_deref(),
@@ -2659,7 +2856,7 @@ impl PipelineEngine for BasicPipelineEngine {
                                     &asset_group,
                                 )?
                             };
-                            let status = web_static_generate::write_generated_html(
+                            let status = web::static_generate::write_generated_html(
                                 &abs_path,
                                 &localized.html,
                                 &config.on_conflict,
@@ -2667,36 +2864,36 @@ impl PipelineEngine for BasicPipelineEngine {
                             let bytes = localized.html.as_bytes().len() as u64;
                             let url = format!("/fs/{}/{}/{}", ctx.owner, ctx.project, rel_path);
                             let site_root_rel =
-                                web_static_generate::effective_site_root_rel_path(&config)?;
+                                web::static_generate::effective_site_root_rel_path(&config)?;
                             let manifest_rel = if let Some(site_root_rel) = site_root_rel.as_deref()
                             {
                                 let manifest_rel =
-                                    web_static_site::site_manifest_rel_path(site_root_rel);
+                                    web::static_site::site_manifest_rel_path(site_root_rel);
                                 let manifest_abs = data_root
                                     .join("users")
                                     .join(&ctx.owner)
                                     .join(&ctx.project)
                                     .join("files")
                                     .join(&manifest_rel);
-                                let page_path = web_static_site::normalize_page_output_path(
+                                let page_path = web::static_site::normalize_page_output_path(
                                     &config.output_path,
                                 )?;
-                                let page_record = web_static_site::StaticPageRecord {
+                                let page_record = web::static_site::StaticPageRecord {
                                     path: page_path,
                                     route: route.clone(),
                                     template: template_source.id.clone(),
                                     asset_group: asset_group.clone(),
-                                    generator: web_static_generate::NODE_KIND.to_string(),
+                                    generator: web::static_generate::NODE_KIND.to_string(),
                                 };
-                                let _manifest = web_static_site::update_site_manifest(
+                                let _manifest = web::static_site::update_site_manifest(
                                     &manifest_abs,
                                     site_root_rel,
-                                    web_static_generate::effective_deploy_base_url(&config)
+                                    web::static_generate::effective_deploy_base_url(&config)
                                         .as_deref(),
-                                    web_static_generate::effective_deploy_base_path(&config)?
+                                    web::static_generate::effective_deploy_base_path(&config)?
                                         .as_deref()
                                         .unwrap_or("/"),
-                                    web_static_generate::NODE_KIND,
+                                    web::static_generate::NODE_KIND,
                                     &template_source.id,
                                     &asset_group,
                                     &[page_record],
@@ -2709,20 +2906,20 @@ impl PipelineEngine for BasicPipelineEngine {
                             };
 
                             let mut trace = render_out.trace;
-                            trace.push(format!("node_kind={}", web_static_generate::NODE_KIND));
+                            trace.push(format!("node_kind={}", web::static_generate::NODE_KIND));
                             trace.push(format!("generated_path={rel_path}"));
                             trace.push(format!("generated_status={status}"));
 
                             Ok(vec![NodeExecutionOutput {
-                                output_pins: vec![web_static_generate::OUTPUT_PIN_OUT.to_string()],
+                                output_pins: vec![web::static_generate::OUTPUT_PIN_OUT.to_string()],
                                 payload: json!({
                                     "generated": {
                                         "status": status,
                                         "path": rel_path,
                                         "url": url,
                                         "route": route,
-                                        "deploy_base_url": web_static_generate::effective_deploy_base_url(&config),
-                                        "deploy_base_path": web_static_generate::effective_deploy_base_path(&config)?,
+                                        "deploy_base_url": web::static_generate::effective_deploy_base_url(&config),
+                                        "deploy_base_path": web::static_generate::effective_deploy_base_path(&config)?,
                                         "template": template_source.id,
                                         "site_root": site_root_rel,
                                         "manifest_path": manifest_rel,
@@ -2792,6 +2989,8 @@ impl PipelineEngine for BasicPipelineEngine {
                     NodeDispatch::ImgThumbnail(node) => {
                         node.execute_many_async(input_for_exec).await
                     }
+                    NodeDispatch::SvgConvert(node) => node.execute_many_async(input_for_exec).await,
+                    NodeDispatch::Input(node) => node.execute_many_async(input_for_exec).await,
                     NodeDispatch::KvSet(node) => node.execute_many_async(input_for_exec).await,
                     NodeDispatch::KvGet(node) => node.execute_many_async(input_for_exec).await,
                     NodeDispatch::KvDel(node) => node.execute_many_async(input_for_exec).await,
@@ -2842,10 +3041,12 @@ impl PipelineEngine for BasicPipelineEngine {
             let outputs = match exec_result {
                 Ok(mut outs) => {
                     let mut processed_payloads: Vec<Value> = Vec::new();
-                    // Skipped entirely below `full`: not capturing is cheaper
-                    // than capturing and discarding, which is the point on a
-                    // device.
-                    let trace_input = if trace_capture.records_successful_payloads() {
+                    // Skipped entirely when not recorded: not capturing is
+                    // cheaper than capturing and discarding, which is the
+                    // point on a device.
+                    let record_input = trace_capture.records_payload_for(true, preview_in);
+                    let record_output = trace_capture.records_payload_for(true, preview_out);
+                    let trace_input = if record_input {
                         trace_capture.capture(&input_snapshot)
                     } else {
                         Value::Null
@@ -2882,21 +3083,75 @@ impl PipelineEngine for BasicPipelineEngine {
                     // masked. `outs` — what the next node receives — is
                     // untouched, because a level shapes the record, never the
                     // run.
-                    let node_output_value = match declared_secret_paths(&trace_node_kind) {
-                        Some(paths) => crate::pipeline::trace_capture::mask_secret_paths(
-                            &trace_capture.outputs(&outs),
-                            paths,
-                        ),
-                        None => trace_capture.outputs(&outs),
+                    let node_output_value = if !record_output {
+                        Value::Null
+                    } else {
+                        match declared_secret_paths(&trace_node_kind) {
+                            Some(paths) => crate::pipeline::trace_capture::mask_secret_paths(
+                                &trace_capture.outputs(&outs),
+                                paths,
+                            ),
+                            None => trace_capture.outputs(&outs),
+                        }
                     };
-                    let nodes_output_value = if processed_payloads.len() == 1 {
+                    let mut nodes_output_value = if processed_payloads.len() == 1 {
                         processed_payloads[0].clone()
                     } else {
                         Value::Array(processed_payloads)
                     };
+                    // An input node passes the envelope through untouched, but
+                    // *its* value — what `$nodes.<id>` answers — is the field it
+                    // checked. The family's own reader says which, on the same
+                    // payload it just passed, so nothing new rides the output.
+                    if let Some(checked) =
+                        input::scope_value(&trace_node_kind, &effective_config, &nodes_output_value)
+                    {
+                        nodes_output_value = checked;
+                    }
+                    // A declared image preview of a temporary file keeps a
+                    // small copy in the record, since the file itself is
+                    // deleted with the run. Read off the stored config, like
+                    // `preview_in` / `preview_out` above.
+                    let preview_snapshot = if preview_in || preview_out {
+                        crate::pipeline::trace_capture::preview_snapshot::snapshot_for(
+                            self.platform.as_ref(),
+                            &ctx.owner,
+                            &ctx.project,
+                            &node.config,
+                            &input_snapshot,
+                            &nodes_output_value,
+                        )
+                    } else {
+                        None
+                    };
                     if should_retain_node_output(&trace_node_id, &nodes_retention) {
                         nodes_output.insert(trace_node_id.clone(), nodes_output_value);
                     }
+                    // A `logic.retry` that sent a verdict round again is a
+                    // wait, and the canvas should say so: `retry` in the
+                    // record, `node_retry` on the bus, with the count the
+                    // node stamped in `__zf_retry` (the platform's key, not
+                    // the author's body). On the error road the failing node
+                    // has already told this story, so the retry node stays
+                    // `ok` there and the status line keeps the error text.
+                    let verdict_retry = trace_node_kind == logic::retry::NODE_KIND
+                        && outs.iter().any(|o| {
+                            o.output_pins.iter().any(|p| p == logic::retry::OUTPUT_PIN_RETRY)
+                        })
+                        && input_snapshot
+                            .get(RETRY_STATE_KEY)
+                            .and_then(|s| s.get("failing_node_id"))
+                            .is_none();
+                    let status_word = if verdict_retry {
+                        "retry"
+                    } else if outs.is_empty() {
+                        // Ran and emitted nothing — a match with no case, a
+                        // filter that filtered everything. Not an error; grey
+                        // in a run view where six green dots would lie.
+                        "skip"
+                    } else {
+                        "ok"
+                    };
                     node_trace.push(NodeTraceEntry {
                         node_id: trace_node_id.clone(),
                         node_kind: trace_node_kind.clone(),
@@ -2907,45 +3162,188 @@ impl PipelineEngine for BasicPipelineEngine {
                         },
                         duration_ms: node_start.elapsed().as_millis() as u64,
                         input: trace_input,
-                        output: if trace_capture.records_successful_payloads() {
-                            node_output_value
-                        } else {
-                            Value::Null
-                        },
+                        output: node_output_value,
                         error: None,
-                        // Ran and emitted nothing — a match with no case, a
-                        // filter that filtered everything. Not an error; grey
-                        // in a run view where six green dots would lie.
-                        status: if outs.is_empty() { "skip" } else { "ok" }.to_string(),
+                        status: status_word.to_string(),
                         error_code: None,
+                        preview_snapshot,
                     });
+                    let duration_ms = node_start.elapsed().as_millis() as u64;
+                    if verdict_retry {
+                        let state = outs
+                            .first()
+                            .and_then(|o| o.payload.get(RETRY_STATE_KEY))
+                            .cloned()
+                            .unwrap_or(Value::Null);
+                        let attempt = state.get("attempt").and_then(Value::as_u64).unwrap_or(1);
+                        let max_attempts = state.get("max_attempts").and_then(Value::as_u64);
+                        // The reason a wait is a wait: the pause the node
+                        // took before the next attempt — the wait it stamped
+                        // (grown by `--backoff`), or its `--delay-ms` when
+                        // an older record has no stamp.
+                        let message = state
+                            .get("next_delay_ms")
+                            .and_then(Value::as_u64)
+                            .or_else(|| {
+                                node.config.get("delay_ms").and_then(|d| {
+                                    d.as_u64().or_else(|| d.as_str().and_then(|s| s.trim().parse().ok()))
+                                })
+                            })
+                            .filter(|d| *d > 0)
+                            .map(|d| format!("next attempt in {d} ms"));
+                        emit_lifecycle(
+                            &bus,
+                            "node_retry",
+                            match max_attempts {
+                                Some(max) => format!(
+                                    "{trace_node_id} {} waiting {attempt}/{max} {duration_ms} ms",
+                                    short_kind_word(&trace_node_kind)
+                                ),
+                                None => format!(
+                                    "{trace_node_id} {} waiting {attempt} {duration_ms} ms",
+                                    short_kind_word(&trace_node_kind)
+                                ),
+                            },
+                            Some((&trace_node_id, &trace_node_kind)),
+                            Some(json!({
+                                "attempt": attempt,
+                                "max_attempts": max_attempts,
+                                "duration_ms": duration_ms,
+                                "message": message,
+                            })),
+                            &run_started,
+                        );
+                    } else {
+                        let outcome = if outs.is_empty() { "node_skip" } else { "node_ok" };
+                        emit_lifecycle(
+                            &bus,
+                            outcome,
+                            format!(
+                                "{trace_node_id} {} {duration_ms} ms",
+                                short_kind_word(&trace_node_kind)
+                            ),
+                            Some((&trace_node_id, &trace_node_kind)),
+                            Some(json!({ "duration_ms": duration_ms })),
+                            &run_started,
+                        );
+                    }
                     outs
                 }
                 Err(mut e) => {
+                    // Attribute error to the failing node if not already set.
+                    if e.node_id.is_none() {
+                        e.node_id = Some(trace_node_id.clone());
+                        e.node_kind = Some(trace_node_kind.clone());
+                    }
+                    // A failure an `:error` edge consumes is not the run
+                    // failing: it is a retry (the consumer is `logic.retry`)
+                    // or an error handled by whatever the edge reaches. The
+                    // record and the bus say which, so a poll loop that
+                    // waited eight times and then succeeded does not show
+                    // eight red crosses. `node_fail` is for the unrouted
+                    // failure that ends the run.
+                    let routed_edges = outgoing.get(&(node.id.as_str(), "error"));
+                    let retry_consumer = routed_edges.and_then(|edges| {
+                        edges
+                            .iter()
+                            .filter_map(|(to_node, _)| node_map.get(to_node).copied())
+                            .find(|target| target.kind == logic::retry::NODE_KIND)
+                    });
+                    let error_payload = routed_edges.map(|_| {
+                        let last_attempt = retry_consumer
+                            .map(|retry| retry_last_attempt(&nodes_output, &retry.id))
+                            .unwrap_or(0);
+                        build_retry_error_payload(&input_snapshot, &e, last_attempt)
+                    });
+                    let duration_ms = node_start.elapsed().as_millis() as u64;
+                    let routed_status = match (routed_edges, retry_consumer) {
+                        (None, _) => None,
+                        (Some(_), Some(retry)) => {
+                            let attempt = error_payload
+                                .as_ref()
+                                .map(retry_attempt_from_payload)
+                                .unwrap_or(1);
+                            let max_attempts = retry_max_attempts(retry);
+                            emit_lifecycle(
+                                &bus,
+                                "node_retry",
+                                match max_attempts {
+                                    Some(max) => format!(
+                                        "{trace_node_id} {} retry {attempt}/{max} {duration_ms} ms",
+                                        short_kind_word(&trace_node_kind)
+                                    ),
+                                    None => format!(
+                                        "{trace_node_id} {} retry {attempt} {duration_ms} ms",
+                                        short_kind_word(&trace_node_kind)
+                                    ),
+                                },
+                                Some((&trace_node_id, &trace_node_kind)),
+                                Some(json!({
+                                    "attempt": attempt,
+                                    "max_attempts": max_attempts,
+                                    "duration_ms": duration_ms,
+                                    "error_code": e.code,
+                                    "message": e.message,
+                                })),
+                                &run_started,
+                            );
+                            Some("retry")
+                        }
+                        (Some(edges), None) => {
+                            let to_node = edges.first().map(|(to, _)| *to).unwrap_or("");
+                            emit_lifecycle(
+                                &bus,
+                                "node_error_routed",
+                                format!(
+                                    "{trace_node_id} {} error → {to_node} {duration_ms} ms",
+                                    short_kind_word(&trace_node_kind)
+                                ),
+                                Some((&trace_node_id, &trace_node_kind)),
+                                Some(json!({
+                                    "duration_ms": duration_ms,
+                                    "error_code": e.code,
+                                    "message": e.message,
+                                    "to_node": to_node,
+                                })),
+                                &run_started,
+                            );
+                            Some("error_routed")
+                        }
+                    };
+                    if routed_status.is_none() {
+                        emit_node_fail(
+                            &bus,
+                            &trace_node_id,
+                            &trace_node_kind,
+                            &e,
+                            &node_start,
+                            &run_started,
+                        );
+                    }
                     node_trace.push(NodeTraceEntry {
                         node_id: trace_node_id.clone(),
                         node_kind: trace_node_kind.clone(),
                         config: base_trace_config,
-                        duration_ms: node_start.elapsed().as_millis() as u64,
+                        duration_ms,
                         input: if trace_capture.records_any_payload() {
                             trace_capture.capture(&input_snapshot)
                         } else {
                             Value::Null
                         },
                         output: Value::Null,
+                        // The error text stays so the Logs panel says why,
+                        // whichever way the failure went.
                         error: Some(e.message.clone()),
-                        status: crate::pipeline::error_class::class_of(e.code)
-                            .as_status_word()
-                            .to_string(),
+                        status: match routed_status {
+                            Some(word) => word.to_string(),
+                            None => crate::pipeline::error_class::class_of(e.code)
+                                .as_status_word()
+                                .to_string(),
+                        },
                         error_code: Some(e.code.to_string()),
+                        preview_snapshot: None,
                     });
-                    // Attribute error to the failing node if not already set.
-                    if e.node_id.is_none() {
-                        e.node_id = Some(trace_node_id);
-                        e.node_kind = Some(trace_node_kind);
-                    }
-                    if let Some(next_edges) = outgoing.get(&(node.id.as_str(), "error")) {
-                        let error_payload = build_retry_error_payload(&input_snapshot, &e);
+                    if let (Some(next_edges), Some(error_payload)) = (routed_edges, error_payload) {
                         for (to_node, to_pin) in next_edges {
                             queue.push_back(NodeExecutionInput {
                                 node_id: (*to_node).to_string(),
@@ -3185,7 +3583,7 @@ mod tests {
     use crate::pipeline::model::{PipelineEdge, PipelineGraph, PipelineNode};
     use crate::pipeline::nodes::basic::{
         script,
-        table_convert::{TableFormat, collect_columns, encode_rows},
+        table::convert::{TableFormat, collect_columns, encode_rows},
     };
     use crate::platform::model::PlatformConfig;
     use crate::platform::services::PlatformService;
@@ -3377,6 +3775,202 @@ mod tests {
         );
     }
 
+    /// A declared preview records its own payload at `on-error` — and only
+    /// its own: the node beside it, and its other half, stay unrecorded. At
+    /// `none` the preview changes nothing.
+    #[tokio::test]
+    async fn a_declared_preview_records_its_payload_at_on_error() {
+        use crate::pipeline::model::{PipelineGraphMetadata, PipelineGraphSettings};
+        use crate::pipeline::trace_capture::{CaptureLevel, TraceCaptureSettings};
+
+        async fn run_at(level: CaptureLevel) -> crate::pipeline::model::PipelineOutput {
+            let mut graph = build_pipeline_graph(
+                "preview-levels",
+                "[a] trigger.manual\n[b] script --preview json -- \"return { seen: input.canary };\"\n[a] -> [b]\n",
+            )
+            .expect("graph");
+            assert_eq!(graph.nodes[1].config["preview"]["out"], json!({ "as": "json" }));
+            graph.metadata = Some(PipelineGraphMetadata {
+                settings: PipelineGraphSettings {
+                    trace_capture: Some(TraceCaptureSettings {
+                        level: Some(level),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                },
+                ..Default::default()
+            });
+            let ctx = PipelineContext {
+                owner: "test".into(),
+                project: "test".into(),
+                pipeline: "preview-levels".into(),
+                request_id: "preview-levels-test".into(),
+                route: String::new(),
+                input: json!({ "canary": "CANARY-IN-INPUT" }),
+                trigger: None,
+                placeholder: None,
+            };
+            BasicPipelineEngine::default()
+                .execute_async(&graph, &ctx)
+                .await
+                .expect("execution")
+        }
+
+        let out = run_at(CaptureLevel::OnError).await;
+        let a = out.node_trace.iter().find(|t| t.node_id == "a").expect("node a");
+        let b = out.node_trace.iter().find(|t| t.node_id == "b").expect("node b");
+        assert_eq!(a.output, serde_json::Value::Null, "no preview on a: nothing recorded");
+        assert_eq!(a.input, serde_json::Value::Null);
+        assert_eq!(b.input, serde_json::Value::Null, "b previews its output, not its input");
+        assert_eq!(
+            b.output,
+            json!({ "seen": "CANARY-IN-INPUT" }),
+            "b previews its output, so on-error records it"
+        );
+        assert!(b.config.is_none(), "config capture is unchanged by a preview");
+
+        let out = run_at(CaptureLevel::None).await;
+        let text = serde_json::to_string(&out.node_trace).unwrap();
+        assert!(!text.contains("CANARY-IN-INPUT"), "none records nothing, preview or not: {text}");
+    }
+
+    /// The engine announces the run on the bus: `run_start`, then per node
+    /// `node_start` and exactly one outcome, then `run_done` — in execution
+    /// order, with the node named and its duration in `data`. A failing
+    /// node gets `node_fail` with its code, and the run still gets its
+    /// `run_done` (status `error`).
+    #[tokio::test]
+    async fn the_engine_announces_run_and_node_lifecycle_on_the_bus() {
+        use crate::pipeline::model::{
+            ExecuteOptions, ExecutionBus, PipelineError, PipelineOutput, Signal,
+        };
+
+        async fn signals_of(dsl: &str) -> (Result<PipelineOutput, PipelineError>, Vec<Signal>) {
+            let graph = build_pipeline_graph("lifecycle", dsl).expect("graph");
+            let ctx = PipelineContext {
+                owner: "test".into(),
+                project: "test".into(),
+                pipeline: "lifecycle".into(),
+                request_id: "lifecycle-run-1".into(),
+                route: String::new(),
+                input: json!({ "n": 1 }),
+                trigger: None,
+                placeholder: None,
+            };
+            let bus = Arc::new(ExecutionBus::new(64));
+            let mut rx = bus.subscribe();
+            let options = ExecuteOptions { bus: Some(bus) };
+            let result = BasicPipelineEngine::default()
+                .execute_with_options_async(&graph, &ctx, &options)
+                .await;
+            let mut signals = Vec::new();
+            while let Ok(signal) = rx.try_recv() {
+                signals.push(signal);
+            }
+            (result, signals)
+        }
+
+        let (result, signals) = signals_of(
+            "[a] trigger.manual\n[b] script -- \"return { n: input.n + 1 };\"\n[a] -> [b]\n",
+        )
+        .await;
+        result.expect("the run succeeds");
+        let seen: Vec<(String, String)> = signals
+            .iter()
+            .map(|s| (s.kind.clone(), s.node_id.clone()))
+            .collect();
+        assert_eq!(
+            seen,
+            [
+                ("run_start", ""),
+                ("node_start", "a"),
+                ("node_ok", "a"),
+                ("node_start", "b"),
+                ("node_ok", "b"),
+                ("run_done", ""),
+            ]
+            .map(|(k, n)| (k.to_string(), n.to_string()))
+        );
+        let node_ok = &signals[4];
+        assert_eq!(node_ok.node_kind, "n.script");
+        assert!(node_ok.data.as_ref().unwrap()["duration_ms"].is_u64());
+        assert!(node_ok.message.starts_with("b script "), "{}", node_ok.message);
+        let run_done = signals.last().unwrap();
+        let data = run_done.data.as_ref().unwrap();
+        assert_eq!(data["run_id"], "lifecycle-run-1");
+        assert_eq!(data["status"], "ok");
+        assert!(data["duration_ms"].is_u64());
+
+        let (result, signals) = signals_of(
+            "[a] trigger.manual\n[b] script -- \"throw new Error('boom');\"\n[a] -> [b]\n",
+        )
+        .await;
+        assert!(result.is_err());
+        let kinds: Vec<&str> = signals.iter().map(|s| s.kind.as_str()).collect();
+        assert_eq!(
+            kinds,
+            ["run_start", "node_start", "node_ok", "node_start", "node_fail", "run_done"]
+        );
+        let fail = &signals[4];
+        assert_eq!(fail.node_id, "b");
+        let data = fail.data.as_ref().unwrap();
+        assert!(data["error_code"].as_str().is_some_and(|c| !c.is_empty()));
+        assert!(data["error_class"].as_str().is_some_and(|c| c == "refused" || c == "failed"));
+        assert!(data["error"].as_str().unwrap().contains("boom"), "{data}");
+        assert_eq!(signals.last().unwrap().data.as_ref().unwrap()["status"], "error");
+    }
+
+    /// Rule 3 of `kinds/invocation-record` under a preview: a declared
+    /// `--preview json` makes `on-error` record a successful node's payload,
+    /// and that record goes through the same capture as every other, so a
+    /// value the project took out of its credential store is masked in it.
+    #[tokio::test]
+    async fn a_previewed_payload_never_shows_a_credential_value() {
+        use crate::pipeline::model::{PipelineGraphMetadata, PipelineGraphSettings};
+        use crate::pipeline::trace_capture::{CaptureLevel, TraceCaptureSettings};
+
+        const SECRET: &str = "sk-live-CREDENTIAL-VALUE-9f2c8d";
+        crate::platform::services::credential::register_confidential_for_test(
+            "preview-rule3",
+            "preview-rule3",
+            &json!({ "api_key": SECRET }),
+        );
+        let mut graph = build_pipeline_graph(
+            "preview-rule3",
+            "[a] trigger.manual\n[b] script --preview json -- \"return { token: input.secret, note: 'ok' };\"\n[a] -> [b]\n",
+        )
+        .expect("graph");
+        graph.metadata = Some(PipelineGraphMetadata {
+            settings: PipelineGraphSettings {
+                trace_capture: Some(TraceCaptureSettings {
+                    level: Some(CaptureLevel::OnError),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+        let ctx = PipelineContext {
+            owner: "preview-rule3".into(),
+            project: "preview-rule3".into(),
+            pipeline: "preview-rule3".into(),
+            request_id: "preview-rule3-test".into(),
+            route: String::new(),
+            input: json!({ "secret": SECRET }),
+            trigger: None,
+            placeholder: None,
+        };
+        let out = BasicPipelineEngine::default()
+            .execute_async(&graph, &ctx)
+            .await
+            .expect("execution");
+        assert_eq!(out.value["token"], json!(SECRET), "the run itself is never masked");
+        let b = out.node_trace.iter().find(|t| t.node_id == "b").expect("node b");
+        assert_eq!(b.output["note"], json!("ok"), "the preview recorded the payload");
+        let text = serde_json::to_string(&out.node_trace).unwrap();
+        assert!(!text.contains(SECRET), "the record shows no credential value: {text}");
+    }
+
     /// Reproducible capture-only comparison, without external I/O. This is an
     /// ignored diagnostic, not a timing assertion or a production throughput
     /// promise. The legacy implementation is compiled only into tests.
@@ -3536,7 +4130,7 @@ mod tests {
 
         // What a declaration does buy is still bought: a readable destination is
         // checked against the list rather than refused outright.
-        super::refuse_uncheckable_egress_node(&silent, super::http_request::NODE_KIND, false)
+        super::refuse_uncheckable_egress_node(&silent, super::http::request::NODE_KIND, false)
             .expect("a host-checked node is not an unreadable destination");
     }
 
@@ -4238,7 +4832,7 @@ mod tests {
         assert_eq!(file_ref["__zf_type"], "file_ref");
         // The eleven contract fields, and nothing that was dropped
         // (`kinds/file-ref/README.md`).
-        crate::pipeline::nodes::basic::file_ref::validate_file_ref(file_ref)
+        crate::pipeline::nodes::shared::file_ref::validate_file_ref(file_ref)
             .expect("valid FileRef");
         assert_eq!(file_ref["mime"], "application/json");
         assert_eq!(file_ref["kind"], "json");
@@ -4283,7 +4877,7 @@ mod tests {
         let dsl = r#"
 [a] trigger.manual
 [b] table.convert --from "{{ input.rows }}" --to datasets/posts.parquet
-[c] table.convert --from datasets/posts.parquet --to-json --preview 2
+[c] table.convert --from datasets/posts.parquet --to-json --preview-rows 2
 
 [a] -> [b]
 [b] -> [c]
@@ -4362,7 +4956,7 @@ mod tests {
 
         let dsl = r#"
 [a] trigger.manual
-[b] table.query --from "datasets/posts.csv as posts" --from "datasets/authors.csv as authors" --params "{{ [input.post_id] }}" --to-json --preview 1 --query "select p.id, p.title, a.name from posts p join authors a on p.author_id = a.id where p.id = $1"
+[b] table.query --from "datasets/posts.csv as posts" --from "datasets/authors.csv as authors" --params "{{ [input.post_id] }}" --to-json --preview-rows 1 --query "select p.id, p.title, a.name from posts p join authors a on p.author_id = a.id where p.id = $1"
 
 [a] -> [b]
 "#;
@@ -4438,7 +5032,7 @@ mod tests {
 
         let dsl = r#"
 [a] trigger.manual
-[b] table.query --from "datasets/posts.parquet as posts" --from "datasets/authors.parquet as authors" --to-json --preview 2 --query "select p.id, p.title, a.name from posts p join authors a on p.author_id = a.id where a.active = true order by p.id"
+[b] table.query --from "datasets/posts.parquet as posts" --from "datasets/authors.parquet as authors" --to-json --preview-rows 2 --query "select p.id, p.title, a.name from posts p join authors a on p.author_id = a.id where a.active = true order by p.id"
 
 [a] -> [b]
 "#;
@@ -4521,7 +5115,7 @@ mod tests {
                         "query": "select * from posts where id = $1",
                         "params": "{{ [input.post_id] }}",
                         "to_json": true,
-                        "preview": 1
+                        "preview_rows": 1
                     }),
                 },
             ],
@@ -4554,6 +5148,12 @@ mod tests {
         assert_eq!(out.value["table"]["rows"], 1);
         assert_eq!(out.value["table"]["data"][0]["title"], "Second");
         assert_eq!(out.value["table"]["sources"][0]["alias"], "posts");
+        assert_eq!(
+            out.value["table"]["preview"].as_array().map(Vec::len),
+            Some(1),
+            "preview_rows samples rows: {}",
+            out.value["table"]
+        );
     }
 
     #[tokio::test]
@@ -4573,7 +5173,7 @@ mod tests {
 
         let dsl = r#"
 [a] trigger.manual
-[b] table.query --engine geodatafusion --from "$input.rows as points" --to-json --preview 1 --query "select id, ST_AsText(ST_Point(x, y)) as geom from points where id = 1"
+[b] table.query --engine geodatafusion --from "$input.rows as points" --to-json --preview-rows 1 --query "select id, ST_AsText(ST_Point(x, y)) as geom from points where id = 1"
 
 [a] -> [b]
 "#;
@@ -4682,6 +5282,51 @@ mod tests {
             .expect("execute");
 
         assert_eq!(out.value["lane"], "billing");
+    }
+
+    /// An input node leaves the envelope alone for the next node and answers
+    /// `$nodes.<id>` with the value it checked; a required field that was not
+    /// sent refuses the run naming the field.
+    #[tokio::test]
+    async fn input_nodes_pass_the_envelope_through_and_expose_the_checked_value() {
+        let dsl = r#"
+[a] trigger.manual
+[b] input.text prompt --label "Caption"
+[c] input.number count --default 3
+[d] script -- "return { echoed: input.body.prompt, prompt: $nodes.b, count: $nodes.c, keys: Object.keys(input).sort() };"
+
+[a] -> [b]
+[b] -> [c]
+[c] -> [d]
+"#;
+        let graph = build_pipeline_graph("input-nodes-test", dsl).expect("graph");
+        let engine = BasicPipelineEngine::default();
+        let ctx = |input: serde_json::Value| PipelineContext {
+            owner: "test".to_string(),
+            project: "test".to_string(),
+            pipeline: "input-nodes-test".to_string(),
+            request_id: "req-input".to_string(),
+            route: String::new(),
+            input,
+            trigger: None,
+            placeholder: None,
+        };
+        let out = engine
+            .execute_async(&graph, &ctx(json!({ "body": { "prompt": "hello", "extra": true } })))
+            .await
+            .expect("execute");
+        assert_eq!(out.value["echoed"], "hello");
+        assert_eq!(out.value["prompt"], "hello");
+        assert_eq!(out.value["count"], 3.0);
+        assert_eq!(out.value["keys"], json!(["body"]));
+
+        let err = engine
+            .execute_async(&graph, &ctx(json!({ "body": {} })))
+            .await
+            .expect_err("a required input that was not sent refuses the run");
+        assert_eq!(err.code, "FW_NODE_INPUT_MISSING");
+        assert!(err.message.contains("'prompt'"), "{}", err.message);
+        assert_eq!(err.node_id.as_deref(), Some("b"));
     }
 
     #[tokio::test]
@@ -4898,6 +5543,52 @@ mod tests {
         assert_eq!(out.value["attempt"], 2);
     }
 
+    /// `input.* --default` reaches the envelope on every path: an execute that
+    /// omits the field finds the default at `input.body.<name>` downstream,
+    /// the same as `$nodes.<id>`; a sent value wins.
+    #[tokio::test]
+    async fn an_input_default_is_written_into_the_envelope_when_the_field_is_omitted() {
+        let dsl = r#"
+[t] trigger.manual
+[who] input.text who --optional --default world
+[s] script -- "return { hi: input.body.who, own: ctx.nodes.who };"
+[t] -> [who]
+[who] -> [s]
+"#;
+        let graph = build_pipeline_graph("input-default-test", dsl).expect("graph");
+        let engine = BasicPipelineEngine::default();
+        let run = |input: serde_json::Value| {
+            let graph = &graph;
+            let engine = &engine;
+            async move {
+                engine
+                    .execute_async(
+                        graph,
+                        &PipelineContext {
+                            owner: "test".to_string(),
+                            project: "test".to_string(),
+                            pipeline: "input-default-test".to_string(),
+                            request_id: "req-default".to_string(),
+                            route: String::new(),
+                            input,
+                            trigger: None,
+                            placeholder: None,
+                        },
+                    )
+                    .await
+                    .expect("execute")
+            }
+        };
+        let omitted = run(json!({})).await;
+        assert_eq!(omitted.value["hi"], "world");
+        assert_eq!(omitted.value["own"], "world");
+        let empty_body = run(json!({ "body": {} })).await;
+        assert_eq!(empty_body.value["hi"], "world");
+        let sent = run(json!({ "body": { "who": "x" } })).await;
+        assert_eq!(sent.value["hi"], "x");
+        assert_eq!(sent.value["own"], "x");
+    }
+
     #[tokio::test]
     async fn logic_retry_routes_to_failed_after_budget() {
         let dsl = r#"
@@ -4939,6 +5630,205 @@ mod tests {
         );
         assert_eq!(out.value["__zf_retry"]["attempt"], 2);
     }
+
+    async fn run_with_bus(
+        id: &str,
+        dsl: &str,
+    ) -> (
+        Result<crate::pipeline::model::PipelineOutput, crate::pipeline::model::PipelineError>,
+        Vec<crate::pipeline::model::Signal>,
+    ) {
+        use crate::pipeline::model::{ExecuteOptions, ExecutionBus};
+        let graph = build_pipeline_graph(id, dsl).expect("graph");
+        let ctx = PipelineContext {
+            owner: "test".into(),
+            project: "test".into(),
+            pipeline: id.into(),
+            request_id: format!("{id}-run"),
+            route: String::new(),
+            input: json!({}),
+            trigger: None,
+            placeholder: None,
+        };
+        let bus = Arc::new(ExecutionBus::new(128));
+        let mut rx = bus.subscribe();
+        let options = ExecuteOptions { bus: Some(bus) };
+        let result = BasicPipelineEngine::default()
+            .execute_with_options_async(&graph, &ctx, &options)
+            .await;
+        let mut signals = Vec::new();
+        while let Ok(signal) = rx.try_recv() {
+            signals.push(signal);
+        }
+        (result, signals)
+    }
+
+    /// A failure an `:error` edge hands to `logic.retry` is a retry, not a
+    /// failure: the record says `retry`, the bus says `node_retry` with the
+    /// attempt counted, `node_fail` is never announced, and the run is `ok`.
+    /// The error text stays in the entry so the log still says why.
+    #[tokio::test]
+    async fn a_routed_failure_is_a_retry_in_the_record_and_on_the_bus() {
+        let dsl = r#"
+[a] trigger.manual
+[b] script -- "const attempt = input.__zf_retry?.attempt ?? 0; if (attempt < 2) { throw new Error('not yet'); } return { ok: true, attempt };"
+[r] logic.retry --max-attempts 5
+[c] script -- "return input;"
+[d] script -- "return { gaveup: true };"
+[a] -> [b]
+[b]:error -> [r]
+[r]:retry -> [b]
+[b] -> [c]
+[r]:failed -> [d]
+"#;
+        let (result, signals) = run_with_bus("routed-retry", dsl).await;
+        let out = result.expect("the run succeeds");
+        assert_eq!(out.value["ok"], true);
+
+        let b_entries: Vec<&crate::pipeline::model::NodeTraceEntry> =
+            out.node_trace.iter().filter(|t| t.node_id == "b").collect();
+        let statuses: Vec<&str> = b_entries.iter().map(|t| t.status.as_str()).collect();
+        assert_eq!(statuses, ["retry", "retry", "ok"]);
+        assert!(b_entries[0].error.as_deref().is_some_and(|e| e.contains("not yet")));
+        assert!(b_entries[0].error_code.is_some());
+        assert!(b_entries[2].error.is_none());
+
+        let retries: Vec<&crate::pipeline::model::Signal> =
+            signals.iter().filter(|s| s.kind == "node_retry").collect();
+        assert_eq!(retries.len(), 2, "{:?}", signals.iter().map(|s| &s.kind).collect::<Vec<_>>());
+        for (i, signal) in retries.iter().enumerate() {
+            assert_eq!(signal.node_id, "b");
+            let data = signal.data.as_ref().unwrap();
+            assert_eq!(data["attempt"], (i + 1) as u64, "{data}");
+            assert_eq!(data["max_attempts"], 5);
+            assert!(data["duration_ms"].is_u64());
+            assert!(data["error_code"].as_str().is_some_and(|c| !c.is_empty()));
+            assert!(data["message"].as_str().unwrap().contains("not yet"));
+        }
+        assert!(retries[0].message.contains("retry 1/5"), "{}", retries[0].message);
+        assert!(signals.iter().all(|s| s.kind != "node_fail"), "a routed failure is never node_fail");
+        assert_eq!(signals.last().unwrap().kind, "run_done");
+        assert_eq!(signals.last().unwrap().data.as_ref().unwrap()["status"], "ok");
+
+        // The record's key for an error group skips routed entries: this run
+        // has no failing entry at all, so it could never name a group.
+        let entry = crate::platform::model::PipelineInvocationEntry {
+            run_id: "routed-retry-run".into(),
+            at: 0,
+            duration_ms: 1,
+            status: "ok".into(),
+            trigger: "manual".into(),
+            error: None,
+            trace: out.node_trace.clone(),
+        };
+        assert!(crate::platform::model::failing_trace_entry(&entry.trace).is_none());
+    }
+
+    /// A failure routed to something other than `logic.retry` is
+    /// `error_routed`, naming where it went; an unrouted one is still
+    /// `node_fail` and fails the run.
+    #[tokio::test]
+    async fn a_failure_routed_elsewhere_is_error_routed_and_an_unrouted_one_still_fails() {
+        let dsl = r#"
+[a] trigger.manual
+[b] script -- "throw new Error('handled here');"
+[h] script -- "return { handled: input.error.message };"
+[a] -> [b]
+[b]:error -> [h]
+"#;
+        let (result, signals) = run_with_bus("routed-elsewhere", dsl).await;
+        let out = result.expect("the run succeeds");
+        assert!(out.value["handled"].as_str().unwrap().contains("handled here"), "{}", out.value);
+        let b = out.node_trace.iter().find(|t| t.node_id == "b").unwrap();
+        assert_eq!(b.status, "error_routed");
+        let routed = signals.iter().find(|s| s.kind == "node_error_routed").expect("node_error_routed");
+        assert_eq!(routed.node_id, "b");
+        assert_eq!(routed.data.as_ref().unwrap()["to_node"], "h");
+        assert!(signals.iter().all(|s| s.kind != "node_fail"));
+
+        let (result, signals) = run_with_bus(
+            "unrouted",
+            "[a] trigger.manual\n[b] script -- \"throw new Error('boom');\"\n[a] -> [b]\n",
+        )
+        .await;
+        let err = result.expect_err("the run fails");
+        assert_eq!(err.node_trace.last().unwrap().status, "failed");
+        assert!(signals.iter().any(|s| s.kind == "node_fail"));
+        assert!(
+            crate::platform::model::failing_trace_entry(&err.node_trace)
+                .is_some_and(|t| t.node_id == "b")
+        );
+    }
+
+    /// The verdict road: a check that never throws answers `retry: true`
+    /// while waiting; `logic.retry` counts its own attempts from `$nodes`
+    /// even though `poll` replaces the payload every round, then `done`
+    /// carries the payload on. No failure anywhere, so every badge is green.
+    #[tokio::test]
+    async fn logic_retry_takes_a_verdict_and_counts_for_itself() {
+        let dsl = r#"
+[a] trigger.manual
+[poll] script -- "return { polled: true };"
+[check] script -- "const seen = (ctx.nodes.wait && ctx.nodes.wait.__zf_retry && ctx.nodes.wait.__zf_retry.attempt) || 0; return { retry: seen < 2, seen };"
+[wait] logic.retry --max-attempts 5
+[done] script -- "return { done: true, attempts: input.__zf_retry.attempt, seen: input.seen };"
+[gaveup] script -- "return { gaveup: true };"
+[a] -> [poll]
+[poll] -> [check]
+[check] -> [wait]
+[wait]:retry -> [poll]
+[wait]:done -> [done]
+[wait]:failed -> [gaveup]
+"#;
+        let (result, signals) = run_with_bus("verdict-done", dsl).await;
+        let out = result.expect("the run succeeds");
+        assert_eq!(out.value["done"], true);
+        assert_eq!(out.value["attempts"], 2, "{}", out.value);
+        assert_eq!(out.value["seen"], 2);
+        assert_eq!(out.node_trace.iter().filter(|t| t.node_id == "poll").count(), 3);
+        // The wait is told on the retry node — `retry` twice, then `ok` when
+        // `done` fires — and nowhere else: every other entry is `ok`.
+        let wait_statuses: Vec<&str> = out
+            .node_trace
+            .iter()
+            .filter(|t| t.node_id == "wait")
+            .map(|t| t.status.as_str())
+            .collect();
+        assert_eq!(wait_statuses, ["retry", "retry", "ok"]);
+        assert!(
+            out.node_trace.iter().filter(|t| t.node_id != "wait").all(|t| t.status == "ok"),
+            "{:?}",
+            out.node_trace.iter().map(|t| (&t.node_id, &t.status)).collect::<Vec<_>>()
+        );
+        assert!(signals.iter().all(|s| s.kind != "node_fail"));
+        let waits: Vec<&crate::pipeline::model::Signal> =
+            signals.iter().filter(|s| s.kind == "node_retry").collect();
+        assert_eq!(waits.len(), 2);
+        assert!(waits.iter().all(|s| s.node_id == "wait"));
+        assert_eq!(waits[0].data.as_ref().unwrap()["attempt"], 1);
+        assert_eq!(waits[1].data.as_ref().unwrap()["attempt"], 2);
+        assert_eq!(waits[1].data.as_ref().unwrap()["max_attempts"], 5);
+
+        // The budget spent on a verdict that never turns false is `failed`.
+        let dsl = r#"
+[a] trigger.manual
+[poll] script -- "return { polled: true };"
+[check] script -- "return { retry: true };"
+[wait] logic.retry --max-attempts 2
+[done] script -- "return { done: true };"
+[gaveup] script -- "return { gaveup: true, attempts: input.__zf_retry.attempt };"
+[a] -> [poll]
+[poll] -> [check]
+[check] -> [wait]
+[wait]:retry -> [poll]
+[wait]:done -> [done]
+[wait]:failed -> [gaveup]
+"#;
+        let (result, _) = run_with_bus("verdict-failed", dsl).await;
+        let out = result.expect("the run succeeds through the failed pin");
+        assert_eq!(out.value["gaveup"], true);
+        assert_eq!(out.value["attempts"], 2);
+    }
 }
 
 enum NodeDispatch {
@@ -4946,66 +5836,69 @@ enum NodeDispatch {
     Schedule(schedule::Node),
     Manual(manual::Node),
     Script(script::Node),
-    HttpRequest(http_request::Node),
-    BrowserRun(browser_run::Node),
-    SqliteQuery(sqlite_query::Node),
-    SekejapQuery(sekejap_query::Node),
-    SekejapInsert(sekejap_insert::Node),
-    SqliteMutate(sqlite_mutate::Node),
-    Postgres(pg_query::Node),
+    HttpRequest(http::request::Node),
+    BrowserRun(browser::run::Node),
+    SqliteQuery(sqlite::query::Node),
+    SekejapQuery(sekejap::query::Node),
+    SekejapInsert(sekejap::insert::Node),
+    SqliteMutate(sqlite::mutate::Node),
+    Postgres(pg::query::Node),
     InlineWebResponse {
         node_id: String,
-        config: web_response::Config,
+        config: web::response::Config,
     },
     InlineWebStaticGenerate {
         node_id: String,
-        config: web_static_generate::Config,
+        config: web::static_generate::Config,
     },
     InlineWebDocsGenerate {
         node_id: String,
-        config: web_docs_generate::Config,
+        config: web::docs_generate::Config,
     },
-    WebResponse(web_response::Node),
-    Agent(agent::Node),
-    AiTts(ai_tts::Node),
+    WebResponse(web::response::Node),
+    Agent(ai::agent::Node),
+    AiTts(ai::tts::Node),
     LogicIf(logic::if_::Node),
     LogicMatch(logic::match_::Node),
     LogicCollect(logic::collect::Node),
     LogicForeach(logic::foreach_::Node),
     LogicReduce(logic::reduce::Node),
     LogicRetry(logic::retry::Node),
-    AuthTokenCreate(auth_token_create::Node),
-    AuthTokenVerify(auth_token_verify::Node),
-    MailSend(mail_send::Node),
+    AuthTokenCreate(auth::token_create::Node),
+    AuthTokenVerify(auth::token_verify::Node),
+    MailSend(mail::send::Node),
     Concept(concept::Node),
     WebError(weberror::Node),
-    WsTrigger(ws_trigger::Node),
-    WsSyncState(ws_sync_state::Node),
-    WsEmit(ws_emit::Node),
+    WsTrigger(ws::trigger::Node),
+    WsSyncState(ws::sync_state::Node),
+    WsEmit(ws::emit::Node),
     Crypto(crypto::Node),
     TriggerFunction(trigger_function::Node),
-    FunctionCall(function_call::Node),
-    FileSave(fs_save::Node),
-    FsObject(fs_object::Node),
-    MapserverCrud(mapserver_crud::Node),
-    TableConvert(table_convert::Node),
-    TableQuery(table_query::Node),
-    FileCompress(fs_compress::Node),
-    FileDecompress(fs_decompress::Node),
-    GeoInspect(geo_inspect::Node),
-    GeoConvert(geo_convert::Node),
-    FilePdfConvert(fs_pdf_convert::Node),
-    ImgThumbnail(fs_thumbnail::Node),
-    KvSet(kv_set::Node),
-    KvGet(kv_get::Node),
-    KvDel(kv_del::Node),
-    KvExists(kv_exists::Node),
-    KvExpire(kv_expire::Node),
-    KvIncr(kv_incr::Node),
-    KvPublish(kv_publish::Node),
+    FunctionCall(function::call::Node),
+    FileSave(fs::save::Node),
+    FsObject(fs::object::Node),
+    MapserverCrud(ms::crud::Node),
+    TableConvert(table::convert::Node),
+    TableQuery(table::query::Node),
+    FileCompress(fs::compress::Node),
+    FileDecompress(fs::decompress::Node),
+    GeoInspect(geo::inspect::Node),
+    GeoConvert(geo::convert::Node),
+    FilePdfConvert(fs::pdf::convert::Node),
+    ImgThumbnail(fs::image::thumbnail::Node),
+    SvgConvert(fs::svg::convert::Node),
+    /// Any `n.input.*` kind — a pass-through validator of one envelope field.
+    Input(input::Node),
+    KvSet(kv::set::Node),
+    KvGet(kv::get::Node),
+    KvDel(kv::del::Node),
+    KvExists(kv::exists::Node),
+    KvExpire(kv::expire::Node),
+    KvIncr(kv::incr::Node),
+    KvPublish(kv::publish::Node),
     KvSubscribe(kv_subscribe::Node),
     WsClientTrigger(trigger_ws_client::Node),
-    WsClientSend(ws_client_send::Node),
+    WsClientSend(ws::client_send::Node),
     McpTrigger(mcp_trigger::Node),
     /// A node provided by an installed bundle (`n.x.*`).
     ///
@@ -5024,7 +5917,7 @@ enum NodeDispatch {
 
 /// Node kinds whose outbound destination reaches an egress guard as a URL, so a
 /// bundle's declared hosts can be checked against what they actually contact.
-const HOST_CHECKED_NETWORK_NODES: &[&str] = &[http_request::NODE_KIND, browser_run::NODE_KIND];
+const HOST_CHECKED_NETWORK_NODES: &[&str] = &[http::request::NODE_KIND, browser::run::NODE_KIND];
 
 /// Refuses a network-capable node whose destination cannot be host-checked.
 ///

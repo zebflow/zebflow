@@ -38,6 +38,11 @@ pub struct WebhookTriggerSpec {
     /// `input.auth` is null, not a 401.
     #[serde(default)]
     pub auth_optional: bool,
+    /// `show` or `hide`: what this route's 5xx reveals, overriding the
+    /// project's `errors` switch; empty means the project decides
+    /// (`addressing.md` §2a).
+    #[serde(default)]
+    pub errors: String,
 }
 
 /// One extracted weberror trigger from an active compiled pipeline.
@@ -277,6 +282,12 @@ impl CompiledPipeline {
                         .get("auth_optional")
                         .and_then(serde_json::Value::as_bool)
                         .unwrap_or(false);
+                    let errors = node
+                        .config
+                        .get("errors")
+                        .and_then(serde_json::Value::as_str)
+                        .map(|s| s.trim().to_ascii_lowercase())
+                        .unwrap_or_default();
                     webhook_triggers.push(WebhookTriggerSpec {
                         node_id: node.id.clone(),
                         path,
@@ -285,15 +296,17 @@ impl CompiledPipeline {
                         auth_credential,
                         auth_required_role,
                         auth_optional,
+                        errors,
                     });
                 }
                 "n.trigger.weberror" => {
-                    let code = node
-                        .config
-                        .get("code")
-                        .and_then(serde_json::Value::as_str)
-                        .unwrap_or_default()
-                        .to_string();
+                    // `--code 404` arrives as a number from the DSL; as a string
+                    // it would have silently become the catch-all.
+                    let code = match node.config.get("code") {
+                        Some(serde_json::Value::String(s)) => s.clone(),
+                        Some(serde_json::Value::Number(n)) => n.to_string(),
+                        _ => String::new(),
+                    };
                     weberror_triggers.push(WebErrorTriggerSpec {
                         node_id: node.id.clone(),
                         code,
@@ -498,6 +511,7 @@ impl CompiledPipeline {
                         auth_credential: String::new(),
                         auth_required_role: Vec::new(),
                         auth_optional: false,
+                        errors: String::new(),
                     });
                 }
                 _ => {}

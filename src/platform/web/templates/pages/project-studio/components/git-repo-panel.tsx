@@ -8,6 +8,7 @@ import DialogTitle from "@/components/ui/dialog-title";
 import DialogFooter from "@/components/ui/dialog-footer";
 import { GitBranchIcon } from "@/pages/project-studio/components/icons";
 import { GitFileTree } from "@/pages/project-studio/components/git-file-tree";
+import { GitSyncPanel } from "@/pages/project-studio/components/git-sync-panel";
 import { useStudioChrome } from "@/pages/project-studio/components/studio-chrome-context";
 
 const credLabelCx = "text-[0.65rem] font-semibold uppercase tracking-[0.07em] text-muted-foreground mb-[0.3rem] block";
@@ -23,6 +24,8 @@ export function GitRepoPanel({ owner, project }) {
   const [gitLoading, setGitLoading] = useState(false);
   const [synced, setSynced] = useState(true);
   const [localBranch, setLocalBranch] = useState("");
+  const [sync, setSync] = useState(null);
+  const [syncWord, setSyncWord] = useState("unknown");
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState(false);
   const [commitError, setCommitError] = useState("");
@@ -64,6 +67,7 @@ export function GitRepoPanel({ owner, project }) {
       const data = await res.json().catch(() => ({ branch: "", files: [] }));
       const files = Array.isArray(data) ? data : (data.files ?? []);
       if (!Array.isArray(data) && data.branch) setLocalBranch(data.branch);
+      if (!Array.isArray(data)) { setSync(data.sync ?? null); setSyncWord(data.sync_word ?? "unknown"); }
       setFiles(files.map((f) => ({ ...f, checked: true })));
     } catch (_) {}
     setGitLoading(false);
@@ -99,9 +103,9 @@ export function GitRepoPanel({ owner, project }) {
       });
       if (res.status === 401) { nav("/login"); return; }
       const body = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(body?.error?.message || body?.error || body?.message || "Failed");
+      if (!res.ok && body?.outcome !== "conflict") throw new Error(body?.error?.message || body?.error || body?.message || "Failed");
       setMessage("");
-      if (push) setSynced(true);
+      if (push && res.ok) setSynced(true);
       await fetchStatus();
     } catch (e) {
       setCommitError(e.message || "Error");
@@ -319,6 +323,7 @@ export function GitRepoPanel({ owner, project }) {
                   {count === 0 && !gitLoading && <p className="text-[0.74rem] text-muted-foreground px-3 py-[0.6rem]">Working tree clean.</p>}
                   {gitLoading && <p className="text-[0.74rem] text-muted-foreground px-3 py-[0.6rem]">Loading…</p>}
                 </div>
+                {connected && <GitSyncPanel owner={owner} project={project} sync={sync} word={syncWord} onDone={fetchStatus} />}
                 {count > 0 && (
                   <div className="border-t border-border px-[0.6rem] py-[0.5rem] flex flex-col gap-[0.4rem]">
                     <Input

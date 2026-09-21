@@ -8,13 +8,13 @@ Authoritative code and docs:
 - `src/platform/db/`
 - `src/zebfs/`
 - `src/mapserver/`
-- `src/pipeline/nodes/basic/sekejap_*.rs`
-- `src/pipeline/nodes/basic/sqlite_*.rs`
-- `src/pipeline/nodes/basic/pg_query.rs`
-- `src/pipeline/nodes/basic/fs_*.rs`
-- `src/pipeline/nodes/basic/table_*.rs`
-- `src/pipeline/nodes/basic/geo_*.rs`
-- `src/pipeline/nodes/basic/mapserver_crud.rs`
+- `src/pipeline/nodes/basic/sekejap/`
+- `src/pipeline/nodes/basic/sqlite/`
+- `src/pipeline/nodes/basic/pg/query.rs`
+- `src/pipeline/nodes/basic/fs/`
+- `src/pipeline/nodes/basic/table/`
+- `src/pipeline/nodes/basic/geo/`
+- `src/pipeline/nodes/basic/ms/crud.rs`
 - `src/platform/help/db/`
 - `src/platform/help/guide/mapserver.md`
 

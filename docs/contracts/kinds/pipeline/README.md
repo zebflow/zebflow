@@ -110,6 +110,8 @@ The golden fixture contains the complete v1 example.
 | `spec.metadata.locked` | Prevents editing, moving, activation, and deletion through managed interfaces |
 | `spec.metadata.settings.invocation_retention` | Optional override of project invocation retention |
 | `spec.metadata.settings.trace_capture` | Optional per-field overrides of project trace capture limits; affects logs only |
+| `spec.metadata.settings.error_groups` | Optional override of the project's error-group bounds and `capture` mode for this pipeline's failures (`kinds/invocation-record`, Error group) |
+| `trigger.webhook` config `errors` | `show` or `hide`: what this route's 5xx shows on the project's hosts, overriding the project switch (`addressing.md` §2a); absent means the project's setting. DSL `--errors show`. Status codes are never affected; an authored 4xx always shows its message |
 | `spec.entry_nodes` | Unique node ids where execution begins |
 | `spec.nodes` | Required ordered source list of unique node instances |
 | `spec.edges` | Required ordered source list of unique directed connections |
@@ -156,6 +158,10 @@ Free-standing annotations drawn on the canvas. Presentation only.
 | `text` | markdown, rendered by the editor; empty is legal |
 | `x`, `y`, `width`, `height` | canvas geometry, same space node positions use; all default to `0` |
 | `color` | a palette name the editor resolves, e.g. `amber`. Free text rather than a closed set, because a note drawn in the wrong colour is a cosmetic problem and refusing to open a pipeline over one is not |
+
+In the DSL a note is the reserved word `note` (`[id] note --text "…" --at x,y
+--size WxH --color c`; `patch pipeline <path> note <id> …`); `register` keeps
+the notes it does not redeclare. See `help topic="pipeline/dsl"`, Notes.
 
 A note never executes, never appears in an edge, and never affects a run. The
 reason they exist is distribution: a pipeline installed from a hub must be able

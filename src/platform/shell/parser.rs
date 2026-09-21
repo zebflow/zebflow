@@ -11,8 +11,7 @@ use serde_json::{Map, Value, json};
 use crate::contracts::kinds::INSTALLED_NODE_KIND_PREFIX;
 use crate::pipeline::auto_tidy_pipeline_graph;
 use crate::pipeline::model::{
-    DslFlag, DslFlagKind, NodeDefinition, PipelineEdge, PipelineGraph, PipelineNode,
-};
+    DslFlag, DslFlagKind, NodeDefinition, PipelineEdge, PipelineGraph, PipelineNode, PipelineNote,};
 use crate::pipeline::nodes::builtin_node_definitions;
 
 /// Parsed DSL command verb ready for execution.
@@ -55,9 +54,12 @@ pub enum DslVerb {
         as_json: bool,
         body: String,
     },
-    /// `patch pipeline <file_rel_path> node <id> [flags...]`
+    /// `patch pipeline <file_rel_path> node <id> [flags...]` or
+    /// `patch pipeline <file_rel_path> note <id> [--text …] [--at x,y] [--size WxH] [--color c] [--remove]`
     Patch {
         file_rel_path: String,
+        /// `node` (the default) or `note`.
+        target: String,
         node_id: String,
         flags: HashMap<String, Value>,
         body: Option<String>,
@@ -72,6 +74,8 @@ pub enum DslVerb {
     },
     /// `node help <kind>`
     NodeHelp { kind: String },
+    /// A command the parser understood but refuses, with the reason.
+    Invalid { message: String },
     /// Credential write blocked
     CredentialBlocked { reason: String },
     /// Unknown verb
@@ -220,6 +224,108 @@ fn looks_like_node_kind(raw_kind: &str) -> bool {
         || raw_kind.starts_with("x.")
 }
 
+/// The reserved word for a canvas note in both DSL modes. A note is not a
+/// node: no pins, no kind in the catalogue, never reached by an edge. Graph
+/// mode: `[n1] note --text "…" --at 120,40 --size 320x140 --color amber`;
+/// pipe mode: `| note --id n1 --text "…"`. A `-- body` after the flags is the
+/// text too, for anything long or multi-line.
+pub const NOTE_KEYWORD: &str = "note";
+
+fn is_note_keyword(token: &str) -> bool {
+    token.eq_ignore_ascii_case(NOTE_KEYWORD)
+}
+
+fn parse_pair(value: &str, sep: char, what: &str) -> Result<(f64, f64), String> {
+    let (a, b) = value
+        .split_once(sep)
+        .ok_or_else(|| format!("note: {what}, got `{value}`"))?;
+    let a: f64 = a.trim().parse().map_err(|_| format!("note: {what}, got `{value}`"))?;
+    let b: f64 = b.trim().parse().map_err(|_| format!("note: {what}, got `{value}`"))?;
+    Ok((a, b))
+}
+
+/// Parses the tokens after the `note` keyword. `default_id` is the graph-mode
+/// label or `note{n}` in pipe mode; `--id` overrides it.
+fn parse_note_statement(default_id: &str, tokens: &[String], raw: &str) -> Result<PipelineNote, String> {
+    let mut note = PipelineNote {
+        id: default_id.to_string(),
+        text: String::new(),
+        x: 0.0,
+        y: 0.0,
+        width: 0.0,
+        height: 0.0,
+        color: String::new(),
+    };
+    let mut i = 0;
+    while i < tokens.len() {
+        let flag = tokens[i].as_str();
+        if flag == "--" {
+            break;
+        }
+        let value = tokens
+            .get(i + 1)
+            .cloned()
+            .ok_or_else(|| format!("note: `{flag}` needs a value"))?;
+        match flag {
+            "--id" => note.id = value,
+            "--text" => note.text = value,
+            "--color" => note.color = value,
+            "--at" => {
+                let (x, y) = parse_pair(&value, ',', "--at expects x,y")?;
+                note.x = x;
+                note.y = y;
+            }
+            "--size" => {
+                let (w, h) = parse_pair(&value, 'x', "--size expects WIDTHxHEIGHT")?;
+                note.width = w;
+                note.height = h;
+            }
+            other => {
+                return Err(format!(
+                    "note: unknown flag `{other}` (flags: --text, --at x,y, --size WxH, --color, --id; or `-- text`)"
+                ))
+            }
+        }
+        i += 2;
+    }
+    if let Some(body) = extract_raw_body_from(raw) {
+        note.text = body;
+    }
+    if note.id.trim().is_empty() {
+        return Err("note id must not be empty".to_string());
+    }
+    Ok(note)
+}
+
+/// The DSL for one note, without the graph-mode label: `note --text "…" --at 120,40 --size 320x140 --color amber`.
+fn note_to_statement(note: &PipelineNote, with_id: bool) -> String {
+    let mut parts = vec![NOTE_KEYWORD.to_string()];
+    if with_id {
+        parts.push("--id".into());
+        parts.push(quote_dsl_arg(&note.id));
+    }
+    parts.push("--text".into());
+    parts.push(quote_dsl_arg(&note.text));
+    if note.x != 0.0 || note.y != 0.0 {
+        parts.push(format!("--at {},{}", note.x, note.y));
+    }
+    if note.width != 0.0 || note.height != 0.0 {
+        parts.push(format!("--size {}x{}", note.width, note.height));
+    }
+    if !note.color.is_empty() {
+        parts.push(format!("--color {}", quote_dsl_arg(&note.color)));
+    }
+    parts.join(" ")
+}
+
+/// The short name the DSL writes for a kind: `n.web.response` → `web.response`.
+/// The catalogue's kinds all carry the `n.` prefix, so this is the inverse of
+/// `expand_kind` for every kind the alias table knows, and a plain strip of
+/// the prefix for the rest.
+pub fn short_kind(kind: &str) -> String {
+    kind.strip_prefix("n.").unwrap_or(kind).to_string()
+}
+
 pub fn expand_kind(short: &str) -> Option<&'static str> {
     match short {
         "trigger.webhook" | "n.trigger.webhook" => Some("n.trigger.webhook"),
@@ -259,7 +365,8 @@ pub fn expand_kind(short: &str) -> Option<&'static str> {
         "fs.compress" | "n.fs.compress" => Some("n.fs.compress"),
         "fs.decompress" | "n.fs.decompress" => Some("n.fs.decompress"),
         "fs.pdf.convert" | "n.fs.pdf.convert" => Some("n.fs.pdf.convert"),
-        "fs.thumbnail" | "n.fs.thumbnail" => Some("n.fs.thumbnail"),
+        "fs.image.thumbnail" | "n.fs.image.thumbnail" => Some("n.fs.image.thumbnail"),
+        "fs.svg.convert" | "n.fs.svg.convert" => Some("n.fs.svg.convert"),
         "fs.list" | "n.fs.list" => Some("n.fs.list"),
         "fs.head" | "n.fs.head" => Some("n.fs.head"),
         "fs.get" | "n.fs.get" => Some("n.fs.get"),
@@ -284,6 +391,18 @@ pub fn expand_kind(short: &str) -> Option<&'static str> {
         "ms.list" | "n.ms.list" => Some("n.ms.list"),
         "trigger.ws.client" | "n.trigger.ws.client" => Some("n.trigger.ws.client"),
         "ws.client.send" | "n.ws.client.send" => Some("n.ws.client.send"),
+        // The `input.*` family. Graph mode decides whether a line starts a
+        // node from this table alone, so a family missing here is folded into
+        // the previous statement and refused for a flag it never had.
+        "input.text" | "n.input.text" => Some("n.input.text"),
+        "input.number" | "n.input.number" => Some("n.input.number"),
+        "input.boolean" | "n.input.boolean" => Some("n.input.boolean"),
+        "input.json" | "n.input.json" => Some("n.input.json"),
+        "input.file" | "n.input.file" => Some("n.input.file"),
+        "input.files" | "n.input.files" => Some("n.input.files"),
+        "input.image" | "n.input.image" => Some("n.input.image"),
+        "input.audio" | "n.input.audio" => Some("n.input.audio"),
+        "input.video" | "n.input.video" => Some("n.input.video"),
         _ => None,
     }
 }
@@ -464,6 +583,155 @@ fn coerce_scalar_value(s: &str) -> Value {
     }
 }
 
+// ── Node previews ─────────────────────────────────────────────────────────────
+//
+// `--preview <as>[:<path>]` and `--preview-in <as>[:<path>]` are engine-common
+// flags (see `engine_common_dsl_flags`) that store under a *nested* key,
+// `config.preview.out` / `config.preview.in`, rather than a flat one. That is
+// why they carry a dotted `config_key` and why every flag→config site consults
+// the three helpers below instead of writing `config[config_key]` directly.
+//
+// The engine never reads any of it. `config.preview` is presentation, exactly
+// like `config.ui`.
+
+/// The kinds a preview may be rendered as.
+pub const PREVIEW_KINDS: [&str; 8] = [
+    "image", "video", "audio", "pdf", "json", "text", "table", "html",
+];
+
+/// `"preview.out"` → `Some("out")`. Any other config key → `None`.
+pub fn preview_slot_for_config_key(config_key: &str) -> Option<&'static str> {
+    match config_key {
+        "preview.out" => Some("out"),
+        "preview.in" => Some("in"),
+        _ => None,
+    }
+}
+
+/// The canvas panel's size bounds, in canvas pixels — the same numbers the
+/// graphui bundle clamps a drag to, so a value the DSL accepts is one the
+/// canvas can draw.
+pub const PREVIEW_MIN_SIZE: (u64, u64) = (160, 60);
+pub const PREVIEW_MAX_SIZE: (u64, u64) = (1200, 900);
+
+/// `360x240` → `(360, 240)`. Both positive integers within the canvas bounds.
+fn parse_preview_size(flag: &str, value: &str, raw: &str) -> Result<(u64, u64), String> {
+    let bad = || {
+        format!(
+            "`{flag} {value}` — bad size `{raw}`; the form is <as>[:<path>]@WxH with \
+             W {}–{} and H {}–{}, e.g. `image@360x240`",
+            PREVIEW_MIN_SIZE.0, PREVIEW_MAX_SIZE.0, PREVIEW_MIN_SIZE.1, PREVIEW_MAX_SIZE.1
+        )
+    };
+    let (w, h) = raw.trim().split_once(['x', 'X']).ok_or_else(bad)?;
+    let width: u64 = w.trim().parse().map_err(|_| bad())?;
+    let height: u64 = h.trim().parse().map_err(|_| bad())?;
+    let in_range = (PREVIEW_MIN_SIZE.0..=PREVIEW_MAX_SIZE.0).contains(&width)
+        && (PREVIEW_MIN_SIZE.1..=PREVIEW_MAX_SIZE.1).contains(&height);
+    if !in_range {
+        return Err(bad());
+    }
+    Ok((width, height))
+}
+
+/// Parse a `--preview` / `--preview-in` value.
+///
+/// `off` (case-insensitive) means "remove this half" and answers `Ok(None)`.
+/// Anything else is `<as>[:<path>][@WxH]` with `as` drawn from
+/// [`PREVIEW_KINDS`]. The value is the whole cell: `image@400x260` is kind
+/// image, no path, that size — a size is never carried over from what was
+/// stored before.
+pub fn parse_preview_flag_value(flag: &str, value: &str) -> Result<Option<Value>, String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Err(format!(
+            "`{flag}` requires a value: <as>[:<path>][@WxH] where as is one of {}, or `off`",
+            PREVIEW_KINDS.join(", ")
+        ));
+    }
+    if trimmed.eq_ignore_ascii_case("off") {
+        return Ok(None);
+    }
+    let (cell_raw, size) = match trimmed.rsplit_once('@') {
+        Some((cell, size_raw)) => (cell, Some(parse_preview_size(flag, trimmed, size_raw)?)),
+        None => (trimmed, None),
+    };
+    let (as_raw, path_raw) = match cell_raw.split_once(':') {
+        Some((a, p)) => (a, Some(p)),
+        None => (cell_raw, None),
+    };
+    let as_kind = as_raw.trim().to_ascii_lowercase();
+    if !PREVIEW_KINDS.contains(&as_kind.as_str()) {
+        return Err(format!(
+            "`{flag} {trimmed}` — unknown preview kind `{as_kind}`; use one of {}, or `off`",
+            PREVIEW_KINDS.join(", ")
+        ));
+    }
+    let mut cell = Map::new();
+    cell.insert("as".to_string(), json!(as_kind));
+    if let Some(path) = path_raw.map(str::trim).filter(|p| !p.is_empty()) {
+        cell.insert("path".to_string(), json!(path));
+    }
+    if let Some((width, height)) = size {
+        cell.insert("width".to_string(), json!(width));
+        cell.insert("height".to_string(), json!(height));
+    }
+    Ok(Some(Value::Object(cell)))
+}
+
+/// Write (or, with `None`, delete) `config.preview.<slot>`.
+///
+/// Deleting the last half deletes the `preview` object with it, so a node that
+/// previews nothing carries no key at all.
+pub fn set_preview_config(config: &mut Map<String, Value>, slot: &str, cell: Option<Value>) {
+    match cell {
+        Some(value) => {
+            let entry = config
+                .entry("preview".to_string())
+                .or_insert_with(|| Value::Object(Map::new()));
+            if !entry.is_object() {
+                *entry = Value::Object(Map::new());
+            }
+            if let Value::Object(map) = entry {
+                map.insert(slot.to_string(), value);
+            }
+        }
+        None => {
+            let emptied = match config.get_mut("preview") {
+                Some(Value::Object(map)) => {
+                    map.remove(slot);
+                    map.is_empty()
+                }
+                Some(_) => true,
+                None => false,
+            };
+            if emptied {
+                config.remove("preview");
+            }
+        }
+    }
+}
+
+/// Render `config.preview.<slot>` back as the flag's single token,
+/// `image:body` — with `@WxH` appended only when a size is stored, so a
+/// panel at its default size renders exactly as it was written.
+pub fn preview_flag_token(config: &Value, slot: &str) -> Option<String> {
+    let cell = config.get("preview")?.get(slot)?;
+    let as_kind = cell.get("as")?.as_str()?.trim();
+    if as_kind.is_empty() {
+        return None;
+    }
+    let mut token = match cell.get("path").and_then(Value::as_str).map(str::trim) {
+        Some(path) if !path.is_empty() => format!("{as_kind}:{path}"),
+        _ => as_kind.to_string(),
+    };
+    let dimension = |key: &str| cell.get(key).and_then(Value::as_u64).filter(|n| *n > 0);
+    if let (Some(width), Some(height)) = (dimension("width"), dimension("height")) {
+        token.push_str(&format!("@{width}x{height}"));
+    }
+    Some(token)
+}
+
 /// Parse flag→config key mapping and body from token list after node kind.
 ///
 /// Every `--flag` must be declared in the node's `dsl_flags`. The `config_key`
@@ -474,10 +742,34 @@ pub fn parse_node_config(
     raw: &str,
     dsl_flags: &[DslFlag],
 ) -> Result<(Value, Option<String>), String> {
+    parse_node_config_with_positional(tokens, raw, dsl_flags, None)
+}
+
+/// [`parse_node_config`] for a kind that declares a positional: the first
+/// token, when it is bare (no `--`, not the body marker), fills that config
+/// key — `input.text prompt --label "…"` is `input.text --name prompt …`.
+/// The flag form still works and, given both, the flag wins. Only the first
+/// token is ever positional; a bare token anywhere else is ignored as before.
+pub fn parse_node_config_with_positional(
+    tokens: &[String],
+    raw: &str,
+    dsl_flags: &[DslFlag],
+    positional: Option<&str>,
+) -> Result<(Value, Option<String>), String> {
     let mut config = serde_json::Map::new();
     let mut list_modes = HashMap::<String, ListFlagMode>::new();
     let mut body: Option<String> = None;
     let mut i = 0;
+
+    if let Some(key) = positional {
+        if let Some(first) = tokens.first() {
+            if !first.starts_with("--") && first != "--" {
+                reject_unquoted_expression(key, first)?;
+                config.insert(key.to_string(), Value::String(first.clone()));
+                i = 1;
+            }
+        }
+    }
 
     while i < tokens.len() {
         let t = &tokens[i];
@@ -500,7 +792,12 @@ pub fn parse_node_config(
                 DslFlagKind::Scalar => {
                     let val = tokens.get(i + 1).cloned().unwrap_or_default();
                     reject_unquoted_expression(&flag_str, &val)?;
-                    config.insert(dsl_flag.config_key.clone(), coerce_scalar_value(&val));
+                    if let Some(slot) = preview_slot_for_config_key(&dsl_flag.config_key) {
+                        let cell = parse_preview_flag_value(&flag_str, &val)?;
+                        set_preview_config(&mut config, slot, cell);
+                    } else {
+                        config.insert(dsl_flag.config_key.clone(), coerce_scalar_value(&val));
+                    }
                     i += 2;
                 }
                 DslFlagKind::CommaSeparatedList | DslFlagKind::RepeatedList => {
@@ -795,6 +1092,26 @@ fn parse_register(tokens: &[String], cmd: &str) -> DslVerb {
     // Pipe mode bodies start with `|`; graph mode bodies start with `[`.
     let body = extract_pipeline_body(cmd);
 
+    // Anything between the header flags and the first `|` / `[` is not a
+    // header and not a body: `register p trigger.webhook --path /x | …` used
+    // to lose its webhook silently and gain a manual trigger. Refuse it.
+    let stray: Vec<&str> = tokens[i..]
+        .iter()
+        .map(String::as_str)
+        .take_while(|t| !t.starts_with('|') && !t.starts_with('['))
+        .filter(|t| *t != "--") // `register p -- | …` is the documented separator
+        .collect();
+    if !stray.is_empty() {
+        return DslVerb::Invalid {
+            message: format!(
+                "register: the body must start with `|` (pipe mode) or `[label]` (graph mode); found `{}` before it. \
+                 Write: register {file_rel_path} | {} …",
+                stray.join(" "),
+                stray.join(" ")
+            ),
+        };
+    }
+
     DslVerb::Register {
         file_rel_path,
         title,
@@ -807,6 +1124,10 @@ fn parse_register(tokens: &[String], cmd: &str) -> DslVerb {
 /// Parse `patch pipeline <file_rel_path> node <id> [flags] [-- body]`
 fn parse_patch(tokens: &[String], cmd: &str) -> DslVerb {
     let file_rel_path = tokens.get(2).cloned().unwrap_or_default();
+    let target = tokens
+        .get(3)
+        .map(|t| t.to_lowercase())
+        .unwrap_or_else(|| "node".to_string());
     let node_id = tokens.get(4).cloned().unwrap_or_default();
     let flag_tokens = if tokens.len() > 5 {
         tokens[5..].to_vec()
@@ -816,6 +1137,7 @@ fn parse_patch(tokens: &[String], cmd: &str) -> DslVerb {
     let (flags, body) = parse_flags_for_patch(&flag_tokens, cmd);
     DslVerb::Patch {
         file_rel_path,
+        target,
         node_id,
         flags,
         body,
@@ -1038,11 +1360,18 @@ fn build_graph_mode(
 ) -> Result<PipelineGraph, String> {
     let mut nodes: Vec<PipelineNode> = Vec::new();
     let mut edges: Vec<PipelineEdge> = Vec::new();
+    let mut notes: Vec<PipelineNote> = Vec::new();
 
     for statement in graph_mode_statements(body) {
         if is_graph_edge_statement(&statement) {
             // Edge declaration: [from]:pin -> [to]:pin  or  [from] -> [to]
             parse_graph_edge(&statement, &mut edges)?;
+        } else if let Some((label, tokens)) = graph_note_statement(&statement) {
+            // Note declaration: [label] note --text "…"
+            if notes.iter().any(|n| n.id == label) {
+                return Err(format!("duplicate note id '[{label}]'"));
+            }
+            notes.push(parse_note_statement(&label, &tokens, &statement)?);
         } else {
             // Node declaration: [label] node_kind --flags...
             parse_graph_node(&statement, &mut nodes, definitions)?;
@@ -1065,10 +1394,23 @@ fn build_graph_mode(
         entry_nodes,
         nodes,
         edges,
-        notes: Vec::new(),
+        notes,
     };
     auto_tidy_pipeline_graph(&mut graph);
     Ok(graph)
+}
+
+/// `Some((label, tokens after the keyword))` when a graph-mode statement is a
+/// note declaration.
+fn graph_note_statement(line: &str) -> Option<(String, Vec<String>)> {
+    let inner = line.strip_prefix('[')?;
+    let (label, rest) = inner.split_once(']')?;
+    let tokens = tokenize(rest.trim());
+    if tokens.first().map(|t| is_note_keyword(t)).unwrap_or(false) {
+        Some((label.trim().to_string(), tokens[1..].to_vec()))
+    } else {
+        None
+    }
 }
 
 /// The config key a node's `-- body` is stored under. One table, used by
@@ -1081,6 +1423,7 @@ pub fn body_config_key(kind: &str) -> &'static str {
         "n.script" => "source",
         "n.logic.match" | "n.logic.if" => "expression",
         "n.browser.run" => "code",
+        "n.ai.agent" => "prompt",
         _ => "body",
     }
 }
@@ -1156,18 +1499,254 @@ fn is_graph_node_statement(line: &str) -> bool {
     let Some(raw_kind) = tokens.first().map(String::as_str) else {
         return false;
     };
-    looks_like_node_kind(raw_kind)
+    looks_like_node_kind(raw_kind) || is_note_keyword(raw_kind)
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::pipeline::model::{DslFlag, DslFlagKind, NodeDefinition, PipelineNode};
+    use crate::pipeline::model::{DslFlag, DslFlagKind, NodeDefinition, PipelineGraph, PipelineNode};
     use serde_json::json;
 
     use super::{
-        DslVerb, build_pipeline_graph, build_pipeline_graph_with_definitions,
-        node_to_segment_no_body, parse_one_command, split_commands,
+        DslVerb, build_pipeline_graph, build_pipeline_graph_with_definitions, graph_to_dsl,
+        node_to_segment_no_body, parse_one_command, parse_preview_flag_value,
+        preview_flag_token, set_preview_config, split_commands,
     };
+
+    // ── Node previews ─────────────────────────────────────────────────────────
+
+    fn preview_graph_node(dsl_flags: &str) -> PipelineNode {
+        let dsl = format!(
+            "[a] trigger.manual\n[b] script {dsl_flags} -- return input\n\n[a] -> [b]\n"
+        );
+        let graph = build_pipeline_graph("parser-preview-test", &dsl).expect("graph");
+        graph
+            .nodes
+            .into_iter()
+            .find(|node| node.id == "b")
+            .expect("script node")
+    }
+
+    #[test]
+    fn preview_flags_parse_into_the_nested_preview_object() {
+        let node = preview_graph_node("--preview image:response.file --preview-in json:body");
+        assert_eq!(
+            node.config.get("preview"),
+            Some(&json!({
+                "out": { "as": "image", "path": "response.file" },
+                "in": { "as": "json", "path": "body" }
+            }))
+        );
+    }
+
+    #[test]
+    fn preview_flag_without_a_path_stores_only_the_kind() {
+        let node = preview_graph_node("--preview table");
+        assert_eq!(
+            node.config.get("preview"),
+            Some(&json!({ "out": { "as": "table" } }))
+        );
+    }
+
+    #[test]
+    fn preview_off_removes_that_half_and_the_object_with_the_last_one() {
+        let mut config = serde_json::Map::new();
+        set_preview_config(&mut config, "out", Some(json!({ "as": "image" })));
+        set_preview_config(&mut config, "in", Some(json!({ "as": "json" })));
+
+        set_preview_config(&mut config, "out", None);
+        assert_eq!(
+            config.get("preview"),
+            Some(&json!({ "in": { "as": "json" } }))
+        );
+
+        set_preview_config(&mut config, "in", None);
+        assert!(config.get("preview").is_none());
+    }
+
+    #[test]
+    fn preview_off_in_dsl_leaves_no_preview_key() {
+        let node = preview_graph_node("--preview off --preview-in off");
+        assert!(node.config.get("preview").is_none());
+    }
+
+    #[test]
+    fn preview_refuses_a_kind_that_is_not_on_the_list() {
+        let err = build_pipeline_graph(
+            "parser-preview-bad-kind",
+            "[a] trigger.manual\n[b] script --preview gif -- return input\n\n[a] -> [b]\n",
+        )
+        .expect_err("unknown preview kind must fail");
+        assert!(err.contains("unknown preview kind `gif`"), "{err}");
+        assert!(err.contains("image, video, audio, pdf, json, text, table, html"), "{err}");
+    }
+
+    #[test]
+    fn preview_flags_round_trip_through_graph_to_dsl() {
+        let dsl = "[a] trigger.manual\n[b] script --preview image:response.file --preview-in json:body -- return input\n\n[a] -> [b]\n";
+        let graph = build_pipeline_graph("parser-preview-round-trip", dsl).expect("graph");
+        let rendered = graph_to_dsl(&graph);
+        assert!(
+            rendered.contains("--preview image:response.file"),
+            "{rendered}"
+        );
+        assert!(rendered.contains("--preview-in json:body"), "{rendered}");
+
+        let reparsed = build_pipeline_graph("parser-preview-round-trip-2", &rendered)
+            .expect("re-parsed graph");
+        // Pipe mode regenerates node ids, so the script node is found by kind.
+        let script_preview = |g: &PipelineGraph| {
+            g.nodes
+                .iter()
+                .find(|n| n.kind == "n.script")
+                .expect("script node")
+                .config
+                .get("preview")
+                .cloned()
+        };
+        assert_eq!(script_preview(&graph), script_preview(&reparsed));
+    }
+
+    #[test]
+    fn node_to_segment_no_body_renders_the_preview_flags() {
+        let node = preview_graph_node("--preview table:rows");
+        let segment = node_to_segment_no_body(&node);
+        assert!(segment.contains("--preview table:rows"), "{segment}");
+        assert!(!segment.contains("return input"), "{segment}");
+    }
+
+    /// `<as>[:<path>][@WxH]` — every combination of path and size parses to
+    /// exactly the keys it names, and nothing else.
+    #[test]
+    fn preview_size_suffix_parses_in_every_combination() {
+        let cell = |value: &str| {
+            parse_preview_flag_value("--preview", value)
+                .expect("parses")
+                .expect("a cell, not off")
+        };
+        assert_eq!(cell("image"), json!({ "as": "image" }));
+        assert_eq!(cell("table:rows"), json!({ "as": "table", "path": "rows" }));
+        assert_eq!(
+            cell("image@360x240"),
+            json!({ "as": "image", "width": 360, "height": 240 })
+        );
+        assert_eq!(
+            cell("table:rows@420x180"),
+            json!({ "as": "table", "path": "rows", "width": 420, "height": 180 })
+        );
+        // Through the DSL, on both flags, the same shape lands in the config.
+        let node = preview_graph_node("--preview image@360x240 --preview-in json:body@300x90");
+        assert_eq!(
+            node.config.get("preview"),
+            Some(&json!({
+                "out": { "as": "image", "width": 360, "height": 240 },
+                "in": { "as": "json", "path": "body", "width": 300, "height": 90 }
+            }))
+        );
+    }
+
+    #[test]
+    fn preview_size_suffix_round_trips_and_is_omitted_at_default_size() {
+        let dsl = "[a] trigger.manual\n[b] script --preview table:rows@420x180 --preview-in json@300x90 -- return input\n\n[a] -> [b]\n";
+        let graph = build_pipeline_graph("parser-preview-size-round-trip", dsl).expect("graph");
+        let rendered = graph_to_dsl(&graph);
+        assert!(rendered.contains("--preview table:rows@420x180"), "{rendered}");
+        assert!(rendered.contains("--preview-in json@300x90"), "{rendered}");
+        let reparsed = build_pipeline_graph("parser-preview-size-round-trip-2", &rendered)
+            .expect("re-parsed graph");
+        let script_preview = |g: &PipelineGraph| {
+            g.nodes
+                .iter()
+                .find(|n| n.kind == "n.script")
+                .expect("script node")
+                .config
+                .get("preview")
+                .cloned()
+        };
+        assert_eq!(script_preview(&graph), script_preview(&reparsed));
+
+        // No size stored → no suffix rendered; a half-stored size is no size.
+        let plain = preview_graph_node("--preview image:response.file");
+        assert_eq!(node_to_segment_no_body(&plain).contains('@'), false);
+        let half = json!({ "preview": { "out": { "as": "image", "width": 300 } } });
+        assert_eq!(preview_flag_token(&half, "out").as_deref(), Some("image"));
+        let sized = json!({ "preview": { "out": { "as": "image", "width": 300, "height": 200 } } });
+        assert_eq!(preview_flag_token(&sized, "out").as_deref(), Some("image@300x200"));
+    }
+
+    #[test]
+    fn preview_size_suffix_refuses_a_bad_size_and_names_the_form() {
+        for bad in ["image@big", "image@360", "image@0x240", "image@360x", "image@-1x5", "image@10x10", "image@9999x240"] {
+            let err = parse_preview_flag_value("--preview", bad).expect_err(bad);
+            assert!(err.contains("bad size"), "{bad}: {err}");
+            assert!(err.contains("<as>[:<path>]@WxH"), "{bad}: {err}");
+        }
+        // The kind is still checked once the size is fine.
+        let err = parse_preview_flag_value("--preview", "gif@360x240").expect_err("bad kind");
+        assert!(err.contains("unknown preview kind `gif`"), "{err}");
+        // And through the DSL the error reaches the caller.
+        let err = build_pipeline_graph(
+            "parser-preview-bad-size",
+            "[a] trigger.manual\n[b] script --preview image@wide -- return input\n\n[a] -> [b]\n",
+        )
+        .expect_err("bad size must fail");
+        assert!(err.contains("bad size `wide`"), "{err}");
+    }
+
+    // ── Positionals ───────────────────────────────────────────────────────────
+
+    /// `input.text prompt --label "…"` reads the bare first token as `--name`
+    /// and writes it back the same way, in both renderers.
+    #[test]
+    fn a_positional_field_name_round_trips_through_the_dsl() {
+        let dsl = r#"| trigger.manual | input.text prompt --label "What should happen?" --max 200 | input.image photo --optional | input.file sheet --accept csv,xlsx"#;
+        let graph = build_pipeline_graph("parser-positional-test", dsl).expect("graph");
+        let text = &graph.nodes[1];
+        assert_eq!(text.kind, "n.input.text");
+        assert_eq!(text.config["name"], json!("prompt"));
+        assert_eq!(text.config["label"], json!("What should happen?"));
+        assert_eq!(text.config["max"], json!(200));
+        assert_eq!(graph.nodes[2].config["name"], json!("photo"));
+        assert_eq!(graph.nodes[2].config["optional"], json!(true));
+        assert_eq!(graph.nodes[3].config["accept"], json!(["csv", "xlsx"]));
+
+        let rendered = graph_to_dsl(&graph);
+        assert!(rendered.contains(r#"input.text prompt --label "What should happen?" --max 200"#), "{rendered}");
+        assert!(rendered.contains("input.image photo --optional"), "{rendered}");
+        assert!(rendered.contains("input.file sheet --accept csv,xlsx"), "{rendered}");
+        assert!(!rendered.contains("--name"), "{rendered}");
+
+        let compact = node_to_segment_no_body(text);
+        assert!(compact.starts_with("input.text prompt "), "{compact}");
+
+        // Parsing the rendering gives the same graph back.
+        let again = build_pipeline_graph("parser-positional-test", &rendered).expect("re-parse");
+        for (a, b) in graph.nodes.iter().zip(again.nodes.iter()) {
+            assert_eq!(a.kind, b.kind);
+            assert_eq!(a.config, b.config, "{}", a.kind);
+        }
+    }
+
+    /// The flag form still works, wins over the bare token, and a kind with
+    /// no positional keeps ignoring a stray bare token.
+    #[test]
+    fn the_flag_form_of_a_positional_still_works_and_wins() {
+        let graph = build_pipeline_graph(
+            "parser-positional-flag",
+            "| trigger.manual | input.number count --name total --min 1",
+        )
+        .expect("graph");
+        assert_eq!(graph.nodes[1].config["name"], json!("total"));
+        assert_eq!(graph.nodes[1].config["min"], json!(1));
+
+        let graph = build_pipeline_graph("parser-positional-none", "| trigger.manual | script stray -- return input")
+            .expect("graph");
+        assert!(graph.nodes[1].config.get("name").is_none());
+
+        let err = build_pipeline_graph("parser-positional-expr", "| trigger.manual | input.text {{ input.x }}")
+            .expect_err("an unquoted expression is refused, not stored as `{{`");
+        assert!(err.contains("unquoted expression"), "{err}");
+    }
 
     #[test]
     fn logic_match_cases_accept_compact_list_form() {
@@ -1638,12 +2217,11 @@ fn parse_graph_node(
         None => return Err(format!("Unknown node kind: '{raw_kind}'")),
     };
     let (input_pins, mut output_pins) = default_pins(full_kind);
-    let dsl_flags = definitions
-        .iter()
-        .find(|d| d.kind == full_kind)
-        .map(|d| d.dsl_flags.as_slice())
-        .unwrap_or(&[]);
-    let (mut config, body_val) = parse_node_config(&tokens[1..], rest, dsl_flags)?;
+    let definition = definitions.iter().find(|d| d.kind == full_kind);
+    let dsl_flags = definition.map(|d| d.dsl_flags.as_slice()).unwrap_or(&[]);
+    let positional = definition.and_then(|d| d.positional.as_deref());
+    let (mut config, body_val) =
+        parse_node_config_with_positional(&tokens[1..], rest, dsl_flags, positional)?;
     if let Some(bval) = body_val {
         if let Value::Object(ref mut map) = config {
             map.insert(body_config_key(full_kind).to_string(), json!(bval));
@@ -1762,17 +2340,41 @@ fn is_linear_graph(graph: &PipelineGraph) -> bool {
 /// Fields not declared in `dsl_flags` (e.g. `title`, `params_path`) are omitted.
 fn node_to_segment(node: &PipelineNode) -> String {
     let all_defs = builtin_node_definitions();
-    let dsl_flags = all_defs
-        .iter()
-        .find(|d| d.kind == node.kind)
-        .map(|d| d.dsl_flags.as_slice())
-        .unwrap_or(&[]);
+    let definition = all_defs.iter().find(|d| d.kind == node.kind);
+    let dsl_flags = definition.map(|d| d.dsl_flags.as_slice()).unwrap_or(&[]);
 
     // Strip "n." prefix for cleaner output; expand_kind accepts both forms.
     let kind = node.kind.strip_prefix("n.").unwrap_or(&node.kind);
     let mut parts = vec![kind.to_string()];
 
+    // A positional is written bare, right after the kind, the way it is read.
+    let positional = positional_segment_token(definition, &node.config);
+    if let Some((_, token)) = &positional {
+        parts.push(token.clone());
+    }
+
+    // The body key (`query`, `source`, `expression`, `prompt`, …) may also be
+    // a declared flag. It is written once: as the `-- body` when the flag
+    // table declares it, never as both — `logic.if --expr "x" -- x` was the
+    // shape this produced before.
+    let body_key = body_config_key(&node.kind);
+
     for flag in dsl_flags {
+        if flag.config_key == body_key {
+            continue;
+        }
+        if positional.as_ref().is_some_and(|(key, _)| *key == flag.config_key) {
+            continue;
+        }
+        // Previews live nested under `config.preview`, so they are read back
+        // through the slot helper rather than by a flat key lookup.
+        if let Some(slot) = preview_slot_for_config_key(&flag.config_key) {
+            if let Some(token) = preview_flag_token(&node.config, slot) {
+                parts.push(flag.flag.clone());
+                parts.push(token);
+            }
+            continue;
+        }
         let Some(val) = node.config.get(&flag.config_key) else {
             continue;
         };
@@ -1843,7 +2445,6 @@ fn node_to_segment(node: &PipelineNode) -> String {
     }
 
     // Body (SQL / script source / generic body) — stored under a kind-specific key.
-    let body_key = body_config_key(&node.kind);
     if let Some(body) = node.config.get(body_key).and_then(|v| v.as_str()) {
         let body = body.trim();
         if !body.is_empty() {
@@ -1866,16 +2467,21 @@ fn node_to_segment(node: &PipelineNode) -> String {
 /// Used by compact describe to show flags without long SQL/script bodies.
 pub fn node_to_segment_no_body(node: &PipelineNode) -> String {
     let all_defs = builtin_node_definitions();
-    let dsl_flags = all_defs
-        .iter()
-        .find(|d| d.kind == node.kind)
-        .map(|d| d.dsl_flags.as_slice())
-        .unwrap_or(&[]);
+    let definition = all_defs.iter().find(|d| d.kind == node.kind);
+    let dsl_flags = definition.map(|d| d.dsl_flags.as_slice()).unwrap_or(&[]);
 
     let kind = node.kind.strip_prefix("n.").unwrap_or(&node.kind);
     let mut parts = vec![kind.to_string()];
 
+    let positional = positional_segment_token(definition, &node.config);
+    if let Some((_, token)) = &positional {
+        parts.push(token.clone());
+    }
+
     for flag in dsl_flags {
+        if positional.as_ref().is_some_and(|(key, _)| *key == flag.config_key) {
+            continue;
+        }
         // Skip body-typed flags (their config_key matches the body key for this node kind)
         let body_key = match node.kind.as_str() {
             "n.pg.query" => "query",
@@ -1888,6 +2494,13 @@ pub fn node_to_segment_no_body(node: &PipelineNode) -> String {
             _ => "body",
         };
         if flag.config_key == body_key {
+            continue;
+        }
+        if let Some(slot) = preview_slot_for_config_key(&flag.config_key) {
+            if let Some(token) = preview_flag_token(&node.config, slot) {
+                parts.push(flag.flag.clone());
+                parts.push(token);
+            }
             continue;
         }
         let Some(val) = node.config.get(&flag.config_key) else {
@@ -1961,6 +2574,20 @@ pub fn node_to_segment_no_body(node: &PipelineNode) -> String {
     parts.join(" ")
 }
 
+/// The positional's rendered token, `(config_key, token)`, when the kind
+/// declares one and the config holds a non-empty string for it.
+fn positional_segment_token(
+    definition: Option<&NodeDefinition>,
+    config: &Value,
+) -> Option<(String, String)> {
+    let key = definition?.positional.as_deref()?;
+    let value = config.get(key)?.as_str()?.trim();
+    if value.is_empty() {
+        return None;
+    }
+    Some((key.to_string(), quote_dsl_arg(value)))
+}
+
 fn quote_dsl_arg(value: &str) -> String {
     if value.chars().any(char::is_whitespace) || value.contains('"') {
         format!("\"{}\"", value.replace('"', "\\\""))
@@ -2009,11 +2636,14 @@ fn graph_to_pipe_mode(graph: &PipelineGraph) -> String {
         }
     }
 
-    ordered
+    let mut lines = ordered
         .iter()
         .map(|n| format!("| {}", node_to_segment(n)))
-        .collect::<Vec<_>>()
-        .join("\n")
+        .collect::<Vec<_>>();
+    for note in &graph.notes {
+        lines.push(format!("| {}", note_to_statement(note, true)));
+    }
+    lines.join("\n")
 }
 
 fn graph_to_graph_mode(graph: &PipelineGraph) -> String {
@@ -2037,6 +2667,13 @@ fn graph_to_graph_mode(graph: &PipelineGraph) -> String {
         }
     }
 
+    if !graph.notes.is_empty() {
+        lines.push(String::new());
+        for note in &graph.notes {
+            lines.push(format!("[{}] {}", note.id, note_to_statement(note, false)));
+        }
+    }
+
     lines.join("\n")
 }
 
@@ -2050,7 +2687,25 @@ fn build_pipe_mode(
 ) -> Result<PipelineGraph, String> {
     // Strip leading `|` if present
     let body = body.trim_start_matches('|').trim();
-    let segments: Vec<&str> = split_pipe_segments(body);
+    let all_segments: Vec<&str> = split_pipe_segments(body);
+
+    // Notes are not part of the chain: lift them out first so the node ids
+    // (`n0`, `n1`, …) and the edges between them stay index-based.
+    let mut notes: Vec<PipelineNote> = Vec::new();
+    let mut segments: Vec<&str> = Vec::new();
+    for segment in all_segments {
+        let tokens = tokenize(segment);
+        if tokens.first().map(|t| is_note_keyword(t)).unwrap_or(false) {
+            let default_id = format!("note{}", notes.len() + 1);
+            let note = parse_note_statement(&default_id, &tokens[1..], segment)?;
+            if notes.iter().any(|n| n.id == note.id) {
+                return Err(format!("duplicate note id '{}'", note.id));
+            }
+            notes.push(note);
+        } else {
+            segments.push(segment);
+        }
+    }
 
     if segments.is_empty() {
         return Err("No nodes in pipeline body".to_string());
@@ -2094,27 +2749,16 @@ fn build_pipe_mode(
 
         let node_id = format!("n{idx}");
         let (input_pins, mut output_pins) = default_pins(full_kind);
-        let dsl_flags = definitions
-            .iter()
-            .find(|d| d.kind == full_kind)
-            .map(|d| d.dsl_flags.as_slice())
-            .unwrap_or(&[]);
-        let (mut config, body_val) = parse_node_config(&seg_tokens[1..], segment, dsl_flags)?;
+        let definition = definitions.iter().find(|d| d.kind == full_kind);
+        let dsl_flags = definition.map(|d| d.dsl_flags.as_slice()).unwrap_or(&[]);
+        let positional = definition.and_then(|d| d.positional.as_deref());
+        let (mut config, body_val) =
+            parse_node_config_with_positional(&seg_tokens[1..], segment, dsl_flags, positional)?;
 
-        // Set body using kind-appropriate key
+        // Set body using the kind's body key — one table for both modes.
         if let Some(bval) = body_val {
-            let body_key = match full_kind {
-                "n.pg.query" => "query",
-                "n.sekejap.query" => "query",
-                "n.sqlite.query" => "query",
-                "n.sqlite.mutate" => "query",
-                "n.table.query" => "query",
-                "n.script" => "source",
-                "n.browser.run" => "code",
-                _ => "body",
-            };
             if let Value::Object(ref mut map) = config {
-                map.insert(body_key.to_string(), json!(bval));
+                map.insert(body_config_key(full_kind).to_string(), json!(bval));
             }
         }
 
@@ -2187,10 +2831,126 @@ fn build_pipe_mode(
         entry_nodes,
         nodes,
         edges,
-        notes: Vec::new(),
+        notes,
     };
     auto_tidy_pipeline_graph(&mut graph);
     Ok(graph)
+}
+
+#[cfg(test)]
+mod register_shape_tests {
+    use super::*;
+
+    #[test]
+    fn a_body_without_a_leading_pipe_is_refused_not_truncated() {
+        match parse_one_command("register api/x trigger.webhook --path /x --method POST | ai.agent --credential c") {
+            DslVerb::Invalid { message } => {
+                assert!(message.contains("must start with `|`"), "{message}");
+                assert!(message.contains("trigger.webhook --path /x --method POST"), "{message}");
+            }
+            other => panic!("expected a refusal, got {other:?}"),
+        }
+        match parse_one_command("register api/x --title \"T\" -- | trigger.webhook --path /x | ai.agent --credential c") {
+            DslVerb::Register { body, title, .. } => {
+                assert_eq!(title, "T");
+                assert!(body.starts_with("| trigger.webhook"), "{body}");
+            }
+            other => panic!("{other:?}"),
+        }
+        match parse_one_command("register api/x\n[t] trigger.webhook --path /x\n[a] ai.agent --credential c\n[t] -> [a]") {
+            DslVerb::Register { body, .. } => assert!(body.starts_with("[t]"), "{body}"),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_body_key_that_is_also_a_flag_is_rendered_once() {
+        let g = build_pipeline_graph("p", "trigger.webhook --path /x | logic.if --expr \"$trigger.query.who == 'm'\" | ai.agent --credential c --output-mode final_only -- Classify: {{ input.body.review }}").expect("parse");
+        let dsl = graph_to_dsl(&g);
+        let if_line = dsl.lines().find(|l| l.contains("logic.if")).unwrap();
+        assert_eq!(if_line.matches("$trigger.query.who").count(), 1, "{if_line}");
+        assert!(!if_line.contains("--expr"), "{if_line}");
+        let agent_line = dsl.lines().find(|l| l.contains("ai.agent")).unwrap();
+        assert_eq!(agent_line.matches("Classify:").count(), 1, "{agent_line}");
+        assert!(!agent_line.contains("--prompt"), "{agent_line}");
+        // and it round-trips
+        let again = build_pipeline_graph("p", &dsl).expect("re-parse");
+        assert_eq!(again.nodes[1].config.get("expression"), g.nodes[1].config.get("expression"));
+        assert_eq!(again.nodes[2].config.get("prompt"), g.nodes[2].config.get("prompt"));
+    }
+}
+
+#[cfg(test)]
+mod note_tests {
+    use super::*;
+
+    #[test]
+    fn graph_mode_note_is_a_note_not_a_node() {
+        let body = "[t] trigger.webhook --path /x\n[r] web.response --template pages/x.tsx\n[t] -> [r]\n[why] note --text \"Create the `smtp` credential first.\" --at 120,40 --size 320x140 --color amber";
+        let graph = build_pipeline_graph("p", body).expect("parse");
+        assert_eq!(graph.nodes.len(), 2);
+        assert_eq!(graph.edges.len(), 1);
+        assert_eq!(graph.notes.len(), 1);
+        let note = &graph.notes[0];
+        assert_eq!(note.id, "why");
+        assert_eq!(note.text, "Create the `smtp` credential first.");
+        assert_eq!((note.x, note.y, note.width, note.height), (120.0, 40.0, 320.0, 140.0));
+        assert_eq!(note.color, "amber");
+    }
+
+    #[test]
+    fn pipe_mode_note_does_not_break_the_chain() {
+        let body = "trigger.webhook --path /x | note --text \"first\" | web.response --template pages/x.tsx | note --id tail -- a longer text, after the flags";
+        let graph = build_pipeline_graph("p", body).expect("parse");
+        assert_eq!(graph.nodes.iter().map(|n| n.id.as_str()).collect::<Vec<_>>(), vec!["n0", "n1"]);
+        assert_eq!(graph.edges.len(), 1);
+        assert_eq!(graph.edges[0].from_node, "n0");
+        assert_eq!(graph.edges[0].to_node, "n1");
+        assert_eq!(graph.notes.len(), 2);
+        assert_eq!(graph.notes[0].id, "note1");
+        assert_eq!(graph.notes[1].id, "tail");
+        assert_eq!(graph.notes[1].text, "a longer text, after the flags");
+    }
+
+    #[test]
+    fn notes_survive_the_dsl_round_trip_in_both_modes() {
+        for body in [
+            "trigger.webhook --path /x | web.response --template pages/x.tsx | note --id n1 --text \"keep me\" --at 10,20 --size 200x80 --color blue",
+            "[t] trigger.webhook --path /x\n[a] logic.if --expr \"true\"\n[b] web.response --template pages/a.tsx\n[c] web.response --template pages/b.tsx\n[t] -> [a]\n[a]:then -> [b]\n[a]:else -> [c]\n[n1] note --text \"keep me\" --color blue",
+        ] {
+            let first = build_pipeline_graph("p", body).expect("parse");
+            let rendered = graph_to_dsl(&first);
+            assert!(rendered.contains("note"), "{rendered}");
+            let second = build_pipeline_graph("p", &rendered).expect("re-parse:\n{rendered}");
+            assert_eq!(second.notes, first.notes, "{rendered}");
+        }
+    }
+
+    #[test]
+    fn bad_note_flags_are_refused_with_the_flag_list() {
+        let err = build_pipeline_graph("p", "trigger.webhook --path /x | note --colour red").unwrap_err();
+        assert!(err.contains("unknown flag `--colour`"), "{err}");
+        let err = build_pipeline_graph("p", "trigger.webhook --path /x | note --at 12").unwrap_err();
+        assert!(err.contains("--at expects x,y"), "{err}");
+        let err = build_pipeline_graph("p", "[t] trigger.webhook --path /x\n[r] web.response --template pages/x.tsx\n[t] -> [r]\n[a] note --text one\n[a] note --text two").unwrap_err();
+        assert!(err.contains("duplicate note id"), "{err}");
+    }
+
+    #[test]
+    fn patch_verb_carries_its_target() {
+        match parse_one_command("patch pipeline api/x note why --text \"new\" --at 1,2") {
+            DslVerb::Patch { target, node_id, flags, .. } => {
+                assert_eq!(target, "note");
+                assert_eq!(node_id, "why");
+                assert_eq!(flags.get("text").and_then(|v| v.as_str()), Some("new"));
+            }
+            other => panic!("{other:?}"),
+        }
+        match parse_one_command("patch pipeline api/x node n1 --path /y") {
+            DslVerb::Patch { target, .. } => assert_eq!(target, "node"),
+            other => panic!("{other:?}"),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -2345,3 +3105,4 @@ mod key_value_quoting_tests {
         );
     }
 }
+

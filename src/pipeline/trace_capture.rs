@@ -21,6 +21,8 @@ use serde_json::{Value, json};
 
 use crate::pipeline::nodes::NodeExecutionOutput;
 
+pub mod preview_snapshot;
+
 #[cfg(test)]
 mod tests;
 
@@ -184,6 +186,22 @@ impl TraceCapture {
     /// whole point on a device.
     pub(crate) fn records_any_payload(&self) -> bool {
         !matches!(self.limits.level, CaptureLevel::None)
+    }
+
+    /// Does this node's input or output go into the record?
+    ///
+    /// The level decides, with one exception: a node that declares a canvas
+    /// preview for that payload (`config.preview.in` / `.out`) has asked to
+    /// see it, so `on-error` records it even for a node that succeeded —
+    /// otherwise the preview would read "no run yet" forever at the default
+    /// level. `None` still records nothing: an operator chose that for a
+    /// device, and a preview does not overrule them. The byte budgets are
+    /// untouched either way; a preview widens nothing.
+    pub(crate) fn records_payload_for(&self, success: bool, wanted_by_preview: bool) -> bool {
+        if !success {
+            return self.records_any_payload();
+        }
+        self.records_successful_payloads() || (wanted_by_preview && self.records_any_payload())
     }
 
     /// Capture one borrowed payload, preserving private-marker and exception
@@ -476,7 +494,9 @@ impl Serialize for View<'_> {
                 }
                 let mut out = serializer.serialize_map(None)?;
                 for (key, value) in map {
-                    if private_key(key) || (self.config && key == "ui") {
+                    // `ui` and `preview` are canvas presentation the engine never
+                    // reads; a trace of the run has no use for either.
+                    if private_key(key) || (self.config && (key == "ui" || key == "preview")) {
                         continue;
                     }
                     out.serialize_entry(key, &self.child(value, Some(key)))?;

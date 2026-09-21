@@ -5,13 +5,16 @@
 //! module docs, `definition()`, typed config, runtime handler, DSL flags, schemas,
 //! and registration expectations.
 //!
-//! This module is the local catalog for framework-provided nodes. Add a new node
-//! here only after its `definition()` is complete, then register it in
-//! [`builtin_node_definitions`]. Keep cross-node payload conventions documented in
-//! the smallest shared module that owns them:
+//! This module is the local catalog for framework-provided nodes. A node's file
+//! is `basic/<family>/<node>.rs`, mirroring its kind; add a new node to its
+//! family's `definitions()` only after its `definition()` is complete — that
+//! list is what [`builtin_node_definitions`] reads. Keep cross-node payload
+//! conventions documented in the smallest shared module that owns them:
 //!
-//! - [`file_ref`] owns FileRef IR for file-like bytes moving through pipelines.
-//! - [`util`] owns metadata scope and dot-path resolution shared by node handlers.
+//! - [`crate::pipeline::nodes::shared::file_ref`] owns FileRef IR for file-like
+//!   bytes moving through pipelines.
+//! - [`crate::pipeline::nodes::shared::util`] owns metadata scope and dot-path
+//!   resolution shared by node handlers.
 //! - [`trigger`] owns ingress triggers and their root payload shape.
 //!
 //! ZebFS is the project storage backend; FileRef is the payload IR for passing
@@ -22,126 +25,70 @@
 //! read those bytes (`fs.put`) or validate/promote them (`fs.save`). Durable
 //! dataset nodes such as table, geo, and mapserver nodes operate on ZebFS paths,
 //! but payload path keys should accept either a plain path string or a FileRef and
-//! resolve it through [`file_ref`].
+//! resolve it through [`crate::pipeline::nodes::shared::file_ref`].
 
 use crate::pipeline::NodeDefinition;
 
-pub mod agent;
-pub mod ai_tts;
-pub mod auth_token_create;
-pub mod auth_token_verify;
+// One folder per DSL family, one file per node, the path mirroring the kind:
+// `n.fs.save` is `fs/save.rs`, `n.kv.get` is `kv/get.rs`. A family with one
+// node and no submodules keeps that node in its `mod.rs` (`concept`, `crypto`,
+// `script`). Every family exposes `definitions()`; nothing else is registered
+// here. A test in `crate::pipeline::nodes` refuses a `.rs` file beside this
+// one and a folder that is not a family of the catalogue.
+pub mod ai;
+pub mod auth;
+pub mod browser;
 pub mod concept;
-pub mod mail_send;
-pub mod browser_run;
 pub mod crypto;
-pub mod file_ref;
-pub mod fs_compress;
-pub mod fs_decompress;
-pub mod fs_object;
-pub mod fs_pdf_convert;
-pub mod fs_save;
-pub mod fs_thumbnail;
-pub mod function_call;
-pub mod geo_convert;
-pub mod geo_inspect;
-pub mod http_request;
-pub mod kv_del;
-pub mod kv_exists;
-pub mod kv_expire;
-pub mod kv_get;
-pub mod kv_incr;
-pub mod kv_publish;
-pub mod kv_set;
+pub mod fs;
+pub mod function;
+pub mod geo;
+pub mod http;
+pub mod input;
+pub mod kv;
 pub mod logic;
-pub mod mapserver_crud;
-pub mod pg_query;
+pub mod mail;
+pub mod ms;
+pub mod pg;
 pub mod script;
-pub mod sekejap_insert;
-pub mod sekejap_query;
-pub mod sqlite_mutate;
-pub mod sqlite_query;
-pub mod table_convert;
-pub mod table_query;
+pub mod sekejap;
+pub mod sqlite;
+pub mod table;
 pub mod trigger;
-mod util;
-pub mod web_docs_generate;
-pub mod web_response;
-pub mod web_static_generate;
-pub mod web_static_site;
-pub mod ws_client_send;
-pub mod ws_emit;
-pub mod ws_sync_state;
-pub mod ws_trigger;
+pub mod web;
+pub mod ws;
+
+/// The family lists, in the order the node index shows them.
+fn family_definitions() -> Vec<NodeDefinition> {
+    let mut items = Vec::new();
+    items.extend(ai::definitions());
+    items.extend(auth::definitions());
+    items.extend(browser::definitions());
+    items.extend(concept::definitions());
+    items.extend(crypto::definitions());
+    items.extend(fs::definitions());
+    items.extend(function::definitions());
+    items.extend(geo::definitions());
+    items.extend(http::definitions());
+    items.extend(input::definitions());
+    items.extend(kv::definitions());
+    items.extend(logic::definitions());
+    items.extend(mail::definitions());
+    items.extend(ms::definitions());
+    items.extend(pg::definitions());
+    items.extend(script::definitions());
+    items.extend(sekejap::definitions());
+    items.extend(sqlite::definitions());
+    items.extend(table::definitions());
+    items.extend(trigger::definitions());
+    items.extend(web::definitions());
+    items.extend(ws::definitions());
+    items
+}
 
 /// Returns built-in node definitions sorted by kind.
 pub fn builtin_node_definitions() -> Vec<NodeDefinition> {
-    let mut items = vec![
-        agent::definition(),
-        ai_tts::definition(),
-        auth_token_create::definition(),
-        auth_token_verify::definition(),
-        concept::definition(),
-        mail_send::definition(),
-        browser_run::definition(),
-        fs_compress::definition(),
-        fs_decompress::definition(),
-        fs_object::list_definition(),
-        fs_object::head_definition(),
-        fs_object::get_definition(),
-        fs_object::put_definition(),
-        fs_object::delete_definition(),
-        fs_object::copy_definition(),
-        fs_object::move_definition(),
-        fs_object::mkdir_definition(),
-        mapserver_crud::publish_definition(),
-        mapserver_crud::unpublish_definition(),
-        mapserver_crud::get_definition(),
-        mapserver_crud::list_definition(),
-        geo_convert::definition(),
-        geo_inspect::definition(),
-        fs_pdf_convert::definition(),
-        fs_save::definition(),
-        function_call::definition(),
-        fs_thumbnail::definition(),
-        kv_del::definition(),
-        kv_exists::definition(),
-        kv_expire::definition(),
-        kv_get::definition(),
-        kv_incr::definition(),
-        kv_publish::definition(),
-        kv_set::definition(),
-        trigger::function::definition(),
-        trigger::kv_subscribe::definition(),
-        trigger::webhook::definition(),
-        trigger::schedule::definition(),
-        trigger::manual::definition(),
-        trigger::mcp_trigger::definition(),
-        ws_trigger::definition(),
-        script::definition(),
-        http_request::definition(),
-        sekejap_insert::definition(),
-        sekejap_query::definition(),
-        sqlite_mutate::definition(),
-        sqlite_query::definition(),
-        table_convert::definition(),
-        table_query::definition(),
-        pg_query::definition(),
-        web_response::definition(),
-        web_docs_generate::definition(),
-        web_static_generate::definition(),
-        ws_client_send::definition(),
-        ws_sync_state::definition(),
-        ws_emit::definition(),
-        trigger::ws_client::definition(),
-        logic::if_::definition(),
-        logic::match_::definition(),
-        logic::collect::definition(),
-        logic::foreach_::definition(),
-        logic::reduce::definition(),
-        logic::retry::definition(),
-        crypto::definition(),
-        trigger::weberror::definition(),
-    ];
+    let mut items = family_definitions();
     // Inject engine-level common flags and fields into every node definition.
     let common_flags = crate::pipeline::model::engine_common_dsl_flags();
     let common_fields = crate::pipeline::model::engine_common_fields();
@@ -150,7 +97,7 @@ pub fn builtin_node_definitions() -> Vec<NodeDefinition> {
             if !def
                 .dsl_flags
                 .iter()
-                .any(|f| f.config_key == flag.config_key)
+                .any(|f| f.config_key == flag.config_key || f.flag == flag.flag)
             {
                 def.dsl_flags.push(flag.clone());
             }
@@ -181,6 +128,11 @@ fn ui_category_for_kind(kind: &str) -> (&'static str, &'static str) {
     if kind.starts_with("n.trigger.") {
         return ("trigger", "");
     }
+    // The trigger's declaration, next to the trigger: its own family, not
+    // "other" and not a data node.
+    if kind.starts_with(input::KIND_PREFIX) {
+        return ("input", "");
+    }
     if kind.starts_with("n.sekejap.") {
         return ("data.sekejap", "Sekejap");
     }
@@ -205,7 +157,9 @@ fn ui_category_for_kind(kind: &str) -> (&'static str, &'static str) {
     if kind.starts_with("n.ai.") {
         return ("logic.ai", "AI");
     }
-    if kind.starts_with("n.logic.") || kind.starts_with("n.function.") || kind == "n.script" {
+    // `n.concept` is a step described but not built: a logic placeholder, not
+    // an "other" of its own.
+    if kind.starts_with("n.logic.") || kind.starts_with("n.function.") || kind == "n.script" || kind == "n.concept" {
         return ("logic", "");
     }
     if kind.starts_with("n.browser.") {
@@ -216,6 +170,9 @@ fn ui_category_for_kind(kind: &str) -> (&'static str, &'static str) {
     }
     if kind.starts_with("n.http.") || kind.starts_with("n.web.") {
         return ("web", "");
+    }
+    if kind.starts_with("n.mail.") {
+        return ("communication.mail", "Mail");
     }
     if kind.starts_with("n.auth.") || kind == "n.crypto" {
         return ("security", "");

@@ -41,13 +41,34 @@ A host that carries any custom route serves only its routes.
 | `static` — project assets, `_rwe/lib`, `_rwe/scripts` | on | `/_static/…` | `/static/{o}/{p}/…` |
 | `ms` — published map layers | **off** | `/_ms/…` | `/ms/{o}/{p}/…` |
 | `fs` — private objects (session) | **off** | `/_fs/…` | `/fs/{o}/{p}/…` |
-| `mcp` | on | `/_mcp` | `/api/projects/{o}/{p}/mcp` |
+| `mcp` | **off** | `/_mcp` | `/api/projects/{o}/{p}/mcp` — always served on the platform address |
 
 Rules: `/_` is reserved — a webhook path starting with it is refused at
 register (`PIPELINE_ROUTE_RESERVED`). `pages` mounts at `/` or nowhere
 (`ADDRESSING_PAGES_ROOT`); every other surface mounts anywhere. A disabled
 surface answers 404 on the project's hosts and on its platform form alike.
 A host belongs to one project on an instance (`ADDRESSING_HOST_TAKEN`).
+
+There is no dev mode and no production mode: Zebflow is one runtime, and no
+behaviour keys on which host asked — the dev host and a named host obey the
+same switches. What a visitor gets is what the switches say, and the switches
+can be read back.
+
+## 2a. Switches
+
+Beside `hosts`, `routes` and `disabled`, the project's addressing record
+(`addressing.json`, store tier, so it never travels with the code) carries:
+
+| Switch | Default | Meaning |
+|---|---|---|
+| `api_on_hosts` | `false` | the platform API `/api/projects/{o}/{p}/…` answers on the project's hosts (dev host included). The platform address always serves it — that is where the Studio lives. Authentication applies either way |
+| `mcp` (in `disabled`) | off | `/_mcp` on the project's hosts; the platform form is always served on the platform address |
+| `errors` | `hidden` | what a **5xx** shows on the project's hosts: `hidden` — the project's 500 page (or the platform's neutral one) with the first eight characters of the run id, and `{ "error": { "code": "internal", "request_id": … } }` for a JSON request; `shown` — the same page plus the error code, message, node id and a link to the run. A webhook overrides its own routes with `--errors show` or `--errors hide` (`kinds/pipeline`). Status codes never change with this switch, and an authored 4xx (`web.response --status 400 --message …`) always shows its message |
+
+The full detail of every failure is in the invocation record and its error
+group (`kinds/invocation-record`) whatever `errors` says; `hidden` hides, it
+never loses. Decided 2026-09-17; the dev-host exception that briefly served
+the API on `*.localhost` regardless of the switch is withdrawn by this rule.
 
 ## 3. Two kinds of URL, opposite rules
 

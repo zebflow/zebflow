@@ -1,5 +1,10 @@
-//! OpenAI-compatible and Anthropic HTTP clients.
-//! Both implement `LlmCall` — the single LLM interface used throughout automaton.
+//! The one HTTP client behind `LlmCall`: OpenAI-compatible, with two
+//! surfaces — Responses (`/responses`) for the `openai` credential kind and
+//! Chat Completions (`/chat/completions`) for `openrouter` — and the
+//! credential-driven factories at the bottom. The only source of a key is
+//! the credential secret handed in; there is no environment fallback.
+//!
+//! Anthropic is not a provider yet; its tool-use mapping is a separate decision.
 
 use std::sync::Arc;
 
@@ -541,100 +546,6 @@ fn extract_responses_text(val: &Value) -> Option<String> {
     }
 }
 
-// ── Anthropic client ──────────────────────────────────────────────────────────
-
-/// Anthropic Messages API client.
-/// `call_with_tools` falls back to text-only (uses default trait impl).
-pub struct AnthropicClient {
-    api_key: String,
-    model: String,
-    client: reqwest::Client,
-}
-
-impl AnthropicClient {
-    pub fn new(api_key: String, model: String) -> Self {
-        Self {
-            api_key,
-            model,
-            client: reqwest::Client::new(),
-        }
-    }
-}
-
-#[async_trait]
-impl LlmCall for AnthropicClient {
-    async fn call(&self, messages: Vec<Message>) -> Result<String, String> {
-        let system = messages
-            .iter()
-            .filter(|m| m.role == MessageRole::System)
-            .map(|m| m.content.trim())
-            .filter(|s| !s.is_empty())
-            .collect::<Vec<_>>()
-            .join("\n\n");
-        let mapped: Vec<Value> = messages
-            .iter()
-            .filter(|m| m.role != MessageRole::System)
-            .map(|m| {
-                json!({
-                    "role": match m.role {
-                        MessageRole::Assistant => "assistant",
-                        _ => "user",
-                    },
-                    "content": m.content,
-                })
-            })
-            .collect();
-
-        let mut payload = json!({
-            "model": self.model,
-            "max_tokens": 1024,
-            "messages": mapped,
-        });
-        if !system.is_empty() {
-            payload["system"] = Value::String(system);
-        }
-
-        let resp = self
-            .client
-            .post("https://api.anthropic.com/v1/messages")
-            .header("Content-Type", "application/json")
-            .header("anthropic-version", "2023-06-01")
-            .header("x-api-key", &self.api_key)
-            .json(&payload)
-            .send()
-            .await
-            .map_err(|e| format!("anthropic request failed: {}", e))?;
-
-        let status = resp.status();
-        let body: Value = resp
-            .json()
-            .await
-            .map_err(|e| format!("anthropic parse failed: {}", e))?;
-        if !status.is_success() {
-            return Err(format!("anthropic error {}: {}", status, body));
-        }
-
-        body.get("content")
-            .and_then(Value::as_array)
-            .and_then(|arr| {
-                let parts: Vec<String> = arr
-                    .iter()
-                    .filter(|p| p.get("type").and_then(Value::as_str) == Some("text"))
-                    .filter_map(|p| p.get("text").and_then(Value::as_str))
-                    .map(|s| s.trim().to_string())
-                    .filter(|s| !s.is_empty())
-                    .collect();
-                if parts.is_empty() {
-                    None
-                } else {
-                    Some(parts.join("\n"))
-                }
-            })
-            .ok_or_else(|| "anthropic empty content".to_string())
-    }
-    // call_with_tools falls back to text-only via default trait impl
-}
-
 // ── Factory functions ─────────────────────────────────────────────────────────
 
 /// Build an `LlmCall` client from a credential secret JSON blob.
@@ -660,27 +571,4 @@ pub fn client_from_provider_secret_with_model(
 ) -> Option<Arc<dyn LlmCall>> {
     OpenAiHttpClient::from_provider_secret(provider_kind, secret, model_override)
         .map(|c| Arc::new(c) as Arc<dyn LlmCall>)
-}
-
-/// Build an `LlmCall` client from environment variables.
-/// ZEBTUNE_LLM_PROVIDER=openai (default) | anthropic
-/// OpenAI: ZEBTUNE_OPENAI_API_KEY, ZEBTUNE_OPENAI_BASE_URL, ZEBTUNE_OPENAI_MODEL
-/// Anthropic: ZEBTUNE_ANTHROPIC_API_KEY, ZEBTUNE_ANTHROPIC_MODEL
-pub fn client_from_env() -> Option<Arc<dyn LlmCall>> {
-    let provider = std::env::var("ZEBTUNE_LLM_PROVIDER")
-        .unwrap_or_else(|_| "openai".to_string())
-        .to_lowercase();
-
-    if provider == "anthropic" {
-        let api_key = std::env::var("ZEBTUNE_ANTHROPIC_API_KEY").ok()?;
-        let model = std::env::var("ZEBTUNE_ANTHROPIC_MODEL")
-            .unwrap_or_else(|_| "claude-3-5-sonnet-20241022".to_string());
-        return Some(Arc::new(AnthropicClient::new(api_key, model)));
-    }
-
-    let api_key = std::env::var("ZEBTUNE_OPENAI_API_KEY").ok()?;
-    let base_url = std::env::var("ZEBTUNE_OPENAI_BASE_URL")
-        .unwrap_or_else(|_| "https://api.openai.com/v1".to_string());
-    let model = std::env::var("ZEBTUNE_OPENAI_MODEL").unwrap_or_else(|_| "gpt-4o-mini".to_string());
-    Some(Arc::new(OpenAiHttpClient::new(base_url, api_key, model)))
 }

@@ -81,9 +81,9 @@ reads only its own credentials (`owner/project` is the store's key).
 ## Evidence
 
 `web/mod.rs` `session_cookie_header_same_site`, `SESSION_TTL_SECS`,
-`logout_submit`; `services/mcp_session.rs`; `nodes/basic/auth_token_verify.rs`
+`logout_submit`; `services/mcp_session.rs`; `nodes/basic/auth/token_verify.rs`
 (algorithm pin, `set_audience`); `infra/secrets/keyring.rs`;
 `adapters/data/sqlite.rs` keyring report and reencrypt;
-`services/credential.rs` confidential registry; `nodes/basic/fs_save.rs`;
+`services/credential.rs` confidential registry; `nodes/basic/fs/save.rs`;
 `confinement.md`. Absences in §4 are grep results on the same day, not a
 design decision — each becomes a row in §1–3 when it lands.

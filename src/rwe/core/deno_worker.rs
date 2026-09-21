@@ -284,15 +284,13 @@ fn run_js_thread(worker_id: usize, mut rx: tokio::sync::mpsc::UnboundedReceiver<
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 // We need a way to run async in catch_unwind. Use block_on nested.
                 tokio::task::block_in_place(|| {
-                    tokio::runtime::Handle::current().block_on(do_render_ssr(
-                        &mut js_rt,
+                    tokio::runtime::Handle::current().block_on(async {
                         match &req.op {
-                            JsOp::RenderSsr { source, .. } => source,
-                        },
-                        match &req.op {
-                            JsOp::RenderSsr { ctx, .. } => ctx,
-                        },
-                    ))
+                            JsOp::RenderSsr { source, ctx } => {
+                                do_render_ssr(&mut js_rt, source, ctx).await
+                            }
+                        }
+                    })
                 })
             }));
 
@@ -339,11 +337,14 @@ fn run_js_thread(worker_id: usize, mut rx: tokio::sync::mpsc::UnboundedReceiver<
 // ---------------------------------------------------------------------------
 // SSR execution
 // ---------------------------------------------------------------------------
-async fn do_render_ssr(
+/// Steps 1–7 of a render, shared by SSR and a default-export call: transpile,
+/// strip the runtime imports, publish `ctx`, load the module as a side module,
+/// evaluate it and pin its namespace on `globalThis.__rwe_module_ns`.
+async fn load_page_module(
     js_rt: &mut JsRuntime,
     tsx_source: &str,
     ctx: &Value,
-) -> Result<JsResponse, EngineError> {
+) -> Result<(), EngineError> {
     // Reset result slot from any previous render.
     RENDER_RESULT.with(|r| *r.borrow_mut() = None);
     reset_render_globals(js_rt)?;
@@ -407,6 +408,15 @@ async fn do_render_ssr(
 
     // Clean up temp file (best-effort, before render script runs).
     let _ = std::fs::remove_file(&temp_path);
+    Ok(())
+}
+
+async fn do_render_ssr(
+    js_rt: &mut JsRuntime,
+    tsx_source: &str,
+    ctx: &Value,
+) -> Result<JsResponse, EngineError> {
+    load_page_module(js_rt, tsx_source, ctx).await?;
 
     // 8. Execute render script.
     //    It calls Deno.core.ops.op_rwe_store_result(json) synchronously,
@@ -633,6 +643,16 @@ fn load_sync(specifier: &ModuleSpecifier) -> Result<ModuleSource, JsErrorBox> {
 // build_client_module() in render.rs.
 // ---------------------------------------------------------------------------
 pub fn transpile_tsx(source: &str) -> Result<String, EngineError> {
+    transpile_source(source, true)
+}
+
+/// Plain TypeScript (no JSX) to JavaScript — a service worker, a script a
+/// page loads. Parsed without JSX so `<T>(x) => x` stays a generic.
+pub fn transpile_ts(source: &str) -> Result<String, EngineError> {
+    transpile_source(source, false)
+}
+
+fn transpile_source(source: &str, jsx: bool) -> Result<String, EngineError> {
     use oxc_allocator::Allocator;
     use oxc_codegen::Codegen;
     use oxc_parser::Parser;
@@ -643,7 +663,7 @@ pub fn transpile_tsx(source: &str) -> Result<String, EngineError> {
     let alloc = Allocator::default();
     let source_type = SourceType::default()
         .with_module(true)
-        .with_jsx(true)
+        .with_jsx(jsx)
         .with_typescript(true);
 
     let parsed = Parser::new(&alloc, source, source_type).parse();
@@ -671,7 +691,7 @@ pub fn transpile_tsx(source: &str) -> Result<String, EngineError> {
         ..Default::default()
     };
 
-    let source_path = Path::new("module.tsx");
+    let source_path = Path::new(if jsx { "module.tsx" } else { "module.ts" });
     let transform_ret = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         Transformer::new(&alloc, source_path, &options).build_with_scoping(scoping, &mut program)
     }))

@@ -1738,8 +1738,12 @@ pub enum PipelineExecuteTrigger {
 pub struct ExecutePipelineRequest {
     /// Stable file-relative path under `repo/` (e.g. `"pipelines/api/my-hook.zf.json"`).
     pub file_rel_path: String,
-    /// Trigger mode to validate against active trigger nodes.
-    pub trigger: PipelineExecuteTrigger,
+    /// Trigger mode to validate against active trigger nodes. Optional: when
+    /// absent, `manual` is inferred — unless the graph's first trigger is a
+    /// webhook, in which case the run is validated as `webhook` against that
+    /// trigger's own path and method, as if the caller had spelled them out.
+    #[serde(default)]
+    pub trigger: Option<PipelineExecuteTrigger>,
     /// Optional webhook path matcher.
     #[serde(default)]
     pub webhook_path: Option<String>,
@@ -3067,8 +3071,8 @@ pub const DEFAULT_LAYOUT_NODE_INTERFACES_DIR: &str = "nodes";
 pub const DEFAULT_ALLOWED_FILE_EXTENSIONS: &[&str] = &[
     // Source and project documents. `.zf.json`, the schema exports, node
     // interfaces and library manifests are all `json`.
-    "css", "geojson", "js", "json", "jsx", "md", "mjs", "sql", "ts", "tsx", "txt", "xml", "yaml",
-    "yml", // Assets: what the asset route serves with a content type of its own.
+    "css", "geojson", "js", "json", "jsx", "md", "mjs", "sql", "ts", "tsx", "txt", "webmanifest", "xml",
+    "yaml", "yml", // Assets: what the asset route serves with a content type of its own.
     "csv", "gif", "ico", "jpeg", "jpg", "mp3", "mp4", "pdf", "png", "svg", "ttf", "webp", "woff",
     "woff2",
 ];
@@ -3611,16 +3615,173 @@ pub struct ZebflowJsonLogging {
     /// by each pipeline. Omitted fields inherit the engine defaults.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub trace_capture: Option<crate::pipeline::trace_capture::TraceCaptureSettings>,
+    /// Distinct error groups kept per project (`kinds/invocation-record`,
+    /// Retention). Defaults to 200.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_error_groups: Option<u32>,
+    /// Occurrences remembered per group as `(run_id, at)`. Defaults to 500.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub occurrence_ring: Option<u32>,
 }
 
 impl ZebflowJsonLogging {
     pub fn effective_max_invocations(&self) -> usize {
         self.max_invocations.unwrap_or(20).max(1) as usize
     }
+
+    pub fn error_group_bounds(&self) -> ErrorGroupBounds {
+        let d = ErrorGroupBounds::default();
+        ErrorGroupBounds {
+            max_groups: self.max_error_groups.map(|v| v.max(1) as usize).unwrap_or(d.max_groups),
+            occurrence_ring: self.occurrence_ring.map(|v| v.max(1) as usize).unwrap_or(d.occurrence_ring),
+            ..d
+        }
+    }
+}
+
+/// One distinct failure of a pipeline, counted across occurrences
+/// (`kinds/invocation-record`, Error group).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PipelineErrorGroup {
+    pub file_rel_path: String,
+    pub signature: String,
+    pub node_id: String,
+    pub code: String,
+    /// The message with runs of digits and quoted values blanked.
+    pub message_pattern: String,
+    pub count: u64,
+    pub first_seen: i64,
+    pub last_seen: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reopened_at: Option<i64>,
+    pub first: PipelineInvocationEntry,
+    pub latest: PipelineInvocationEntry,
+    /// `(run_id, at)` of the newest occurrences.
+    pub occurrences: Vec<(String, i64)>,
+    /// `first-latest` or `all`.
+    pub capture: String,
+    /// Full records kept under `capture: all`, oldest first, up to the cap.
+    #[serde(default)]
+    pub captured: Vec<PipelineInvocationEntry>,
+}
+
+/// The three parts of a failure's signature: the failing node, its error
+/// code, and the message. From the last trace entry that carries an error;
+/// the run's own error message when no node does.
+/// The trace entry that failed the run: the last one carrying an error whose
+/// failure was not consumed by an `:error` edge. A `retry` or `error_routed`
+/// entry is a node that failed and a run that went on, so it is not the
+/// reason the run ended — and never the key of an error group.
+pub fn failing_trace_entry(
+    trace: &[crate::pipeline::model::NodeTraceEntry],
+) -> Option<&crate::pipeline::model::NodeTraceEntry> {
+    trace
+        .iter()
+        .rev()
+        .find(|t| t.error.is_some() && t.status != "retry" && t.status != "error_routed")
+}
+
+pub fn error_group_parts(entry: &PipelineInvocationEntry) -> (String, String, String) {
+    if let Some(t) = failing_trace_entry(&entry.trace) {
+        let err = t.error.clone().unwrap_or_default();
+        let (code, message) = match err.split_once(": ") {
+            Some((c, m)) if c.len() < 48 && c.chars().all(|ch| ch.is_ascii_uppercase() || ch == '_' || ch.is_ascii_digit()) => (c.to_string(), m.to_string()),
+            _ => (String::new(), err),
+        };
+        return (t.node_id.clone(), code, message);
+    }
+    (String::new(), String::new(), entry.error.clone().unwrap_or_default())
+}
+
+/// The message with runs of digits and quoted values blanked, so two
+/// occurrences that differ only in an id or a value are one error
+/// (`kinds/invocation-record`, Error group).
+pub fn error_message_pattern(message: &str) -> String {
+    let mut out = String::with_capacity(message.len());
+    let mut chars = message.chars().peekable();
+    let mut in_quote: Option<char> = None;
+    while let Some(c) = chars.next() {
+        if let Some(q) = in_quote {
+            if c == q {
+                in_quote = None;
+                out.push(q);
+            }
+            continue;
+        }
+        match c {
+            '"' | '\'' | '`' => {
+                in_quote = Some(c);
+                out.push(c);
+                out.push('?');
+            }
+            d if d.is_ascii_digit() => {
+                if !out.ends_with('#') {
+                    out.push('#');
+                }
+                while chars.peek().is_some_and(|n| n.is_ascii_digit()) {
+                    chars.next();
+                }
+            }
+            other => out.push(other),
+        }
+    }
+    out.chars().take(200).collect()
+}
+
+/// How many distinct errors, occurrences and full records a project keeps.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ErrorGroupBounds {
+    pub max_groups: usize,
+    pub occurrence_ring: usize,
+    pub capture_cap: usize,
+    /// Quiet seconds after which a new occurrence reopens the group.
+    pub reopen_after_secs: i64,
+}
+
+impl Default for ErrorGroupBounds {
+    fn default() -> Self {
+        Self { max_groups: 200, occurrence_ring: 500, capture_cap: 200, reopen_after_secs: 7 * 24 * 3600 }
+    }
+}
+
+/// The retention a run's record is kept under: the pipeline's own setting
+/// where it has one, else the project's.
+#[derive(Debug, Clone, Copy)]
+pub struct EffectivePipelineInvocationRetention {
+    pub max_invocations: usize,
+    pub max_age_secs: Option<i64>,
+}
+
+/// Resolves [`EffectivePipelineInvocationRetention`] for one run. Shared by
+/// every path that writes a record — the API route, the webhook ingress, the
+/// DSL `execute pipeline` — so all of them keep the same number of runs.
+pub fn resolve_invocation_retention(
+    project_cfg: &ZebflowJson,
+    graph: Option<&crate::pipeline::PipelineGraph>,
+) -> EffectivePipelineInvocationRetention {
+    let project_max_invocations = project_cfg
+        .configs
+        .pipelines
+        .logging
+        .effective_max_invocations();
+    let pipeline_retention = graph
+        .and_then(|graph| graph.metadata.as_ref())
+        .and_then(|metadata| metadata.settings.invocation_retention.as_ref());
+    let max_invocations = pipeline_retention
+        .and_then(|retention| retention.max_invocations)
+        .map(|value| value.max(1) as usize)
+        .unwrap_or(project_max_invocations);
+    let max_age_secs = pipeline_retention
+        .and_then(|retention| retention.max_age_secs)
+        .map(|value| value.max(1) as i64);
+    EffectivePipelineInvocationRetention {
+        max_invocations,
+        max_age_secs,
+    }
 }
 
 /// One recorded pipeline invocation.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct PipelineInvocationEntry {
     /// Stable run identifier for this execution.
     #[serde(default, skip_serializing_if = "String::is_empty")]

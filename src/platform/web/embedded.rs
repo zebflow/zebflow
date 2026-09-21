@@ -1,4 +1,11 @@
 //! Embedded platform templates and official library assets.
+//!
+//! `blessed/` is not a watched path, so a hand-edited library bundle (the
+//! graphui canvas, for one) only reaches a running dev server when something
+//! under `src/` changes too. (Touched 2026-09-20: note colour picker, resizable
+//! input widgets, undeclared `:error` pins kept through a save. Touched
+//! 2026-09-21: `retry` / `error_routed` run badges — an orange ring with the
+//! attempt count, never red.)
 
 /// One embedded file shipped inside the binary.
 pub struct EmbeddedAsset {
@@ -263,8 +270,12 @@ pub const PLATFORM_NODE_ICON_ASSETS: &[EmbeddedAsset] = &[
         bytes: include_bytes!("assets/node-icons/zebflow/n.fs.save.svg"),
     },
     EmbeddedAsset {
-        path: "zebflow/n.fs.thumbnail.svg",
-        bytes: include_bytes!("assets/node-icons/zebflow/n.fs.thumbnail.svg"),
+        path: "zebflow/n.fs.image.thumbnail.svg",
+        bytes: include_bytes!("assets/node-icons/zebflow/n.fs.image.thumbnail.svg"),
+    },
+    EmbeddedAsset {
+        path: "zebflow/n.fs.svg.convert.svg",
+        bytes: include_bytes!("assets/node-icons/zebflow/n.fs.svg.convert.svg"),
     },
     EmbeddedAsset {
         path: "zebflow/n.function.call.svg",
@@ -446,6 +457,62 @@ pub const PLATFORM_NODE_ICON_ASSETS: &[EmbeddedAsset] = &[
         path: "zebflow/n.ws.sync_state.svg",
         bytes: include_bytes!("assets/node-icons/zebflow/n.ws.sync_state.svg"),
     },
+    EmbeddedAsset {
+        path: "zebflow/n.ai.embedding.svg",
+        bytes: include_bytes!("assets/node-icons/zebflow/n.ai.embedding.svg"),
+    },
+    EmbeddedAsset {
+        path: "zebflow/n.auth.token.verify.svg",
+        bytes: include_bytes!("assets/node-icons/zebflow/n.auth.token.verify.svg"),
+    },
+    EmbeddedAsset {
+        path: "zebflow/n.concept.svg",
+        bytes: include_bytes!("assets/node-icons/zebflow/n.concept.svg"),
+    },
+    EmbeddedAsset {
+        path: "zebflow/n.mail.send.svg",
+        bytes: include_bytes!("assets/node-icons/zebflow/n.mail.send.svg"),
+    },
+    EmbeddedAsset {
+        path: "zebflow/n.input.text.svg",
+        bytes: include_bytes!("assets/node-icons/zebflow/n.input.text.svg"),
+    },
+    EmbeddedAsset {
+        path: "zebflow/n.input.number.svg",
+        bytes: include_bytes!("assets/node-icons/zebflow/n.input.number.svg"),
+    },
+    EmbeddedAsset {
+        path: "zebflow/n.input.boolean.svg",
+        bytes: include_bytes!("assets/node-icons/zebflow/n.input.boolean.svg"),
+    },
+    EmbeddedAsset {
+        path: "zebflow/n.input.json.svg",
+        bytes: include_bytes!("assets/node-icons/zebflow/n.input.json.svg"),
+    },
+    EmbeddedAsset {
+        path: "zebflow/n.input.file.svg",
+        bytes: include_bytes!("assets/node-icons/zebflow/n.input.file.svg"),
+    },
+    EmbeddedAsset {
+        path: "zebflow/n.input.files.svg",
+        bytes: include_bytes!("assets/node-icons/zebflow/n.input.files.svg"),
+    },
+    EmbeddedAsset {
+        path: "zebflow/n.input.image.svg",
+        bytes: include_bytes!("assets/node-icons/zebflow/n.input.image.svg"),
+    },
+    EmbeddedAsset {
+        path: "zebflow/n.input.audio.svg",
+        bytes: include_bytes!("assets/node-icons/zebflow/n.input.audio.svg"),
+    },
+    EmbeddedAsset {
+        path: "zebflow/n.input.video.svg",
+        bytes: include_bytes!("assets/node-icons/zebflow/n.input.video.svg"),
+    },
+    EmbeddedAsset {
+        path: "zebflow/n.sekejap.insert.svg",
+        bytes: include_bytes!("assets/node-icons/zebflow/n.sekejap.insert.svg"),
+    },
 ];
 
 pub fn platform_node_icon_asset(path: &str) -> Option<&'static [u8]> {
@@ -571,6 +638,9 @@ pub const PLATFORM_LIBRARY_ASSETS: &[EmbeddedAsset] = &[
         path: "zeb/graphui/0.1/keywords.json",
         bytes: include_bytes!("../../../blessed/rwe-libraries/graphui/0.1/keywords.json"),
     },
+    // The bundle is edited by hand (no build step); the canvas notes live in it.
+    // cargo-watch does not watch blessed/, so a change there needs a src edit
+    // beside it to rebuild the dev server.
     EmbeddedAsset {
         path: "zeb/graphui/0.1/runtime/graphui.bundle.mjs",
         bytes: include_bytes!(
@@ -930,6 +1000,28 @@ pub fn platform_public_asset(path: &str) -> Option<&'static [u8]> {
 #[cfg(test)]
 mod vendor_tests {
     use super::*;
+
+    /// An icon file that is on disk but not in `PLATFORM_NODE_ICON_ASSETS` is
+    /// invisible to every editor, and nothing said so for a whole afternoon.
+    /// The table is hand-written, so this keeps it honest both ways.
+    #[test]
+    fn every_node_icon_on_disk_is_embedded_and_every_embedded_icon_exists() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/platform/web/assets/node-icons/zebflow");
+        let on_disk: std::collections::BTreeSet<String> = std::fs::read_dir(&dir)
+            .expect("icons dir")
+            .filter_map(Result::ok)
+            .map(|e| e.file_name().to_string_lossy().to_string())
+            .filter(|n| n.ends_with(".svg"))
+            .map(|n| format!("zebflow/{n}"))
+            .collect();
+        // The manifest sits beside the icons in the same table.
+        let embedded: std::collections::BTreeSet<String> =
+            PLATFORM_NODE_ICON_ASSETS.iter().map(|a| a.path.to_string()).filter(|p| p.ends_with(".svg")).collect();
+        let missing: Vec<_> = on_disk.difference(&embedded).collect();
+        let stale: Vec<_> = embedded.difference(&on_disk).collect();
+        assert!(missing.is_empty(), "icons on disk not embedded — add them to PLATFORM_NODE_ICON_ASSETS: {missing:?}");
+        assert!(stale.is_empty(), "embedded icons with no file: {stale:?}");
+    }
 
     /// The Studio vendors every library its own pages import.
     ///

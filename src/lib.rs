@@ -6,7 +6,7 @@
 //! 2. [`pipeline`] for pipeline orchestration (graph traversal, node dispatch)
 //! 3. [`language`] for sandboxed script execution (Deno)
 //! 4. [`rwe`] for reactive web template compile/render (TSX → SSR → hydrate)
-//! 5. [`automaton`] for autonomous objective planning/execution + LLM clients (Zebtune)
+//! 5. [`automaton`] for the LLM call interface, the OpenAI-compatible client and the model loop `n.ai.agent` runs
 //! 6. [`platform`] for service composition and web shell (Axum, MCP, DSL)
 //! 7. [`infra`] for shared runtime infrastructure (WebSocket, storage, scheduler)
 //!
@@ -27,7 +27,6 @@ pub mod zebfs;
 
 use std::sync::Arc;
 
-use automaton::{AutomatonEngine, AutomatonEngineRegistry, NoopAutomatonEngine};
 use language::{DenoSandboxEngine, LanguageEngine, LanguageEngineRegistry, NoopLanguageEngine};
 use pipeline::{BasicPipelineEngine, NoopPipelineEngine, PipelineEngine, PipelineEngineRegistry};
 use rwe::{ReactiveWebEngine, ReactiveWebEngineRegistry, RweReactiveWebEngine};
@@ -38,8 +37,6 @@ use rwe::{ReactiveWebEngine, ReactiveWebEngineRegistry, RweReactiveWebEngine};
 /// lookup engine implementations by id.
 #[derive(Clone)]
 pub struct ZebflowEngineKit {
-    /// Automaton engines.
-    pub automaton: AutomatonEngineRegistry,
     /// Pipeline execution engines.
     pub pipeline: PipelineEngineRegistry,
     /// Script/runtime engines.
@@ -56,11 +53,7 @@ impl ZebflowEngineKit {
     /// - `language.deno_sandbox`
     /// - `language.noop`
     /// - `rwe`
-    /// - `automaton.noop`
     pub fn with_defaults() -> Self {
-        let mut automaton = AutomatonEngineRegistry::new();
-        automaton.register(Arc::new(NoopAutomatonEngine));
-
         let mut pipeline = PipelineEngineRegistry::new();
         pipeline.register(Arc::new(BasicPipelineEngine::default()));
         pipeline.register(Arc::new(NoopPipelineEngine::default()));
@@ -73,16 +66,10 @@ impl ZebflowEngineKit {
         rwe.register(Arc::new(RweReactiveWebEngine::default()));
 
         Self {
-            automaton,
             pipeline,
             language,
             rwe,
         }
-    }
-
-    /// Returns an automaton engine by id.
-    pub fn automaton_engine(&self, id: &str) -> Option<Arc<dyn AutomatonEngine>> {
-        self.automaton.get(id)
     }
 
     /// Returns a pipeline execution engine by id.

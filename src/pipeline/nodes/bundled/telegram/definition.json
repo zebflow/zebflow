@@ -60,7 +60,7 @@
         "title": "Telegram Trigger",
         "description": "Receive Telegram bot updates via webhook.",
         "icon": "icons/trigger.svg",
-        "ui_category": "web.telegram",
+        "ui_category": "communication.telegram",
         "ui_category_label": "Telegram",
         "uses_credentials": [
           "telegram_bot"
@@ -138,7 +138,7 @@
         "title": "Telegram Send Message",
         "description": "Send a text message via Telegram Bot API.",
         "icon": "icons/send.svg",
-        "ui_category": "web.telegram",
+        "ui_category": "communication.telegram",
         "ui_category_label": "Telegram",
         "uses_credentials": [
           "telegram_bot"
@@ -190,7 +190,7 @@
         "title": "Telegram Send Photo",
         "description": "Send a photo via Telegram Bot API. Accepts a URL or file_id.",
         "icon": "icons/send-photo.svg",
-        "ui_category": "web.telegram",
+        "ui_category": "communication.telegram",
         "ui_category_label": "Telegram",
         "uses_credentials": [
           "telegram_bot"
@@ -242,7 +242,7 @@
         "title": "Telegram Send Document",
         "description": "Send a document/file via Telegram Bot API. Accepts a URL or file_id.",
         "icon": "icons/send-document.svg",
-        "ui_category": "web.telegram",
+        "ui_category": "communication.telegram",
         "ui_category_label": "Telegram",
         "uses_credentials": [
           "telegram_bot"
@@ -294,7 +294,7 @@
         "title": "Telegram Edit Message",
         "description": "Edit an existing text message via Telegram Bot API.",
         "icon": "icons/edit.svg",
-        "ui_category": "web.telegram",
+        "ui_category": "communication.telegram",
         "ui_category_label": "Telegram",
         "uses_credentials": [
           "telegram_bot"

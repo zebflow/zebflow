@@ -125,6 +125,19 @@ await test('forwarded imperative refs, reducer and imperative library children',
   render(null, host); assert(ref.current === null, 'imperative cleanup');
 });
 
+await test('hydration keeps the option the server selected from a select defaultValue', async host => {
+  function Form() {
+    return h('form', null,
+      h('select', { name: 'to', defaultValue: 'b' }, h('option', { value: 'a' }, 'A'), h('option', { value: 'b' }, 'B')),
+      h('select', { name: 'c', value: 'y', onChange: () => {} }, h('option', { value: 'x' }, 'X'), h('option', { value: 'y' }, 'Y')));
+  }
+  host.innerHTML = renderToString(h(Form));
+  equal(host.querySelector('select[name=to]').value, 'b', 'server markup selects the default');
+  hydrate(h(Form), host);
+  equal(host.querySelector('select[name=to]').value, 'b', 'hydration dropped the server-selected option');
+  equal(host.querySelector('select[name=c]').value, 'y', 'controlled select lost its value on hydration');
+});
+
 await test('hydration recovers missing and extra elements without losing matching siblings', async host => {
   host.innerHTML = '<div><b>keep</b><aside>obsolete</aside></div>';
   const kept = host.querySelector('b');

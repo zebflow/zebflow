@@ -1046,6 +1046,10 @@ impl ProjectService {
         let layout = self.file.ensure_project_layout(&owner, &project)?;
         let source = self.read_pipeline_source(&owner, &project, &meta.file_rel_path)?;
         let graph = parse_and_validate_pipeline_source(&source)?;
+        // A required input after a schedule would refuse every tick; that is
+        // an activation refusal, not a run-time one.
+        crate::pipeline::nodes::basic::input::ensure_inputs_reachable_from_empty_triggers(&graph)
+            .map_err(|err| PlatformError::new(err.code, err.message))?;
         self.dependency_lock
             .validate_pipeline_dependencies(&owner, &project, &graph)?;
         if graph
@@ -1835,6 +1839,42 @@ impl ProjectService {
     }
 
     /// Creates one repository folder.
+    /// A binary repository file — an icon under `static/`, a font. Same gates
+    /// as `write_repo_file` (layout, accepted extension, machine-owned), the
+    /// bytes written as given; the payload carries no content, only the size
+    /// in `line_count`'s place would lie, so it is 0 and `content` is empty.
+    pub fn write_repo_bytes(
+        &self,
+        owner: &str,
+        project: &str,
+        rel_path: &str,
+        bytes: &[u8],
+    ) -> Result<TemplateFilePayload, PlatformError> {
+        let owner = slug_segment(owner);
+        let project = slug_segment(project);
+        self.ensure_template_editable(&owner, &project, rel_path, "edited")?;
+        let layout = self.file.ensure_project_layout(&owner, &project)?;
+        let (rel, abs) = resolve_repo_entry(&layout, rel_path, true)?;
+        if repo_entry_is_machine_owned(&rel) {
+            return Err(PlatformError::new(
+                "PLATFORM_REPO_MACHINE_OWNED",
+                format!("'{rel}' is written by the platform and cannot be edited here"),
+            ));
+        }
+        if let Some(parent) = abs.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        atomic_write(&abs, bytes)?;
+        Ok(TemplateFilePayload {
+            rel_path: rel.clone(),
+            name: rel.rsplit('/').next().unwrap_or(&rel).to_string(),
+            file_kind: repo_file_kind(&layout.repo_layout, &rel),
+            content: String::new(),
+            line_count: 0,
+            is_protected: false,
+        })
+    }
+
     pub fn create_repo_folder(
         &self,
         owner: &str,
@@ -3238,6 +3278,34 @@ mod tests {
         assert_eq!(read.name, "Design Notes.md");
     }
 
+    /// An icon is a repository file too (`static/pwa/icon-192.png` is served
+    /// at `/_static/pwa/icon-192.png`), and a PNG is not UTF-8, so the text
+    /// road cannot carry it without corrupting it. The bytes road writes it
+    /// as given and keeps the same gates.
+    #[test]
+    fn a_binary_file_is_written_byte_for_byte_under_the_same_gates() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let svc = make_service(tmp.path());
+        create_default_project(&svc);
+
+        let png = [0x89u8, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a, 0xff, 0xfe, 0x00];
+        let payload = svc
+            .write_repo_bytes("superadmin", "default", "static/pwa/icon-192.png", &png)
+            .expect("a png under static/");
+        assert_eq!(payload.rel_path, "static/pwa/icon-192.png");
+        assert!(payload.content.is_empty());
+        let on_disk = std::fs::read(
+            svc.file.ensure_project_layout("superadmin", "default").unwrap().repo_dir.join("static/pwa/icon-192.png"),
+        )
+        .unwrap();
+        assert_eq!(on_disk, png);
+
+        let err = svc
+            .write_repo_bytes("superadmin", "default", "static/tool.exe", &png)
+            .expect_err("an extension outside the allowlist, bytes or not");
+        assert_eq!(err.code, "PLATFORM_REPO_FILE_TYPE");
+    }
+
     #[test]
     fn the_repository_refuses_what_the_layout_refuses() {
         let tmp = tempfile::tempdir().expect("temp dir");
@@ -3640,6 +3708,67 @@ mod tests {
         assert_eq!(err.code, "FW_EDGE_FROM_PIN");
         assert!(err.message.contains("kind_route"));
         assert!(err.message.contains("'out'"));
+    }
+
+    /// A schedule tick delivers an empty envelope, so a required input after
+    /// `trigger.schedule` is refused at activation, not at every tick. Saving
+    /// the draft is fine; only activation asks whether it can ever run.
+    #[test]
+    fn activate_refuses_a_required_input_a_schedule_reaches_and_takes_a_default() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let svc = make_service(tmp.path());
+        create_default_project(&svc);
+
+        let file_rel_path = "pipelines/jobs/tick.zf.json";
+        let source = |input_config: &str| {
+            format!(
+                r#"{{
+  "apiVersion":"zebflow.com/v1",
+  "kind":"Pipeline",
+  "metadata":{{"name":"tick"}},
+  "spec":{{
+  "id":"tick",
+  "entry_nodes":["s"],
+  "nodes":[
+    {{"id":"s","kind":"n.trigger.schedule","input_pins":[],"output_pins":["out"],"config":{{"cron":"0 * * * *"}}}},
+    {{"id":"b","kind":"n.input.text","input_pins":["in"],"output_pins":["out"],"config":{input_config}}}
+  ],
+  "edges":[{{"from_node":"s","from_pin":"out","to_node":"b","to_pin":"in"}}]}}
+}}"#
+            )
+        };
+
+        svc.upsert_pipeline_definition(
+            "superadmin",
+            "default",
+            file_rel_path,
+            "Tick",
+            "",
+            "schedule",
+            &source(r#"{"name":"prompt"}"#),
+        )
+        .expect("a draft may hold what cannot yet run");
+        let err = svc
+            .activate_pipeline_definition("superadmin", "default", file_rel_path)
+            .expect_err("a required input after a schedule never runs");
+        assert_eq!(err.code, "FW_NODE_INPUT_UNREACHABLE");
+        assert_eq!(
+            err.message,
+            "input 'prompt' (node b) is required but trigger.schedule delivers no body — add --default or --optional"
+        );
+
+        svc.upsert_pipeline_definition(
+            "superadmin",
+            "default",
+            file_rel_path,
+            "Tick",
+            "",
+            "schedule",
+            &source(r#"{"name":"prompt","default":"hi"}"#),
+        )
+        .expect("upsert with a default");
+        svc.activate_pipeline_definition("superadmin", "default", file_rel_path)
+            .expect("--default lets the tick run");
     }
 
     #[test]

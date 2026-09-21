@@ -322,8 +322,13 @@
       return;
     }
     if (name === 'style') { dom.style.cssText = styleText(value); return; }
-    if (!svg && (name === 'value' || name === 'checked')) {
+    if (!svg && (name === 'value' || name === 'checked' || name === 'selected')) {
       // Preserve edits made between receiving SSR HTML and attaching handlers.
+      // `selected` is here for the same reason with one more: the server marks
+      // an <option> selected from its <select>'s value or defaultValue, and the
+      // option's own props never carry it — treating that attribute as stale
+      // on hydration dropped it, and every server-chosen select snapped back
+      // to its first option the moment the page hydrated.
       if (hydrating) return;
       const next = name === 'checked' ? !!value : value == null ? '' : String(value);
       if (dom[name] !== next) dom[name] = next;

@@ -580,6 +580,7 @@ impl AssistantPlatformTools {
             "pipeline_patch" => {
                 ops.pipeline_patch(
                     args["file_rel_path"].as_str().unwrap_or(""),
+                    args.get("target").and_then(|v| v.as_str()).unwrap_or("node"),
                     args["node_id"].as_str().unwrap_or(""),
                     args.get("flags").and_then(|v| v.as_str()),
                     args.get("body").and_then(|v| v.as_str()),

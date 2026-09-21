@@ -283,10 +283,7 @@ either take the `ZEBFLOW_` prefix and join the tables above or stop being
 environment-configurable. `ZEBFLOW_PORT` is a stray: its only effect is the
 fallback base URL of one WASM lifecycle callback, where it defaults to `10611`
 rather than the real listen port, and it should be deleted in favour of
-`ZEBFLOW_PLATFORM_BASE_URL`. `ZEBTUNE_LLM_PROVIDER` and its five
-`ZEBTUNE_OPENAI_*` / `ZEBTUNE_ANTHROPIC_*` companions are a fallback LLM
-credential for the agent node, read inside the server but belonging to the
-credential surface rather than to a server mode.
+`ZEBFLOW_PLATFORM_BASE_URL`.
 
 ## 4. Aliases
 

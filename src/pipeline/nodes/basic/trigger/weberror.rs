@@ -165,8 +165,22 @@ pub struct Config {
     /// - Exact: `"404"`, `"401"`, `"500"`
     /// - Range: `"4xx"` (400–499), `"5xx"` (500–599)
     /// - Catch-all: `""` or `"*"` (default, matches any error)
-    #[serde(default)]
+    ///
+    /// The DSL types an unquoted `--code 404` as a number, so the field
+    /// accepts a number and keeps it as its digits — the node's own example
+    /// used to fail at run time with "expected a string".
+    #[serde(default, deserialize_with = "code_from_string_or_number")]
     pub code: String,
+}
+
+fn code_from_string_or_number<'de, D: serde::Deserializer<'de>>(d: D) -> Result<String, D::Error> {
+    let value = serde_json::Value::deserialize(d)?;
+    Ok(match value {
+        serde_json::Value::String(s) => s,
+        serde_json::Value::Number(n) => n.to_string(),
+        serde_json::Value::Null => String::new(),
+        other => return Err(serde::de::Error::custom(format!("code must be a string or a number, got {other}"))),
+    })
 }
 
 /// Match specificity — used to select the most specific weberror pipeline.
@@ -224,5 +238,19 @@ impl NodeHandler for Node {
             payload: input.payload,
             trace: vec!["n.trigger.weberror: passthrough".to_string()],
         })
+    }
+}
+
+#[cfg(test)]
+mod code_tests {
+    use super::*;
+    #[test]
+    fn code_accepts_the_number_the_dsl_types_it_as() {
+        let numeric: Config = serde_json::from_value(serde_json::json!({ "code": 404 })).unwrap();
+        assert_eq!(numeric.code, "404");
+        let text: Config = serde_json::from_value(serde_json::json!({ "code": "4xx" })).unwrap();
+        assert_eq!(text.code, "4xx");
+        let missing: Config = serde_json::from_value(serde_json::json!({})).unwrap();
+        assert_eq!(missing.code, "");
     }
 }

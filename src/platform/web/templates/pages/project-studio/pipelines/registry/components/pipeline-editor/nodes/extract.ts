@@ -3,7 +3,8 @@ import { canonicalNodeKind } from "@/pages/project-studio/pipelines/registry/com
 const NUMERIC_FIELDS = new Set([
   "limit",
   "timeout_ms",
-  "step_budget",
+  "budget",
+  "max_repairs",
   "expires_in",
   "cost",
   "length",
@@ -12,6 +13,60 @@ const NUMERIC_FIELDS = new Set([
 const ARRAY_FIELDS = new Set(["cases", "branches"]);
 
 const JSON_FIELDS = new Set(["claims"]);
+
+// ── Node previews ────────────────────────────────────────────────────────────
+//
+// `config.preview = { in?: {as, path?, width?, height?}, out?: {…} }` —
+// presentation the engine never reads, same standing as `config.ui`. The
+// dialog holds the two halves flat as `formState.preview_in` /
+// `formState.preview_out`; these functions are the only place that shape and
+// the stored one meet. `width` / `height` are the canvas panel's size, set by
+// dragging its corner; the dialog carries them through untouched and only
+// drops them with the whole cell, when the kind goes off.
+
+export const PREVIEW_KINDS = [
+  "image",
+  "video",
+  "audio",
+  "pdf",
+  "json",
+  "text",
+  "table",
+  "html",
+];
+
+export type PreviewCellValue =
+  | { as: string; path?: string; width?: number; height?: number }
+  | null;
+
+/** A stored panel size: both numbers positive, else nothing. */
+export function previewCellSize(raw: unknown): { width: number; height: number } | null {
+  const width = Number((raw as any)?.width);
+  const height = Number((raw as any)?.height);
+  if (!(width > 0) || !(height > 0)) return null;
+  return { width: Math.round(width), height: Math.round(height) };
+}
+
+/** Read whatever is stored into the `{as, path, width, height}` shape, or null for off. */
+export function normalizePreviewCell(raw: unknown): PreviewCellValue {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const as = String((raw as any).as || "").trim().toLowerCase();
+  if (!PREVIEW_KINDS.includes(as)) return null;
+  const path = String((raw as any).path || "").trim();
+  return { as, ...(path ? { path } : {}), ...(previewCellSize(raw) || {}) };
+}
+
+/** `config.preview` → the two flat form values. */
+export function splitPreviewConfig(config: any): {
+  preview_in: PreviewCellValue;
+  preview_out: PreviewCellValue;
+} {
+  const preview = config && typeof config === "object" ? (config as any).preview : null;
+  return {
+    preview_in: normalizePreviewCell(preview?.in),
+    preview_out: normalizePreviewCell(preview?.out),
+  };
+}
 
 function slugifyPin(raw: string, fallback = "case"): string {
   const out = String(raw || "")
@@ -104,6 +159,18 @@ export function extractNodeConfig(
       } catch {
         next[key] = value;
       }
+      continue;
+    }
+
+    // Preview halves fold back into one `config.preview` object; both off
+    // leaves no key at all.
+    if (key === "preview_in" || key === "preview_out") {
+      const cell = normalizePreviewCell(value);
+      if (!cell) continue;
+      const slot = key === "preview_in" ? "in" : "out";
+      const preview = (next.preview as Record<string, unknown>) || {};
+      preview[slot] = cell;
+      next.preview = preview;
       continue;
     }
 

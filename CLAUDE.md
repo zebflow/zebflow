@@ -277,7 +277,8 @@ object path; otherwise folder + generated name), `--folder` (default
 `n.fs.thumbnail` — `--width` / `--height` (default 256), `--fit`
 (cover|contain|fill), `--format` (jpg|png|webp), `--quality` (1–100, default
 82), `--folder` (default `thumbnails`), `--source-key` (dot-path to the source
-in the payload, default `saved.path`), `--delete-source`, `--filename`.
+in the payload, default `saved` — the FileRef `fs.save` answers, or a store
+path string), `--delete-source`, `--filename`.
 
 ```bash
 # Register. Always write the JSON to a file and use -d @file: the DSL is full

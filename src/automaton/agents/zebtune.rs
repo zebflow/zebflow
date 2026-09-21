@@ -1,30 +1,19 @@
-//! Zebtune autonomous agent.
-//!
-//! The full autonomous agent — strategic planning, tool use, synthesis.
-//! Comparable in capability scope to Perplexity, Claude Code, or Cursor:
-//! it receives a goal and works autonomously until the goal is achieved.
-//!
-//! # Architecture
+//! `ZebtuneAgent` — the model loop `n.ai.agent` runs.
 //!
 //! ```text
-//! ZebtuneAgent::run(goal)
-//!   │
-//!   ├── Phase 1: Strategic Planning  [TODO M6]
-//!   │     LLM decomposes goal → HierarchicalPlan (subgoals + steps)
-//!   │
-//!   ├── Phase 2: Execution Loop  ✅ native function calling (M7 done)
-//!   │     LLM turn → tool_calls → execute via caller-provided executor → feed result → repeat
-//!   │     Budget-bounded; emits ChainStep events for streaming UI
-//!   │
-//!   ├── Phase 3: Validation  [TODO M6]
-//!   │     LLM checks if subgoal criteria met → pass/fail
-//!   │
-//!   ├── Phase 4: Adaptive Replanning  [TODO M6]
-//!   │     On failure: LLM generates alternative plan for the failed subgoal
-//!   │
-//!   └── Phase 5: Synthesis
-//!         Final answer assembled from chain + execution trace
+//! ZebtuneAgent::run(goal, tool_defs, executor, verifier, step_callback)
+//!   system + goal → model call (native function calling)
+//!     ├─ tool calls  → executor(name, args) → results appended → call again
+//!     └─ text answer → contract: success_schema (shape) then verifier (truth)
+//!                        pass → final answer
+//!                        fail → the failure is fed back, up to max_repairs
+//!   stop: an answer that passes, the step budget spent, or a repair budget spent
 //! ```
+//!
+//! Budget-bounded: `step_budget` caps model calls per run. Every event is a
+//! `ChainStep` handed to the host's callback, so a pipeline can stream
+//! progress. With no tools it is one call. `OutputMode::FinalOnly` returns
+//! the answer without the chain.
 
 use std::sync::Arc;
 use std::time::Instant;
@@ -113,7 +102,7 @@ pub struct RunMetrics {
     pub llm_calls: u32,
     /// Total tool invocations across all turns.
     pub tool_calls: u32,
-    /// Number of verifier-pipeline invocations (Phase B).
+    /// Number of verifier invocations.
     pub verify_calls: u32,
     /// Repair attempts performed (mirrors `ZebtuneResult::repairs_used`).
     pub repairs_used: u32,
@@ -155,7 +144,7 @@ pub struct ZebtuneResult {
 
 // ── Agent ─────────────────────────────────────────────────────────────────────
 
-/// Zebtune: full autonomous agent with planning, tool use, and synthesis.
+/// The model loop: tool use under a step budget, an optional contract on the answer.
 pub struct ZebtuneAgent {
     pub config: ZebtuneConfig,
     pub llm: Option<Arc<dyn LlmCall>>,
@@ -182,8 +171,8 @@ impl ZebtuneAgent {
     /// Uses native function calling (OpenAI tools API).
     /// `tool_defs` describes which tools the LLM may call.
     /// `executor` resolves each tool call: `(name, args_json) -> Result<output, error>`.
-    /// `verifier` is an optional semantic check applied to the final answer
-    /// (Phase B). It runs *after* the cheap JSON `success_schema` check passes,
+    /// `verifier` is an optional semantic check applied to the final answer.
+    /// It runs *after* the cheap JSON `success_schema` check passes,
     /// so a malformed answer never wastes a verifier call. `None` disables it.
     /// `step_callback` is called synchronously after each chain step.
     pub async fn run(
@@ -197,7 +186,7 @@ impl ZebtuneAgent {
         let Some(ref llm) = self.llm else {
             return ZebtuneResult {
                 final_content:
-                    "LLM not configured. Set ZEBTUNE_OPENAI_API_KEY or ZEBTUNE_ANTHROPIC_API_KEY."
+                    "LLM not configured: the caller must supply a client built from a project credential."
                         .to_string(),
                 chain: vec![],
                 budget_exhausted: false,
@@ -212,11 +201,7 @@ impl ZebtuneAgent {
             };
         };
 
-        let system_content = self.config.system_prompt.clone().unwrap_or_else(|| {
-            "You are Zebtune, an autonomous assistant. Use the available tools when helpful. \
-             Provide a clear, concise final answer."
-                .to_string()
-        });
+        let system_content = system_content_for(&self.config);
 
         let start = Instant::now();
         let mut trace = vec!["agent=zebtune".to_string()];
@@ -238,9 +223,6 @@ impl ZebtuneAgent {
         let mut prompt_tokens: u64 = 0;
         let mut completion_tokens: u64 = 0;
         let mut stop_reason = String::from("ok");
-
-        // TODO M6: Phase 1 — Strategic Planning
-        // let plan = crate::automaton::planning::basic::ZebtunePlanner::decompose(llm, goal).await;
 
         let mut messages: Vec<Value> = vec![
             json!({ "role": "system", "content": system_content }),
@@ -591,4 +573,43 @@ fn strip_thinking(text: &str) -> String {
         }
     }
     out.to_string()
+}
+
+/// The system message of the first turn. When a `success_schema` is set the
+/// model is told the shape up front — the contract check and the repair turn
+/// stay as they are, but a model that never saw the schema could only miss
+/// it, and the repair turn named only the keys it missed.
+pub fn system_content_for(config: &ZebtuneConfig) -> String {
+    let base = config.system_prompt.clone().unwrap_or_else(|| {
+        "You are Zebtune, an autonomous assistant. Use the available tools when helpful. \
+         Provide a clear, concise final answer."
+            .to_string()
+    });
+    match &config.success_schema {
+        Some(schema) => format!(
+            "{base}\n\nAnswer with JSON only — no prose, no code fence — that satisfies this JSON Schema:\n{}",
+            serde_json::to_string(schema).unwrap_or_default()
+        ),
+        None => base,
+    }
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_first_turn_carries_the_schema_and_the_no_schema_turn_is_unchanged() {
+        let schema = json!({ "type": "object", "required": ["title", "date_line"], "properties": { "title": { "type": "string" } } });
+        let with = ZebtuneConfig { system_prompt: Some("You fill posters.".into()), success_schema: Some(schema.clone()), ..Default::default() };
+        let content = system_content_for(&with);
+        assert!(content.starts_with("You fill posters."));
+        assert!(content.contains("Answer with JSON only — no prose, no code fence — that satisfies this JSON Schema:"));
+        assert!(content.contains(&serde_json::to_string(&schema).unwrap()), "{content}");
+        assert!(content.contains("date_line"));
+        let without = ZebtuneConfig { system_prompt: Some("You fill posters.".into()), ..Default::default() };
+        assert_eq!(system_content_for(&without), "You fill posters.");
+        assert!(system_content_for(&ZebtuneConfig::default()).starts_with("You are Zebtune"));
+    }
 }

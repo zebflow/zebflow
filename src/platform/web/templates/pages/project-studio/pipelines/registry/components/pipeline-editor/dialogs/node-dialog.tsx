@@ -4,8 +4,9 @@ import Input from "@/components/ui/input";
 import Field from "@/components/ui/field";
 import Label from "@/components/ui/label";
 import NodeForm from "@/pages/project-studio/pipelines/registry/components/nodes/node-form";
+import NodeFrameworkFields from "@/pages/project-studio/pipelines/registry/components/pipeline-editor/dialogs/node-framework-fields";
 import type { PipelineNodeData, EditorDataState, NodeCatalogEntry } from "@/pages/project-studio/pipelines/registry/components/pipeline-editor/types";
-import { extractNodeConfig, ensureUniqueSlug } from "@/pages/project-studio/pipelines/registry/components/pipeline-editor/nodes/extract";
+import { extractNodeConfig, ensureUniqueSlug, splitPreviewConfig } from "@/pages/project-studio/pipelines/registry/components/pipeline-editor/nodes/extract";
 import { canonicalNodeKind } from "@/pages/project-studio/pipelines/registry/components/pipeline-editor/nodes/catalog";
 
 function parseMaybeJson(value: any): any {
@@ -92,6 +93,7 @@ export default function NodeDialog({
     const s: Record<string, unknown> = {
       __node_slug: nodeData?.zfPipelineNodeId || "",
       title: config.title || "",
+      ...splitPreviewConfig(config),
     };
     serverFields.forEach((f) => {
       if (f.type === "match_cases") {
@@ -255,32 +257,13 @@ export default function NodeDialog({
         <p className="pipeline-editor-subtitle">{subtitle}</p>
 
         <div className="pipeline-editor-node-fields">
-          {/* Instance slug + title — framework fields, always shown at top */}
-          <div className="pipeline-editor-fields-grid">
-            <Field>
-              <Label>Slug</Label>
-              <Input
-                type="text"
-                value={String(formState.__node_slug || "")}
-                onInput={(e) => handleChange("__node_slug", e.currentTarget.value)}
-              />
-              <small className="text-xs text-gray-500 mt-1">
-                Unique key for this node in pipeline graph edges.
-              </small>
-            </Field>
-            <Field>
-              <Label>Title</Label>
-              <Input
-                type="text"
-                value={String(formState.title || "")}
-                onInput={(e) => handleChange("title", e.currentTarget.value)}
-                placeholder={catalogEntry?.title || kind}
-              />
-              <small className="text-xs text-gray-500 mt-1">
-                Custom display label. Falls back to node kind title.
-              </small>
-            </Field>
-          </div>
+          {/* Slug, title, previews — framework fields, always shown at top */}
+          <NodeFrameworkFields
+            formState={formState}
+            titlePlaceholder={catalogEntry?.title || kind}
+            onChange={handleChange}
+            hidePreviewIn={kind.startsWith("n.input.")}
+          />
 
           {/* Server-driven fields via NodeForm.
               For n.function.call with params loaded: hide input_path (replaced by param inputs below). */}

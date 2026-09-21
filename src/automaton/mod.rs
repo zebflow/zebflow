@@ -1,137 +1,40 @@
 //! # Automaton
 //!
-//! Zebflow's autonomous agent infrastructure. An independent module with no
-//! platform or pipeline dependencies — usable as a standalone library.
+//! What `n.ai.agent` and the Studio assistant run on. Five pieces, nothing
+//! else:
 //!
-//! Zebtune is the runtime instance: a goal-directed agent that can plan,
-//! use tools, validate progress, replan, and synthesize answers.
-//! Target capability: on par with Perplexity, Claude Code, or Cursor.
+//! - [`infra::llm_interface`] — the one LLM call interface: `LlmCall`
+//!   (`call`, `call_with_tools`), `ToolDef`, `ToolCall`, `CallResult`,
+//!   `Usage`, `Message`, `MessageRole`.
+//! - [`infra::http_client`] — one OpenAI-compatible client,
+//!   `OpenAiHttpClient`, with two surfaces (Responses for the `openai`
+//!   credential kind, Chat Completions for `openrouter`), and the
+//!   credential-driven factories `client_from_provider_secret_with_model`,
+//!   `client_from_secret`, `client_from_secret_with_model`.
+//! - [`agents::zebtune`] — the one model loop, `ZebtuneAgent`: send the
+//!   messages with the tool definitions, run each tool call the model
+//!   returns, append the results, call again, stop when the model answers
+//!   with text or the step budget is spent; an optional JSON-Schema
+//!   contract and verifier gate the answer, and a failure is fed back for
+//!   repair.
+//! - [`agents::contract`] — the JSON-Schema subset check (`check_contract`,
+//!   `Verdict`) and the tolerant JSON extractor (`extract_json`).
+//! - [`infra::assistant_config`] — `load_project_assistant_llm`, the Studio
+//!   assistant's LLM settings loader (Settings > Automatons).
 //!
-//! ---
+//! Independent of the platform and pipeline modules: nothing here knows
+//! what a pipeline or a project is beyond the credential secret it is
+//! handed. Anthropic is not a provider yet; its tool-use mapping is a
+//! separate decision (see `http_client.rs`).
 //!
-//! ## Architecture: 5-Layer Model
+//! ## Security model
 //!
-//! ```text
-//! ┌──────────────────────────────────────────────────────────────┐
-//! │  AGENTS           reasoning — how the automaton thinks       │
-//! │  ├── zebtune      full autonomous: plan→act→validate→replan  │
-//! │  └── tool_caller  single-pass structured tool sequence       │
-//! ├──────────────────────────────────────────────────────────────┤
-//! │  PLANNING         first-class goal decomposition layer       │
-//! │  └── basic/       HierarchicalPlan, SubGoal, ValidationResult│
-//! ├──────────────────────────────────────────────────────────────┤
-//! │  MEMORY           first-class context retention layer        │
-//! │  └── basic/       ConversationHistory, TokenUsage            │
-//! ├──────────────────────────────────────────────────────────────┤
-//! │  INTELLIGENCE     AI-native capabilities (not LLM reasoning) │
-//! │  └── (planned: tts, stt, ocr, vectorize, classify, regress)  │
-//! ├──────────────────────────────────────────────────────────────┤
-//! │  INFRA            plumbing: LLM clients, REPL, shell tools    │
-//! │  ├── llm_interface LlmCall — single LLM interface (call + call_with_tools) │
-//! │  ├── http_client  OpenAiHttpClient + AnthropicClient + factories            │
-//! │  ├── llm.rs       re-exports factories (backward-compat module path)        │
-//! │  ├── model.rs     AutomatonContext, Objective, Plan, Error   │
-//! │  ├── shell_tools  ToolRegistry: ls, pwd, python              │
-//! │  └── repl.rs      interactive REPL mode                      │
-//! └──────────────────────────────────────────────────────────────┘
-//! ```
-//!
-//! ---
-//!
-//! ## Two Agents
-//!
-//! ### [`agents::zebtune::ZebtuneAgent`] — Full Autonomous Agent
-//!
-//! Goal → strategic plan → execution loop → validation → replanning → synthesis.
-//!
-//! ```text
-//! Phase 1: Strategic Planning  [TODO M6]
-//!   LLM decomposes goal → HierarchicalPlan (subgoals + validation criteria)
-//!
-//! Phase 2: Execution Loop
-//!   LLM turn → detect tool request → execute → feed result back → repeat
-//!   TODO M7: upgrade from text-parsing (RUN:) to native function calling
-//!
-//! Phase 3: Validation  [TODO M6]
-//!   LLM checks if subgoal criteria met → pass/fail with confidence score
-//!
-//! Phase 4: Adaptive Replanning  [TODO M6]
-//!   On failure: LLM generates alternative plan for the failed subgoal
-//!
-//! Phase 5: Synthesis
-//!   Final answer assembled from chain + execution trace
-//! ```
-//!
-//! Exposed as pipeline node `n.ai.agent.zebtune`.
-//!
-//! ### [`agents::tool_caller::ToolCallerAgent`] — Simple Tool Sequence Agent
-//!
-//! Goal + tool definitions → LLM native function calling → execute sequence → answer.
-//!
-//! ```text
-//! - No strategic planning phase
-//! - Uses OpenAI tools API (structured function calls, not text parsing)
-//! - Suitable for deterministic task completion with known tools upfront
-//! ```
-//!
-//! Exposed as pipeline node `n.ai.agent.tool_caller`.
-//!
-//! ---
-//!
-//! ## Infrastructure Note
-//!
-//! `llm.rs` is a thin re-export facade for `http_client` factory functions — NOT an agent.
-//! `llm_interface.rs` defines `LlmCall` — the single LLM interface used by all agents.
-//!
-//! ---
-//!
-//! ## Milestone Roadmap
-//!
-//! | Milestone | Focus |
-//! |-----------|-------|
-//! | M6 | Strategic planning: goal decomposition, validation, replanning |
-//! | M7 | Native function calling: replace RUN: text parsing in ZebtuneAgent ✅ DONE |
-//! | M7 | Tool expansion: file ops, shell allowlist, web fetch, git, code |
-//! | M8 | Memory: graph/, vector/, episodic/, semantic/ backends |
-//! | M9 | Config: security policy, deployment profiles, user prefs |
-//! | M10 | Cost optimization: model routing, batching, context management |
-//!
-//! ---
-//!
-//! ## Security Model
-//!
-//! Allowlist-only. No tool runs without explicit registration.
-//! Shell: allowlisted commands only (no `rm -rf`, `dd`, etc.).
-//! Web: domain allowlist.
-//! Step budget: hard cap on LLM+tool iterations per run.
+//! A tool is offered only when the host names it (for `n.ai.agent`: one of the
+//! project's function pipelines, by slug). There are no shell tools. The step
+//! budget is a hard cap on model calls per run. The only source of an LLM
+//! secret is a project credential; there is no environment fallback.
 
 pub mod agents;
 pub mod infra;
-pub mod intelligence;
-pub mod memory;
-pub mod planning;
 
-// ── Public API re-exports ────────────────────────────────────────────────────
-
-// Core types (used by lib.rs, bin/zebtune.rs, platform)
-pub use infra::interface::AutomatonEngine;
-pub use infra::model::{
-    AutomatonContext, AutomatonError, AutomatonExecutionOutput, AutomatonObjective, AutomatonPlan,
-    AutomatonResult,
-};
-pub use infra::registry::AutomatonEngineRegistry;
-
-// Shell tool registry (used by the n.ai.agent node)
-pub use infra::shell_tools::{
-    LsTool, PwdTool, PythonTool, Tool, ToolRegistry, default_registry, enabled_auto_commands,
-};
-
-// Engine implementations
-pub use agents::engines::NoopAutomatonEngine;
-
-// Agents
-pub use agents::tool_caller::ToolCallerAgent;
 pub use agents::zebtune::ZebtuneAgent;
-
-// Re-export llm module so `zebflow::automaton::llm::client_from_env()` keeps working
-pub use infra::llm;

@@ -1,8 +1,26 @@
 # Zebflow platform
 
-Zebflow runs projects. A project is a git repository of pipelines and the
-files they use, plus the data those pipelines create. Everything an agent or
-a person does to a project goes through the same API the Studio uses.
+Zebflow is the platform: **one running instance that holds many projects.**
+It provides the runtime — pipelines of nodes, TSX pages on `zeb/react` and
+`zeb/ui`, databases, files, auth — plus the Studio, the node catalogue, the
+`zeb/*` libraries and the skills. That knowledge is the same for every
+project and lives in `help` and the skills.
+
+A **project** is one site or app built on it: a git repository of pipelines
+and the files they use, plus the store and databases those pipelines create,
+its own credentials and its own hosts. An agent's MCP session is scoped to
+one project; everything it does goes through the same API the Studio uses.
+Project knowledge — what the site is, its rules, its decisions — lives in the
+project's own files (`docs/`, `AGENTS.md`, `MEMORY.md`), not in this help.
+
+What belongs to which:
+
+| Zebflow (the platform) | The project |
+|---|---|
+| the runtime and every node kind | its pipelines, pages, components, docs |
+| the Studio, at the platform address | its hosts and addressing switches |
+| `zeb/*` libraries, blessed skills, this help | its store (`public/` → `/_files`), databases, credentials |
+| the `_` surfaces (`/_static`, `/_files`, `/_ws`, `/_fs`, `/_ms`, `/_mcp`) | its `static/` (→ `/_static`), its project skills |
 
 ## What a project contains
 
@@ -13,7 +31,8 @@ a person does to a project goes through the same API the Studio uses.
 | **Docs** | `docs/*.md` | the project's own documents; `AGENTS.md`, `SOUL.md`, `MEMORY.md` are kept separately for agents |
 | **Databases** | connections `default` (SQLite) and `default-multimodel` (Sekejap) in every project; PostgreSQL and others by credential | `help("db")` |
 | **Credentials** | encrypted at rest under the instance key; referenced by id from nodes | Studio → Credentials |
-| **Files** | ZebFS: `public/…` served anonymously at `/files/{owner}/{project}/…`, everything else private at `/fs/…` | `n.fs.*` nodes |
+| **Files** | ZebFS: `public/…` served anonymously at `/_files/…` on the project's hosts (`/files/{owner}/{project}/public/…` on the platform address), everything else private at `/_fs/…` (off by default) | `n.fs.*` nodes |
+| **Static assets** | `static/` in the repository, served at `/_static/…` — icons, fonts, brand files that ship with the code | `help("web")` |
 | **Configuration** | `zebflow.yaml` (layout, libraries, locks, policy), `zeb.lock` (installed node bundles and libraries) | Studio → Settings |
 
 ## Project layout
@@ -26,7 +45,7 @@ users/{owner}/{project}/
 │   ├── globals.css              theme tokens, imported by pages
 │   ├── api/…zf.json  pages/…tsx  components/  scripts/  jobs/     ← the source root is the repo root
 │   ├── docs/                    project documents
-│   ├── static/                  static assets, served at /static/{owner}/{project}/…
+│   ├── static/                  static assets, served at /_static/… (platform form /static/{owner}/{project}/…)
 │   ├── schemas/sekejap/  schemas/sqlite/   declared schemas
 │   ├── initial-data/            seed rows applied on install
 │   ├── nodes/                   interfaces of installed third-party nodes

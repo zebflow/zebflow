@@ -35,7 +35,7 @@ async function uploadImage(file) {              // the page decides where images
   const form = new FormData();
   form.append("file", file);
   const { saved } = await (await fetch("/wh/o/p/upload", { method: "POST", body: form })).json();   // n.fs.save
-  return { src: \`/files/o/p/\${saved.path}\`, ref: saved.path, alt: file.name };
+  return { src: \`/files/o/p/\${saved.ref}\`, ref: saved.ref, alt: file.name };
 }
 
 <Editor value={doc} onChange={setDoc} uploadImage={uploadImage} />

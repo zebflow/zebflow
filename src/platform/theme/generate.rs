@@ -179,6 +179,12 @@ pub struct GeneratedTheme {
     pub style: MoodStyle,
     pub contrast: Vec<ContrastRow>,
     pub notes: Vec<String>,
+    /// `@font-face` rules for the mood's two families when the project holds
+    /// them under `static/fonts/` — then the page loads its own files and
+    /// `style.fonts_href` (the Google Fonts link) is not needed. Absent when
+    /// either family has no file there.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fonts_css: Option<String>,
 }
 
 // ── colour maths ─────────────────────────────────────────────────────────────
@@ -430,7 +436,46 @@ pub fn generate(seed: &str, mood: Mood) -> Result<GeneratedTheme, String> {
         css_block(":root", &light, style.radius_rem),
         css_block(".dark", &dark, style.radius_rem)
     );
-    Ok(GeneratedTheme { seed, mood, light, dark, css, style, contrast: contrast_rows, notes })
+    Ok(GeneratedTheme { seed, mood, light, dark, css, style, contrast: contrast_rows, notes, fonts_css: None })
+}
+
+/// `@font-face` rules for the mood's display and sans families from the
+/// files a project has under `static/fonts/` (bare names, any of `.woff2`,
+/// `.otf`, `.ttf`), served at `/static/{owner}/{project}/fonts/…`. A file
+/// belongs to a family when its name starts with the family's name without
+/// spaces (`SourceSerif4-SemiBold.woff2`); the weight is read from a
+/// `-<Weight>` or `-<number>` suffix, `400` otherwise. `None` unless both
+/// families have at least one file — half a pairing is the Google link.
+pub fn font_face_css(style: &MoodStyle, files: &[String], owner: &str, project: &str) -> Option<String> {
+    fn weight_of(stem: &str) -> u16 {
+        let tail = stem.rsplit_once('-').map(|(_, t)| t.to_ascii_lowercase()).unwrap_or_default();
+        match tail.as_str() {
+            "thin" => 100, "extralight" | "ultralight" => 200, "light" => 300, "regular" | "book" | "" => 400,
+            "medium" => 500, "semibold" | "demibold" => 600, "bold" => 700, "extrabold" | "ultrabold" => 800, "black" | "heavy" => 900,
+            other => other.parse().unwrap_or(400),
+        }
+    }
+    let mut css = String::new();
+    for family in [style.display_font, style.sans_font] {
+        let key = family.replace(' ', "").to_ascii_lowercase();
+        let mut found = false;
+        for file in files {
+            let Some((stem, ext)) = file.rsplit_once('.') else { continue };
+            let format = match ext.to_ascii_lowercase().as_str() { "woff2" => "woff2", "otf" => "opentype", "ttf" => "truetype", _ => continue };
+            if !stem.to_ascii_lowercase().starts_with(&key) {
+                continue;
+            }
+            found = true;
+            css.push_str(&format!(
+                "@font-face {{ font-family: \"{family}\"; font-weight: {}; font-display: swap; src: url(\"/static/{owner}/{project}/fonts/{file}\") format(\"{format}\"); }}\n",
+                weight_of(stem)
+            ));
+        }
+        if !found {
+            return None;
+        }
+    }
+    Some(css)
 }
 
 #[cfg(test)]
@@ -490,6 +535,20 @@ mod tests {
         assert!(generate("blue", Mood::Calm).is_err());
         assert!(generate("#12345", Mood::Calm).is_err());
         assert!(generate(" #1e66d6 ", Mood::Calm).is_ok());
+    }
+
+    #[test]
+    fn font_face_rules_come_from_the_project_files_or_not_at_all() {
+        let style = mood_style(Mood::Serious);
+        let files: Vec<String> = ["SourceSerif4-SemiBold.woff2", "SourceSans3-Regular.woff2", "SourceSans3-600.ttf", "Other-Bold.otf"].iter().map(|s| s.to_string()).collect();
+        let css = font_face_css(&style, &files, "acme", "site").expect("both families present");
+        assert!(css.contains("font-family: \"Source Serif 4\"; font-weight: 600") && css.contains("/static/acme/site/fonts/SourceSerif4-SemiBold.woff2\") format(\"woff2\")"), "{css}");
+        assert!(css.contains("font-family: \"Source Sans 3\"; font-weight: 400") && css.contains("font-weight: 600; font-display: swap; src: url(\"/static/acme/site/fonts/SourceSans3-600.ttf\") format(\"truetype\")"), "{css}");
+        assert!(!css.contains("Other-Bold"));
+        assert_eq!(css.matches("@font-face").count(), 3);
+        // Half a pairing stays on the Google link.
+        assert!(font_face_css(&style, &files[..1], "acme", "site").is_none());
+        assert!(font_face_css(&style, &[], "acme", "site").is_none());
     }
 
     #[test]

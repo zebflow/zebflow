@@ -83,6 +83,18 @@ that is a new code, not an edit. `logic.retry` retries only `failed`;
 - **Trigger context is initial payload.** `query`, `body`, `auth`, `params`,
   `files` arrive as ordinary keys, freely overwritable downstream — the
   originals are reachable forever via `$trigger`.
+- **One envelope, whatever the trigger.** A trigger delivers `body` (fields)
+  and `files` (FileRefs). A file that arrives at a trigger is
+  `lifecycle: temporary` — it lives for the run and is deleted after, unless a
+  node such as `fs.save` makes it durable. A manual run delivers the same
+  envelope a webhook does. The `input.*` nodes are pass-through validators of
+  one envelope field each: they change no value that was sent and fetch and
+  store nothing; the one thing an input node writes is its `--default`, at
+  `body.<name>`, when that field was not sent — so the Run form, `execute
+  pipeline`, MCP and a webhook all leave the same envelope, and
+  `input.body.<name>` agrees with `$nodes.<id>`. The set of them after a
+  trigger is that trigger's declaration, and `$nodes.<id>` of one is the
+  value it checked.
 - **Manners are per family.** A producer (query, convert, generate) replaces
   the payload with its product; a reader (`kv.get`, `kv.exists`, `kv.incr`)
   merges into it; a doer (`kv.set`, `ws.emit`) passes it through or returns a
@@ -166,6 +178,7 @@ do not move.
 
 | Date | Change | Why it was safe |
 | --- | --- | --- |
+| 2026-09-21 | An `input.*` node writes its `--default` at `body.<name>` when the field was not sent. | The Run form already posted defaults; the DSL, MCP and webhook paths now leave the same envelope, and a sent value is never touched. |
 
 ## Enforcement
 
@@ -199,3 +212,19 @@ do not move.
 - Whether `cost` gains queue-wait time when the scheduler grows one.
 - The exact `meta` keys `zf.*` ships with (cache, worker id) — settled by
   the first consumers, appended with dates.
+
+## Request id across the boundary
+
+A run's `run_id` (`kinds/invocation-record`) crosses HTTP under the name the
+outside world knows, `X-Request-Id`:
+
+- a `trigger.webhook` run answers with `X-Request-Id: <run_id>` on every
+  response, success or failure, and adopts an inbound `X-Request-Id` as its
+  `run_id` when a proxy sent one;
+- every `http.request` a run makes carries `X-Request-Id: <run_id>` outward,
+  whatever trigger started the run, so a failure two services away traces
+  back;
+- no other trigger has a caller to answer; the run keeps the same id in the
+  log and nothing else happens.
+
+Decided and implemented 2026-09-17: `webhook_run_id` adopts or mints, the ingress sets the header on every response, `http.request` forwards it unless the author set one.

@@ -34,7 +34,7 @@
 //! Files are emitted as FileRef metadata under `input.files.<field>`. If a client
 //! repeats a field name or uses common frontend array names (`photos[]`,
 //! `photos[0]`), the value becomes an array and individual files can be addressed
-//! by dot path (`files.photos.0`). See `src/pipeline/nodes/basic/file_ref.rs` for
+//! by dot path (`files.photos.0`). See `src/pipeline/nodes/shared/file_ref.rs` for
 //! the FileRef shape.
 
 use crate::pipeline::model::{
@@ -118,6 +118,11 @@ pub fn definition() -> NodeDefinition {
                 "auth_optional": {
                     "type": "boolean",
                     "description": "With auth_type jwt: a public route that knows who is signed in. A valid token fills input.auth; no token, an expired one or a missing role leaves input.auth null and the run proceeds — never 401 or 403."
+                },
+                "errors": {
+                    "type": "string",
+                    "enum": ["show", "hide"],
+                    "description": "What this route's 5xx reveals, overriding the project's errors switch: show (code, message, node id, run link) or hide (the error page with a reference only). Absent: the project decides. Status codes never change."
                 }
             }
         }),
@@ -134,6 +139,7 @@ pub fn definition() -> NodeDefinition {
             NodeFieldDef { name: "auth_credential".to_string(), label: "Auth Credential".to_string(), field_type: NodeFieldType::Select, data_source: Some(NodeFieldDataSource::CredentialsWebhookAuth), help: Some("Credential for signing key / secret / api_key.".to_string()), ..Default::default() },
             NodeFieldDef { name: "auth_required_role".to_string(), label: "Required Role".to_string(), field_type: NodeFieldType::MultiCheckbox, data_source: Some(NodeFieldDataSource::CredentialJwtRoles), help: Some("Roles allowed to access this route. Populated from the selected JWT credential's registered roles. Empty = any authenticated user.".to_string()), ..Default::default() },
             NodeFieldDef { name: "auth_optional".to_string(), label: "Auth Optional".to_string(), field_type: NodeFieldType::Checkbox, default_value: Some(serde_json::json!(false)), help: Some("Public route that knows who is signed in: a valid token fills input.auth, anything else leaves it null and the page still renders. Never 401.".to_string()), ..Default::default() },
+            NodeFieldDef { name: "errors".to_string(), label: "Errors".to_string(), field_type: NodeFieldType::Text, placeholder: Some("show | hide".to_string()), help: Some("What a failure on this route reveals: show or hide. Empty: the project's errors switch decides.".to_string()), ..Default::default() },
         ],
         dsl_flags: vec![
             DslFlag {
@@ -178,6 +184,13 @@ pub fn definition() -> NodeDefinition {
                 kind: DslFlagKind::Bool,
                 required: false,
             },
+            DslFlag {
+                flag: "--errors".to_string(),
+                config_key: "errors".to_string(),
+                description: "show or hide: what a failure on this route reveals to the caller, overriding the project's errors switch (Settings → Addressing). Absent: the project decides. The status code is the same either way.".to_string(),
+                kind: DslFlagKind::Scalar,
+                required: false,
+            },
         ],
         layout: vec![
             LayoutItem::Field("path".to_string()),
@@ -186,6 +199,7 @@ pub fn definition() -> NodeDefinition {
             LayoutItem::Row { row: vec![LayoutItem::Field("auth_type".to_string()), LayoutItem::Field("auth_credential".to_string())] },
             LayoutItem::Field("auth_required_role".to_string()),
             LayoutItem::Field("auth_optional".to_string()),
+            LayoutItem::Field("errors".to_string()),
         ],
         ai_tool: Default::default(),
         examples: vec![

@@ -16,7 +16,11 @@
 //!   `input.files.<field>`.
 //!
 //! Keep trigger-specific details in each trigger module, and keep shared file byte
-//! rules in `src/pipeline/nodes/basic/file_ref.rs`.
+//! rules in `src/pipeline/nodes/shared/file_ref.rs`.
+//!
+//! `trigger.ws` lives with the WebSocket family (`basic/ws/trigger.rs`).
+
+use crate::pipeline::NodeDefinition;
 
 pub mod function;
 pub mod kv_subscribe;
@@ -26,3 +30,16 @@ pub mod schedule;
 pub mod weberror;
 pub mod webhook;
 pub mod ws_client;
+
+pub fn definitions() -> Vec<NodeDefinition> {
+    vec![
+        function::definition(),
+        kv_subscribe::definition(),
+        webhook::definition(),
+        schedule::definition(),
+        manual::definition(),
+        mcp_trigger::definition(),
+        ws_client::definition(),
+        weberror::definition(),
+    ]
+}

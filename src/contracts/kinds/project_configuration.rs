@@ -153,6 +153,20 @@ impl ProjectConfigurationSpec {
                 "spec.pipelines.logging.max_invocations must be between 1 and 1000",
             ));
         }
+        if let Some(value) = self.pipelines.logging.max_error_groups
+            && !(1..=10_000).contains(&value)
+        {
+            return Err(ContractError::invalid(
+                "spec.pipelines.logging.max_error_groups must be between 1 and 10000",
+            ));
+        }
+        if let Some(value) = self.pipelines.logging.occurrence_ring
+            && !(1..=100_000).contains(&value)
+        {
+            return Err(ContractError::invalid(
+                "spec.pipelines.logging.occurrence_ring must be between 1 and 100000",
+            ));
+        }
         if let Some(value) = self.pipelines.node_timeout_secs
             && !(5..=3600).contains(&value)
         {
@@ -387,9 +401,11 @@ fn validate_git_url(value: &str) -> Result<(), ContractError> {
         .map_err(|_| ContractError::invalid("spec.git.remote.repo_url is invalid"))?;
     let invalid_credentials =
         url.password().is_some() || (url.scheme() == "https" && !url.username().is_empty());
-    if !matches!(url.scheme(), "https" | "ssh") || invalid_credentials {
+    // `file://` is a bare repository on this machine or a mounted volume — the
+    // remote a test and an air-gapped instance use. It carries no credentials.
+    if !matches!(url.scheme(), "https" | "ssh" | "file") || invalid_credentials {
         return Err(ContractError::invalid(
-            "spec.git.remote.repo_url must use HTTPS or SSH without embedded credentials",
+            "spec.git.remote.repo_url must use HTTPS, SSH or file:// without embedded credentials",
         ));
     }
     Ok(())
@@ -814,6 +830,12 @@ pub struct ProjectPipelinesSpec {
 pub struct ProjectPipelineLoggingSpec {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_invocations: Option<u32>,
+    /// Distinct error groups kept per project; 1–10000, default 200.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_error_groups: Option<u32>,
+    /// Occurrences remembered per error group; 1–100000, default 500.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub occurrence_ring: Option<u32>,
     /// Default capture bounds for node input/output previews. Pipelines may
     /// override individual fields; execution payloads are never compacted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1089,6 +1111,8 @@ impl From<ZebflowJson> for ProjectConfigurationSpec {
             pipelines: ProjectPipelinesSpec {
                 logging: ProjectPipelineLoggingSpec {
                     max_invocations: value.configs.pipelines.logging.max_invocations,
+                    max_error_groups: value.configs.pipelines.logging.max_error_groups,
+                    occurrence_ring: value.configs.pipelines.logging.occurrence_ring,
                     trace_capture: value.configs.pipelines.logging.trace_capture,
                 },
                 node_timeout_secs: value.configs.pipelines.node_timeout_secs,
@@ -1189,6 +1213,8 @@ impl From<ProjectConfigurationSpec> for ZebflowJson {
                 pipelines: ZebflowJsonPipelines {
                     logging: ZebflowJsonLogging {
                         max_invocations: value.pipelines.logging.max_invocations,
+                        max_error_groups: value.pipelines.logging.max_error_groups,
+                        occurrence_ring: value.pipelines.logging.occurrence_ring,
                         trace_capture: value.pipelines.logging.trace_capture,
                     },
                     node_timeout_secs: value.pipelines.node_timeout_secs,
@@ -1629,7 +1655,7 @@ mod tests {
     fn a_declared_backend_survives_the_runtime_model_roundtrip() {
         let expected = ProjectConfigurationSpec {
             files: ProjectFilesSpec {
-                backend: Some(crate::pipeline::nodes::basic::file_ref::BACKEND_ZEBFS.to_string()),
+                backend: Some(crate::pipeline::nodes::shared::file_ref::BACKEND_ZEBFS.to_string()),
                 ..ProjectFilesSpec::default()
             },
             ..ProjectConfigurationSpec::default()

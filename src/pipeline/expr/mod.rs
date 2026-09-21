@@ -11,6 +11,8 @@
 //! |------------------|---------------------------------------------------------|
 //! | `$input`         | The current payload flowing into this node              |
 //! | `$input.field`   | Specific field from upstream output                     |
+//! | `$trigger.body`  | The envelope's fields as they arrived (manual or webhook) |
+//! | `$trigger.files` | The envelope's FileRefs as they arrived                  |
 //! | `$trigger.auth`  | Verified JWT claims from the original request           |
 //! | `$trigger.params`| URL path params (`:id`, `:slug`, etc.)                  |
 //! | `$trigger.query` | Query string params (`?page=2` etc.)                    |

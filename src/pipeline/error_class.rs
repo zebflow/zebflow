@@ -83,10 +83,11 @@ pub const ERROR_CLASS_REGISTRY: &[(&str, ErrorClass)] = &[
     ("FW_FUNCTION_NOT_FOUND", ErrorClass::Refused),
     ("FW_MY_NODE_CODE", ErrorClass::Failed),
     ("FW_NODE_AGENT_BAD_SCHEMA", ErrorClass::Refused),
+    ("FW_NODE_AGENT_CALL", ErrorClass::Failed),
     ("FW_NODE_AGENT_CONFIG", ErrorClass::Refused),
-    ("FW_NODE_AGENT_DIRECT_RUN", ErrorClass::Failed),
+    ("FW_NODE_AGENT_CREDENTIAL", ErrorClass::Refused),
     ("FW_NODE_AGENT_INPUT_PIN", ErrorClass::Refused),
-    ("FW_NODE_AGENT_QUERY", ErrorClass::Failed),
+    ("FW_NODE_AGENT_QUERY", ErrorClass::Refused),
     ("FW_NODE_AI_TTS_CONFIG", ErrorClass::Refused),
     ("FW_NODE_AUTH_TOKEN_ALGORITHM", ErrorClass::Refused),
     ("FW_NODE_AUTH_TOKEN_CONFIG", ErrorClass::Refused),
@@ -169,6 +170,20 @@ pub const ERROR_CLASS_REGISTRY: &[(&str, ErrorClass)] = &[
     ("FW_NODE_HTTP_REQUEST_READ_BODY", ErrorClass::Failed),
     ("FW_NODE_HTTP_REQUEST_SECURE_REQUEST", ErrorClass::Failed),
     ("FW_NODE_HTTP_REQUEST_TRANSPORT", ErrorClass::Failed),
+    // `fs.svg.convert`: the flags, the SVG, its pictures and its fonts are
+    // the author's; only the rasteriser and the store write can fail on their own.
+    ("FW_NODE_FS_SVG_CONVERT_CONFIG", ErrorClass::Refused),
+    ("FS_SVG_CONVERT_SOURCE", ErrorClass::Refused),
+    ("FS_SVG_CONVERT_FONT", ErrorClass::Refused),
+    ("FS_SVG_CONVERT_RASTER", ErrorClass::Failed),
+    // The `input.*` family: every one of these is the caller's envelope
+    // disagreeing with the pipeline's declaration, so none is retryable.
+    ("FW_NODE_INPUT_CONFIG", ErrorClass::Refused),
+    ("FW_NODE_INPUT_INVALID", ErrorClass::Refused),
+    ("FW_NODE_INPUT_MISSING", ErrorClass::Refused),
+    // Raised at activation, not at run time: a required input sits after a
+    // trigger that never delivers a body.
+    ("FW_NODE_INPUT_UNREACHABLE", ErrorClass::Refused),
     ("FW_NODE_INSTALLED_NO_PLATFORM", ErrorClass::Failed),
     ("FW_NODE_KIND_UNSUPPORTED", ErrorClass::Refused),
     ("FW_NODE_KV_DEL_CONFIG", ErrorClass::Refused),
@@ -201,6 +216,9 @@ pub const ERROR_CLASS_REGISTRY: &[(&str, ErrorClass)] = &[
     ("FW_NODE_LOGIC_REDUCE_RUN", ErrorClass::Failed),
     ("FW_NODE_LOGIC_RETRY_CONFIG", ErrorClass::Refused),
     ("FW_NODE_LOGIC_RETRY_INPUT", ErrorClass::Failed),
+    ("FW_NODE_LOGIC_RETRY_WHEN_COMPILE", ErrorClass::Failed),
+    ("FW_NODE_LOGIC_RETRY_WHEN_PARSE", ErrorClass::Refused),
+    ("FW_NODE_LOGIC_RETRY_WHEN_RUN", ErrorClass::Failed),
     ("FW_NODE_MAIL_ADDRESS", ErrorClass::Refused),
     ("FW_NODE_MAIL_BUILD", ErrorClass::Refused),
     ("FW_NODE_MAIL_CONFIG", ErrorClass::Refused),

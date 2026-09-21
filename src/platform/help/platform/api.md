@@ -35,7 +35,9 @@ GET    /pipelines/by-id?id=<file_rel_path>&include_source=true
 POST   /pipelines/definition                      create or replace
 DELETE /pipelines/definition                      { "file_rel_path": "api/posts.zf.json" }
 POST   /pipelines/activate | /deactivate          { "file_rel_path": "api/posts.zf.json" }
-POST   /pipelines/execute                         { "file_rel_path", "trigger": "webhook|schedule|manual", "input": {…}, "webhook_path"?, "webhook_method"?, "schedule_cron"? }
+POST   /pipelines/execute                         { "file_rel_path", "trigger"?: "webhook|schedule|manual", "input": {…}, "webhook_path"?, "webhook_method"?, "schedule_cron"? }
+                                                  trigger absent: manual, unless the graph's first trigger is a webhook (then that route)
+                                                  Accept: text/event-stream → event: signal …, event: result { ok, run_id, output | error }
 POST   /pipelines/dsl                             { "dsl": "register api/posts | trigger.webhook … | …" }
 POST   /pipelines/lock-toggle
 GET    /pipelines/hits  ·  GET /pipelines/invocations
@@ -104,6 +106,7 @@ index types: `hash` · `range` · `fulltext` · `vector` · `spatial`.
 ```
 GET|POST /credentials  ·  GET|PUT|DELETE /credentials/{id}  ·  GET /credentials/{id}/oauth/authorize  ·  GET /credential-types
 GET    /files/list  ·  POST /files/upload  ·  /files/mkdir  ·  /files/rm  ·  PUT /files/access
+GET    /files/object?ref=<path>                   one object's bytes, private or public, with the session or the MCP bearer; inline, never cached
 GET    /files/{owner}/{project}/{*path}           (root path) public/… anonymously, the rest with a session
 GET    /fs/{owner}/{project}/{*path}              (root path) private objects
 ```

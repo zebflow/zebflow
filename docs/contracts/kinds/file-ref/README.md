@@ -12,7 +12,7 @@ Bytes are written to storage; this small object is what the nodes pass around.
 | Marker | `__zf_type: "file_ref"` |
 | Representation | inline payload — an object inside node data, never a file of its own |
 | No envelope | it is not a document: no `apiVersion`, no `metadata`, no `spec` |
-| Adapter | `src/pipeline/nodes/basic/file_ref.rs` |
+| Adapter | `src/pipeline/nodes/shared/file_ref.rs` |
 
 ## Shape
 
@@ -41,11 +41,11 @@ All eleven fields are required.
 | `ref` | **opaque.** Only the named backend may interpret it — no node parses it, joins it to a path, or assumes a local file |
 | `filename` | the uploader's own name, for display and for what a save writes |
 | `mime` | content type |
-| `kind` | one of `geojson`, `json`, `csv`, `image`, `pdf`, `archive`, `parquet`, `binary`; derived from `mime` and `filename`. A shorthand pipeline authors branch on, so the eight values are the promise |
+| `kind` | one of `geojson`, `json`, `csv`, `image`, `audio`, `video`, `pdf`, `spreadsheet`, `archive`, `parquet`, `binary`; derived from `mime` and `filename`. A shorthand pipeline authors branch on, so the eleven values are the promise. `spreadsheet` is xlsx/xls/ods by mime and extension; csv stays `csv` |
 | `size` | byte count, verified before bytes are returned |
 | `sha256` | `sha256:` + exactly 64 lowercase hex digits, verified before bytes are returned |
 | `lifecycle` | `temporary` — deleted after the run — or `durable`, a project file that stays |
-| `origin` | where it entered: `webhook`, `http.response`, `node-output`, `fs.thumbnail`, `project.files.upload`. Open: a new producer adds a word |
+| `origin` | where it entered: `webhook`, `manual` (a signed-in operator's run — an upload on the Run form, or a store path named in the JSON form), `http.response`, `node-output`, `fs.image.thumbnail`, `fs.svg.convert`, `fs.save`, `fs.put`, `fs.copy`, `fs.move`, `fs.compress`, `project.files.upload`. Open: a new producer adds a word |
 | `trust` | how far the bytes are trusted: `untrusted` (arrived from outside), `sanitized` (re-encoded by a node that discards what it did not understand), `generated` (a node produced them), `user` (a signed-in operator uploaded them). Open: no consumer branches on it yet |
 
 ## Why it has no envelope
@@ -103,6 +103,14 @@ lowercase hex digits. A `size` or digest that disagrees with the stored bytes.
 An unknown `kind` or `lifecycle`. A `ref` read by anything other than its
 backend.
 
+## Amendments
+
+| Date | Change | Why it was safe |
+| --- | --- | --- |
+| 2026-09-19 | `kind` gains `audio`, `video`, `spreadsheet` (eight → eleven). `origin` gains `manual`. | Every producer still derives `kind` through the one classifier, so no writer can emit a twelfth; a consumer that matched the eight exhaustively now sees a value it did not expect only for bytes that were `binary` before, which is the case the closed vocabulary exists to make loud. `origin` is open by its own rule. |
+| 2026-09-19 | Temporary cleanup has a writer: `remove_run_temporary_files` deletes `tmp/runs/{request_id}/` after a webhook run and after a manual run, whether the run succeeded or failed. | The promise ("deleted after the run") is unchanged; what changed is that it is kept. A node that needs the bytes past the run copies them out (`fs.save`), which is what it always had to do. |
+| 2026-09-20 | `fs.save` (`saved`), `fs.put` / `fs.copy` / `fs.move` (`fs.object`) and `fs.compress` (`compressed`) answer the stored file as a **bare durable FileRef** — the eleven fields and nothing else; `origin` gains those five words. No `path`, `url`, `original_name`, `content_type`, `modified`, `archive_path`, `archive_url`, `source_path(s)` or `format` beside them. The DSL `execute pipeline` removes `tmp/runs/{request_id}/` too, and writes the record. (Revised 2026-09-21: the first cut carried those plain keys beside the eleven for pipelines written against the old shape; this is a fresh version and nothing carries old shapes, so they are gone from the producers and from every consumer in the tree.) | The eleven fields are all present and derived the one way, so every consumer of a FileRef takes these values as they are. A consumer that needs the store path reads `ref`; a URL is not a node's business — the Studio reads an object at `files/object?ref=`, a site serves `public/` at `/_files/…`. The nodes that read `saved` by default (`fs.image.thumbnail`, `fs.compress`, `fs.decompress`, `fs.pdf_convert`) now default `--source-key` to `saved` — the FileRef itself, which the shared resolver takes — instead of `saved.path`. A consumer that matched `fs.object.kind == "object"` after `fs.put` sees the FileRef word instead; the value was always an object on those three operations. |
+
 ## Open
 
 - **`trust` is written but never read.** Four values are produced —
@@ -111,16 +119,21 @@ backend.
   (`web/mod.rs` upload) — and no consumer branches on any of them. The field
   carries a real distinction; nothing spends it yet. Corrected 2026-08-31: an
   earlier draft said the field had one value and proposed removing it.
-- **Temporary cleanup.** `lifecycle: temporary` promises deletion after the
-  run. `tmp/runs/{request_id}/files/` has no writer that removes it
-  (`stability-matrix.md` row 8).
+- **Temporary cleanup on other triggers.** `tmp/runs/{request_id}/files/` is
+  removed after a webhook run, after a manual run on the API route, and
+  (2026-09-20) after a DSL `execute pipeline` run (see Amendments). No
+  other trigger writes a temporary FileRef today; one that starts to must
+  join the same removal.
 - **Remote streaming.** With a non-`zebfs` backend, whether a consumer streams
   or must hold whole bytes in memory is undefined.
 - **How a URL is obtained.** The format carries none, deliberately. What does
-  not exist yet is the operation that answers for one — local returning its
-  `/fs/{owner}/{project}/{ref}` path, S3 a presigned link — nor the choice
-  between proxying bytes through Zebflow, which keeps the ACL authoritative,
-  and presigning, which does not.
+  not exist yet is the operation that answers for one — local returning a
+  path, S3 a presigned link — nor the choice between proxying bytes through
+  Zebflow, which keeps the ACL authoritative, and presigning, which does not.
+  What does exist (2026-09-20) is one route, not a FileRef operation: the
+  Studio and an MCP session read a `zebfs` ref, private or public, through
+  `GET /api/projects/{owner}/{project}/files/object?ref=…` with the session;
+  the public surfaces (`/_files/…`, `/fs/…`) stay what they are for sites.
 - **The backend seam is cut but not widened.** Which backend a project uses is
   now declared in `spec.files.backend` and resolved in one place
   (`zebfs::backend::open`, reached through `ProjectFileLayout::open_files`), so

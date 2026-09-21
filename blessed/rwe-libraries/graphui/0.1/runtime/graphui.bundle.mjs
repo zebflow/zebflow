@@ -312,6 +312,425 @@ const BASE_STYLE = `
   to { stroke-dashoffset: 0; }
 }
 .zgu-nodes { position: absolute; inset: 0; }
+.zgu-notes { position: absolute; inset: 0; }
+.zgu-node-preview {
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 9;
+  display: flex;
+  flex-direction: column;
+  /* Each cell keeps its own width and sits centred on the node's centre. */
+  align-items: center;
+  gap: 4px;
+  cursor: pointer;
+}
+.zgu-node-preview-cell {
+  position: relative;
+  flex: none;
+  border: 1px solid rgba(148,163,184,.45);
+  border-radius: 8px;
+  background: rgba(9,9,11,.92);
+  box-shadow: 0 6px 16px rgba(0,0,0,.38);
+  overflow: hidden;
+}
+.zgu-node-preview-cell:hover { border-color: var(--zgu-wire-active); }
+.zgu-node-preview-cell.resizing { border-color: var(--zgu-wire-active); }
+.zgu-node-preview-resize {
+  position: absolute;
+  right: 3px;
+  bottom: 3px;
+  z-index: 3;
+  width: 12px;
+  height: 12px;
+  cursor: nwse-resize;
+  color: #94a3b8;
+  border-right: 2px solid currentColor;
+  border-bottom: 2px solid currentColor;
+  border-radius: 0 0 3px 0;
+  opacity: .45;
+}
+.zgu-node-preview-cell:hover .zgu-node-preview-resize { opacity: .9; }
+.zgu-root.zgu-readonly .zgu-node-preview-resize { display: none; }
+.zgu-node-preview-tag {
+  position: absolute;
+  top: 3px;
+  right: 5px;
+  z-index: 2;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+  color: #94a3b8;
+  background: rgba(9,9,11,.78);
+  border-radius: 4px;
+  padding: 0 3px;
+  pointer-events: none;
+}
+.zgu-node-preview-note {
+  position: absolute;
+  left: 5px;
+  bottom: 4px;
+  z-index: 2;
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: .04em;
+  color: #fcd34d;
+  background: rgba(9,9,11,.78);
+  border-radius: 4px;
+  padding: 0 4px;
+  pointer-events: none;
+}
+.zgu-node-preview-body {
+  display: block;
+  width: 100%;
+  overflow: hidden;
+  background: #0b0b0e;
+}
+.zgu-node-preview-body.empty,
+.zgu-node-preview-body.error {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 6px 8px;
+  height: auto !important;
+  min-height: 34px;
+  font-size: 10.5px;
+  line-height: 1.25;
+  text-align: center;
+  word-break: break-word;
+}
+.zgu-node-preview-body.empty { color: #64748b; }
+.zgu-node-preview-body.error { color: #fda4af; }
+.zgu-node-preview-body img,
+.zgu-node-preview-body video {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  display: block;
+  background: #0b0b0e;
+}
+.zgu-node-preview-body audio { width: 100%; margin-top: 28px; }
+.zgu-node-preview-body iframe { width: 100%; height: 100%; border: 0; background: #fff; }
+.zgu-node-preview-body pre {
+  margin: 0;
+  padding: 6px 8px;
+  height: 100%;
+  overflow: auto;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10px;
+  line-height: 1.35;
+  color: #cbd5e1;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.zgu-node-preview-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 9.5px;
+  color: #cbd5e1;
+  table-layout: fixed;
+}
+.zgu-node-preview-table th,
+.zgu-node-preview-table td {
+  border-bottom: 1px solid rgba(148,163,184,.18);
+  padding: 2px 5px;
+  text-align: left;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.zgu-node-preview-table th { color: #94a3b8; font-weight: 600; }
+.zgu-node-preview-scroll { height: 100%; overflow: auto; }
+.zgu-node-status {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  z-index: 4;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+}
+.zgu-node-status-mark {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 9px;
+  font-weight: 800;
+  line-height: 1;
+  color: #0b0b0d;
+  box-shadow: 0 1px 2px rgba(0,0,0,.6);
+}
+.zgu-node-status[data-state="pending"] .zgu-node-status-mark { background: #64748b; }
+.zgu-node-status[data-state="running"] .zgu-node-status-mark {
+  background: #f59e0b;
+  animation: zgu-status-pulse 1s ease-in-out infinite;
+}
+.zgu-node-status[data-state="ok"] .zgu-node-status-mark { background: #34d399; }
+.zgu-node-status[data-state="skip"] .zgu-node-status-mark { background: #94a3b8; }
+.zgu-node-status[data-state="fail"] .zgu-node-status-mark { background: #f43f5e; color: #fff; }
+/* A failure an :error edge consumed: a wait (retry) or a handled error
+   (error_routed). An orange ring, never red — red is for fail only. */
+.zgu-node-status[data-state="retry"] .zgu-node-status-mark,
+.zgu-node-status[data-state="error_routed"] .zgu-node-status-mark {
+  background: transparent;
+  border: 2px solid #f59e0b;
+  box-sizing: border-box;
+}
+.zgu-node-status-count {
+  display: none;
+  font-size: 8px;
+  line-height: 1;
+  font-weight: 700;
+  color: #fbbf24;
+  text-shadow: 0 1px 2px rgba(0,0,0,.85);
+  white-space: nowrap;
+}
+.zgu-node-status[data-state="retry"] .zgu-node-status-count,
+.zgu-node-status[data-state="running"] .zgu-node-status-count { display: block; }
+.zgu-node-status-ms {
+  font-size: 8px;
+  line-height: 1;
+  color: #cbd5e1;
+  text-shadow: 0 1px 2px rgba(0,0,0,.85);
+  white-space: nowrap;
+}
+@keyframes zgu-status-pulse {
+  0%, 100% { transform: scale(1); opacity: 1; }
+  50% { transform: scale(1.35); opacity: .55; }
+}
+.zgu-node-input {
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 9;
+  border: 1px solid rgba(148,163,184,.45);
+  border-radius: 8px;
+  background: rgba(9,9,11,.94);
+  box-shadow: 0 6px 16px rgba(0,0,0,.38);
+  padding: 6px 8px 7px;
+  font-size: 11px;
+  color: #cbd5e1;
+  cursor: default;
+  /* A column so a stored height (data-height) stretches the field, not
+     the label; the size comes from the grip below. */
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+}
+.zgu-node-input.invalid { border-color: #fb7185; box-shadow: 0 0 0 2px rgba(251,113,133,.35), 0 6px 16px rgba(0,0,0,.38); }
+.zgu-node-input.resizing { border-color: var(--zgu-wire-active); }
+.zgu-node-input-resize {
+  position: absolute;
+  right: 3px;
+  bottom: 3px;
+  z-index: 3;
+  width: 12px;
+  height: 12px;
+  cursor: nwse-resize;
+  color: #94a3b8;
+  border-right: 2px solid currentColor;
+  border-bottom: 2px solid currentColor;
+  border-radius: 0 0 3px 0;
+  opacity: .45;
+}
+.zgu-node-input:hover .zgu-node-input-resize { opacity: .9; }
+.zgu-root.zgu-readonly .zgu-node-input-resize { display: none; }
+.zgu-node-input-label {
+  display: flex;
+  align-items: baseline;
+  gap: 5px;
+  margin-bottom: 4px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+  color: #94a3b8;
+}
+.zgu-node-input-label .optional { font-weight: 400; text-transform: none; letter-spacing: 0; color: #64748b; }
+.zgu-node-input.invalid .zgu-node-input-label { color: #fda4af; }
+.zgu-node-input-field { display: flex; flex: 1; min-height: 0; }
+.zgu-node-input-field > * { flex: 1; min-width: 0; }
+.zgu-node-input[data-mode="result"] .zgu-node-input-field { display: none; }
+.zgu-node-input-result { display: none; }
+.zgu-node-input[data-mode="result"] .zgu-node-input-result { display: flex; align-items: center; gap: 8px; }
+.zgu-node-input input[type="text"],
+.zgu-node-input input[type="number"],
+.zgu-node-input textarea {
+  width: 100%;
+  box-sizing: border-box;
+  border: 1px solid rgba(148,163,184,.35);
+  border-radius: 6px;
+  background: #0b0b0e;
+  color: #e2e8f0;
+  font: inherit;
+  font-size: 11px;
+  padding: 4px 6px;
+  outline: none;
+}
+/* No native resize handle: the widget's own grip sizes the whole cell. */
+.zgu-node-input textarea { resize: none; min-height: 28px; height: 100%; display: block; }
+.zgu-node-input textarea[data-kind="json"] { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 10px; }
+.zgu-node-input input:focus, .zgu-node-input textarea:focus { border-color: var(--zgu-wire-active); }
+.zgu-node-input-check { display: flex; align-items: center; gap: 6px; color: #e2e8f0; cursor: pointer; }
+.zgu-node-input-drop {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  min-height: 48px;
+  padding: 6px;
+  border: 1px dashed rgba(148,163,184,.5);
+  border-radius: 6px;
+  background: #0b0b0e;
+  color: #94a3b8;
+  text-align: center;
+  cursor: pointer;
+}
+.zgu-node-input-drop.over { border-color: var(--zgu-wire-active); color: #e2e8f0; }
+.zgu-node-input-drop.has-file { border-style: solid; color: #e2e8f0; }
+.zgu-node-input-drop input[type="file"] { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; cursor: pointer; }
+.zgu-node-input-drop .hint { font-size: 10px; }
+.zgu-node-input-drop .chosen { font-size: 10.5px; word-break: break-all; }
+.zgu-node-input-result img { width: 44px; height: 44px; object-fit: cover; border-radius: 4px; background: #0b0b0e; flex: none; }
+.zgu-node-input-result .summary { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #e2e8f0; }
+.zgu-node-input-result .meta { display: block; font-size: 10px; color: #64748b; }
+.zgu-node-input-change {
+  flex: none;
+  border: 1px solid rgba(148,163,184,.4);
+  border-radius: 5px;
+  background: transparent;
+  color: #94a3b8;
+  font: inherit;
+  font-size: 10px;
+  padding: 2px 6px;
+  cursor: pointer;
+}
+.zgu-node-input-change:hover { color: #e2e8f0; border-color: var(--zgu-wire-active); }
+.zgu-note {
+  position: absolute;
+  z-index: 1;
+  --zgu-note-bg: rgba(148,163,184,.14);
+  --zgu-note-border: rgba(148,163,184,.55);
+  --zgu-note-fg: #e2e8f0;
+  border-radius: 10px;
+  border: 1px solid var(--zgu-note-border);
+  background: var(--zgu-note-bg);
+  color: var(--zgu-note-fg);
+  padding: 10px 12px;
+  font-size: 12.5px;
+  line-height: 1.45;
+  user-select: none;
+  touch-action: none;
+  cursor: grab;
+  overflow: hidden;
+  will-change: transform;
+  box-shadow: 0 6px 16px rgba(0,0,0,.22);
+}
+.zgu-note:active { cursor: grabbing; }
+.zgu-note[data-color="amber"]  { --zgu-note-bg: rgba(245,158,11,.16); --zgu-note-border: rgba(245,158,11,.6); --zgu-note-fg: #fde68a; }
+.zgu-note[data-color="blue"]   { --zgu-note-bg: rgba(96,165,250,.16); --zgu-note-border: rgba(96,165,250,.6); --zgu-note-fg: #bfdbfe; }
+.zgu-note[data-color="green"]  { --zgu-note-bg: rgba(52,211,153,.16); --zgu-note-border: rgba(52,211,153,.6); --zgu-note-fg: #a7f3d0; }
+.zgu-note[data-color="rose"]   { --zgu-note-bg: rgba(251,113,133,.16); --zgu-note-border: rgba(251,113,133,.6); --zgu-note-fg: #fecdd3; }
+.zgu-note[data-color="violet"] { --zgu-note-bg: rgba(167,139,250,.16); --zgu-note-border: rgba(167,139,250,.6); --zgu-note-fg: #ddd6fe; }
+.zgu-note[data-color="teal"]   { --zgu-note-bg: rgba(45,212,191,.16); --zgu-note-border: rgba(45,212,191,.6); --zgu-note-fg: #99f6e4; }
+.zgu-note[data-color="orange"] { --zgu-note-bg: rgba(251,146,60,.16); --zgu-note-border: rgba(251,146,60,.6); --zgu-note-fg: #fed7aa; }
+.zgu-note.selected { outline: 2px solid var(--zgu-wire-active); outline-offset: 2px; z-index: 2; }
+/* The colour dot at a note's top-right and the palette it opens. The body
+   under it has pointer-events: none, so the dot is what a press reaches. */
+.zgu-note-color {
+  position: absolute;
+  top: 5px;
+  right: 6px;
+  z-index: 3;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--zgu-note-border);
+  border: 1px solid rgba(255,255,255,.35);
+  box-shadow: 0 1px 3px rgba(0,0,0,.4);
+  cursor: pointer;
+  opacity: .8;
+}
+.zgu-note-color:hover, .zgu-note.palette-open .zgu-note-color { opacity: 1; }
+.zgu-note-palette {
+  display: none;
+  position: absolute;
+  top: 21px;
+  right: 4px;
+  z-index: 4;
+  grid-template-columns: repeat(4, 14px);
+  gap: 5px;
+  padding: 6px;
+  border-radius: 8px;
+  border: 1px solid rgba(148,163,184,.45);
+  background: rgba(9,9,11,.96);
+  box-shadow: 0 6px 16px rgba(0,0,0,.45);
+  cursor: default;
+}
+.zgu-note.palette-open .zgu-note-palette { display: grid; }
+.zgu-note-swatch {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  border: 1px solid rgba(255,255,255,.3);
+  cursor: pointer;
+}
+.zgu-note-swatch:hover { transform: scale(1.15); }
+.zgu-note-swatch.selected { outline: 2px solid #e2e8f0; outline-offset: 1px; }
+.zgu-note-swatch[data-color="slate"]  { background: #94a3b8; }
+.zgu-note-swatch[data-color="amber"]  { background: #f59e0b; }
+.zgu-note-swatch[data-color="blue"]   { background: #60a5fa; }
+.zgu-note-swatch[data-color="green"]  { background: #34d399; }
+.zgu-note-swatch[data-color="rose"]   { background: #fb7185; }
+.zgu-note-swatch[data-color="violet"] { background: #a78bfa; }
+.zgu-note-swatch[data-color="teal"]   { background: #2dd4bf; }
+.zgu-note-swatch[data-color="orange"] { background: #fb923c; }
+.zgu-root.zgu-readonly .zgu-note-color, .zgu-root.zgu-readonly .zgu-note-palette { display: none; }
+.zgu-note-body { height: 100%; overflow: auto; word-break: break-word; white-space: normal; pointer-events: none; }
+.zgu-note-body p { margin: 0 0 6px; }
+.zgu-note-body p:last-child { margin-bottom: 0; }
+.zgu-note-body h4 { margin: 0 0 6px; font-size: 13px; font-weight: 600; }
+.zgu-note-body ul { margin: 0 0 6px; padding-left: 16px; }
+.zgu-note-body code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11.5px; background: rgba(0,0,0,.28); padding: 0 4px; border-radius: 4px; }
+.zgu-note-edit {
+  display: none;
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  padding: 10px 12px;
+  margin: 0;
+  border: 0;
+  outline: none;
+  resize: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  line-height: inherit;
+}
+.zgu-note.editing { cursor: text; }
+.zgu-note.editing .zgu-note-body { visibility: hidden; }
+.zgu-note.editing .zgu-note-edit { display: block; }
+.zgu-note-resize {
+  position: absolute;
+  right: 3px;
+  bottom: 3px;
+  width: 12px;
+  height: 12px;
+  cursor: nwse-resize;
+  border-right: 2px solid currentColor;
+  border-bottom: 2px solid currentColor;
+  border-radius: 0 0 3px 0;
+  opacity: .45;
+}
+.zgu-root.zgu-readonly .zgu-note-resize { display: none; }
 .zgu-node {
   position: absolute;
   --zgu-node-width: 84px;
@@ -666,8 +1085,8 @@ export function autoTidyGraphLayout(app, options = {}) {
       node.y = baseY + row * nodeGapY;
       if (app.ui?.snapToGrid) {
         app.ui.snapNodePosition(node);
-      } else if (node.el) {
-        node.el.style.transform = `translate(${node.x}px, ${node.y}px)`;
+      } else {
+        node.applyTransform();
       }
       placements.push({ id, x: node.x, y: node.y, rank, row });
     });
@@ -705,7 +1124,22 @@ export class GraphStore {
   constructor() {
     this.nodes = [];
     this.links = [];
+    // Canvas notes: presentation only. Never in `links`, never executed.
+    this.notes = [];
     this.lastId = 1;
+  }
+
+  addNote(note) {
+    note.uid = this.lastId++;
+    this.notes.push(note);
+    return note;
+  }
+
+  removeNote(note) {
+    this.notes = this.notes.filter((n) => n.uid !== note.uid);
+    if (note.el) {
+      note.el.remove();
+    }
   }
 
   add(node) {
@@ -720,12 +1154,18 @@ export class GraphStore {
     if (node.el) {
       node.el.remove();
     }
+    node.detachSlot?.();
   }
 
   clear() {
-    this.nodes.forEach((node) => node.el && node.el.remove());
+    this.nodes.forEach((node) => {
+      if (node.el) node.el.remove();
+      node.detachSlot?.();
+    });
+    this.notes.forEach((note) => note.el && note.el.remove());
     this.nodes = [];
     this.links = [];
+    this.notes = [];
     this.lastId = 1;
   }
 
@@ -786,6 +1226,63 @@ export class GraphNode {
     this.inputs = [];
     this.outputs = [];
     this.el = null;
+    // Preview panel drawn under the box — presentation only, see
+    // `positionNodePreviewEl`. Owned by the canvas, not by the graph.
+    this.previewEl = null;
+    // Input widget for an `n.input.*` node — the Run form's field, drawn in
+    // the same slot above the preview. Owned by the canvas as well.
+    this.inputEl = null;
+    // Run badge at the box's top-right — see `setNodeStatus`. It lives
+    // inside `el`, so it moves with the box and dies with it.
+    this.statusEl = null;
+  }
+
+  /** Drop the run badge only — `setNodeStatus(node, null)` uses this. */
+  detachStatus() {
+    if (this.statusEl) {
+      this.statusEl.remove();
+      this.statusEl = null;
+    }
+  }
+
+  /**
+   * Move the node's DOM to its current x/y. Every place that moves a node goes
+   * through here, so its preview panel can never be left behind.
+   */
+  applyTransform() {
+    if (this.el) {
+      this.el.style.transform = `translate(${this.x}px, ${this.y}px)`;
+    }
+    positionNodePreviewEl(this);
+  }
+
+  /** Drop the preview panel only — `setNodePreview(node, null)` uses this. */
+  detachPreview() {
+    if (this.previewEl) {
+      this.previewEl.remove();
+      this.previewEl = null;
+    }
+    positionNodePreviewEl(this);
+  }
+
+  /** Drop the input widget only — `setNodeInput(node, null)` uses this. */
+  detachInput() {
+    if (this.inputEl) {
+      this.inputEl.remove();
+      this.inputEl = null;
+    }
+    positionNodePreviewEl(this);
+  }
+
+  /**
+   * Drop the whole under-box slot — called wherever the node's element is
+   * removed. Kept apart from the two halves: a preview sync that finds no
+   * preview for a node must not take that node's Run-form field with it.
+   */
+  detachSlot() {
+    this.detachPreview();
+    this.detachInput();
+    this.detachStatus();
   }
 
   addInput(name) {
@@ -816,6 +1313,7 @@ export class GraphNode {
 
     const pinCount = Math.max(this.inputs.length, this.outputs.length);
     const nodeHeight = Math.max(84, 52 + Math.max(1, pinCount) * 26);
+    this.zguNodeHeight = nodeHeight;
     if (pinCount > 2) {
       node.classList.add("expanded");
     }
@@ -903,6 +1401,9 @@ export class GraphNode {
 
     container.appendChild(node);
     this.el = node;
+    // A rebuilt box may be a different height (pins changed); the preview that
+    // outlived it moves to match.
+    positionNodePreviewEl(this);
     return node;
   }
 }
@@ -998,6 +1499,692 @@ export class DisplayNode extends GraphNode {
   }
 }
 
+function escapeNoteHtml(text) {
+  return String(text)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+function inlineNoteMarkdown(text) {
+  return escapeNoteHtml(text)
+    .replace(/`([^`]+)`/g, "<code>$1</code>")
+    .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+    .replace(/(^|[^*])\*([^*\n]+)\*(?!\*)/g, "$1<em>$2</em>");
+}
+
+/**
+ * The subset of markdown a canvas note needs: headings, bullets, paragraphs,
+ * bold, italic, inline code. Everything is escaped first, so a note is never
+ * a script.
+ */
+export function renderNoteMarkdown(text) {
+  const out = [];
+  let paragraph = [];
+  let list = [];
+  const flushParagraph = () => {
+    if (paragraph.length) {
+      out.push(`<p>${paragraph.map(inlineNoteMarkdown).join("<br>")}</p>`);
+      paragraph = [];
+    }
+  };
+  const flushList = () => {
+    if (list.length) {
+      out.push(`<ul>${list.map((item) => `<li>${inlineNoteMarkdown(item)}</li>`).join("")}</ul>`);
+      list = [];
+    }
+  };
+  for (const raw of String(text || "").split(/\r?\n/)) {
+    const line = raw.trimEnd();
+    if (!line.trim()) {
+      flushParagraph();
+      flushList();
+      continue;
+    }
+    const heading = line.match(/^#{1,6}\s+(.*)$/);
+    if (heading) {
+      flushParagraph();
+      flushList();
+      out.push(`<h4>${inlineNoteMarkdown(heading[1])}</h4>`);
+      continue;
+    }
+    const bullet = line.match(/^\s*[-*]\s+(.*)$/);
+    if (bullet) {
+      flushParagraph();
+      list.push(bullet[1]);
+      continue;
+    }
+    flushList();
+    paragraph.push(line);
+  }
+  flushParagraph();
+  flushList();
+  return out.join("");
+}
+
+// ── Node previews ───────────────────────────────────────────────────────────
+//
+// A preview is a panel drawn under a node box showing one value from that
+// node's latest run. Like a note it is presentation only: never a link, never
+// executed, never read by the engine. The bundle owns the drawing; *what* to
+// draw arrives from the host as a `previewData` prop keyed by pipeline node id:
+//
+//   { [pipelineNodeId]: { in?: PreviewCell, out?: PreviewCell } }
+//   PreviewCell = { as, status: "ok" | "none" | "error",
+//                   src?, text?, rows?, error?, width?, height? }
+//
+// `width` / `height` are the cell's size in canvas pixels when the host has
+// one stored; otherwise the defaults below. A cell has a resize grip at its
+// bottom-right, like a note: dragging it resizes that cell live, and on
+// release the canvas reports `onPreviewResize(pipelineNodeId, which,
+// { width, height })` — the host stores it, the canvas never does.
+//
+// Every value below is written through `textContent` or a checked `src`, so a
+// payload can never become markup here.
+
+const NODE_PREVIEW_WIDTH = 220;
+const NODE_PREVIEW_GAP = 6;
+const NODE_PREVIEW_MIN_WIDTH = 160;
+const NODE_PREVIEW_MIN_HEIGHT = 60;
+const NODE_PREVIEW_MAX_WIDTH = 1200;
+const NODE_PREVIEW_MAX_HEIGHT = 900;
+const NODE_PREVIEW_HEIGHTS = {
+  image: 160,
+  video: 160,
+  pdf: 160,
+  html: 160,
+  table: 120,
+  json: 90,
+  text: 90,
+  audio: 90,
+};
+const NODE_PREVIEW_TABLE_ROWS = 8;
+const NODE_PREVIEW_TABLE_COLUMNS = 4;
+
+function nodePreviewHeight(as) {
+  return NODE_PREVIEW_HEIGHTS[String(as || "").toLowerCase()] || 90;
+}
+
+// An input widget (`text` / `json`) has a grip like a preview cell's. Its
+// size is `spec.width` / `spec.height` when the host stores one
+// (`config.ui.widget`), else 220 wide and as tall as its content. On release
+// the canvas reports `onInputResize(pipelineNodeId, { width, height })` and
+// stores nothing; between the drag and the next scene load the DOM owns it.
+const NODE_INPUT_MIN_WIDTH = 160;
+const NODE_INPUT_MIN_HEIGHT = 48;
+const NODE_INPUT_MAX_WIDTH = 900;
+const NODE_INPUT_MAX_HEIGHT = 600;
+const NODE_INPUT_RESIZABLE_KINDS = ["text", "json"];
+
+/** A stored widget size within bounds, or null when the spec has none. */
+function nodeInputSize(spec) {
+  const w = Number(spec && spec.width);
+  const h = Number(spec && spec.height);
+  if (!(w > 0) || !(h > 0)) return null;
+  return {
+    width: clamp(Math.round(w), NODE_INPUT_MIN_WIDTH, NODE_INPUT_MAX_WIDTH),
+    height: clamp(Math.round(h), NODE_INPUT_MIN_HEIGHT, NODE_INPUT_MAX_HEIGHT),
+  };
+}
+
+/** Apply (or, for null, clear) a size on a widget element. */
+function applyNodeInputSize(el, size) {
+  if (!size) {
+    el.style.height = "";
+    delete el.dataset.width;
+    delete el.dataset.height;
+    return;
+  }
+  el.style.width = `${size.width}px`;
+  el.style.height = `${size.height}px`;
+  el.dataset.width = String(size.width);
+  el.dataset.height = String(size.height);
+}
+
+/** A cell's size: the stored one within bounds, else the defaults by kind. */
+function nodePreviewSize(cell) {
+  const stored = (value, fallback, min, max) => {
+    const n = Number(value);
+    return Number.isFinite(n) && n > 0 ? clamp(Math.round(n), min, max) : fallback;
+  };
+  return {
+    width: stored(cell && cell.width, NODE_PREVIEW_WIDTH, NODE_PREVIEW_MIN_WIDTH, NODE_PREVIEW_MAX_WIDTH),
+    height: stored(cell && cell.height, nodePreviewHeight(cell && cell.as), NODE_PREVIEW_MIN_HEIGHT, NODE_PREVIEW_MAX_HEIGHT),
+  };
+}
+
+/** Apply a size to a built cell: the wrap's width, the body's height. */
+function applyNodePreviewSize(cellEl, width, height) {
+  cellEl.style.width = `${width}px`;
+  cellEl.dataset.width = String(width);
+  cellEl.dataset.height = String(height);
+  const body = cellEl.querySelector(".zgu-node-preview-body");
+  if (body) body.style.height = `${height}px`;
+}
+
+/** A URL the browser may load as media — an absolute path or http(s). */
+function safeNodePreviewSrc(raw, as) {
+  const src = String(raw || "").trim();
+  if (!src) return "";
+  if (src.startsWith("/") || /^https?:\/\//i.test(src)) return src;
+  // An image cell may carry its picture inline: the host's snapshot of a
+  // temporary file, taken from the run's record. Only an image, only a
+  // data URI — a script or a page never rides in here.
+  if (as === "image" && /^data:image\/(png|jpeg|webp|gif);base64,/i.test(src)) return src;
+  return "";
+}
+
+function nodePreviewCellText(value) {
+  if (value === null || value === undefined) return "";
+  return typeof value === "string" ? value : String(value);
+}
+
+function buildNodePreviewTable(rows) {
+  const items = (Array.isArray(rows) ? rows : []).slice(0, NODE_PREVIEW_TABLE_ROWS);
+  const scroll = document.createElement("div");
+  scroll.className = "zgu-node-preview-scroll";
+  if (!items.length) {
+    scroll.textContent = "no rows";
+    return scroll;
+  }
+  const columns = [];
+  for (const row of items) {
+    if (!row || typeof row !== "object" || Array.isArray(row)) continue;
+    for (const key of Object.keys(row)) {
+      if (!columns.includes(key) && columns.length < NODE_PREVIEW_TABLE_COLUMNS) {
+        columns.push(key);
+      }
+    }
+  }
+  const table = document.createElement("table");
+  table.className = "zgu-node-preview-table";
+  const head = document.createElement("tr");
+  for (const column of columns) {
+    const th = document.createElement("th");
+    th.textContent = column;
+    head.appendChild(th);
+  }
+  table.appendChild(head);
+  for (const row of items) {
+    const tr = document.createElement("tr");
+    for (const column of columns) {
+      const td = document.createElement("td");
+      const value = row && typeof row === "object" ? row[column] : undefined;
+      td.textContent =
+        value !== null && typeof value === "object"
+          ? JSON.stringify(value)
+          : nodePreviewCellText(value);
+      td.title = td.textContent;
+      tr.appendChild(td);
+    }
+    table.appendChild(tr);
+  }
+  scroll.appendChild(table);
+  return scroll;
+}
+
+/** One half of a node's preview — `which` is "in" or "out". */
+function buildNodePreviewCell(cell, which) {
+  const wrap = document.createElement("div");
+  wrap.className = "zgu-node-preview-cell";
+  wrap.dataset.which = which;
+  wrap.dataset.as = String((cell && cell.as) || "");
+
+  const tag = document.createElement("span");
+  tag.className = "zgu-node-preview-tag";
+  tag.textContent = which;
+  wrap.appendChild(tag);
+
+  const body = document.createElement("div");
+  body.className = "zgu-node-preview-body";
+  wrap.appendChild(body);
+  const size = nodePreviewSize(cell);
+  applyNodePreviewSize(wrap, size.width, size.height);
+
+  // The grip — same look as a note's, hidden by CSS when read-only. The
+  // canvas recognises it by class in the preview panel's pointerdown.
+  const grip = document.createElement("div");
+  grip.className = "zgu-node-preview-resize";
+  grip.title = "Drag to resize";
+  wrap.appendChild(grip);
+
+  const status = String((cell && cell.status) || "none");
+  if (status === "error") {
+    body.classList.add("error");
+    body.textContent = nodePreviewCellText((cell && cell.error) || "error");
+    return wrap;
+  }
+  if (status !== "ok") {
+    body.classList.add("empty");
+    body.textContent = "no run yet";
+    return wrap;
+  }
+
+  const as = String((cell && cell.as) || "json").toLowerCase();
+  const src = safeNodePreviewSrc(cell && cell.src, as);
+  if (!src && (as === "image" || as === "video" || as === "audio" || as === "pdf" || as === "html")) {
+    body.classList.add("empty");
+    body.textContent = "nothing to show";
+    return wrap;
+  }
+  // A small caption the host sets — "temporary — not saved" on a snapshot.
+  const noteText = nodePreviewCellText(cell && cell.note).trim();
+  if (noteText) {
+    const note = document.createElement("span");
+    note.className = "zgu-node-preview-note";
+    note.textContent = noteText;
+    wrap.appendChild(note);
+  }
+
+  if (as === "image") {
+    const img = document.createElement("img");
+    img.src = src;
+    img.alt = "";
+    img.loading = "lazy";
+    img.decoding = "async";
+    img.draggable = false;
+    img.addEventListener("dragstart", (event) => event.preventDefault());
+    body.appendChild(img);
+  } else if (as === "video") {
+    const video = document.createElement("video");
+    video.src = src;
+    video.controls = true;
+    video.preload = "metadata";
+    body.appendChild(video);
+  } else if (as === "audio") {
+    const audio = document.createElement("audio");
+    audio.src = src;
+    audio.controls = true;
+    audio.preload = "metadata";
+    body.appendChild(audio);
+  } else if (as === "pdf" || as === "html") {
+    const frame = document.createElement("iframe");
+    frame.src = src;
+    frame.setAttribute("sandbox", "");
+    frame.setAttribute("loading", "lazy");
+    frame.setAttribute("referrerpolicy", "no-referrer");
+    frame.title = `${which} preview`;
+    body.appendChild(frame);
+  } else if (as === "table") {
+    body.appendChild(buildNodePreviewTable(cell && cell.rows));
+  } else {
+    const pre = document.createElement("pre");
+    pre.textContent = nodePreviewCellText(cell && cell.text);
+    body.appendChild(pre);
+  }
+  return wrap;
+}
+
+// ── Node run status ─────────────────────────────────────────────────────────
+//
+// A badge at a node box's top-right saying how the node's last (or current)
+// run went — n8n-style. Presentation only, like a preview: the host drives
+// it through a `nodeStatus` prop keyed by pipeline node id:
+//
+//   { [pipelineNodeId]: { state: "pending" | "running" | "ok" | "skip" | "fail"
+//                                | "retry" | "error_routed",
+//                         duration_ms?, error?, attempt?, max_attempts?, to_node? } }
+//
+// pending: grey dot · running: orange pulsing dot (with the count when the
+// node is going round again) · ok: green tick · skip: grey dash · fail: red
+// cross · retry: orange ring with the attempt count ("3/40") · error_routed:
+// orange ring, tooltip "error → <to_node>"; the duration under it when known. Red is for `fail` only: a failure an
+// `:error` edge consumed is a wait or a handled error, and a poll loop that
+// waited eight times and then succeeded must not look like eight failures.
+
+const NODE_STATUS_STATES = ["pending", "running", "ok", "skip", "fail", "retry", "error_routed"];
+const NODE_STATUS_MARKS = { pending: "", running: "", ok: "✓", skip: "–", fail: "✕", retry: "", error_routed: "" };
+
+/** `3/40`, or `3` when the budget is unknown (a record seeds the count only); empty otherwise. */
+function formatNodeStatusCount(status) {
+  const attempt = Number(status && status.attempt);
+  if (!Number.isFinite(attempt) || attempt <= 0) return "";
+  const max = Number(status && status.max_attempts);
+  return Number.isFinite(max) && max > 0 ? `${attempt}/${max}` : `${attempt}`;
+}
+
+/** The badge's tooltip: the state, the count or the destination, and the error text when there is one. */
+function nodeStatusTitle(state, status) {
+  const error = status && status.error ? String(status.error) : "";
+  if (state === "retry") {
+    const count = formatNodeStatusCount(status);
+    const head = count ? `retry ${count}` : "retry";
+    return error ? `${head}: ${error}` : head;
+  }
+  if (state === "error_routed") {
+    const head = status && status.to_node ? `error → ${String(status.to_node)}` : "error routed";
+    return error ? `${head}: ${error}` : head;
+  }
+  return error ? `${state}: ${error}` : state;
+}
+
+/** `412 ms`, `3.9 s`, `1m 05s`; empty when unknown. */
+function formatNodeStatusDuration(ms) {
+  const n = Number(ms);
+  if (!Number.isFinite(n) || n < 0) return "";
+  if (n < 1000) return `${Math.round(n)} ms`;
+  if (n < 60000) return `${(n / 1000).toFixed(n < 10000 ? 1 : 0)} s`;
+  const seconds = Math.round((n % 60000) / 1000);
+  return `${Math.floor(n / 60000)}m ${String(seconds).padStart(2, "0")}s`;
+}
+
+// ── Node input widgets ──────────────────────────────────────────────────────
+//
+// An `n.input.*` node draws a form field in the same under-node slot the
+// previews use: the Run form, built from the graph. What to draw arrives from
+// the host as an `inputWidgets` prop keyed by pipeline node id:
+//
+//   { [pipelineNodeId]: { kind, name, label, optional, accept, default,
+//                         value?, invalid?, result? } }
+//
+// `kind` is the word after `input.`; `value` seeds the field when it is
+// (re)built and is deliberately outside the rebuild signature, so typing never
+// rebuilds the field under the cursor; `invalid` highlights without rebuilding;
+// `result` — what went in on the latest run — is shown instead of the field
+// until "change" is pressed. Values live in the host's state only: the widget
+// emits `onInputChange(pipelineNodeId, value | File | File[])` and stores
+// nothing. Widget first, preview beneath, when both exist.
+
+const NODE_INPUT_FILE_KINDS = ["file", "files", "image", "audio", "video"];
+const NODE_INPUT_ACCEPT_BY_KIND = {
+  image: "image/*",
+  audio: "audio/*",
+  video: "video/*",
+  pdf: "application/pdf,.pdf",
+  csv: "text/csv,.csv",
+  json: "application/json,.json",
+  geojson: "application/geo+json,.geojson",
+  spreadsheet: ".xlsx,.xls,.ods",
+  archive: "application/zip,.zip",
+  parquet: ".parquet",
+};
+
+/** The `accept` attribute for a declaration's FileRef kinds, mimes and extensions. */
+function nodeInputAcceptAttr(spec) {
+  const kind = String((spec && spec.kind) || "");
+  let list = Array.isArray(spec && spec.accept) ? spec.accept : [];
+  if (!list.length && NODE_INPUT_ACCEPT_BY_KIND[kind]) list = [kind];
+  const out = [];
+  for (const raw of list) {
+    const item = String(raw || "").trim().toLowerCase();
+    if (!item) continue;
+    if (NODE_INPUT_ACCEPT_BY_KIND[item]) out.push(NODE_INPUT_ACCEPT_BY_KIND[item]);
+    else if (item.endsWith("/")) out.push(`${item}*`);
+    else if (item.includes("/")) out.push(item);
+    else out.push(item.startsWith(".") ? item : `.${item}`);
+  }
+  return out.join(",");
+}
+
+function nodeInputFormatBytes(size) {
+  const n = Number(size);
+  if (!Number.isFinite(n) || n < 0) return "";
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function nodeInputFileSummary(files) {
+  const list = Array.from(files || []);
+  if (!list.length) return "";
+  if (list.length === 1) return `${list[0].name} · ${nodeInputFormatBytes(list[0].size)}`;
+  return `${list.length} files · ${nodeInputFormatBytes(list.reduce((a, f) => a + (f.size || 0), 0))}`;
+}
+
+/** The result view: what went in on the latest run, as the host resolved it. */
+function buildNodeInputResult(result, onChange) {
+  const wrap = document.createElement("div");
+  wrap.className = "zgu-node-input-result";
+  const src = safeNodePreviewSrc(result && result.src);
+  if (src) {
+    const img = document.createElement("img");
+    img.src = src;
+    img.alt = "";
+    img.loading = "lazy";
+    img.draggable = false;
+    img.addEventListener("dragstart", (event) => event.preventDefault());
+    img.addEventListener("error", () => img.remove());
+    wrap.appendChild(img);
+  }
+  const summary = document.createElement("span");
+  summary.className = "summary";
+  summary.textContent = nodePreviewCellText(result && result.text);
+  summary.title = summary.textContent;
+  const meta = nodePreviewCellText(result && result.meta);
+  if (meta) {
+    const metaEl = document.createElement("span");
+    metaEl.className = "meta";
+    metaEl.textContent = meta;
+    summary.appendChild(metaEl);
+  }
+  wrap.appendChild(summary);
+  const change = document.createElement("button");
+  change.type = "button";
+  change.className = "zgu-node-input-change";
+  change.textContent = "change";
+  change.addEventListener("click", (event) => {
+    event.stopPropagation();
+    onChange();
+  });
+  wrap.appendChild(change);
+  return wrap;
+}
+
+/** The field view: one control per value type, emitting through `emit`. */
+function buildNodeInputField(spec, emit) {
+  const kind = String(spec.kind || "text");
+  const seed = spec.value !== undefined && spec.value !== null ? spec.value : spec.default;
+  const field = document.createElement("div");
+  field.className = "zgu-node-input-field";
+  const stop = (el) => {
+    // The canvas listens for keys (delete, select-all) and pointer moves; a
+    // field is typed into, not a handle for the node.
+    for (const type of ["keydown", "keyup", "keypress", "pointerdown", "mousedown", "wheel"]) {
+      el.addEventListener(type, (event) => event.stopPropagation());
+    }
+  };
+
+  if (NODE_INPUT_FILE_KINDS.includes(kind)) {
+    const drop = document.createElement("div");
+    drop.className = "zgu-node-input-drop";
+    const hint = document.createElement("span");
+    hint.className = "hint";
+    hint.textContent = kind === "files" ? "Drop files or click" : "Drop a file or click";
+    const chosen = document.createElement("span");
+    chosen.className = "chosen";
+    const input = document.createElement("input");
+    input.type = "file";
+    input.name = String(spec.name || "");
+    if (kind === "files") input.multiple = true;
+    const accept = nodeInputAcceptAttr(spec);
+    if (accept) input.accept = accept;
+    const show = (files) => {
+      const summary = nodeInputFileSummary(files);
+      chosen.textContent = summary;
+      drop.classList.toggle("has-file", !!summary);
+      hint.textContent = summary ? "Drop to replace" : kind === "files" ? "Drop files or click" : "Drop a file or click";
+    };
+    const take = (files) => {
+      const list = Array.from(files || []);
+      show(list);
+      emit(kind === "files" ? list : list[0] || null);
+    };
+    input.addEventListener("change", () => take(input.files));
+    for (const type of ["dragenter", "dragover"]) {
+      drop.addEventListener(type, (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        drop.classList.add("over");
+      });
+    }
+    drop.addEventListener("dragleave", () => drop.classList.remove("over"));
+    drop.addEventListener("drop", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      drop.classList.remove("over");
+      if (event.dataTransfer && event.dataTransfer.files && event.dataTransfer.files.length) {
+        try { input.files = event.dataTransfer.files; } catch (_) {}
+        take(event.dataTransfer.files);
+      }
+    });
+    stop(drop);
+    if (seed && typeof seed === "object") show(Array.isArray(seed) ? seed : [seed]);
+    drop.appendChild(hint);
+    drop.appendChild(chosen);
+    drop.appendChild(input);
+    field.appendChild(drop);
+    return field;
+  }
+
+  if (kind === "boolean") {
+    const label = document.createElement("label");
+    label.className = "zgu-node-input-check";
+    const input = document.createElement("input");
+    input.type = "checkbox";
+    input.name = String(spec.name || "");
+    input.checked = seed === true || seed === "true" || seed === 1 || seed === "1" || seed === "on";
+    input.addEventListener("change", () => emit(input.checked));
+    const text = document.createElement("span");
+    text.textContent = "yes";
+    label.appendChild(input);
+    label.appendChild(text);
+    stop(label);
+    field.appendChild(label);
+    return field;
+  }
+
+  if (kind === "json") {
+    const area = document.createElement("textarea");
+    area.name = String(spec.name || "");
+    area.dataset.kind = "json";
+    area.rows = 3;
+    area.spellcheck = false;
+    area.placeholder = "{ }";
+    area.value =
+      seed === undefined || seed === null ? "" : typeof seed === "string" ? seed : JSON.stringify(seed, null, 2);
+    area.addEventListener("input", () => emit(area.value));
+    stop(area);
+    field.appendChild(area);
+    return field;
+  }
+
+  // Text is a textarea too — a prompt or a story beat runs to several lines,
+  // and the widget's grip sizes it. `--max` is still the length limit.
+  if (kind === "text") {
+    const area = document.createElement("textarea");
+    area.name = String(spec.name || "");
+    area.dataset.kind = "text";
+    area.rows = 2;
+    if (spec.max !== undefined && spec.max !== null && spec.max !== "") {
+      area.maxLength = Number(spec.max) || 524288;
+    }
+    area.placeholder = String(spec.label || spec.name || "");
+    area.value = seed === undefined || seed === null ? "" : String(seed);
+    area.addEventListener("input", () => emit(area.value));
+    stop(area);
+    field.appendChild(area);
+    return field;
+  }
+
+  const input = document.createElement("input");
+  input.type = kind === "number" ? "number" : "text";
+  input.name = String(spec.name || "");
+  if (kind === "number") {
+    if (spec.min !== undefined && spec.min !== null && spec.min !== "") input.min = String(spec.min);
+    if (spec.max !== undefined && spec.max !== null && spec.max !== "") input.max = String(spec.max);
+    input.step = "any";
+  } else if (spec.max !== undefined && spec.max !== null && spec.max !== "") {
+    input.maxLength = Number(spec.max) || 524288;
+  }
+  input.placeholder = String(spec.label || spec.name || "");
+  input.value = seed === undefined || seed === null ? "" : String(seed);
+  input.addEventListener("input", () => emit(input.value));
+  stop(input);
+  field.appendChild(input);
+  return field;
+}
+
+/** The whole widget for one input node: label, field, and the result view. */
+function buildNodeInputWidget(el, spec, emit) {
+  while (el.firstChild) el.removeChild(el.firstChild);
+  const label = document.createElement("div");
+  label.className = "zgu-node-input-label";
+  const name = document.createElement("span");
+  name.textContent = String(spec.label || spec.name || "input");
+  label.appendChild(name);
+  if (spec.optional) {
+    const optional = document.createElement("span");
+    optional.className = "optional";
+    optional.textContent = "(optional)";
+    label.appendChild(optional);
+  }
+  el.appendChild(label);
+  el.appendChild(buildNodeInputField(spec, emit));
+  if (spec.result) {
+    el.appendChild(buildNodeInputResult(spec.result, () => { el.dataset.mode = "field"; }));
+    el.dataset.mode = "result";
+  } else {
+    el.dataset.mode = "field";
+  }
+  // The grip — same look as a preview cell's, hidden by CSS when read-only.
+  // The widget's own pointerdown listener recognises it by class.
+  if (NODE_INPUT_RESIZABLE_KINDS.includes(String(spec.kind || ""))) {
+    const grip = document.createElement("div");
+    grip.className = "zgu-node-input-resize";
+    grip.title = "Drag to resize";
+    el.appendChild(grip);
+  }
+}
+
+/** The widest cell in a preview panel — the panel's own width. */
+function nodePreviewPanelWidth(el) {
+  let width = 0;
+  for (const cellEl of el.querySelectorAll(".zgu-node-preview-cell")) {
+    width = Math.max(width, Number(cellEl.dataset.width) || cellEl.offsetWidth || 0);
+  }
+  return width || NODE_PREVIEW_WIDTH;
+}
+
+/**
+ * Place a node's under-box slot — its input widget, then its preview panel —
+ * below the node's title, so nothing covers the name, and centred on the
+ * node's centre. Every place that moves a node ends up here.
+ *
+ * Centred means: each element's x is `node.x + boxWidth/2 − width/2`. The
+ * preview panel is as wide as its widest cell, and its cells are centred
+ * within it (`align-items: center`), so an `in` and an `out` cell of
+ * different widths are each centred on the node on their own. The slot's
+ * height is read off the DOM, so a resized cell moves whatever sits below.
+ */
+function positionNodePreviewEl(node) {
+  if (!node || (!node.previewEl && !node.inputEl)) return;
+  const box = node.el;
+  const boxWidth = (box && box.offsetWidth) || 84;
+  const boxHeight = (box && box.offsetHeight) || node.zguNodeHeight || 84;
+  const labelEl = box ? box.querySelector(".zgu-node-label") : null;
+  const labelHeight = labelEl ? labelEl.offsetHeight : 0;
+  let top = node.y + boxHeight + (labelHeight ? labelHeight + 9 : 0) + NODE_PREVIEW_GAP;
+  const centre = node.x + boxWidth / 2;
+  for (const el of [node.inputEl, node.previewEl]) {
+    if (!el) continue;
+    const width =
+      el === node.previewEl ? nodePreviewPanelWidth(el) : Number(el.dataset.width) || NODE_PREVIEW_WIDTH;
+    el.style.width = `${width}px`;
+    el.style.transform = `translate(${Math.round(centre - width / 2)}px, ${Math.round(top)}px)`;
+    top += (el.offsetHeight || 0) + NODE_PREVIEW_GAP;
+  }
+}
+
+const NOTE_MIN_WIDTH = 120;
+const NOTE_MIN_HEIGHT = 60;
+const NOTE_DEFAULT_WIDTH = 280;
+const NOTE_DEFAULT_HEIGHT = 120;
+// The palette's eight; each has a `.zgu-note[data-color]` rule (slate is
+// the default grey). The DSL's `--color` takes any word — one outside this
+// list draws grey and keeps its name.
+const NOTE_COLORS = ["slate", "amber", "blue", "green", "rose", "violet", "teal", "orange"];
+
 export class GraphCanvasUI {
   constructor(root, graph, options = {}) {
     this.root = root;
@@ -1020,6 +2207,16 @@ export class GraphCanvasUI {
     this.pendingDangling = null;
     this.selectedNode = null;
     this.selectedLink = null;
+    this.selectedNote = null;
+    this.draggingNote = null;
+    this.resizingNote = null;
+    // `{ node, which, el }` while a preview cell's grip is being dragged —
+    // the preview twin of `resizingNote`.
+    this.resizingPreview = null;
+    // `{ node, el }` while an input widget's grip is being dragged.
+    this.resizingInput = null;
+    // The note whose colour palette is open, if any.
+    this.paletteNote = null;
     this.startPos = { x: 0, y: 0 };
     this.initialTransform = { x: 0, y: 0 };
     this.activePointerId = null;
@@ -1031,6 +2228,20 @@ export class GraphCanvasUI {
     this.wheelHandler = this.onWheel.bind(this);
     this.keyHandler = this.onKeyDown.bind(this);
     this.contextHandler = (event) => event.preventDefault();
+    // Pressing a note captures the pointer on the workspace, so the browser
+    // retargets the resulting click/dblclick to the workspace, never to the
+    // note. Resolve the note under the cursor instead of trusting the target.
+    this.dblClickHandler = (event) => {
+      if (this.readOnly) return;
+      const hit = document.elementFromPoint(event.clientX, event.clientY);
+      if (hit && (hit.tagName === "TEXTAREA" || hit.tagName === "INPUT")) return;
+      if (hit && (hit.classList.contains("zgu-note-color") || hit.closest(".zgu-note-palette"))) return;
+      const note = this.findNoteByElement(hit);
+      if (!note || note.el.classList.contains("editing")) return;
+      event.preventDefault();
+      event.stopPropagation();
+      this.beginNoteEdit(note);
+    };
 
     this.mountDom();
     this.initEvents();
@@ -1105,6 +2316,14 @@ export class GraphCanvasUI {
     this.nodesEl = document.createElement("div");
     this.nodesEl.className = "zgu-nodes";
 
+    this.notesEl = document.createElement("div");
+    this.notesEl.className = "zgu-notes";
+
+    if (this.readOnly) {
+      this.root.classList.add("zgu-readonly");
+    }
+
+    this.transformEl.appendChild(this.notesEl);
     this.transformEl.appendChild(this.svgEl);
     this.transformEl.appendChild(this.nodesEl);
     this.workspaceEl.appendChild(this.transformEl);
@@ -1292,15 +2511,27 @@ export class GraphCanvasUI {
     this.workspaceEl.addEventListener("wheel", this.wheelHandler, { passive: false });
     window.addEventListener("keydown", this.keyHandler);
     this.workspaceEl.addEventListener("contextmenu", this.contextHandler);
+    this.workspaceEl.addEventListener("dblclick", this.dblClickHandler);
+    // A press outside the workspace (the toolbar, a dialog) closes an open
+    // palette too; presses inside are handled in `onPointerDown`.
+    this.paletteCloseHandler = (event) => {
+      if (!this.paletteNote) return;
+      const target = event.target;
+      if (target && target.closest && (target.closest(".zgu-note-palette") || target.classList.contains("zgu-note-color"))) return;
+      this.toggleNotePalette(this.paletteNote, false);
+    };
+    document.addEventListener("pointerdown", this.paletteCloseHandler, true);
   }
 
   destroy() {
+    document.removeEventListener("pointerdown", this.paletteCloseHandler, true);
     this.workspaceEl.removeEventListener("pointerdown", this.pointerDownHandler);
     window.removeEventListener("pointermove", this.pointerMoveHandler);
     window.removeEventListener("pointerup", this.pointerUpHandler);
     this.workspaceEl.removeEventListener("wheel", this.wheelHandler);
     window.removeEventListener("keydown", this.keyHandler);
     this.workspaceEl.removeEventListener("contextmenu", this.contextHandler);
+    this.workspaceEl.removeEventListener("dblclick", this.dblClickHandler);
     if (this.wireUpdateFrame != null) {
       window.cancelAnimationFrame(this.wireUpdateFrame);
       this.wireUpdateFrame = null;
@@ -1320,6 +2551,358 @@ export class GraphCanvasUI {
     }
     node.buildDOM(this.nodesEl);
     this.updateWires();
+  }
+
+  /**
+   * Draw (or, for an empty `data`, remove) the preview panel under one node.
+   *
+   * `data` is `{ in?: PreviewCell, out?: PreviewCell }`; `in` is drawn above
+   * `out`. Rebuilding only on a changed signature keeps a playing video from
+   * restarting on every re-render.
+   */
+  setNodePreview(node, data) {
+    if (!node) return;
+    const cells = [];
+    if (data && data.in) cells.push(["in", data.in]);
+    if (data && data.out) cells.push(["out", data.out]);
+    if (!cells.length) {
+      // The preview half only — the Run-form field in the same slot stays.
+      node.detachPreview?.();
+      return;
+    }
+    if (!node.previewEl) {
+      const el = document.createElement("div");
+      el.className = "zgu-node-preview";
+      el.dataset.nodeId = String(node.id);
+      // The canvas drags whatever is pressed; a preview is a thing you look
+      // at and click, not a handle for the node. Its one handle is the
+      // resize grip, which starts a resize here — the event never reaches
+      // the workspace, so `onPointerDown` cannot see it the way it sees a
+      // note's grip.
+      el.setAttribute("data-zgu-nodrag", "true");
+      el.addEventListener("pointerdown", (event) => {
+        event.stopPropagation();
+        if (event.button === 0 && event.target.classList.contains("zgu-node-preview-resize")) {
+          this.beginPreviewResize(node, event.target.closest(".zgu-node-preview-cell"), event);
+        }
+      });
+      this.nodesEl.appendChild(el);
+      node.previewEl = el;
+    }
+    const el = node.previewEl;
+    el.dataset.nodeSlug = String(node.zfPipelineNodeId || "");
+    const signature = JSON.stringify(cells);
+    if (el.dataset.signature !== signature) {
+      el.dataset.signature = signature;
+      while (el.firstChild) el.removeChild(el.firstChild);
+      for (const [which, cell] of cells) {
+        const cellEl = buildNodePreviewCell(cell, which);
+        cellEl.addEventListener("click", (event) => {
+          event.stopPropagation();
+          // Releasing the grip is not a click on the preview.
+          if (event.target.classList.contains("zgu-node-preview-resize")) return;
+          const open = this.options.onPreviewOpen;
+          if (typeof open === "function") {
+            open(String(node.zfPipelineNodeId || node.id), which);
+          }
+        });
+        el.appendChild(cellEl);
+      }
+    }
+    positionNodePreviewEl(node);
+  }
+
+  /**
+   * Start dragging one preview cell's grip — the same pointer-capture flow
+   * as a note's grip: capture on the workspace, remember where the pointer
+   * and the size started, then `onPointerMove` resizes and `onPointerUp`
+   * snaps and reports.
+   */
+  beginPreviewResize(node, cellEl, event) {
+    if (this.readOnly || !node || !cellEl) return;
+    event.preventDefault();
+    this.resizingPreview = { node, el: cellEl, which: String(cellEl.dataset.which || "out") };
+    this.capturePointer(event);
+    this.startPos = { x: event.clientX, y: event.clientY };
+    this.startSize = {
+      width: Number(cellEl.dataset.width) || cellEl.offsetWidth || NODE_PREVIEW_WIDTH,
+      height: Number(cellEl.dataset.height) || nodePreviewHeight(cellEl.dataset.as),
+    };
+    this.clearSelection();
+    cellEl.classList.add("resizing");
+  }
+
+  /** Clamp, apply and re-centre a cell mid-drag; `snap` on release. */
+  resizePreviewCell(resizing, width, height, snap) {
+    let w = clamp(Math.round(width), NODE_PREVIEW_MIN_WIDTH, NODE_PREVIEW_MAX_WIDTH);
+    let h = clamp(Math.round(height), NODE_PREVIEW_MIN_HEIGHT, NODE_PREVIEW_MAX_HEIGHT);
+    if (snap && this.snapToGrid) {
+      w = clamp(this.snapCoordinate(w), NODE_PREVIEW_MIN_WIDTH, NODE_PREVIEW_MAX_WIDTH);
+      h = clamp(this.snapCoordinate(h), NODE_PREVIEW_MIN_HEIGHT, NODE_PREVIEW_MAX_HEIGHT);
+    }
+    applyNodePreviewSize(resizing.el, w, h);
+    positionNodePreviewEl(resizing.node);
+    return { width: w, height: h };
+  }
+
+  /**
+   * Draw (or, for an empty `spec`, remove) the input widget under one node.
+   *
+   * Rebuilt only when the declaration or the run result changes; `value`
+   * seeds a rebuild and `invalid` only toggles a class, so typing and
+   * validation never rebuild the field under the cursor.
+   */
+  setNodeInput(node, spec) {
+    if (!node) return;
+    if (!spec || typeof spec !== "object") {
+      node.detachInput?.();
+      return;
+    }
+    if (!node.inputEl) {
+      const el = document.createElement("div");
+      el.className = "zgu-node-input";
+      el.dataset.nodeId = String(node.id);
+      el.setAttribute("data-zgu-nodrag", "true");
+      // The widget swallows the press (typing never drags the node); its one
+      // handle is the grip, which starts a resize here, as a preview's does.
+      el.addEventListener("pointerdown", (event) => {
+        event.stopPropagation();
+        if (event.button === 0 && event.target.classList.contains("zgu-node-input-resize")) {
+          this.beginInputResize(node, el, event);
+        }
+      });
+      el.addEventListener("click", (event) => event.stopPropagation());
+      this.nodesEl.appendChild(el);
+      node.inputEl = el;
+    }
+    const el = node.inputEl;
+    const pipelineNodeId = String(node.zfPipelineNodeId || node.id);
+    el.dataset.nodeSlug = pipelineNodeId;
+    el.dataset.kind = String(spec.kind || "");
+    el.dataset.name = String(spec.name || "");
+    const { value: _value, invalid: _invalid, width: _width, height: _height, ...stable } = spec;
+    const signature = JSON.stringify(stable);
+    if (el.dataset.signature !== signature) {
+      el.dataset.signature = signature;
+      buildNodeInputWidget(el, spec, (value) => {
+        const change = this.options.onInputChange;
+        if (typeof change === "function") change(pipelineNodeId, value);
+      });
+    }
+    // The stored size is applied when the host's copy of it changes, never
+    // on every sync: after a drag the DOM holds the new size until the host
+    // stores it and hands it back (a Save Draft reloads the scene with it).
+    const size = nodeInputSize(spec);
+    const sizeKey = size ? `${size.width}x${size.height}` : "";
+    if (el.dataset.sizeKey !== sizeKey && !(this.resizingInput && this.resizingInput.el === el)) {
+      el.dataset.sizeKey = sizeKey;
+      applyNodeInputSize(el, size);
+    }
+    el.classList.toggle("invalid", !!spec.invalid);
+    if (spec.invalid) el.dataset.mode = "field";
+    positionNodePreviewEl(node);
+  }
+
+  /** Start dragging one input widget's grip — the preview's flow, one cell. */
+  beginInputResize(node, el, event) {
+    if (this.readOnly || !node || !el) return;
+    event.preventDefault();
+    this.resizingInput = { node, el };
+    this.capturePointer(event);
+    this.startPos = { x: event.clientX, y: event.clientY };
+    this.startSize = {
+      width: Number(el.dataset.width) || el.offsetWidth || NODE_PREVIEW_WIDTH,
+      height: Number(el.dataset.height) || el.offsetHeight || NODE_INPUT_MIN_HEIGHT,
+    };
+    this.clearSelection();
+    el.classList.add("resizing");
+  }
+
+  /** Clamp, apply and re-centre a widget mid-drag; `snap` on release. */
+  resizeInputWidget(resizing, width, height, snap) {
+    let w = clamp(Math.round(width), NODE_INPUT_MIN_WIDTH, NODE_INPUT_MAX_WIDTH);
+    let h = clamp(Math.round(height), NODE_INPUT_MIN_HEIGHT, NODE_INPUT_MAX_HEIGHT);
+    if (snap && this.snapToGrid) {
+      w = clamp(this.snapCoordinate(w), NODE_INPUT_MIN_WIDTH, NODE_INPUT_MAX_WIDTH);
+      h = clamp(this.snapCoordinate(h), NODE_INPUT_MIN_HEIGHT, NODE_INPUT_MAX_HEIGHT);
+    }
+    applyNodeInputSize(resizing.el, { width: w, height: h });
+    positionNodePreviewEl(resizing.node);
+    return { width: w, height: h };
+  }
+
+  /**
+   * Draw (or, for an empty `status`, remove) the run badge at one node's
+   * top-right. It lives inside the node's box, so it moves with the box for
+   * free; a box rebuilt by a scene load gets it back on the next sync.
+   */
+  setNodeStatus(node, status) {
+    if (!node) return;
+    const state =
+      status && typeof status === "object" ? String(status.state || "").toLowerCase() : "";
+    if (!NODE_STATUS_STATES.includes(state) || !node.el) {
+      node.detachStatus?.();
+      return;
+    }
+    if (!node.statusEl || node.statusEl.parentNode !== node.el || node.statusEl.childNodes.length !== 3) {
+      node.statusEl?.remove();
+      const el = document.createElement("div");
+      el.className = "zgu-node-status";
+      const mark = document.createElement("span");
+      mark.className = "zgu-node-status-mark";
+      const count = document.createElement("span");
+      count.className = "zgu-node-status-count";
+      const ms = document.createElement("span");
+      ms.className = "zgu-node-status-ms";
+      el.appendChild(mark);
+      el.appendChild(count);
+      el.appendChild(ms);
+      node.el.appendChild(el);
+      node.statusEl = el;
+    }
+    const el = node.statusEl;
+    el.dataset.state = state;
+    el.childNodes[0].textContent = NODE_STATUS_MARKS[state] || "";
+    // The count rides along while the node runs again: the wait between
+    // attempts happens inside that run, and "2/40" is what it is waiting for.
+    el.childNodes[1].textContent = state === "retry" || state === "running" ? formatNodeStatusCount(status) : "";
+    el.childNodes[2].textContent = formatNodeStatusDuration(status.duration_ms);
+    el.title = nodeStatusTitle(state, status);
+  }
+
+  addNoteToDOM(note) {
+    note.width = Math.max(NOTE_MIN_WIDTH, Number(note.width) || NOTE_DEFAULT_WIDTH);
+    note.height = Math.max(NOTE_MIN_HEIGHT, Number(note.height) || NOTE_DEFAULT_HEIGHT);
+    note.x = Number(note.x) || 0;
+    note.y = Number(note.y) || 0;
+    if (this.snapToGrid) {
+      note.x = this.snapCoordinate(note.x);
+      note.y = this.snapCoordinate(note.y);
+    }
+    const el = document.createElement("div");
+    el.className = "zgu-note";
+    el.dataset.uid = String(note.uid);
+    el.title = this.readOnly ? "" : "Drag to move · double-click to edit · right-click or Delete to remove";
+    const body = document.createElement("div");
+    body.className = "zgu-note-body";
+    const edit = document.createElement("textarea");
+    edit.className = "zgu-note-edit";
+    edit.spellcheck = false;
+    const grip = document.createElement("div");
+    grip.className = "zgu-note-resize";
+    // The colour dot and its palette; `onPointerDown` recognises both by
+    // class before the press becomes a drag.
+    const dot = document.createElement("div");
+    dot.className = "zgu-note-color";
+    dot.title = "Colour";
+    const palette = document.createElement("div");
+    palette.className = "zgu-note-palette";
+    for (const color of NOTE_COLORS) {
+      const swatch = document.createElement("div");
+      swatch.className = "zgu-note-swatch";
+      swatch.dataset.color = color;
+      swatch.title = color;
+      palette.appendChild(swatch);
+    }
+    el.appendChild(body);
+    el.appendChild(edit);
+    el.appendChild(grip);
+    el.appendChild(dot);
+    el.appendChild(palette);
+    note.el = el;
+    note.bodyEl = body;
+    note.editEl = edit;
+    note.paletteEl = palette;
+    this.renderNote(note);
+    this.notesEl.appendChild(el);
+
+    if (!this.readOnly) {
+      edit.addEventListener("blur", () => this.commitNoteEdit(note));
+      edit.addEventListener("keydown", (event) => {
+        if (event.key === "Escape") {
+          event.preventDefault();
+          edit.value = note.text;
+          edit.blur();
+        } else if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+          event.preventDefault();
+          edit.blur();
+        }
+        event.stopPropagation();
+      });
+    }
+    return el;
+  }
+
+  renderNote(note) {
+    if (!note.el) return;
+    note.el.style.transform = `translate(${note.x}px, ${note.y}px)`;
+    note.el.style.width = `${note.width}px`;
+    note.el.style.height = `${note.height}px`;
+    const color = String(note.color || "").trim().toLowerCase() || "slate";
+    note.el.dataset.color = color;
+    if (note.paletteEl) {
+      for (const swatch of note.paletteEl.children) {
+        swatch.classList.toggle("selected", swatch.dataset.color === color);
+      }
+    }
+    note.bodyEl.innerHTML = renderNoteMarkdown(note.text) || '<p style="opacity:.5">(empty note — double-click to write)</p>';
+  }
+
+  /** Open one note's palette (closing any other's), or close it when `open` is false. */
+  toggleNotePalette(note, open) {
+    if (this.paletteNote && this.paletteNote !== note) {
+      this.paletteNote.el?.classList.remove("palette-open");
+      this.paletteNote = null;
+    }
+    if (!note || !note.el) return;
+    const next = open === undefined ? !note.el.classList.contains("palette-open") : !!open;
+    note.el.classList.toggle("palette-open", next);
+    this.paletteNote = next ? note : null;
+  }
+
+  /** Pick a colour: the note re-renders and the host hears `onNoteChange`, as for a move. */
+  setNoteColor(note, color) {
+    if (!note) return;
+    note.color = String(color || "").trim().toLowerCase();
+    this.renderNote(note);
+    this.toggleNotePalette(note, false);
+    if (typeof this.options.onNoteChange === "function") {
+      this.options.onNoteChange(note);
+    }
+  }
+
+  beginNoteEdit(note) {
+    if (this.readOnly || !note.el) return;
+    note.el.classList.add("editing");
+    note.editEl.value = note.text || "";
+    note.editEl.focus();
+    note.editEl.setSelectionRange(note.editEl.value.length, note.editEl.value.length);
+  }
+
+  commitNoteEdit(note) {
+    if (!note.el || !note.el.classList.contains("editing")) return;
+    note.text = note.editEl.value;
+    note.el.classList.remove("editing");
+    this.renderNote(note);
+    if (typeof this.options.onNoteChange === "function") {
+      this.options.onNoteChange(note);
+    }
+  }
+
+  removeNote(note) {
+    if (this.selectedNote === note) {
+      this.selectedNote = null;
+    }
+    if (this.paletteNote === note) {
+      this.paletteNote = null;
+    }
+    this.graph.removeNote(note);
+  }
+
+  findNoteByElement(target) {
+    const noteEl = target && target.closest ? target.closest(".zgu-note") : null;
+    if (!noteEl) return null;
+    return this.graph.notes.find((note) => note.uid === Number(noteEl.dataset.uid)) || null;
   }
 
   clearSVG() {
@@ -1526,9 +3109,7 @@ export class GraphCanvasUI {
     }
     node.x = this.snapCoordinate(node.x);
     node.y = this.snapCoordinate(node.y);
-    if (node.el) {
-      node.el.style.transform = `translate(${node.x}px, ${node.y}px)`;
-    }
+    node.applyTransform();
   }
 
   updateWires() {
@@ -1757,6 +3338,7 @@ export class GraphCanvasUI {
       }
       if (
         target.closest(".zgu-node") ||
+        target.closest(".zgu-note") ||
         target.classList.contains("zgu-port") ||
         target.classList.contains("zgu-wire")
       ) {
@@ -1779,11 +3361,56 @@ export class GraphCanvasUI {
           this.updateWires();
         }
       }
+      const note = this.findNoteByElement(event.target);
+      if (note && !note.el.classList.contains("editing")) {
+        this.removeNote(note);
+      }
       event.preventDefault();
       return;
     }
 
     const target = event.target;
+
+    // The colour dot opens the palette; a swatch picks; a press anywhere
+    // else closes it (the document listener covers presses off the canvas).
+    if (target.classList.contains("zgu-note-color")) {
+      const note = this.findNoteByElement(target);
+      event.preventDefault();
+      event.stopPropagation();
+      if (note) {
+        this.clearSelection();
+        this.selectedNote = note;
+        note.el.classList.add("selected");
+        this.toggleNotePalette(note);
+      }
+      return;
+    }
+    if (target.closest(".zgu-note-palette")) {
+      const note = this.findNoteByElement(target);
+      event.preventDefault();
+      event.stopPropagation();
+      if (note && target.classList.contains("zgu-note-swatch")) {
+        this.setNoteColor(note, target.dataset.color);
+      }
+      return;
+    }
+    if (this.paletteNote) this.toggleNotePalette(this.paletteNote, false);
+
+    if (target.classList.contains("zgu-note-resize")) {
+      const note = this.findNoteByElement(target);
+      if (note) {
+        event.preventDefault();
+        event.stopPropagation();
+        this.resizingNote = note;
+        this.capturePointer(event);
+        this.startPos = { x: event.clientX, y: event.clientY };
+        this.startSize = { width: note.width, height: note.height };
+        this.clearSelection();
+        this.selectedNote = note;
+        note.el.classList.add("selected");
+        return;
+      }
+    }
 
     if (target.classList.contains("zgu-wire") && !target.classList.contains("temp")) {
       event.preventDefault();
@@ -1806,6 +3433,19 @@ export class GraphCanvasUI {
     }
 
     if (target.closest("[data-zgu-nodrag='true']") || target.tagName === "INPUT" || target.tagName === "TEXTAREA") {
+      return;
+    }
+
+    const pressedNote = this.findNoteByElement(target);
+    if (pressedNote) {
+      event.preventDefault();
+      event.stopPropagation();
+      this.draggingNote = pressedNote;
+      this.capturePointer(event);
+      this.startPos = { x: event.clientX, y: event.clientY };
+      this.clearSelection();
+      this.selectedNote = pressedNote;
+      pressedNote.el.classList.add("selected");
       return;
     }
 
@@ -1856,12 +3496,46 @@ export class GraphCanvasUI {
       return;
     }
 
+    if (this.draggingNote) {
+      const dx = (event.clientX - this.startPos.x) / this.transform.k;
+      const dy = (event.clientY - this.startPos.y) / this.transform.k;
+      this.draggingNote.x += dx;
+      this.draggingNote.y += dy;
+      this.draggingNote.el.style.transform = `translate(${this.draggingNote.x}px, ${this.draggingNote.y}px)`;
+      this.startPos = { x: event.clientX, y: event.clientY };
+      return;
+    }
+
+    if (this.resizingNote) {
+      const dx = (event.clientX - this.startPos.x) / this.transform.k;
+      const dy = (event.clientY - this.startPos.y) / this.transform.k;
+      this.resizingNote.width = Math.max(NOTE_MIN_WIDTH, this.startSize.width + dx);
+      this.resizingNote.height = Math.max(NOTE_MIN_HEIGHT, this.startSize.height + dy);
+      this.resizingNote.el.style.width = `${this.resizingNote.width}px`;
+      this.resizingNote.el.style.height = `${this.resizingNote.height}px`;
+      return;
+    }
+
+    if (this.resizingPreview) {
+      const dx = (event.clientX - this.startPos.x) / this.transform.k;
+      const dy = (event.clientY - this.startPos.y) / this.transform.k;
+      this.resizePreviewCell(this.resizingPreview, this.startSize.width + dx, this.startSize.height + dy, false);
+      return;
+    }
+
+    if (this.resizingInput) {
+      const dx = (event.clientX - this.startPos.x) / this.transform.k;
+      const dy = (event.clientY - this.startPos.y) / this.transform.k;
+      this.resizeInputWidget(this.resizingInput, this.startSize.width + dx, this.startSize.height + dy, false);
+      return;
+    }
+
     if (this.draggingNode) {
       const dx = (event.clientX - this.startPos.x) / this.transform.k;
       const dy = (event.clientY - this.startPos.y) / this.transform.k;
       this.draggingNode.x += dx;
       this.draggingNode.y += dy;
-      this.draggingNode.el.style.transform = `translate(${this.draggingNode.x}px, ${this.draggingNode.y}px)`;
+      this.draggingNode.applyTransform();
       this.scheduleWiresUpdate();
       this.startPos = { x: event.clientX, y: event.clientY };
       return;
@@ -1927,6 +3601,51 @@ export class GraphCanvasUI {
       this.snapNodePosition(draggedNode);
       this.updateWires();
     }
+    const movedNote = this.draggingNote || this.resizingNote;
+    this.draggingNote = null;
+    this.resizingNote = null;
+    if (movedNote) {
+      if (this.snapToGrid) {
+        movedNote.x = this.snapCoordinate(movedNote.x);
+        movedNote.y = this.snapCoordinate(movedNote.y);
+        movedNote.width = Math.max(NOTE_MIN_WIDTH, this.snapCoordinate(movedNote.width));
+        movedNote.height = Math.max(NOTE_MIN_HEIGHT, this.snapCoordinate(movedNote.height));
+      }
+      this.renderNote(movedNote);
+      if (typeof this.options.onNoteChange === "function") {
+        this.options.onNoteChange(movedNote);
+      }
+    }
+    const resizedPreview = this.resizingPreview;
+    this.resizingPreview = null;
+    if (resizedPreview) {
+      resizedPreview.el.classList.remove("resizing");
+      const size = this.resizePreviewCell(
+        resizedPreview,
+        Number(resizedPreview.el.dataset.width),
+        Number(resizedPreview.el.dataset.height),
+        true
+      );
+      if (typeof this.options.onPreviewResize === "function") {
+        const node = resizedPreview.node;
+        this.options.onPreviewResize(String(node.zfPipelineNodeId || node.id), resizedPreview.which, size);
+      }
+    }
+    const resizedInput = this.resizingInput;
+    this.resizingInput = null;
+    if (resizedInput) {
+      resizedInput.el.classList.remove("resizing");
+      const size = this.resizeInputWidget(
+        resizedInput,
+        Number(resizedInput.el.dataset.width),
+        Number(resizedInput.el.dataset.height),
+        true
+      );
+      if (typeof this.options.onInputResize === "function") {
+        const node = resizedInput.node;
+        this.options.onInputResize(String(node.zfPipelineNodeId || node.id), size);
+      }
+    }
     this.panning = false;
     this.releasePointer();
   }
@@ -1951,6 +3670,10 @@ export class GraphCanvasUI {
     if (this.readOnly) {
       return;
     }
+    if (event.key === "Escape" && this.paletteNote) {
+      this.toggleNotePalette(this.paletteNote, false);
+      return;
+    }
     if (event.target.tagName === "INPUT" || event.target.tagName === "TEXTAREA") {
       return;
     }
@@ -1972,6 +3695,11 @@ export class GraphCanvasUI {
       this.graph.remove(this.selectedNode);
       this.updateWires();
       this.selectedNode = null;
+      return;
+    }
+
+    if (this.selectedNote) {
+      this.removeNote(this.selectedNote);
     }
   }
 
@@ -1979,6 +3707,10 @@ export class GraphCanvasUI {
     if (this.selectedNode?.el) {
       this.selectedNode.el.classList.remove("selected");
     }
+    if (this.selectedNote?.el) {
+      this.selectedNote.el.classList.remove("selected");
+    }
+    this.selectedNote = null;
     if (this.selectedLink) {
       const old = this.svgEl.querySelector(`#${CSS.escape(this.selectedLink)}`);
       if (old) {
@@ -2269,6 +4001,21 @@ export function createPipelineScene(pipeline, options = {}) {
     setup(app) {
       const nodeMap = new Map();
 
+      // Pins an edge leaves from that the node never declared — `:error` on
+      // any node in graph mode, which the engine routes without a declared
+      // pin. Each needs a slot of its own: without one the link landed on
+      // slot 0 and a Save Draft wrote `[a]:error -> [r]` back as `[a] -> [r]`,
+      // silently unwiring a retry loop.
+      const undeclaredOutputs = new Map();
+      graphEdges.forEach((edge) => {
+        const fromId = String(edge?.from_node || "");
+        const pin = String(edge?.from_pin || "");
+        if (!fromId || !pin) return;
+        if (!undeclaredOutputs.has(fromId)) undeclaredOutputs.set(fromId, []);
+        const pins = undeclaredOutputs.get(fromId);
+        if (!pins.includes(pin)) pins.push(pin);
+      });
+
       graphNodes.forEach((node, index) => {
         const row = Math.floor(index / 3);
         const col = index % 3;
@@ -2279,7 +4026,10 @@ export function createPipelineScene(pipeline, options = {}) {
 
         const inputs = sanitizePins(node?.input_pins, ["in"]);
         const kind = String(node?.kind || "node");
-        const outputs = deriveOutputPins(kind, cfg, node?.output_pins, ["out"]);
+        const outputs = [...deriveOutputPins(kind, cfg, node?.output_pins, ["out"])];
+        for (const pin of undeclaredOutputs.get(String(node?.id || "")) || []) {
+          if (!outputs.includes(pin)) outputs.push(pin);
+        }
         const catalogTitle = titleMap && titleMap[kind] ? titleMap[kind] : "";
         const title = resolveNodeTitle(kind, cfg, catalogTitle);
         const color = resolveNodeColor(kind, colorMap, fallbackNodeColor);
@@ -2321,6 +4071,20 @@ export function createPipelineScene(pipeline, options = {}) {
           : defaultEdgeOptions;
         app.graph.connect(from.id, resolvedFrom, to.id, resolvedTo, edgeOptions);
       });
+
+      const graphNotes = Array.isArray(pipeline?.notes) ? pipeline.notes : [];
+      graphNotes.forEach((note) => {
+        if (!note || typeof note !== "object") return;
+        app.addNote({
+          zfId: note.id,
+          text: note.text,
+          x: note.x,
+          y: note.y,
+          width: note.width,
+          height: note.height,
+          color: note.color,
+        });
+      });
     },
   };
 }
@@ -2359,6 +4123,26 @@ export function createGraphUI(root, options = {}) {
       graph.add(node);
       ui.addNodeToDOM(node);
       return node;
+    },
+
+    /** A canvas note: `{ zfId, text, x, y, width, height, color }`. */
+    addNote(note) {
+      const next = {
+        zfId: String(note?.zfId || note?.id || ""),
+        text: String(note?.text || ""),
+        x: Number(note?.x) || 0,
+        y: Number(note?.y) || 0,
+        width: Number(note?.width) || 0,
+        height: Number(note?.height) || 0,
+        color: String(note?.color || ""),
+      };
+      graph.addNote(next);
+      ui.addNoteToDOM(next);
+      return next;
+    },
+
+    removeNote(note) {
+      ui.removeNote(note);
     },
 
     updateNodePins(node, nextPins = {}) {
@@ -2747,6 +4531,51 @@ export const PipelineGraph = (() => {
     _pgAttachContinuationButtons(app, onOutputAdd);
   }
 
+  /**
+   * Push `previewData` onto the canvas: one panel per node that has an entry,
+   * nothing for the rest. Keyed by pipeline node id — the slug the host knows
+   * a node by — not by the canvas's own numeric id.
+   */
+  function _pgSyncPreviews(app, previewData, onPreviewOpen, onPreviewResize) {
+    if (!app || !app.ui || typeof app.ui.setNodePreview !== "function") return;
+    app.ui.options.onPreviewOpen = onPreviewOpen || null;
+    app.ui.options.onPreviewResize = onPreviewResize || null;
+    const data = previewData && typeof previewData === "object" ? previewData : {};
+    for (const node of app.graph.nodes || []) {
+      const key = String(node.zfPipelineNodeId || node.id);
+      app.ui.setNodePreview(node, data[key] || null);
+    }
+  }
+
+  /**
+   * Push `inputWidgets` onto the canvas: one Run-form field per `n.input.*`
+   * node that has an entry, keyed by pipeline node id like the previews.
+   * Drawn before the previews so the widget takes the top of the slot.
+   */
+  function _pgSyncInputs(app, inputWidgets, onInputChange, onInputResize) {
+    if (!app || !app.ui || typeof app.ui.setNodeInput !== "function") return;
+    app.ui.options.onInputChange = onInputChange || null;
+    app.ui.options.onInputResize = onInputResize || null;
+    const data = inputWidgets && typeof inputWidgets === "object" ? inputWidgets : {};
+    for (const node of app.graph.nodes || []) {
+      const key = String(node.zfPipelineNodeId || node.id);
+      app.ui.setNodeInput(node, data[key] || null);
+    }
+  }
+
+  /**
+   * Push `nodeStatus` onto the canvas: one run badge per node that has an
+   * entry, none for the rest, keyed by pipeline node id like the previews.
+   */
+  function _pgSyncStatus(app, nodeStatus) {
+    if (!app || !app.ui || typeof app.ui.setNodeStatus !== "function") return;
+    const data = nodeStatus && typeof nodeStatus === "object" ? nodeStatus : {};
+    for (const node of app.graph.nodes || []) {
+      const key = String(node.zfPipelineNodeId || node.id);
+      app.ui.setNodeStatus(node, data[key] || null);
+    }
+  }
+
   function _pgEnsureObserver(stateRef, app, onNodeEdit, onOutputAdd) {
     stateRef.current.observer?.disconnect();
     const obs = new MutationObserver(() =>
@@ -2789,7 +4618,15 @@ export const PipelineGraph = (() => {
         output_pins: (node.outputs || []).map((p) => p.name),
         config: {
           ...(node.zfConfig || {}),
-          ui: { x: Math.round(node.x), y: Math.round(node.y) },
+          // `config.ui` is the editor-only key the engine ignores: the box's
+          // position, and beside it `widget` (an input widget's dragged size,
+          // written by the host on `onInputResize`). Kept whole; x/y are the
+          // canvas's own.
+          ui: {
+            ...((node.zfConfig && node.zfConfig.ui) || {}),
+            x: Math.round(node.x),
+            y: Math.round(node.y),
+          },
         },
       };
     });
@@ -2810,13 +4647,37 @@ export const PipelineGraph = (() => {
     const entry = nodes
       .filter((n) => String(n.kind).startsWith("n.trigger."))
       .map((n) => n.id);
-    return {
+    const usedNoteIds = new Set();
+    const notes = (app.graph.notes || []).map((note, index) => {
+      let id = _pgSanitizeSlug(note.zfId || "") || `note${index + 1}`;
+      let candidate = id,
+        seq = 2;
+      while (usedNoteIds.has(candidate)) {
+        candidate = `${id}_${seq}`;
+        seq++;
+      }
+      usedNoteIds.add(candidate);
+      note.zfId = candidate;
+      const out = {
+        id: candidate,
+        text: String(note.text || ""),
+        x: Math.round(note.x),
+        y: Math.round(note.y),
+        width: Math.round(note.width),
+        height: Math.round(note.height),
+      };
+      if (note.color) out.color = String(note.color);
+      return out;
+    });
+    const pipeline = {
       id: app._pgId || "pipeline",
       entry_nodes:
         entry.length ? entry : nodes[0] ? [nodes[0].id] : [],
       nodes,
       edges,
     };
+    if (notes.length) pipeline.notes = notes;
+    return pipeline;
   }
 
   // ── Component ─────────────────────────────────────────────────────────────
@@ -2864,6 +4725,20 @@ export const PipelineGraph = (() => {
         collectPipeline: function () {
           return _pgCollect(appRef.current);
         },
+        /** Place a new note at the canvas centre and open it for editing. */
+        addNote: function (text, color) {
+          const app = appRef.current;
+          if (!app) return null;
+          const { ui } = app;
+          const x = (-ui.transform.x + ui.workspaceEl.clientWidth / 2) / ui.transform.k - 140;
+          const y = (-ui.transform.y + ui.workspaceEl.clientHeight / 2) / ui.transform.k - 60;
+          const taken = new Set((app.graph.notes || []).map((n) => n.zfId));
+          let seq = (app.graph.notes || []).length + 1;
+          while (taken.has(`note${seq}`)) seq++;
+          const note = app.addNote({ zfId: `note${seq}`, text: text || "", x, y, color: color || "amber" });
+          ui.beginNoteEdit(note);
+          return note;
+        },
         autoTidy: function (options) {
           const app = appRef.current;
           if (!app || typeof app.autoTidy !== "function") return [];
@@ -2896,8 +4771,14 @@ export const PipelineGraph = (() => {
       appRef.current = app;
       hostRef.current.__zebGraphApp = app;
       _pgLoadScene(app, props.pipeline, props.kindColors, props.kindIcons, props.kindTitles);
+      _pgSyncInputs(app, props.inputWidgets, props.onInputChange, props.onInputResize);
+      _pgSyncPreviews(app, props.previewData, props.onPreviewOpen, props.onPreviewResize);
+      _pgSyncStatus(app, props.nodeStatus);
       setTimeout(function () {
         _pgAttachChrome(app, props.onNodeEdit, props.onOutputAdd);
+        _pgSyncInputs(app, props.inputWidgets, props.onInputChange, props.onInputResize);
+        _pgSyncPreviews(app, props.previewData, props.onPreviewOpen, props.onPreviewResize);
+        _pgSyncStatus(app, props.nodeStatus);
       }, 0);
       setTimeout(function () {
         _pgAttachChrome(app, props.onNodeEdit, props.onOutputAdd);
@@ -2926,8 +4807,14 @@ export const PipelineGraph = (() => {
       app.ui.setSelectionMode?.(props.selectionMode || "normal", { emit: false });
       app.ui.updateCanvasControls?.();
       _pgLoadScene(app, props.pipeline, props.kindColors, props.kindIcons, props.kindTitles);
+      _pgSyncInputs(app, props.inputWidgets, props.onInputChange, props.onInputResize);
+      _pgSyncPreviews(app, props.previewData, props.onPreviewOpen, props.onPreviewResize);
+      _pgSyncStatus(app, props.nodeStatus);
       setTimeout(function () {
         _pgAttachChrome(app, props.onNodeEdit, props.onOutputAdd);
+        _pgSyncInputs(app, props.inputWidgets, props.onInputChange, props.onInputResize);
+        _pgSyncPreviews(app, props.previewData, props.onPreviewOpen, props.onPreviewResize);
+        _pgSyncStatus(app, props.nodeStatus);
       }, 0);
       _pgEnsureObserver(stateRef, app, props.onNodeEdit, props.onOutputAdd);
     }, [props.pipeline, props.readOnly, props.kindIcons, props.kindTitles]);
@@ -2942,6 +4829,9 @@ export const PipelineGraph = (() => {
       app.ui.setSelectionMode?.(props.selectionMode || "normal", { emit: false });
       app.ui.updateCanvasControls?.();
       _pgAttachChrome(app, props.onNodeEdit, props.onOutputAdd);
+      _pgSyncInputs(app, props.inputWidgets, props.onInputChange, props.onInputResize);
+      _pgSyncPreviews(app, props.previewData, props.onPreviewOpen, props.onPreviewResize);
+      _pgSyncStatus(app, props.nodeStatus);
     });
 
     return _h("div", {

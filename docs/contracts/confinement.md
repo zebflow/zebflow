@@ -51,21 +51,17 @@ key. The one in-repo writer of `languageRunPatch` is the expression resolver,
 which *narrows* to `capabilities: []` and `maxOps: 500`.
 
 **Filesystem nodes go through ZebFS**, which is project-scoped, rather than raw
-paths. `fs_pdf_convert` sanitises its output path with `sanitize_rel_path`.
+paths. `fs.pdf.convert` sanitises its output path with `sanitize_rel_path`.
 
 **Platform shell and git run in the project.**
 `platform/shell/executor.rs` and `adapters/file/mod.rs:56` both
 `current_dir(&layout.repo_dir)`.
 
-**`n.ai.agent`'s shell tools run in the project.** `Node::shell_work_dir`
-resolves `layout.repo_dir` through the same `ensure_project_layout` the
-filesystem nodes use. A run with no platform service, or with no owner/project,
-refuses the tool with that reason rather than running it somewhere else.
-
-**A shell tool's root is a boundary.** `shell_tools::resolve_in_work_dir`
-resolves `..` lexically, then re-checks against the real filesystem to catch a
-symbolic link, and refuses an argument landing outside the root with an error
-naming both the path and the root. Nothing is clamped back inside.
+**`n.ai.agent` has no shell.** The only tools the model can call are the
+project's function pipelines, named by slug in `--tools`; nothing is offered
+unless named. The shell tools (`ls`, `pwd`, `python`) that once ran inside the
+project's `repo/` were removed on 2026-09-19: a Python tool reachable from a
+public webhook's agent is not a boundary, it is a door.
 
 **The script sandbox fetches inside one project.**
 `PlatformService::project_sandbox` builds a `DenoSandboxEngine::for_project`
@@ -78,8 +74,7 @@ for a project's. Each is closed, and none was closed by clamping.
 
 | Where | Was | Is |
 | --- | --- | --- |
-| `pipeline/nodes/basic/agent.rs` | `work_dir = std::env::current_dir()` | the owning project's `repo_dir`, or a refusal naming why there is none |
-| `automaton/infra/repl.rs` | same | `shell_tool_root()` — the operator's directory or `ZEBTUNE_WORK_DIR`, logged at start |
+| `pipeline/nodes/basic/ai/agent.rs` | shell tools ran in `std::env::current_dir()` | no shell tools; a tool is a function pipeline of the project |
 | `language/engines/deno_sandbox/config.rs` | `local_fetch_root: ".".into()` | empty, meaning no root; the project's `files_dir` arrives via the project patch |
 
 The sandbox default is now fail-closed rather than fail-to-the-server: an engine
@@ -96,10 +91,6 @@ be read as a 404.
   manager, all of which serve every project. Its sandbox has no fetch root, so a
   scheduled `n.script` cannot local-fetch at all. That is the safe answer, not
   the right one; the right one is a per-run engine.
-- **The REPL has no project.** `zebtune` is a standalone binary with no
-  Zebflow project on disk; its `owner`/`project` are automaton-context
-  placeholders. Its root is the operator's own directory, which is stated in the
-  log rather than assumed.
 
 ## 3. Declarations, and what honours them
 

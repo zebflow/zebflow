@@ -97,6 +97,8 @@ pub struct PlatformService {
     pub state_bus: DynStateBus,
     /// In-memory registry of embedded `zeb/*` library manifests.
     pub library: Arc<LibraryService>,
+    /// Fonts: the bundled default set and each project's `static/fonts/`.
+    pub fonts: Arc<crate::platform::services::FontService>,
     /// Platform-level asset hub service.
     pub hub: Arc<HubService>,
     /// Read/write service for per-project `repo/zeb.lock`.
@@ -177,6 +179,7 @@ impl PlatformService {
             data.clone(),
             file.clone(),
         ));
+        let fonts = Arc::new(crate::platform::services::FontService::new(file.clone()));
         let assistant_configs = Arc::new(AssistantConfigService::new(
             data.clone(),
             zebflow_cfg.clone(),
@@ -323,6 +326,7 @@ impl PlatformService {
             mem_hub,
             state_bus,
             library,
+            fonts,
             hub,
             dependency_lock,
         };

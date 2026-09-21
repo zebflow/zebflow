@@ -35,5 +35,5 @@ backend. Platform adapters create the physical project layout.
 - `src/platform/adapters/file/`
 - `src/platform/adapters/project_data/`
 - `src/platform/services/project_transfer.rs`
-- `src/pipeline/nodes/basic/file_ref.rs`
-- `src/pipeline/nodes/basic/fs_object.rs`
+- `src/pipeline/nodes/shared/file_ref.rs`
+- `src/pipeline/nodes/basic/fs/object.rs`

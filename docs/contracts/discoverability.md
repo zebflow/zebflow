@@ -76,22 +76,64 @@ paths; unknown agents are not recorded. One file per day under
 nightly site-health table from §4. What it deliberately is not: keyword
 volumes, rankings, backlinks.
 
-## 6. Installability — PWA as a mode (draft, build later)
+## 6. Installability — one project, several apps, nothing hidden
 
 A phone keeping the site is the third reader after search and answer
-engines. It is one configuration per project, never hand-written files:
+engines. An installable app is project content served by ordinary routes,
+never files the platform invents; a project may declare several (the public
+site at `/`, a member app at `/member/`), each a separate icon.
 
-| Piece | Generated from | Rule |
+| Piece | Where it lives | Rule |
 |---|---|---|
-| `/manifest.json` | project name, short name, the theme's `background`/`primary`, one square source icon | icons rasterised in every required size by the same SVG→PNG path as the OG card; `head.manifest`, `themeColor` and apple-touch icons filled from it by the renderer |
-| `/sw.js` | the project's **mode** | **ssr**: network-first for pages, cache-first for `/_static`, an offline fallback page · **spa**: precache the shell and its assets, runtime cache for `/api/*` and `/_files`, client navigation as now · **static**: precache everything `web.static.generate` wrote; served by the site surface, versioned by the build hash |
-| offline page | the **empty/404** archetype in `offline` mode | registered like the 404; shown by the worker when the network fails on a page |
-| install prompt | a zeb/ui `InstallPrompt` (Chromium `beforeinstallprompt`, the iOS "Add to Home Screen" hint) | opt-in, usually in the shell; never a modal on first visit |
-| verification | `route_fetch`'s report gains `pwa: { manifest, sw, icons, installable }` | the skills check it the way they check `seo` |
+| manifest | `pwa/manifest.webmanifest` in the repo; `trigger.webhook --path /manifest.webmanifest \| web.response --file pwa/manifest.webmanifest` | a plain JSON file the author writes; typed by its extension. A second app is a second file and route with its own `id`, `scope` (ending in `/`) and `start_url` inside it |
+| worker | `pwa/site.sw.ts` in the repo; `trigger.webhook --path /sw.js \| web.response --file pwa/site.sw.ts` | TypeScript, compiled by the page engine; every script `--file` serves starts with `self.__ZF = { version, source }`; `text/javascript`, `Cache-Control: no-cache`. It must answer at the scope root: a store object at `/_files/sw.js` controls nothing. Served from deeper, add `--header Service-Worker-Allowed=/` |
+| icons | repo files `static/pwa/*.png` → `/_static/pwa/…`: they ship with the code (the repo write API takes bytes with `?encoding=base64`) | 192, 512, maskable 512, apple 180 (no transparency) |
+| head | `page.head`: `links: [{rel:"manifest"}, {rel:"apple-touch-icon"}]`, `themeColor` | the renderer already emits these; the shell's shared head links carry them once |
+| page side | a project component: registers the worker, keeps `beforeinstallprompt` and shows a quiet card, iOS hint, dismiss remembered | never a modal on first visit; a page places it on purpose |
+| offline page | an ordinary page pipeline, e.g. `/offline`, precached by the worker | the worker answers it on a failed navigation |
+| verification | `route_fetch` → `pwa: { installable, reasons[], icons, worker }` | Chrome's checklist without a browser: name, `start_url` inside `scope`, display, 192 + 512 icons, a worker whose effective scope covers `start_url` (`serviceworker.src` in the manifest, else `sw.js` under the scope). Headless Chromium never fires `beforeinstallprompt`; real Chrome is the judge of the button |
 
-Settings: mode (off · ssr · spa · static), the icon, short name, display
-(`standalone` / `browser`); everything else derived. Not covered: push
-notifications, background sync, native store packaging.
+There is no PWA node and no PWA setting: `web.response --file` is the only
+platform piece, and it serves any project file (robots, sitemap, an icon)
+the same way. The whole set — folder, routes, page, component — is what a
+hub package of kind `folder_bundle` carries, so "add a PWA" is an install,
+and a generator can later ask the questions and write the same files.
+
+Rules: the worker never caches a signed-in scope (two people on one phone
+must not see each other's back office); every `start_url` renders for a
+guest; a scope is a directory and ends in `/`. Not covered here: push (a
+sender node next to `n.mail.send`, a subscriptions table, VAPID as a
+credential), background sync, store packaging.
+
+## 6a. The error page a visitor sees
+
+An uncaught failure never answers a browser with JSON. On a page request a
+5xx renders the project's own error page — the `trigger.weberror --code 500`
+archetype, registered like the 404 — or, when the project has none, the
+platform's neutral fallback: unbranded, no Studio styling, one sentence and the
+first eight characters of the run id as "reference". With `errors: shown`
+(`addressing.md` §2a) the same page carries the failure's code, message,
+node id and a link to the run. A JSON request gets the JSON forms from §2a.
+`route_fetch` reports which of the two a route answered with.
+
+What the catcher takes, and what it leaves alone:
+
+| Situation | Who answers |
+|---|---|
+| no route matched | `weberror` 404, else the platform's neutral page |
+| a page needed a sign-in it did not have | `weberror` 401, else the redirect to the project's login |
+| a pipeline failed (uncaught) | `weberror` `500`/`5xx`/`*`, else the neutral page; JSON form for a JSON request |
+| a pipeline answered `_status ≥ 400` in its payload (legacy convention) | `weberror` for that code, else JSON |
+| a pipeline answered through `web.response --status ≥ 400` with a message, body or template | **that response, as authored, always** — the catcher never replaces what an author wrote |
+
+A request is a *JSON request* when its `Accept` names `application/json` and not `text/html`; everything else is a page request.
+
+What the page receives as `input`, from `trigger.weberror`: `error_code`,
+`error_message` (the reason phrase), `original_path`, `method`,
+`request_id` (the run id, full; the page prints the first eight), and — only
+when the effective `errors` is `shown` — `detail: { code, message, node_id,
+run_url }`. Under `hidden` `detail` is absent, not empty, so a page cannot
+leak it by accident.
 
 ## 7. Not covered
 

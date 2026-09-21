@@ -110,7 +110,7 @@ a proxy), as the sitemap does above.
 
 | Thing | Budget | How |
 |---|---|---|
-| images | ≤ 200 KB each, sized to their slot, `width`/`height` set, `loading="lazy"` below the fold — except the one hero image, which loads eagerly | `fs.thumbnail --format webp` at upload; never the original in a list |
+| images | ≤ 200 KB each, sized to their slot, `width`/`height` set, `loading="lazy"` below the fold — except the one hero image, which loads eagerly | `fs.image.thumbnail --format webp` at upload; never the original in a list |
 | fonts | ≤ 2 families, ≤ 4 files, `display=swap` | `page.head.links` with the Google Fonts CSS URL; the variable in `globals.css` |
 | page HTML | ≤ 100 KB | paginate lists at 20; do not inline a table of 500 rows |
 | third-party scripts | none unless the brief names one | analytics via a single `page.head.links`/script entry |

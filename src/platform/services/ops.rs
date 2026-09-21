@@ -319,61 +319,174 @@ impl PlatformOps {
         ]
     }
 
+    /// What an agent reads first. The shape was chosen by an ablation on
+    /// haiku, sonnet and grok (research/zebflow/ablation/2026-09-18-start-here):
+    /// a frame that separates the platform from the project, the project's
+    /// files in reading order, a task→material table instead of a flat skill
+    /// list, and counts instead of inventories — because an inventory dump
+    /// taught the weakest model what this project has and nothing about what
+    /// Zebflow is, and a table gave it a direction to open next.
     pub async fn start_here(&self) -> OpsResult {
         let owner = &self.owner;
         let project = &self.project;
         let mut out = String::new();
 
+        let (title, description) = self
+            .platform
+            .zebflow_cfg
+            .read_or_default(owner, project)
+            .map(|c| (c.metadata.title.trim().to_string(), c.metadata.description.trim().to_string()))
+            .unwrap_or_default();
+        let title = if title.is_empty() { project.to_string() } else { title };
+        let about = if description.is_empty() { String::new() } else { format!(" — {description}") };
+
         out.push_str(&format!(
-            "# Zebflow MCP Start Here\n\n\
-             Project scope: `{owner}/{project}`\n\
-             Site: `http://{project}.{owner}.localhost:<port>/` — write links and redirects as `/path`; neutral form `/wh/{owner}/{project}{{path}}`; verify with `route_fetch path=\"{{path}}\"` (status, headers, body, RWE errors)\n\
-             Mental model: pipelines connect triggers to nodes for APIs, pages, automations, and jobs.\n\n\
-             ## First Moves\n\
-             1. Read the embedded AGENTS.md and MEMORY.md below.\n\
-             2. For pipelines, call `pipeline_list`, then `pipeline_describe file_rel_path=\"...\" compact=true`.\n\
-             3. For templates, call `file_list`, then `file_outline rel_path=\"...\"` before `file_read`.\n\
-             4. For SQL, call `connection_list`, then `connection_describe slug=\"...\" scope=\"tables\"` before writing queries.\n\
-             5. For syntax, call `help topic=\"pipeline/dsl\"`, `help topic=\"web\"`, or `help_search query=\"...\"`.\n"
+            "# Start here\n\n\
+             You are an agent doing **full-stack development of one project, \"{title}\"{about}, on Zebflow, a unified full-stack runtime.**\n\n\
+             **Zebflow** is the platform: one running instance, many projects. It provides the runtime (pipelines of nodes, TSX pages on `zeb/react` + `zeb/ui`, databases, files, auth), the node catalogue, the `zeb/*` libraries and the skills. \
+             **The project** `{owner}/{project}` is one site built on it, with its own repository, store, databases, credentials and hosts. Every tool in this session is scoped to this project. \
+             Project knowledge is in the project's files; Zebflow knowledge is in `help` and the skills. Do not confuse the two.\n\n\
+             Site: `http://{project}.{owner}.localhost:<port>/` — write links and redirects as `/path`; neutral form `/wh/{owner}/{project}{{path}}`.\n\n\
+             ## Step 1 — the project (now)\n"
         ));
 
-        out.push_str("\n---\n\n## Project Instructions: AGENTS.md\n");
-        match self
+        // The project's own documents, brief first when there is one.
+        let tree = self.platform.projects.list_repo_tree(owner, project, &RepoTreeScope::all());
+        let mut docs: Vec<String> = tree
+            .as_ref()
+            .map(|l| l.items.iter().filter(|i| i.file_kind == "doc").map(|i| i.rel_path.clone()).collect())
+            .unwrap_or_default();
+        docs.sort_by_key(|d| {
+            let l = d.to_ascii_lowercase();
+            (!(l.ends_with("docs/brief.md") || l == "docs/brief.md"), !l.starts_with("docs/"), l)
+        });
+        if docs.is_empty() {
+            out.push_str("- No project documents yet — interview the user (what to build, for whom, data, auth), then `file_write rel_path=\"docs/brief.md\" content=…`.\n");
+        } else {
+            for (i, d) in docs.iter().take(8).enumerate() {
+                let hint = if i == 0 { " — what to build and for whom; read first" } else { "" };
+                out.push_str(&format!("- `file_read rel_path=\"{d}\"`{hint}\n"));
+            }
+            if docs.len() > 8 {
+                out.push_str(&format!("- … {} more: `file_list glob=\"docs/**\"`\n", docs.len() - 8));
+            }
+        }
+        out.push_str("- AGENTS.md (the project's rules) and MEMORY.md (what earlier agents learned) are embedded below — read both.\n");
+
+        // What exists: counts and the one tool that expands each. Never the list.
+        let (active, stale, draft, total) = match self.platform.projects.list_pipeline_meta_rows(owner, project) {
+            Ok(ps) => {
+                let a = ps.iter().filter(|p| pipeline_status(p) == "active").count();
+                let st = ps.iter().filter(|p| pipeline_status(p) == "stale").count();
+                (a, st, ps.len() - a - st, ps.len())
+            }
+            Err(_) => (0, 0, 0, 0),
+        };
+        let files = tree.as_ref().map(|l| l.items.iter().filter(|i| i.kind == "file").count()).unwrap_or(0);
+        let connections: Vec<String> = self
             .platform
-            .projects
-            .read_agent_doc(owner, project, "AGENTS.md")
-        {
-            Ok(content) => out.push_str(&content),
-            Err(_) => out
-                .push_str("(none — create with `docs_agent_write name=\"AGENTS.md\" content=...`)"),
+            .db_connections
+            .list_project_connections(owner, project)
+            .map(|items| items.iter().map(|c| format!("`{}` ({})", c.connection_slug, c.database_kind)).collect())
+            .unwrap_or_default();
+        let credentials: Vec<String> = self
+            .platform
+            .credentials
+            .list_project_credentials(owner, project)
+            .map(|items| items.iter().map(|c| format!("{} ({})", c.title, c.kind)).collect())
+            .unwrap_or_default();
+        if total == 0 && files == 0 {
+            out.push_str("- Nothing exists yet: an empty project — `pipeline_register` creates the first route, `file_write` the first page.\n");
+        } else {
+            out.push_str(&format!(
+                "- What exists: {total} pipelines ({active} active, {stale} stale, {draft} draft) → `pipeline_list`, then `pipeline_describe file_rel_path=\"…\" compact=true`; \
+                 {files} files → `file_list`, then `file_outline rel_path=\"…\"` before `file_read`.\n"
+            ));
+        }
+        if !connections.is_empty() {
+            out.push_str(&format!(
+                "- Databases: {} → `connection_describe slug=\"…\" scope=\"tables\"` before any SQL.",
+                connections.join(", ")
+            ));
+            if !credentials.is_empty() {
+                out.push_str(&format!(" Credentials: {}.", credentials.join(", ")));
+            }
+            out.push('\n');
+        }
+        // A repository with no commits answers "fatal: … does not have any
+        // commits yet" on stdout; that is not a commit list.
+        let git = self.git_command("log", Some("--oneline -3"), None).await;
+        let git_text = git.text.trim();
+        if !git_text.is_empty() && !git_text.starts_with("Error") && !git_text.starts_with("fatal:") {
+            let last: Vec<&str> = git_text.lines().take(3).collect();
+            out.push_str(&format!("- Last commits: {}\n", last.join(" · ")));
         }
 
-        if let Ok(soul) = self
+        // Zebflow knowledge as a direction table: one row per kind of task,
+        // read only when the task is that kind.
+        let project_skills: Vec<String> = self
             .platform
             .projects
-            .read_agent_doc(owner, project, "SOUL.md")
-        {
-            if !soul
-                .trim_start()
-                .starts_with("# Soul\n\nDescribe the assistant")
-                && soul.len() > 60
-            {
+            .project_layout(owner, project)
+            .map(|layout| {
+                crate::platform::skills::list(&layout.repo_source_dir())
+                    .into_iter()
+                    .filter(|s| s.source == crate::platform::skills::SkillSource::Project)
+                    .map(|s| format!("`{}` — {}", s.name, s.description))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let node_count = official_node_count();
+        out.push_str(&format!(
+            "\n## Step 2 — Zebflow, only what this task needs\n\
+             | If the task is… | open |\n|---|---|\n\
+             | any task, first time this session | `skill_read name=\"zebflow-basic\"` |\n\
+             | creating a new file or module | `skill_read name=\"zebflow-engineering\"` |\n\
+             | a route, an API, a form POST, a job | `help topic=\"pipeline/dsl\"` then `skill_read name=\"zebflow-pipeline\"` |\n\
+             | a page or component | `help topic=\"web\"` then `skill_read name=\"zebflow-rwe\"` |\n\
+             | a screen with forms, tables, dialogs | `skill_read name=\"zebflow-ui\"` |\n\
+             | a query, a table, a migration | `connection_describe` then `skill_read name=\"zebflow-data\"` |\n\
+             | sign-in, roles, a protected route | `skill_read name=\"zebflow-auth\"` |\n\
+             | uploads, images, rich text | `skill_read name=\"zebflow-files-editor\"` |\n\
+             | which node does X ({node_count} kinds, one line each) | `help topic=\"pipeline/nodes\"` |\n\
+             | one node's flags | `help topic=\"pipeline/nodes/<short name>\"` |\n\
+             | where a file or URL lives, hosts, surfaces | `help topic=\"platform\"` |\n\
+             | proving a route or page works | `skill_read name=\"zebflow-verify\"` |\n\
+             | adding a Hub package | `skill_read name=\"zebflow-hub\"` |\n\
+             | anything else | `help_search query=\"…\"` |\n"
+        ));
+        if !project_skills.is_empty() {
+            out.push_str("\nThis project's own skills override the blessed ones:\n");
+            for s in &project_skills {
+                out.push_str(&format!("- {s}\n"));
+            }
+        }
+
+        out.push_str(
+            "\n## Step 3 — the loop\n\
+             Orient (`pipeline_describe … compact=true`, `file_outline`, `connection_describe`) → \
+             Build through the tools only (`pipeline_register` for DSL, `file_write` for TSX, then `pipeline_activate`; never the filesystem, never a direct edit of a live route) → \
+             Verify (`route_fetch path=\"…\"`: status, `rwe_component_errors`, body — a 200 with a component error is not done) → \
+             Record (`docs_agent_write name=\"MEMORY.md\"` with durable, non-obvious facts; never commit for the user).\n",
+        );
+
+        out.push_str("\n---\n\n## AGENTS.md\n");
+        match self.platform.projects.read_agent_doc(owner, project, "AGENTS.md") {
+            Ok(content) => out.push_str(&content),
+            Err(_) => out.push_str("(none — create with `docs_agent_write name=\"AGENTS.md\" content=…`)"),
+        }
+        if let Ok(soul) = self.platform.projects.read_agent_doc(owner, project, "SOUL.md") {
+            if !soul.trim_start().starts_with("# Soul\n\nDescribe the assistant") && soul.len() > 60 {
                 out.push_str("\n\n## Personality (SOUL.md)\n");
                 out.push_str(&soul);
             }
         }
-
-        out.push_str("\n\n## Project Memory: MEMORY.md\n");
-        match self
-            .platform
-            .projects
-            .read_agent_doc(owner, project, "MEMORY.md")
-        {
+        out.push_str("\n\n## MEMORY.md\n");
+        match self.platform.projects.read_agent_doc(owner, project, "MEMORY.md") {
             Ok(mem) => {
-                let is_default =
-                    mem.contains("_(This file is managed by the assistant.") && mem.len() < 300;
+                let is_default = mem.contains("_(This file is managed by the assistant.") && mem.len() < 300;
                 if is_default {
-                    out.push_str("(empty — write discoveries here: `docs_agent_write name=\"MEMORY.md\" content=...`)");
+                    out.push_str("(empty — write discoveries here: `docs_agent_write name=\"MEMORY.md\" content=…`)");
                 } else {
                     out.push_str(&mem);
                 }
@@ -381,177 +494,16 @@ impl PlatformOps {
             Err(_) => out.push_str("(none)"),
         }
 
-        out.push_str("\n\n---\n\n## Project Docs\n");
-        match self.platform.projects.list_repo_tree(owner, project, &RepoTreeScope::all()) {
-            Ok(listing) if listing.items.iter().any(|item| item.file_kind == "doc") => {
-                for item in listing.items.iter().filter(|item| item.file_kind == "doc") {
-                    out.push_str(&format!(
-                        "  {} -> `file_read rel_path=\"{}\"`\n",
-                        item.rel_path, item.rel_path
-                    ));
-                }
-            }
-            Ok(_) => {
-                out.push_str(
-                    "(none — interview the user: what to build, DB schema, auth needs?)\n",
-                );
-                out.push_str("Then: `file_write rel_path=\"docs/REQUIREMENTS.md\" content=...`\n");
-            }
-            Err(e) => out.push_str(&format!("(error: {e})\n")),
-        }
-
-        out.push_str("\n---\n\n## Live Project Inventory\n");
-
-        match self
-            .platform
-            .projects
-            .list_pipeline_meta_rows(owner, project)
-        {
-            Ok(ps) if !ps.is_empty() => {
-                let active = ps.iter().filter(|p| pipeline_status(p) == "active").count();
-                let stale = ps.iter().filter(|p| pipeline_status(p) == "stale").count();
-                let draft = ps.len() - active - stale;
-                out.push_str(&format!(
-                    "\n### Pipelines [{active} active, {stale} stale, {draft} draft]\n"
-                ));
-                for p in ps.iter().take(60) {
-                    let status = pipeline_status(p);
-                    let trigger = if !p.trigger_kind.is_empty() {
-                        format!(" | {}", p.trigger_kind)
-                    } else {
-                        String::new()
-                    };
-                    out.push_str(&format!("  {} [{status}{trigger}]\n", p.file_rel_path));
-                }
-                if ps.len() > 60 {
-                    out.push_str(&format!("  ... ({} more)\n", ps.len() - 60));
-                }
-                out.push_str(
-                    "  -> `pipeline_describe file_rel_path=\"...\" compact=true` for node IDs and key config\n",
-                );
-            }
-            Ok(_) => {
-                out.push_str("\n### Pipelines\n  (none — use `pipeline_register` to create)\n")
-            }
-            Err(e) => out.push_str(&format!("\n### Pipelines\n  (error: {e})\n")),
-        }
-
-        match self.platform.projects.list_repo_tree(owner, project, &RepoTreeScope::all()) {
-            Ok(workspace) => {
-                let files: Vec<_> = workspace
-                    .items
-                    .iter()
-                    .filter(|i| i.kind == "file")
-                    .collect();
-                out.push_str(&format!("\n### Templates [{} files]\n", files.len()));
-                if files.is_empty() {
-                    out.push_str("  (none — use `file_create` to scaffold)\n");
-                } else {
-                    for item in files.iter().take(40) {
-                        let tag = template_type_tag(&item.rel_path);
-                        out.push_str(&format!("  [{}] {}\n", tag, item.rel_path));
-                    }
-                    if files.len() > 40 {
-                        out.push_str(&format!("  ... ({} more)\n", files.len() - 40));
-                    }
-                    out.push_str("  -> `file_outline rel_path=\"...\"` first, then `file_read rel_path=\"...\"` when content is needed\n");
-                }
-            }
-            Err(e) => out.push_str(&format!("\n### Templates\n  (error: {e})\n")),
-        }
-
-        out.push_str("\n### Connections & Credentials\n");
-        match self
-            .platform
-            .db_connections
-            .list_project_connections(owner, project)
-        {
-            Ok(items) if !items.is_empty() => {
-                for c in &items {
-                    out.push_str(&format!(
-                        "  {} ({}) -> `connection_describe slug=\"{}\" scope=\"tables\"`\n",
-                        c.connection_slug, c.database_kind, c.connection_slug
-                    ));
-                }
-            }
-            Ok(_) => out.push_str("  (none — add via UI Settings → Connections)\n"),
-            Err(e) => out.push_str(&format!("  (error: {e})\n")),
-        }
-        match self
-            .platform
-            .credentials
-            .list_project_credentials(owner, project)
-        {
-            Ok(items) if !items.is_empty() => {
-                let creds: Vec<String> = items
-                    .iter()
-                    .map(|c| format!("{} ({})", c.title, c.kind))
-                    .collect();
-                out.push_str(&format!("  Credentials: {}\n", creds.join(", ")));
-            }
-            Ok(_) => out.push_str("  Credentials: (none)\n"),
-            Err(_) => {}
-        }
-
-        let git = self.git_command("log", Some("--oneline -8"), None).await;
-        if !git.text.starts_with("Error") && !git.text.trim().is_empty() {
-            out.push_str("\n---\n\n## Recent Git Activity\n");
-            for line in git.text.lines().take(8) {
-                out.push_str(&format!("  {line}\n"));
-            }
-        }
-
-        let node_count = official_node_count();
-        let example_count = crate::platform::help::HELP
-            .iter()
-            .filter(|n| n.path.starts_with("pipeline/examples/"))
-            .count();
-        out.push_str(&format!(
-            "\n---\n\n## MCP Tool Map\n\
-             Pipeline DSL: `help topic=\"pipeline/dsl\"`; node catalog: `help topic=\"pipeline/nodes\"` ({node_count} official nodes)\n\
-             Web templates: `help topic=\"web\"`; examples: `help topic=\"pipeline/examples\"` ({example_count} recipes)\n\
-             Search docs: `help_search query=\"...\"`\n\
-             Project docs are files: `file_list glob=\"docs/**\"`, `file_read`, `file_write rel_path=\"docs/...\"`\n\
-             Read/write agent memory: `docs_agent_read name=\"MEMORY.md\"`, `docs_agent_write name=\"MEMORY.md\" content=...`\n\
-             Inspect code cheaply: `file_outline`, `file_deps`; edit with `file_edit` or `file_batch_edit`\n\
-             Full agent workflow: `help topic=\"platform/workflow\"`\n"
-        ));
-
-        // Tier 1 of the skills: name and description only. The agent reads a
-        // body with `skill_read` when a task matches — never all of them.
-        if let Ok(layout) = self.platform.projects.project_layout(owner, project) {
-            let skills = crate::platform::skills::list(&layout.repo_source_dir());
-            if !skills.is_empty() {
-                let project_count = skills
-                    .iter()
-                    .filter(|s| s.source == crate::platform::skills::SkillSource::Project)
-                    .count();
-                out.push_str(&format!(
-                    "\n## Skills\n\
-                     A skill is the procedure for one kind of task. Read `zebflow-basic` once, `zebflow-engineering` \
-                     before the first file you create, then only the \
-                     two or three whose triggers match the task at hand (`skill_read name=\"…\"`) — a page and its \
-                     route is `zebflow-pipeline` + `zebflow-rwe`; not the whole list. The blessed `zebflow-*` skills are the same text \
-                     as github.com/zebflow/skills at {} — if your client already loaded them, skip those and \
-                     read only this project's own ({} marked `(project)`), which override them.\n",
-                    crate::version::APP_VERSION,
-                    project_count
-                ));
-                out.push_str(&crate::platform::skills::render_listing(&skills));
-            }
-        }
-
         out.push_str(
-            "\n## Operational Rules\n\
-             - Before patching a pipeline, call `pipeline_describe` and use the returned node IDs.\n\
-             - After `pipeline_register` or `pipeline_patch`, call `pipeline_activate` before expecting traffic to use it.\n\
+            "\n\n## Operational rules\n\
+             - Before patching a pipeline, `pipeline_describe` and use the returned node ids.\n\
+             - After `pipeline_register` or `pipeline_patch`, `pipeline_activate` before expecting traffic.\n\
              - When testing function pipelines, pass an explicit `input` object.\n\
-             - After meaningful work, update `MEMORY.md` with durable project facts.\n"
+             - After meaningful work, update `MEMORY.md` with durable project facts.\n",
         );
 
         OpsResult::ok(out)
-    }
-}
+    }}
 
 // ── Help / Knowledge ──────────────────────────────────────────────────────────
 
@@ -875,9 +827,11 @@ impl PlatformOps {
             .map(|l| l.text.clone())
             .collect::<Vec<_>>()
             .join("\n");
-        let nav = format!(
-            "/projects/{}/{}/pipelines/registry?path=/",
-            self.owner, self.project
+        // The page that shows what was just registered, with it selected.
+        let nav = crate::platform::interaction::patterns::pipeline_editor_url(
+            &self.owner,
+            &self.project,
+            &frp,
         );
         OpsResult::ok_nav(text, nav)
     }
@@ -906,11 +860,13 @@ impl PlatformOps {
     pub async fn pipeline_patch(
         &self,
         file_rel_path: &str,
+        target: &str,
         node_id: &str,
         flags: Option<&str>,
         body: Option<&str>,
     ) -> OpsResult {
-        let mut dsl = format!("patch pipeline {file_rel_path} node {node_id}");
+        let target = if target.trim().is_empty() { "node" } else { target.trim() };
+        let mut dsl = format!("patch pipeline {file_rel_path} {target} {node_id}");
         if let Some(f) = flags {
             dsl.push(' ');
             dsl.push_str(f);
@@ -948,9 +904,10 @@ impl PlatformOps {
             .map(|l| l.text.clone())
             .collect::<Vec<_>>()
             .join("\n");
-        let nav = format!(
-            "/projects/{}/{}/pipelines/registry?path=/",
-            self.owner, self.project
+        let nav = crate::platform::interaction::patterns::pipeline_editor_url(
+            &self.owner,
+            &self.project,
+            file_rel_path,
         );
         OpsResult::ok_nav(text, nav)
     }
@@ -1806,24 +1763,6 @@ impl PlatformOps {
     }
 }
 
-/// Single-letter type tag for a template file based on its path prefix.
-/// P=page, C=component, L=layout, S=script/behavior, F=other file.
-fn template_type_tag(rel_path: &str) -> &'static str {
-    // A domain layout nests the kind folders (`modules/finance/pages/x.tsx`),
-    // so the kind is the nearest such segment, not the root prefix.
-    let in_kind = |kind: &str| rel_path.starts_with(&format!("{kind}/")) || rel_path.contains(&format!("/{kind}/"));
-    if in_kind("pages") {
-        "P"
-    } else if in_kind("components") {
-        "C"
-    } else if in_kind("layout") {
-        "L"
-    } else if in_kind("scripts") || in_kind("behavior") {
-        "S"
-    } else {
-        "F"
-    }
-}
 
 /// Returns true if the path looks like a pipeline file.
 ///
@@ -2106,7 +2045,17 @@ impl PlatformOps {
             .filter(|s| !s.is_empty())
             .unwrap_or_else(|| mood.default_seed().to_string());
         match generate(&seed, mood) {
-            Ok(theme) => OpsResult::ok(serde_json::to_string_pretty(&theme).unwrap_or_default()),
+            Ok(mut theme) => {
+                // A project that holds the pairing under static/fonts/ gets
+                // @font-face rules for its own files instead of the link.
+                if let Ok(files) = self.platform.fonts.project_font_files(&self.owner, &self.project) {
+                    theme.fonts_css = crate::platform::theme::generate::font_face_css(&theme.style, &files, &self.owner, &self.project);
+                    if theme.fonts_css.is_some() {
+                        theme.notes.push("the display and text families are in static/fonts/: paste `fonts_css` and skip the Google Fonts link".to_string());
+                    }
+                }
+                OpsResult::ok(serde_json::to_string_pretty(&theme).unwrap_or_default())
+            }
             Err(message) => OpsResult::err(message),
         }
     }
@@ -2128,8 +2077,79 @@ pub struct RouteFetchReport {
     /// present for HTML responses (`docs/contracts/discoverability.md` §4).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub seo: Option<Value>,
+    /// Whether a phone would offer to install this page: the manifest it links,
+    /// the worker that manifest names, and Chrome's checklist as booleans —
+    /// present when the page links a manifest (`discoverability.md` §6).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pwa: Option<Value>,
     pub body: String,
     pub truncated: bool,
+}
+
+/// The manifest `href` a page links, if any.
+pub fn manifest_href(html: &str) -> Option<String> {
+    let re = regex::Regex::new(r#"(?is)<link\s+[^>]*rel=["']manifest["'][^>]*href=["']([^"']*)["']"#).unwrap();
+    re.captures(html).and_then(|c| c.get(1)).map(|m| m.as_str().trim().to_string()).filter(|h| !h.is_empty())
+}
+
+/// Chrome's installability checklist read off a manifest document, without a
+/// browser. `worker` is what fetching the manifest's `serviceworker.src` gave
+/// back: `(status, content_type, service_worker_allowed)`. Pure, so a test can
+/// hand it a manifest and see every reason.
+pub fn manifest_facts(manifest: &Value, worker: Option<(u16, String, String)>) -> Value {
+    let s = |k: &str| manifest.get(k).and_then(Value::as_str).map(str::to_string);
+    let name = s("name").filter(|v| !v.trim().is_empty());
+    let short_name = s("short_name").filter(|v| !v.trim().is_empty());
+    let start_url = s("start_url");
+    let scope = s("scope").unwrap_or_else(|| "/".to_string());
+    let display = s("display").unwrap_or_else(|| "browser".to_string());
+    let icons: Vec<Value> = manifest.get("icons").and_then(Value::as_array).cloned().unwrap_or_default();
+    let icon_px = |icon: &Value| -> u32 {
+        icon.get("sizes").and_then(Value::as_str).unwrap_or("").split('x').next().and_then(|w| w.trim().parse().ok()).unwrap_or(0)
+    };
+    let has_192 = icons.iter().any(|i| icon_px(i) >= 192);
+    let has_512 = icons.iter().any(|i| icon_px(i) >= 512);
+    let has_maskable = icons.iter().any(|i| i.get("purpose").and_then(Value::as_str).is_some_and(|p| p.contains("maskable")));
+    let start_in_scope = start_url.as_deref().is_some_and(|u| u.starts_with(scope.as_str()));
+    let display_ok = matches!(display.as_str(), "standalone" | "fullscreen" | "minimal-ui");
+
+    // The manifest may name its worker (`serviceworker.src`, the old draft
+    // member); otherwise the convention is `sw.js` at the scope root.
+    let (worker_src, assumed) = match manifest.get("serviceworker").and_then(|w| w.get("src")).and_then(Value::as_str) {
+        Some(src) => (Some(src.to_string()), false),
+        None => (Some(format!("{}sw.js", if scope.ends_with('/') { scope.clone() } else { format!("{scope}/") })), true),
+    };
+    let worker_report = match (&worker_src, &worker) {
+        (Some(src), Some((status, content_type, allowed))) => {
+            let is_js = content_type.contains("javascript") || content_type.contains("ecmascript");
+            // The worker controls its own directory, widened by Service-Worker-Allowed.
+            let own_dir = match src.rfind('/') { Some(i) => src[..=i].to_string(), None => "/".to_string() };
+            let effective = if !allowed.is_empty() { allowed.clone() } else { own_dir };
+            let covers = start_url.as_deref().is_some_and(|u| u.starts_with(effective.as_str()));
+            json!({ "src": src, "assumed": assumed, "status": status, "content_type": content_type, "service_worker_allowed": allowed, "effective_scope": effective, "is_javascript": is_js, "covers_start_url": covers, "ok": *status == 200 && is_js && covers })
+        }
+        (Some(src), None) => json!({ "src": src, "assumed": assumed, "ok": false, "error": "worker could not be fetched" }),
+        (None, _) => json!({ "src": null, "ok": false }),
+    };
+    let worker_ok = worker_report.get("ok").and_then(Value::as_bool).unwrap_or(false);
+
+    let mut reasons = Vec::new();
+    if name.is_none() && short_name.is_none() { reasons.push("manifest has neither name nor short_name"); }
+    if start_url.is_none() { reasons.push("manifest has no start_url"); }
+    else if !start_in_scope { reasons.push("start_url is outside scope"); }
+    if !display_ok { reasons.push("display must be standalone, fullscreen or minimal-ui"); }
+    if !has_192 { reasons.push("no icon of at least 192×192"); }
+    if !has_512 { reasons.push("no icon of at least 512×512"); }
+    if !worker_ok { reasons.push("no service worker controlling start_url"); }
+
+    json!({
+        "name": name, "short_name": short_name, "id": s("id"), "start_url": start_url, "scope": scope, "display": display,
+        "theme_color": s("theme_color"), "background_color": s("background_color"),
+        "icons": { "count": icons.len(), "has_192": has_192, "has_512": has_512, "has_maskable": has_maskable },
+        "worker": worker_report,
+        "installable": reasons.is_empty(),
+        "reasons": reasons,
+    })
 }
 
 /// Read the machine-facing facts off a rendered page. This is deliberately a
@@ -2317,6 +2337,44 @@ impl PlatformOps {
             })
             .collect();
         let seo = if content_type.starts_with("text/html") { Some(seo_facts(&text)) } else { None };
+        // A page that links a manifest is asking to be installable; fetch the
+        // manifest and the worker it names on the same host and report Chrome's
+        // checklist, so an agent sees "installable: false, reasons: […]" instead
+        // of a phone that silently never offers the button.
+        let pwa = match manifest_href(&text) {
+            Some(href) if content_type.starts_with("text/html") => {
+                let same_host = |p: &str| format!("{}{}", crate::platform::boot::local_instance_url(), if p.starts_with('/') { p.to_string() } else { format!("/{p}") });
+                let manifest_resp = client.get(same_host(&href)).header(reqwest::header::HOST, dev_host.clone()).send().await;
+                match manifest_resp {
+                    Ok(r) => {
+                        let m_status = r.status().as_u16();
+                        let m_type = r.headers().get(reqwest::header::CONTENT_TYPE).and_then(|v| v.to_str().ok()).unwrap_or("").to_string();
+                        let m_text = r.text().await.unwrap_or_default();
+                        match serde_json::from_str::<Value>(&m_text) {
+                            Ok(manifest) if m_status == 200 => {
+                                let scope = manifest.get("scope").and_then(Value::as_str).unwrap_or("/");
+                                let worker_src = manifest.get("serviceworker").and_then(|w| w.get("src")).and_then(Value::as_str).map(str::to_string)
+                                    .unwrap_or_else(|| format!("{}sw.js", if scope.ends_with('/') { scope.to_string() } else { format!("{scope}/") }));
+                                let worker = match client.get(same_host(&worker_src)).header(reqwest::header::HOST, dev_host.clone()).send().await {
+                                    Ok(w) => {
+                                        let h = |n: &str| w.headers().get(n).and_then(|v| v.to_str().ok()).unwrap_or("").to_string();
+                                        Some((w.status().as_u16(), h("content-type"), h("service-worker-allowed")))
+                                    }
+                                    Err(_) => None,
+                                };
+                                let mut facts = manifest_facts(&manifest, worker);
+                                facts["href"] = json!(href);
+                                facts["content_type"] = json!(m_type);
+                                Some(facts)
+                            }
+                            _ => Some(json!({ "href": href, "status": m_status, "content_type": m_type, "installable": false, "reasons": ["manifest did not answer 200 with JSON"] })),
+                        }
+                    }
+                    Err(e) => Some(json!({ "href": href, "installable": false, "reasons": [format!("manifest fetch failed: {e}")] })),
+                }
+            }
+            _ => None,
+        };
         let cap = max_body_chars.unwrap_or(6000).clamp(200, 60_000);
         let (body, truncated) = if text.chars().count() > cap {
             (text.chars().take(cap).collect::<String>(), true)
@@ -2332,10 +2390,74 @@ impl PlatformOps {
             length,
             rwe_component_errors,
             seo,
+            pwa,
             body,
             truncated,
         };
         OpsResult::ok(serde_json::to_string_pretty(&report).unwrap_or_default())
+    }
+}
+
+#[cfg(test)]
+mod pwa_facts_tests {
+    use super::{manifest_facts, manifest_href};
+    use serde_json::json;
+
+    #[test]
+    fn a_complete_manifest_with_a_root_worker_is_installable() {
+        let m = json!({ "name": "RESEARCHSITE", "start_url": "/", "scope": "/", "display": "standalone",
+            "icons": [{ "src": "/_files/pwa/icon-192.png", "sizes": "192x192" }, { "src": "/_files/pwa/icon-512.png", "sizes": "512x512", "purpose": "maskable" }],
+            "serviceworker": { "src": "/sw.js", "scope": "/" } });
+        let f = manifest_facts(&m, Some((200, "text/javascript; charset=utf-8".into(), "/".into())));
+        assert_eq!(f["installable"], true, "{f}");
+        assert_eq!(f["icons"]["has_maskable"], true);
+        assert_eq!(f["worker"]["effective_scope"], "/");
+    }
+
+    #[test]
+    fn a_worker_served_under_files_controls_nothing_unless_the_header_widens_it() {
+        let m = json!({ "name": "X", "start_url": "/", "display": "standalone",
+            "icons": [{ "sizes": "192x192" }, { "sizes": "512x512" }], "serviceworker": { "src": "/_files/sw.js" } });
+        let narrow = manifest_facts(&m, Some((200, "text/javascript".into(), String::new())));
+        assert_eq!(narrow["installable"], false);
+        assert_eq!(narrow["worker"]["effective_scope"], "/_files/");
+        assert!(narrow["reasons"].as_array().unwrap().iter().any(|r| r.as_str().unwrap().contains("service worker")));
+        let widened = manifest_facts(&m, Some((200, "text/javascript".into(), "/".into())));
+        assert_eq!(widened["installable"], true);
+    }
+
+    #[test]
+    fn a_manifest_that_names_no_worker_is_checked_at_sw_js_under_its_scope() {
+        let mut m = json!({ "name": "My RESEARCHSITE", "start_url": "/member/", "scope": "/member/", "display": "standalone",
+            "icons": [{ "sizes": "192x192" }, { "sizes": "512x512" }] });
+        let f = manifest_facts(&m, Some((200, "text/javascript".into(), String::new())));
+        assert_eq!(f["worker"]["src"], "/member/sw.js");
+        assert_eq!(f["worker"]["assumed"], true);
+        assert_eq!(f["installable"], true, "{f}");
+        // `/member` without the slash is outside `/member/` — the browser's rule, and the
+        // one mistake every second app makes, so the report has to say it.
+        m["start_url"] = json!("/member");
+        let f = manifest_facts(&m, Some((200, "text/javascript".into(), String::new())));
+        assert_eq!(f["worker"]["covers_start_url"], false);
+        assert_eq!(f["installable"], false);
+    }
+
+    #[test]
+    fn every_missing_piece_is_a_named_reason() {
+        let f = manifest_facts(&json!({ "start_url": "/app", "scope": "/member", "display": "browser", "icons": [] }), None);
+        let reasons: Vec<&str> = f["reasons"].as_array().unwrap().iter().map(|r| r.as_str().unwrap()).collect();
+        assert!(reasons.iter().any(|r| r.contains("name")));
+        assert!(reasons.iter().any(|r| r.contains("outside scope")));
+        assert!(reasons.iter().any(|r| r.contains("display")));
+        assert!(reasons.iter().any(|r| r.contains("192")));
+        assert!(reasons.iter().any(|r| r.contains("512")));
+        assert!(reasons.iter().any(|r| r.contains("service worker")));
+    }
+
+    #[test]
+    fn the_manifest_link_is_read_off_the_page() {
+        assert_eq!(manifest_href(r#"<head><link rel="manifest" href="/manifest.webmanifest"><title>x</title></head>"#).as_deref(), Some("/manifest.webmanifest"));
+        assert_eq!(manifest_href("<head><title>x</title></head>"), None);
     }
 }
 

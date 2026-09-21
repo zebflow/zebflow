@@ -21,7 +21,7 @@
 //! `ref` would stop meaning one consistent thing — sometimes a key in the store
 //! Zebflow owns, sometimes a key in a bucket it does not.
 //!
-//! [`FileRef`]: crate::pipeline::nodes::basic::file_ref
+//! [`FileRef`]: crate::pipeline::nodes::shared::file_ref
 
 use std::path::PathBuf;
 
@@ -127,7 +127,7 @@ mod tests {
     fn the_declared_word_is_the_word_a_file_ref_carries() {
         assert_eq!(
             FileBackend::default().as_str(),
-            crate::pipeline::nodes::basic::file_ref::BACKEND_ZEBFS
+            crate::pipeline::nodes::shared::file_ref::BACKEND_ZEBFS
         );
     }
 

@@ -6010,6 +6010,35 @@ async fn a_web_published_layer_serves_and_shows_only_the_chosen_properties() {
         "the stored path must not carry a leading slash: {registry_raw}"
     );
 
+    // Addressing (docs/contracts/addressing.md §2): the `ms` surface is off
+    // until the operator switches it on, and a disabled surface answers 404
+    // on the platform form too. The publish itself is not the switch.
+    let closed = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/ms/superadmin/default/roads?limit=10")
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("serve response");
+    assert_eq!(closed.status(), StatusCode::NOT_FOUND, "ms is off by default");
+    let switched = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/projects/superadmin/default/settings/addressing")
+                .method("PUT")
+                .header(header::COOKIE, &cookie)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(json!({ "data": { "hosts": [], "routes": [], "disabled": ["fs"] } }).to_string()))
+                .expect("request"),
+        )
+        .await
+        .expect("addressing write");
+    assert_eq!(switched.status(), StatusCode::OK, "switch the ms surface on");
+
     let served = app
         .clone()
         .oneshot(
@@ -6023,7 +6052,7 @@ async fn a_web_published_layer_serves_and_shows_only_the_chosen_properties() {
     assert_eq!(
         served.status(),
         StatusCode::OK,
-        "a layer published through the web UI must serve"
+        "a layer published through the web UI must serve once the surface is on"
     );
     let served = response_json(served).await;
     assert_eq!(served["count"], json!(1));
@@ -6384,6 +6413,293 @@ async fn preview_refuses_a_subject_without_project_capabilities() {
 /// One person's whole lifecycle: created, working, entangled with other
 /// people's projects — and then deleted, with every refusal checked on the
 /// way and no footprint left at the end.
+/// docs/contracts/addressing.md §2: the dev host is the Studio's, a named
+/// host is the public's. On `research.test` the platform API and `/_mcp` are
+/// not there at all until the project switches `mcp` on; the dev host keeps
+/// serving them so the Studio's preview and an agent's session keep working.
+#[tokio::test]
+async fn a_named_host_serves_only_the_site_until_mcp_is_switched_on() {
+    let mut config = PlatformConfig::default();
+    config.data_root = temp_test_dir("addressing-named-host-api");
+    config.default_password = "test-pass".to_string();
+    let app = build_router(config).await.expect("platform router");
+    let cookie = login_cookie(app.clone(), "superadmin", "test-pass").await;
+
+    let put_hosts = |disabled: serde_json::Value| {
+        Request::builder()
+            .uri("/api/projects/superadmin/default/settings/addressing")
+            .method("PUT")
+            .header(header::COOKIE, &cookie)
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(json!({ "data": { "hosts": ["research.test"], "routes": [], "disabled": disabled } }).to_string()))
+            .expect("request")
+    };
+    let status = |host: &'static str, path: &'static str, with_cookie: bool| {
+        let mut b = Request::builder().uri(path).header(header::HOST, host);
+        if with_cookie {
+            b = b.header(header::COOKIE, &cookie);
+        }
+        b.body(Body::empty()).expect("request")
+    };
+
+    let saved = app.clone().oneshot(put_hosts(json!(["fs", "ms", "mcp"]))).await.expect("addressing write");
+    assert_eq!(saved.status(), StatusCode::OK);
+
+    // Named host, api_on_hosts off (the default): the site is there, the API and the agent endpoint are not.
+    let site = app.clone().oneshot(status("research.test", "/", false)).await.expect("site");
+    assert_eq!(
+        site.headers().get("x-zebflow-project").and_then(|v| v.to_str().ok()),
+        Some("superadmin/default"),
+        "the host resolved to the project (the default project has no home page, so the status is 404)"
+    );
+    let api = app.clone().oneshot(status("research.test", "/api/projects/superadmin/default/pipelines", true)).await.expect("api");
+    assert_eq!(api.status(), StatusCode::NOT_FOUND, "the platform API is not on a public host by default, even with a session");
+    let mcp = app.clone().oneshot(status("research.test", "/_mcp", false)).await.expect("mcp");
+    assert_eq!(mcp.status(), StatusCode::NOT_FOUND, "/_mcp is off by default on a public host");
+
+    // There is no dev mode: the dev host obeys the same switch, and the platform address always serves the API.
+    let dev = app.clone().oneshot(status("default.superadmin.localhost", "/api/projects/superadmin/default/pipelines", true)).await.expect("dev");
+    assert_eq!(dev.status(), StatusCode::NOT_FOUND, "the dev host is a project host like any other");
+    let platform = app.clone().oneshot(Request::builder().uri("/api/projects/superadmin/default/pipelines").header(header::COOKIE, &cookie).body(Body::empty()).expect("request")).await.expect("platform");
+    assert_eq!(platform.status(), StatusCode::OK);
+
+    // Switch api_on_hosts and mcp on: the named host now serves the API (still behind auth) and the agent endpoint.
+    let saved = app.clone().oneshot(Request::builder().uri("/api/projects/superadmin/default/settings/addressing").method("PUT")
+        .header(header::COOKIE, &cookie).header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(json!({ "data": { "hosts": ["research.test"], "routes": [], "disabled": ["fs", "ms"], "api_on_hosts": true } }).to_string())).expect("request")).await.expect("addressing write");
+    assert_eq!(saved.status(), StatusCode::OK);
+    let api_anon = app.clone().oneshot(status("research.test", "/api/projects/superadmin/default/pipelines", false)).await.expect("api anon");
+    assert_eq!(api_anon.status(), StatusCode::UNAUTHORIZED, "reachable now, and still authenticated");
+    let api = app.clone().oneshot(status("research.test", "/api/projects/superadmin/default/pipelines", true)).await.expect("api");
+    assert_eq!(api.status(), StatusCode::OK);
+    let mcp = app.clone().oneshot(status("research.test", "/_mcp", false)).await.expect("mcp");
+    assert_ne!(mcp.status(), StatusCode::NOT_FOUND, "/_mcp answers (and refuses without a bearer) once switched on");
+}
+
+/// docs/contracts/project.md "Git": a conflict is a state the Studio resolves,
+/// not "resolve locally". Against a bare repository on disk: the project
+/// commits and pushes; a second clone pushes a conflicting change; the
+/// project's next commit stays local, `sync` answers 409 with the file, the
+/// rebase is kept, `resolve mine` + `continue` finish it, `push` lands both
+/// histories, and status reports `clean` throughout with honest counts.
+#[tokio::test]
+async fn a_git_conflict_is_resolved_in_the_studio_not_locally() {
+    let mut config = PlatformConfig::default();
+    config.data_root = temp_test_dir("git-sync-conflict");
+    config.default_password = "test-pass".to_string();
+    let data_root = config.data_root.clone();
+    let app = build_router(config).await.expect("platform router");
+    let cookie = login_cookie(app.clone(), "superadmin", "test-pass").await;
+
+    let git = |dir: &std::path::Path, args: &[&str]| {
+        let out = std::process::Command::new("git")
+            .args(["-c", "user.name=Other", "-c", "user.email=other@example.test"])
+            .arg("-C").arg(dir).args(args).output().expect("git runs");
+        assert!(out.status.success(), "git {:?}: {}", args, String::from_utf8_lossy(&out.stderr));
+        String::from_utf8_lossy(&out.stdout).to_string()
+    };
+    let bare = data_root.join("remote.git");
+    git(&data_root, &["init", "--bare", "--initial-branch=main", bare.to_str().unwrap()]);
+    let remote_url = format!("file://{}", bare.display());
+
+    let post = |path: &'static str, body: serde_json::Value| {
+        let app = app.clone(); let cookie = cookie.clone();
+        async move {
+            app.oneshot(Request::builder().uri(format!("/api/projects/superadmin/default/git/{path}")).method("POST")
+                .header(header::COOKIE, &cookie).header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(body.to_string())).expect("request")).await.expect("response")
+        }
+    };
+    let write = |path: &'static str, body: &'static str| {
+        let app = app.clone(); let cookie = cookie.clone();
+        async move {
+            app.oneshot(Request::builder().uri(format!("/api/projects/superadmin/default/repo/file?path={path}")).method("PUT")
+                .header(header::COOKIE, &cookie).header(header::CONTENT_TYPE, "text/plain")
+                .body(Body::from(body)).expect("request")).await.expect("response")
+        }
+    };
+    let status = || {
+        let app = app.clone(); let cookie = cookie.clone();
+        async move {
+            let r = app.oneshot(Request::builder().uri("/api/projects/superadmin/default/git/status")
+                .header(header::COOKIE, &cookie).body(Body::empty()).expect("request")).await.expect("response");
+            response_json(r).await
+        }
+    };
+
+    // Connect the remote, commit and push the first version.
+    let saved = app.clone().oneshot(Request::builder().uri("/api/projects/superadmin/default/git/remote").method("PUT")
+        .header(header::COOKIE, &cookie).header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(json!({ "credential_id": "", "repo_url": remote_url, "branch": "main" }).to_string())).expect("request")).await.expect("remote");
+    let saved_status = saved.status();
+    assert_eq!(saved_status, StatusCode::OK, "{}", response_json(saved).await);
+    assert_eq!(write("docs/notes.md", "line one\n").await.status(), StatusCode::OK);
+    let first = post("commit", json!({ "files": ["docs/notes.md"], "message": "first", "push": true })).await;
+    assert_eq!(first.status(), StatusCode::OK, "{}", response_json(first).await);
+    let st = status().await;
+    assert_eq!(st["sync_word"], "clean", "{st}");
+
+    // Someone else pushes a conflicting change to the same line.
+    let other = data_root.join("other");
+    git(&data_root, &["clone", &remote_url, other.to_str().unwrap()]);
+    fs::write(other.join("docs/notes.md"), "line one, edited elsewhere\n").expect("write");
+    git(&other, &["commit", "-am", "elsewhere"]);
+    git(&other, &["push", "origin", "main"]);
+
+    // The project commits its own version. The commit is local and fine.
+    assert_eq!(write("docs/notes.md", "line one, edited here\n").await.status(), StatusCode::OK);
+    let local = post("commit", json!({ "files": ["docs/notes.md"], "message": "here", "push": false })).await;
+    let local_status = local.status();
+    assert_eq!(local_status, StatusCode::OK, "{}", response_json(local).await);
+
+    // A fetch shows the truth: one to push, one to pull.
+    let fetched = post("fetch", json!({})).await;
+    assert_eq!(fetched.status(), StatusCode::OK);
+    let st = status().await;
+    assert_eq!(st["sync"]["ahead"], json!(1), "{st}");
+    assert_eq!(st["sync"]["behind"], json!(1), "{st}");
+    assert_eq!(st["sync_word"], "diverged");
+
+    // Push refuses while behind; sync stops at the conflict and keeps the rebase.
+    let pushed = post("push", json!({})).await;
+    assert_eq!(pushed.status(), StatusCode::CONFLICT);
+    assert_eq!(response_json(pushed).await["code"], "GIT_BEHIND");
+    let synced = post("sync", json!({})).await;
+    assert_eq!(synced.status(), StatusCode::CONFLICT);
+    let body = response_json(synced).await;
+    assert_eq!(body["outcome"], "conflict");
+    assert_eq!(body["state"]["conflicts"], json!(["docs/notes.md"]), "{body}");
+    let st = status().await;
+    assert_eq!(st["sync_word"], "conflict", "the rebase is a state, not an aborted attempt: {st}");
+
+    // Continue is refused while the file is unresolved; resolve keeps the project's version.
+    let early = post("continue", json!({})).await;
+    assert_eq!(early.status(), StatusCode::CONFLICT);
+    let resolved = post("resolve", json!({ "path": "docs/notes.md", "resolution": "mine" })).await;
+    assert_eq!(resolved.status(), StatusCode::OK, "{}", response_json(resolved).await);
+    let repo_file = data_root.join("users/superadmin/default/repo/docs/notes.md");
+    assert_eq!(fs::read_to_string(&repo_file).unwrap(), "line one, edited here\n", "mine means what the project had");
+    let done = post("continue", json!({})).await;
+    assert_eq!(done.status(), StatusCode::OK, "{}", response_json(done).await);
+    let st = status().await;
+    assert_eq!(st["sync_word"], "unpushed", "{st}");
+    assert_eq!(st["sync"]["ahead"], json!(1));
+    assert_eq!(st["sync"]["behind"], json!(0));
+
+    // Push lands it; the remote now carries both commits in order.
+    let pushed = post("push", json!({})).await;
+    assert_eq!(pushed.status(), StatusCode::OK, "{}", response_json(pushed).await);
+    assert_eq!(status().await["sync_word"], "clean");
+    let log = git(&bare, &["log", "--format=%s", "main"]);
+    assert_eq!(log.lines().collect::<Vec<_>>(), vec!["here", "elsewhere", "first"]);
+
+    // Taking the remote's side works the same way, and abort puts everything back.
+    git(&other, &["pull", "--rebase", "origin", "main"]);
+    fs::write(other.join("docs/notes.md"), "theirs wins\n").expect("write");
+    git(&other, &["commit", "-am", "elsewhere again"]);
+    git(&other, &["push", "origin", "main"]);
+    assert_eq!(write("docs/notes.md", "mine again\n").await.status(), StatusCode::OK);
+    assert_eq!(post("commit", json!({ "files": ["docs/notes.md"], "message": "here again", "push": false })).await.status(), StatusCode::OK);
+    assert_eq!(post("sync", json!({})).await.status(), StatusCode::CONFLICT);
+    let aborted = post("abort", json!({})).await;
+    assert_eq!(aborted.status(), StatusCode::OK);
+    assert_eq!(fs::read_to_string(&repo_file).unwrap(), "mine again\n", "abort restores the project's commit untouched");
+    assert_eq!(post("sync", json!({})).await.status(), StatusCode::CONFLICT);
+    assert_eq!(post("resolve", json!({ "path": "docs/notes.md", "resolution": "theirs" })).await.status(), StatusCode::OK);
+    assert_eq!(fs::read_to_string(&repo_file).unwrap(), "theirs wins\n", "theirs means the remote's version");
+    assert_eq!(post("continue", json!({})).await.status(), StatusCode::OK);
+    assert_eq!(post("push", json!({})).await.status(), StatusCode::OK);
+    assert_eq!(status().await["sync_word"], "clean");
+}
+
+/// `addressing.md` §2a and `kinds/invocation-record`: an uncaught failure is a
+/// 500 whatever the switch says; `hidden` shows the reference only, `shown` or
+/// a route's `--errors show` adds the failure; every response carries the run
+/// id as `X-Request-Id`, an inbound one in canonical form is adopted; the same
+/// failure three times is one error group with a count of three, found by the
+/// reference a visitor quotes.
+#[tokio::test]
+async fn an_uncaught_failure_hides_by_default_and_is_one_error_group() {
+    let mut config = PlatformConfig::default();
+    config.data_root = temp_test_dir("errors-switch-and-groups");
+    config.default_password = "test-pass".to_string();
+    let app = build_router(config).await.expect("platform router");
+    let cookie = login_cookie(app.clone(), "superadmin", "test-pass").await;
+
+    for dsl in [
+        r#"register pipelines/tests/boom -- | trigger.webhook --path /boom --method GET | script -- "throw new Error('column \"x\" does not exist at row ' + (input.query.n || 0))" | web.response"#,
+        "activate pipeline pipelines/tests/boom.zf.json",
+        r#"register pipelines/tests/boom-shown -- | trigger.webhook --path /boom-shown --method GET --errors show | script -- "throw new Error('shown on purpose')" | web.response"#,
+        "activate pipeline pipelines/tests/boom-shown.zf.json",
+    ] {
+        let r = app.clone().oneshot(Request::builder().uri("/api/projects/superadmin/default/pipelines/dsl").method("POST")
+            .header(header::COOKIE, &cookie).header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(json!({ "dsl": dsl }).to_string())).expect("request")).await.expect("dsl");
+        let j = response_json(r).await;
+        assert_eq!(j["ok"], json!(true), "{j}");
+    }
+    let call = |path: &'static str, accept: &'static str, inbound: Option<&'static str>| {
+        let app = app.clone();
+        async move {
+            let mut b = Request::builder().uri(format!("/wh/superadmin/default{path}")).header(header::ACCEPT, accept);
+            if let Some(id) = inbound { b = b.header("x-request-id", id); }
+            app.oneshot(b.body(Body::empty()).expect("request")).await.expect("response")
+        }
+    };
+    let is_hex32 = |s: &str| s.len() == 32 && s.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase());
+
+    // hidden (the default): a browser gets the neutral page with a reference and no internals
+    let r = call("/boom?n=1", "text/html,*/*", None).await;
+    assert_eq!(r.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    let rid = r.headers().get("x-request-id").and_then(|v| v.to_str().ok()).unwrap_or("").to_string();
+    assert!(is_hex32(&rid), "run id on the response: {rid:?}");
+    let html = response_text(r).await;
+    assert!(html.contains("Reference") && html.contains(&rid[..8]), "{html}");
+    assert!(!html.contains("does not exist"), "hidden must not leak the message: {html}");
+    // hidden, JSON request: code internal + the reference, nothing else
+    let r = call("/boom?n=2", "application/json", None).await;
+    assert_eq!(r.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    let j = response_json(r).await;
+    assert_eq!(j["error"]["code"], "internal");
+    assert!(j["error"].get("message").is_none(), "{j}");
+    // an inbound id in canonical form is adopted
+    let mine = "0123456789abcdef0123456789abcdef";
+    let r = call("/boom?n=3", "application/json", Some(mine)).await;
+    assert_eq!(r.headers().get("x-request-id").and_then(|v| v.to_str().ok()), Some(mine));
+    let j = response_json(r).await;
+    assert_eq!(j["error"]["request_id"], mine);
+    // a route that says --errors show reveals the failure whatever the project says
+    let r = call("/boom-shown", "application/json", None).await;
+    assert_eq!(r.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    let j = response_json(r).await;
+    assert!(j["error"]["message"].as_str().unwrap_or("").contains("shown on purpose"), "{j}");
+    assert!(j["error"]["run_url"].as_str().unwrap_or("").contains("boom-shown"), "{j}");
+
+    // three occurrences, two different row numbers: one group, count three, the quoted reference finds it
+    let r = app.clone().oneshot(Request::builder().uri("/api/projects/superadmin/default/pipelines/errors").header(header::COOKIE, &cookie).body(Body::empty()).expect("request")).await.expect("errors");
+    let groups = response_json(r).await;
+    let boom: Vec<&Value> = groups["groups"].as_array().unwrap().iter().filter(|g| g["file_rel_path"] == "pipelines/tests/boom.zf.json").collect();
+    assert_eq!(boom.len(), 1, "one group for the same error with different numbers: {groups}");
+    assert_eq!(boom[0]["count"], json!(3));
+    assert_eq!(boom[0]["occurrences"].as_array().unwrap().len(), 3);
+    assert!(boom[0]["message_pattern"].as_str().unwrap().contains("row #"), "{}", boom[0]["message_pattern"]);
+    assert_eq!(boom[0]["latest"]["run_id"], mine);
+    let r = app.clone().oneshot(Request::builder().uri(format!("/api/projects/superadmin/default/pipelines/errors?run_id={}", &rid[..8])).header(header::COOKIE, &cookie).body(Body::empty()).expect("request")).await.expect("lookup");
+    assert_eq!(r.status(), StatusCode::OK);
+    assert_eq!(response_json(r).await["group"]["count"], json!(3));
+
+    // the project switch: shown, and the same route now reveals the failure
+    let r = app.clone().oneshot(Request::builder().uri("/api/projects/superadmin/default/settings/addressing").method("PUT")
+        .header(header::COOKIE, &cookie).header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(json!({ "data": { "hosts": [], "routes": [], "disabled": ["fs", "ms", "mcp"], "errors": "shown" } }).to_string())).expect("request")).await.expect("addressing");
+    assert_eq!(r.status(), StatusCode::OK);
+    let r = call("/boom?n=4", "application/json", None).await;
+    assert_eq!(r.status(), StatusCode::INTERNAL_SERVER_ERROR, "the status never changes with the switch");
+    let j = response_json(r).await;
+    assert!(j["error"]["message"].as_str().unwrap_or("").contains("does not exist"), "{j}");
+    assert_eq!(j["error"]["node_id"], "n1");
+}
+
 #[tokio::test]
 async fn a_deleted_user_leaves_no_footprint_and_takes_no_hostages() {
     let mut config = PlatformConfig::default();
@@ -6879,4 +7195,73 @@ async fn an_auth_optional_webhook_answers_guests_and_reads_a_valid_token() {
         nav.headers().get(header::LOCATION).and_then(|v| v.to_str().ok()),
         Some("/login?next=%2Fmine%2Fabc%3Ftab%3D2")
     );
+}
+
+/// A designed 404: `trigger.weberror --code 404 | web.response --template`
+/// answers an unknown route with the page, not the JSON fallback. The two
+/// halves this exercises: the DSL types `404` as a number and the node must
+/// take it; the weberror dispatcher must load the template's markup before
+/// running the graph, as the webhook path does.
+#[tokio::test]
+async fn a_weberror_template_page_answers_an_unknown_route() {
+    let mut config = PlatformConfig::default();
+    config.data_root = temp_test_dir("weberror-template");
+    config.default_password = "test-pass".to_string();
+    let app = build_router(config).await.expect("platform router");
+    let cookie = login_cookie(app.clone(), "superadmin", "test-pass").await;
+
+    let page = r#"export default function NotFound(input) { return <main><h1>Nothing here</h1><p id="path">{input.path}</p></main>; }
+export function getPage() { return { head: { title: "Not found" } }; }"#;
+    let put = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/projects/superadmin/default/repo/file?path=not-found.tsx")
+                .method("PUT")
+                .header(header::COOKIE, &cookie)
+                .header(header::CONTENT_TYPE, "text/plain")
+                .body(Body::from(page))
+                .expect("request"),
+        )
+        .await
+        .expect("put");
+    assert_eq!(put.status(), StatusCode::OK);
+    for dsl in [
+        "register pipelines/not-found -- | trigger.weberror --code 404 | web.response --status 404 --template not-found.tsx",
+        "activate pipeline pipelines/not-found.zf.json",
+    ] {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/projects/superadmin/default/pipelines/dsl")
+                    .method("POST")
+                    .header(header::COOKIE, &cookie)
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(json!({ "dsl": dsl }).to_string()))
+                    .expect("request"),
+            )
+            .await
+            .expect("dsl response");
+        let body = response_json(response).await;
+        assert_eq!(body["ok"], json!(true), "{body}");
+    }
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/wh/superadmin/default/no/such/page")
+                .method("GET")
+                .header(header::ACCEPT, "text/html")
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    let html = response_text(response).await;
+    assert!(html.contains("<h1>Nothing here</h1>"), "the designed page, not the JSON fallback: {html}");
+    assert!(html.contains(r#"<p id="path">/no/such/page</p>"#), "{html}");
+    assert!(!html.contains("RWE component error"), "{html}");
 }

@@ -9,6 +9,15 @@
         "n.ai.agent"
       ]
     },
+    "n.ai.embedding": {
+      "label": "EMB",
+      "method": "direct-svg",
+      "path": "/assets/node-icons/zebflow/n.ai.embedding.svg",
+      "source_url": "",
+      "supports": [
+        "n.ai.embedding"
+      ]
+    },
     "n.ai.tts": {
       "label": "TTS",
       "method": "direct-svg",
@@ -27,6 +36,15 @@
         "n.auth.token.create"
       ]
     },
+    "n.auth.token.verify": {
+      "label": "JWT?",
+      "method": "direct-svg",
+      "path": "/assets/node-icons/zebflow/n.auth.token.verify.svg",
+      "source_url": "",
+      "supports": [
+        "n.auth.token.verify"
+      ]
+    },
     "n.browser.run": {
       "label": "RUN",
       "method": "direct-svg",
@@ -34,6 +52,15 @@
       "source_url": "",
       "supports": [
         "n.browser.run"
+      ]
+    },
+    "n.concept": {
+      "label": "TBD",
+      "method": "direct-svg",
+      "path": "/assets/node-icons/zebflow/n.concept.svg",
+      "source_url": "",
+      "supports": [
+        "n.concept"
       ]
     },
     "n.crypto": {
@@ -153,13 +180,22 @@
         "n.fs.save"
       ]
     },
-    "n.fs.thumbnail": {
+    "n.fs.image.thumbnail": {
       "label": "IMG",
       "method": "direct-svg",
-      "path": "/assets/node-icons/zebflow/n.fs.thumbnail.svg",
+      "path": "/assets/node-icons/zebflow/n.fs.image.thumbnail.svg",
       "source_url": "",
       "supports": [
-        "n.fs.thumbnail"
+        "n.fs.image.thumbnail"
+      ]
+    },
+    "n.fs.svg.convert": {
+      "label": "SVG",
+      "method": "direct-svg",
+      "path": "/assets/node-icons/zebflow/n.fs.svg.convert.svg",
+      "source_url": "",
+      "supports": [
+        "n.fs.svg.convert"
       ]
     },
     "n.function.call": {
@@ -196,6 +232,87 @@
       "source_url": "",
       "supports": [
         "n.http.request"
+      ]
+    },
+    "n.input.audio": {
+      "label": "AUD",
+      "method": "direct-svg",
+      "path": "/assets/node-icons/zebflow/n.input.audio.svg",
+      "source_url": "",
+      "supports": [
+        "n.input.audio"
+      ]
+    },
+    "n.input.boolean": {
+      "label": "BOOL",
+      "method": "direct-svg",
+      "path": "/assets/node-icons/zebflow/n.input.boolean.svg",
+      "source_url": "",
+      "supports": [
+        "n.input.boolean"
+      ]
+    },
+    "n.input.file": {
+      "label": "FILE",
+      "method": "direct-svg",
+      "path": "/assets/node-icons/zebflow/n.input.file.svg",
+      "source_url": "",
+      "supports": [
+        "n.input.file"
+      ]
+    },
+    "n.input.files": {
+      "label": "FILES",
+      "method": "direct-svg",
+      "path": "/assets/node-icons/zebflow/n.input.files.svg",
+      "source_url": "",
+      "supports": [
+        "n.input.files"
+      ]
+    },
+    "n.input.image": {
+      "label": "IMG",
+      "method": "direct-svg",
+      "path": "/assets/node-icons/zebflow/n.input.image.svg",
+      "source_url": "",
+      "supports": [
+        "n.input.image"
+      ]
+    },
+    "n.input.json": {
+      "label": "JSON",
+      "method": "direct-svg",
+      "path": "/assets/node-icons/zebflow/n.input.json.svg",
+      "source_url": "",
+      "supports": [
+        "n.input.json"
+      ]
+    },
+    "n.input.number": {
+      "label": "NUM",
+      "method": "direct-svg",
+      "path": "/assets/node-icons/zebflow/n.input.number.svg",
+      "source_url": "",
+      "supports": [
+        "n.input.number"
+      ]
+    },
+    "n.input.text": {
+      "label": "TXT",
+      "method": "direct-svg",
+      "path": "/assets/node-icons/zebflow/n.input.text.svg",
+      "source_url": "",
+      "supports": [
+        "n.input.text"
+      ]
+    },
+    "n.input.video": {
+      "label": "VID",
+      "method": "direct-svg",
+      "path": "/assets/node-icons/zebflow/n.input.video.svg",
+      "source_url": "",
+      "supports": [
+        "n.input.video"
       ]
     },
     "n.kv.del": {
@@ -315,6 +432,15 @@
         "n.logic.retry"
       ]
     },
+    "n.mail.send": {
+      "label": "MAIL",
+      "method": "direct-svg",
+      "path": "/assets/node-icons/zebflow/n.mail.send.svg",
+      "source_url": "",
+      "supports": [
+        "n.mail.send"
+      ]
+    },
     "n.ms.get": {
       "label": "MSGET",
       "method": "direct-svg",
@@ -367,6 +493,15 @@
       "source_url": "",
       "supports": [
         "n.script"
+      ]
+    },
+    "n.sekejap.insert": {
+      "label": "SJI",
+      "method": "direct-svg",
+      "path": "/assets/node-icons/zebflow/n.sekejap.insert.svg",
+      "source_url": "",
+      "supports": [
+        "n.sekejap.insert"
       ]
     },
     "n.sekejap.query": {
