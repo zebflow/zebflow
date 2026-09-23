@@ -98,7 +98,7 @@ paths are untouched, and an unmapped owner is a refusal, never a guess.
 This is the one rule every surveyed system reached by a different road — none
 merges two account databases, because every merge policy is a privilege
 escalation in one direction or a silent breakage in the other
-(`surveys/multi-instance-join-models.md`).
+(`surveys/multi-instance-join-models.md`, maintainer notes outside this repository).
 
 ## 6. Break-glass
 

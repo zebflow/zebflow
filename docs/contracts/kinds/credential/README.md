@@ -8,7 +8,7 @@ authenticate. It is **not** the credential *type* definition, which a
 merges.
 
 Survey behind these decisions:
-`surveys/credential-storage-practice.md`.
+`surveys/credential-storage-practice.md` (maintainer notes, outside this repository).
 
 ## Identity
 

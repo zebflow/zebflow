@@ -875,7 +875,7 @@ export const page = {
 export function getPage(input) {
   return {
     head: {
-      title: `${input.artist_name} — ${input.song_title} | Musicsite`,
+      title: `${input.artist_name} — ${input.song_title} | Music Site`,
       description: `${input.song_title} lyrics by ${input.artist_name}.`
     }
   };

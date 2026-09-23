@@ -9511,7 +9511,7 @@ dependencies = [
 
 [[package]]
 name = "zebflow"
-version = "0.9.0"
+version = "0.9.1"
 dependencies = [
  "arc-swap",
  "argon2",

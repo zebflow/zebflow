@@ -1497,7 +1497,7 @@ fn normalize_audio_output_rel_path(raw: &str) -> Result<String, PipelineError> {
 #[cfg(test)]
 mod tests {
     use std::fs;
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
     use std::sync::Arc;
     use std::time::Instant;
 
@@ -1513,6 +1513,17 @@ mod tests {
     use crate::pipeline::nodes::{NodeExecutionInput, NodeHandler};
     use crate::platform::model::{PlatformConfig, UpsertProjectCredentialRequest};
     use crate::platform::services::PlatformService;
+
+    /// The Piper voice (`ZEBFLOW_TEST_PIPER_MODEL`, its `.onnx.json` beside it)
+    /// and the espeak-ng data folder (`ZEBFLOW_TEST_ESPEAK_DATA`) the manual
+    /// smoke tests read. `None` when either is unset.
+    fn local_piper_assets() -> Option<(PathBuf, PathBuf, PathBuf)> {
+        let model = PathBuf::from(std::env::var_os("ZEBFLOW_TEST_PIPER_MODEL")?);
+        let espeak = PathBuf::from(std::env::var_os("ZEBFLOW_TEST_ESPEAK_DATA")?);
+        let mut config = model.clone().into_os_string();
+        config.push(".json");
+        Some((model, PathBuf::from(config), espeak))
+    }
 
     fn copy_dir_all(src: &Path, dst: &Path) -> std::io::Result<()> {
         fs::create_dir_all(dst)?;
@@ -1677,15 +1688,14 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "manual local smoke using Narrator Piper assets"]
-    async fn piper_node_smoke_with_local_arin() {
-        let model_src = Path::new("/path/to/piper/narrator.onnx");
-        let config_src = Path::new("/path/to/piper/narrator.onnx.json");
-        let espeak_src = Path::new(
-            "/path/to/espeak-ng-data",
-        );
+    #[ignore = "manual local smoke using Piper voice assets"]
+    async fn piper_node_smoke_with_local_voice() {
+        let Some((model_src, config_src, espeak_src)) = local_piper_assets() else {
+            eprintln!("ZEBFLOW_TEST_PIPER_MODEL / ZEBFLOW_TEST_ESPEAK_DATA are not set; skipping");
+            return;
+        };
         if !(model_src.is_file() && config_src.is_file() && espeak_src.is_dir()) {
-            eprintln!("local Narrator smoke assets are not present; skipping");
+            eprintln!("local Piper smoke assets are not present; skipping");
             return;
         }
 
@@ -1702,9 +1712,9 @@ mod tests {
 
         let voice_dir = layout.files_dir.join("voices/narrator");
         fs::create_dir_all(&voice_dir).expect("voice dir");
-        fs::copy(model_src, voice_dir.join("narrator.onnx")).expect("copy model");
-        fs::copy(config_src, voice_dir.join("narrator.onnx.json")).expect("copy config");
-        copy_dir_all(espeak_src, &layout.files_dir.join("runtime/espeak-ng-data"))
+        fs::copy(&model_src, voice_dir.join("narrator.onnx")).expect("copy model");
+        fs::copy(&config_src, voice_dir.join("narrator.onnx.json")).expect("copy config");
+        copy_dir_all(&espeak_src, &layout.files_dir.join("runtime/espeak-ng-data"))
             .expect("copy espeak");
 
         platform
@@ -1790,15 +1800,14 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "manual local benchmark using Narrator Piper assets"]
-    async fn piper_lipsync_benchmark_with_local_arin() {
-        let model_src = Path::new("/path/to/piper/narrator.onnx");
-        let config_src = Path::new("/path/to/piper/narrator.onnx.json");
-        let espeak_src = Path::new(
-            "/path/to/espeak-ng-data",
-        );
+    #[ignore = "manual local benchmark using Piper voice assets"]
+    async fn piper_lipsync_benchmark_with_local_voice() {
+        let Some((model_src, config_src, espeak_src)) = local_piper_assets() else {
+            eprintln!("ZEBFLOW_TEST_PIPER_MODEL / ZEBFLOW_TEST_ESPEAK_DATA are not set; skipping");
+            return;
+        };
         if !(model_src.is_file() && config_src.is_file() && espeak_src.is_dir()) {
-            eprintln!("local Narrator benchmark assets are not present; skipping");
+            eprintln!("local Piper benchmark assets are not present; skipping");
             return;
         }
 
@@ -1815,9 +1824,9 @@ mod tests {
 
         let voice_dir = layout.files_dir.join("voices/narrator");
         fs::create_dir_all(&voice_dir).expect("voice dir");
-        fs::copy(model_src, voice_dir.join("narrator.onnx")).expect("copy model");
-        fs::copy(config_src, voice_dir.join("narrator.onnx.json")).expect("copy config");
-        copy_dir_all(espeak_src, &layout.files_dir.join("runtime/espeak-ng-data"))
+        fs::copy(&model_src, voice_dir.join("narrator.onnx")).expect("copy model");
+        fs::copy(&config_src, voice_dir.join("narrator.onnx.json")).expect("copy config");
+        copy_dir_all(&espeak_src, &layout.files_dir.join("runtime/espeak-ng-data"))
             .expect("copy espeak");
 
         platform

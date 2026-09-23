@@ -201,7 +201,7 @@ Example nginx server:
 ```nginx
 server {
   listen 80;
-  server_name musicsite.example;
+  server_name music.example;
 
   root /data/users/superadmin/default/files/static/musicsite;
   index index.html;
@@ -224,9 +224,9 @@ server {
 
 That mapping makes these files resolve directly:
 
-- `a/index.html` -> `https://musicsite.example/a/`
-- `a/aurora/index.html` -> `https://musicsite.example/a/aurora/`
-- `a/aurora/songs/runaway/lyrics/index.html` -> `https://musicsite.example/a/aurora/songs/runaway/lyrics/`
+- `a/index.html` -> `https://music.example/a/`
+- `a/aurora/index.html` -> `https://music.example/a/aurora/`
+- `a/aurora/songs/runaway/lyrics/index.html` -> `https://music.example/a/aurora/songs/runaway/lyrics/`
 
 The generator is only writing artifacts. The nginx host is the publishing surface.
 

@@ -3262,10 +3262,18 @@ async fn private_project_files_require_project_capability() {
 }
 
 #[tokio::test]
-#[ignore = "manual local TTS smoke using Narrator Piper assets"]
+#[ignore = "manual local TTS smoke using Piper voice assets"]
 async fn platform_tts_upload_credential_and_execute_smoke() {
-    let model_src = Path::new("/path/to/piper/narrator.onnx");
-    let config_src = Path::new("/path/to/piper/narrator.onnx.json");
+    // The Piper voice is read from ZEBFLOW_TEST_PIPER_MODEL, its `.onnx.json`
+    // beside it; the test skips when the variable is unset.
+    let Some(model) = std::env::var_os("ZEBFLOW_TEST_PIPER_MODEL") else {
+        eprintln!("ZEBFLOW_TEST_PIPER_MODEL is not set; skipping");
+        return;
+    };
+    let model_src = Path::new(&model);
+    let mut config_path = model.clone();
+    config_path.push(".json");
+    let config_src = Path::new(&config_path);
     if !(model_src.is_file() && config_src.is_file()) {
         eprintln!("local TTS smoke assets are not present; skipping");
         return;
