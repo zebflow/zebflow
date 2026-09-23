@@ -21,13 +21,13 @@ function maintenanceDelta(report, key) {
 export default function MaintenancePanel({ health, report, busy, status, onRefresh, onSync, onCompact }) {
   const walBytes = Number(health?.wal_bytes || 0);
   const shouldCompact = walBytes >= 64 * 1024 * 1024;
+  const totalBytes = Number(health?.data_bytes || 0) + walBytes;
   const statItems = [
-    { label: "Nodes", value: Number(health?.node_count || 0).toLocaleString() },
+    { label: "Rows", value: Number(health?.node_count || 0).toLocaleString() },
     { label: "Edges", value: Number(health?.edge_count || 0).toLocaleString() },
+    { label: "Data", value: formatBytes(health?.data_bytes), delta: maintenanceDelta(report, "data_bytes") },
     { label: "WAL", value: formatBytes(health?.wal_bytes), delta: maintenanceDelta(report, "wal_bytes") },
-    { label: "Snapshot", value: formatBytes(health?.snapshot_bytes), delta: maintenanceDelta(report, "snapshot_bytes") },
-    { label: "Payload", value: formatBytes(health?.payload_bytes), delta: maintenanceDelta(report, "payload_bytes") },
-    { label: "Indexes", value: formatBytes(health?.sidecar_bytes), delta: maintenanceDelta(report, "sidecar_bytes") },
+    { label: "On Disk", value: formatBytes(totalBytes) },
     { label: "Check Time", value: `${Number(health?.duration_ms || 0)} ms` },
     { label: "Root", value: health?.root ? String(health.root) : "Not loaded", mono: true },
   ];
@@ -38,7 +38,7 @@ export default function MaintenancePanel({ health, report, busy, status, onRefre
         <div>
           <p className="text-sm font-semibold text-foreground">Sekejap Store Maintenance</p>
           <p className="mt-1 max-w-2xl text-xs text-muted-foreground">
-            Inspect the project-local store, flush pending WAL writes, and compact the snapshot during low-traffic windows.
+            Inspect the project-local store, publish the newest commit, and checkpoint the WAL into the data file during low-traffic windows.
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
@@ -69,7 +69,7 @@ export default function MaintenancePanel({ health, report, busy, status, onRefre
 
       {shouldCompact ? (
         <div className="mb-4 rounded-md border border-amber-300/70 bg-amber-50/50 px-3 py-2 text-xs text-amber-800 dark:border-amber-800/60 dark:bg-amber-950/20 dark:text-amber-300">
-          WAL is above 64 MB. Compacting will checkpoint the store into a clean snapshot and truncate replay data.
+          WAL is above 64 MB. Compacting folds the committed WAL into the data file and truncates it.
         </div>
       ) : null}
 

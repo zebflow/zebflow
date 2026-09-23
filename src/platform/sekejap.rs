@@ -1,8 +1,28 @@
+//! The project's embedded multimodel store, on sekejap 0.17.
+//!
+//! One `Db` per project directory, pooled by path. sekejap locks internally
+//! and is `Send + Sync`, so the pool hands out `Arc<Db>` and nothing here
+//! wraps it in a lock of its own. Every call that changes rows commits
+//! before it returns; a batch (`bulk_insert`) takes one transaction so the
+//! records and their edges land under one barrier or not at all.
+//!
+//! What this module owns, and sekejap does not: the project directory and
+//! the pool, the schema document mirrored into the repository, the managed
+//! table shape the Studio edits (`SimpleTableDefinition`), and the SQL the
+//! Studio's own actions emit. The dialect itself is sekejap's
+//! (`docs/lang/QL_CONTRACT.md` in that repository); the help page
+//! `db/sekejap` is the short form for pipeline authors.
+//!
+//! A store written by sekejap 0.16 cannot be opened by 0.17 — the on-disk
+//! format changed whole. `ensure_project_dir` recognises the old files and
+//! refuses by name when they hold rows, so nothing is ever opened halfway.
+
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, OnceLock, RwLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Instant;
 
+use sekejap::{Db, FieldKind, IndexFamily};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
@@ -16,23 +36,31 @@ use crate::platform::model::{
     SCHEMA_DOCUMENT_FILE, SimpleTableDefinition, UpdateSimpleTableRequest, slug_segment,
 };
 
-// ── CoreDB connection pool ───────────────────────────────────────────────────
-//
-// Keyed by canonical directory path.  `RwLock<CoreDB>` gives concurrent readers
-// and exclusive writers.  The outer `Mutex` protects the pool map itself.
+// ── the pool ─────────────────────────────────────────────────────────────
 
-type DbPool = HashMap<PathBuf, Arc<RwLock<sekejap::CoreDB>>>;
+type DbPool = HashMap<PathBuf, Arc<Db>>;
 type MaintenancePool = HashMap<PathBuf, SekejapAutoMaintenanceState>;
 
 static POOL: OnceLock<Mutex<DbPool>> = OnceLock::new();
 static MAINTENANCE: OnceLock<Mutex<MaintenancePool>> = OnceLock::new();
 
-const AUTO_COMPACT_WRITE_UNITS: usize = 10_000;
-const AUTO_COMPACT_WAL_BYTES: u64 = 64 * 1024 * 1024;
+const AUTO_CHECKPOINT_WRITE_UNITS: usize = 10_000;
+const AUTO_CHECKPOINT_WAL_BYTES: u64 = 64 * 1024 * 1024;
+
+/// The files a sekejap 0.16 store left behind. Any of them beside no `data`
+/// file means the directory is a 0.16 store, and one that holds rows is
+/// refused rather than overwritten.
+const LEGACY_FILES: [&str; 5] = [
+    "wal.log",
+    "snapshot.json",
+    "payloads.bin",
+    "gin.bin",
+    "edge_meta.bin",
+];
 
 #[derive(Debug, Default)]
 struct SekejapAutoMaintenanceState {
-    write_units_since_compact: usize,
+    write_units_since_checkpoint: usize,
 }
 
 fn pool() -> &'static Mutex<DbPool> {
@@ -43,33 +71,82 @@ fn maintenance_pool() -> &'static Mutex<MaintenancePool> {
     MAINTENANCE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-fn get_db(
-    data_root: &Path,
-    owner: &str,
-    project: &str,
-) -> Result<Arc<RwLock<sekejap::CoreDB>>, PlatformError> {
+/// Any sekejap failure as a platform error under one code.
+fn store_error(code: &'static str, err: impl std::fmt::Display) -> PlatformError {
+    PlatformError::new(code, err.to_string())
+}
+
+fn get_db(data_root: &Path, owner: &str, project: &str) -> Result<Arc<Db>, PlatformError> {
     let dir = ensure_project_dir(data_root, owner, project)?;
-    let mut map = pool().lock().unwrap();
+    let mut map = pool().lock().unwrap_or_else(|e| e.into_inner());
     if let Some(db) = map.get(&dir) {
         return Ok(Arc::clone(db));
     }
-    let db = sekejap::CoreDB::open(&dir).map_err(|err| {
+    // SERVICE mode: one writer, parallel readers on a published snapshot.
+    // Zebflow is a long-running server answering many requests at once,
+    // which is the shape this mode is for; single mode would put every read
+    // and write through one mutex. The publish interval starts at zero, so
+    // a commit is visible to the next reader.
+    let db = Db::open_service(&dir).map_err(|err| {
         PlatformError::new(
             "PLATFORM_SEKEJAP_OPEN",
-            format!("failed to open sekejap store: {err}"),
+            format!("failed to open sekejap store at {}: {err}", dir.display()),
         )
     })?;
-    let arc = Arc::new(RwLock::new(db));
+    let arc = Arc::new(db);
     map.insert(dir, Arc::clone(&arc));
     Ok(arc)
 }
 
-/// Record project write pressure and checkpoint the WAL when it is large enough.
+/// Fold the committed WAL into the data file.
 ///
-/// This is deliberately best-effort. The write already succeeded by the time
-/// this function runs, so automatic maintenance must not turn an accepted
-/// mutation into a failed pipeline result. Explicit `compact_project` calls
-/// still report failures to the caller.
+/// In service mode `Db::checkpoint` is always DEFERRED: the published read
+/// view holds a reader slot for its whole life, and a slot out defers the
+/// fold (`docs/dist/OPS_CONTRACT.md` §1). So the fold is done the one way it
+/// can be: the pooled service handle is closed, which releases the view;
+/// the store is opened for a moment in single mode, where a checkpoint
+/// folds; and the service is reopened for the next caller.
+///
+/// A handle a request is still using cannot be closed — `Arc::try_unwrap`
+/// says so — and then this answers `Ok(false)`: deferred, not failed, and
+/// the next call tries again. That is what a low-traffic maintenance window
+/// is for.
+fn fold_wal(dir: &Path) -> Result<bool, PlatformError> {
+    let taken = {
+        let mut map = pool().lock().unwrap_or_else(|e| e.into_inner());
+        map.remove(dir)
+    };
+    if let Some(shared) = taken {
+        match Arc::try_unwrap(shared) {
+            Ok(db) => db
+                .close()
+                .map_err(|e| store_error("PLATFORM_SEKEJAP_COMPACT", e))?,
+            Err(shared) => {
+                // Somebody is mid-call on it. Put it back and defer.
+                pool()
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .insert(dir.to_path_buf(), shared);
+                return Ok(false);
+            }
+        }
+    }
+    let single = Db::open(dir).map_err(|e| store_error("PLATFORM_SEKEJAP_COMPACT", e))?;
+    let folded = single
+        .checkpoint()
+        .map_err(|e| store_error("PLATFORM_SEKEJAP_COMPACT", e))?;
+    single
+        .close()
+        .map_err(|e| store_error("PLATFORM_SEKEJAP_COMPACT", e))?;
+    Ok(folded)
+}
+
+/// Record project write pressure and checkpoint the WAL when it is large
+/// enough.
+///
+/// Best-effort on purpose: the write already committed, so maintenance must
+/// not turn an accepted mutation into a failed pipeline result. An explicit
+/// `compact_project` still reports its failure to the caller.
 fn record_project_write(data_root: &Path, owner: &str, project: &str, write_units: usize) {
     if write_units == 0 {
         return;
@@ -77,31 +154,38 @@ fn record_project_write(data_root: &Path, owner: &str, project: &str, write_unit
     let Ok(dir) = ensure_project_dir(data_root, owner, project) else {
         return;
     };
-    let wal_bytes = file_len_or_zero(&dir.join("wal.log"));
-    let should_compact = {
-        let mut map = maintenance_pool().lock().unwrap();
-        let state = map.entry(dir.clone()).or_default();
-        state.write_units_since_compact =
-            state.write_units_since_compact.saturating_add(write_units);
-        state.write_units_since_compact >= AUTO_COMPACT_WRITE_UNITS
-            || wal_bytes >= AUTO_COMPACT_WAL_BYTES
+    let Ok(db) = get_db(data_root, owner, project) else {
+        return;
     };
-    if !should_compact {
+    let wal_bytes = db.storage().map(|s| s.wal_bytes).unwrap_or(0);
+    let should_checkpoint = {
+        let mut map = maintenance_pool().lock().unwrap_or_else(|e| e.into_inner());
+        let state = map.entry(dir.clone()).or_default();
+        state.write_units_since_checkpoint =
+            state.write_units_since_checkpoint.saturating_add(write_units);
+        state.write_units_since_checkpoint >= AUTO_CHECKPOINT_WRITE_UNITS
+            || wal_bytes >= AUTO_CHECKPOINT_WAL_BYTES
+    };
+    if !should_checkpoint {
         return;
     }
-    if compact_project(data_root, owner, project).is_ok() {
-        let mut map = maintenance_pool().lock().unwrap();
-        let state = map.entry(dir).or_default();
-        state.write_units_since_compact = 0;
+    // The handle this function holds is one of the clones `fold_wal` has to
+    // see gone, so it is released first.
+    drop(db);
+    if matches!(fold_wal(&dir), Ok(true)) {
+        let mut map = maintenance_pool().lock().unwrap_or_else(|e| e.into_inner());
+        map.entry(dir).or_default().write_units_since_checkpoint = 0;
     }
 }
 
-/// Return cheap project-scoped Sekejap health and persistence stats.
+/// Cheap project-scoped store health: what is on disk and how many rows and
+/// edges the store holds.
 ///
-/// This is intentionally small and side-effect free so settings pages, health
-/// checks, and maintenance jobs can call it without touching pipeline runtime
-/// state. Reads use the project DB `RwLock` read guard; compaction/sync use the
-/// write guard below.
+/// Row counts come from sekejap's live per-collection record where the
+/// database keeps one, and from a walk where it does not; edges are always a
+/// walk. Small stores answer in microseconds; a store with millions of rows
+/// and no live record pays for the walk, which is what the name of
+/// `Db::scan_count_rows` says.
 pub fn project_health(
     data_root: &Path,
     owner: &str,
@@ -109,30 +193,42 @@ pub fn project_health(
 ) -> Result<SekejapProjectHealth, PlatformError> {
     let dir = ensure_project_dir(data_root, owner, project)?;
     let started = Instant::now();
-    let db_arc = get_db(data_root, owner, project)?;
-    let db = db_arc.read().unwrap();
-    let node_count = db.node_count();
-    let edge_count = db.edge_count();
-    drop(db);
+    let db = get_db(data_root, owner, project)?;
+    let mut node_count = 0u64;
+    for name in db
+        .collections()
+        .map_err(|e| store_error("PLATFORM_SEKEJAP_HEALTH", e))?
+    {
+        node_count += db
+            .count_rows(&name)
+            .map_err(|e| store_error("PLATFORM_SEKEJAP_HEALTH", e))?;
+    }
+    let edge_count = db
+        .scan_count_edges()
+        .map_err(|e| store_error("PLATFORM_SEKEJAP_HEALTH", e))?;
+    let storage = db
+        .storage()
+        .map_err(|e| store_error("PLATFORM_SEKEJAP_HEALTH", e))?;
 
     Ok(SekejapProjectHealth {
         owner: owner.to_string(),
         project: project.to_string(),
         root: dir.to_string_lossy().to_string(),
-        node_count,
-        edge_count,
-        wal_bytes: file_len_or_zero(&dir.join("wal.log")),
-        snapshot_bytes: file_len_or_zero(&dir.join("snapshot.json")),
-        payload_bytes: file_len_or_zero(&dir.join("payloads.bin")),
-        sidecar_bytes: sekejap_sidecar_bytes(&dir),
+        node_count: node_count as usize,
+        edge_count: edge_count as usize,
+        wal_bytes: storage.wal_bytes,
+        data_bytes: storage.data_bytes,
         duration_ms: started.elapsed().as_millis() as u64,
     })
 }
 
-/// Force the project's open Sekejap WAL to disk.
+/// Make the newest commit visible to every reader.
 ///
-/// Use after critical single-write batches that are not wrapped in SQL
-/// transactions. SQL `COMMIT` already calls Sekejap's `sync()` internally.
+/// On sekejap 0.17 every commit is already durable when the call returns,
+/// so there is no WAL to force. What is left of the old "sync" is
+/// publication, which in the single-handle mode this module opens is
+/// already the case too. The operation stays so a caller that scheduled it
+/// keeps a report to read.
 pub fn sync_project(
     data_root: &Path,
     owner: &str,
@@ -140,15 +236,9 @@ pub fn sync_project(
 ) -> Result<SekejapMaintenanceReport, PlatformError> {
     let started = Instant::now();
     let before = project_health(data_root, owner, project)?;
-    let db_arc = get_db(data_root, owner, project)?;
-    let mut db = db_arc.write().unwrap();
-    db.sync().map_err(|err| {
-        PlatformError::new(
-            "PLATFORM_SEKEJAP_SYNC",
-            format!("failed to sync sekejap WAL: {err}"),
-        )
-    })?;
-    drop(db);
+    let db = get_db(data_root, owner, project)?;
+    db.publish()
+        .map_err(|e| store_error("PLATFORM_SEKEJAP_SYNC", e))?;
     let after = project_health(data_root, owner, project)?;
     Ok(SekejapMaintenanceReport {
         operation: "sync".to_string(),
@@ -158,12 +248,12 @@ pub fn sync_project(
     })
 }
 
-/// Compact the project's open Sekejap DB: snapshot current state and reset the WAL.
+/// Fold the committed WAL into the data file.
 ///
-/// This is the foundational WAL checkpoint primitive. It should be called by
-/// explicit admin actions, low-traffic scheduled maintenance, and graceful
-/// shutdown hooks for projects that have been opened in-process. Sekejap 0.12+
-/// retains the fresh WAL's 8-byte format header after a successful checkpoint.
+/// The WAL checkpoint primitive, for explicit admin actions, low-traffic
+/// scheduled maintenance, and graceful shutdown. See [`fold_wal`] for why
+/// it closes and reopens the handle; a fold deferred because a request
+/// still holds the handle is reported as `compact (deferred)`, not failed.
 pub fn compact_project(
     data_root: &Path,
     owner: &str,
@@ -171,50 +261,25 @@ pub fn compact_project(
 ) -> Result<SekejapMaintenanceReport, PlatformError> {
     let started = Instant::now();
     let before = project_health(data_root, owner, project)?;
-    let db_arc = get_db(data_root, owner, project)?;
-    let mut db = db_arc.write().unwrap();
-    db.compact().map_err(|err| {
-        PlatformError::new(
-            "PLATFORM_SEKEJAP_COMPACT",
-            format!("failed to compact sekejap store: {err}"),
-        )
-    })?;
-    drop(db);
+    let dir = ensure_project_dir(data_root, owner, project)?;
+    let folded = fold_wal(&dir)?;
     let after = project_health(data_root, owner, project)?;
     Ok(SekejapMaintenanceReport {
-        operation: "compact".to_string(),
+        operation: if folded {
+            "compact".to_string()
+        } else {
+            "compact (deferred)".to_string()
+        },
         before,
         after,
         duration_ms: started.elapsed().as_millis() as u64,
     })
 }
 
-fn file_len_or_zero(path: &Path) -> u64 {
-    std::fs::metadata(path).map(|meta| meta.len()).unwrap_or(0)
-}
-
-fn sekejap_sidecar_bytes(dir: &Path) -> u64 {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return 0;
-    };
-    entries
-        .filter_map(Result::ok)
-        .map(|entry| entry.path())
-        .filter(|path| {
-            let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
-                return false;
-            };
-            name == "gin.bin"
-                || name == "edge_meta.bin"
-                || name.starts_with("vectors_") && name.ends_with(".bin")
-        })
-        .map(|path| file_len_or_zero(&path))
-        .sum()
-}
-
 pub const BUILTIN_CONNECTION_SLUG: &str = "default-multimodel";
 pub const BUILTIN_CONNECTION_LABEL: &str = "Default Multimodel Store";
 pub const DB_KIND: &str = "sekejap";
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct SekejapTableSchemaExport {
@@ -258,6 +323,9 @@ pub struct SekejapSchemaApplyReport {
     pub table_count: usize,
 }
 
+/// What the store occupies and holds. `node_count` is rows across every
+/// collection; the name is kept because every reader of this report — the
+/// maintenance panel, the ops routes — already reads it.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SekejapProjectHealth {
     pub owner: String,
@@ -266,9 +334,7 @@ pub struct SekejapProjectHealth {
     pub node_count: usize,
     pub edge_count: usize,
     pub wal_bytes: u64,
-    pub snapshot_bytes: u64,
-    pub payload_bytes: u64,
-    pub sidecar_bytes: u64,
+    pub data_bytes: u64,
     pub duration_ms: u64,
 }
 
@@ -280,13 +346,13 @@ pub struct SekejapMaintenanceReport {
     pub duration_ms: u64,
 }
 
-/// Drops the pooled in-memory handle for one project store.
+/// Drops the pooled handle for one project store.
 ///
 /// A `ProjectBundle` import swaps `data/store/` as a unit
-/// (`kinds/project-bundle/README.md`), so a `CoreDB` opened against the
-/// displaced directory must not keep serving its bytes. Callers still holding
-/// a cloned `Arc` finish their in-flight call on the old handle; the next
-/// `get_db` reopens from the swapped-in directory.
+/// (`kinds/project-bundle/README.md`), so a `Db` opened against the
+/// displaced directory must not keep serving its bytes. Callers still
+/// holding a cloned `Arc` finish their in-flight call on the old handle; the
+/// next `get_db` reopens from the swapped-in directory.
 pub fn evict_project_pool(data_root: &Path, owner: &str, project: &str) {
     let dir = project_dir(data_root, owner, project);
     pool()
@@ -332,7 +398,7 @@ fn repo_layout() -> ResolvedProjectLayout {
     ResolvedProjectLayout::platform_default()
 }
 
-fn ensure_project_dir(
+pub fn ensure_project_dir(
     data_root: &Path,
     owner: &str,
     project: &str,
@@ -340,9 +406,10 @@ fn ensure_project_dir(
     let dir = project_dir(data_root, owner, project);
     migrate_legacy_sekejap_dir(data_root, owner, project, &dir)?;
     std::fs::create_dir_all(&dir)?;
+    refuse_or_retire_legacy_store(&dir)?;
     // `tables.json` was a hand-kept mirror of the table list from before
-    // sekejap could be asked directly. `live_tables` reads the database now, so
-    // the file is only stale weight; drop it the first time a project is
+    // sekejap could be asked directly. `live_tables` reads the database now,
+    // so the file is only stale weight; drop it the first time a project is
     // touched.
     match std::fs::remove_file(dir.join("tables.json")) {
         Ok(()) => {}
@@ -355,7 +422,7 @@ fn ensure_project_dir(
 /// Moves a pre-tier `data/sekejap` into `data/store/sekejap`
 /// (`project-directory.md` §5), once.
 ///
-/// This is the one chokepoint every Sekejap access already runs through
+/// This is the one chokepoint every store access already runs through
 /// (`get_db`, `record_project_write`, health and maintenance all call
 /// `ensure_project_dir`), independent of whether anything has resolved a full
 /// `ProjectFileLayout` for the request. See
@@ -377,25 +444,140 @@ fn migrate_legacy_sekejap_dir(
         .map_err(|err| PlatformError::new("PLATFORM_DATA_TIER_MIGRATE", err.to_string()))
 }
 
-fn map_declared_kind(kind: &str) -> &'static str {
-    match kind {
-        "number" | "real" | "integer" => "number",
-        "boolean" => "boolean",
-        "json" => "json",
-        "vector" => "vector",
-        "geo" => "geo",
-        _ => "string",
+/// A directory sekejap 0.16 wrote, met by 0.17.
+///
+/// 0.17 recognises its own store by a `data` file. A directory that has none
+/// but carries the 0.16 files is one of two things. Empty — the header-only
+/// WAL every fresh 0.16 store wrote, no payload, no snapshot — and the old
+/// files are moved aside into `legacy-0.16/` so the directory can be created
+/// into. Holding rows — and it is refused by name, because the only honest
+/// migration is to read it with 0.16 and write it with 0.17, and nothing
+/// here can do the first half.
+fn refuse_or_retire_legacy_store(dir: &Path) -> Result<(), PlatformError> {
+    if dir.join("data").exists() {
+        return Ok(());
+    }
+    let present: Vec<&str> = LEGACY_FILES
+        .iter()
+        .copied()
+        .filter(|name| dir.join(name).exists())
+        .collect();
+    if present.is_empty() {
+        return Ok(());
+    }
+    let size = |name: &str| std::fs::metadata(dir.join(name)).map(|m| m.len()).unwrap_or(0);
+    // A 0.16 WAL is eight header bytes when nothing was ever written.
+    let holds_rows = size("wal.log") > 8 || size("payloads.bin") > 0 || size("snapshot.json") > 0;
+    if holds_rows {
+        return Err(PlatformError::new(
+            "PLATFORM_SEKEJAP_LEGACY_STORE",
+            format!(
+                "{} holds a sekejap 0.16 store with rows, and sekejap 0.17 cannot read that format. \
+                 Export it with a 0.16 build and re-import, or move the directory aside to start empty.",
+                dir.display()
+            ),
+        ));
+    }
+    let retired = dir.join("legacy-0.16");
+    std::fs::create_dir_all(&retired)?;
+    for name in present {
+        std::fs::rename(dir.join(name), retired.join(name))?;
+    }
+    for name in ["db.lock"] {
+        let _ = std::fs::remove_file(dir.join(name));
+    }
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for entry in entries.filter_map(Result::ok) {
+            let path = entry.path();
+            let is_vector_sidecar = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.starts_with("vectors_") && n.ends_with(".bin"));
+            if is_vector_sidecar {
+                let _ = std::fs::rename(&path, retired.join(entry.file_name()));
+            }
+        }
+    }
+    Ok(())
+}
+
+// ── attribute kinds ──────────────────────────────────────────────────────
+
+/// The kind a Studio attribute declares, split from the one parameter a
+/// kind can carry: `vector(384)`. Everything else has none.
+fn parse_kind(raw: &str) -> (String, Option<usize>) {
+    let raw = raw.trim().to_ascii_lowercase();
+    if let Some(open) = raw.find('(') {
+        let base = raw[..open].trim().to_string();
+        let inner = raw[open + 1..].trim_end_matches(')').trim();
+        return (base, inner.parse::<usize>().ok().filter(|n| *n > 0));
+    }
+    (raw, None)
+}
+
+fn map_declared_kind(kind: &str) -> String {
+    let (base, dims) = parse_kind(kind);
+    match base.as_str() {
+        "number" | "real" | "integer" | "int" | "float" => "number".to_string(),
+        "boolean" | "bool" => "boolean".to_string(),
+        "json" | "jsonb" => "json".to_string(),
+        "vector" => match dims {
+            Some(n) => format!("vector({n})"),
+            None => "vector".to_string(),
+        },
+        "geo" | "geometry" | "point" => "geo".to_string(),
+        _ => "string".to_string(),
     }
 }
 
-fn map_field_type(kind: &str) -> &'static str {
-    match kind {
-        "number" | "real" => "REAL",
-        "boolean" => "BOOLEAN",
-        "json" => "JSON",
-        "vector" => "VECTOR",
-        "geo" => "GEO",
-        _ => "TEXT",
+/// The SQL type one attribute kind becomes. A vector without its dimension
+/// is refused: `VECTOR(n)` needs `n`, and there is no default that would not
+/// be a guess about someone's embedding model.
+fn map_field_type(kind: &str) -> Result<String, PlatformError> {
+    let (base, dims) = parse_kind(kind);
+    Ok(match base.as_str() {
+        "number" | "real" | "integer" | "int" | "float" => "REAL".to_string(),
+        "boolean" | "bool" => "BOOLEAN".to_string(),
+        "json" | "jsonb" => "JSONB".to_string(),
+        "vector" => match dims {
+            Some(n) => format!("VECTOR({n})"),
+            None => {
+                return Err(PlatformError::new(
+                    "PLATFORM_SEKEJAP_VECTOR_DIMENSION",
+                    "a vector attribute needs its dimension: write the kind as `vector(384)` (the length of the embeddings that will be stored)",
+                ));
+            }
+        },
+        "geo" | "geometry" => "GEOMETRY".to_string(),
+        "point" => "GEOMETRY(Point,4326)".to_string(),
+        _ => "TEXT".to_string(),
+    })
+}
+
+/// One declared field back into the attribute kind the Studio shows.
+fn field_kind_to_attribute(field: &sekejap::Field) -> String {
+    match &field.kind {
+        FieldKind::Text => "string".to_string(),
+        FieldKind::Int | FieldKind::Real => "number".to_string(),
+        FieldKind::Bool => "boolean".to_string(),
+        FieldKind::Json => "json".to_string(),
+        FieldKind::Geo | FieldKind::Point => "geo".to_string(),
+        FieldKind::Vector(n) => format!("vector({n})"),
+    }
+}
+
+/// Which of the Studio's index kinds one catalog index is. A scalar index
+/// answers equality and range alike, so it is both `hash` and `range`.
+fn index_family_kinds(family: &IndexFamily) -> &'static [&'static str] {
+    match family {
+        IndexFamily::Scalar => &["hash", "range"],
+        IndexFamily::Text => &["fulltext"],
+        IndexFamily::SpatialPoint | IndexFamily::SpatialGeometry => &["spatial"],
+        IndexFamily::ExactVector | IndexFamily::QuantizedVector | IndexFamily::VamanaGraph => {
+            &["vector"]
+        }
+        #[allow(unreachable_patterns)]
+        _ => &[],
     }
 }
 
@@ -419,29 +601,15 @@ fn collect_index_fields(
     out.into_iter().collect()
 }
 
-fn normalize_definition(
-    req: &CreateSimpleTableRequest,
-) -> Result<SimpleTableDefinition, PlatformError> {
-    let table = slug_segment(&req.table);
-    if table.is_empty() {
-        return Err(PlatformError::new(
-            "PLATFORM_SEKEJAP_TABLE_INVALID",
-            "table slug must not be empty",
-        ));
-    }
-
+fn normalize_attributes(attributes: &[CollectionAttribute]) -> Vec<CollectionAttribute> {
     let mut attrs = Vec::new();
     let mut seen = BTreeSet::new();
-    let mut has_user_key = false;
-    for attr in &req.attributes {
+    for attr in attributes {
         let name = slug_segment(&attr.name);
-        if name.is_empty() || !seen.insert(name.clone()) {
+        if name.is_empty() || name == "_key" || !seen.insert(name.clone()) {
             continue;
         }
-        if name == "_key" {
-            has_user_key = true;
-        }
-        let kind = map_declared_kind(&slug_segment(&attr.kind)).to_string();
+        let kind = map_declared_kind(&attr.kind);
         let mut index_types = Vec::new();
         for item in &attr.index_types {
             let key = slug_segment(item);
@@ -456,17 +624,20 @@ fn normalize_definition(
             index_types,
         });
     }
-    if !has_user_key {
-        attrs.insert(
-            0,
-            CollectionAttribute {
-                name: "_key".to_string(),
-                kind: "string".to_string(),
-                index_types: Vec::new(),
-            },
-        );
-    }
+    attrs
+}
 
+fn normalize_definition(
+    req: &CreateSimpleTableRequest,
+) -> Result<SimpleTableDefinition, PlatformError> {
+    let table = slug_segment(&req.table);
+    if table.is_empty() {
+        return Err(PlatformError::new(
+            "PLATFORM_SEKEJAP_TABLE_INVALID",
+            "table slug must not be empty",
+        ));
+    }
+    let attrs = normalize_attributes(&req.attributes);
     let hash_indexed_fields = collect_index_fields(&attrs, &req.hash_indexed_fields, "hash");
     let range_indexed_fields = collect_index_fields(&attrs, &req.range_indexed_fields, "range");
     let fulltext_fields = collect_index_fields(&attrs, &[], "fulltext");
@@ -486,207 +657,139 @@ fn normalize_definition(
     })
 }
 
-fn build_create_table_sql(def: &SimpleTableDefinition) -> String {
-    let mut columns = Vec::new();
+/// The one statement that creates a managed table.
+///
+/// `_key TEXT PRIMARY KEY` names the key every sekejap row has. The declared
+/// indexes ride in the `WITH (...)` sugar so the table and its indexes are
+/// one commit. `hash` and `range` are not written: sekejap gives every
+/// scalar column a btree unasked (`docs/lang/INDEX_CONTRACT.md`), and that
+/// one index answers both.
+fn build_create_table_sql(def: &SimpleTableDefinition) -> Result<String, PlatformError> {
+    let mut columns = vec!["_key TEXT PRIMARY KEY".to_string()];
     for attr in &def.attributes {
-        // `_key` is the primary key and auto-fills with a UUID when an INSERT
-        // omits it. `UUIDV4()` and `UUIDV5(..)` are the only DEFAULT forms
-        // sekejap's parser honours — see `sql.rs::parse_field_default`, which
-        // silently discards every other expression — so no other column
-        // carries one.
-        if attr.name == "_key" {
-            columns.push(format!(
-                "_key {} PRIMARY KEY DEFAULT UUIDV4()",
-                map_field_type(&attr.kind)
-            ));
-        } else {
-            columns.push(format!("{} {}", attr.name, map_field_type(&attr.kind)));
-        }
+        columns.push(format!("{} {}", attr.name, map_field_type(&attr.kind)?));
     }
-    format!("CREATE TABLE {} ({})", def.collection, columns.join(", "))
-}
-
-fn build_index_sql(collection: &str, method: &str, field: &str) -> String {
-    format!(
-        "CREATE INDEX ON {} USING {} ({})",
-        collection, method, field
-    )
-}
-
-fn row_count_for_collection(db: &sekejap::CoreDB, collection: &str) -> usize {
-    db.collection(collection).count()
-}
-
-fn field_type_to_kind(ty: &sekejap::sql::FieldType) -> &'static str {
-    match ty {
-        sekejap::sql::FieldType::Text => "string",
-        sekejap::sql::FieldType::Integer => "number",
-        sekejap::sql::FieldType::Real => "number",
-        sekejap::sql::FieldType::Bool => "boolean",
-        sekejap::sql::FieldType::Timestamptz => "number",
-        sekejap::sql::FieldType::Geo => "geo",
-        sekejap::sql::FieldType::Vector => "vector",
-        sekejap::sql::FieldType::Json => "json",
+    let mut with = Vec::new();
+    let declared = |fields: &[String]| -> Vec<String> {
+        fields
+            .iter()
+            .filter(|f| def.attributes.iter().any(|a| &a.name == *f))
+            .cloned()
+            .collect()
+    };
+    let fulltext = declared(&def.fulltext_fields);
+    if !fulltext.is_empty() {
+        with.push(format!("fulltext: [{}]", fulltext.join(", ")));
     }
-}
-
-fn infer_kind_from_value(val: &Value) -> &'static str {
-    match val {
-        Value::String(_) => "string",
-        Value::Number(_) => "number",
-        Value::Bool(_) => "boolean",
-        Value::Object(obj) => {
-            if obj.contains_key("type") && obj.contains_key("coordinates") {
-                "geo"
-            } else {
-                "json"
-            }
-        }
-        Value::Array(_) => "json",
-        Value::Null => "string",
+    let spatial = declared(&def.spatial_fields);
+    if !spatial.is_empty() {
+        with.push(format!("spatial: [{}]", spatial.join(", ")));
     }
+    let vector = declared(&def.vector_fields);
+    if !vector.is_empty() {
+        with.push(format!("vector: [{}]", vector.join(", ")));
+    }
+    let mut sql = format!("CREATE TABLE {} ({})", def.collection, columns.join(", "));
+    if !with.is_empty() {
+        sql.push_str(&format!(" WITH ({})", with.join(", ")));
+    }
+    Ok(sql)
 }
 
-fn backfill_from_sample(db: &sekejap::CoreDB, collection: &str) -> Vec<CollectionAttribute> {
-    let hits: Vec<sekejap::Hit> = db.collection(collection).take(1).collect();
-    let payload = match hits.first().and_then(|h| h.payload.as_ref()) {
-        Some(Value::Object(map)) => map,
-        _ => return Vec::new(),
+/// One declared index, by the family word the catalog names it with.
+fn build_index_sql(collection: &str, kind: &str, field: &str) -> Option<String> {
+    let method = match kind {
+        "hash" | "range" => format!("btree ({field})"),
+        "fulltext" => format!("gin (to_tsvector('simple', {field}))"),
+        "spatial" => format!("gist ({field})"),
+        "vector" => format!("exact ({field})"),
+        _ => return None,
     };
-    payload
-        .keys()
-        .filter(|k| !k.starts_with('_'))
-        .map(|k| CollectionAttribute {
-            name: k.clone(),
-            kind: infer_kind_from_value(&payload[k]).to_string(),
-            index_types: Vec::new(),
-        })
-        .collect()
+    Some(format!("CREATE INDEX ON {collection} USING {method}"))
 }
 
-fn backfill_from_schema(
-    db: &sekejap::CoreDB,
-    collection: &str,
-) -> (
-    Vec<CollectionAttribute>,
-    Vec<String>,
-    Vec<String>,
-    Vec<String>,
-    Vec<String>,
-    Vec<String>,
-) {
-    let schema = match db.table_schema(collection) {
-        Some(s) => s,
-        None => {
-            let attrs = backfill_from_sample(db, collection);
-            return (
-                attrs,
-                vec!["_key".to_string()],
-                Vec::new(),
-                Vec::new(),
-                Vec::new(),
-                Vec::new(),
-            );
-        }
-    };
-
-    let attrs: Vec<CollectionAttribute> = schema
-        .fields
-        .iter()
-        .filter(|f| !f.name.starts_with('_'))
-        .map(|f| {
-            let kind = field_type_to_kind(&f.ty).to_string();
-            let mut index_types = Vec::new();
-            if schema.indexes.hash.contains(&f.name) {
-                index_types.push("hash".to_string());
-            }
-            if schema.indexes.range.contains(&f.name) {
-                index_types.push("range".to_string());
-            }
-            if schema.indexes.fulltext.contains(&f.name) || schema.indexes.bm25.contains(&f.name) {
-                index_types.push("fulltext".to_string());
-            }
-            if schema.indexes.vector.contains(&f.name) {
-                index_types.push("vector".to_string());
-            }
-            if schema.indexes.spatial.contains(&f.name) {
-                index_types.push("spatial".to_string());
-            }
-            CollectionAttribute {
-                name: f.name.clone(),
-                kind,
-                index_types,
-            }
-        })
-        .collect();
-
-    let hash = schema.indexes.hash.clone();
-    let range = schema.indexes.range.clone();
-    let fulltext = {
-        let mut v = schema.indexes.fulltext.clone();
-        for f in &schema.indexes.bm25 {
-            if !v.contains(f) {
-                v.push(f.clone());
-            }
-        }
-        v
-    };
-    let vector = schema.indexes.vector.clone();
-    let spatial = schema.indexes.spatial.clone();
-
-    (attrs, hash, range, fulltext, vector, spatial)
-}
-
-/// Every table in the project, read from the live database.
-///
-/// `SHOW TABLES` is the listing: sekejap answers it by unioning the
-/// collections that hold rows with the schemas that `CREATE TABLE` declared,
-/// so a table that has never been written to is still reported. This is the
-/// reason it is the listing and `collection_names()` is not — that one walks
-/// stored rows, so an empty table is invisible to it.
-///
-/// Each name is then filled in by `table_schema()`, which reports the fields
-/// with their types and index kinds, and `collection().count()`.
-///
-/// Nothing is cached alongside this. A structure fact the database cannot
-/// answer is a fact Zebflow does not keep.
-fn live_tables(db: &sekejap::CoreDB) -> Vec<SimpleTableDefinition> {
-    let Ok(hits) = db.show("SHOW TABLES") else {
-        return Vec::new();
-    };
+/// Every table in the project, read from the live catalog.
+fn live_tables(db: &Db) -> Result<Vec<SimpleTableDefinition>, PlatformError> {
     let mut by_table = BTreeMap::new();
-    for hit in hits {
-        let Some(collection) = hit
-            .payload
-            .as_ref()
-            .and_then(|row| row.get("name"))
-            .and_then(Value::as_str)
-            .map(str::to_string)
-        else {
-            continue;
-        };
+    for collection in db
+        .collections()
+        .map_err(|e| store_error("PLATFORM_SEKEJAP_CATALOG", e))?
+    {
         let table = slug_segment(&collection);
         if table.is_empty() || by_table.contains_key(&table) {
             continue;
         }
-        let (attributes, hash, range, fulltext, vector, spatial) =
-            backfill_from_schema(db, &collection);
+        let Some(described) = db
+            .describe(&collection)
+            .map_err(|e| store_error("PLATFORM_SEKEJAP_CATALOG", e))?
+        else {
+            continue;
+        };
+        let row_count = match described.rows {
+            Some(n) => n,
+            None => db
+                .count_rows(&collection)
+                .map_err(|e| store_error("PLATFORM_SEKEJAP_CATALOG", e))?,
+        } as usize;
+
+        let mut hash = BTreeSet::new();
+        let mut range = BTreeSet::new();
+        let mut fulltext = BTreeSet::new();
+        let mut vector = BTreeSet::new();
+        let mut spatial = BTreeSet::new();
+        for index in &described.indexes {
+            for kind in index_family_kinds(&index.family) {
+                match *kind {
+                    "hash" => hash.insert(index.field.clone()),
+                    "range" => range.insert(index.field.clone()),
+                    "fulltext" => fulltext.insert(index.field.clone()),
+                    "vector" => vector.insert(index.field.clone()),
+                    "spatial" => spatial.insert(index.field.clone()),
+                    _ => false,
+                };
+            }
+        }
+        let attributes = described
+            .fields
+            .iter()
+            .filter(|f| !f.primary_key && !f.name.starts_with('_'))
+            .map(|f| {
+                let mut index_types = Vec::new();
+                for (set, kind) in [
+                    (&hash, "hash"),
+                    (&range, "range"),
+                    (&fulltext, "fulltext"),
+                    (&vector, "vector"),
+                    (&spatial, "spatial"),
+                ] {
+                    if set.contains(&f.name) {
+                        index_types.push(kind.to_string());
+                    }
+                }
+                CollectionAttribute {
+                    name: f.name.clone(),
+                    kind: field_kind_to_attribute(f),
+                    index_types,
+                }
+            })
+            .collect();
+
         by_table.insert(
             table.clone(),
             SimpleTableDefinition {
                 table,
                 attributes,
-                hash_indexed_fields: hash,
-                range_indexed_fields: range,
-                fulltext_fields: fulltext,
-                vector_fields: vector,
-                spatial_fields: spatial,
-                row_count: row_count_for_collection(db, &collection),
+                hash_indexed_fields: hash.into_iter().collect(),
+                range_indexed_fields: range.into_iter().collect(),
+                fulltext_fields: fulltext.into_iter().collect(),
+                vector_fields: vector.into_iter().collect(),
+                spatial_fields: spatial.into_iter().collect(),
+                row_count,
                 collection: collection.clone(),
             },
         );
     }
-    by_table.into_values().collect()
+    Ok(by_table.into_values().collect())
 }
 
 fn stable_list(mut values: Vec<String>) -> Vec<String> {
@@ -762,7 +865,7 @@ fn imported_table_definition(table: &SekejapTableSchemaExport) -> Option<SimpleT
     Some(SimpleTableDefinition {
         table: table_slug.clone(),
         collection,
-        attributes: table.attributes.clone(),
+        attributes: normalize_attributes(&table.attributes),
         hash_indexed_fields: stable_list(table.hash_indexed_fields.clone()),
         range_indexed_fields: stable_list(table.range_indexed_fields.clone()),
         fulltext_fields: stable_list(table.fulltext_fields.clone()),
@@ -770,6 +873,13 @@ fn imported_table_definition(table: &SekejapTableSchemaExport) -> Option<SimpleT
         spatial_fields: stable_list(table.spatial_fields.clone()),
         row_count: 0,
     })
+}
+
+/// Creates one managed table with its declared indexes.
+fn create_managed_table(db: &Db, def: &SimpleTableDefinition) -> Result<(), PlatformError> {
+    db.execute(&build_create_table_sql(def)?, &[])
+        .map_err(|e| store_error("PLATFORM_SEKEJAP_TABLE_CREATE", e))?;
+    Ok(())
 }
 
 pub fn apply_schema_export(
@@ -781,9 +891,8 @@ pub fn apply_schema_export(
     encode_schema_export(export.clone())?;
     let mut tables_created = Vec::new();
     let mut tables_skipped = Vec::new();
-    let db_arc = get_db(data_root, owner, project)?;
-    let mut db = db_arc.write().unwrap();
-    let mut existing_tables = live_tables(&db)
+    let db = get_db(data_root, owner, project)?;
+    let mut existing_tables = live_tables(&db)?
         .into_iter()
         .map(|def| def.table)
         .collect::<BTreeSet<_>>();
@@ -796,48 +905,12 @@ pub fn apply_schema_export(
             tables_skipped.push(def.table.clone());
             continue;
         }
-
-        db.execute(&build_create_table_sql(&def))
-            .map_err(|err| PlatformError::new("PLATFORM_SEKEJAP_SCHEMA_APPLY", err.to_string()))?;
-        for field in &def.hash_indexed_fields {
-            if field == "_key" {
-                continue;
-            }
-            db.execute(&build_index_sql(&def.collection, "hash", field))
-                .map_err(|err| {
-                    PlatformError::new("PLATFORM_SEKEJAP_SCHEMA_APPLY", err.to_string())
-                })?;
-        }
-        for field in &def.range_indexed_fields {
-            db.execute(&build_index_sql(&def.collection, "btree", field))
-                .map_err(|err| {
-                    PlatformError::new("PLATFORM_SEKEJAP_SCHEMA_APPLY", err.to_string())
-                })?;
-        }
-        for field in &def.fulltext_fields {
-            db.execute(&build_index_sql(&def.collection, "gist", field))
-                .map_err(|err| {
-                    PlatformError::new("PLATFORM_SEKEJAP_SCHEMA_APPLY", err.to_string())
-                })?;
-        }
-        for field in &def.vector_fields {
-            db.execute(&build_index_sql(&def.collection, "hnsw", field))
-                .map_err(|err| {
-                    PlatformError::new("PLATFORM_SEKEJAP_SCHEMA_APPLY", err.to_string())
-                })?;
-        }
-        for field in &def.spatial_fields {
-            db.execute(&build_index_sql(&def.collection, "spatial", field))
-                .map_err(|err| {
-                    PlatformError::new("PLATFORM_SEKEJAP_SCHEMA_APPLY", err.to_string())
-                })?;
-        }
-
+        create_managed_table(&db, &def)
+            .map_err(|err| PlatformError::new("PLATFORM_SEKEJAP_SCHEMA_APPLY", err.message))?;
         existing_tables.insert(def.table.clone());
         tables_created.push(def.table);
     }
 
-    drop(db);
     sync_schema_to_repo(data_root, owner, project)?;
 
     Ok(SekejapSchemaApplyReport {
@@ -879,10 +952,8 @@ pub fn sync_schema_to_repo(
     owner: &str,
     project: &str,
 ) -> Result<SekejapSchemaSyncReport, PlatformError> {
-    let db_arc = get_db(data_root, owner, project)?;
-    let db = db_arc.read().unwrap();
-    let defs = live_tables(&db);
-    drop(db);
+    let db = get_db(data_root, owner, project)?;
+    let defs = live_tables(&db)?;
     let export = SekejapSchemaExport {
         database: DB_KIND.to_string(),
         connection_slug: BUILTIN_CONNECTION_SLUG.to_string(),
@@ -934,9 +1005,8 @@ pub fn list_tables(
     owner: &str,
     project: &str,
 ) -> Result<Vec<SimpleTableDefinition>, PlatformError> {
-    let db_arc = get_db(data_root, owner, project)?;
-    let db = db_arc.read().unwrap();
-    Ok(live_tables(&db))
+    let db = get_db(data_root, owner, project)?;
+    live_tables(&db)
 }
 
 pub fn create_table(
@@ -954,40 +1024,18 @@ pub fn create_table(
         ));
     }
 
-    let db_arc = get_db(data_root, owner, project)?;
-    let mut db = db_arc.write().unwrap();
-    db.execute(&build_create_table_sql(&def))
-        .map_err(|err| PlatformError::new("PLATFORM_SEKEJAP_TABLE_CREATE", err.to_string()))?;
-
-    for field in &def.hash_indexed_fields {
-        if field == "_key" {
-            continue;
-        }
-        db.execute(&build_index_sql(&def.collection, "hash", field))
-            .map_err(|err| PlatformError::new("PLATFORM_SEKEJAP_INDEX_CREATE", err.to_string()))?;
-    }
-    for field in &def.range_indexed_fields {
-        db.execute(&build_index_sql(&def.collection, "btree", field))
-            .map_err(|err| PlatformError::new("PLATFORM_SEKEJAP_INDEX_CREATE", err.to_string()))?;
-    }
-    for field in &def.fulltext_fields {
-        db.execute(&build_index_sql(&def.collection, "gist", field))
-            .map_err(|err| PlatformError::new("PLATFORM_SEKEJAP_INDEX_CREATE", err.to_string()))?;
-    }
-    for field in &def.vector_fields {
-        db.execute(&build_index_sql(&def.collection, "hnsw", field))
-            .map_err(|err| PlatformError::new("PLATFORM_SEKEJAP_INDEX_CREATE", err.to_string()))?;
-    }
-    for field in &def.spatial_fields {
-        db.execute(&build_index_sql(&def.collection, "spatial", field))
-            .map_err(|err| PlatformError::new("PLATFORM_SEKEJAP_INDEX_CREATE", err.to_string()))?;
-    }
-
-    let mut created = def;
-    created.row_count = row_count_for_collection(&db, &created.collection);
-    drop(db);
+    let db = get_db(data_root, owner, project)?;
+    create_managed_table(&db, &def)?;
     sync_schema_to_repo(data_root, owner, project)?;
-    Ok(created)
+    live_tables(&db)?
+        .into_iter()
+        .find(|item| item.table == def.table)
+        .ok_or_else(|| {
+            PlatformError::new(
+                "PLATFORM_SEKEJAP_TABLE_CREATE",
+                format!("table '{}' was not in the catalog after CREATE TABLE", def.table),
+            )
+        })
 }
 
 pub fn delete_table(
@@ -1004,33 +1052,44 @@ pub fn delete_table(
         ));
     }
 
-    let db_arc = get_db(data_root, owner, project)?;
-    let mut db = db_arc.write().unwrap();
-    let Some(def) = live_tables(&db).into_iter().find(|d| d.table == table_slug) else {
+    let db = get_db(data_root, owner, project)?;
+    let Some(def) = live_tables(&db)?
+        .into_iter()
+        .find(|d| d.table == table_slug)
+    else {
         return Err(PlatformError::new(
             "PLATFORM_SEKEJAP_TABLE_NOT_FOUND",
             format!("table '{}' not found", table_slug),
         ));
     };
 
-    db.execute(&format!("DROP TABLE IF EXISTS {}", def.collection))
-        .map_err(|err| PlatformError::new("PLATFORM_SEKEJAP_TABLE_DROP", err.to_string()))?;
-    if db
-        .collection_names()
+    // CASCADE: a managed table dropped from the Studio takes its edges with
+    // it; RESTRICT would refuse the drop and name the graph contexts instead.
+    db.execute(&format!("DROP TABLE IF EXISTS {} CASCADE", def.collection), &[])
+        .map_err(|e| store_error("PLATFORM_SEKEJAP_TABLE_DROP", e))?;
+    let still_there = db
+        .collections()
+        .map_err(|e| store_error("PLATFORM_SEKEJAP_TABLE_DROP", e))?
         .into_iter()
-        .any(|collection| collection == def.collection)
-    {
+        .any(|collection| collection == def.collection);
+    if still_there {
         return Err(PlatformError::new(
             "PLATFORM_SEKEJAP_TABLE_DROP",
             format!("table '{}' still exists after DROP TABLE", table_slug),
         ));
     }
-    drop(db);
 
     sync_schema_to_repo(data_root, owner, project)?;
     Ok(())
 }
 
+/// Reshapes a managed table: new columns are added, declared indexes are
+/// brought in line with the request.
+///
+/// The btree every scalar column carries is sekejap's automatic index and is
+/// never dropped here: without it a `WHERE` on that column is refused, and
+/// nobody unticks "hash" in the Studio meaning that. The declared families
+/// — full text, spatial, vector — are the ones this call adds and removes.
 pub fn update_table(
     data_root: &Path,
     owner: &str,
@@ -1046,45 +1105,24 @@ pub fn update_table(
         ));
     }
 
-    let db_arc = get_db(data_root, owner, project)?;
-    let mut db = db_arc.write().unwrap();
-    let Some(existing) = live_tables(&db).into_iter().find(|d| d.table == table_slug) else {
+    let db = get_db(data_root, owner, project)?;
+    let Some(existing) = live_tables(&db)?
+        .into_iter()
+        .find(|d| d.table == table_slug)
+    else {
         return Err(PlatformError::new(
             "PLATFORM_SEKEJAP_TABLE_NOT_FOUND",
             format!("table '{}' not found", table_slug),
         ));
     };
 
-    let mut attrs = Vec::new();
-    let mut seen = BTreeSet::new();
-    for attr in &req.attributes {
-        let name = slug_segment(&attr.name);
-        if name.is_empty() || !seen.insert(name.clone()) {
-            continue;
-        }
-        let kind = map_declared_kind(&slug_segment(&attr.kind)).to_string();
-        let mut index_types = Vec::new();
-        for item in &attr.index_types {
-            let key = slug_segment(item);
-            if key.is_empty() || index_types.iter().any(|existing| existing == &key) {
-                continue;
-            }
-            index_types.push(key);
-        }
-        attrs.push(CollectionAttribute {
-            name,
-            kind,
-            index_types,
-        });
-    }
-
-    let hash_indexed_fields = collect_index_fields(&attrs, &req.hash_indexed_fields, "hash");
-    let range_indexed_fields = collect_index_fields(&attrs, &req.range_indexed_fields, "range");
+    let attrs = normalize_attributes(&req.attributes);
     let fulltext_fields = collect_index_fields(&attrs, &[], "fulltext");
     let vector_fields = collect_index_fields(&attrs, &[], "vector");
     let spatial_fields = collect_index_fields(&attrs, &[], "spatial");
 
-    // Add new columns that don't exist yet.
+    // New columns. sekejap builds the automatic index over the rows already
+    // there, so a column added here is filterable as soon as this returns.
     let old_names: BTreeSet<String> = existing.attributes.iter().map(|a| a.name.clone()).collect();
     for attr in &attrs {
         if !old_names.contains(&attr.name) {
@@ -1092,81 +1130,62 @@ pub fn update_table(
                 "ALTER TABLE {} ADD COLUMN {} {}",
                 existing.collection,
                 attr.name,
-                map_field_type(&attr.kind)
+                map_field_type(&attr.kind)?
             );
-            let _ = db.execute(&sql);
+            db.execute(&sql, &[])
+                .map_err(|e| store_error("PLATFORM_SEKEJAP_TABLE_ALTER", e))?;
         }
     }
 
-    // Rebuild indexes: drop all then recreate.
-    for field in &existing.hash_indexed_fields {
-        let _ = db.execute(&format!(
-            "DROP INDEX ON {} USING hash ({})",
-            existing.collection, field
-        ));
-    }
-    for field in &existing.range_indexed_fields {
-        let _ = db.execute(&format!(
-            "DROP INDEX ON {} USING btree ({})",
-            existing.collection, field
-        ));
-    }
-    for field in &existing.fulltext_fields {
-        let _ = db.execute(&format!(
-            "DROP INDEX ON {} USING gist ({})",
-            existing.collection, field
-        ));
-    }
-    for field in &existing.vector_fields {
-        let _ = db.execute(&format!(
-            "DROP INDEX ON {} USING hnsw ({})",
-            existing.collection, field
-        ));
-    }
-    for field in &existing.spatial_fields {
-        let _ = db.execute(&format!(
-            "DROP INDEX ON {} USING spatial ({})",
-            existing.collection, field
-        ));
-    }
-
-    for field in &hash_indexed_fields {
-        if field == "_key" {
-            continue;
+    // Declared indexes: drop the ones no longer wanted, by the name the
+    // catalog holds them under; create the wanted ones, which sekejap
+    // answers with a notice when one already exists.
+    let described = db
+        .describe(&existing.collection)
+        .map_err(|e| store_error("PLATFORM_SEKEJAP_TABLE_ALTER", e))?;
+    if let Some(described) = described {
+        for index in &described.indexes {
+            let wanted = match index.family {
+                IndexFamily::Scalar => true,
+                IndexFamily::Text => fulltext_fields.contains(&index.field),
+                IndexFamily::SpatialPoint | IndexFamily::SpatialGeometry => {
+                    spatial_fields.contains(&index.field)
+                }
+                IndexFamily::ExactVector
+                | IndexFamily::QuantizedVector
+                | IndexFamily::VamanaGraph => vector_fields.contains(&index.field),
+                #[allow(unreachable_patterns)]
+                _ => true,
+            };
+            if !wanted {
+                db.execute(&format!("DROP INDEX IF EXISTS {}", index.name), &[])
+                    .map_err(|e| store_error("PLATFORM_SEKEJAP_INDEX_DROP", e))?;
+            }
         }
-        let _ = db.execute(&build_index_sql(&existing.collection, "hash", field));
     }
-    for field in &range_indexed_fields {
-        let _ = db.execute(&build_index_sql(&existing.collection, "btree", field));
+    for (kind, fields) in [
+        ("fulltext", &fulltext_fields),
+        ("spatial", &spatial_fields),
+        ("vector", &vector_fields),
+    ] {
+        for field in fields {
+            if let Some(sql) = build_index_sql(&existing.collection, kind, field) {
+                db.execute(&sql, &[])
+                    .map_err(|e| store_error("PLATFORM_SEKEJAP_INDEX_CREATE", e))?;
+            }
+        }
     }
-    for field in &fulltext_fields {
-        let _ = db.execute(&build_index_sql(&existing.collection, "gist", field));
-    }
-    for field in &vector_fields {
-        let _ = db.execute(&build_index_sql(&existing.collection, "hnsw", field));
-    }
-    for field in &spatial_fields {
-        let _ = db.execute(&build_index_sql(&existing.collection, "spatial", field));
-    }
-
-    let row_count = row_count_for_collection(&db, &existing.collection);
-    drop(db);
-
-    let updated = SimpleTableDefinition {
-        table: existing.table.clone(),
-        collection: existing.collection.clone(),
-        attributes: attrs,
-        hash_indexed_fields,
-        range_indexed_fields,
-        fulltext_fields,
-        vector_fields,
-        spatial_fields,
-        row_count,
-    };
 
     sync_schema_to_repo(data_root, owner, project)?;
-
-    Ok(updated)
+    live_tables(&db)?
+        .into_iter()
+        .find(|item| item.table == table_slug)
+        .ok_or_else(|| {
+            PlatformError::new(
+                "PLATFORM_SEKEJAP_TABLE_NOT_FOUND",
+                format!("table '{}' vanished during update", table_slug),
+            )
+        })
 }
 
 fn table_to_node(def: &SimpleTableDefinition) -> DbObjectNode {
@@ -1277,6 +1296,8 @@ pub fn describe_columns(
     Ok(nodes)
 }
 
+// ── SQL ──────────────────────────────────────────────────────────────────
+
 #[derive(Debug, Clone)]
 pub struct QueryPayload {
     pub columns: Vec<DbQueryColumn>,
@@ -1320,16 +1341,18 @@ pub struct StructuredWritePayload {
     pub duration_ms: u64,
 }
 
-fn statement_is_write(sql: &str) -> bool {
-    let first = sql
-        .trim_start()
+fn first_word(sql: &str) -> String {
+    sql.trim_start()
         .split_whitespace()
         .next()
         .unwrap_or("")
-        .to_ascii_uppercase();
+        .to_ascii_uppercase()
+}
+
+fn statement_is_write(sql: &str) -> bool {
     matches!(
-        first.as_str(),
-        "INSERT" | "UPDATE" | "DELETE" | "CREATE" | "DROP" | "ALTER"
+        first_word(sql).as_str(),
+        "INSERT" | "UPDATE" | "DELETE" | "CREATE" | "DROP" | "ALTER" | "BEGIN" | "COMMIT" | "ROLLBACK"
     )
 }
 
@@ -1346,6 +1369,7 @@ pub fn statement_changes_schema(sql: &str) -> bool {
         ("CREATE", "TABLE")
             | ("CREATE", "COLLECTION")
             | ("CREATE", "INDEX")
+            | ("CREATE", "UNIQUE")
             | ("ALTER", "TABLE")
             | ("ALTER", "COLLECTION")
             | ("DROP", "TABLE")
@@ -1354,28 +1378,10 @@ pub fn statement_changes_schema(sql: &str) -> bool {
     )
 }
 
-fn statement_is_show(sql: &str) -> bool {
-    let first = sql
-        .trim_start()
-        .split_whitespace()
-        .next()
-        .unwrap_or("")
-        .to_ascii_uppercase();
-    first == "SHOW"
-}
-
-/// Detect `EXPLAIN [ANALYZE] ...` statements.
 fn statement_is_explain(sql: &str) -> bool {
-    let first = sql
-        .trim_start()
-        .split_whitespace()
-        .next()
-        .unwrap_or("")
-        .to_ascii_uppercase();
-    first == "EXPLAIN"
+    first_word(sql) == "EXPLAIN"
 }
 
-/// Detect `EXPLAIN ANALYZE ...` specifically.
 fn statement_is_explain_analyze(sql: &str) -> bool {
     let mut words = sql.trim_start().split_whitespace();
     let first = words.next().unwrap_or("").to_ascii_uppercase();
@@ -1383,43 +1389,105 @@ fn statement_is_explain_analyze(sql: &str) -> bool {
     first == "EXPLAIN" && second == "ANALYZE"
 }
 
-/// Strip the `EXPLAIN [ANALYZE]` prefix and return the inner SQL.
+/// The statement after `EXPLAIN`.
 fn strip_explain_prefix(sql: &str) -> &str {
-    let rest = sql
-        .trim_start()
-        .strip_prefix("EXPLAIN")
-        .unwrap_or(sql)
-        .trim_start();
-    // Also strip ANALYZE if present
-    rest.strip_prefix("ANALYZE")
-        .or_else(|| rest.strip_prefix("analyze"))
-        .unwrap_or(rest)
-        .trim_start()
+    let rest = sql.trim_start();
+    let rest = rest
+        .get(..7)
+        .filter(|head| head.eq_ignore_ascii_case("EXPLAIN"))
+        .map(|_| &rest[7..])
+        .unwrap_or(rest);
+    rest.trim_start()
 }
 
 fn statement_is_show_tables(sql: &str) -> bool {
-    let normalized = sql.trim().trim_end_matches(';');
-    let parts = normalized
+    let parts = sql
+        .trim()
+        .trim_end_matches(';')
         .split_whitespace()
         .map(|part| part.to_ascii_uppercase())
         .collect::<Vec<_>>();
     parts.len() == 2 && parts[0] == "SHOW" && parts[1] == "TABLES"
 }
 
-fn hit_to_row_map(hit: sekejap::Hit) -> Map<String, Value> {
-    match hit.payload {
-        Some(Value::Object(map)) => map,
-        Some(other) => {
-            let mut out = Map::new();
-            out.insert("value".to_string(), other);
-            out
-        }
-        None => {
-            let mut out = Map::new();
-            out.insert("slug".to_string(), Value::String(hit.slug));
-            out.insert("slug_hash".to_string(), json!(hit.slug_hash));
-            out
-        }
+/// `SHOW <one word>`: the word, when the statement is that shape.
+fn show_collection_target(sql: &str) -> Option<String> {
+    let parts = sql
+        .trim()
+        .trim_end_matches(';')
+        .split_whitespace()
+        .collect::<Vec<_>>();
+    if parts.len() != 2 || !parts[0].eq_ignore_ascii_case("SHOW") {
+        return None;
+    }
+    let word = parts[1];
+    if matches!(
+        word.to_ascii_uppercase().as_str(),
+        "TABLES" | "EDGES" | "INDEXES" | "INDEX" | "CREATE" | "ALL"
+    ) {
+        return None;
+    }
+    Some(word.to_string())
+}
+
+/// An `INSERT INTO t (columns)` whose column list names no `_key`.
+///
+/// sekejap 0.17 takes the FIRST column as the row's key in that case, with a
+/// notice nobody reading a pipeline result sees. A title silently becoming
+/// a key is exactly the kind of thing to refuse by name: every Zebflow row is
+/// addressed by `_key`, so the statement has to say what it is.
+fn insert_without_key(sql: &str) -> bool {
+    let trimmed = sql.trim_start();
+    if !trimmed
+        .get(..6)
+        .is_some_and(|head| head.eq_ignore_ascii_case("INSERT"))
+    {
+        return false;
+    }
+    let Some(open) = trimmed.find('(') else {
+        return false;
+    };
+    let Some(close) = trimmed[open..].find(')') else {
+        return false;
+    };
+    let columns = &trimmed[open + 1..open + close];
+    !columns
+        .split(',')
+        .any(|column| column.trim().trim_matches('"') == "_key")
+}
+
+fn payload_from_rows(rows: sekejap::Rows, limit: usize) -> (Vec<DbQueryColumn>, Vec<Vec<Value>>, bool) {
+    let columns = rows
+        .columns
+        .iter()
+        .map(|name| DbQueryColumn {
+            name: name.clone(),
+            data_type: None,
+        })
+        .collect::<Vec<_>>();
+    let truncated = rows.rows.len() > limit;
+    let rows = rows
+        .rows
+        .into_iter()
+        .take(limit)
+        .map(|row| row.values.iter().map(sekejap::value_to_json).collect::<Vec<_>>())
+        .collect::<Vec<_>>();
+    (columns, rows, truncated)
+}
+
+fn payload(
+    columns: Vec<DbQueryColumn>,
+    rows: Vec<Vec<Value>>,
+    truncated: bool,
+    started: Instant,
+) -> QueryPayload {
+    QueryPayload {
+        row_count: rows.len(),
+        columns,
+        rows,
+        truncated,
+        affected_rows: None,
+        duration_ms: started.elapsed().as_millis() as u64,
     }
 }
 
@@ -1432,15 +1500,16 @@ pub fn execute_sql(
     limit: usize,
     read_only: bool,
 ) -> Result<QueryPayload, PlatformError> {
-    let trimmed = sql.trim();
+    let trimmed = sql.trim().trim_end_matches(';').trim();
     if trimmed.is_empty() {
         return Err(PlatformError::new(
             "PLATFORM_SEKEJAP_QUERY_INVALID",
             "query.sql must not be empty for sekejap",
         ));
     }
-
     let started = Instant::now();
+    let max_rows = limit.clamp(1, 5_000);
+
     if statement_is_write(trimmed) {
         if read_only {
             return Err(PlatformError::new(
@@ -1448,92 +1517,72 @@ pub fn execute_sql(
                 "write statement rejected in read-only mode",
             ));
         }
-        let db_arc = get_db(data_root, owner, project)?;
-        let mut db = db_arc.write().unwrap();
-        let affected_rows = if params.is_empty() {
-            db.execute(trimmed)
-        } else {
-            db.execute_params(trimmed, params)
+        if insert_without_key(trimmed) {
+            return Err(PlatformError::new(
+                "PLATFORM_SEKEJAP_INSERT_NO_KEY",
+                "INSERT names no `_key` column. Every row is addressed by `_key`, and sekejap would otherwise take \
+                 the first column as the key. Add `_key` to the column list and bind a value for it — \
+                 `INSERT INTO t (_key, title) VALUES ($1, $2)` with `--params \"{{ [$nodes.id.hex, input.body.title] }}\"`, \
+                 where `$nodes.id` is a `crypto --op random_hex` node.",
+            ));
         }
-        .map_err(|err| PlatformError::new("PLATFORM_SEKEJAP_QUERY_FAILED", err.to_string()))?;
-        let should_sync_schema = statement_changes_schema(trimmed);
-        drop(db);
-        if should_sync_schema {
+        let db = get_db(data_root, owner, project)?;
+        let affected_rows = db
+            .execute(trimmed, params)
+            .map_err(|e| store_error("PLATFORM_SEKEJAP_QUERY_FAILED", e))?;
+        if statement_changes_schema(trimmed) {
             sync_schema_to_repo(data_root, owner, project)?;
         }
-        record_project_write(data_root, owner, project, affected_rows.max(1));
+        record_project_write(data_root, owner, project, (affected_rows as usize).max(1));
         return Ok(QueryPayload {
             columns: Vec::new(),
             rows: Vec::new(),
             row_count: 0,
             truncated: false,
-            affected_rows: Some(affected_rows as u64),
+            affected_rows: Some(affected_rows),
             duration_ms: started.elapsed().as_millis() as u64,
         });
     }
 
     if statement_is_explain(trimmed) {
-        let db_arc = get_db(data_root, owner, project)?;
-        let db = db_arc.read().unwrap();
-        let inner_sql = strip_explain_prefix(trimmed);
-        let hits = if statement_is_explain_analyze(trimmed) {
-            db.explain_analyze(inner_sql)
-        } else {
-            db.explain(inner_sql)
+        if statement_is_explain_analyze(trimmed) {
+            return Err(PlatformError::new(
+                "PLATFORM_SEKEJAP_QUERY_FAILED",
+                "EXPLAIN ANALYZE is not built in sekejap 0.17 (QL_CONTRACT: options refused); \
+                 EXPLAIN prints the plan the engine would build",
+            ));
         }
-        .map_err(|err| PlatformError::new("PLATFORM_SEKEJAP_QUERY_FAILED", err.to_string()))?;
-
-        let max_rows = limit.clamp(1, 5_000);
-        let truncated = hits.len() > max_rows;
-        let mut column_names = Vec::<String>::new();
-        let mut row_maps = Vec::<Map<String, Value>>::new();
-        for hit in hits.into_iter().take(max_rows) {
-            let row = hit_to_row_map(hit);
-            for key in row.keys() {
-                if !column_names.iter().any(|existing| existing == key) {
-                    column_names.push(key.clone());
-                }
-            }
-            row_maps.push(row);
-        }
-        let columns = column_names
-            .iter()
-            .map(|name| DbQueryColumn {
-                name: name.clone(),
+        let db = get_db(data_root, owner, project)?;
+        let plan = db
+            .explain(strip_explain_prefix(trimmed), params)
+            .map_err(|e| store_error("PLATFORM_SEKEJAP_QUERY_FAILED", e))?;
+        let lines = plan
+            .lines()
+            .map(|line| vec![Value::String(line.to_string())])
+            .collect::<Vec<_>>();
+        let truncated = lines.len() > max_rows;
+        let rows = lines.into_iter().take(max_rows).collect();
+        return Ok(payload(
+            vec![DbQueryColumn {
+                name: "plan".to_string(),
                 data_type: None,
-            })
-            .collect::<Vec<_>>();
-        let rows = row_maps
-            .into_iter()
-            .map(|row| {
-                column_names
-                    .iter()
-                    .map(|name| row.get(name).cloned().unwrap_or(Value::Null))
-                    .collect::<Vec<_>>()
-            })
-            .collect::<Vec<_>>();
-
-        return Ok(QueryPayload {
-            row_count: rows.len(),
-            columns,
+            }],
             rows,
             truncated,
-            affected_rows: None,
-            duration_ms: started.elapsed().as_millis() as u64,
-        });
+            started,
+        ));
     }
 
     if statement_is_show_tables(trimmed) {
         let defs = list_tables(data_root, owner, project)?;
-        let max_rows = limit.clamp(1, 5_000);
         let truncated = defs.len() > max_rows;
         let rows = defs
             .into_iter()
             .take(max_rows)
             .map(|def| vec![Value::String(def.table), json!(def.row_count)])
             .collect::<Vec<_>>();
-        return Ok(QueryPayload {
-            columns: vec![
+        return Ok(payload(
+            vec![
                 DbQueryColumn {
                     name: "name".to_string(),
                     data_type: None,
@@ -1543,67 +1592,56 @@ pub fn execute_sql(
                     data_type: None,
                 },
             ],
-            row_count: rows.len(),
             rows,
             truncated,
-            affected_rows: None,
-            duration_ms: started.elapsed().as_millis() as u64,
-        });
+            started,
+        ));
     }
 
-    let db_arc = get_db(data_root, owner, project)?;
-    let db = db_arc.read().unwrap();
-    let hits = if statement_is_show(trimmed) {
-        db.show(trimmed)
-            .map_err(|err| PlatformError::new("PLATFORM_SEKEJAP_QUERY_FAILED", err.to_string()))?
-    } else if params.is_empty() {
-        db.query(trimmed)
-            .map_err(|err| PlatformError::new("PLATFORM_SEKEJAP_QUERY_FAILED", err.to_string()))?
-            .collect()
-    } else {
-        db.query_params(trimmed, params)
-            .map_err(|err| PlatformError::new("PLATFORM_SEKEJAP_QUERY_FAILED", err.to_string()))?
-            .collect()
-    };
+    let db = get_db(data_root, owner, project)?;
 
-    let max_rows = limit.clamp(1, 5_000);
-    let truncated = hits.len() > max_rows;
-    let mut column_names = Vec::<String>::new();
-    let mut row_maps = Vec::<Map<String, Value>>::new();
-    for hit in hits.into_iter().take(max_rows) {
-        let row = hit_to_row_map(hit);
-        for key in row.keys() {
-            if !column_names.iter().any(|existing| existing == key) {
-                column_names.push(key.clone());
-            }
-        }
-        row_maps.push(row);
-    }
-    let columns = column_names
-        .iter()
-        .map(|name| DbQueryColumn {
-            name: name.clone(),
-            data_type: None,
-        })
-        .collect::<Vec<_>>();
-    let rows = row_maps
-        .into_iter()
-        .map(|row| {
-            column_names
+    // `SHOW <collection>`: the structure, from the catalog, in the shape the
+    // Studio's structure table reads. Any other SHOW is the engine's.
+    if let Some(target) = show_collection_target(trimmed) {
+        if let Some(described) = db
+            .describe(&target)
+            .map_err(|e| store_error("PLATFORM_SEKEJAP_QUERY_FAILED", e))?
+        {
+            let rows = described
+                .fields
                 .iter()
-                .map(|name| row.get(name).cloned().unwrap_or(Value::Null))
-                .collect::<Vec<_>>()
-        })
-        .collect::<Vec<_>>();
+                .map(|field| {
+                    let indexes = described
+                        .indexes_on(&field.name)
+                        .flat_map(|index| index_family_kinds(&index.family).iter().copied())
+                        .collect::<BTreeSet<_>>()
+                        .into_iter()
+                        .map(|kind| Value::String(kind.to_string()))
+                        .collect::<Vec<_>>();
+                    vec![
+                        Value::String(field.name.clone()),
+                        Value::String(field.declared.clone().unwrap_or_else(|| format!("{:?}", field.kind).to_ascii_uppercase())),
+                        Value::Array(indexes),
+                        Value::Bool(field.primary_key),
+                    ]
+                })
+                .collect::<Vec<_>>();
+            let columns = ["name", "type", "indexes", "primary_key"]
+                .iter()
+                .map(|name| DbQueryColumn {
+                    name: name.to_string(),
+                    data_type: None,
+                })
+                .collect();
+            return Ok(payload(columns, rows, false, started));
+        }
+    }
 
-    Ok(QueryPayload {
-        row_count: rows.len(),
-        columns,
-        rows,
-        truncated,
-        affected_rows: None,
-        duration_ms: started.elapsed().as_millis() as u64,
-    })
+    let rows = db
+        .query(trimmed, params)
+        .map_err(|e| store_error("PLATFORM_SEKEJAP_QUERY_FAILED", e))?;
+    let (columns, rows, truncated) = payload_from_rows(rows, max_rows);
+    Ok(payload(columns, rows, truncated, started))
 }
 
 pub fn execute_connection_query(
@@ -1636,6 +1674,271 @@ pub fn execute_connection_query(
     })
 }
 
+// ── structured writes ────────────────────────────────────────────────────
+
+/// A document as sekejap stores it, checked against the collection's
+/// declared fields.
+///
+/// A declared field is checked by its `Kind`; a vector is checked for its
+/// dimension and stays in the document, because in 0.17 a `VECTOR(n)`
+/// column is a typed field and not a sidecar. A field the collection does
+/// not declare is kept as an extra — sekejap's own rule: a declaration is a
+/// floor, not a fence.
+fn typed_document(
+    collection: &str,
+    declared: &sekejap::Collection,
+    fields: Map<String, Value>,
+    field_dimensions: &mut BTreeMap<String, usize>,
+) -> Result<Map<String, Value>, PlatformError> {
+    let mut out = Map::with_capacity(fields.len());
+    for (field, value) in fields {
+        if matches!(field.as_str(), "_id" | "_key" | "_collection") {
+            continue;
+        }
+        let Some(spec) = declared.field(&field) else {
+            out.insert(field, value);
+            continue;
+        };
+        if value.is_null() {
+            out.insert(field, Value::Null);
+            continue;
+        }
+        let ok = match &spec.kind {
+            FieldKind::Text => value.is_string(),
+            FieldKind::Int => match spec.declared.as_deref() {
+                // TIMESTAMPTZ and DATE are Int on disk and take an ISO string
+                // or the integer itself.
+                Some("TIMESTAMPTZ") | Some("DATE") => value.is_string() || value.as_i64().is_some(),
+                _ => value.as_i64().is_some() || value.as_u64().is_some(),
+            },
+            FieldKind::Real => value.as_f64().is_some(),
+            FieldKind::Bool => value.is_boolean(),
+            FieldKind::Json => true,
+            FieldKind::Geo | FieldKind::Point => value.is_object() || value.is_array() || value.is_string(),
+            FieldKind::Vector(n) => {
+                let Some(vector) = value_as_f32_vec(&value) else {
+                    return Err(schema_type_error(collection, &field, &format!("VECTOR({n})"), &value));
+                };
+                if vector.len() != *n {
+                    return Err(PlatformError::new(
+                        "PLATFORM_SEKEJAP_INSERT_INVALID",
+                        format!(
+                            "field '{field}' in collection '{collection}' is VECTOR({n}) and the value has {} dimension(s)",
+                            vector.len()
+                        ),
+                    ));
+                }
+                field_dimensions.insert(field.clone(), *n);
+                true
+            }
+        };
+        if !ok {
+            let expected = spec
+                .declared
+                .clone()
+                .unwrap_or_else(|| format!("{:?}", spec.kind).to_ascii_uppercase());
+            return Err(schema_type_error(collection, &field, &expected, &value));
+        }
+        out.insert(field, value);
+    }
+    Ok(out)
+}
+
+/// Records and edges, under one commit.
+fn write_batch(
+    db: &Db,
+    collection: &str,
+    rows: Vec<StructuredInsertRecord>,
+    edges: Vec<StructuredInsertEdge>,
+    mode: StructuredWriteMode,
+) -> Result<StructuredWritePayload, PlatformError> {
+    let started = Instant::now();
+    let declared = db
+        .describe(collection)
+        .map_err(|e| store_error("PLATFORM_SEKEJAP_INSERT_FAILED", e))?
+        .ok_or_else(|| {
+            PlatformError::new(
+                "PLATFORM_SEKEJAP_INSERT_UNKNOWN_COLLECTION",
+                format!(
+                    "collection '{collection}' does not exist; create it first — `CREATE TABLE {collection} (_key TEXT PRIMARY KEY, …)`"
+                ),
+            )
+        })?;
+
+    let mut field_dimensions = BTreeMap::<String, usize>::new();
+    let mut tx = db
+        .transaction()
+        .map_err(|e| store_error("PLATFORM_SEKEJAP_INSERT_FAILED", e))?;
+    let mut written = 0usize;
+    for row in rows {
+        let key = row.key.trim().to_string();
+        let existing = {
+            let engine = tx.database();
+            let id = engine
+                .collection(collection)
+                .map_err(|e| store_error("PLATFORM_SEKEJAP_INSERT_FAILED", e))?
+                .ok_or_else(|| {
+                    PlatformError::new(
+                        "PLATFORM_SEKEJAP_INSERT_UNKNOWN_COLLECTION",
+                        format!("collection '{collection}' does not exist"),
+                    )
+                })?;
+            engine
+                .get(id, &key)
+                .map_err(|e| store_error("PLATFORM_SEKEJAP_INSERT_FAILED", e))?
+                .map(|entity| entity.document)
+        };
+        match mode {
+            StructuredWriteMode::Insert if existing.is_some() => {
+                return Err(PlatformError::new(
+                    "PLATFORM_SEKEJAP_INSERT_EXISTS",
+                    format!("row '{collection}/{key}' already exists"),
+                ));
+            }
+            StructuredWriteMode::Update if existing.is_none() => {
+                return Err(PlatformError::new(
+                    "PLATFORM_SEKEJAP_INSERT_MISSING",
+                    format!("row '{collection}/{key}' does not exist"),
+                ));
+            }
+            _ => {}
+        }
+        let mut document = match (mode, existing) {
+            (StructuredWriteMode::Merge, Some(Value::Object(current))) => current,
+            _ => Map::new(),
+        };
+        let typed = typed_document(collection, &declared, row.fields, &mut field_dimensions)?;
+        document.extend(typed);
+        tx.put((collection, key.as_str()), &Value::Object(document))
+            .map_err(|e| store_error("PLATFORM_SEKEJAP_INSERT_FAILED", e))?;
+        written += 1;
+    }
+    for edge in &edges {
+        let properties = Value::Object(edge.fields.clone());
+        tx.link_with(
+            (edge.from_target.trim(), edge.from_key.trim()),
+            edge.edge_type.trim(),
+            (edge.to_target.trim(), edge.to_key.trim()),
+            &properties,
+        )
+        .map_err(|e| store_error("PLATFORM_SEKEJAP_INSERT_EDGE", e))?;
+    }
+    tx.commit()
+        .map_err(|e| store_error("PLATFORM_SEKEJAP_INSERT_FAILED", e))?;
+
+    Ok(StructuredWritePayload {
+        affected_rows: written + edges.len(),
+        optimized_fields: field_dimensions.keys().cloned().collect(),
+        field_dimensions,
+        duration_ms: started.elapsed().as_millis() as u64,
+    })
+}
+
+fn check_records(
+    collection: &str,
+    rows: &[StructuredInsertRecord],
+) -> Result<(), PlatformError> {
+    if collection.trim().is_empty() {
+        return Err(PlatformError::new(
+            "PLATFORM_SEKEJAP_INSERT_INVALID",
+            "collection must not be empty",
+        ));
+    }
+    for row in rows {
+        if row.key.trim().is_empty() {
+            return Err(PlatformError::new(
+                "PLATFORM_SEKEJAP_INSERT_INVALID",
+                "row key must not be empty",
+            ));
+        }
+    }
+    Ok(())
+}
+
+pub fn bulk_write_records(
+    data_root: &Path,
+    owner: &str,
+    project: &str,
+    collection: &str,
+    rows: Vec<StructuredInsertRecord>,
+    mode: StructuredWriteMode,
+) -> Result<StructuredWritePayload, PlatformError> {
+    bulk_insert(data_root, owner, project, collection, rows, Vec::new(), mode)
+}
+
+/// Records into one collection and edges between any rows, as one commit.
+///
+/// Both endpoints of an edge must exist when the edge is written — sekejap
+/// validates them — so an edge to a row this same batch writes is fine, and
+/// one to a row nothing wrote is refused naming it.
+pub fn bulk_insert(
+    data_root: &Path,
+    owner: &str,
+    project: &str,
+    collection: &str,
+    rows: Vec<StructuredInsertRecord>,
+    edges: Vec<StructuredInsertEdge>,
+    mode: StructuredWriteMode,
+) -> Result<StructuredWritePayload, PlatformError> {
+    let collection = collection.trim();
+    check_records(collection, &rows)?;
+    for edge in &edges {
+        if edge.from_target.trim().is_empty()
+            || edge.from_key.trim().is_empty()
+            || edge.edge_type.trim().is_empty()
+            || edge.to_target.trim().is_empty()
+            || edge.to_key.trim().is_empty()
+        {
+            return Err(PlatformError::new(
+                "PLATFORM_SEKEJAP_INSERT_EDGE_INVALID",
+                "edge from.target, from.key, type, to.target, and to.key must be non-empty",
+            ));
+        }
+    }
+    let db = get_db(data_root, owner, project)?;
+    let out = write_batch(&db, collection, rows, edges, mode)?;
+    record_project_write(data_root, owner, project, out.affected_rows);
+    Ok(out)
+}
+
+fn value_as_f32_vec(value: &Value) -> Option<Vec<f32>> {
+    let arr = value.as_array()?;
+    if arr.is_empty() {
+        return None;
+    }
+    let mut out = Vec::with_capacity(arr.len());
+    for item in arr {
+        out.push(item.as_f64()? as f32);
+    }
+    Some(out)
+}
+
+fn schema_type_error(
+    collection: &str,
+    field: &str,
+    expected: &str,
+    value: &Value,
+) -> PlatformError {
+    PlatformError::new(
+        "PLATFORM_SEKEJAP_INSERT_TYPE",
+        format!(
+            "field '{field}' in collection '{collection}' expects {expected}, got {}",
+            json_type_name(value)
+        ),
+    )
+}
+
+fn json_type_name(value: &Value) -> &'static str {
+    match value {
+        Value::Null => "null",
+        Value::Bool(_) => "boolean",
+        Value::Number(_) => "number",
+        Value::String(_) => "string",
+        Value::Array(_) => "array",
+        Value::Object(_) => "object",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1644,55 +1947,55 @@ mod tests {
         tempfile::tempdir().expect("temp dir")
     }
 
+    fn attribute(name: &str, kind: &str, index_types: &[&str]) -> CollectionAttribute {
+        CollectionAttribute {
+            name: name.to_string(),
+            kind: kind.to_string(),
+            index_types: index_types.iter().map(|s| s.to_string()).collect(),
+        }
+    }
+
+    fn create(root: &Path, owner: &str, project: &str, table: &str, attrs: Vec<CollectionAttribute>) -> SimpleTableDefinition {
+        create_table(
+            root,
+            owner,
+            project,
+            &CreateSimpleTableRequest {
+                table: table.to_string(),
+                attributes: attrs,
+                hash_indexed_fields: Vec::new(),
+                range_indexed_fields: Vec::new(),
+            },
+        )
+        .expect("create table")
+    }
+
     #[test]
     fn create_table_persists_empty_table_definition() {
         let tmp = tmp_root();
-        let req = CreateSimpleTableRequest {
-            table: "posts".to_string(),
-            attributes: vec![CollectionAttribute {
-                name: "title".to_string(),
-                kind: "string".to_string(),
-                index_types: vec!["hash".to_string()],
-            }],
-            hash_indexed_fields: Vec::new(),
-            range_indexed_fields: Vec::new(),
-        };
-
-        let created = create_table(tmp.path(), "alice", "demo", &req).expect("create table");
+        let created = create(tmp.path(), "alice", "demo", "posts", vec![attribute("title", "string", &["hash"])]);
         assert_eq!(created.table, "posts");
+        assert_eq!(created.row_count, 0);
 
         let items = list_tables(tmp.path(), "alice", "demo").expect("list tables");
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].table, "posts");
-        assert_eq!(items[0].row_count, 0);
+        // The scalar index sekejap gives every text column answers equality
+        // and range alike, so the column reads back as both.
+        let title = items[0].attributes.iter().find(|a| a.name == "title").expect("title");
+        assert!(title.index_types.contains(&"hash".to_string()));
+        assert!(title.index_types.contains(&"range".to_string()));
     }
 
     #[test]
     fn create_table_syncs_portable_schema_to_repo() {
         let tmp = tmp_root();
-        create_table(
-            tmp.path(),
-            "alice",
-            "demo",
-            &CreateSimpleTableRequest {
-                table: "posts".to_string(),
-                attributes: vec![CollectionAttribute {
-                    name: "title".to_string(),
-                    kind: "string".to_string(),
-                    index_types: vec!["hash".to_string()],
-                }],
-                hash_indexed_fields: Vec::new(),
-                range_indexed_fields: Vec::new(),
-            },
-        )
-        .expect("create table");
+        create(tmp.path(), "alice", "demo", "posts", vec![attribute("title", "string", &["hash"])]);
 
         let schema_path = tmp
             .path()
             .join("users/alice/demo/repo/schemas/sekejap/schema.json");
         assert!(schema_path.is_file());
-        // The schema document is the whole of it. No per-table sidecar is
-        // written beside it.
         assert!(
             !tmp.path()
                 .join("users/alice/demo/repo/schemas/sekejap/tables")
@@ -1707,40 +2010,22 @@ mod tests {
         assert_eq!(schema["metadata"]["name"], BUILTIN_CONNECTION_SLUG);
         assert_eq!(schema["spec"]["tables"][0]["table"], "posts");
         assert!(schema["spec"]["tables"][0].get("row_count").is_none());
-        assert!(schema["spec"]["tables"][0].get("updated_at").is_none());
     }
 
     #[test]
     fn apply_schema_from_repo_hydrates_live_store() {
         let tmp = tmp_root();
-        create_table(
+        create(
             tmp.path(),
             "alice",
             "source",
-            &CreateSimpleTableRequest {
-                table: "places".to_string(),
-                attributes: vec![
-                    CollectionAttribute {
-                        name: "name".to_string(),
-                        kind: "string".to_string(),
-                        index_types: vec!["hash".to_string(), "fulltext".to_string()],
-                    },
-                    CollectionAttribute {
-                        name: "geometry".to_string(),
-                        kind: "geo".to_string(),
-                        index_types: vec!["spatial".to_string()],
-                    },
-                    CollectionAttribute {
-                        name: "embedding".to_string(),
-                        kind: "vector".to_string(),
-                        index_types: vec!["vector".to_string()],
-                    },
-                ],
-                hash_indexed_fields: Vec::new(),
-                range_indexed_fields: Vec::new(),
-            },
-        )
-        .expect("create source table");
+            "places",
+            vec![
+                attribute("name", "string", &["hash", "fulltext"]),
+                attribute("geometry", "geo", &["spatial"]),
+                attribute("embedding", "vector(3)", &["vector"]),
+            ],
+        );
 
         let source_schema = tmp
             .path()
@@ -1765,6 +2050,27 @@ mod tests {
         assert!(places.fulltext_fields.contains(&"name".to_string()));
         assert!(places.spatial_fields.contains(&"geometry".to_string()));
         assert!(places.vector_fields.contains(&"embedding".to_string()));
+        let embedding = places.attributes.iter().find(|a| a.name == "embedding").expect("embedding");
+        assert_eq!(embedding.kind, "vector(3)", "the dimension survives the round trip");
+    }
+
+    #[test]
+    fn a_vector_attribute_without_its_dimension_is_refused_by_name() {
+        let tmp = tmp_root();
+        let err = create_table(
+            tmp.path(),
+            "alice",
+            "demo",
+            &CreateSimpleTableRequest {
+                table: "docs".to_string(),
+                attributes: vec![attribute("embedding", "vector", &["vector"])],
+                hash_indexed_fields: Vec::new(),
+                range_indexed_fields: Vec::new(),
+            },
+        )
+        .unwrap_err();
+        assert_eq!(err.code, "PLATFORM_SEKEJAP_VECTOR_DIMENSION");
+        assert!(err.message.contains("vector(384)"), "{}", err.message);
     }
 
     #[test]
@@ -1792,24 +2098,12 @@ mod tests {
     #[test]
     fn sync_schema_clears_the_legacy_tables_directory() {
         let tmp = tmp_root();
-        create_table(
-            tmp.path(),
-            "alice",
-            "demo",
-            &CreateSimpleTableRequest {
-                table: "posts".to_string(),
-                attributes: Vec::new(),
-                hash_indexed_fields: Vec::new(),
-                range_indexed_fields: Vec::new(),
-            },
-        )
-        .expect("create table");
+        create(tmp.path(), "alice", "demo", "posts", Vec::new());
         let tables_dir = tmp
             .path()
             .join("users/alice/demo/repo/schemas/sekejap/tables");
         std::fs::create_dir_all(&tables_dir).expect("create legacy dir");
-        let stale_path = tables_dir.join("stale.json");
-        std::fs::write(&stale_path, "{}").expect("stale file");
+        std::fs::write(tables_dir.join("stale.json"), "{}").expect("stale file");
 
         let report = sync_schema_to_repo(tmp.path(), "alice", "demo").expect("sync schema");
         assert!(report.changed);
@@ -1826,11 +2120,10 @@ mod tests {
     fn delete_table_removes_live_discovered_collection() {
         let tmp = tmp_root();
         {
-            let db_arc = get_db(tmp.path(), "alice", "demo").expect("open db");
-            let mut db = db_arc.write().unwrap();
-            db.execute("CREATE TABLE live_only (_key TEXT PRIMARY KEY)")
+            let db = get_db(tmp.path(), "alice", "demo").expect("open db");
+            db.execute("CREATE TABLE live_only (_key TEXT PRIMARY KEY, note TEXT)", &[])
                 .expect("create live table");
-            db.execute("INSERT INTO live_only (_key) VALUES ('row-1')")
+            db.execute("INSERT INTO live_only (_key, note) VALUES ('row-1', 'x')", &[])
                 .expect("insert live row");
         }
 
@@ -1854,15 +2147,9 @@ mod tests {
     #[test]
     fn schema_changing_sql_syncs_repo_schema() {
         let tmp = tmp_root();
-        assert!(statement_changes_schema(
-            "CREATE TABLE posts (_key TEXT PRIMARY KEY)"
-        ));
-        assert!(statement_changes_schema(
-            "DROP INDEX ON posts USING hash (title)"
-        ));
-        assert!(!statement_changes_schema(
-            "INSERT INTO posts (_key) VALUES ('a')"
-        ));
+        assert!(statement_changes_schema("CREATE TABLE posts (_key TEXT PRIMARY KEY)"));
+        assert!(statement_changes_schema("DROP INDEX posts_title_btree"));
+        assert!(!statement_changes_schema("INSERT INTO posts (_key) VALUES ('a')"));
 
         execute_sql(
             tmp.path(),
@@ -1888,22 +2175,7 @@ mod tests {
     #[test]
     fn execute_sql_reads_and_writes_rows() {
         let tmp = tmp_root();
-        create_table(
-            tmp.path(),
-            "alice",
-            "demo",
-            &CreateSimpleTableRequest {
-                table: "posts".to_string(),
-                attributes: vec![CollectionAttribute {
-                    name: "title".to_string(),
-                    kind: "string".to_string(),
-                    index_types: Vec::new(),
-                }],
-                hash_indexed_fields: Vec::new(),
-                range_indexed_fields: Vec::new(),
-            },
-        )
-        .expect("table");
+        create(tmp.path(), "alice", "demo", "posts", vec![attribute("title", "string", &[])]);
 
         let write = execute_sql(
             tmp.path(),
@@ -1929,27 +2201,33 @@ mod tests {
         .expect("select");
         assert_eq!(read.row_count, 1);
         assert_eq!(read.columns.len(), 2);
+        assert_eq!(read.rows[0][1], Value::String("Hello".to_string()));
+    }
+
+    /// sekejap would take the first column as the key; Zebflow says so
+    /// instead of letting a title become one.
+    #[test]
+    fn an_insert_without_key_is_refused_by_name() {
+        let tmp = tmp_root();
+        create(tmp.path(), "alice", "demo", "posts", vec![attribute("title", "string", &[])]);
+        let err = execute_sql(
+            tmp.path(),
+            "alice",
+            "demo",
+            "INSERT INTO posts (title) VALUES ('Hello')",
+            &[],
+            100,
+            false,
+        )
+        .unwrap_err();
+        assert_eq!(err.code, "PLATFORM_SEKEJAP_INSERT_NO_KEY");
+        assert!(err.message.contains("_key"), "{}", err.message);
     }
 
     #[test]
     fn execute_sql_supports_show_tables() {
         let tmp = tmp_root();
-        create_table(
-            tmp.path(),
-            "alice",
-            "demo",
-            &CreateSimpleTableRequest {
-                table: "posts".to_string(),
-                attributes: vec![CollectionAttribute {
-                    name: "title".to_string(),
-                    kind: "string".to_string(),
-                    index_types: Vec::new(),
-                }],
-                hash_indexed_fields: Vec::new(),
-                range_indexed_fields: Vec::new(),
-            },
-        )
-        .expect("table");
+        create(tmp.path(), "alice", "demo", "posts", vec![attribute("title", "string", &[])]);
 
         let read = execute_sql(tmp.path(), "alice", "demo", "SHOW TABLES", &[], 100, true)
             .expect("show tables");
@@ -1962,152 +2240,88 @@ mod tests {
     #[test]
     fn execute_sql_supports_show_collection_structure() {
         let tmp = tmp_root();
-        create_table(
+        create(
             tmp.path(),
             "alice",
             "demo",
-            &CreateSimpleTableRequest {
-                table: "posts".to_string(),
-                attributes: vec![
-                    CollectionAttribute {
-                        name: "title".to_string(),
-                        kind: "string".to_string(),
-                        index_types: Vec::new(),
-                    },
-                    CollectionAttribute {
-                        name: "views".to_string(),
-                        kind: "number".to_string(),
-                        index_types: Vec::new(),
-                    },
-                ],
-                hash_indexed_fields: Vec::new(),
-                range_indexed_fields: Vec::new(),
-            },
-        )
-        .expect("table");
+            "posts",
+            vec![attribute("title", "string", &[]), attribute("views", "number", &[])],
+        );
 
         let read = execute_sql(tmp.path(), "alice", "demo", "SHOW posts", &[], 100, true)
             .expect("show structure");
-        assert!(read.row_count >= 2);
+        assert!(read.row_count >= 3, "_key, title, views");
         assert_eq!(read.columns.len(), 4);
         assert!(
             read.rows
                 .iter()
-                .any(|row| { row.first() == Some(&Value::String("title".to_string())) })
+                .any(|row| row.first() == Some(&Value::String("title".to_string())))
         );
     }
 
     #[test]
-    fn execute_sql_supports_select_from_match() {
+    fn execute_sql_explains_a_select() {
         let tmp = tmp_root();
-        create_table(
-            tmp.path(),
-            "alice",
-            "demo",
-            &CreateSimpleTableRequest {
-                table: "people".to_string(),
-                attributes: vec![CollectionAttribute {
-                    name: "name".to_string(),
-                    kind: "string".to_string(),
-                    index_types: Vec::new(),
-                }],
-                hash_indexed_fields: Vec::new(),
-                range_indexed_fields: Vec::new(),
-            },
-        )
-        .expect("table");
-
-        let db_arc = get_db(tmp.path(), "alice", "demo").expect("db");
-        let mut db = db_arc.write().unwrap();
-        db.execute("INSERT INTO people (_key, name) VALUES ('alice', 'Alice')")
-            .expect("insert alice");
-        db.execute("INSERT INTO people (_key, name) VALUES ('bob', 'Bob')")
-            .expect("insert bob");
-        db.execute("INSERT ('people/alice')-[:knows]->('people/bob')")
-            .expect("insert edge");
-        drop(db);
-
+        create(tmp.path(), "alice", "demo", "posts", vec![attribute("title", "string", &[])]);
         let read = execute_sql(
             tmp.path(),
             "alice",
             "demo",
-            "SELECT b._key AS _key, b.name AS name FROM MATCH (a:people)-[:knows]->(b:people) WHERE a._key = 'alice'",
+            "EXPLAIN SELECT _key FROM posts WHERE title = 'x'",
             &[],
             100,
             true,
         )
-        .expect("select from match");
-        assert_eq!(read.row_count, 1);
-        assert_eq!(read.columns.len(), 2);
-        assert_eq!(read.rows[0][0], Value::String("bob".to_string()));
-        assert_eq!(read.rows[0][1], Value::String("Bob".to_string()));
+        .expect("explain");
+        assert_eq!(read.columns[0].name, "plan");
+        assert!(read.row_count >= 1);
     }
 
     #[test]
-    fn execute_sql_supports_select_incoming_relation_with_rhs_filter() {
+    fn execute_sql_supports_graph_table_traversal() {
         let tmp = tmp_root();
-        create_table(
-            tmp.path(),
-            "alice",
-            "demo",
-            &CreateSimpleTableRequest {
-                table: "people".to_string(),
-                attributes: vec![CollectionAttribute {
-                    name: "name".to_string(),
-                    kind: "string".to_string(),
-                    index_types: Vec::new(),
-                }],
-                hash_indexed_fields: Vec::new(),
-                range_indexed_fields: Vec::new(),
-            },
-        )
-        .expect("table");
+        create(tmp.path(), "alice", "demo", "people", vec![attribute("name", "string", &[])]);
 
-        let db_arc = get_db(tmp.path(), "alice", "demo").expect("db");
-        let mut db = db_arc.write().unwrap();
-        db.execute("INSERT INTO people (_key, name) VALUES ('alice', 'Alice')")
+        let db = get_db(tmp.path(), "alice", "demo").expect("db");
+        db.execute("INSERT INTO people (_key, name) VALUES ('alice', 'Alice')", &[])
             .expect("insert alice");
-        db.execute("INSERT INTO people (_key, name) VALUES ('bob', 'Bob')")
+        db.execute("INSERT INTO people (_key, name) VALUES ('bob', 'Bob')", &[])
             .expect("insert bob");
-        db.execute("INSERT ('people/alice')-[:knows]->('people/bob')")
-            .expect("insert edge");
-        drop(db);
+        db.link(("people", "alice"), "knows", ("people", "bob"))
+            .expect("link");
 
         let read = execute_sql(
             tmp.path(),
             "alice",
             "demo",
-            "SELECT a._key AS _key, a.name AS name FROM MATCH (a:people)-[:knows]->(b:people) WHERE b._key = 'bob'",
+            "SELECT _key, name FROM GRAPH_TABLE (base MATCH (a:people WHERE a._key = 'alice')-[:knows]->(b:people) COLUMNS (b._key AS _key, b.name AS name))",
             &[],
             100,
             true,
         )
-        .expect("select incoming from match");
+        .expect("graph table");
         assert_eq!(read.row_count, 1);
-        assert_eq!(read.columns.len(), 2);
-        assert_eq!(read.rows[0][0], Value::String("alice".to_string()));
-        assert_eq!(read.rows[0][1], Value::String("Alice".to_string()));
+        assert_eq!(read.rows[0][0], Value::String("bob".to_string()));
+        assert_eq!(read.rows[0][1], Value::String("Bob".to_string()));
+
+        let incoming = execute_sql(
+            tmp.path(),
+            "alice",
+            "demo",
+            "SELECT _key, name FROM GRAPH_TABLE (base MATCH (b:people WHERE b._key = 'bob')<-[:knows]-(a:people) COLUMNS (a._key AS _key, a.name AS name))",
+            &[],
+            100,
+            true,
+        )
+        .expect("incoming");
+        assert_eq!(incoming.row_count, 1);
+        assert_eq!(incoming.rows[0][0], Value::String("alice".to_string()));
     }
 
     #[test]
     fn execute_sql_supports_bind_params_for_write_and_read() {
         let tmp = tmp_root();
-        create_table(
-            tmp.path(),
-            "alice",
-            "demo",
-            &CreateSimpleTableRequest {
-                table: "posts".to_string(),
-                attributes: vec![CollectionAttribute {
-                    name: "title".to_string(),
-                    kind: "string".to_string(),
-                    index_types: Vec::new(),
-                }],
-                hash_indexed_fields: Vec::new(),
-                range_indexed_fields: Vec::new(),
-            },
-        )
-        .expect("table");
+        create(tmp.path(), "alice", "demo", "posts", vec![attribute("title", "string", &[])]);
 
         let write = execute_sql(
             tmp.path(),
@@ -2137,13 +2351,13 @@ mod tests {
     }
 
     #[test]
-    fn bulk_write_records_uses_schema_for_native_fields_and_merge_preserves_fields() {
+    fn bulk_write_records_types_declared_fields_and_merge_preserves_fields() {
         let tmp = tmp_root();
         execute_sql(
             tmp.path(),
             "alice",
             "demo",
-            "CREATE TABLE docs (_key TEXT PRIMARY KEY, title TEXT, category TEXT, embedding VECTOR)",
+            "CREATE TABLE docs (_key TEXT PRIMARY KEY, title TEXT, category TEXT, embedding VECTOR(3)) WITH (vector: [embedding])",
             &[],
             100,
             false,
@@ -2186,20 +2400,21 @@ mod tests {
         .expect("merge insert");
         assert_eq!(merged.affected_rows, 1);
 
-        let db_arc = get_db(tmp.path(), "alice", "demo").expect("db");
-        let db = db_arc.read().unwrap();
-        let payload: Value =
-            serde_json::from_str(&db.get("docs/d1").expect("payload")).expect("payload json");
-        assert_eq!(payload["title"], json!("Updated"));
-        assert_eq!(payload["category"], json!("alpha"));
-        assert!(payload.get("embedding").is_none());
-        assert_eq!(
-            db.get_vector("docs/d1", "embedding").expect("vector"),
-            &[0.4, 0.5, 0.6]
-        );
-        drop(db);
+        let db = get_db(tmp.path(), "alice", "demo").expect("db");
+        let document = db.get(("docs", "d1")).expect("get").expect("row");
+        assert_eq!(document["title"], json!("Updated"));
+        assert_eq!(document["category"], json!("alpha"), "merge kept the field it was not given");
+        // A VECTOR(n) column is stored as f32, so it reads back as the f64
+        // of each f32 — compare at f32 precision.
+        let stored: Vec<f32> = document["embedding"]
+            .as_array()
+            .expect("vector array")
+            .iter()
+            .map(|v| v.as_f64().expect("number") as f32)
+            .collect();
+        assert_eq!(stored, vec![0.4f32, 0.5, 0.6]);
 
-        let invalid = bulk_write_records(
+        let wrong_type = bulk_write_records(
             tmp.path(),
             "alice",
             "demo",
@@ -2209,12 +2424,88 @@ mod tests {
                 fields: Map::from_iter([("title".to_string(), json!([4, 5]))]),
             }],
             StructuredWriteMode::Upsert,
-        );
-        assert!(invalid.is_err());
+        )
+        .unwrap_err();
+        assert_eq!(wrong_type.code, "PLATFORM_SEKEJAP_INSERT_TYPE");
+
+        let wrong_dimension = bulk_write_records(
+            tmp.path(),
+            "alice",
+            "demo",
+            "docs",
+            vec![StructuredInsertRecord {
+                key: "d3".to_string(),
+                fields: Map::from_iter([("embedding".to_string(), json!([1.0, 2.0]))]),
+            }],
+            StructuredWriteMode::Upsert,
+        )
+        .unwrap_err();
+        assert!(wrong_dimension.message.contains("VECTOR(3)"), "{}", wrong_dimension.message);
+    }
+
+    /// Records and their edges are one commit, and an edge to a row nothing
+    /// wrote is refused naming it rather than dangling.
+    #[test]
+    fn bulk_insert_links_rows_in_the_same_batch_and_refuses_a_missing_endpoint() {
+        let tmp = tmp_root();
+        create(tmp.path(), "alice", "demo", "people", vec![attribute("name", "string", &[])]);
+
+        let out = bulk_insert(
+            tmp.path(),
+            "alice",
+            "demo",
+            "people",
+            vec![
+                StructuredInsertRecord { key: "a".into(), fields: Map::from_iter([("name".to_string(), json!("A"))]) },
+                StructuredInsertRecord { key: "b".into(), fields: Map::from_iter([("name".to_string(), json!("B"))]) },
+            ],
+            vec![StructuredInsertEdge {
+                from_target: "people".into(),
+                from_key: "a".into(),
+                edge_type: "knows".into(),
+                to_target: "people".into(),
+                to_key: "b".into(),
+                fields: Map::from_iter([("since".to_string(), json!(2026))]),
+                strength: 1.0,
+            }],
+            StructuredWriteMode::Insert,
+        )
+        .expect("insert with edge");
+        assert_eq!(out.affected_rows, 3);
+
+        let db = get_db(tmp.path(), "alice", "demo").expect("db");
+        let friends = db
+            .neighbours(("people", "a"), Some("knows"), sekejap::Direction::Outgoing, 16)
+            .expect("neighbours");
+        assert_eq!(friends.len(), 1);
+        assert_eq!(friends[0].key, "b");
+
+        let dangling = bulk_insert(
+            tmp.path(),
+            "alice",
+            "demo",
+            "people",
+            vec![StructuredInsertRecord { key: "c".into(), fields: Map::new() }],
+            vec![StructuredInsertEdge {
+                from_target: "people".into(),
+                from_key: "c".into(),
+                edge_type: "knows".into(),
+                to_target: "people".into(),
+                to_key: "nobody".into(),
+                fields: Map::new(),
+                strength: 1.0,
+            }],
+            StructuredWriteMode::Insert,
+        )
+        .unwrap_err();
+        assert_eq!(dangling.code, "PLATFORM_SEKEJAP_INSERT_EDGE");
+        assert!(dangling.message.contains("nobody"), "{}", dangling.message);
+        // The failed batch wrote nothing: `c` is not there either.
+        assert!(!db.exists(("people", "c")).expect("exists"));
     }
 
     #[test]
-    fn project_health_and_compact_report_wal_checkpoint() {
+    fn project_health_and_compact_report_the_store() {
         let tmp = tmp_root();
         execute_sql(
             tmp.path(),
@@ -2239,319 +2530,42 @@ mod tests {
 
         let before = project_health(tmp.path(), "alice", "demo").expect("health");
         assert_eq!(before.node_count, 1);
-        assert!(before.wal_bytes > 8);
+        assert_eq!(before.edge_count, 0);
+        assert!(before.data_bytes + before.wal_bytes > 0);
 
         let report = compact_project(tmp.path(), "alice", "demo").expect("compact");
         assert_eq!(report.operation, "compact");
         assert_eq!(report.after.node_count, 1);
-        assert_eq!(report.after.wal_bytes, 8);
-        assert!(report.after.snapshot_bytes > 0);
-    }
-}
-
-pub fn bulk_write_records(
-    data_root: &Path,
-    owner: &str,
-    project: &str,
-    collection: &str,
-    rows: Vec<StructuredInsertRecord>,
-    mode: StructuredWriteMode,
-) -> Result<StructuredWritePayload, PlatformError> {
-    let collection = collection.trim();
-    if collection.is_empty() {
-        return Err(PlatformError::new(
-            "PLATFORM_SEKEJAP_INSERT_INVALID",
-            "collection must not be empty",
-        ));
+        let sync = sync_project(tmp.path(), "alice", "demo").expect("sync");
+        assert_eq!(sync.operation, "sync");
     }
 
-    let started = Instant::now();
-    for row in &rows {
-        let key = row.key.trim();
-        if key.is_empty() {
-            return Err(PlatformError::new(
-                "PLATFORM_SEKEJAP_INSERT_INVALID",
-                "row key must not be empty",
-            ));
-        }
-    }
+    /// A 0.16 directory that never held a row is retired and the store is
+    /// created fresh beside it; one that held rows is refused by name.
+    #[test]
+    fn a_legacy_store_is_retired_when_empty_and_refused_when_it_holds_rows() {
+        let tmp = tmp_root();
+        let dir = project_dir(tmp.path(), "alice", "demo");
+        std::fs::create_dir_all(&dir).expect("dir");
+        std::fs::write(dir.join("wal.log"), [0u8; 8]).expect("wal header");
+        std::fs::write(dir.join("payloads.bin"), b"").expect("payloads");
+        std::fs::write(dir.join("gin.bin"), [0u8; 12]).expect("gin");
+        std::fs::write(dir.join("db.lock"), b"").expect("lock");
 
-    let db_arc = get_db(data_root, owner, project)?;
-    let mut db = db_arc.write().unwrap();
-    let schema = db.table_schema(collection).cloned();
-    let schema_fields = schema
-        .as_ref()
-        .map(|schema| {
-            schema
-                .fields
-                .iter()
-                .map(|field| (field.name.clone(), field.ty.clone()))
-                .collect::<BTreeMap<_, _>>()
-        })
-        .unwrap_or_default();
-    let mut field_dimensions = BTreeMap::<String, usize>::new();
-    let mut prepared = Vec::with_capacity(rows.len());
-    for row in rows {
-        let key = row.key.trim().to_string();
-        let slug = format!("{collection}/{key}");
-        let exists = db.contains(&slug);
-        match mode {
-            StructuredWriteMode::Insert if exists => {
-                return Err(PlatformError::new(
-                    "PLATFORM_SEKEJAP_INSERT_EXISTS",
-                    format!("row '{slug}' already exists"),
-                ));
-            }
-            StructuredWriteMode::Update if !exists => {
-                return Err(PlatformError::new(
-                    "PLATFORM_SEKEJAP_INSERT_MISSING",
-                    format!("row '{slug}' does not exist"),
-                ));
-            }
-            _ => {}
-        }
+        create(tmp.path(), "alice", "demo", "posts", Vec::new());
+        assert!(dir.join("legacy-0.16/wal.log").is_file());
+        assert!(!dir.join("wal.log").exists());
+        assert!(dir.join("data").exists(), "the 0.17 store was created");
 
-        let mut payload = if mode == StructuredWriteMode::Merge && exists {
-            db.get(&slug)
-                .and_then(|raw| serde_json::from_str::<Value>(&raw).ok())
-                .and_then(|value| value.as_object().cloned())
-                .unwrap_or_default()
-        } else {
-            Map::new()
+        let full = project_dir(tmp.path(), "alice", "loaded");
+        std::fs::create_dir_all(&full).expect("dir");
+        std::fs::write(full.join("wal.log"), [0u8; 64]).expect("wal with rows");
+        std::fs::write(full.join("payloads.bin"), b"rows").expect("payloads");
+        let err = match get_db(tmp.path(), "alice", "loaded") {
+            Ok(_) => panic!("a 0.16 store with rows must not open"),
+            Err(err) => err,
         };
-        let mut native_values = BTreeMap::<String, Vec<f32>>::new();
-        for (field, value) in row.fields {
-            if matches!(field.as_str(), "_id" | "_key" | "_collection") {
-                continue;
-            }
-            let Some(field_type) = schema_fields.get(&field) else {
-                if schema.is_some() {
-                    return Err(PlatformError::new(
-                        "PLATFORM_SEKEJAP_INSERT_UNKNOWN_FIELD",
-                        format!("field '{field}' is not declared in collection '{collection}'"),
-                    ));
-                }
-                payload.insert(field, value);
-                continue;
-            };
-            match classify_schema_value(collection, &field, field_type, value)? {
-                SchemaWriteValue::Payload(value) => {
-                    payload.insert(field, value);
-                }
-                SchemaWriteValue::NativeVector(vector) => {
-                    let dimensions = vector.len();
-                    match field_dimensions.get(&field) {
-                        Some(expected) if *expected != dimensions => {
-                            return Err(PlatformError::new(
-                                "PLATFORM_SEKEJAP_INSERT_INVALID",
-                                format!(
-                                    "field '{field}' dimensions mismatch: expected {expected}, got {dimensions}"
-                                ),
-                            ));
-                        }
-                        Some(_) => {}
-                        None => {
-                            field_dimensions.insert(field.clone(), dimensions);
-                        }
-                    }
-                    payload.remove(&field);
-                    native_values.insert(field, vector);
-                }
-            }
-        }
-        payload.insert(
-            "_collection".to_string(),
-            Value::String(collection.to_string()),
-        );
-        payload.insert("_key".to_string(), Value::String(key));
-        payload.insert("_id".to_string(), Value::String(slug.clone()));
-        prepared.push((slug, Value::Object(payload), native_values));
-    }
-
-    let affected_rows = prepared.len();
-    let mut payload_rows = Vec::with_capacity(prepared.len());
-    let mut vector_rows = Vec::new();
-    for (slug, payload, native_values) in prepared {
-        payload_rows.push((slug.clone(), payload));
-        for (field, vector) in native_values {
-            vector_rows.push((slug.clone(), field, vector));
-        }
-    }
-    db.put_value_bulk(payload_rows)
-        .map_err(|err| PlatformError::new("PLATFORM_SEKEJAP_INSERT_FAILED", err.to_string()))?;
-    for (slug, field, vector) in vector_rows {
-        db.put_vector(&slug, &field, &vector)
-            .map_err(|err| PlatformError::new("PLATFORM_SEKEJAP_INSERT_FAILED", err.to_string()))?;
-    }
-    drop(db);
-    record_project_write(data_root, owner, project, affected_rows);
-
-    Ok(StructuredWritePayload {
-        affected_rows,
-        optimized_fields: field_dimensions.keys().cloned().collect(),
-        field_dimensions,
-        duration_ms: started.elapsed().as_millis() as u64,
-    })
-}
-
-pub fn bulk_insert(
-    data_root: &Path,
-    owner: &str,
-    project: &str,
-    collection: &str,
-    rows: Vec<StructuredInsertRecord>,
-    edges: Vec<StructuredInsertEdge>,
-    mode: StructuredWriteMode,
-) -> Result<StructuredWritePayload, PlatformError> {
-    let started = Instant::now();
-    let mut payload = bulk_write_records(data_root, owner, project, collection, rows, mode)?;
-    if edges.is_empty() {
-        payload.duration_ms = started.elapsed().as_millis() as u64;
-        return Ok(payload);
-    }
-
-    for edge in &edges {
-        if edge.from_target.trim().is_empty()
-            || edge.from_key.trim().is_empty()
-            || edge.edge_type.trim().is_empty()
-            || edge.to_target.trim().is_empty()
-            || edge.to_key.trim().is_empty()
-        {
-            return Err(PlatformError::new(
-                "PLATFORM_SEKEJAP_INSERT_EDGE_INVALID",
-                "edge from.target, from.key, type, to.target, and to.key must be non-empty",
-            ));
-        }
-    }
-
-    let db_arc = get_db(data_root, owner, project)?;
-    let mut db = db_arc.write().unwrap();
-    let edge_count = edges.len();
-    let mut prepared_edges = Vec::with_capacity(edge_count);
-    for edge in edges {
-        let from_slug = format!("{}/{}", edge.from_target.trim(), edge.from_key.trim());
-        let to_slug = format!("{}/{}", edge.to_target.trim(), edge.to_key.trim());
-        let edge_type = edge.edge_type.trim().to_string();
-        let meta_json = Value::Object(edge.fields).to_string();
-        prepared_edges.push((from_slug, to_slug, edge_type, meta_json));
-    }
-    db.link_meta_many(prepared_edges.iter().map(|(from, to, edge_type, meta)| {
-        (
-            from.as_str(),
-            to.as_str(),
-            edge_type.as_str(),
-            Some(meta.as_str()),
-        )
-    }))
-    .map_err(|err| PlatformError::new("PLATFORM_SEKEJAP_INSERT_EDGE", err.to_string()))?;
-    drop(db);
-    record_project_write(data_root, owner, project, edge_count);
-
-    payload.affected_rows += edge_count;
-    payload.duration_ms = started.elapsed().as_millis() as u64;
-    Ok(payload)
-}
-
-enum SchemaWriteValue {
-    Payload(Value),
-    NativeVector(Vec<f32>),
-}
-
-fn classify_schema_value(
-    collection: &str,
-    field: &str,
-    field_type: &sekejap::FieldType,
-    value: Value,
-) -> Result<SchemaWriteValue, PlatformError> {
-    if value.is_null() {
-        return Ok(SchemaWriteValue::Payload(Value::Null));
-    }
-    match field_type {
-        sekejap::FieldType::Text => {
-            if value.is_string() {
-                Ok(SchemaWriteValue::Payload(value))
-            } else {
-                Err(schema_type_error(collection, field, "TEXT", &value))
-            }
-        }
-        sekejap::FieldType::Integer => {
-            if value.as_i64().is_some() || value.as_u64().is_some() {
-                Ok(SchemaWriteValue::Payload(value))
-            } else {
-                Err(schema_type_error(collection, field, "INTEGER", &value))
-            }
-        }
-        sekejap::FieldType::Real => {
-            if value.as_f64().is_some() {
-                Ok(SchemaWriteValue::Payload(value))
-            } else {
-                Err(schema_type_error(collection, field, "REAL", &value))
-            }
-        }
-        sekejap::FieldType::Bool => {
-            if value.is_boolean() {
-                Ok(SchemaWriteValue::Payload(value))
-            } else {
-                Err(schema_type_error(collection, field, "BOOLEAN", &value))
-            }
-        }
-        sekejap::FieldType::Timestamptz => {
-            if value.is_string() || value.as_f64().is_some() {
-                Ok(SchemaWriteValue::Payload(value))
-            } else {
-                Err(schema_type_error(collection, field, "TIMESTAMPTZ", &value))
-            }
-        }
-        sekejap::FieldType::Geo => {
-            if value.is_object() || value.is_array() || value.is_string() {
-                Ok(SchemaWriteValue::Payload(value))
-            } else {
-                Err(schema_type_error(collection, field, "GEO", &value))
-            }
-        }
-        sekejap::FieldType::Vector => {
-            let vector = value_as_f32_vec(&value)
-                .ok_or_else(|| schema_type_error(collection, field, "VECTOR", &value))?;
-            Ok(SchemaWriteValue::NativeVector(vector))
-        }
-        sekejap::FieldType::Json => Ok(SchemaWriteValue::Payload(value)),
-    }
-}
-
-fn value_as_f32_vec(value: &Value) -> Option<Vec<f32>> {
-    let arr = value.as_array()?;
-    if arr.is_empty() {
-        return None;
-    }
-    let mut out = Vec::with_capacity(arr.len());
-    for item in arr {
-        out.push(item.as_f64()? as f32);
-    }
-    Some(out)
-}
-
-fn schema_type_error(
-    collection: &str,
-    field: &str,
-    expected: &str,
-    value: &Value,
-) -> PlatformError {
-    PlatformError::new(
-        "PLATFORM_SEKEJAP_INSERT_TYPE",
-        format!(
-            "field '{field}' in collection '{collection}' expects {expected}, got {}",
-            json_type_name(value)
-        ),
-    )
-}
-
-fn json_type_name(value: &Value) -> &'static str {
-    match value {
-        Value::Null => "null",
-        Value::Bool(_) => "boolean",
-        Value::Number(_) => "number",
-        Value::String(_) => "string",
-        Value::Array(_) => "array",
-        Value::Object(_) => "object",
+        assert_eq!(err.code, "PLATFORM_SEKEJAP_LEGACY_STORE");
+        assert!(full.join("wal.log").exists(), "nothing was moved or destroyed");
     }
 }

@@ -7903,6 +7903,26 @@ fn initial_data_step_from_entry(
     })
 }
 
+/// `CREATE TABLE name ...` as `CREATE TABLE IF NOT EXISTS name ...`; any
+/// other statement, and one that already says so, unchanged.
+fn create_table_if_not_exists(stmt: &str) -> String {
+    let trimmed = stmt.trim_start();
+    let mut words = trimmed.split_whitespace();
+    let is_create_table = words.next().is_some_and(|w| w.eq_ignore_ascii_case("CREATE"))
+        && words.next().is_some_and(|w| w.eq_ignore_ascii_case("TABLE"));
+    if !is_create_table {
+        return stmt.to_string();
+    }
+    let already = words.next().is_some_and(|w| w.eq_ignore_ascii_case("IF"));
+    if already {
+        return stmt.to_string();
+    }
+    // The text after the two words, whatever whitespace separated them.
+    let after_create = trimmed[6..].trim_start();
+    let after_table = after_create[5..].trim_start();
+    format!("CREATE TABLE IF NOT EXISTS {after_table}")
+}
+
 fn execute_project_initial_data(
     data_root: &Path,
     owner: &str,
@@ -7932,6 +7952,12 @@ fn execute_project_initial_data(
         match engine {
             "sekejap" => {
                 for stmt in split_initial_data_sql(&sql) {
+                    // The schema document was applied before this replay, so
+                    // a seed file that creates its own table meets one that
+                    // is already there. That is the platform's own doing, not
+                    // the author's, and sekejap 0.17 refuses a second CREATE
+                    // TABLE by name — so the replay says IF NOT EXISTS for it.
+                    let stmt = create_table_if_not_exists(&stmt);
                     sekejap::execute_sql(data_root, owner, project, &stmt, &[], 0, false)?;
                 }
             }

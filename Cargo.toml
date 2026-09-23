@@ -82,7 +82,7 @@ dirs-next = "2"
 jsonwebtoken = "9"
 bcrypt = "0.15"
 rusqlite = { version = "0.32", features = ["bundled"] }
-sekejap = "0.16.5"
+sekejap = "0.17.2"
 argon2 = { version = "0.5", features = ["std"] }
 hmac = "0.12"
 subtle = "2"
@@ -94,7 +94,7 @@ chrono = { version = "0.4.44", features = ["serde", "clock"] }
 uuid = { version = "1.22.0", features = ["v4"] }
 tempfile = "3"
 flate2 = "1"
-pdfwrangler = "0.1.4"
+pdfwrangler = "0.1.5"
 hound = "3.5"
 geonative-core = "0.4.0"
 geonative-convert = "0.4.0"
@@ -112,7 +112,7 @@ wasmtime = { version = "36.0.2", default-features = false, features = ["cranelif
 # engine that runs the relay this may be pointing at. Only the socket and
 # what wraps it stay here, because that is a question about a deployment,
 # not about mail.
-mailbourne = { version = "0.0.7", default-features = false, features = ["send"] }
+mailbourne = { version = "0.0.8", default-features = false, features = ["send"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
 webpki-roots = "0.26"
 # The route_fetch SEO scan reads a rendered page's head; regex is already in

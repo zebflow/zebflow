@@ -2294,7 +2294,9 @@ async fn project_bundle_installs_spatial_blog_with_sekejap_schema_across_two_ins
                 },
                 CollectionAttribute {
                     name: "embedding".to_string(),
-                    kind: "vector".to_string(),
+                    // A vector attribute carries its dimension: sekejap 0.17
+                    // types the column as VECTOR(n).
+                    kind: "vector(3)".to_string(),
                     index_types: vec!["vector".to_string()],
                 },
             ],
@@ -4153,14 +4155,14 @@ async fn platform_import_creates_project_and_auto_initiates_repo_only_store() {
     fs::create_dir_all(&seed_dir).expect("seed dir");
     fs::write(
         seed_dir.join("seed.sql"),
-        "CREATE TABLE seeded (id TEXT, title TEXT);\nINSERT INTO seeded (id, title) VALUES ('s1', 'from-initial-data');\n",
+        "CREATE TABLE seeded (_key TEXT PRIMARY KEY, id TEXT, title TEXT);\nINSERT INTO seeded (_key, id, title) VALUES ('s1', 's1', 'from-initial-data');\n",
     )
     .expect("seed file");
     zebflow::platform::sekejap::execute_sql(
         &data_root,
         "superadmin",
         "default",
-        "CREATE TABLE seeded (id TEXT, title TEXT)",
+        "CREATE TABLE seeded (_key TEXT PRIMARY KEY, id TEXT, title TEXT)",
         &[],
         0,
         false,
@@ -4170,7 +4172,7 @@ async fn platform_import_creates_project_and_auto_initiates_repo_only_store() {
         &data_root,
         "superadmin",
         "default",
-        "INSERT INTO seeded (id, title) VALUES ('live1', 'live-only-row')",
+        "INSERT INTO seeded (_key, id, title) VALUES ('live1', 'live1', 'live-only-row')",
         &[],
         0,
         false,

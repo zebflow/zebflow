@@ -28,8 +28,10 @@ pub fn definition() -> NodeDefinition {
             "Run SQL on the project's built-in database (connection `default-multimodel`; no credential, no setup). SQL goes in the body \
              after `--`, values in `--params` as `$1, $2, …`; writes need `--read-only false`. A read answers \
              `{ columns, rows, row_count, truncated }` with each row an object keyed by column (`input.rows[0].title`); a write answers \
-             `{ affected_rows }`. Sekejap's DDL is its own dialect — `CREATE TABLE t (_key TEXT PRIMARY KEY DEFAULT UUIDV4(), name TEXT) WITH (hash: ['name'])`, \
-             no NOT NULL/UNIQUE/REFERENCES/DEFAULT NOW(); see help topic `db/sekejap`. An unknown table or column fails at run time, not at register."
+             `{ affected_rows }`. Every row has a `_key` you supply: an INSERT must name it. Sekejap's SQL is PostgreSQL-shaped with a \
+             typed catalog — `CREATE TABLE t (_key TEXT PRIMARY KEY, name TEXT, embedding VECTOR(384)) WITH (fulltext: [name])`; \
+             a WHERE needs an index on its column (scalar columns get one automatically); graph walks are `GRAPH_TABLE`; \
+             see help topic `db/sekejap`. An unknown table or column fails at run time, not at register."
                 .to_string(),
         input_schema: json!({
             "type": "object",
@@ -88,7 +90,7 @@ pub fn definition() -> NodeDefinition {
                 language: Some("sql".to_string()),
                 span: Some("full".to_string()),
                 help: Some(
-                    "SELECT * FROM posts WHERE slug = $1\nINSERT INTO posts (_key, title) VALUES ($1, $2)"
+                    "SELECT _key, title FROM posts WHERE slug = $1\nINSERT INTO posts (_key, title) VALUES ($1, $2) — an INSERT always names _key"
                         .to_string(),
                 ),
                 default_value: Some(json!("SELECT *\nFROM items\nLIMIT 20")),
@@ -147,11 +149,14 @@ pub fn definition() -> NodeDefinition {
         },
         examples: vec![
             crate::pipeline::model::NodeExample::dsl("Read with a bound value", r#"sekejap.query --params "{{ [$trigger.params.slug] }}" -- "SELECT _key, title, body FROM posts WHERE slug = $1""#)
-                .output(serde_json::json!({ "columns": ["_key", "title", "body"], "rows": [{ "_key": "8c1…", "title": "Hello", "body": "…" }], "row_count": 1, "truncated": false })),
-            crate::pipeline::model::NodeExample::dsl("Insert from a form", r#"sekejap.query --read-only false --params "{{ [input.body.title, input.body.slug, new Date().toISOString()] }}" -- "INSERT INTO posts (title, slug, created_at) VALUES ($1, $2, $3)""#)
-                .output(serde_json::json!({ "affected_rows": 1 })),
-            crate::pipeline::model::NodeExample::dsl("Create a table", r#"sekejap.query --read-only false -- "CREATE TABLE posts (_key TEXT PRIMARY KEY DEFAULT UUIDV4(), title TEXT, slug TEXT, created_at TIMESTAMPTZ) WITH (hash: ['slug'], range: ['created_at'])""#)
-                .note("Run once from `pipeline_run` or a `jobs/migrate` function pipeline; keep the SQL in `db/001_posts.sql`."),
+                .output(serde_json::json!({ "columns": ["_key", "title", "body"], "rows": [{ "_key": "hello-world", "title": "Hello", "body": "…" }], "row_count": 1, "truncated": false })),
+            crate::pipeline::model::NodeExample::dsl("Insert from a form", r#"sekejap.query --read-only false --params "{{ [input.body.slug, input.body.title, new Date().toISOString()] }}" -- "INSERT INTO posts (_key, title, created_at) VALUES ($1, $2, $3)""#)
+                .output(serde_json::json!({ "affected_rows": 1 }))
+                .note("The slug is the row's `_key`. For a key nobody typed, put a `crypto --op random_hex` node before this one and bind `$nodes.<id>.hex`."),
+            crate::pipeline::model::NodeExample::dsl("Create a table", r#"sekejap.query --read-only false -- "CREATE TABLE posts (_key TEXT PRIMARY KEY, title TEXT, slug TEXT, created_at TIMESTAMPTZ) WITH (fulltext: [title])""#)
+                .note("Run once from `pipeline_run` or a `jobs/migrate` function pipeline; keep the SQL in `db/001_posts.sql`. Scalar columns are indexed automatically; `WITH` declares full-text, spatial and vector indexes."),
+            crate::pipeline::model::NodeExample::dsl("Walk the graph", r#"sekejap.query --params "{{ [$trigger.params.id] }}" -- "SELECT _key, name FROM GRAPH_TABLE (base MATCH (u:users WHERE u._key = $1)-[:follows]->(f:users) COLUMNS (f._key AS _key, f.name AS name))""#)
+                .output(serde_json::json!({ "columns": ["_key", "name"], "rows": [{ "_key": "bob", "name": "Bob" }], "row_count": 1, "truncated": false })),
         ],
         ..Default::default()
     }
@@ -282,9 +287,9 @@ impl NodeHandler for Node {
     }
 }
 
-/// A `CREATE TABLE` that fails to parse is nearly always SQL-dialect DDL —
-/// `NOT NULL`, `UNIQUE`, `REFERENCES`, `DEFAULT NOW()` — which Sekejap's
-/// grammar does not have. Every agent tried each of those before reading the
+/// A `CREATE TABLE` that fails is nearly always a clause sekejap's catalog
+/// has no slot for — `UNIQUE`, `REFERENCES`, `CHECK`, a bare `VECTOR` with
+/// no dimension. Every agent tried each of those before reading the
 /// grammar, so the error says where the grammar is.
 fn with_ddl_hint(query: &str, message: String) -> String {
     let upper = query.trim_start().to_ascii_uppercase();
@@ -292,8 +297,8 @@ fn with_ddl_hint(query: &str, message: String) -> String {
         return message;
     }
     format!(
-        "{message} — Sekejap DDL: `CREATE TABLE t (_key TEXT PRIMARY KEY DEFAULT UUIDV4(), name TEXT, created_at TIMESTAMPTZ) WITH (hash: ['name'])`; \
-         no NOT NULL / UNIQUE / REFERENCES / DEFAULT NOW() (help topic db/sekejap)"
+        "{message} — Sekejap DDL: `CREATE TABLE t (_key TEXT PRIMARY KEY, name TEXT, created_at TIMESTAMPTZ DEFAULT now(), embedding VECTOR(384)) WITH (fulltext: [name], vector: [embedding])`; \
+         column clauses are DEFAULT now()/uuid4()/ulid() and NOT NULL only — no UNIQUE / REFERENCES / CHECK (help topic db/sekejap)"
     )
 }
 
@@ -329,9 +334,9 @@ mod row_shape_tests {
     /// already deliver.
     #[test]
     fn a_failed_create_table_points_at_the_grammar() {
-        let hinted = with_ddl_hint("CREATE TABLE users (email TEXT NOT NULL)", "parse error".into());
+        let hinted = with_ddl_hint("CREATE TABLE users (email TEXT UNIQUE)", "parse error".into());
         assert!(hinted.contains("db/sekejap"), "{hinted}");
-        assert!(hinted.contains("UUIDV4()"), "{hinted}");
+        assert!(hinted.contains("VECTOR(384)"), "{hinted}");
         assert_eq!(with_ddl_hint("SELECT 1", "parse error".into()), "parse error");
     }
 

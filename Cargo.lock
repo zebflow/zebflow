@@ -1379,6 +1379,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "19d374276b40fb8bbdee95aef7c7fa6b5316ec764510eb64b8dd0e2ed0d7e7f5"
 
 [[package]]
+name = "crc32c"
+version = "0.6.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3a47af21622d091a8f0fb295b88bc886ac74efcc613efc19f5d0b21de5c89e47"
+dependencies = [
+ "rustc_version",
+]
+
+[[package]]
 name = "crc32fast"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2793,15 +2802,6 @@ checksum = "04412b8935272e3a9bae6f48c7bfff74c2911f60525404edfdd28e49884c3bfb"
 dependencies = [
  "libc",
  "winapi",
-]
-
-[[package]]
-name = "fst"
-version = "0.4.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7ab85b9b05e3978cc9a9cf8fea7f01b494e1a09ed3037e16ba39edc7a29eb61a"
-dependencies = [
- "utf8-ranges",
 ]
 
 [[package]]
@@ -4584,9 +4584,9 @@ dependencies = [
 
 [[package]]
 name = "mailbourne"
-version = "0.0.7"
+version = "0.0.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a2335ce037f9625e724d0cb4d80f146e6fd67891bcc72ca92a58ac89a999581e"
+checksum = "e016797d709f05d9ea58202fc4594f446c620578ed8461dd559ffaf4407da9e1"
 dependencies = [
  "async-trait",
  "base64",
@@ -5492,9 +5492,9 @@ dependencies = [
 
 [[package]]
 name = "pdfwrangler"
-version = "0.1.4"
+version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "43bf2058549ae9b0e9204348d36f9adcacc83eb67a7f67620acc4bb3aeee8e02"
+checksum = "40959902bff55a0086e6397e57c0d3e072e62e68106e1ad8a6917197508b3660"
 dependencies = [
  "anyhow",
  "base64",
@@ -6382,16 +6382,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "roaring"
-version = "0.10.12"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "19e8d2cfa184d94d0726d650a9f4a1be7f9b76ac9fdb954219878dc00c1c1e7b"
-dependencies = [
- "bytemuck",
- "byteorder",
-]
-
-[[package]]
 name = "robust"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6555,7 +6545,7 @@ dependencies = [
  "security-framework",
  "security-framework-sys",
  "webpki-root-certs",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -6672,12 +6662,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
 
 [[package]]
-name = "seahash"
-version = "4.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1c107b6f4780854c8b126e228ea8869f4d7b71260f962fefb57b996b8959ba6b"
-
-[[package]]
 name = "security-framework"
 version = "3.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6702,20 +6686,61 @@ dependencies = [
 
 [[package]]
 name = "sekejap"
-version = "0.16.5"
+version = "0.17.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6fa4ee5d055de47dd9e18fbea536529b543f0337983c111f4e4338b69962b72b"
+checksum = "4f19862bf3b754a7bde8598702f747534c2d0ad8eac8f9c86cdb30adab9689ae"
 dependencies = [
- "chrono",
- "crc32fast",
- "fst",
- "memchr",
- "rayon",
- "roaring",
- "seahash",
- "serde",
+ "sekejap-core",
+ "sekejap-dist",
+ "sekejap-lang",
  "serde_json",
- "uuid",
+]
+
+[[package]]
+name = "sekejap-core"
+version = "0.17.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a96304c16a3d34cc79d1041a72e8378c3c69a1e9e53f56f3a9ebfdabd73dc60a"
+dependencies = [
+ "crc32c",
+ "geographiclib-rs",
+ "getrandom 0.4.2",
+ "sekejap-kernel",
+ "serde_json",
+]
+
+[[package]]
+name = "sekejap-dist"
+version = "0.17.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4bef4ceb3c2958805437f2db876f099bc8c0753155f44baf577eff57144e11d7"
+dependencies = [
+ "sekejap-core",
+ "sekejap-kernel",
+ "sekejap-lang",
+ "serde_json",
+]
+
+[[package]]
+name = "sekejap-kernel"
+version = "0.17.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c840aacf5731c28e07fd913b6dd20815b5e06b1f7b3f83bcd861eb67b196d05d"
+dependencies = [
+ "crc32c",
+ "libc",
+ "tempfile",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "sekejap-lang"
+version = "0.17.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f28448f1723a251280aaf30060f66b9dc690c047e9e2318b893c93be643fcb13"
+dependencies = [
+ "sekejap-core",
+ "serde_json",
 ]
 
 [[package]]
@@ -6860,12 +6885,6 @@ dependencies = [
  "cpufeatures 0.2.17",
  "digest",
 ]
-
-[[package]]
-name = "sha1_smol"
-version = "1.0.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bbfa15b3dddfee50a0fff136974b3e1bde555604ba463834a7eb7deb6417705d"
 
 [[package]]
 name = "sha2"
@@ -8432,12 +8451,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "09cc8ee72d2a9becf2f2febe0205bbed8fc6615b7cb429ad062dc7b7ddd036a9"
 
 [[package]]
-name = "utf8-ranges"
-version = "1.0.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7fcfc827f90e53a02eaef5e535ee14266c1d569214c6aa70133a624d8a3164ba"
-
-[[package]]
 name = "utf8_iter"
 version = "1.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8457,7 +8470,6 @@ checksum = "a68d3c8f01c0cfa54a75291d83601161799e4a89a39e0929f4b0354d88757a37"
 dependencies = [
  "getrandom 0.4.2",
  "js-sys",
- "sha1_smol",
  "wasm-bindgen",
 ]
 

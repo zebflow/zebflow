@@ -233,7 +233,7 @@ them.
             │
             ├── data/
             │   ├── store/             STORE — irreplaceable
-            │   │   ├── sekejap/       project database: *.bin, wal.log, snapshot.json
+            │   │   ├── sekejap/       project database (sekejap 0.17): data file and its WAL
             │   │   ├── local.db       project SQLite (n.sqlite.*)
             │   │   ├── kv.db          durable n.kv.* state
             │   │   └── chat_history.json  assistant conversation

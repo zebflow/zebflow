@@ -35,10 +35,12 @@ pub fn definition() -> NodeDefinition {
         kind: NODE_KIND.to_string(),
         capabilities: vec![NodeCapability::Database],
         title: "Sekejap Insert".to_string(),
-        description: "Bulk-insert records (and optional graph edges) into a Sekejap collection. Reads an array at `--records-path` (default \
-            `records`), each `{ key, fields: { … } }`, writes them typed against the collection's declared schema into `--target`; \
-            vectors are indexed as they land. Answers `{ inserted_records, inserted_edges, … }` — the payload is replaced. For one row \
-            from a form use `sekejap.query … INSERT`; this node is for imports and seeds, up to `--max-records` (default 1000) per run."
+        description: "Bulk-insert records (and optional graph edges) into a Sekejap collection, as one commit. Reads an array at \
+            `--records-path` (default `records`), each `{ key, fields: { … } }`, and writes them typed against the collection's \
+            declared columns into `--target` — the collection must already exist (`CREATE TABLE`), a `VECTOR(n)` field must have \
+            exactly n numbers, and an edge's two endpoints must exist, in this batch or before it. Answers \
+            `{ inserted_records, inserted_edges, … }` — the payload is replaced. For one row from a form use `sekejap.query … INSERT`; \
+            this node is for imports and seeds, up to `--max-records` (default 1000) per run."
             .to_string(),
         input_schema: json!({
             "type": "object",
@@ -434,6 +436,17 @@ mod tests {
     #[tokio::test]
     async fn executes_records_and_native_edges_from_insert_contract() {
         let tmp = tempfile::tempdir().expect("tempdir");
+        // The collections exist before the node writes into them, and so
+        // does the author the edge starts from: sekejap validates both
+        // endpoints of an edge.
+        for sql in [
+            "CREATE TABLE documents (_key TEXT PRIMARY KEY, title TEXT)",
+            "CREATE TABLE authors (_key TEXT PRIMARY KEY, name TEXT)",
+            "INSERT INTO authors (_key, name) VALUES ('author:1', 'Ann')",
+        ] {
+            crate::platform::sekejap::execute_sql(tmp.path(), "alice", "demo", sql, &[], 10, false)
+                .expect(sql);
+        }
         let node = Node::new(
             Config {
                 target: "documents".to_string(),

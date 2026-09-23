@@ -49,20 +49,22 @@ impl DbDriver for SekejapDbDriver {
     fn type_catalog(&self) -> Vec<DbTypeDef> {
         // Sekejap stores values by kind rather than by SQL type, so these are
         // its own words, not a dialect's.
-        let def = |name: &str, family: DbTypeFamily, note: &str| DbTypeDef {
+        let def = |name: &str, family: DbTypeFamily, parameterized: bool, note: &str| DbTypeDef {
             name: name.to_string(),
             family,
-            parameterized: false,
+            parameterized,
             note: note.to_string(),
         };
         vec![
-            def("string", DbTypeFamily::Text, ""),
-            def("text", DbTypeFamily::Text, "long form"),
-            def("number", DbTypeFamily::Number, ""),
-            def("boolean", DbTypeFamily::Boolean, ""),
-            def("json", DbTypeFamily::Json, ""),
-            def("geo", DbTypeFamily::Geometry, "GeoJSON"),
-            def("vector", DbTypeFamily::Vector, "similarity search"),
+            def("string", DbTypeFamily::Text, false, ""),
+            def("text", DbTypeFamily::Text, false, "long form"),
+            def("number", DbTypeFamily::Number, false, ""),
+            def("boolean", DbTypeFamily::Boolean, false, ""),
+            def("json", DbTypeFamily::Json, false, ""),
+            def("geo", DbTypeFamily::Geometry, false, "GeoJSON"),
+            // A vector column carries its dimension: `vector(384)`. There is
+            // no default, because the number is the embedding model's.
+            def("vector", DbTypeFamily::Vector, true, "similarity search; write the dimension, vector(384)"),
         ]
     }
 
