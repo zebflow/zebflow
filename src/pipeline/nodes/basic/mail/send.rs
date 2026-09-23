@@ -81,7 +81,8 @@ pub fn definition() -> NodeDefinition {
                 "html":     { "type": "string", "description": "HTML body — literal or {{ expr }}. With text, sent as multipart/alternative." },
                 "from":     { "type": "string", "description": "Override the credential's From." },
                 "reply_to": { "type": "string", "description": "Reply-To address." },
-                "attach":   { "type": "object", "description": "Displayed filename → store path or FileRef, one entry per attachment." }
+                "attach":   { "type": "object", "description": "Displayed filename → store path or FileRef, one entry per attachment." },
+                "embed":    { "type": "object", "description": "cid id → store path or FileRef, one entry per inline picture the HTML references as <img src=\"cid:id\">." }
             }
         }),
         dsl_flags: vec![
@@ -137,6 +138,15 @@ pub fn definition() -> NodeDefinition {
                 required: false,
             },
             crate::pipeline::model::DslFlag {
+                flag: "--embed".to_string(),
+                config_key: "embed".to_string(),
+                description: "A picture the HTML body draws inline: id = store path or FileRef. Reference it in --html \
+                    as <img src=\"cid:id\">. Repeat for several. Ignored (sent as a plain attachment) with no --html."
+                    .to_string(),
+                kind: crate::pipeline::model::DslFlagKind::KeyValuePairs,
+                required: false,
+            },
+            crate::pipeline::model::DslFlag {
                 flag: "--reply-to".to_string(),
                 config_key: "reply_to".to_string(),
                 description: "Reply-To address.".to_string(),
@@ -154,6 +164,7 @@ pub fn definition() -> NodeDefinition {
                 NodeFieldDef { name: "html_section".to_string(), label: "HTML version (optional)".to_string(), field_type: NodeFieldType::Section, help: Some("An email carries the text above and, optionally, an HTML rendering of the same words. A reader's client shows one or the other — never both — so this is an addition, not a choice.".to_string()), ..Default::default() },
                 NodeFieldDef { name: "html".to_string(), label: "HTML Body".to_string(), field_type: NodeFieldType::CodeEditor, language: Some("html".to_string()), rows: Some(12), help: Some("Leave empty to send plain text only. Email clients are not browsers: use tables and inline styles, and expect no JavaScript, no flexbox and no external stylesheet.".to_string()), ..Default::default() },
                 NodeFieldDef { name: "attach".to_string(), label: "Attachments".to_string(), field_type: NodeFieldType::KeyValuePairs, help: Some("Each row: the name the recipient sees, and the store path or FileRef it comes from. Leave the name empty to keep the file's own — otherwise a certificate arrives called 9f2c-4d1a-….pdf.".to_string()), ..Default::default() },
+                NodeFieldDef { name: "embed".to_string(), label: "Inline pictures".to_string(), field_type: NodeFieldType::KeyValuePairs, help: Some("Each row: a short id you choose, and the store path or FileRef it comes from. Write <img src=\"cid:id\"> in the HTML body to place it — a logo, say. Ignored, and sent as a plain attachment, when there is no HTML body.".to_string()), ..Default::default() },
                 NodeFieldDef { name: "from".to_string(), label: "From".to_string(), field_type: NodeFieldType::Text, help: Some("Overrides the credential's From address.".to_string()), ..Default::default() },
                 NodeFieldDef { name: "reply_to".to_string(), label: "Reply-To".to_string(), field_type: NodeFieldType::Text, help: Some("Where replies should go when that is not the From address — literal or {{ expr }}.".to_string()), ..Default::default() },
             ]
@@ -163,7 +174,10 @@ pub fn definition() -> NodeDefinition {
             LayoutItem::Row { row: vec![LayoutItem::Field("to".to_string()), LayoutItem::Field("subject".to_string())] },
             LayoutItem::Row { row: vec![LayoutItem::Field("from".to_string()), LayoutItem::Field("reply_to".to_string())] },
             LayoutItem::Field("text".to_string()),
+            LayoutItem::Field("html_section".to_string()),
             LayoutItem::Field("html".to_string()),
+            LayoutItem::Field("attach".to_string()),
+            LayoutItem::Field("embed".to_string()),
         ],
         examples: vec![
             crate::pipeline::model::NodeExample::dsl("Confirmation after a form", r#"mail.send --credential smtp_main --to "{{ input.body.email }}" --subject "We got your message" --text "Thanks {{ input.body.name }}, we will reply within a day.""#)
@@ -191,6 +205,13 @@ pub struct Config {
     /// with an empty name takes the file's own.
     #[serde(default)]
     pub attach: std::collections::BTreeMap<String, String>,
+    /// Pictures the HTML body draws inline: your own short id → store path
+    /// or FileRef. The HTML references one as `<img src="cid:ID">`, using
+    /// the same id as the key here. Ignored when there is no HTML body —
+    /// nothing could reference it — in which case it is sent as an
+    /// ordinary attachment instead.
+    #[serde(default)]
+    pub embed: std::collections::BTreeMap<String, String>,
 }
 
 
@@ -235,11 +256,33 @@ impl Node {
     /// node resolves one. The key is the name the recipient sees; an empty
     /// key takes the file's own, so the common case stays short and nobody
     /// receives `9f2c-4d1a-….pdf`.
+    /// Reads one store object for an attachment or an embed.
+    fn read_store_object(
+        zebfs: &crate::zebfs::LocalZebFs,
+        source: &str,
+    ) -> Result<(String, Vec<u8>), PipelineError> {
+        let rel = crate::zebfs::normalize_object_path(source.trim_start_matches('/'))
+            .map_err(|e| PipelineError::new("FW_NODE_MAIL_ATTACH", format!("'{source}': {e}")))?;
+        let object = zebfs
+            .get(&rel)
+            .map_err(|e| PipelineError::new("FW_NODE_MAIL_ATTACH", format!("'{rel}': {}", e.message)))?;
+        Ok((rel, object.bytes))
+    }
+
+    /// Reads every attachment and, when there is an HTML body to reference
+    /// them from, every inline picture out of the project's store.
+    ///
+    /// `--attach` keys are the name the recipient sees; an empty one takes
+    /// the file's own, so the common case stays short and nobody receives
+    /// `9f2c-4d1a-….pdf`. `--embed` keys are the id the HTML uses in
+    /// `cid:ID` — with no HTML body there is nothing to reference it, so it
+    /// is read the same way but sent as an ordinary attachment instead.
     async fn resolve_attachments(
         &self,
         input: &NodeExecutionInput,
+        has_html: bool,
     ) -> Result<Vec<Attachment>, PipelineError> {
-        if self.config.attach.is_empty() {
+        if self.config.attach.is_empty() && self.config.embed.is_empty() {
             return Ok(Vec::new());
         }
         let (owner, project, ..) = metadata_scope(&input.metadata)?;
@@ -255,23 +298,33 @@ impl Node {
             .map_err(|e| PipelineError::new("FW_NODE_MAIL_ATTACH", e.to_string()))?;
         let zebfs = layout.open_files();
 
-        let mut out = Vec::with_capacity(self.config.attach.len());
+        let mut out = Vec::with_capacity(self.config.attach.len() + self.config.embed.len());
         for (name, source) in &self.config.attach {
             let source = source.trim();
             if source.is_empty() {
                 continue;
             }
-            let rel = crate::zebfs::normalize_object_path(source.trim_start_matches('/'))
-                .map_err(|e| PipelineError::new("FW_NODE_MAIL_ATTACH", format!("attachment '{source}': {e}")))?;
-            let object = zebfs.get(&rel).map_err(|e| {
-                PipelineError::new("FW_NODE_MAIL_ATTACH", format!("attachment '{rel}': {}", e.message))
-            })?;
+            let (rel, bytes) = Self::read_store_object(&zebfs, source)?;
             let filename = if name.trim().is_empty() {
                 rel.rsplit('/').next().unwrap_or(&rel).to_string()
             } else {
                 name.trim().to_string()
             };
-            out.push(Attachment::new(filename, object.bytes));
+            out.push(Attachment::new(filename, bytes));
+        }
+        for (id, source) in &self.config.embed {
+            let source = source.trim();
+            let id = id.trim();
+            if source.is_empty() || id.is_empty() {
+                continue;
+            }
+            let (rel, bytes) = Self::read_store_object(&zebfs, source)?;
+            let filename = rel.rsplit('/').next().unwrap_or(&rel).to_string();
+            out.push(if has_html {
+                Attachment::inline(filename, id, bytes)
+            } else {
+                Attachment::new(filename, bytes)
+            });
         }
         Ok(out)
     }
@@ -392,7 +445,8 @@ impl NodeHandler for Node {
             text
         };
 
-        let attachments = self.resolve_attachments(&input).await?;
+        let has_html = html.as_deref().is_some_and(|h| !h.trim().is_empty());
+        let attachments = self.resolve_attachments(&input, has_html).await?;
         let attached: Vec<String> = attachments.iter().map(|a| a.filename.clone()).collect();
 
         let hostname = from_address.domain().to_string();
