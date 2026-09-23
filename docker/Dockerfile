@@ -38,6 +38,9 @@ RUN cargo chef cook --release --recipe-path recipe.json
 # Now copy source and build only the application code (fast after cache hit).
 COPY Cargo.toml Cargo.lock build.rs ./
 COPY src ./src
+# src/platform/services/fonts.rs embeds runtime/fonts/inter/*.ttf with
+# include_bytes!, so the tree it reaches for has to be in the context too.
+COPY runtime ./runtime
 ARG BUILD_VERSION
 RUN BUILD_VERSION=${BUILD_VERSION} cargo build --release --bin zebflow
 
