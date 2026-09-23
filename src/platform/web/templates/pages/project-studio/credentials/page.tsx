@@ -33,7 +33,7 @@ export function getPage(input) {
 
 const FALLBACK_KINDS = [
   "postgres", "mysql", "openai", "openrouter", "http", "github", "gitlab",
-  "jwt_signing_key", "browser_browserless", "oauth2", "hmac", "api_key", "tts", "secure_request", "custom",
+  "jwt_signing_key", "browser_browserless", "oauth2", "hmac", "api_key", "tts", "s3", "secure_request", "custom",
 ];
 
 const REQUEST_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE"];

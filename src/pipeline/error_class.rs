@@ -387,6 +387,24 @@ pub const ERROR_CLASS_REGISTRY: &[(&str, ErrorClass)] = &[
     ("LANG_PARSE_TPJSON", ErrorClass::Refused),
     ("LANG_COMPILE", ErrorClass::Failed),
     ("LANG_RUN_DECODE", ErrorClass::Failed),
+
+    // The store namespace. A `ZebFsError` converts into a `PipelineError`
+    // keeping its own code, so the store's reason reaches the caller by name;
+    // these say which reasons are the author's to fix.
+    // The path names no object, is malformed, is the reserved metadata prefix,
+    // or asks a bucket project for an operation that streams from local disk:
+    // none of these succeeds on a second attempt.
+    ("ZEBFS_NOT_FOUND", ErrorClass::Refused),
+    ("ZEBFS_INVALID_PATH", ErrorClass::Refused),
+    ("ZEBFS_RESERVED_PATH", ErrorClass::Refused),
+    ("ZEBFS_LOCAL_ONLY", ErrorClass::Refused),
+    ("ZEBFS_UNKNOWN_BACKEND", ErrorClass::Refused),
+    ("ZEBFS_S3_CREDENTIAL", ErrorClass::Refused),
+    // Disk and the bucket's own answers: a retry may well succeed.
+    ("ZEBFS_IO", ErrorClass::Failed),
+    ("ZEBFS_S3", ErrorClass::Failed),
+    ("ZEBFS_ACL_READ", ErrorClass::Failed),
+    ("ZEBFS_ACL_WRITE", ErrorClass::Failed),
 ];
 
 /// The class of one code. Unregistered codes are `Failed` — see module docs.

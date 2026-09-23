@@ -22,7 +22,7 @@ use crate::pipeline::{
     nodes::{NodeExecutionInput, NodeExecutionOutput, NodeHandler},
 };
 use crate::platform::services::PlatformService;
-use crate::zebfs::{LocalZebFs, normalize_object_path};
+use crate::zebfs::{ZebFs, normalize_object_path};
 
 use crate::pipeline::nodes::shared::file_ref::zebfs_rel_path;
 use super::convert::{
@@ -483,7 +483,7 @@ async fn execute_geodatafusion_engine(
     sources: &[SourceBindingConfig],
     sql: &str,
     params: &[Value],
-    zebfs: &LocalZebFs,
+    zebfs: &ZebFs,
     input: &NodeExecutionInput,
     language: &dyn LanguageEngine,
     max_inline_rows: usize,
@@ -594,7 +594,7 @@ fn valid_alias(alias: &str) -> bool {
 
 async fn register_source(
     ctx: &SessionContext,
-    zebfs: &LocalZebFs,
+    zebfs: &ZebFs,
     binding: &SourceBinding,
     input: &NodeExecutionInput,
     language: &dyn LanguageEngine,
@@ -636,16 +636,26 @@ async fn register_source(
 
 async fn register_table_path(
     ctx: &SessionContext,
-    zebfs: &LocalZebFs,
+    zebfs: &ZebFs,
     alias: &str,
     source: &str,
 ) -> Result<(), PipelineError> {
     let (format_label, table_path) = if is_external_table_uri(source) {
         (source.to_string(), source.trim().to_string())
     } else {
-        let (rel, abs) = zebfs
-            .resolve_object_path(source)
+        let rel = normalize_object_path(source)
             .map_err(|err| PipelineError::new("FW_NODE_TABLE_QUERY", err.to_string()))?;
+        // DataFusion streams from a file path. A bucket has none, and pulling
+        // the object down to read it is a design the node does not have yet.
+        let abs = zebfs
+            .local_path(&rel)
+            .map_err(|err| PipelineError::new("FW_NODE_TABLE_QUERY", err.to_string()))?
+            .ok_or_else(|| {
+                PipelineError::new(
+                    "FW_NODE_TABLE_QUERY",
+                    format!("'{rel}': this project's files live in a bucket, and table.query streams a source from local disk; an object-store source is not supported yet"),
+                )
+            })?;
         ensure_local_table_file(&abs)?;
         (rel, abs.to_string_lossy().into_owned())
     };

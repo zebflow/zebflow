@@ -197,13 +197,25 @@ where the bytes came from. Otherwise `ref` would stop meaning one thing:
 sometimes a key in the store Zebflow owns, sometimes a key in a bucket it does
 not. Both questions can be answered "S3" and still be different questions.
 
-`zebfs` is the only accepted value in this build. It is the word the FileRef
-field already carries for locally-stored bytes, so one constant spells it in
-both places (`src/zebfs/backend.rs`). An unknown value is refused by name with
-the accepted list rather than resolved to the default, because a project whose
-bytes went to a store it did not declare is worse than a project that will not
-start. A second backend is one more accepted value plus the connection that
-holds its endpoint and credential; nothing about this section reshapes.
+Two values are accepted: `zebfs`, the local `files/` directory, and `s3`, an
+S3-compatible bucket. Each is the word the FileRef field carries for bytes in
+that store, so one constant spells it in both places (`src/zebfs/backend.rs`).
+An unknown value is refused by name with the accepted list rather than resolved
+to the default, because a project whose bytes went to a store it did not
+declare is worse than a project that will not start.
+
+`s3` declares the *kind* of store and nothing more, because this file is
+committed and travels with the repository. Which bucket, and the keys that
+reach it, are this instance's: a credential of kind `s3` (endpoint, bucket,
+region, prefix, access key, secret, addressing style) selected for the project
+in `data/store/files-backend.json` -- the STORE tier, beside `addressing.json`,
+never the repository. A project declaring `s3` with no selection refuses every
+request by name (`PROJECT_FILES_BACKEND`) until one is made on the Files page,
+which is also where the declaration is written from. The bucket must exist; the
+Files page opens it once before saving, so a wrong key is refused there and not
+at the next upload. The map server, GDAL, DataFusion and the other engines that
+stream from a file path refuse a bucket project (`ZEBFS_LOCAL_ONLY`) rather
+than reading the local `files/`, which on such a project is scratch.
 
 Declaring it is per project, because `files/` is per project and a store is what
 a project's own objects are addressed in. An instance-wide bucket with
@@ -229,7 +241,7 @@ file operations.
 | `spec.assistant` | Settings > Automatons | Project assistant credentials and execution bounds |
 | `spec.locks` | Template editor lock control | REST, MCP, and assistant template access checks |
 | `spec.data` | Reserved; no writer in v1 | No runtime effect in v1 |
-| `spec.files` | Settings > General Runtime Defaults writes the upload limits; `backend` has no writer and is hand-authored in `repo/zebflow.yaml`, with Settings > Files showing which store is active | Asset, file, and webhook upload limits; `FilesystemFileAdapter::ensure_project_layout` reads `backend` into `ProjectFileLayout`, whose `open_files` is the one call that turns it into an implementation through `zebfs::backend::open` |
+| `spec.files` | Settings > General Runtime Defaults writes the upload limits; the Files page writes `backend` (and, beside it, the instance's credential selection in `data/store/files-backend.json`) through `PUT settings/files` | Asset, file, and webhook upload limits; `FilesystemFileAdapter::ensure_project_layout` resolves `backend` -- plus the selected `s3` credential for a bucket -- into `ProjectFileLayout::file_store`, whose `open_files` is the one call that turns it into an implementation through `zebfs::backend::open` |
 | `spec.distribution` | Settings > General presentation and Hub producer control | Dashboard app entry and Hub producer availability |
 
 The complete `spec.runtime` section is preserved in project runtime bundles.
@@ -279,7 +291,7 @@ Omitted fields use these v1 meanings:
 | `spec.runtime.execution` | `resident` |
 | `spec.runtime.resource_profile` | `small` |
 | `spec.runtime.min_replicas` | `1` |
-| `spec.files.backend` | `zebfs` -- the native store on local disk |
+| `spec.files.backend` | `zebfs` -- the native store on local disk (`s3` is the other accepted word) |
 | `spec.files.uploads.max_asset_size_mb` | Runtime default of 10 MiB |
 | `spec.files.uploads.webhook_body_max_mb` | Runtime default of 100 MiB |
 | `spec.files.uploads.max_file_size_mb` | Runtime default of 1024 MiB |
@@ -326,7 +338,7 @@ The reader rejects:
   because a declaration is matched, not normalized
 - repeated initial-data prefixes, and initial-data engines other than `sekejap`
   and `sqlite`
-- a `files.backend` other than `zebfs`, refused by name with the accepted list
+- a `files.backend` other than `zebfs` or `s3`, refused by name with the accepted list
 - URLs with embedded credentials
 - upload, timeout, logging, assistant, replica, or resource values outside their
   documented limits
@@ -386,6 +398,7 @@ schema stops being a draft and starts being a promise.
 | 2026-08-20 | Added `spec.layout.sqlite_schema` | The SQLite export directory was the one repository directory with no entry, so `schemas/sqlite/` stayed a literal in two places that could drift from each other. Optional, defaults to the literal it replaces, and absent stays absent on rewrite. |
 | 2026-08-20 | Added `spec.layout.allowed_extensions` | Optional; an absent entry resolves to the platform set, which is derived from what a repository in this codebase actually holds plus the media types the asset route serves, so no existing content becomes uninstallable and absent stays absent on rewrite. It can only narrow, so no document can weaken the gate built on it. No existing field changed meaning and the golden fixture still round-trips byte for byte. |
 | 2026-09-01 | Added `spec.files.backend` | Optional; an absent entry resolves to `zebfs`, the store every project already used, and absent stays absent on rewrite, so no existing file is modified on its next save. No existing field changed meaning and both golden fixtures still round-trip byte for byte. The only accepted value is the one a stored FileRef already carries, so nothing written before the entry existed becomes unreadable. |
+| 2026-09-24 | `spec.files.backend` accepts `s3` | Additive: `zebfs` and an absent entry mean exactly what they did. The word alone is committed; the bucket and its keys are an instance selection in the STORE tier, so a repository declaring `s3` restored on another instance refuses by name until that instance selects its own credential, and never resolves to a store it did not choose. |
 | 2026-08-20 | `spec.layout.assets` now defaults inside the resolved `source` | It only differs for a project that declares a different `source` -- a case that could not arise before the declaration was read, and where the previous literal would have scaffolded an asset directory in the tree the project moved out of. |
 | 2026-09-03 | `spec.layout.assets` renamed to `spec.layout.static`, default `static` | `assets` was the wrong word: in Vite, Astro, Rails and Hugo it names files that are processed and content-hashed, while this directory is served byte-for-byte -- which those same projects call `static`. `public` was not taken because it is the *state* the exposure inventory reports, and a folder claiming that word would collide with it. |
 | 2026-09-03 | `spec.layout.source` defaults to the repository itself | It was `pipelines`, and every layout entry was also a directory the platform created on every request -- so a folder an author deleted returned on the next page load. A project now starts as an empty repository and a layout entry only says where a kind is looked for. An empty declaration is legal and names the repository root; `static` is the one entry that may not be empty, because its route serves everything beneath it unauthenticated. |
@@ -409,7 +422,8 @@ schema stops being a draft and starts being a promise.
   rewrite, and stores and serves a file exactly as before; a project declaring
   `zebfs` explicitly round-trips byte for byte and resolves to the same store;
   an unknown backend is refused by name with the accepted list rather than
-  falling back; and the declaration survives an unrelated settings write.
+  falling back; `s3` without a selected credential is refused by name; and the
+  declaration survives an unrelated settings write.
 - A declared layout survives the runtime model conversion and an unrelated
   configuration update, so no settings write can erase it.
 - A project that declares no layout is not rewritten to carry an empty section.

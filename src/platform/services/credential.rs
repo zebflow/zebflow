@@ -874,6 +874,21 @@ pub fn builtin_credential_types() -> Vec<CredentialTypeDef> {
             ..Default::default()
         },
         CredentialTypeDef {
+            kind: "s3".into(),
+            title: "S3 object store".into(),
+            description: "An S3-compatible bucket — AWS S3, Cloudflare R2, MinIO, SeaweedFS, Garage, Backblaze B2, Tigris. Select it on the Files page to make it the store this project keeps its files in.".into(),
+            fields: vec![
+                F { placeholder: Some("https://s3.amazonaws.com".into()), full_width: true, help: Some("Scheme and host, no path: https://s3.amazonaws.com, https://<account>.r2.cloudflarestorage.com, or http://127.0.0.1:8333 for a local SeaweedFS.".into()), ..f("endpoint", "Endpoint") },
+                F { help: Some("Bucket name. The bucket must already exist.".into()), ..f("bucket", "Bucket") },
+                F { placeholder: Some("us-east-1".into()), help: Some("Signing region: us-east-1 for most self-hosted stores (default), auto for R2.".into()), ..f("region", "Region") },
+                F { placeholder: Some("projects/demo".into()), help: Some("Key prefix every object of this project lives under; empty means the bucket root. Lets several projects share one bucket.".into()), ..f("prefix", "Prefix") },
+                F { ..f("access_key_id", "Access key ID") },
+                F { full_width: true, ..fp("secret_access_key", "Secret access key") },
+                F { placeholder: Some("path".into()), help: Some("path (default): endpoint/bucket/key — MinIO, SeaweedFS, Garage, R2. virtual: bucket.endpoint/key — AWS's default.".into()), ..f("addressing", "Addressing") },
+            ],
+            ..Default::default()
+        },
+        CredentialTypeDef {
             kind: "custom".into(),
             title: "Custom".into(),
             description: "Freeform JSON secret for custom integrations.".into(),

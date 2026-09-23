@@ -283,7 +283,7 @@ impl NodeHandler for Node {
 
         let mut source_rels_for_task = Vec::with_capacity(source_paths.len());
         for source_rel in &source_paths {
-            let source_abs = layout.files_dir.join(source_rel);
+            let source_abs = layout.local_files_dir()?.join(source_rel);
             if !source_abs.exists() {
                 return Err(PipelineError::new(
                     "FW_NODE_FILE_COMPRESS",
@@ -294,7 +294,7 @@ impl NodeHandler for Node {
         }
 
         let archive_rel = resolve_archive_leaf(&self.config.output_path, &primary_source_rel);
-        let archive_abs = layout.files_dir.join(&archive_rel);
+        let archive_abs = layout.local_files_dir()?.join(&archive_rel);
         if let Some(parent) = archive_abs.parent() {
             std::fs::create_dir_all(parent).map_err(|err| {
                 PipelineError::new(
@@ -305,7 +305,7 @@ impl NodeHandler for Node {
         }
 
         let archive_abs_for_task = archive_abs.clone();
-        let files_root_for_task = layout.files_dir.clone();
+        let files_root_for_task = layout.local_files_dir()?.to_path_buf();
         tokio::task::spawn_blocking(move || {
             compress_tar_gz(
                 &files_root_for_task,
@@ -341,6 +341,7 @@ impl NodeHandler for Node {
             })?;
             let archive_name = archive_rel.rsplit('/').next().unwrap_or(&archive_rel).to_string();
             durable_file_ref(
+                layout.file_backend(),
                 &archive_rel,
                 &archive_name,
                 "application/gzip",

@@ -63,10 +63,12 @@ document contracts.
 
 ## The format survives a change of backend
 
-ZebFS is one object-storage model whose first backend is the local filesystem;
-the settings page already offers S3, R2, MinIO, B2 and Tigris as the next ones.
-The shape above is what makes that swap a backend change rather than a format
-change.
+ZebFS is one object-storage model with two backends: the local filesystem
+(`zebfs`) and any S3-compatible bucket (`s3` -- AWS S3, Cloudflare R2, MinIO,
+SeaweedFS, Garage, B2, Tigris). The shape above is what makes the swap a
+backend change rather than a format change: a project moved to a bucket writes
+the same eleven fields with `backend: s3`, and `ref` is the key the bucket
+knows it by, under the project's prefix.
 
 Every field is true wherever the bytes live. `sha256`, `size`, `mime`, `kind`
 and `filename` describe the object, not its host. `backend` names who owns it.
@@ -109,6 +111,7 @@ backend.
 | --- | --- | --- |
 | 2026-09-19 | `kind` gains `audio`, `video`, `spreadsheet` (eight → eleven). `origin` gains `manual`. | Every producer still derives `kind` through the one classifier, so no writer can emit a twelfth; a consumer that matched the eight exhaustively now sees a value it did not expect only for bytes that were `binary` before, which is the case the closed vocabulary exists to make loud. `origin` is open by its own rule. |
 | 2026-09-19 | Temporary cleanup has a writer: `remove_run_temporary_files` deletes `tmp/runs/{request_id}/` after a webhook run and after a manual run, whether the run succeeded or failed. | The promise ("deleted after the run") is unchanged; what changed is that it is kept. A node that needs the bytes past the run copies them out (`fs.save`), which is what it always had to do. |
+| 2026-09-24 | `backend` gains `s3`: the project's native store may be an S3-compatible bucket, declared as `spec.files.backend: s3` with the credential (kind `s3`) selected per instance in `data/store/files-backend.json`. Every producer takes the word from the project's layout; `read_file_ref_bytes` refuses a ref whose word is not the project's store; `zebfs_rel_path` accepts either native word and leaves the store to interpret it. | The eleven fields are unchanged and `ref` was already opaque, so a consumer that honoured the contract never joined it to a path. `zebfs::backend::open` was the one seam, and `ZebFs` (an enum, not a trait) is what it now answers; every caller that held a `LocalZebFs` holds a `ZebFs` and reads the same seven verbs. |
 | 2026-09-20 | `fs.save` (`saved`), `fs.put` / `fs.copy` / `fs.move` (`fs.object`) and `fs.compress` (`compressed`) answer the stored file as a **bare durable FileRef** — the eleven fields and nothing else; `origin` gains those five words. No `path`, `url`, `original_name`, `content_type`, `modified`, `archive_path`, `archive_url`, `source_path(s)` or `format` beside them. The DSL `execute pipeline` removes `tmp/runs/{request_id}/` too, and writes the record. (Revised 2026-09-21: the first cut carried those plain keys beside the eleven for pipelines written against the old shape; this is a fresh version and nothing carries old shapes, so they are gone from the producers and from every consumer in the tree.) | The eleven fields are all present and derived the one way, so every consumer of a FileRef takes these values as they are. A consumer that needs the store path reads `ref`; a URL is not a node's business — the Studio reads an object at `files/object?ref=`, a site serves `public/` at `/_files/…`. The nodes that read `saved` by default (`fs.image.thumbnail`, `fs.compress`, `fs.decompress`, `fs.pdf_convert`) now default `--source-key` to `saved` — the FileRef itself, which the shared resolver takes — instead of `saved.path`. A consumer that matched `fs.object.kind == "object"` after `fs.put` sees the FileRef word instead; the value was always an object on those three operations. |
 
 ## Open
@@ -124,8 +127,14 @@ backend.
   (2026-09-20) after a DSL `execute pipeline` run (see Amendments). No
   other trigger writes a temporary FileRef today; one that starts to must
   join the same removal.
-- **Remote streaming.** With a non-`zebfs` backend, whether a consumer streams
-  or must hold whole bytes in memory is undefined.
+- **Remote streaming.** On `s3` every consumer holds whole bytes: `get` answers
+  the object in memory. The nodes that stream from a *file path* instead --
+  `fs.image.thumbnail`, `fs.pdf_convert`, `fs.compress` / `fs.decompress`,
+  `geo.convert` / `geo.inspect`, `ai.tts`, `ms.*`, `table.query` and the
+  streamed `table.convert` -- refuse a bucket project by name
+  (`ZEBFS_LOCAL_ONLY`) rather than reading `files/`, which on that project is
+  scratch and not the store. Pulling an object down to a temporary file for
+  them is the design not made yet.
 - **How a URL is obtained.** The format carries none, deliberately. What does
   not exist yet is the operation that answers for one — local returning a
   path, S3 a presigned link — nor the choice between proxying bytes through
@@ -134,10 +143,7 @@ backend.
   Studio and an MCP session read a `zebfs` ref, private or public, through
   `GET /api/projects/{owner}/{project}/files/object?ref=…` with the session;
   the public surfaces (`/_files/…`, `/fs/…`) stay what they are for sites.
-- **The backend seam is cut but not widened.** Which backend a project uses is
-  now declared in `spec.files.backend` and resolved in one place
-  (`zebfs::backend::open`, reached through `ProjectFileLayout::open_files`), so
-  no caller constructs an implementation by name. What is still missing is the
-  implementation behind it: `LocalZebFs` is a concrete struct and there is no
-  trait for a second backend to implement. The format is ready for one, the
-  declaration is ready for one, the storage code is not.
+- **Moving a project between backends moves no bytes.** Selecting a bucket on
+  the Files page changes where new objects go; what was on disk stays on disk
+  and a FileRef written before the change still says `zebfs`, which the
+  bucket project refuses by name. A copy step is the owner's, by hand, today.

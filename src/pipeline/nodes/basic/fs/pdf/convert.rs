@@ -320,7 +320,7 @@ impl NodeHandler for Node {
             .ensure_project_layout(owner, project)
             .map_err(|err| PipelineError::new("FW_NODE_PDF_CONVERT", err.to_string()))?;
 
-        let abs_path = layout.files_dir.join(&rel_path);
+        let abs_path = layout.local_files_dir()?.join(&rel_path);
         if !abs_path.is_file() {
             return Err(PipelineError::new(
                 "FW_NODE_PDF_CONVERT",
@@ -331,7 +331,7 @@ impl NodeHandler for Node {
         validate_pdf_magic(&abs_path)?;
 
         let output_rel_dir = resolve_output_dir(&self.config.output_dir, &rel_path);
-        let output_root = layout.files_dir.join(&output_rel_dir);
+        let output_root = layout.local_files_dir()?.join(&output_rel_dir);
 
         let options = ExportOptions {
             emit_fulltext: self.config.emit_fulltext,

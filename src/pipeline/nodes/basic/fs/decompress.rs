@@ -256,7 +256,7 @@ impl NodeHandler for Node {
             .ensure_project_layout(owner, project)
             .map_err(|err| PipelineError::new("FW_NODE_FILE_DECOMPRESS", err.to_string()))?;
 
-        let source_abs = layout.files_dir.join(&source_rel);
+        let source_abs = layout.local_files_dir()?.join(&source_rel);
         if !source_abs.is_file() {
             return Err(PipelineError::new(
                 "FW_NODE_FILE_DECOMPRESS",
@@ -265,7 +265,7 @@ impl NodeHandler for Node {
         }
 
         let output_rel = resolve_output_dir(&self.config.output_dir, &source_rel);
-        let output_abs = layout.files_dir.join(&output_rel);
+        let output_abs = layout.local_files_dir()?.join(&output_rel);
         std::fs::create_dir_all(&output_abs).map_err(|err| {
             PipelineError::new(
                 "FW_NODE_FILE_DECOMPRESS",

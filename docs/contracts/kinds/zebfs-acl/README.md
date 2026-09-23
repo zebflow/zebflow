@@ -9,7 +9,7 @@ Which of a project's files the public may read. One document per project.
 | | |
 | --- | --- |
 | API version / kind | `zebflow.com/v1` `ZebFsAcl` |
-| Document | `files/.zebfs/acl.json` |
+| Document | `.zebfs/acl.json` in the project's store: `files/.zebfs/acl.json` on disk, or that key under the project's prefix in its bucket |
 | Reserved prefix | `.zebfs/` — the folder holding this document; never an object |
 | Adapter | `src/zebfs/acl.rs` |
 | Backend-neutral | the same document describes local files and future object stores |

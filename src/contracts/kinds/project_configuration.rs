@@ -1686,7 +1686,7 @@ mod tests {
         )
         .expect("the local backend is accepted by its declared name");
 
-        for refused in ["s3", "local", "ZebFS", "", "minio"] {
+        for refused in ["ftp", "local", "ZebFS", "", "minio"] {
             let error = encode_contract::<ProjectConfigurationContract>(
                 ContractMetadata::named("project"),
                 with(refused),

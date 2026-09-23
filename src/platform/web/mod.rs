@@ -2708,14 +2708,18 @@ async fn project_legacy_file_serve(
         Err(err) => return internal_error(err),
     };
     let zebfs = layout.open_files();
-    let (_, abs_path) = match zebfs.resolve_object_path(&normalized) {
+    // A local store's object must resolve inside the store's directory. A
+    // bucket has no path to check; its keys are its own.
+    let abs_path = match zebfs.local_path(&normalized) {
         Ok(resolved) => resolved,
         Err(err) if err.code == "ZEBFS_INVALID_PATH" => {
             return (StatusCode::BAD_REQUEST, "invalid object path").into_response();
         }
         Err(err) => return internal_error(PlatformError::new(err.code, err.message)),
     };
-    if let Ok(abs_canonical) = std::fs::canonicalize(&abs_path) {
+    if let Some(abs_path) = abs_path
+        && let Ok(abs_canonical) = std::fs::canonicalize(&abs_path)
+    {
         let root_canonical =
             std::fs::canonicalize(&layout.files_dir).unwrap_or_else(|_| layout.files_dir.clone());
         if !abs_canonical.starts_with(&root_canonical) {
@@ -6729,6 +6733,10 @@ async fn render_files_page(
                 Ok(backend) => backend,
                 Err(err) => return internal_error(PlatformError::new(err.code, err.message)),
             };
+            let storage = match files_section_json(&state, &owner, &project, &zebflow_cfg) {
+                Ok(storage) => storage,
+                Err(err) => return internal_error(err),
+            };
 
             let input = json!({
                 "seo": {
@@ -6746,13 +6754,7 @@ async fn render_files_page(
                 // rather than in Settings: it is a fact about the store you are
                 // looking at, and it was previously shown in a place you could
                 // not act on it from.
-                "storage": {
-                    "backend": file_backend.as_str(),
-                    "backend_label": file_backend.label(),
-                    "declared": zebflow_cfg.configs.files.backend.is_some(),
-                    "field": "spec.files.backend",
-                    "accepted": crate::zebfs::FILE_BACKENDS,
-                },
+                "storage": storage,
                 "storages": [
                     {
                         "name": "default",
@@ -9381,7 +9383,18 @@ async fn api_create_project(
             match finalize_project_runtime_setup(&state, &owner, &project.project, &runtime).await
             {
                 Ok(placement) => Json(
-                    json!({"ok": true, "project": project, "layout": layout, "placement": placement}),
+                    json!({
+                        "ok": true,
+                        "project": project,
+                        "layout": {
+                            "root": layout.root,
+                            "data_dir": layout.data_dir,
+                            "files_dir": layout.files_dir,
+                            "repo_dir": layout.repo_dir,
+                            "file_backend": layout.file_backend().as_str(),
+                        },
+                        "placement": placement
+                    }),
                 )
                 .into_response(),
                 Err(err) => internal_error(err),
@@ -15541,7 +15554,7 @@ async fn api_files_upload(
     Json(json!({
         "ok": true,
         "__zf_type": crate::pipeline::nodes::shared::file_ref::FILE_REF_TYPE,
-        "backend": crate::pipeline::nodes::shared::file_ref::BACKEND_ZEBFS,
+        "backend": layout.file_backend().as_str(),
         "ref": entry_rel,
         "filename": filename,
         "mime": content_type,
@@ -15941,15 +15954,20 @@ async fn api_mapserver_layer_stats(
         == crate::mapserver::publish::manifest::SourceKind::GeoJsonArtifact
     {
         match state.platform.file.ensure_project_layout(&owner, &project) {
-            Ok(layout) => crate::mapserver::publish::manifest::PublishedLayerManifest {
-                source_kind: crate::mapserver::publish::manifest::SourceKind::GeoJsonFile,
-                source_ref: layout
-                    .files_dir
-                    .join(source_path.trim_start_matches('/'))
-                    .display()
-                    .to_string(),
-                ..manifest
-            },
+            Ok(layout) => {
+                let files_dir = match layout.local_files_dir() {
+                    Ok(dir) => dir.to_path_buf(),
+                    Err(err) => return internal_error(PlatformError::new(err.code, err.message)),
+                };
+                crate::mapserver::publish::manifest::PublishedLayerManifest {
+                    source_kind: crate::mapserver::publish::manifest::SourceKind::GeoJsonFile,
+                    source_ref: files_dir
+                        .join(source_path.trim_start_matches('/'))
+                        .display()
+                        .to_string(),
+                    ..manifest
+                }
+            }
             Err(err) => return internal_error(err),
         }
     } else {
@@ -16038,7 +16056,10 @@ async fn api_mapserver_layers_publish(
         Ok(layout) => layout,
         Err(err) => return internal_error(err),
     };
-    let source_abs_path = layout.files_dir.join(&source_path);
+    let source_abs_path = match layout.local_files_dir() {
+        Ok(dir) => dir.join(&source_path),
+        Err(err) => return internal_error(PlatformError::new(err.code, err.message)),
+    };
     if !source_abs_path.exists() || !source_abs_path.is_file() {
         return (
             StatusCode::BAD_REQUEST,
@@ -16888,12 +16909,69 @@ async fn api_get_settings_section(
             Ok(data) => Json(json!({ "ok": true, "section": "addressing", "data": data })).into_response(),
             Err(err) => internal_error(err),
         },
+        "files" => match files_section_json(&state, &owner, &project, &cfg) {
+            Ok(data) => Json(json!({ "ok": true, "section": "files", "data": data })).into_response(),
+            Err(err) => internal_error(err),
+        },
         _ => (
             StatusCode::NOT_FOUND,
             Json(json!({"ok": false, "error": format!("unknown settings section '{section}'")})),
         )
             .into_response(),
     }
+}
+
+/// The Files section: which store this project keeps its files in, what
+/// `zebflow.yaml` declares, the credential this instance selected for a
+/// bucket, and the `s3` credentials that could be selected.
+///
+/// Whether the store opens as declared is *shown*, not failed: a wrong
+/// selection is repaired from this very page, so the page must render with
+/// it.
+fn files_section_json(
+    state: &PlatformAppState,
+    owner: &str,
+    project: &str,
+    cfg: &crate::platform::model::ZebflowJson,
+) -> Result<Value, PlatformError> {
+    use crate::platform::adapters::file::S3_CREDENTIAL_KIND;
+    let backend = cfg
+        .configs
+        .files
+        .effective_backend()
+        .map_err(|err| PlatformError::new(err.code, err.message))?;
+    let selection = state.platform.file.files_backend_selection(owner, project)?;
+    let credentials: Vec<Value> = state
+        .platform
+        .credentials
+        .list_project_credentials(owner, project)?
+        .into_iter()
+        .filter(|credential| credential.kind == S3_CREDENTIAL_KIND)
+        .map(|credential| json!({ "id": credential.credential_id, "title": credential.title }))
+        .collect();
+    let (bucket, problem) = match state.platform.file.ensure_project_layout(owner, project) {
+        Ok(layout) => match &layout.file_store {
+            crate::zebfs::FileStore::S3(config) => (
+                json!({ "endpoint": config.endpoint, "bucket": config.bucket, "prefix": config.prefix }),
+                Value::Null,
+            ),
+            crate::zebfs::FileStore::Local(_) => (Value::Null, Value::Null),
+        },
+        Err(err) => (Value::Null, json!(err.message)),
+    };
+    Ok(json!({
+        "backend": backend.as_str(),
+        "backend_label": backend.label(),
+        "declared": cfg.configs.files.backend.is_some(),
+        "field": "spec.files.backend",
+        "accepted": crate::zebfs::FILE_BACKENDS,
+        "credential_id": selection.credential_id,
+        "credentials": credentials,
+        "bucket": bucket,
+        "problem": problem,
+        "api": format!("/api/projects/{owner}/{project}/settings/files"),
+        "credentials_href": format!("/projects/{owner}/{project}/credentials"),
+    }))
 }
 
 /// The Addressing section as the Studio and the API read it: what the
@@ -17445,6 +17523,100 @@ async fn api_upsert_settings_section(
                     .into_response(),
                 Err(err) => internal_error(err),
             };
+        }
+        "files" => {
+            use crate::platform::adapters::file::S3_CREDENTIAL_KIND;
+            use crate::platform::adapters::file::selection::FilesBackendSelection;
+            use crate::zebfs::{FileBackend, FileStore, S3Config};
+            #[derive(serde::Deserialize)]
+            #[serde(deny_unknown_fields)]
+            struct FilesPayload {
+                #[serde(default)]
+                backend: String,
+                #[serde(default)]
+                credential_id: Option<String>,
+            }
+            let bad_request = |message: String| {
+                (StatusCode::BAD_REQUEST, Json(json!({"ok": false, "error": message}))).into_response()
+            };
+            let payload: FilesPayload = match serde_json::from_value(req.data.clone()) {
+                Ok(payload) => payload,
+                Err(err) => return bad_request(err.to_string()),
+            };
+            let backend = match FileBackend::parse(payload.backend.trim()) {
+                Ok(backend) => backend,
+                Err(err) => return bad_request(err.message),
+            };
+            let credential_id = payload
+                .credential_id
+                .map(|id| id.trim().to_string())
+                .filter(|id| !id.is_empty());
+            let selection = match backend {
+                FileBackend::Zebfs => FilesBackendSelection::default(),
+                FileBackend::S3 => {
+                    let Some(credential_id) = credential_id else {
+                        return bad_request(format!(
+                            "choose an '{S3_CREDENTIAL_KIND}' credential for the bucket"
+                        ));
+                    };
+                    // Resolve and probe before anything is written, so a wrong
+                    // key or an unreachable endpoint is refused here, not at
+                    // the next upload.
+                    let credential = match state
+                        .platform
+                        .credentials
+                        .get_project_credential(&owner, &project, &credential_id)
+                    {
+                        Ok(Some(credential)) => credential,
+                        Ok(None) => {
+                            return bad_request(format!("credential '{credential_id}' does not exist"));
+                        }
+                        Err(err) => return internal_error(err),
+                    };
+                    if credential.kind != S3_CREDENTIAL_KIND {
+                        return bad_request(format!(
+                            "credential '{credential_id}' is of kind '{}', not '{S3_CREDENTIAL_KIND}'",
+                            credential.kind
+                        ));
+                    }
+                    let config = match S3Config::from_credential(&credential.secret) {
+                        Ok(config) => config,
+                        Err(err) => return bad_request(format!("credential '{credential_id}': {}", err.message)),
+                    };
+                    if let Err(err) = crate::zebfs::backend::open(&FileStore::S3(config)).list("") {
+                        return bad_request(format!("the bucket does not answer: {}", err.message));
+                    }
+                    FilesBackendSelection {
+                        credential_id: Some(credential_id),
+                    }
+                }
+            };
+            // The selection first, then the declaration: the layout reads
+            // both, and a declaration without its selection refuses every
+            // request until the selection lands.
+            if let Err(err) = state.platform.file.select_files_backend(&owner, &project, &selection) {
+                return internal_error(err);
+            }
+            let updated = state.platform.zebflow_cfg.update(&owner, &project, |cfg| {
+                cfg.configs.files.backend = match backend {
+                    // Absent stays absent; a project that declared a word
+                    // keeps declaring one.
+                    FileBackend::Zebfs => cfg
+                        .configs
+                        .files
+                        .backend
+                        .as_ref()
+                        .map(|_| FileBackend::Zebfs.as_str().to_string()),
+                    FileBackend::S3 => Some(FileBackend::S3.as_str().to_string()),
+                };
+            });
+            match updated {
+                Ok(cfg) => match files_section_json(&state, &owner, &project, &cfg) {
+                    Ok(data) => data,
+                    Err(err) => return internal_error(err),
+                },
+                Err(err) => return internal_error(err),
+            }
         }
         "distribution" => {
             #[derive(serde::Deserialize)]
@@ -24923,9 +25095,11 @@ fn mapserver_layers_manifest_path(
     instance: &str,
 ) -> Result<std::path::PathBuf, PlatformError> {
     let layout = state.platform.file.ensure_project_layout(owner, project)?;
+    let files_dir = layout
+        .local_files_dir()
+        .map_err(|err| PlatformError::new(err.code, err.message))?;
     Ok(crate::mapserver::publish::registry::layers_manifest_path(
-        &layout.files_dir,
-        instance,
+        files_dir, instance,
     ))
 }
 
@@ -24976,7 +25150,10 @@ fn list_mapserver_source_files(
     project: &str,
 ) -> Result<Vec<serde_json::Value>, PlatformError> {
     let layout = state.platform.file.ensure_project_layout(owner, project)?;
-    let dir = layout.files_dir.join("mapserver");
+    let dir = layout
+        .local_files_dir()
+        .map_err(|err| PlatformError::new(err.code, err.message))?
+        .join("mapserver");
     std::fs::create_dir_all(&dir)
         .map_err(|err| PlatformError::new("MAPSERVER_LIST", err.to_string()))?;
     let mut out = Vec::new();
@@ -25065,7 +25242,8 @@ fn mapserver_record_to_manifest(
             (
                 crate::mapserver::publish::manifest::SourceKind::GeoParquet,
                 layout
-                    .files_dir
+                    .local_files_dir()
+                    .map_err(|err| PlatformError::new(err.code, err.message))?
                     .join(item.source_path.trim_start_matches('/'))
                     .display()
                     .to_string(),
@@ -25079,7 +25257,8 @@ fn mapserver_record_to_manifest(
             (
                 crate::mapserver::publish::manifest::SourceKind::GeoJsonFile,
                 layout
-                    .files_dir
+                    .local_files_dir()
+                    .map_err(|err| PlatformError::new(err.code, err.message))?
                     .join(item.source_path.trim_start_matches('/'))
                     .display()
                     .to_string(),

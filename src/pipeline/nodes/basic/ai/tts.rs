@@ -572,7 +572,7 @@ impl NodeHandler for Node {
             }
         }
 
-        let files_root = layout.files_dir.clone();
+        let files_root = layout.local_files_dir()?.to_path_buf();
         let model_abs = resolve_zebfs_abs(
             &files_root,
             required_secret_str(&secret.model_file, "model_file")?,
@@ -647,7 +647,7 @@ impl NodeHandler for Node {
         let (file_rel_path, file_url) = if needs_file {
             let output_rel = resolve_output_rel_path(self.config.output_path.as_deref())?;
             let final_rel = normalize_audio_output_rel_path(&output_rel)?;
-            let abs_path = layout.files_dir.join(&final_rel);
+            let abs_path = layout.local_files_dir()?.join(&final_rel);
             if let Some(parent) = abs_path.parent() {
                 fs::create_dir_all(parent).map_err(|err| {
                     PipelineError::new(

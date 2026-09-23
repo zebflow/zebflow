@@ -40,6 +40,7 @@ pub const FILE_REF_TYPE: &str = "file_ref";
 /// Re-exported rather than redefined: the word a FileRef carries and the word
 /// `spec.files.backend` declares name the same thing, so there is one constant.
 pub use crate::zebfs::backend::BACKEND_ZEBFS;
+use crate::zebfs::FileBackend;
 pub const LIFECYCLE_TEMPORARY: &str = "temporary";
 pub const LIFECYCLE_DURABLE: &str = "durable";
 
@@ -72,6 +73,7 @@ pub const FILE_REF_KINDS: [&str; 11] = [
 /// the caller's: a node that re-encodes says `sanitized`, one that writes
 /// what it was handed carries the source's word forward.
 pub fn durable_file_ref(
+    backend: FileBackend,
     rel_path: &str,
     filename: &str,
     mime: &str,
@@ -83,7 +85,7 @@ pub fn durable_file_ref(
     let mime = if mime.is_empty() { "application/octet-stream" } else { mime };
     json!({
         "__zf_type": FILE_REF_TYPE,
-        "backend": BACKEND_ZEBFS,
+        "backend": backend.as_str(),
         "ref": rel_path,
         "filename": filename,
         "mime": mime,
@@ -128,7 +130,7 @@ pub fn durable_file_ref_for_store_path(
     let mime = mime_for_filename(&filename);
     Ok(json!({
         "__zf_type": FILE_REF_TYPE,
-        "backend": BACKEND_ZEBFS,
+        "backend": layout.file_backend().as_str(),
         "ref": object.stat.path,
         "filename": filename,
         "mime": mime,
@@ -195,10 +197,11 @@ pub fn remove_run_temporary_files(
     let Ok(layout) = platform.file.ensure_project_layout(owner, project) else {
         return;
     };
-    let dir = layout.files_dir.join("tmp").join("runs").join(&request_part);
-    if dir.is_dir() {
-        let _ = std::fs::remove_dir_all(&dir);
-    }
+    // Through the store, whichever it is: a temporary FileRef was written
+    // with `put`, so its bytes are wherever the project's bytes are.
+    let _ = layout
+        .open_files()
+        .delete(&format!("tmp/runs/{request_part}"));
 }
 
 /// The content type a stored object's name implies, for a FileRef built from
@@ -315,7 +318,7 @@ pub fn write_tmp_file_ref(
     let kind = infer_kind(mime, &clean_name);
     Ok(json!({
         "__zf_type": FILE_REF_TYPE,
-        "backend": BACKEND_ZEBFS,
+        "backend": layout.file_backend().as_str(),
         "ref": stat.path,
         "filename": clean_name,
         "mime": mime,
@@ -338,17 +341,20 @@ pub fn read_file_ref_bytes(
     let path = file_ref_path(value).ok_or_else(|| {
         PipelineError::new("FW_FILE_REF_READ", "value is not a FileRef with a ref")
     })?;
-    let backend = file_ref_backend(value);
-    if backend != BACKEND_ZEBFS {
-        return Err(PipelineError::new(
-            "FW_FILE_REF_BACKEND",
-            format!("unsupported FileRef backend '{backend}'"),
-        ));
-    }
     let layout = platform
         .file
         .ensure_project_layout(owner, project)
         .map_err(|err| PipelineError::new("FW_FILE_REF_READ", err.to_string()))?;
+    // Only the backend that wrote a ref may read it. The project's store is
+    // that backend, so a ref carrying any other word is refused by name.
+    let backend = file_ref_backend(value);
+    let native = layout.file_backend().as_str();
+    if backend != native {
+        return Err(PipelineError::new(
+            "FW_FILE_REF_BACKEND",
+            format!("FileRef backend '{backend}' is not this project's store ('{native}')"),
+        ));
+    }
     let zebfs = layout.open_files();
     let object = zebfs
         .get(path)
@@ -470,12 +476,15 @@ pub fn zebfs_rel_path(value: &Value) -> Result<Option<String>, PipelineError> {
     if !is_file_ref(value) {
         return Ok(None);
     }
+    // A native word — `zebfs`, `s3` — means the ref is a path in the
+    // project's own store, and the store that opens interprets it. Any other
+    // word names a backend that is not this project's, so the ref stays opaque.
     let backend = file_ref_backend(value);
-    if backend != BACKEND_ZEBFS {
+    if FileBackend::parse(backend).is_err() {
         return Err(PipelineError::new(
             "FW_FILE_REF_BACKEND",
             format!(
-                "FileRef backend '{backend}' owns these bytes; its ref is opaque                  to this node and cannot be read as a local path"
+                "FileRef backend '{backend}' owns these bytes; its ref is opaque to this node and cannot be read as a store path"
             ),
         ));
     }
@@ -757,8 +766,8 @@ mod tests {
     #[test]
     fn a_foreign_backend_ref_is_never_resolved_to_a_local_path() {
         let mut value = contract_file_ref();
-        value["backend"] = json!("s3");
-        value["ref"] = json!("s3://bucket/key.jpg");
+        value["backend"] = json!("gdrive");
+        value["ref"] = json!("1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgvE2upms");
 
         assert_eq!(
             zebfs_rel_path(&value).unwrap_err().code,

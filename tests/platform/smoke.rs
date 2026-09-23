@@ -6203,7 +6203,7 @@ fn the_file_storage_backend_is_declared_and_an_unknown_one_is_refused() {
         b"hello"
     );
     assert_eq!(
-        undeclared.root(),
+        undeclared.local_root().expect("a local store"),
         data_root
             .join("users")
             .join("superadmin")
@@ -6240,7 +6240,7 @@ fn the_file_storage_backend_is_declared_and_an_unknown_one_is_refused() {
         b"hello"
     );
     assert_eq!(
-        declared.root(),
+        declared.local_root().expect("a local store"),
         data_root
             .join("users")
             .join("superadmin")
@@ -6288,16 +6288,34 @@ fn the_file_storage_backend_is_declared_and_an_unknown_one_is_refused() {
         .join("zebflow.yaml");
     fs::write(
         &config_path,
-        declared_yaml.replace("backend: zebfs", "backend: s3"),
+        declared_yaml.replace("backend: zebfs", "backend: ftp"),
     )
     .expect("declare an unknown backend");
     let refused = platform
         .project_zebfs("superadmin", "declared")
         .expect_err("an unknown backend is refused");
     assert!(
-        refused.message.contains("'s3'") && refused.message.contains("accepted: zebfs"),
+        refused.message.contains("'ftp'") && refused.message.contains("accepted: zebfs, s3"),
         "{}",
         refused.message
+    );
+
+    // `s3` is a backend this build provides, but a bucket needs a credential
+    // this instance selected for it; until one is, the project refuses by
+    // name rather than writing its bytes to the local directory.
+    fs::write(
+        &config_path,
+        declared_yaml.replace("backend: zebfs", "backend: s3"),
+    )
+    .expect("declare the object store");
+    let unselected = platform
+        .project_zebfs("superadmin", "declared")
+        .expect_err("a bucket without a selected credential is refused");
+    assert_eq!(unselected.code, "PROJECT_FILES_BACKEND");
+    assert!(
+        unselected.message.contains("no credential is selected"),
+        "{}",
+        unselected.message
     );
 
     let _ = fs::remove_dir_all(&data_root);

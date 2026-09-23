@@ -1638,6 +1638,14 @@ pub struct PipelineError {
     pub node_trace: Vec<NodeTraceEntry>,
 }
 
+impl From<crate::zebfs::ZebFsError> for PipelineError {
+    /// A store refusal keeps its own code — `ZEBFS_LOCAL_ONLY`,
+    /// `ZEBFS_NOT_FOUND` — so a node's diagnostic names the store's reason.
+    fn from(err: crate::zebfs::ZebFsError) -> Self {
+        Self::new(err.code, err.message)
+    }
+}
+
 impl PipelineError {
     /// Constructs a new error with a stable code and a descriptive message.
     pub fn new(code: &'static str, message: impl Into<String>) -> Self {

@@ -174,7 +174,7 @@ impl NodeHandler for Node {
             .ensure_project_layout(owner, project)
             .map_err(|err| PipelineError::new("FW_NODE_GEO_INSPECT", err.to_string()))?;
 
-        let abs_path = layout.files_dir.join(&rel_path);
+        let abs_path = layout.local_files_dir()?.join(&rel_path);
         if !abs_path.exists() {
             return Err(PipelineError::new(
                 "FW_NODE_GEO_INSPECT",

@@ -144,6 +144,7 @@ impl PlatformService {
             config.file_adapter,
             config.data_root.clone(),
             zebflow_cfg.clone(),
+            Some(data.clone()),
         );
         let project_data = build_project_data_factory(&config.data_root);
         file.initialize()?;
@@ -452,9 +453,9 @@ impl PlatformService {
     ///
     /// This is the seam. `spec.files.backend` in `repo/zebflow.yaml` names the
     /// store that owns the project's bytes, and this is the one place that
-    /// declaration becomes an implementation, so a second backend is added by
+    /// declaration becomes an implementation, so a backend is added by
     /// changing `zebfs::backend::open` rather than by finding every caller that
-    /// once constructed `LocalZebFs` directly.
+    /// once constructed an implementation directly.
     ///
     /// It answers only "where does this project keep its files". An outside
     /// bucket a pipeline reads from is a connection with a credential, chosen
@@ -463,7 +464,7 @@ impl PlatformService {
         &self,
         owner: &str,
         project: &str,
-    ) -> Result<crate::zebfs::LocalZebFs, PlatformError> {
+    ) -> Result<crate::zebfs::ZebFs, PlatformError> {
         Ok(self
             .file
             .ensure_project_layout(owner, project)?

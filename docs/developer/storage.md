@@ -7,14 +7,20 @@ kind has a different lifetime and backup rule.
 
 - `repo/` is project source and Git work.
 - `data/` is durable project data and runtime owned state.
-- `files/` is the ZebFS object root.
+- `files/` is the ZebFS object root when the project keeps its files on disk
+  (`spec.files.backend: zebfs`, the default). A project declaring `s3` keeps
+  them in a bucket instead, reached through the credential named in
+  `data/store/files-backend.json`; `files/` is then scratch, not the store.
 - temporary paths exist only for one bounded operation.
 
 ## Interfaces
 
 `src/infra/io/` defines replaceable cache, catalog, object, runtime data, and
-state interfaces. `src/zebfs/` defines the project file object model and local
-backend. Platform adapters create the physical project layout.
+state interfaces. `src/zebfs/` defines the project file object model and its
+two backends -- `local.rs` (a directory) and `s3.rs` (an S3-compatible bucket,
+Signature Version 4 over a blocking client, no SDK) -- behind one `ZebFs` enum
+opened at `backend::open`. Platform adapters create the physical project layout
+and resolve which backend a project declared.
 
 ## Rules
 

@@ -745,7 +745,7 @@ impl NodeHandler for Node {
         };
         payload.insert(
             "saved".to_string(),
-            durable_file_ref(&rel_path, &storage_name, &effective_mime, &bytes, "fs.save", &trust),
+            durable_file_ref(layout.file_backend(), &rel_path, &storage_name, &effective_mime, &bytes, "fs.save", &trust),
         );
         Ok(NodeExecutionOutput {
             output_pins: vec![OUTPUT_PIN_OUT.to_string()],
@@ -921,7 +921,7 @@ mod tests {
     #[test]
     fn saved_is_exactly_a_durable_file_ref() {
         let bytes = b"\x89PNG\r\n\x1a\nnot really a png";
-        let saved = durable_file_ref("uploads/abc.png", "abc.png", "image/png", bytes, "fs.save", "untrusted");
+        let saved = durable_file_ref(crate::zebfs::FileBackend::Zebfs, "uploads/abc.png", "abc.png", "image/png", bytes, "fs.save", "untrusted");
         crate::pipeline::nodes::shared::file_ref::validate_file_ref(&saved).expect("a contract FileRef");
         let mut keys: Vec<&str> = saved.as_object().unwrap().keys().map(String::as_str).collect();
         keys.sort_unstable();

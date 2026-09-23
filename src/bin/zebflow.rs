@@ -392,6 +392,7 @@ fn pipeline_identity_service(
         FileAdapterKind::Filesystem,
         data_root.to_path_buf(),
         configs.clone(),
+        Some(data.clone()),
     );
     file.initialize()?;
     Ok(ProjectService::new(

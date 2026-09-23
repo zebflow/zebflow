@@ -53,7 +53,7 @@ fn layers_path(
         .ensure_project_layout(owner, project)
         .map_err(|e| PipelineError::new("FW_NODE_MS", e.to_string()))?;
     Ok(registry::layers_manifest_path(
-        &layout.files_dir,
+        layout.local_files_dir()?,
         DEFAULT_INSTANCE,
     ))
 }
@@ -741,7 +741,7 @@ impl Node {
         let mut optimization_info: Option<Value> = None;
 
         // ── Auto-detect format and optimize ──────────────────────────────
-        let source_abs = layout.files_dir.join(source_path.trim_start_matches('/'));
+        let source_abs = layout.local_files_dir()?.join(source_path.trim_start_matches('/'));
         let source_lower = source_path.to_ascii_lowercase();
 
         // Determine if we should optimize (default=yes, opt-out with --no-optimize)
@@ -767,7 +767,7 @@ impl Node {
                     "geoparquet".to_string()
                 } else {
                     // Optimize: add bbox columns, Hilbert sort, small row groups
-                    let optimized_dir = layout.files_dir.join("mapserver/.optimized");
+                    let optimized_dir = layout.local_files_dir()?.join("mapserver/.optimized");
                     std::fs::create_dir_all(&optimized_dir).map_err(|e| {
                         PipelineError::new("FW_NODE_MS_PUBLISH", format!("mkdir failed: {e}"))
                     })?;
@@ -823,7 +823,7 @@ impl Node {
                 }
             } else if is_geojson {
                 // Convert GeoJSON → raw Parquet → optimize
-                let optimized_dir = layout.files_dir.join("mapserver/.optimized");
+                let optimized_dir = layout.local_files_dir()?.join("mapserver/.optimized");
                 std::fs::create_dir_all(&optimized_dir).map_err(|e| {
                     PipelineError::new("FW_NODE_MS_PUBLISH", format!("mkdir failed: {e}"))
                 })?;
@@ -1098,7 +1098,7 @@ impl Node {
                 }
 
                 let optimized_file = layout
-                    .files_dir
+                    .local_files_dir()?
                     .join("mapserver")
                     .join(".optimized")
                     .join(format!("{}.spatial.parquet", name));
@@ -1107,7 +1107,7 @@ impl Node {
                 }
 
                 let stats_file = layout
-                    .files_dir
+                    .local_files_dir()?
                     .join("mapserver")
                     .join(".optimized")
                     .join(format!("{}.spatial.stats.json", name));
@@ -1220,8 +1220,8 @@ mod tests {
         let payload = json!({
             "source_path": {
                 "__zf_type": "file_ref",
-                "backend": "s3",
-                "ref": "s3://bucket/roads.geojson",
+                "backend": "gdrive",
+                "ref": "1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgvE2upms",
                 "filename": "roads.geojson",
                 "mime": "application/geo+json",
                 "kind": "geojson",

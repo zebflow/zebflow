@@ -163,6 +163,29 @@ impl LocalZebFs {
         Ok(())
     }
 
+    /// Bytes of a document under the reserved `.zebfs/` prefix — the ACL
+    /// manifest — which the user verbs refuse. `None` when never written.
+    pub fn read_reserved(&self, path: &str) -> Result<Option<Vec<u8>>, ZebFsError> {
+        let rel = normalize_object_path(path)?;
+        let abs = self.abs_path(&rel)?;
+        match fs::read(&abs) {
+            Ok(bytes) => Ok(Some(bytes)),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(err) => Err(err.into()),
+        }
+    }
+
+    /// Writes a reserved-prefix document atomically.
+    pub fn write_reserved(&self, path: &str, bytes: &[u8]) -> Result<(), ZebFsError> {
+        let rel = normalize_object_path(path)?;
+        let abs = self.abs_path(&rel)?;
+        if let Some(parent) = abs.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        atomic_write(&abs, bytes)?;
+        Ok(())
+    }
+
     /// Copies one object.
     pub fn copy(&self, from: &str, to: &str) -> Result<ZebFsStat, ZebFsError> {
         let from_rel = normalize_object_path(from)?;

@@ -393,7 +393,7 @@ impl NodeHandler for Node {
             .ensure_project_layout(owner, project)
             .map_err(|e| PipelineError::new("IMG_THUMBNAIL", e.to_string()))?;
 
-        let abs_path = layout.files_dir.join(&rel_path);
+        let abs_path = layout.local_files_dir()?.join(&rel_path);
         if !abs_path.exists() {
             return Err(PipelineError::new(
                 "IMG_THUMBNAIL",
@@ -458,7 +458,7 @@ impl NodeHandler for Node {
             }
         };
         let thumb_rel = format!("{folder}/{storage_name}");
-        let abs_dest = layout.files_dir.join(&thumb_rel);
+        let abs_dest = layout.local_files_dir()?.join(&thumb_rel);
 
         if let Some(parent) = abs_dest.parent() {
             std::fs::create_dir_all(parent)

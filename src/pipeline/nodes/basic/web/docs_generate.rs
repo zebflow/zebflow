@@ -1844,6 +1844,7 @@ mod tests {
             FileAdapterKind::Filesystem,
             root.clone(),
             std::sync::Arc::new(ProjectConfigurationService::new(root.join("users"))),
+            None,
         );
         let layout = file
             .ensure_project_layout("superadmin", "docs-project")

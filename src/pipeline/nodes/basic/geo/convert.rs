@@ -284,7 +284,7 @@ impl NodeHandler for Node {
             .ensure_project_layout(owner, project)
             .map_err(|err| PipelineError::new("FW_NODE_GEO_CONVERT", err.to_string()))?;
 
-        let input_abs = layout.files_dir.join(&input_rel);
+        let input_abs = layout.local_files_dir()?.join(&input_rel);
         if !input_abs.exists() {
             return Err(PipelineError::new(
                 "FW_NODE_GEO_CONVERT",
@@ -292,7 +292,7 @@ impl NodeHandler for Node {
             ));
         }
 
-        let output_abs = layout.files_dir.join(&output_rel);
+        let output_abs = layout.local_files_dir()?.join(&output_rel);
         if let Some(parent) = output_abs.parent() {
             std::fs::create_dir_all(parent).map_err(|err| {
                 PipelineError::new(

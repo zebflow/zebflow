@@ -258,7 +258,7 @@ impl Node {
     /// receives `9f2c-4d1a-….pdf`.
     /// Reads one store object for an attachment or an embed.
     fn read_store_object(
-        zebfs: &crate::zebfs::LocalZebFs,
+        zebfs: &crate::zebfs::ZebFs,
         source: &str,
     ) -> Result<(String, Vec<u8>), PipelineError> {
         let rel = crate::zebfs::normalize_object_path(source.trim_start_matches('/'))

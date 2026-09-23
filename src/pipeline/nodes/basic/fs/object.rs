@@ -572,6 +572,7 @@ impl NodeHandler for Node {
                     .map_err(|err| PipelineError::new("FW_NODE_FS_PUT", err.to_string()))?;
                 // The bytes are in hand, so the digest costs nothing extra.
                 let object = durable_file_ref(
+                    layout.file_backend(),
                     &stat.path,
                     stat.path.rsplit('/').next().unwrap_or(&stat.path),
                     content_type_for_path(&stat.path),

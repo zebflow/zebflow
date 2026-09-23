@@ -338,7 +338,7 @@ impl NodeHandler for Node {
         zebfs
             .put(&out_rel, &bytes)
             .map_err(|e| PipelineError::new("FS_IMAGE_CHROMAKEY_RASTER", format!("store write {out_rel}: {}", e.message)))?;
-        let mut image = durable_file_ref(&out_rel, &filename, mime, &bytes, ORIGIN, "sanitized");
+        let mut image = durable_file_ref(layout.file_backend(), &out_rel, &filename, mime, &bytes, ORIGIN, "sanitized");
         if let Some(obj) = image.as_object_mut() {
             obj.insert("width".into(), json!(width));
             obj.insert("height".into(), json!(height));
@@ -350,7 +350,7 @@ impl NodeHandler for Node {
             _ => serde_json::Map::new(),
         };
         if self.config.delete_source {
-            if let Err(e) = std::fs::remove_file(layout.files_dir.join(&rel)) {
+            if let Err(e) = std::fs::remove_file(layout.local_files_dir()?.join(&rel)) {
                 eprintln!("[{NODE_KIND}] delete-source failed for {rel}: {e}");
             }
             if let Some(top) = key.split('.').next() {

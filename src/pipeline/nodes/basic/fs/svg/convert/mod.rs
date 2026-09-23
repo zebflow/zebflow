@@ -493,7 +493,7 @@ impl NodeHandler for Node {
         zebfs
             .put(&rel, &rendered.bytes)
             .map_err(|e| PipelineError::new("FS_SVG_CONVERT_RASTER", format!("store write {rel}: {}", e.message)))?;
-        let mut image = durable_file_ref(&rel, &filename, self.format.mime(), &rendered.bytes, ORIGIN, "generated");
+        let mut image = durable_file_ref(layout.file_backend(), &rel, &filename, self.format.mime(), &rendered.bytes, ORIGIN, "generated");
         if let Some(obj) = image.as_object_mut() {
             obj.insert("width".into(), json!(rendered.width));
             obj.insert("height".into(), json!(rendered.height));
@@ -507,7 +507,7 @@ impl NodeHandler for Node {
         };
         if self.config.delete_source {
             if let Some(src) = &stored_source {
-                if let Err(e) = std::fs::remove_file(layout.files_dir.join(src)) {
+                if let Err(e) = std::fs::remove_file(layout.local_files_dir()?.join(src)) {
                     eprintln!("[{NODE_KIND}] delete-source failed for {src}: {e}");
                 }
             }

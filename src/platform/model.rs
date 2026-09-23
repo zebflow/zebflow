@@ -1,7 +1,7 @@
 //! Platform domain models and configuration.
 
 use std::collections::{BTreeMap, HashMap};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
@@ -9,7 +9,7 @@ use crate::infra::cluster::config::ClusterSettings;
 use crate::infra::cluster::registry::WorkerHeartbeat;
 use crate::infra::execution::placement::ProjectRuntimeProfile;
 use crate::infra::execution::runner::RunnerCapabilities;
-use crate::zebfs::{FileBackend, LocalZebFs, ZebFsError};
+use crate::zebfs::{FileBackend, FileStore, ZebFs, ZebFsError};
 
 /// Data adapter selection.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -2395,7 +2395,7 @@ pub struct SimpleTableQueryResult {
 /// `repo_source_dir()` and the other `repo_*` methods already use for `repo/`
 /// — rather than a separately stored field, so there is exactly one place
 /// that can disagree with the tree the contract draws.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct ProjectFileLayout {
     /// `{data_root}/users/{owner}/{project}`
     pub root: PathBuf,
@@ -2415,13 +2415,12 @@ pub struct ProjectFileLayout {
     /// beside it, so an absolute path and the repository-relative rule that
     /// names it cannot disagree.
     pub repo_layout: ResolvedProjectLayout,
-    /// The native store that owns this project's files, as declared in
-    /// `spec.files.backend`.
-    ///
-    /// Defaulted on read so a layout serialized before this field existed still
-    /// resolves to the store it was written against.
-    #[serde(default)]
-    pub file_backend: FileBackend,
+    /// The native store that owns this project's files: `spec.files.backend`
+    /// resolved once, with everything opening it needs — the `files/`
+    /// directory, or the bucket and the credential the instance selected for
+    /// it (`data/store/files-backend.json`). Resolved here so that
+    /// `open_files` cannot fail.
+    pub file_store: FileStore,
 }
 
 impl ProjectFileLayout {
@@ -2430,8 +2429,34 @@ impl ProjectFileLayout {
     /// Every caller that needs a project's bytes goes through here rather than
     /// naming an implementation, so a second backend is added in
     /// [`crate::zebfs::backend::open`] and nowhere else.
-    pub fn open_files(&self) -> LocalZebFs {
-        crate::zebfs::backend::open(self.file_backend, self.files_dir.clone())
+    pub fn open_files(&self) -> ZebFs {
+        crate::zebfs::backend::open(&self.file_store)
+    }
+
+    /// The declared word for this project's store — what every FileRef written
+    /// here carries in `backend`.
+    pub fn file_backend(&self) -> FileBackend {
+        self.file_store.backend()
+    }
+
+    /// The local directory behind this project's store, for the engines that
+    /// stream from a file path — GDAL, DataFusion, the map server — and can
+    /// only do so when there is one.
+    ///
+    /// A project whose files live in a bucket is refused by name, so no such
+    /// engine silently reads or writes `files/`, which on that project is a
+    /// scratch directory and not the store.
+    pub fn local_files_dir(&self) -> Result<&Path, ZebFsError> {
+        match &self.file_store {
+            FileStore::Local(dir) => Ok(dir),
+            FileStore::S3(config) => Err(ZebFsError::new(
+                "ZEBFS_LOCAL_ONLY",
+                format!(
+                    "this project's files live in the bucket '{}', and this operation streams from local disk; it is not available on an object store yet",
+                    config.bucket
+                ),
+            )),
+        }
     }
 
     /// `.../repo/{source}` — unified source root: *.zf.json pipelines + *.tsx

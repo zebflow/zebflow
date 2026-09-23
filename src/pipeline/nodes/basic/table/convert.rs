@@ -36,7 +36,7 @@ use crate::pipeline::{
     nodes::{NodeExecutionInput, NodeExecutionOutput, NodeHandler},
 };
 use crate::platform::services::PlatformService;
-use crate::zebfs::{LocalZebFs, normalize_object_path};
+use crate::zebfs::{ZebFs, normalize_object_path};
 
 pub const NODE_KIND: &str = "n.table.convert";
 const INPUT_PIN_IN: &str = "in";
@@ -439,7 +439,7 @@ enum SourceValue {
 impl Node {
     fn read_source(
         &self,
-        zebfs: &LocalZebFs,
+        zebfs: &ZebFs,
     ) -> Result<SourceData, PipelineError> {
         // `--from` arrives final and is typed, so its shape says what it is:
         // a string is a ZebFS path, a FileRef names one, and anything else is
@@ -493,7 +493,7 @@ impl Node {
 
     async fn try_streaming_file_conversion(
         &self,
-        zebfs: &LocalZebFs,
+        zebfs: &ZebFs,
         owner: &str,
         project: &str,
     ) -> Result<Option<NodeExecutionOutput>, PipelineError> {
@@ -512,18 +512,30 @@ impl Node {
             Some(&source_path),
             "source",
         )?;
-        let (rel_to, abs_to) = zebfs
-            .resolve_object_path(to_path)
+        let rel_to = normalize_object_path(to_path)
             .map_err(|err| PipelineError::new("FW_NODE_TABLE_CONVERT", err.to_string()))?;
+        // The streamed path writes straight to a file; a bucket has none, so
+        // that project takes the materialised path below.
+        let Some(abs_to) = zebfs
+            .local_path(&rel_to)
+            .map_err(|err| PipelineError::new("FW_NODE_TABLE_CONVERT", err.to_string()))?
+        else {
+            return Ok(None);
+        };
         let to_format =
             normalize_format(self.config.to_format.as_deref(), Some(&rel_to), "target")?;
         if from_format != TableFormat::Csv || to_format != TableFormat::Parquet {
             return Ok(None);
         }
 
-        let (rel_from, abs_from) = zebfs
-            .resolve_object_path(&source_path)
+        let rel_from = normalize_object_path(&source_path)
             .map_err(|err| PipelineError::new("FW_NODE_TABLE_CONVERT", err.to_string()))?;
+        let Some(abs_from) = zebfs
+            .local_path(&rel_from)
+            .map_err(|err| PipelineError::new("FW_NODE_TABLE_CONVERT", err.to_string()))?
+        else {
+            return Ok(None);
+        };
         ensure_local_table_file(&abs_from)?;
 
         let columns = stream_csv_to_parquet(&abs_from, &abs_to, self.config.limit).await?;
@@ -573,7 +585,7 @@ impl Node {
     }
 }
 
-fn ensure_materialization_safe(zebfs: &LocalZebFs, rel_path: &str) -> Result<(), PipelineError> {
+fn ensure_materialization_safe(zebfs: &ZebFs, rel_path: &str) -> Result<(), PipelineError> {
     let stat = zebfs
         .head(rel_path)
         .map_err(|err| PipelineError::new("FW_NODE_TABLE_CONVERT", err.to_string()))?;
