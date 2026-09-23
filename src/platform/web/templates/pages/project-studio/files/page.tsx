@@ -40,7 +40,10 @@ export default function Page(input) {
   const selectedStorage = input?.selected_storage ?? "default";
   const base = `/projects/${input.owner}/${input.project}/files`;
   const api = input?.api ?? {};
-  const storages = Array.isArray(input?.storages) ? input.storages : [];
+  // The default namespace is pinned first, whatever order the server sent.
+  const storages = (Array.isArray(input?.storages) ? input.storages : [])
+    .slice()
+    .sort((a, b) => Number(isDefaultStorage(b)) - Number(isDefaultStorage(a)));
   const browser = input?.browser ?? { path: "", folders: [], files: [] };
   const fileInputRef = useRef(null);
 
@@ -423,12 +426,7 @@ export default function Page(input) {
 
                 {/* The backend behind those namespaces. It used to be shown in
                     Settings, where you could read it but do nothing with it. */}
-                <StorageBackendPanel
-                  backend={input?.storage?.backend}
-                  backendLabel={input?.storage?.backend_label}
-                  declared={input?.storage?.declared}
-                  field={input?.storage?.field}
-                />
+                <StorageBackendPanel storage={input?.storage} />
               </div>
             </div>
           ) : null}
@@ -734,17 +732,35 @@ function UploadDialog({
   );
 }
 
+/** The namespace every project starts with: pinned first and marked green. */
+function isDefaultStorage(storage) {
+  const tags = Array.isArray(storage?.tags) ? storage.tags : [];
+  return storage?.name === "default" || tags.includes("default");
+}
+
 function StorageRow({ storage }) {
   const tags = Array.isArray(storage.tags) ? storage.tags : [];
+  const isDefault = isDefaultStorage(storage);
   return (
-    <tr className="border-b border-border last:border-b-0">
-      <td className="px-3 py-2.5 text-foreground font-medium">{storage.name}</td>
+    <tr className={cx("border-b border-border last:border-b-0", isDefault && "bg-success/5")}>
+      <td className="px-3 py-2.5 text-foreground font-medium">
+        <span className="inline-flex items-center gap-2">
+          {isDefault ? <span className="inline-block h-2 w-2 rounded-full bg-success" aria-hidden="true" /> : null}
+          {storage.name}
+        </span>
+      </td>
       <td className="px-3 py-2.5 text-muted-foreground">{storage.backend}</td>
       <td className="px-3 py-2.5 text-muted-foreground font-mono text-[0.74rem]">{storage.namespace}</td>
       <td className="px-3 py-2.5">
         <div className="flex flex-wrap gap-1">
           {tags.map((tag) => (
-            <Badge key={tag} variant="outline" className="text-[0.65rem]">{tag}</Badge>
+            <Badge
+              key={tag}
+              variant="outline"
+              className={cx("text-[0.65rem]", tag === "default" && "border-success/50 bg-success/10 text-success")}
+            >
+              {tag}
+            </Badge>
           ))}
         </div>
       </td>
