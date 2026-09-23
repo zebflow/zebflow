@@ -331,6 +331,7 @@ pub fn expand_kind(short: &str) -> Option<&'static str> {
         "trigger.webhook" | "n.trigger.webhook" => Some("n.trigger.webhook"),
         "trigger.schedule" | "n.trigger.schedule" => Some("n.trigger.schedule"),
         "trigger.manual" | "n.trigger.manual" => Some("n.trigger.manual"),
+        "trigger.mcp" | "n.trigger.mcp" => Some("n.trigger.mcp"),
         "pg.query" | "n.pg.query" => Some("n.pg.query"),
         "sekejap.insert" | "n.sekejap.insert" => Some("n.sekejap.insert"),
         "sekejap.query" | "n.sekejap.query" => Some("n.sekejap.query"),
@@ -339,10 +340,12 @@ pub fn expand_kind(short: &str) -> Option<&'static str> {
         "table.convert" | "n.table.convert" => Some("n.table.convert"),
         "table.query" | "n.table.query" => Some("n.table.query"),
         "script" | "n.script" => Some("n.script"),
+        "concept" | "n.concept" => Some("n.concept"),
         "web.response" | "n.web.response" => Some("n.web.response"),
         "web.static.generate" | "n.web.static.generate" => Some("n.web.static.generate"),
         "web.docs.generate" | "n.web.docs.generate" => Some("n.web.docs.generate"),
         "http.request" | "n.http.request" => Some("n.http.request"),
+        "mail.send" | "n.mail.send" => Some("n.mail.send"),
         "zebtune" | "n.zebtune" => Some("n.ai.agent"),
         "logic.if" | "n.logic.if" => Some("n.logic.if"),
         "logic.match" | "n.logic.match" => Some("n.logic.match"),
@@ -354,6 +357,7 @@ pub fn expand_kind(short: &str) -> Option<&'static str> {
         "ws.emit" | "n.ws.emit" => Some("n.ws.emit"),
         "ws.sync_state" | "n.ws.sync_state" => Some("n.ws.sync_state"),
         "auth.token.create" | "n.auth.token.create" => Some("n.auth.token.create"),
+        "auth.token.verify" | "n.auth.token.verify" => Some("n.auth.token.verify"),
         "crypto" | "n.crypto" => Some("n.crypto"),
         "ai.agent" | "n.ai.agent" => Some("n.ai.agent"),
         "ai.tts" | "n.ai.tts" => Some("n.ai.tts"),
@@ -2957,6 +2961,29 @@ mod note_tests {
 #[cfg(test)]
 mod quoting_tests {
     use super::*;
+
+    /// Every node in the catalogue must be reachable by the short name the
+    /// DSL writes, because `short_kind` is what the help pages, the node
+    /// dialog and every written example print. `n.mail.send` shipped with no
+    /// entry here, so `mail.send` — the form its own help page showed —
+    /// failed to parse, and the error named a flag rather than the kind.
+    #[test]
+    fn every_catalogue_kind_is_reachable_by_its_short_name() {
+        let mut unreachable = Vec::new();
+        for definition in crate::pipeline::nodes::builtin_node_definitions() {
+            let kind = definition.kind.clone();
+            let short = short_kind(&kind);
+            match expand_kind(&short) {
+                Some(resolved) if resolved == kind => {}
+                other => unreachable.push(format!("{kind} (short {short} resolved to {other:?})")),
+            }
+        }
+        assert!(
+            unreachable.is_empty(),
+            "these kinds have no working short alias in expand_kind:\n  {}",
+            unreachable.join("\n  ")
+        );
+    }
 
     /// A realistic graph: branching, an error path, expressions in several
     /// flag kinds, quoted and bare values side by side. This is the shape the
