@@ -82,7 +82,7 @@ dirs-next = "2"
 jsonwebtoken = "9"
 bcrypt = "0.15"
 rusqlite = { version = "0.32", features = ["bundled"] }
-sekejap = "0.17.2"
+sekejap = "0.18.1"
 argon2 = { version = "0.5", features = ["std"] }
 hmac = "0.12"
 subtle = "2"

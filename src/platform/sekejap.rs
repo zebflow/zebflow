@@ -1,4 +1,4 @@
-//! The project's embedded multimodel store, on sekejap 0.17.
+//! The project's embedded multimodel store, on sekejap 0.18.
 //!
 //! One `Db` per project directory, pooled by path. sekejap locks internally
 //! and is `Send + Sync`, so the pool hands out `Arc<Db>` and nothing here
@@ -12,10 +12,6 @@
 //! Studio's own actions emit. The dialect itself is sekejap's
 //! (`docs/lang/QL_CONTRACT.md` in that repository); the help page
 //! `db/sekejap` is the short form for pipeline authors.
-//!
-//! A store written by sekejap 0.16 cannot be opened by 0.17 — the on-disk
-//! format changed whole. `ensure_project_dir` recognises the old files and
-//! refuses by name when they hold rows, so nothing is ever opened halfway.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
@@ -31,7 +27,8 @@ use crate::contracts::{ContractMetadata, decode_contract, encode_contract};
 use crate::infra::io::durable::atomic_write;
 use crate::platform::error::PlatformError;
 use crate::platform::model::{
-    CollectionAttribute, CreateSimpleTableRequest, DbObjectNode, DbQueryColumn,
+    CollectionAttribute, CreateSimpleTableRequest, DbObjectNode, DbQueryColumn, EdgeTableDefinition,
+    EdgeTableReference,
     ProjectDbConnectionQueryResult, QueryProjectDbConnectionRequest, ResolvedProjectLayout,
     SCHEMA_DOCUMENT_FILE, SimpleTableDefinition, UpdateSimpleTableRequest, slug_segment,
 };
@@ -46,17 +43,6 @@ static MAINTENANCE: OnceLock<Mutex<MaintenancePool>> = OnceLock::new();
 
 const AUTO_CHECKPOINT_WRITE_UNITS: usize = 10_000;
 const AUTO_CHECKPOINT_WAL_BYTES: u64 = 64 * 1024 * 1024;
-
-/// The files a sekejap 0.16 store left behind. Any of them beside no `data`
-/// file means the directory is a 0.16 store, and one that holds rows is
-/// refused rather than overwritten.
-const LEGACY_FILES: [&str; 5] = [
-    "wal.log",
-    "snapshot.json",
-    "payloads.bin",
-    "gin.bin",
-    "edge_meta.bin",
-];
 
 #[derive(Debug, Default)]
 struct SekejapAutoMaintenanceState {
@@ -297,6 +283,12 @@ pub struct SekejapTableSchemaExport {
     pub vector_fields: Vec<String>,
     #[serde(default)]
     pub spatial_fields: Vec<String>,
+    /// Named schema; empty for `public`.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub schema: String,
+    /// Present for an edge table.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub edge: Option<EdgeTableDefinition>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -404,101 +396,8 @@ pub fn ensure_project_dir(
     project: &str,
 ) -> Result<PathBuf, PlatformError> {
     let dir = project_dir(data_root, owner, project);
-    migrate_legacy_sekejap_dir(data_root, owner, project, &dir)?;
     std::fs::create_dir_all(&dir)?;
-    refuse_or_retire_legacy_store(&dir)?;
-    // `tables.json` was a hand-kept mirror of the table list from before
-    // sekejap could be asked directly. `live_tables` reads the database now,
-    // so the file is only stale weight; drop it the first time a project is
-    // touched.
-    match std::fs::remove_file(dir.join("tables.json")) {
-        Ok(()) => {}
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
-        Err(err) => return Err(err.into()),
-    }
     Ok(dir)
-}
-
-/// Moves a pre-tier `data/sekejap` into `data/store/sekejap`
-/// (`project-directory.md` §5), once.
-///
-/// This is the one chokepoint every store access already runs through
-/// (`get_db`, `record_project_write`, health and maintenance all call
-/// `ensure_project_dir`), independent of whether anything has resolved a full
-/// `ProjectFileLayout` for the request. See
-/// [`crate::infra::io::durable::migrate_tier_entry`] for the atomicity and
-/// idempotency this relies on.
-fn migrate_legacy_sekejap_dir(
-    data_root: &Path,
-    owner: &str,
-    project: &str,
-    new_dir: &Path,
-) -> Result<(), PlatformError> {
-    let old_dir = data_root
-        .join("users")
-        .join(slug_segment(owner))
-        .join(slug_segment(project))
-        .join("data")
-        .join("sekejap");
-    crate::infra::io::durable::migrate_tier_entry(&old_dir, new_dir)
-        .map_err(|err| PlatformError::new("PLATFORM_DATA_TIER_MIGRATE", err.to_string()))
-}
-
-/// A directory sekejap 0.16 wrote, met by 0.17.
-///
-/// 0.17 recognises its own store by a `data` file. A directory that has none
-/// but carries the 0.16 files is one of two things. Empty — the header-only
-/// WAL every fresh 0.16 store wrote, no payload, no snapshot — and the old
-/// files are moved aside into `legacy-0.16/` so the directory can be created
-/// into. Holding rows — and it is refused by name, because the only honest
-/// migration is to read it with 0.16 and write it with 0.17, and nothing
-/// here can do the first half.
-fn refuse_or_retire_legacy_store(dir: &Path) -> Result<(), PlatformError> {
-    if dir.join("data").exists() {
-        return Ok(());
-    }
-    let present: Vec<&str> = LEGACY_FILES
-        .iter()
-        .copied()
-        .filter(|name| dir.join(name).exists())
-        .collect();
-    if present.is_empty() {
-        return Ok(());
-    }
-    let size = |name: &str| std::fs::metadata(dir.join(name)).map(|m| m.len()).unwrap_or(0);
-    // A 0.16 WAL is eight header bytes when nothing was ever written.
-    let holds_rows = size("wal.log") > 8 || size("payloads.bin") > 0 || size("snapshot.json") > 0;
-    if holds_rows {
-        return Err(PlatformError::new(
-            "PLATFORM_SEKEJAP_LEGACY_STORE",
-            format!(
-                "{} holds a sekejap 0.16 store with rows, and sekejap 0.17 cannot read that format. \
-                 Export it with a 0.16 build and re-import, or move the directory aside to start empty.",
-                dir.display()
-            ),
-        ));
-    }
-    let retired = dir.join("legacy-0.16");
-    std::fs::create_dir_all(&retired)?;
-    for name in present {
-        std::fs::rename(dir.join(name), retired.join(name))?;
-    }
-    for name in ["db.lock"] {
-        let _ = std::fs::remove_file(dir.join(name));
-    }
-    if let Ok(entries) = std::fs::read_dir(dir) {
-        for entry in entries.filter_map(Result::ok) {
-            let path = entry.path();
-            let is_vector_sidecar = path
-                .file_name()
-                .and_then(|n| n.to_str())
-                .is_some_and(|n| n.starts_with("vectors_") && n.ends_with(".bin"));
-            if is_vector_sidecar {
-                let _ = std::fs::rename(&path, retired.join(entry.file_name()));
-            }
-        }
-    }
-    Ok(())
 }
 
 // ── attribute kinds ──────────────────────────────────────────────────────
@@ -622,6 +521,7 @@ fn normalize_attributes(attributes: &[CollectionAttribute]) -> Vec<CollectionAtt
             name,
             kind,
             index_types,
+            unique: attr.unique,
         });
     }
     attrs
@@ -654,6 +554,8 @@ fn normalize_definition(
         vector_fields,
         spatial_fields,
         row_count: 0,
+        schema: String::new(),
+        edge: None,
     })
 }
 
@@ -665,9 +567,13 @@ fn normalize_definition(
 /// scalar column a btree unasked (`docs/lang/INDEX_CONTRACT.md`), and that
 /// one index answers both.
 fn build_create_table_sql(def: &SimpleTableDefinition) -> Result<String, PlatformError> {
+    if let Some(edge) = &def.edge {
+        return build_create_edge_table_sql(def, edge);
+    }
     let mut columns = vec!["_key TEXT PRIMARY KEY".to_string()];
     for attr in &def.attributes {
-        columns.push(format!("{} {}", attr.name, map_field_type(&attr.kind)?));
+        let unique = if attr.unique { " UNIQUE" } else { "" };
+        columns.push(format!("{} {}{unique}", attr.name, map_field_type(&attr.kind)?));
     }
     let mut with = Vec::new();
     let declared = |fields: &[String]| -> Vec<String> {
@@ -696,6 +602,105 @@ fn build_create_table_sql(def: &SimpleTableDefinition) -> Result<String, Platfor
     Ok(sql)
 }
 
+/// An edge table's `CREATE TABLE`: no `_key` of its own, its `REFERENCES`
+/// columns naming the rows an edge joins, and the primary key that decides
+/// how many edges one pair may have. It becomes an edge table when a
+/// property graph declares it (`build_graph_sql`).
+fn build_create_edge_table_sql(
+    def: &SimpleTableDefinition,
+    edge: &EdgeTableDefinition,
+) -> Result<String, PlatformError> {
+    let mut columns = Vec::new();
+    for attr in &def.attributes {
+        let mut column = format!("{} {}", attr.name, map_field_type(&attr.kind)?);
+        if let Some(reference) = edge.references.iter().find(|r| r.column == attr.name) {
+            column.push_str(&format!(" REFERENCES {}", reference.table));
+        }
+        columns.push(column);
+    }
+    if !edge.key.is_empty() {
+        columns.push(format!("PRIMARY KEY ({})", edge.key.join(", ")));
+    }
+    Ok(format!("CREATE TABLE {} ({})", def.collection, columns.join(", ")))
+}
+
+/// One edge table as a property graph declares it.
+fn edge_declaration(def: &SimpleTableDefinition, edge: &EdgeTableDefinition) -> String {
+    let mut declaration = format!(
+        "{} SOURCE KEY ({}) REFERENCES {} (_key) DESTINATION KEY ({}) REFERENCES {} (_key)",
+        def.collection, edge.source, edge.source_table, edge.destination, edge.destination_table
+    );
+    // A label the same as the table's own name is the default; only another
+    // one is written.
+    let bare = def.collection.rsplit('.').next().unwrap_or(&def.collection);
+    if !edge.label.is_empty() && edge.label != bare {
+        declaration.push_str(&format!(" LABEL {}", edge.label));
+    }
+    declaration
+}
+
+/// The statement that declares a property graph over its edge tables, or
+/// adds edge tables to a graph that already exists. A graph is not stored in
+/// the schema document on its own: it is the `graph` its edge tables name,
+/// and its vertex tables are the tables those edges join.
+fn build_graph_sql(graph: &str, edges: &[&SimpleTableDefinition], exists: bool) -> String {
+    let declarations = edges
+        .iter()
+        .filter_map(|def| def.edge.as_ref().map(|edge| edge_declaration(def, edge)))
+        .collect::<Vec<_>>()
+        .join(", ");
+    if exists {
+        return format!("ALTER PROPERTY GRAPH {graph} ADD EDGE TABLES ({declarations})");
+    }
+    let vertices = edges
+        .iter()
+        .filter_map(|def| def.edge.as_ref())
+        .flat_map(|edge| [edge.source_table.clone(), edge.destination_table.clone()])
+        .filter(|table| !table.is_empty())
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("CREATE PROPERTY GRAPH {graph} VERTEX TABLES ({vertices}) EDGE TABLES ({declarations})")
+}
+
+/// A table name as the catalog gives it, `table` or `schema.table`, with each
+/// part slugged. `public.x` is `x`, because a bare name resolves in `public`.
+fn qualified_slug(raw: &str) -> String {
+    let parts = raw
+        .split('.')
+        .map(slug_segment)
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>();
+    match parts.as_slice() {
+        [schema, table] if schema == "public" => table.clone(),
+        [schema, table] => format!("{schema}.{table}"),
+        [table] => table.clone(),
+        _ => String::new(),
+    }
+}
+
+fn edge_definition(info: &sekejap::EdgeTableInfo) -> EdgeTableDefinition {
+    let text = |value: &Option<String>| value.clone().unwrap_or_default();
+    EdgeTableDefinition {
+        references: info
+            .references
+            .iter()
+            .map(|(column, table)| EdgeTableReference {
+                column: column.clone(),
+                table: table.clone(),
+            })
+            .collect(),
+        key: info.key.clone(),
+        source: text(&info.source),
+        source_table: text(&info.source_table),
+        destination: text(&info.destination),
+        destination_table: text(&info.destination_table),
+        label: text(&info.label),
+        graph: text(&info.graph),
+    }
+}
+
 /// One declared index, by the family word the catalog names it with.
 fn build_index_sql(collection: &str, kind: &str, field: &str) -> Option<String> {
     let method = match kind {
@@ -715,7 +720,7 @@ fn live_tables(db: &Db) -> Result<Vec<SimpleTableDefinition>, PlatformError> {
         .collections()
         .map_err(|e| store_error("PLATFORM_SEKEJAP_CATALOG", e))?
     {
-        let table = slug_segment(&collection);
+        let table = qualified_slug(&collection);
         if table.is_empty() || by_table.contains_key(&table) {
             continue;
         }
@@ -727,6 +732,9 @@ fn live_tables(db: &Db) -> Result<Vec<SimpleTableDefinition>, PlatformError> {
         };
         let row_count = match described.rows {
             Some(n) => n,
+            // An edge table's rows are its graph's edges, not a collection
+            // count; a count it cannot answer is not a catalog failure.
+            None if described.edge.is_some() => db.count_rows(&collection).unwrap_or(0),
             None => db
                 .count_rows(&collection)
                 .map_err(|e| store_error("PLATFORM_SEKEJAP_CATALOG", e))?,
@@ -737,7 +745,11 @@ fn live_tables(db: &Db) -> Result<Vec<SimpleTableDefinition>, PlatformError> {
         let mut fulltext = BTreeSet::new();
         let mut vector = BTreeSet::new();
         let mut spatial = BTreeSet::new();
+        let mut unique = BTreeSet::new();
         for index in &described.indexes {
+            if index.unique {
+                unique.insert(index.field.clone());
+            }
             for kind in index_family_kinds(&index.family) {
                 match *kind {
                     "hash" => hash.insert(index.field.clone()),
@@ -770,6 +782,7 @@ fn live_tables(db: &Db) -> Result<Vec<SimpleTableDefinition>, PlatformError> {
                     name: f.name.clone(),
                     kind: field_kind_to_attribute(f),
                     index_types,
+                    unique: unique.contains(&f.name),
                 }
             })
             .collect();
@@ -786,6 +799,12 @@ fn live_tables(db: &Db) -> Result<Vec<SimpleTableDefinition>, PlatformError> {
                 spatial_fields: spatial.into_iter().collect(),
                 row_count,
                 collection: collection.clone(),
+                schema: if described.schema == "public" {
+                    String::new()
+                } else {
+                    described.schema.clone()
+                },
+                edge: described.edge.as_ref().map(edge_definition),
             },
         );
     }
@@ -813,6 +832,8 @@ fn export_table_schema(def: SimpleTableDefinition) -> SekejapTableSchemaExport {
         fulltext_fields: stable_list(def.fulltext_fields),
         vector_fields: stable_list(def.vector_fields),
         spatial_fields: stable_list(def.spatial_fields),
+        schema: def.schema,
+        edge: def.edge,
     }
 }
 
@@ -852,11 +873,11 @@ fn export_tables_from_defs(defs: Vec<SimpleTableDefinition>) -> Vec<SekejapTable
 }
 
 fn imported_table_definition(table: &SekejapTableSchemaExport) -> Option<SimpleTableDefinition> {
-    let table_slug = slug_segment(&table.table);
+    let table_slug = qualified_slug(&table.table);
     if table_slug.is_empty() {
         return None;
     }
-    let collection_slug = slug_segment(&table.collection);
+    let collection_slug = qualified_slug(&table.collection);
     let collection = if collection_slug.is_empty() {
         table_slug.clone()
     } else {
@@ -872,6 +893,8 @@ fn imported_table_definition(table: &SekejapTableSchemaExport) -> Option<SimpleT
         vector_fields: stable_list(table.vector_fields.clone()),
         spatial_fields: stable_list(table.spatial_fields.clone()),
         row_count: 0,
+        schema: slug_segment(&table.schema),
+        edge: table.edge.clone(),
     })
 }
 
@@ -897,18 +920,59 @@ pub fn apply_schema_export(
         .map(|def| def.table)
         .collect::<BTreeSet<_>>();
 
-    for table in &export.tables {
-        let Some(def) = imported_table_definition(table) else {
-            continue;
-        };
+    let defs = export
+        .tables
+        .iter()
+        .filter_map(imported_table_definition)
+        .collect::<Vec<_>>();
+    let apply_error = |err: PlatformError| PlatformError::new("PLATFORM_SEKEJAP_SCHEMA_APPLY", err.message);
+    let run = |sql: String| {
+        db.execute(&sql, &[])
+            .map(|_| ())
+            .map_err(|e| apply_error(store_error("PLATFORM_SEKEJAP_SCHEMA_APPLY", e)))
+    };
+
+    // Schemas before the tables in them.
+    for schema in defs
+        .iter()
+        .map(|def| def.schema.as_str())
+        .filter(|schema| !schema.is_empty())
+        .collect::<BTreeSet<_>>()
+    {
+        run(format!("CREATE SCHEMA IF NOT EXISTS {schema}"))?;
+    }
+
+    // Tables of rows before edge tables, which reference them.
+    let (edge_defs, row_defs): (Vec<_>, Vec<_>) = defs.iter().partition(|def| def.edge.is_some());
+    let existed_before = existing_tables.clone();
+    let mut created_edges = Vec::new();
+    for def in row_defs.into_iter().chain(edge_defs.iter().copied()) {
         if existing_tables.contains(&def.table) {
             tables_skipped.push(def.table.clone());
             continue;
         }
-        create_managed_table(&db, &def)
-            .map_err(|err| PlatformError::new("PLATFORM_SEKEJAP_SCHEMA_APPLY", err.message))?;
+        create_managed_table(&db, def).map_err(apply_error)?;
         existing_tables.insert(def.table.clone());
-        tables_created.push(def.table);
+        tables_created.push(def.table.clone());
+        if def.edge.is_some() {
+            created_edges.push(def);
+        }
+    }
+
+    // Then each graph, declared over the edge tables just created. A graph
+    // one of whose edge tables was already here exists, and gains the rest.
+    let mut graphs: BTreeMap<&str, Vec<&SimpleTableDefinition>> = BTreeMap::new();
+    for def in created_edges {
+        if let Some(edge) = def.edge.as_ref().filter(|edge| !edge.graph.is_empty()) {
+            graphs.entry(edge.graph.as_str()).or_default().push(def);
+        }
+    }
+    for (graph, edges) in graphs {
+        let exists = edge_defs.iter().any(|def| {
+            existed_before.contains(&def.table)
+                && def.edge.as_ref().is_some_and(|edge| edge.graph == graph)
+        });
+        run(build_graph_sql(graph, &edges, exists))?;
     }
 
     sync_schema_to_repo(data_root, owner, project)?;
@@ -1375,6 +1439,13 @@ pub fn statement_changes_schema(sql: &str) -> bool {
             | ("DROP", "TABLE")
             | ("DROP", "COLLECTION")
             | ("DROP", "INDEX")
+            // sekejap 0.18: named schemas, and property graphs whose edge
+            // tables are views over the graph's own edges.
+            | ("CREATE", "SCHEMA")
+            | ("DROP", "SCHEMA")
+            | ("CREATE", "PROPERTY")
+            | ("ALTER", "PROPERTY")
+            | ("DROP", "PROPERTY")
     )
 }
 
@@ -1952,6 +2023,7 @@ mod tests {
             name: name.to_string(),
             kind: kind.to_string(),
             index_types: index_types.iter().map(|s| s.to_string()).collect(),
+            unique: false,
         }
     }
 
@@ -2116,6 +2188,101 @@ mod tests {
         );
     }
 
+    /// `UNIQUE` is read from the live catalog into the table's attributes,
+    /// and a table created from that definition declares it again, so the
+    /// schema document carries it both ways.
+    #[test]
+    fn a_unique_column_is_read_from_the_catalog_and_declared_again() {
+        let tmp = tmp_root();
+        let db = get_db(tmp.path(), "alice", "demo").expect("open db");
+        db.execute(
+            "CREATE TABLE members (_key TEXT PRIMARY KEY, email TEXT UNIQUE, name TEXT)",
+            &[],
+        )
+        .expect("create table");
+        let tables = live_tables(&db).expect("live tables");
+        let members = tables
+            .iter()
+            .find(|t| t.table == "members")
+            .expect("members");
+        let flag = |name: &str| {
+            members
+                .attributes
+                .iter()
+                .find(|a| a.name == name)
+                .expect("attribute")
+                .unique
+        };
+        assert!(flag("email"));
+        assert!(!flag("name"));
+        let sql = build_create_table_sql(members).expect("create sql");
+        assert!(sql.contains("email TEXT UNIQUE"), "{sql}");
+        assert!(!sql.contains("name TEXT UNIQUE"), "{sql}");
+    }
+
+    /// Named schemas and edge tables survive the schema document: a project
+    /// built from it has the same tables, the same edge tables declared by
+    /// the same graph, and a GQL walk over them answers.
+    #[test]
+    fn schemas_and_edge_tables_round_trip_through_the_schema_document() {
+        let tmp = tmp_root();
+        {
+            let db = get_db(tmp.path(), "alice", "source").expect("open source");
+            for ddl in [
+                "CREATE SCHEMA geo",
+                "CREATE TABLE geo.city (_key TEXT PRIMARY KEY, name TEXT)",
+                "CREATE TABLE geo.road (from_id TEXT REFERENCES geo.city, to_id TEXT REFERENCES geo.city, km INT, PRIMARY KEY (from_id, to_id))",
+                "CREATE TABLE notes (_key TEXT PRIMARY KEY, body TEXT)",
+                "CREATE PROPERTY GRAPH roads VERTEX TABLES (geo.city) EDGE TABLES (geo.road SOURCE KEY (from_id) REFERENCES geo.city (_key) DESTINATION KEY (to_id) REFERENCES geo.city (_key) LABEL connects)",
+            ] {
+                db.execute(ddl, &[]).expect(ddl);
+            }
+        }
+        sync_schema_to_repo(tmp.path(), "alice", "source").expect("sync");
+        let document = std::fs::read(
+            repo_schema_dir(tmp.path(), "alice", "source").join(SCHEMA_DOCUMENT_FILE),
+        )
+        .expect("schema document");
+
+        let target_schema = repo_schema_dir(tmp.path(), "alice", "target");
+        std::fs::create_dir_all(&target_schema).expect("target repo");
+        std::fs::write(target_schema.join(SCHEMA_DOCUMENT_FILE), &document).expect("copy");
+        let report = apply_schema_from_repo(tmp.path(), "alice", "target")
+            .expect("apply")
+            .expect("a document to apply");
+        assert_eq!(report.tables_created.len(), 3, "{report:?}");
+
+        let db = get_db(tmp.path(), "alice", "target").expect("open target");
+        let tables = live_tables(&db).expect("live tables");
+        let road = tables.iter().find(|t| t.table == "geo.road").expect("geo.road");
+        assert_eq!(road.schema, "geo");
+        let edge = road.edge.as_ref().expect("an edge table");
+        assert_eq!(edge.graph, "roads");
+        assert_eq!(edge.label, "connects");
+        assert_eq!(edge.source_table, "geo.city");
+        assert_eq!(edge.key, vec!["from_id".to_string(), "to_id".to_string()]);
+        assert!(tables.iter().any(|t| t.table == "geo.city" && t.edge.is_none()));
+        assert!(tables.iter().any(|t| t.table == "notes" && t.schema.is_empty()));
+
+        for dml in [
+            "INSERT INTO geo.city (_key, name) VALUES ('a', 'Alpha'), ('b', 'Beta')",
+            "INSERT INTO geo.road (from_id, to_id, km) VALUES ('a', 'b', 12)",
+        ] {
+            db.execute(dml, &[]).expect(dml);
+        }
+        let rows = db
+            .query(
+                "SELECT name, km FROM GRAPH_TABLE (roads MATCH (x WHERE x._key = 'a')-[e:connects]->(y) RETURN y.name AS name, e.km AS km)",
+                &[],
+            )
+            .expect("walk");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(
+            rows.iter().next().and_then(|row| row.value("name")).map(sekejap::value_to_json),
+            Some(json!("Beta"))
+        );
+    }
+
     #[test]
     fn delete_table_removes_live_discovered_collection() {
         let tmp = tmp_root();
@@ -2150,6 +2317,15 @@ mod tests {
         assert!(statement_changes_schema("CREATE TABLE posts (_key TEXT PRIMARY KEY)"));
         assert!(statement_changes_schema("DROP INDEX posts_title_btree"));
         assert!(!statement_changes_schema("INSERT INTO posts (_key) VALUES ('a')"));
+        for ddl in [
+            "CREATE SCHEMA geo",
+            "DROP SCHEMA geo",
+            "CREATE PROPERTY GRAPH g VERTEX TABLES (a) EDGE TABLES (e SOURCE KEY (x) REFERENCES a (_key) DESTINATION KEY (y) REFERENCES a (_key))",
+            "ALTER PROPERTY GRAPH g ADD VERTEX TABLES (b)",
+            "drop property graph g",
+        ] {
+            assert!(statement_changes_schema(ddl), "{ddl}");
+        }
 
         execute_sql(
             tmp.path(),
@@ -2294,7 +2470,7 @@ mod tests {
             tmp.path(),
             "alice",
             "demo",
-            "SELECT _key, name FROM GRAPH_TABLE (base MATCH (a:people WHERE a._key = 'alice')-[:knows]->(b:people) COLUMNS (b._key AS _key, b.name AS name))",
+            "SELECT _key, name FROM GRAPH_TABLE (base MATCH (a:people WHERE a._key = 'alice')-[:knows]->(b:people) RETURN b._key AS _key, b.name AS name)",
             &[],
             100,
             true,
@@ -2308,7 +2484,7 @@ mod tests {
             tmp.path(),
             "alice",
             "demo",
-            "SELECT _key, name FROM GRAPH_TABLE (base MATCH (b:people WHERE b._key = 'bob')<-[:knows]-(a:people) COLUMNS (a._key AS _key, a.name AS name))",
+            "SELECT _key, name FROM GRAPH_TABLE (base MATCH (b:people WHERE b._key = 'bob')<-[:knows]-(a:people) RETURN a._key AS _key, a.name AS name)",
             &[],
             100,
             true,
@@ -2540,32 +2716,4 @@ mod tests {
         assert_eq!(sync.operation, "sync");
     }
 
-    /// A 0.16 directory that never held a row is retired and the store is
-    /// created fresh beside it; one that held rows is refused by name.
-    #[test]
-    fn a_legacy_store_is_retired_when_empty_and_refused_when_it_holds_rows() {
-        let tmp = tmp_root();
-        let dir = project_dir(tmp.path(), "alice", "demo");
-        std::fs::create_dir_all(&dir).expect("dir");
-        std::fs::write(dir.join("wal.log"), [0u8; 8]).expect("wal header");
-        std::fs::write(dir.join("payloads.bin"), b"").expect("payloads");
-        std::fs::write(dir.join("gin.bin"), [0u8; 12]).expect("gin");
-        std::fs::write(dir.join("db.lock"), b"").expect("lock");
-
-        create(tmp.path(), "alice", "demo", "posts", Vec::new());
-        assert!(dir.join("legacy-0.16/wal.log").is_file());
-        assert!(!dir.join("wal.log").exists());
-        assert!(dir.join("data").exists(), "the 0.17 store was created");
-
-        let full = project_dir(tmp.path(), "alice", "loaded");
-        std::fs::create_dir_all(&full).expect("dir");
-        std::fs::write(full.join("wal.log"), [0u8; 64]).expect("wal with rows");
-        std::fs::write(full.join("payloads.bin"), b"rows").expect("payloads");
-        let err = match get_db(tmp.path(), "alice", "loaded") {
-            Ok(_) => panic!("a 0.16 store with rows must not open"),
-            Err(err) => err,
-        };
-        assert_eq!(err.code, "PLATFORM_SEKEJAP_LEGACY_STORE");
-        assert!(full.join("wal.log").exists(), "nothing was moved or destroyed");
-    }
 }

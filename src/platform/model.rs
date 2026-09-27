@@ -1960,6 +1960,9 @@ pub struct CollectionAttribute {
     /// Active index types: `hash` | `range` | `fulltext` | `vector` | `spatial`.
     #[serde(default)]
     pub index_types: Vec<String>,
+    /// Two rows may not hold the same value here (`UNIQUE`); NULLs never collide.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub unique: bool,
 }
 
 /// One managed Simple Table definition stored inside the project runtime DB.
@@ -1989,6 +1992,48 @@ pub struct SimpleTableDefinition {
     pub spatial_fields: Vec<String>,
     /// Live row count.
     pub row_count: usize,
+    /// Named schema the table lives in; empty for the default (`public`).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub schema: String,
+    /// Present when the table is an edge table: a view over a property
+    /// graph's own edges rather than a table of rows.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub edge: Option<EdgeTableDefinition>,
+}
+
+/// What makes a table an edge table: the rows its edges join, the key that
+/// decides how many edges one pair may have, and the graph that declares it.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct EdgeTableDefinition {
+    /// Each `REFERENCES` column and the table it names.
+    #[serde(default)]
+    pub references: Vec<EdgeTableReference>,
+    /// Primary key columns; empty for a table without one.
+    #[serde(default)]
+    pub key: Vec<String>,
+    /// Source column and its table.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub source: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub source_table: String,
+    /// Destination column and its table.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub destination: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub destination_table: String,
+    /// The label its edges carry.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub label: String,
+    /// The property graph that declares it; empty when none does.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub graph: String,
+}
+
+/// One `REFERENCES` column of an edge table.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct EdgeTableReference {
+    pub column: String,
+    pub table: String,
 }
 
 /// One generation of the credential encryption keyring.

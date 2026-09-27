@@ -49,6 +49,18 @@ Rules:
 - Sekejap's structure document is rewritten after every DDL the project runs.
   SQLite's is written when a project bundle is exported.
 
+## Schemas and edge tables (sekejap)
+
+- A table in a named schema is `schema.table`, and carries `schema`. Applying
+  creates each schema before its tables.
+- An edge table carries `edge`: its `REFERENCES` columns, key, source,
+  destination, label and graph. It has no `_key`.
+- A property graph is not stored on its own. It is the `graph` its edge
+  tables name, and its vertex tables are the tables those edges join.
+- Applying runs in dependency order: schemas, tables of rows, edge tables,
+  then one `CREATE PROPERTY GRAPH` per graph — or `ALTER ... ADD EDGE TABLES`
+  when the graph already exists.
+
 ## Load is creation-only
 
 A project created with an empty store applies its structure documents and

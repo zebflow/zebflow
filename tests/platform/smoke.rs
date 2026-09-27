@@ -2385,23 +2385,27 @@ async fn project_bundle_installs_spatial_blog_with_sekejap_schema_across_two_ins
                     name: "title".to_string(),
                     kind: "string".to_string(),
                     index_types: vec!["hash".to_string(), "fulltext".to_string()],
+                    unique: false,
                 },
                 CollectionAttribute {
                     name: "body".to_string(),
                     kind: "text".to_string(),
                     index_types: vec!["fulltext".to_string()],
+                    unique: false,
                 },
                 CollectionAttribute {
                     name: "geometry".to_string(),
                     kind: "geo".to_string(),
                     index_types: vec!["spatial".to_string()],
+                    unique: false,
                 },
                 CollectionAttribute {
                     name: "embedding".to_string(),
-                    // A vector attribute carries its dimension: sekejap 0.17
+                    // A vector attribute carries its dimension: sekejap
                     // types the column as VECTOR(n).
                     kind: "vector(3)".to_string(),
                     index_types: vec!["vector".to_string()],
+                    unique: false,
                 },
             ],
             hash_indexed_fields: Vec::new(),

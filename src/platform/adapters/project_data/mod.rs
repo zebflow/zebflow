@@ -88,11 +88,6 @@ impl ProjectDataEngine for ProjectSekejapEngine {
     }
 
     fn initialize(&self, layout: &ProjectFileLayout) -> Result<(), PlatformError> {
-        // Migrate before creating: an eager `create_dir_all` at the new path
-        // would otherwise make `data/store/sekejap` exist before the real
-        // migration in `sekejap::ensure_project_dir` runs, and that function
-        // refuses to move data onto a path that already exists.
-        migrate_legacy_data_dir_entry(layout, "sekejap", &layout.data_store_sekejap_dir())?;
         std::fs::create_dir_all(layout.data_store_sekejap_dir())?;
         Ok(())
     }

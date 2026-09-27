@@ -155,7 +155,7 @@ pub fn definition() -> NodeDefinition {
                 .note("The slug is the row's `_key`. For a key nobody typed, put a `crypto --op random_hex` node before this one and bind `$nodes.<id>.hex`."),
             crate::pipeline::model::NodeExample::dsl("Create a table", r#"sekejap.query --read-only false -- "CREATE TABLE posts (_key TEXT PRIMARY KEY, title TEXT, slug TEXT, created_at TIMESTAMPTZ) WITH (fulltext: [title])""#)
                 .note("Run once from `pipeline_run` or a `jobs/migrate` function pipeline; keep the SQL in `db/001_posts.sql`. Scalar columns are indexed automatically; `WITH` declares full-text, spatial and vector indexes."),
-            crate::pipeline::model::NodeExample::dsl("Walk the graph", r#"sekejap.query --params "{{ [$trigger.params.id] }}" -- "SELECT _key, name FROM GRAPH_TABLE (base MATCH (u:users WHERE u._key = $1)-[:follows]->(f:users) COLUMNS (f._key AS _key, f.name AS name))""#)
+            crate::pipeline::model::NodeExample::dsl("Walk the graph", r#"sekejap.query --params "{{ [$trigger.params.id] }}" -- "SELECT _key, name FROM GRAPH_TABLE (base MATCH (u:users WHERE u._key = $1)-[:follows]->(f:users) RETURN f._key AS _key, f.name AS name)""#)
                 .output(serde_json::json!({ "columns": ["_key", "name"], "rows": [{ "_key": "bob", "name": "Bob" }], "row_count": 1, "truncated": false })),
         ],
         ..Default::default()

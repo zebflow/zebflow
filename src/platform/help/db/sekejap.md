@@ -143,11 +143,12 @@ SELECT _key, name FROM contacts ORDER BY embedding <=> $1 LIMIT 5
 ```sql
 SELECT _key, name FROM GRAPH_TABLE (base MATCH
   (u:users WHERE u._key = $1)-[:follows]->(f:users)
-  COLUMNS (f._key AS _key, f.name AS name))
+  RETURN f._key AS _key, f.name AS name)
 ```
 
 `<-[:follows]-` walks the other way; `-[:follows]->{1,3}` walks up to
-three hops; an edge's own properties project as `@edge.<name>`.
+three hops. An edge's own properties are read by naming the edge:
+`-[e:follows]->` then `RETURN e.since AS since`.
 
 ## Writing
 
