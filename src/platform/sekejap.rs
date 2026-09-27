@@ -1836,6 +1836,25 @@ fn write_batch(
             )
         })?;
 
+    if let Some(edge) = &declared.edge {
+        return Err(PlatformError::new(
+            "PLATFORM_SEKEJAP_INSERT_EDGE_TABLE_TARGET",
+            format!(
+                "'{collection}' is an edge table: its rows are the edges between two tables. Send them as `edges` \
+                 with `type: \"{}\"`, and set the target to a table of rows.",
+                edge.label.clone().unwrap_or_else(|| collection.to_string())
+            ),
+        ));
+    }
+    // sekejap 0.18: an edge whose type belongs to an edge table carries typed
+    // properties and a key, and is written with INSERT INTO that table;
+    // `link_with` refuses it. Looked up once, and only when there are edges.
+    let edge_tables = if edges.is_empty() {
+        HashMap::new()
+    } else {
+        edge_tables_by_label(db)?
+    };
+
     let mut field_dimensions = BTreeMap::<String, usize>::new();
     let mut tx = db
         .transaction()
@@ -1885,6 +1904,10 @@ fn write_batch(
         written += 1;
     }
     for edge in &edges {
+        if let Some((table, info)) = edge_tables.get(edge.edge_type.trim()) {
+            insert_edge_table_row(&mut tx, table, info, edge)?;
+            continue;
+        }
         let properties = Value::Object(edge.fields.clone());
         tx.link_with(
             (edge.from_target.trim(), edge.from_key.trim()),
@@ -1903,6 +1926,87 @@ fn write_batch(
         field_dimensions,
         duration_ms: started.elapsed().as_millis() as u64,
     })
+}
+
+/// Every edge table, by the label its edges carry.
+fn edge_tables_by_label(
+    db: &Db,
+) -> Result<HashMap<String, (String, sekejap::EdgeTableInfo)>, PlatformError> {
+    let mut tables = HashMap::new();
+    for collection in db
+        .collections()
+        .map_err(|e| store_error("PLATFORM_SEKEJAP_CATALOG", e))?
+    {
+        let Some(described) = db
+            .describe(&collection)
+            .map_err(|e| store_error("PLATFORM_SEKEJAP_CATALOG", e))?
+        else {
+            continue;
+        };
+        if let Some(info) = described.edge {
+            let label = info.label.clone().unwrap_or_else(|| collection.clone());
+            tables.entry(label).or_insert((collection, info));
+        }
+    }
+    Ok(tables)
+}
+
+/// One edge written into its edge table, inside the batch's transaction.
+///
+/// The endpoints must be the tables the edge table joins, in its direction.
+/// Property names become column names, so each must already be a plain
+/// identifier; their values travel as parameters, never inside the SQL. A
+/// plain INSERT, as the records in this batch are: an edge whose key is
+/// taken is refused (23505), and one to a row that does not exist is 23503.
+fn insert_edge_table_row(
+    tx: &mut sekejap::Tx<'_>,
+    table: &str,
+    info: &sekejap::EdgeTableInfo,
+    edge: &StructuredInsertEdge,
+) -> Result<(), PlatformError> {
+    let refuse = |message: String| PlatformError::new("PLATFORM_SEKEJAP_INSERT_EDGE", message);
+    let (Some(source), Some(destination)) = (&info.source, &info.destination) else {
+        return Err(refuse(format!(
+            "edge table '{table}' is not declared by a property graph yet, so it has no source or destination"
+        )));
+    };
+    let expected_from = info.source_table.clone().unwrap_or_default();
+    let expected_to = info.destination_table.clone().unwrap_or_default();
+    let (from, to) = (qualified_slug(&edge.from_target), qualified_slug(&edge.to_target));
+    if from != qualified_slug(&expected_from) || to != qualified_slug(&expected_to) {
+        return Err(refuse(format!(
+            "edge type '{}' goes from '{expected_from}' to '{expected_to}' (edge table '{table}'); \
+             this edge goes from '{}' to '{}'",
+            edge.edge_type, edge.from_target, edge.to_target
+        )));
+    }
+    let mut columns = vec![source.clone(), destination.clone()];
+    let mut params = vec![
+        Value::String(edge.from_key.trim().to_string()),
+        Value::String(edge.to_key.trim().to_string()),
+    ];
+    let mut names = edge.fields.keys().collect::<Vec<_>>();
+    names.sort();
+    for name in names {
+        if slug_segment(name) != *name || name.contains('-') {
+            return Err(refuse(format!(
+                "edge property '{name}' is not a column name of '{table}'; use lowercase letters, digits and _"
+            )));
+        }
+        columns.push(name.clone());
+        params.push(edge.fields[name].clone());
+    }
+    let placeholders = (1..=columns.len())
+        .map(|n| format!("${n}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let sql = format!(
+        "INSERT INTO {table} ({}) VALUES ({placeholders})",
+        columns.join(", ")
+    );
+    tx.execute(&sql, &params)
+        .map_err(|e| refuse(format!("edge '{}' into '{table}': {e}", edge.edge_type)))?;
+    Ok(())
 }
 
 fn check_records(
@@ -2281,6 +2385,68 @@ mod tests {
             rows.iter().next().and_then(|row| row.value("name")).map(sekejap::value_to_json),
             Some(json!("Beta"))
         );
+    }
+
+    /// The edge-table path refuses by name: a taken edge key, an edge
+    /// between the wrong tables, a property that is not a column name, and
+    /// an edge table as the batch's target. A refused edge takes the whole
+    /// batch with it, records included.
+    #[test]
+    fn edge_table_edges_refuse_by_name_and_take_the_batch_with_them() {
+        let tmp = tmp_root();
+        {
+            let db = get_db(tmp.path(), "alice", "demo").expect("open db");
+            for ddl in [
+                "CREATE TABLE people (_key TEXT PRIMARY KEY, name TEXT)",
+                "CREATE TABLE places (_key TEXT PRIMARY KEY, name TEXT)",
+                "CREATE TABLE knows (src TEXT REFERENCES people, dst TEXT REFERENCES people, since INT, PRIMARY KEY (src, dst))",
+                "CREATE PROPERTY GRAPH social VERTEX TABLES (people) EDGE TABLES (knows SOURCE KEY (src) REFERENCES people (_key) DESTINATION KEY (dst) REFERENCES people (_key))",
+                "INSERT INTO people (_key, name) VALUES ('ann', 'Ann'), ('bo', 'Bo')",
+                "INSERT INTO places (_key, name) VALUES ('here', 'Here')",
+            ] {
+                db.execute(ddl, &[]).expect(ddl);
+            }
+        }
+        let record = |key: &str| StructuredInsertRecord {
+            key: key.to_string(),
+            fields: json!({ "name": key }).as_object().cloned().unwrap_or_default(),
+        };
+        let edge = |from: (&str, &str), to: (&str, &str), fields: Value| StructuredInsertEdge {
+            from_target: from.0.to_string(),
+            from_key: from.1.to_string(),
+            edge_type: "knows".to_string(),
+            to_target: to.0.to_string(),
+            to_key: to.1.to_string(),
+            fields: fields.as_object().cloned().unwrap_or_default(),
+            strength: 1.0,
+        };
+        let insert = |target: &str, rows, edges| {
+            bulk_insert(tmp.path(), "alice", "demo", target, rows, edges, StructuredWriteMode::Insert)
+        };
+
+        insert("people", vec![], vec![edge(("people", "ann"), ("people", "bo"), json!({ "since": 2020 }))])
+            .expect("first edge");
+        let taken = insert("people", vec![], vec![edge(("people", "ann"), ("people", "bo"), json!({}))])
+            .expect_err("a taken key");
+        assert!(taken.message.contains("23505"), "{}", taken.message);
+
+        let wrong = insert("people", vec![], vec![edge(("people", "ann"), ("places", "here"), json!({}))])
+            .expect_err("wrong tables");
+        assert!(wrong.message.contains("goes from 'people' to 'people'"), "{}", wrong.message);
+
+        let column = insert("people", vec![], vec![edge(("people", "bo"), ("people", "ann"), json!({ "since; DROP": 1 }))])
+            .expect_err("not a column name");
+        assert!(column.message.contains("not a column name"), "{}", column.message);
+
+        let target = insert("knows", vec![record("x")], vec![]).expect_err("edge table target");
+        assert_eq!(target.code, "PLATFORM_SEKEJAP_INSERT_EDGE_TABLE_TARGET");
+
+        // One commit: the record goes back with the refused edge.
+        insert("people", vec![record("cy")], vec![edge(("people", "cy"), ("places", "here"), json!({}))])
+            .expect_err("refused edge");
+        let db = get_db(tmp.path(), "alice", "demo").expect("open db");
+        let rows = db.query("SELECT _key FROM people WHERE _key = 'cy'", &[]).expect("read");
+        assert_eq!(rows.len(), 0, "the record was rolled back with the edge");
     }
 
     #[test]

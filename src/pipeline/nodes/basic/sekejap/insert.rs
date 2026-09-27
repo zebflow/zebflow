@@ -38,7 +38,9 @@ pub fn definition() -> NodeDefinition {
         description: "Bulk-insert records (and optional graph edges) into a Sekejap collection, as one commit. Reads an array at \
             `--records-path` (default `records`), each `{ key, fields: { … } }`, and writes them typed against the collection's \
             declared columns into `--target` — the collection must already exist (`CREATE TABLE`), a `VECTOR(n)` field must have \
-            exactly n numbers, and an edge's two endpoints must exist, in this batch or before it. Answers \
+            exactly n numbers, and an edge's two endpoints must exist, in this batch or before it. An edge whose `type` is an \
+            edge table's label is written into that table, its `fields` as the table's columns; the target itself must be a \
+            table of rows. Answers \
             `{ inserted_records, inserted_edges, … }` — the payload is replaced. For one row from a form use `sekejap.query … INSERT`; \
             this node is for imports and seeds, up to `--max-records` (default 1000) per run."
             .to_string(),
@@ -432,6 +434,71 @@ fn scalar_key(value: Option<&Value>) -> Option<String> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// sekejap 0.18: an edge whose type belongs to an edge table is written
+    /// into that table, in the same commit as the records, and a graph walk
+    /// reads its typed property back.
+    #[tokio::test]
+    async fn writes_edges_whose_type_is_an_edge_table_into_that_table() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        for sql in [
+            "CREATE TABLE people (_key TEXT PRIMARY KEY, name TEXT)",
+            "CREATE TABLE knows (src TEXT REFERENCES people, dst TEXT REFERENCES people, since INT, PRIMARY KEY (src, dst))",
+            "CREATE PROPERTY GRAPH social VERTEX TABLES (people) EDGE TABLES (knows SOURCE KEY (src) REFERENCES people (_key) DESTINATION KEY (dst) REFERENCES people (_key))",
+        ] {
+            crate::platform::sekejap::execute_sql(tmp.path(), "alice", "demo", sql, &[], 10, false)
+                .expect(sql);
+        }
+        let node = Node::new(
+            Config {
+                target: "people".to_string(),
+                records_path: "records".to_string(),
+                edges_path: "edges".to_string(),
+                key_path: "key".to_string(),
+                max_records: 10,
+                max_edges: 10,
+            },
+            tmp.path().to_path_buf(),
+        )
+        .expect("node");
+        let output = node
+            .execute_async(NodeExecutionInput {
+                node_id: "insert".to_string(),
+                input_pin: "in".to_string(),
+                payload: json!({
+                    "records": [
+                        { "key": "ann", "fields": { "name": "Ann" } },
+                        { "key": "bo", "fields": { "name": "Bo" } }
+                    ],
+                    "edges": [
+                        {
+                            "from": { "target": "people", "key": "ann" },
+                            "type": "knows",
+                            "to": { "target": "people", "key": "bo" },
+                            "fields": { "since": 2020 }
+                        }
+                    ]
+                }),
+                metadata: json!({ "owner": "alice", "project": "demo", "pipeline": "t", "request_id": "r" }),
+                bus: None,
+            })
+            .await
+            .expect("execute");
+        assert_eq!(output.payload["inserted_records"], json!(2));
+        assert_eq!(output.payload["inserted_edges"], json!(1));
+
+        let walked = crate::platform::sekejap::execute_sql(
+            tmp.path(),
+            "alice",
+            "demo",
+            "SELECT name, since FROM GRAPH_TABLE (social MATCH (a WHERE a._key = 'ann')-[e:knows]->(b) RETURN b.name AS name, e.since AS since)",
+            &[],
+            10,
+            true,
+        )
+        .expect("walk");
+        assert_eq!(walked.rows, vec![vec![json!("Bo"), json!(2020)]]);
+    }
 
     #[tokio::test]
     async fn executes_records_and_native_edges_from_insert_contract() {
