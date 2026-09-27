@@ -32,6 +32,25 @@ pub struct WorkerRegistryRecord {
     /// Unix timestamp of the most recent heartbeat or registration refresh.
     #[serde(default)]
     pub last_heartbeat_at: i64,
+    /// The projects this office holds, as of its last heartbeat.
+    ///
+    /// `offices.md` §3a: the office is the source of the directory, because a
+    /// project may be created on it without the controller's **place**. The
+    /// office reports its whole list on every heartbeat.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub projects: Vec<OfficeHeldProject>,
+}
+
+/// One project an office reports holding.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct OfficeHeldProject {
+    /// Owner slug on that office.
+    pub owner: String,
+    /// Project slug on that office.
+    pub project: String,
+    /// Display title.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub title: String,
 }
 
 /// Snapshot of all known workers.

@@ -1,6 +1,7 @@
 # Offices Contract
 
-Status: **review** — spec settled 2026-08-29, code catch-up owed.
+Status: **review** — spec settled 2026-08-29; directory and opening settled
+2026-09-25. Code catch-up owed.
 
 How independent Zebflow instances relate to each other.
 
@@ -32,7 +33,7 @@ The controller has exactly three verbs:
 | Verb | Meaning |
 | --- | --- |
 | **place** | create a project on a named office. The only reason cargo moves |
-| **see** | a directory of offices and what each holds |
+| **see** | a directory of offices and every project each holds, as the office reports it |
 | **vouch** | one identity the offices accept for administration |
 
 There is no fourth. No scheduling, no load balancing, no shared data, no
@@ -63,6 +64,30 @@ Consequences, recorded rather than discovered later:
   DNS name or a proxy in front, which is the operator's, not the platform's.
 - The public cannot tell that two offices share a controller. Nothing about the
   relationship appears in a request.
+
+## 3a. The directory, and opening a project
+
+The controller's home is one directory: each office with the projects it holds,
+the controller's own among them.
+
+- **The office is the source.** A project may be created on the office itself
+  rather than through **place**, so each office reports its whole project list
+  on every heartbeat, and the directory shows that list. An empty list is an
+  office that holds nothing.
+- **An office is monitored, not opened.** Its entry shows status, address,
+  version, last seen, capabilities and project count. What is opened is a
+  project.
+- **Opening a project on another office is a vouch** (§2) that lands in that
+  project. Management still runs at the office's own address; the controller
+  carries none of it.
+- **The address the browser uses is the operator's.** By default it is the
+  office's `base_url`. An operator whose machine cannot reach that address —
+  an office inside a private network, reached through a local tunnel — gives
+  another address, and that browser remembers it for that office. It is never
+  stored on the controller and changes nothing for anyone else.
+- The vouch stays bound to its office: the address decides only where the
+  browser goes, and another office refuses a vouch that is not its own. The
+  landing path is a local path or nothing.
 
 ## 4. What an office keeps and what it accepts
 
@@ -153,3 +178,13 @@ scheme while old tokens stay parseable rather than merely invalid.
   rule yet.
 - **Directory freshness.** What the controller shows when an office has not
   reported recently, and whether stale entries are shown or hidden.
+- **Opening through the controller.** Today a project on another office opens
+  at the office's own address or an address the operator gives (§3a). A third
+  way is named, not built: the controller forwards the operator's management
+  requests to the office, so one reachable controller is enough. First as a
+  direct reverse proxy, when the controller can reach the office's `base_url`;
+  later through a tunnel the office opens to the controller, when it cannot.
+  Every Studio request would pass through the controller — pages, assets, APIs,
+  uploads up to the office's limit, exports, websockets — streamed, never
+  buffered. Adopting it relaxes §2's "no proxying" for management only; the
+  project interface stays off the controller (§3).

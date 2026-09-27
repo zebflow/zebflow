@@ -3062,232 +3062,158 @@ async fn home_page(State(state): State<PlatformAppState>, headers: HeaderMap) ->
     {
         return internal_error(err);
     }
-
-    match state.platform.projects.list_projects(&owner) {
-        Ok(items) => {
-            let known_workers = state
-                .platform
-                .cluster_registry
-                .snapshot()
-                .map(|snapshot| snapshot.workers)
-                .unwrap_or_default();
-            let all_projects = state
-                .platform
-                .data
-                .list_users()
-                .unwrap_or_default()
-                .into_iter()
-                .flat_map(|user| {
-                    state
-                        .platform
-                        .projects
-                        .list_projects(&user.owner)
-                        .unwrap_or_default()
-                        .into_iter()
-                        .map(move |project| (user.owner.clone(), project.project.clone()))
-                })
-                .collect::<Vec<_>>();
-            let mut hosted_projects: std::collections::BTreeMap<String, Vec<String>> =
-                std::collections::BTreeMap::new();
-            let local_office_id = state.platform.cluster_bootstrap.node_id();
-            for (project_owner, project_slug) in &all_projects {
-                let placement = state
-                    .platform
-                    .cluster_placement
-                    .get(project_owner, project_slug)
-                    .ok()
-                    .flatten();
-                let target_key = match placement.as_ref() {
-                    Some(value) if value.target == ProjectRuntimePlacementTarget::Worker => value
-                        .worker_id
-                        .clone()
-                        .unwrap_or_else(|| "__dangling__".to_string()),
-                    _ => local_office_id.clone(),
-                };
-                hosted_projects
-                    .entry(target_key)
-                    .or_default()
-                    .push(format!("{project_owner}/{project_slug}"));
-            }
-            let now = chrono::Utc::now().timestamp();
-            let mut offices = vec![json!({
-                "id": local_office_id,
-                "label": state.platform.cluster_bootstrap.node_label(),
-                "role": if state.platform.cluster_bootstrap.is_master() {
-                    "Managing office"
-                } else if state.platform.cluster_bootstrap.is_worker() {
-                    "Office"
-                } else {
-                    "Self-managed office"
-                },
-                "availability": "online",
-                "resource_state": "local runtime available",
-                "address": state.platform.cluster_bootstrap.advertise_url().map(str::to_string),
-                "version": APP_VERSION,
-                "last_seen": "Current process",
-                "hosted_project_count": hosted_projects
-                    .get(&state.platform.cluster_bootstrap.node_id())
-                    .map(|items| items.len())
-                    .unwrap_or(0usize),
-                "hosted_projects": hosted_projects
-                    .get(&state.platform.cluster_bootstrap.node_id())
-                    .cloned()
-                    .unwrap_or_default(),
-                "capabilities": vec!["resident".to_string()],
-            })];
-            let known_worker_ids = known_workers
-                .iter()
-                .map(|worker| worker.node_id.clone())
-                .collect::<std::collections::BTreeSet<_>>();
-            // `offices.md` §2's vouch verb, made one action. The link is
-            // emitted only for a controller and only for an operator who could
-            // mint anyway, so the card never offers a door the viewer cannot
-            // open. The local office is excluded because the viewer is already
-            // standing in it.
-            let can_vouch =
-                state.platform.cluster_bootstrap.is_master() && is_superadmin_owner(&state, &owner);
-            for worker in known_workers {
-                let worker_id = worker.node_id.clone();
-                let worker_label = worker.label.clone();
-                let worker_status = worker.status.clone();
-                let worker_base_url = worker.base_url.clone();
-                let heartbeat_age = if worker.last_heartbeat_at > 0 {
-                    now.saturating_sub(worker.last_heartbeat_at)
-                } else {
-                    i64::MAX
-                };
-                let availability = if heartbeat_age > 45 {
-                    "offline"
-                } else {
-                    "online"
-                };
-                let mut capabilities = Vec::new();
-                if worker.capabilities.supports_resident {
-                    capabilities.push("resident".to_string());
-                }
-                if worker.capabilities.supports_k8s_job {
-                    capabilities.push("k8s-job".to_string());
-                }
-                if worker.capabilities.supports_spark_submit {
-                    capabilities.push("spark-submit".to_string());
-                }
-                capabilities.extend(
-                    worker
-                        .capabilities
-                        .tags
-                        .iter()
-                        .filter(|tag| !tag.starts_with("app_version:"))
-                        .cloned(),
-                );
-                let version = worker
-                    .capabilities
-                    .tags
-                    .iter()
-                    .find_map(|tag| tag.strip_prefix("app_version:"))
-                    .map(str::to_string);
-                let last_seen = if heartbeat_age == i64::MAX {
-                    "No heartbeat yet".to_string()
-                } else if heartbeat_age <= 1 {
-                    "just now".to_string()
-                } else {
-                    format!("{heartbeat_age}s ago")
-                };
-                offices.push(json!({
-                    "id": worker_id,
-                    "label": worker_label,
-                    "role": "Joined office",
-                    "availability": availability,
-                    "resource_state": if worker_status.trim().is_empty() {
-                        if availability == "online" {
-                            "healthy".to_string()
-                        } else {
-                            "heartbeat stale".to_string()
-                        }
-                    } else {
-                        worker_status
-                    },
-                    "address": if worker_base_url.trim().is_empty() { None::<String> } else { Some(worker_base_url) },
-                    "version": version,
-                    "last_seen": last_seen,
-                    "hosted_project_count": hosted_projects.get(&worker_id).map(|items| items.len()).unwrap_or(0usize),
-                    "hosted_projects": hosted_projects.get(&worker_id).cloned().unwrap_or_default(),
-                    "capabilities": capabilities,
-                    "open_url": if can_vouch {
-                        Some(format!("/cluster/offices/{worker_id}/open"))
-                    } else {
-                        None
-                    },
-                }));
-            }
-            for (office_id, projects) in &hosted_projects {
-                if office_id == "__dangling__"
-                    || office_id == &state.platform.cluster_bootstrap.node_id()
-                    || known_worker_ids.contains(office_id)
-                {
-                    continue;
-                }
-                offices.push(json!({
-                    "id": office_id,
-                    "label": office_id,
-                    "role": "Missing office",
-                    "availability": "dangling",
-                    "resource_state": "project placement exists but office is not registered",
-                    "address": serde_json::Value::Null,
-                    "version": serde_json::Value::Null,
-                    "last_seen": "No active registration",
-                    "hosted_project_count": projects.len(),
-                    "hosted_projects": projects,
-                    "capabilities": Vec::<String>::new(),
-                }));
-            }
-            let runtime_targets = state
-                .platform
-                .cluster_registry
-                .runtime_target_options()
-                .unwrap_or_else(|_| {
-                    vec![crate::platform::model::ClusterRuntimeTargetOption {
-                        value: "local".to_string(),
-                        label: "Local office".to_string(),
-                        description: "Run inside the current self-controlled office.".to_string(),
-                    }]
-                });
-            let projects = match items
-                .into_iter()
-                .map(|item| home_project_card_json(&state, &owner, &item))
-                .collect::<Result<Vec<_>, _>>()
-            {
-                Ok(projects) => projects,
-                Err(err) => return internal_error(err),
-            };
-            match render_page(
-                &state,
-                "platform-home",
-                "/home",
-                json!({
-                    "seo": {
-                        "title": "Zebflow Platform Home",
-                        "description": "Project list"
-                    },
-                    "owner": owner,
-                    "projects": projects,
-                    "hub_api": {
-                        "service": "/api/platform/hub/service",
-                        "repositories": format!("/api/users/{}/hub/repositories", owner),
-                        "assets": format!("/api/users/{}/hub/assets", owner),
-                        "install": format!("/api/users/{}/hub/install", owner),
-                        "install_review": format!("/api/users/{}/hub/install/review", owner),
-                    },
-                    "offices": offices,
-                    "runtime_targets": runtime_targets,
-                    "app_version": APP_VERSION,
-                }),
-            ) {
-                Ok(html) => Html(html).into_response(),
-                Err(err) => internal_error(err),
-            }
-        }
+    let items = match state.platform.projects.list_projects(&owner) {
+        Ok(items) => items,
+        Err(err) => return internal_error(err),
+    };
+    let local_projects = match items
+        .into_iter()
+        .map(|item| home_project_card_json(&state, &owner, &item))
+        .collect::<Result<Vec<_>, _>>()
+    {
+        Ok(projects) => projects,
+        Err(err) => return internal_error(err),
+    };
+    let bootstrap = &state.platform.cluster_bootstrap;
+    // `offices.md` §3a: one directory, each office with the projects it
+    // holds, this office's own among them. This office comes first.
+    let mut offices = vec![json!({
+        "id": bootstrap.node_id(),
+        "label": bootstrap.node_label(),
+        "role": if bootstrap.is_master() {
+            "Controller"
+        } else if bootstrap.is_worker() {
+            "Office"
+        } else {
+            "Standalone"
+        },
+        "local": true,
+        "online": true,
+        "address": bootstrap.advertise_url().map(str::to_string),
+        "version": APP_VERSION,
+        "last_seen": "this office",
+        "capabilities": vec!["resident".to_string()],
+        "project_count": local_projects.len(),
+        "projects": local_projects,
+    })];
+    let workers = state
+        .platform
+        .cluster_registry
+        .snapshot()
+        .map(|snapshot| snapshot.workers)
+        .unwrap_or_default();
+    let now = chrono::Utc::now().timestamp();
+    for worker in workers {
+        offices.push(home_office_row_json(&worker, now));
+    }
+    let runtime_targets = state
+        .platform
+        .cluster_registry
+        .runtime_target_options()
+        .unwrap_or_else(|_| {
+            vec![crate::platform::model::ClusterRuntimeTargetOption {
+                value: "local".to_string(),
+                label: "Local office".to_string(),
+                description: "Run inside the current self-controlled office.".to_string(),
+            }]
+        });
+    // Opening a project on another office is a vouch (§3a), which only a
+    // controller mints and only a superadmin may ask for. Anyone else sees
+    // the directory without a door they cannot open.
+    let can_open_remote = bootstrap.is_master() && is_superadmin_owner(&state, &owner);
+    match render_page(
+        &state,
+        "platform-home",
+        "/home",
+        json!({
+            "seo": {
+                "title": "Zebflow Platform Home",
+                "description": "Project list"
+            },
+            "owner": owner,
+            "hub_api": {
+                "service": "/api/platform/hub/service",
+                "repositories": format!("/api/users/{}/hub/repositories", owner),
+                "assets": format!("/api/users/{}/hub/assets", owner),
+                "install": format!("/api/users/{}/hub/install", owner),
+                "install_review": format!("/api/users/{}/hub/install/review", owner),
+            },
+            "offices": offices,
+            "can_open_remote": can_open_remote,
+            "runtime_targets": runtime_targets,
+            "app_version": APP_VERSION,
+        }),
+    ) {
+        Ok(html) => Html(html).into_response(),
         Err(err) => internal_error(err),
     }
+}
+
+/// One joined office in the controller's directory: what the monitor shows
+/// and the projects it reported on its last heartbeat (`offices.md` §3a).
+fn home_office_row_json(
+    worker: &crate::infra::cluster::registry::WorkerRegistryRecord,
+    now: i64,
+) -> Value {
+    let heartbeat_age = if worker.last_heartbeat_at > 0 {
+        now.saturating_sub(worker.last_heartbeat_at)
+    } else {
+        i64::MAX
+    };
+    let mut capabilities = Vec::new();
+    if worker.capabilities.supports_resident {
+        capabilities.push("resident".to_string());
+    }
+    if worker.capabilities.supports_k8s_job {
+        capabilities.push("k8s-job".to_string());
+    }
+    if worker.capabilities.supports_spark_submit {
+        capabilities.push("spark-submit".to_string());
+    }
+    capabilities.extend(
+        worker
+            .capabilities
+            .tags
+            .iter()
+            .filter(|tag| !tag.starts_with("app_version:"))
+            .cloned(),
+    );
+    let version = worker
+        .capabilities
+        .tags
+        .iter()
+        .find_map(|tag| tag.strip_prefix("app_version:"))
+        .map(str::to_string);
+    let last_seen = match heartbeat_age {
+        i64::MAX => "never".to_string(),
+        age if age <= 1 => "just now".to_string(),
+        age => format!("{age}s ago"),
+    };
+    let projects = worker
+        .projects
+        .iter()
+        .map(|held| {
+            json!({
+                "owner": held.owner,
+                "project": held.project,
+                "title": if held.title.trim().is_empty() { held.project.clone() } else { held.title.clone() },
+                "path": format!("/projects/{}/{}", held.owner, held.project),
+            })
+        })
+        .collect::<Vec<_>>();
+    json!({
+        "id": worker.node_id,
+        "label": worker.label,
+        "role": "Office",
+        "local": false,
+        "online": heartbeat_age <= 45,
+        "address": if worker.base_url.trim().is_empty() { None } else { Some(worker.base_url.clone()) },
+        "version": version,
+        "last_seen": last_seen,
+        "capabilities": capabilities,
+        "project_count": projects.len(),
+        "projects": projects,
+    })
 }
 
 async fn platform_hub_page(State(state): State<PlatformAppState>, headers: HeaderMap) -> Response {
@@ -4867,6 +4793,42 @@ async fn report_break_glass_to_controller(
     }
 }
 
+/// Every project this office holds, for the controller's directory.
+///
+/// `offices.md` §3a: the office is the source. Projects are created on the
+/// office that runs them, often without the controller's **place**, so only
+/// the office knows the list. Read fresh for each heartbeat, so a project
+/// created or deleted here shows on the controller within one beat.
+fn office_held_projects(
+    state: &PlatformAppState,
+) -> Vec<crate::infra::cluster::registry::OfficeHeldProject> {
+    state
+        .platform
+        .data
+        .list_users()
+        .unwrap_or_default()
+        .into_iter()
+        .flat_map(|user| {
+            state
+                .platform
+                .data
+                .list_projects(&user.owner)
+                .unwrap_or_default()
+        })
+        .map(|project| crate::infra::cluster::registry::OfficeHeldProject {
+            // The title lives in the project's own configuration, not its row,
+            // exactly as `ProjectService::list_projects` reads it.
+            title: state
+                .platform
+                .zebflow_cfg
+                .get_project_title(&project.owner, &project.project)
+                .unwrap_or_default(),
+            owner: project.owner,
+            project: project.project,
+        })
+        .collect()
+}
+
 async fn cluster_worker_registration_loop(state: PlatformAppState) {
     let bootstrap = state.platform.cluster_bootstrap.clone();
     let identity = state
@@ -4983,6 +4945,7 @@ async fn cluster_worker_registration_loop(state: PlatformAppState) {
             status: "online".to_string(),
             base_url: base_url.clone(),
             capabilities: capabilities.clone(),
+            projects: office_held_projects(&state),
         };
         match state
             .http_client
@@ -10584,7 +10547,9 @@ async fn office_vouch_redeem(
 ) -> Response {
     match redeem_vouch_into_local_principal(&state, &params.v) {
         Ok((owner, _write)) => {
-            let mut resp = Redirect::to(HOME_PATH).into_response();
+            // §3a: opening a project is a vouch that lands in that project.
+            let target = local_next_path(&params.next).unwrap_or(HOME_PATH);
+            let mut resp = Redirect::to(target).into_response();
             let token = issue_vouched_session(&state, &owner);
             if let Ok(value) = HeaderValue::from_str(&session_cookie_header_same_site(
                 &token,
@@ -10753,6 +10718,22 @@ struct OfficeVouchRedeemQuery {
     /// The rendered vouch.
     #[serde(default)]
     v: String,
+    /// Where to land once signed in; a local path or nothing.
+    #[serde(default)]
+    next: String,
+}
+
+/// A landing path, only if it stays on this host.
+///
+/// `/x` passes; `//evil.example`, a backslash and `https://…` do not, so a
+/// vouch link cannot be turned into a redirect off the office (§3a).
+fn local_next_path(raw: &str) -> Option<&str> {
+    let value = raw.trim();
+    let local = value.starts_with('/')
+        && !value.starts_with("//")
+        && !value.contains('\\')
+        && !value.chars().any(char::is_control);
+    local.then_some(value)
 }
 
 /// The same value posted as JSON by a client that is not a browser.

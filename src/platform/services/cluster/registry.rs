@@ -67,6 +67,12 @@ impl ClusterRegistryService {
                 .map(|value| value.registered_at)
                 .unwrap_or(now),
             last_heartbeat_at: now,
+            // Registration says who the office is, not what it holds; the
+            // list arrives with the heartbeat that follows.
+            projects: existing
+                .as_ref()
+                .map(|value| value.projects.clone())
+                .unwrap_or_default(),
         };
         // The office row may predate this registration: minting a join token
         // creates it, planned and unreachable, so the controller knows who
@@ -142,6 +148,9 @@ impl ClusterRegistryService {
             record.capabilities = request.capabilities.clone();
         }
         record.last_heartbeat_at = now;
+        // The office reports its whole list every time, so an empty list is
+        // an office that holds nothing, not a heartbeat that forgot.
+        record.projects = request.projects.clone();
         let office_id = record
             .office_id
             .trim()

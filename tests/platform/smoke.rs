@@ -458,6 +458,110 @@ async fn a_join_token_is_per_office_revocable_and_proves_both_directions() {
     let _ = fs::remove_dir_all(controller_root);
 }
 
+/// `offices.md` §3a in one pass. The controller's home is one directory: each
+/// office with the projects it reported on its last heartbeat — a project made
+/// on the office itself included, since the office is the source — and an
+/// emptied list empties the entry. Opening one of those projects is a vouch
+/// that lands in the project, and the landing path is only ever a local one.
+#[tokio::test]
+async fn the_controller_directory_lists_office_projects_and_a_vouch_lands_in_one() {
+    let controller_root = temp_test_dir("controller-directory");
+    let office_root = temp_test_dir("office-directory");
+    let mut controller = PlatformConfig::default();
+    controller.data_root = controller_root.clone();
+    controller.cluster.role = ClusterRole::Master;
+    controller.default_password = "test-pass".to_string();
+    let app = build_router(controller).await.expect("controller starts");
+    let cookie = login_cookie(app.clone(), "superadmin", "test-pass").await;
+
+    let token = mint_join_token_at(&app, &cookie, "office-a", "http://office-a.example:10610").await;
+    assert_eq!(register_office(&app, &token, "office-a", "0123456789abcdef").await.0, StatusCode::OK);
+
+    let beat = |projects: Value| {
+        let app = app.clone();
+        let token = token.clone();
+        async move {
+            app.oneshot(
+                Request::builder()
+                    .uri("/api/internal/cluster/workers/heartbeat")
+                    .method("POST")
+                    .header("x-zebflow-cluster-token", &token)
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        json!({ "node_id": "office-a", "status": "online", "projects": projects }).to_string(),
+                    ))
+                    .expect("request"),
+            )
+            .await
+            .expect("heartbeat response")
+            .status()
+        }
+    };
+    let home = || {
+        let app = app.clone();
+        let cookie = cookie.clone();
+        async move {
+            response_text(
+                app.oneshot(
+                    Request::builder()
+                        .uri("/home")
+                        .header(header::COOKIE, &cookie)
+                        .body(Body::empty())
+                        .expect("request"),
+                )
+                .await
+                .expect("home response"),
+            )
+            .await
+        }
+    };
+
+    assert_eq!(
+        beat(json!([{ "owner": "superadmin", "project": "site-a", "title": "Site A" }])).await,
+        StatusCode::OK
+    );
+    let body = home().await;
+    assert!(!body.contains("RWE component error"), "home rendered with an error");
+    assert!(body.contains("Site A"), "the office's project is in the directory");
+    assert!(body.contains("office-a"), "under its office");
+
+    assert_eq!(beat(json!([])).await, StatusCode::OK);
+    assert!(!home().await.contains("Site A"), "an emptied office lists nothing");
+
+    // The office side: a vouch lands in the project, and only on a local path.
+    let office = build_office(&office_root, &token).await;
+    let land = |next: &'static str| {
+        let app = app.clone();
+        let office = office.clone();
+        let cookie = cookie.clone();
+        async move {
+            let vouch = mint_vouch(&app, &cookie, "office-a").await.1["vouch"]["vouch"]
+                .as_str()
+                .expect("vouch")
+                .to_string();
+            let uri = format!(
+                "/office/vouch?v={}&next={next}",
+                vouch.replace(':', "%3A")
+            );
+            let response = office
+                .oneshot(Request::builder().uri(uri).body(Body::empty()).expect("request"))
+                .await
+                .expect("redeem response");
+            response
+                .headers()
+                .get(header::LOCATION)
+                .and_then(|value| value.to_str().ok())
+                .unwrap_or_default()
+                .to_string()
+        }
+    };
+    assert_eq!(land("/projects/superadmin/site-a").await, "/projects/superadmin/site-a");
+    assert_eq!(land("//evil.example/x").await, "/home", "an off-host landing is dropped");
+
+    let _ = fs::remove_dir_all(controller_root);
+    let _ = fs::remove_dir_all(office_root);
+}
+
 /// `offices.md` §2's third verb, §4's login term, and §8's identity-write rule
 /// in one pass: an operator authenticated on the controller reaches an office
 /// without knowing any password there, exactly once per vouch, and the office's

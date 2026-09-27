@@ -1,12 +1,9 @@
-import { Link, useState } from "zeb/react";
+import { useState } from "zeb/react";
 import PendingInvitations from "@/pages/home/components/pending-invitations";
 import ChromeHeader from "@/pages/home/components/chrome-header";
+import OfficeDirectory from "@/pages/home/components/office-directory";
 import Button from "@/components/ui/button";
 import Input from "@/components/ui/input";
-import Card from "@/components/ui/card";
-import CardContent from "@/components/ui/card-content";
-import CardTitle from "@/components/ui/card-title";
-import CardDescription from "@/components/ui/card-description";
 import Field from "@/components/ui/field";
 import { Dialog } from "@/components/ui/dialog";
 import DialogContent from "@/components/ui/dialog-content";
@@ -41,142 +38,12 @@ export function getPage(input) {
   };
 }
 
-function SectionHeading({ title, description }) {
-  return (
-    <header className="mb-5">
-      <h2 className="text-[26px] font-semibold leading-tight tracking-tight text-foreground">{title}</h2>
-      <p className="mt-1 max-w-2xl text-[15px] leading-6 text-muted-foreground">{description}</p>
-    </header>
-  );
-}
-
-function DetailRow({ label, children, mono = false }) {
-  return (
-    <p className={mono ? "truncate font-mono text-[11.5px] text-muted-foreground" : "text-[13.5px] leading-7 text-muted-foreground"}>
-      <span className={mono ? "font-sans font-semibold text-foreground" : "font-semibold text-foreground"}>{label}:</span>{" "}
-      {children}
-    </p>
-  );
-}
-
-function ProjectCard({ item, index }) {
-  const accent = item?.is_app ? "var(--primary)" : index % 3 === 2 ? "var(--info)" : "var(--muted-foreground)";
-  const primaryAction = item?.open_app_path ? "Play" : "Edit";
-  const primaryHref = item?.open_app_path || item?.edit_path || item?.path || "#";
-
-  return (
-    <Card className="relative overflow-hidden rounded-[14px] transition-all hover:border-ui-border-strong hover:shadow-md">
-      {item?.is_app ? (
-        <div aria-hidden="true" className="pointer-events-none absolute right-0 top-0 h-16 w-32 opacity-35">
-          <svg width="128" height="64" viewBox="0 0 128 64" fill="none">
-            <path d="M0 42 C 32 42, 42 16, 74 16 S 116 38, 128 24" stroke="var(--primary)" strokeWidth="1.5" strokeDasharray="2 7" />
-          </svg>
-        </div>
-      ) : null}
-      <CardContent className="relative p-6">
-        <div className="flex items-start justify-between gap-4">
-          <div className="min-w-0">
-            <CardTitle className="truncate text-[21px] font-semibold leading-tight">{item?.title}</CardTitle>
-            <CardDescription className="mt-1 truncate font-mono text-xs">{item?.project}</CardDescription>
-          </div>
-          <span className="mt-1 h-[9px] w-[9px] shrink-0 rounded-[3px]" style={{ backgroundColor: accent }} />
-        </div>
-
-        <div className="mt-[18px]">
-          <DetailRow label="Runtime">
-            {item?.runtime_mode || "shared"} · {item?.runtime_summary || "Local office"}
-          </DetailRow>
-          <DetailRow label="Office">{item?.office_label || "Local office"}</DetailRow>
-          <DetailRow label="Address" mono>
-            {item?.office_url || "Uses the current office address"}
-          </DetailRow>
-        </div>
-
-        <div className="mt-5 flex flex-wrap gap-2">
-          <Link href={primaryHref} className="inline-flex hover:no-underline">
-            <Button as="span" variant="primary" size="sm">
-              {primaryAction}
-            </Button>
-          </Link>
-          {item?.open_app_path ? (
-            <Link href={item?.edit_path ?? item?.path ?? "#"} className="inline-flex hover:no-underline">
-              <Button as="span" variant="outline" size="sm">
-                Edit
-              </Button>
-            </Link>
-          ) : null}
-        </div>
-      </CardContent>
-    </Card>
-  );
-}
-
-function StatusBadge({ status }) {
-  const value = String(status || "unknown");
-  const tone =
-    value === "online"
-      ? "border-emerald-200 bg-emerald-50 text-emerald-700"
-      : value === "dangling"
-        ? "border-amber-200 bg-amber-50 text-amber-700"
-        : "border-border bg-accent text-muted-foreground";
-  return (
-    <span className={`inline-flex rounded-full border px-2.5 py-1 font-mono text-[10px] font-semibold uppercase tracking-[0.08em] ${tone}`}>
-      {value}
-    </span>
-  );
-}
-
-function OfficeCard({ office, index }) {
-  const projects = Array.isArray(office?.hosted_projects) ? office.hosted_projects : [];
-  const capabilities = Array.isArray(office?.capabilities) ? office.capabilities : [];
-
-  return (
-    <Card key={`${office?.id ?? "office"}-${index}`} className="rounded-[14px]">
-      <CardContent className="p-[22px]">
-        <div className="flex items-start justify-between gap-4">
-          <div className="min-w-0">
-            <CardTitle className="truncate text-[19px] font-semibold leading-tight">{office?.label || office?.id}</CardTitle>
-            <CardDescription className="mt-1 text-[13px]">{office?.role || "Office"}</CardDescription>
-          </div>
-          <StatusBadge status={office?.availability} />
-        </div>
-        <div className="my-4 h-px bg-border" />
-        <div>
-          <DetailRow label="State">{office?.resource_state || "unknown"}</DetailRow>
-          <DetailRow label="Address" mono>
-            {office?.address || "No advertised address"}
-          </DetailRow>
-          <DetailRow label="Version">{office?.version || "unknown"}</DetailRow>
-          <DetailRow label="Last seen">{office?.last_seen || "unknown"}</DetailRow>
-          <DetailRow label="Hosted projects">{office?.hosted_project_count ?? 0}</DetailRow>
-          <DetailRow label="Capabilities">{capabilities.length > 0 ? capabilities.join(", ") : "none declared"}</DetailRow>
-          {projects.length > 0 ? (
-            <DetailRow label="Examples">
-              {projects.slice(0, 3).join(", ")}
-              {projects.length > 3 ? ` +${projects.length - 3} more` : ""}
-            </DetailRow>
-          ) : null}
-        </div>
-        {office?.open_url ? (
-          <div className="mt-4">
-            <Button as="a" href={office.open_url} variant="outline" size="sm">
-              Open office
-            </Button>
-          </div>
-        ) : null}
-      </CardContent>
-    </Card>
-  );
-}
-
 export default function Page(input) {
-  const initialProjects = Array.isArray(input?.projects) ? input.projects : [];
   const offices = Array.isArray(input?.offices) ? input.offices : [];
   const runtimeTargets = Array.isArray(input?.runtime_targets)
     ? input.runtime_targets
     : [{ value: "local", label: "Local office", description: "" }];
 
-  const [projects, setProjects] = useState(initialProjects);
   const [createOpen, setCreateOpen] = useState(false);
   const [cloneOpen, setCloneOpen] = useState(false);
   const [provider, setProvider] = useState("gitlab");
@@ -231,7 +98,7 @@ export default function Page(input) {
                 Projects for <span className="text-primary">{input.owner}</span>
               </h1>
               <p className="mt-3 max-w-2xl text-base leading-6 text-muted-foreground">
-                Create and manage automation projects inside this office.
+                Every project, grouped by the office that holds it.
               </p>
               {input?.app_version ? (
                 <p className="mt-1.5 font-mono text-[11px] tracking-wide text-muted-foreground">v{input.app_version}</p>
@@ -256,23 +123,7 @@ export default function Page(input) {
               that is not in that list yet. */}
           <PendingInvitations />
 
-          <section className="grid gap-5 md:grid-cols-2 lg:grid-cols-3">
-            {projects.map((item, index) => (
-              <ProjectCard key={`${item?.project ?? "project"}-${index}`} item={item} index={index} />
-            ))}
-          </section>
-
-          <section className="mt-14">
-            <SectionHeading
-              title="Office status"
-              description="Current office inventory, runtime availability, and placement health."
-            />
-            <div className="grid gap-5 md:grid-cols-2 lg:grid-cols-3">
-              {offices.map((office, index) => (
-                <OfficeCard key={`${office?.id ?? "office"}-${index}`} office={office} index={index} />
-              ))}
-            </div>
-          </section>
+          <OfficeDirectory offices={offices} canOpenRemote={Boolean(input?.can_open_remote)} />
         </section>
       </main>
 

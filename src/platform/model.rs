@@ -3929,6 +3929,9 @@ pub struct ClusterWorkerHeartbeatRequest {
     /// Refreshed runtime capabilities.
     #[serde(default)]
     pub capabilities: RunnerCapabilities,
+    /// Every project this office holds, whole, replacing the last list.
+    #[serde(default)]
+    pub projects: Vec<crate::infra::cluster::registry::OfficeHeldProject>,
 }
 
 /// Internal office registration response returned by the controller.

@@ -403,7 +403,8 @@ CREATE TABLE IF NOT EXISTS worker_registry (
     status              TEXT NOT NULL DEFAULT '',
     capabilities_json   TEXT NOT NULL DEFAULT '{}',
     registered_at       INTEGER NOT NULL DEFAULT 0,
-    last_heartbeat_at   INTEGER NOT NULL DEFAULT 0
+    last_heartbeat_at   INTEGER NOT NULL DEFAULT 0,
+    projects_json       TEXT NOT NULL DEFAULT '[]'
 );
 CREATE TABLE IF NOT EXISTS project_runtime_placements (
     project_id           TEXT NOT NULL DEFAULT '',
@@ -1203,6 +1204,12 @@ CREATE TABLE IF NOT EXISTS office_nodes (
             "worker_registry",
             "office_slug",
             "TEXT NOT NULL DEFAULT ''",
+        )?;
+        Self::ensure_table_column(
+            tx,
+            "worker_registry",
+            "projects_json",
+            "TEXT NOT NULL DEFAULT '[]'",
         )?;
         Self::ensure_table_column(
             tx,
@@ -6656,7 +6663,7 @@ impl DataAdapter for SqliteDataAdapter {
     ) -> Result<Option<WorkerRegistryRecord>, PlatformError> {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let result = conn.query_row(
-            "SELECT office_id, office_slug, node_id, label, base_url, status, capabilities_json, registered_at, last_heartbeat_at
+            "SELECT office_id, office_slug, node_id, label, base_url, status, capabilities_json, registered_at, last_heartbeat_at, projects_json
              FROM worker_registry
              WHERE node_id = ?1",
             params![node_id],
@@ -6673,6 +6680,7 @@ impl DataAdapter for SqliteDataAdapter {
                     capabilities,
                     registered_at: row.get(7)?,
                     last_heartbeat_at: row.get(8)?,
+                    projects: serde_json::from_str(&row.get::<_, String>(9)?).unwrap_or_default(),
                 })
             },
         );
@@ -6692,8 +6700,8 @@ impl DataAdapter for SqliteDataAdapter {
             serde_json::to_string(&record.capabilities).unwrap_or_else(|_| "{}".to_string());
         conn.execute(
             "INSERT OR REPLACE INTO worker_registry
-             (office_id, office_slug, node_id, label, base_url, status, capabilities_json, registered_at, last_heartbeat_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+             (office_id, office_slug, node_id, label, base_url, status, capabilities_json, registered_at, last_heartbeat_at, projects_json)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
             params![
                 &record.office_id,
                 &record.office_slug,
@@ -6704,6 +6712,7 @@ impl DataAdapter for SqliteDataAdapter {
                 capabilities_json,
                 record.registered_at,
                 record.last_heartbeat_at,
+                serde_json::to_string(&record.projects).unwrap_or_else(|_| "[]".to_string()),
             ],
         )
         .map_err(Self::qe)?;
@@ -6714,7 +6723,7 @@ impl DataAdapter for SqliteDataAdapter {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let mut stmt = conn
             .prepare(
-                "SELECT office_id, office_slug, node_id, label, base_url, status, capabilities_json, registered_at, last_heartbeat_at
+                "SELECT office_id, office_slug, node_id, label, base_url, status, capabilities_json, registered_at, last_heartbeat_at, projects_json
                  FROM worker_registry
                  ORDER BY node_id ASC",
             )
@@ -6733,6 +6742,7 @@ impl DataAdapter for SqliteDataAdapter {
                     capabilities,
                     registered_at: row.get(7)?,
                     last_heartbeat_at: row.get(8)?,
+                    projects: serde_json::from_str(&row.get::<_, String>(9)?).unwrap_or_default(),
                 })
             })
             .map_err(Self::qe)?

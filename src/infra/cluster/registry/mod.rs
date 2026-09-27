@@ -14,4 +14,4 @@ pub mod heartbeat;
 pub mod worker_registry;
 
 pub use heartbeat::WorkerHeartbeat;
-pub use worker_registry::{WorkerRegistryRecord, WorkerRegistrySnapshot};
+pub use worker_registry::{OfficeHeldProject, WorkerRegistryRecord, WorkerRegistrySnapshot};
