@@ -3,7 +3,7 @@
 Sekejap is Zebflow's embedded multimodel database: records, graph edges,
 spatial shapes, vectors and full text in one SQL, in-process, no server.
 Every project has one (connection `default-multimodel`), and it is on
-sekejap 0.18. Outside graph queries its SQL is PostgreSQL's; relations between
+sekejap 0.18.3. Outside graph queries its SQL is PostgreSQL's; relations between
 rows are graph walks.
 
 Engine reference: <https://github.com/sekejapdb/sekejap> — `docs/lang/QL_CONTRACT.md`
@@ -23,9 +23,9 @@ is the whole dialect; this page is the short form for pipelines.
    `JSONB` column is refused by name.
 3. **What is not built is refused by name, not emulated.** `JOIN` (walk the
    graph instead — below), `OFFSET` (continue after the last key),
-   `array_agg` / `json_agg`, `WITH`, window functions, `CHECK`, two
-   `ORDER BY` keys — each answers with the tier it sits in and why. Read the
-   message; it says what to write instead.
+   `array_agg` / `json_agg`, `WITH`, window functions, `CHECK` — each
+   answers with the tier it sits in and why. Read the message; it says what
+   to write instead.
 
 ## Running a query
 
@@ -109,12 +109,16 @@ SELECT _key, name FROM contacts WHERE email IN ('a@x.io', 'b@x.io')
 SELECT status, COUNT(*) AS n FROM contacts GROUP BY status ORDER BY n DESC
 ```
 
-One `ORDER BY` key per query. Paging continues after the last key shown,
-never `OFFSET` (which would read and throw away every skipped row):
+`ORDER BY` takes up to eight keys (`ORDER BY city, name DESC, _key`) and
+needs no index; NULL sorts last ascending and first descending, as in
+PostgreSQL. Paging continues after the last row shown, never `OFFSET` (which
+would read and throw away every skipped row). End the order with `_key` so
+no two rows tie, and compare the pair:
 
 ```sql
-SELECT _key, name FROM contacts ORDER BY _key DESC LIMIT 20                   -- first page, newest first
-SELECT _key, name FROM contacts WHERE _key < $1 ORDER BY _key DESC LIMIT 20   -- next page: $1 = last _key shown
+SELECT _key, name FROM contacts ORDER BY name, _key LIMIT 20                              -- first page
+SELECT _key, name FROM contacts WHERE (name, _key) > ($1, $2) ORDER BY name, _key LIMIT 20 -- next: $1, $2 = last name, _key shown
+SELECT _key, name FROM contacts WHERE _key < $1 ORDER BY _key DESC LIMIT 20               -- newest first by ULID key
 ```
 
 **Text matching** — `LIKE` and `ILIKE` with any pattern (`%`, `_`, `ESCAPE`,
@@ -171,7 +175,14 @@ SELECT _key, name FROM GRAPH_TABLE (base MATCH
 - `OPTIONAL MATCH`, `EXISTS`, `UNION` and `CALL` work inside the body; the
   outer `SELECT` filters, groups, orders and pages the result like a table:
   `SELECT g.name, COUNT(*) FROM GRAPH_TABLE (...) AS g GROUP BY g.name`.
-- `base` walks every edge; a property graph's name (below) walks that graph.
+- `base` walks every edge, in every schema, and always exists. A label there
+  is a table's own name in any schema (`(p:places)`); when two schemas both
+  have one, the quoted `(p:"atlas.places")` picks it. An edge table in a schema
+  other than `public` carries its schema in its type — `atlas.road` with
+  `LABEL connects` has type `atlas.connects` — and `base` names it quoted,
+  `-[:"atlas.connects"]->`. A bare `connects` there matches nothing.
+- A property graph's name (below) walks that graph through its own labels:
+  `GRAPH_TABLE (travel MATCH (p:places)-[:connects]->(q))`.
 
 **Edge tables** — edges with typed properties and a key, written in plain
 SQL. A table with two `REFERENCES` columns, declared as an edge table by a
@@ -199,6 +210,17 @@ SELECT institution_id, position FROM affiliated_with WHERE member_id = $1
 An edge to a row that does not exist is refused (`23503`); a taken key is
 `23505`. A `WHERE` on an edge table names an end. Deleting a row removes
 its edges. `GRAPH_TABLE (network MATCH ...)` walks these edges.
+
+A named graph is a view: it stores no edge, any number of graphs may show
+the same tables, and `CREATE OR REPLACE PROPERTY GRAPH` or `ALTER PROPERTY
+GRAPH g ADD|DROP VERTEX|EDGE TABLES (...)` change it without touching one.
+An edge table needs no named graph at all — fix its direction in `base`:
+
+```sql
+ALTER PROPERTY GRAPH base ADD EDGE TABLES (knows
+  SOURCE KEY (a) REFERENCES members (_key)
+  DESTINATION KEY (b) REFERENCES members (_key))
+```
 
 ## Writing
 
@@ -240,7 +262,8 @@ The table must already exist; a `VECTOR(n)` field takes exactly n numbers;
 both endpoints of an edge must exist, in this batch or before it. A field
 the table does not declare is stored as an extra and is not indexed.
 
-An edge whose `type` is an edge table's label is written into that table,
+An edge whose `type` is an edge table's type — its label, with the schema in
+front outside `public` (`atlas.connects`) — is written into that table,
 its `fields` as the table's columns; the target itself must be a table of
 rows. Records and edges land in one commit, or not at all.
 

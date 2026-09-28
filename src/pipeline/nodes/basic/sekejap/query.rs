@@ -33,7 +33,7 @@ pub fn definition() -> NodeDefinition {
              INSERT never overwrites (a taken key is 23505); upsert with `ON CONFLICT (_key) DO UPDATE SET c = EXCLUDED.c`. \
              Sekejap's SQL is PostgreSQL's outside graphs: `LIKE`/`ILIKE`, `UNIQUE`, `REFERENCES`, `DEFAULT`, `NOT NULL`; relations \
              between rows are graph walks, not JOINs — `GRAPH_TABLE (g MATCH (a)-[e:knows]->(b) RETURN b.name AS name)`; pages \
-             continue after the last key (`WHERE _key < $1 ORDER BY _key DESC LIMIT 20`), there is no OFFSET. See help topic \
+             continue after the last row (`WHERE (name, _key) > ($1, $2) ORDER BY name, _key LIMIT 20`), there is no OFFSET. See help topic \
              `db/sekejap`. An unknown table or column fails at run time, not at register."
                 .to_string(),
         input_schema: json!({

@@ -37,12 +37,19 @@ export function tableByKey(tables, name) {
 }
 
 /**
- * A node pattern for one table. A table outside the default schema is left
- * unlabelled: a GQL label cannot name `schema.table` yet, and the edge type
- * already fixes which table that end is in.
+ * A table or an edge type as a label in the `base` graph. A name with its
+ * schema, `geo.places` or the edge type `geo.connects`, is quoted, which is
+ * how `base` picks one table out of every schema; a bare name is written as
+ * it is.
  */
+export function gqlLabel(name) {
+  const text = String(name || "");
+  return text.includes(".") ? `"${text.replace(/"/g, '""')}"` : text;
+}
+
+/** A node pattern for one table, anchored on one row when a key is given. */
 function nodePattern(variable, graphName, anchorKey) {
-  const label = graphName && !graphName.includes(".") ? `:${graphName}` : "";
+  const label = graphName ? `:${gqlLabel(graphName)}` : "";
   const anchor = anchorKey ? ` WHERE ${variable}._key = '${sqlStringLiteral(anchorKey)}'` : "";
   return `(${variable}${label}${anchor})`;
 }
@@ -75,12 +82,12 @@ export function relationWalkSql({ from, type, to, key, outgoing, farLabel }) {
   const label = farLabel ? `, ${far}.${farLabel} AS _label` : "";
   const source = nodePattern("a", from, outgoing ? key : "");
   const destination = nodePattern("b", to, outgoing ? "" : key);
-  return `SELECT * FROM GRAPH_TABLE (base MATCH ${source}-[:${type}]->${destination} RETURN ${far}._key AS _key${label})`;
+  return `SELECT * FROM GRAPH_TABLE (base MATCH ${source}-[:${gqlLabel(type)}]->${destination} RETURN ${far}._key AS _key${label})`;
 }
 
 /** How many edges of one type join two tables, as GQL. */
 export function relationCountSql({ from, type, to }) {
-  return `SELECT count(*) AS count FROM GRAPH_TABLE (base MATCH ${nodePattern("a", from, "")}-[:${type}]->${nodePattern("b", to, "")} RETURN b._key AS _key)`;
+  return `SELECT count(*) AS count FROM GRAPH_TABLE (base MATCH ${nodePattern("a", from, "")}-[:${gqlLabel(type)}]->${nodePattern("b", to, "")} RETURN b._key AS _key)`;
 }
 
 /** Removing one edge from its edge table: the WHERE names both ends. */

@@ -734,17 +734,26 @@ fn build_create_edge_table_sql(
     Ok(format!("CREATE TABLE {} ({})", def.collection, columns.join(", ")))
 }
 
+/// The graph that holds every table and edge; it is never created or dropped.
+const BASE_GRAPH: &str = "base";
+
 /// One edge table as a property graph declares it.
 fn edge_declaration(def: &SimpleTableDefinition, edge: &EdgeTableDefinition) -> String {
     let mut declaration = format!(
         "{} SOURCE KEY ({}) REFERENCES {} (_key) DESTINATION KEY ({}) REFERENCES {} (_key)",
         def.collection, edge.source, edge.source_table, edge.destination, edge.destination_table
     );
-    // A label the same as the table's own name is the default; only another
-    // one is written.
+    // The catalog names an edge table's type with its schema when it has
+    // one (`geo.connects`), so two schemas' types never meet; the label a
+    // graph declares is the bare word. A label the same as the table's own
+    // name is the default, and only another one is written.
     let bare = def.collection.rsplit('.').next().unwrap_or(&def.collection);
-    if !edge.label.is_empty() && edge.label != bare {
-        declaration.push_str(&format!(" LABEL {}", edge.label));
+    let label = match def.collection.split_once('.') {
+        Some((schema, _)) => edge.label.strip_prefix(&format!("{schema}.")).unwrap_or(&edge.label),
+        None => edge.label.as_str(),
+    };
+    if !label.is_empty() && label != bare {
+        declaration.push_str(&format!(" LABEL {label}"));
     }
     declaration
 }
@@ -1087,17 +1096,21 @@ pub fn apply_schema_export(
 
     // Then each graph, declared over the edge tables just created. A graph
     // one of whose edge tables was already here exists, and gains the rest.
+    // An edge table no named graph shows is fixed in `base`, which always
+    // exists.
     let mut graphs: BTreeMap<&str, Vec<&SimpleTableDefinition>> = BTreeMap::new();
     for def in created_edges {
-        if let Some(edge) = def.edge.as_ref().filter(|edge| !edge.graph.is_empty()) {
-            graphs.entry(edge.graph.as_str()).or_default().push(def);
+        if let Some(edge) = def.edge.as_ref() {
+            let graph = if edge.graph.is_empty() { BASE_GRAPH } else { edge.graph.as_str() };
+            graphs.entry(graph).or_default().push(def);
         }
     }
     for (graph, edges) in graphs {
-        let exists = edge_defs.iter().any(|def| {
-            existed_before.contains(&def.table)
-                && def.edge.as_ref().is_some_and(|edge| edge.graph == graph)
-        });
+        let exists = graph == BASE_GRAPH
+            || edge_defs.iter().any(|def| {
+                existed_before.contains(&def.table)
+                    && def.edge.as_ref().is_some_and(|edge| edge.graph == graph)
+            });
         run(build_graph_sql(graph, &edges, exists))?;
     }
 
@@ -1405,7 +1418,7 @@ pub fn update_table(
             // automatic index over the rows already there, so it is filterable
             // as soon as this returns. UNIQUE goes on as its own constraint:
             // an ADD COLUMN ... UNIQUE is accepted and not applied (sekejap
-            // 0.18.2), where ADD UNIQUE is.
+            // 0.18.2 and 0.18.3), where ADD UNIQUE is.
             let column = column_sql(&CollectionAttribute { unique: false, ..attr.clone() })?;
             alter(format!("ALTER TABLE {} ADD COLUMN {column}", existing.collection))?;
             if attr.unique {
@@ -2653,6 +2666,8 @@ mod tests {
                 "CREATE TABLE geo.road (from_id TEXT REFERENCES geo.city, to_id TEXT REFERENCES geo.city, km INT, PRIMARY KEY (from_id, to_id))",
                 "CREATE TABLE notes (_key TEXT PRIMARY KEY, body TEXT)",
                 "CREATE PROPERTY GRAPH roads VERTEX TABLES (geo.city) EDGE TABLES (geo.road SOURCE KEY (from_id) REFERENCES geo.city (_key) DESTINATION KEY (to_id) REFERENCES geo.city (_key) LABEL connects)",
+                "CREATE TABLE twins (a TEXT REFERENCES geo.city, b TEXT REFERENCES geo.city, PRIMARY KEY (a, b))",
+                "ALTER PROPERTY GRAPH base ADD EDGE TABLES (twins SOURCE KEY (a) REFERENCES geo.city (_key) DESTINATION KEY (b) REFERENCES geo.city (_key))",
             ] {
                 db.execute(ddl, &[]).expect(ddl);
             }
@@ -2669,7 +2684,7 @@ mod tests {
         let report = apply_schema_from_repo(tmp.path(), "alice", "target")
             .expect("apply")
             .expect("a document to apply");
-        assert_eq!(report.tables_created.len(), 3, "{report:?}");
+        assert_eq!(report.tables_created.len(), 4, "{report:?}");
 
         let db = get_db(tmp.path(), "alice", "target").expect("open target");
         let tables = live_tables(&db).expect("live tables");
@@ -2677,7 +2692,13 @@ mod tests {
         assert_eq!(road.schema, "geo");
         let edge = road.edge.as_ref().expect("an edge table");
         assert_eq!(edge.graph, "roads");
-        assert_eq!(edge.label, "connects");
+        // The catalog's name for the type: the schema keeps two schemas'
+        // `connects` apart.
+        assert_eq!(edge.label, "geo.connects");
+        let twins = tables.iter().find(|t| t.table == "twins").expect("twins");
+        let twins_edge = twins.edge.as_ref().expect("an edge table in base only");
+        assert!(twins_edge.graph.is_empty(), "no named graph: {twins_edge:?}");
+        assert_eq!(twins_edge.source_table, "geo.city");
         assert_eq!(edge.source_table, "geo.city");
         assert_eq!(edge.key, vec!["from_id".to_string(), "to_id".to_string()]);
         assert!(tables.iter().any(|t| t.table == "geo.city" && t.edge.is_none()));
