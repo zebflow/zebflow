@@ -49,6 +49,16 @@ Rules:
 - Sekejap's structure document is rewritten after every DDL the project runs.
   SQLite's is written when a project bundle is exported.
 
+## Columns (sekejap)
+
+- A column carries what the database declares: its SQL type (`INT`,
+  `TIMESTAMPTZ`, `GEOMETRY(Point,4326)`, `VECTOR(n)`), `NOT NULL`, its
+  `DEFAULT`, `UNIQUE`, and whether it is the table's named primary key. A
+  table that mints its keys carries `key_default` (`ulid()`).
+- Columns keep the order the table declares them in.
+- A table recreated from the document is declared exactly as the original:
+  its `SHOW CREATE TABLE` is the same text.
+
 ## Schemas and edge tables (sekejap)
 
 - A table in a named schema is `schema.table`, and carries `schema`. Applying

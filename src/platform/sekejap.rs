@@ -283,6 +283,9 @@ pub struct SekejapTableSchemaExport {
     pub vector_fields: Vec<String>,
     #[serde(default)]
     pub spatial_fields: Vec<String>,
+    /// `_key`'s own `DEFAULT` (`ulid()`), when the table mints its keys.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub key_default: String,
     /// Named schema; empty for `public`.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub schema: String,
@@ -522,6 +525,10 @@ fn normalize_attributes(attributes: &[CollectionAttribute]) -> Vec<CollectionAtt
             kind,
             index_types,
             unique: attr.unique,
+            declared: attr.declared.trim().to_string(),
+            default: attr.default.trim().to_string(),
+            not_null: attr.not_null,
+            primary_key: attr.primary_key,
         });
     }
     attrs
@@ -554,6 +561,7 @@ fn normalize_definition(
         vector_fields,
         spatial_fields,
         row_count: 0,
+        key_default: String::new(),
         schema: String::new(),
         edge: None,
     })
@@ -570,10 +578,18 @@ fn build_create_table_sql(def: &SimpleTableDefinition) -> Result<String, Platfor
     if let Some(edge) = &def.edge {
         return build_create_edge_table_sql(def, edge);
     }
-    let mut columns = vec!["_key TEXT PRIMARY KEY".to_string()];
+    // A table whose key is a named column declares that column PRIMARY KEY
+    // and has no `_key` line of its own.
+    let mut columns = Vec::new();
+    if !def.attributes.iter().any(|attr| attr.primary_key) {
+        let mut key = "_key TEXT PRIMARY KEY".to_string();
+        if !def.key_default.is_empty() {
+            key.push_str(&format!(" DEFAULT {}", def.key_default));
+        }
+        columns.push(key);
+    }
     for attr in &def.attributes {
-        let unique = if attr.unique { " UNIQUE" } else { "" };
-        columns.push(format!("{} {}{unique}", attr.name, map_field_type(&attr.kind)?));
+        columns.push(column_sql(attr)?);
     }
     let mut with = Vec::new();
     let declared = |fields: &[String]| -> Vec<String> {
@@ -606,13 +622,37 @@ fn build_create_table_sql(def: &SimpleTableDefinition) -> Result<String, Platfor
 /// columns naming the rows an edge joins, and the primary key that decides
 /// how many edges one pair may have. It becomes an edge table when a
 /// property graph declares it (`build_graph_sql`).
+/// One column as it is declared again: the database's own type when it
+/// reported one, then PRIMARY KEY, NOT NULL, DEFAULT and UNIQUE.
+fn column_sql(attr: &CollectionAttribute) -> Result<String, PlatformError> {
+    let kind = if attr.declared.is_empty() {
+        map_field_type(&attr.kind)?
+    } else {
+        attr.declared.clone()
+    };
+    let mut column = format!("{} {kind}", attr.name);
+    if attr.primary_key {
+        column.push_str(" PRIMARY KEY");
+    }
+    if attr.not_null {
+        column.push_str(" NOT NULL");
+    }
+    if !attr.default.is_empty() {
+        column.push_str(&format!(" DEFAULT {}", attr.default));
+    }
+    if attr.unique {
+        column.push_str(" UNIQUE");
+    }
+    Ok(column)
+}
+
 fn build_create_edge_table_sql(
     def: &SimpleTableDefinition,
     edge: &EdgeTableDefinition,
 ) -> Result<String, PlatformError> {
     let mut columns = Vec::new();
     for attr in &def.attributes {
-        let mut column = format!("{} {}", attr.name, map_field_type(&attr.kind)?);
+        let mut column = column_sql(attr)?;
         if let Some(reference) = edge.references.iter().find(|r| r.column == attr.name) {
             column.push_str(&format!(" REFERENCES {}", reference.table));
         }
@@ -764,7 +804,7 @@ fn live_tables(db: &Db) -> Result<Vec<SimpleTableDefinition>, PlatformError> {
         let attributes = described
             .fields
             .iter()
-            .filter(|f| !f.primary_key && !f.name.starts_with('_'))
+            .filter(|f| !f.name.starts_with('_'))
             .map(|f| {
                 let mut index_types = Vec::new();
                 for (set, kind) in [
@@ -783,6 +823,12 @@ fn live_tables(db: &Db) -> Result<Vec<SimpleTableDefinition>, PlatformError> {
                     kind: field_kind_to_attribute(f),
                     index_types,
                     unique: unique.contains(&f.name),
+                    declared: f.declared.clone().unwrap_or_default(),
+                    default: f.default.clone().unwrap_or_default(),
+                    // A key column is NOT NULL by being the key; saying so
+                    // again would only repeat PRIMARY KEY.
+                    not_null: f.not_null && !f.primary_key,
+                    primary_key: f.primary_key,
                 }
             })
             .collect();
@@ -799,6 +845,12 @@ fn live_tables(db: &Db) -> Result<Vec<SimpleTableDefinition>, PlatformError> {
                 spatial_fields: spatial.into_iter().collect(),
                 row_count,
                 collection: collection.clone(),
+                key_default: described
+                    .fields
+                    .iter()
+                    .find(|f| f.name == "_key")
+                    .and_then(|f| f.default.clone())
+                    .unwrap_or_default(),
                 schema: if described.schema == "public" {
                     String::new()
                 } else {
@@ -818,8 +870,10 @@ fn stable_list(mut values: Vec<String>) -> Vec<String> {
 }
 
 fn export_table_schema(def: SimpleTableDefinition) -> SekejapTableSchemaExport {
+    // Columns keep the order the table declares them in: the catalog answers
+    // it the same way every time, so the document is stable, and a table
+    // recreated from it is declared exactly as the original.
     let mut attributes = def.attributes;
-    attributes.sort_by(|a, b| a.name.cmp(&b.name));
     for attr in &mut attributes {
         attr.index_types = stable_list(std::mem::take(&mut attr.index_types));
     }
@@ -832,6 +886,7 @@ fn export_table_schema(def: SimpleTableDefinition) -> SekejapTableSchemaExport {
         fulltext_fields: stable_list(def.fulltext_fields),
         vector_fields: stable_list(def.vector_fields),
         spatial_fields: stable_list(def.spatial_fields),
+        key_default: def.key_default,
         schema: def.schema,
         edge: def.edge,
     }
@@ -893,6 +948,7 @@ fn imported_table_definition(table: &SekejapTableSchemaExport) -> Option<SimpleT
         vector_fields: stable_list(table.vector_fields.clone()),
         spatial_fields: stable_list(table.spatial_fields.clone()),
         row_count: 0,
+        key_default: table.key_default.trim().to_string(),
         schema: slug_segment(&table.schema),
         edge: table.edge.clone(),
     })
@@ -1501,30 +1557,27 @@ fn show_collection_target(sql: &str) -> Option<String> {
     Some(word.to_string())
 }
 
-/// An `INSERT INTO t (columns)` whose column list names no `_key`.
+/// A write that names a `RETURNING` clause, outside any quoted string.
 ///
-/// sekejap 0.17 takes the FIRST column as the row's key in that case, with a
-/// notice nobody reading a pipeline result sees. A title silently becoming
-/// a key is exactly the kind of thing to refuse by name: every Zebflow row is
-/// addressed by `_key`, so the statement has to say what it is.
-fn insert_without_key(sql: &str) -> bool {
-    let trimmed = sql.trim_start();
-    if !trimmed
-        .get(..6)
-        .is_some_and(|head| head.eq_ignore_ascii_case("INSERT"))
-    {
-        return false;
+/// Such a statement answers the rows it wrote — among them a key its
+/// `DEFAULT ulid()` minted, which the caller has no other way to learn — so
+/// it is run as a query and its rows come back.
+fn statement_has_returning(sql: &str) -> bool {
+    let mut outside = String::with_capacity(sql.len());
+    let mut quoted = false;
+    for c in sql.chars() {
+        match c {
+            '\'' => {
+                quoted = !quoted;
+                outside.push(' ');
+            }
+            _ if quoted => {}
+            _ => outside.push(c),
+        }
     }
-    let Some(open) = trimmed.find('(') else {
-        return false;
-    };
-    let Some(close) = trimmed[open..].find(')') else {
-        return false;
-    };
-    let columns = &trimmed[open + 1..open + close];
-    !columns
-        .split(',')
-        .any(|column| column.trim().trim_matches('"') == "_key")
+    outside
+        .split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+        .any(|word| word.eq_ignore_ascii_case("RETURNING"))
 }
 
 fn payload_from_rows(rows: sekejap::Rows, limit: usize) -> (Vec<DbQueryColumn>, Vec<Vec<Value>>, bool) {
@@ -1588,16 +1641,23 @@ pub fn execute_sql(
                 "write statement rejected in read-only mode",
             ));
         }
-        if insert_without_key(trimmed) {
-            return Err(PlatformError::new(
-                "PLATFORM_SEKEJAP_INSERT_NO_KEY",
-                "INSERT names no `_key` column. Every row is addressed by `_key`, and sekejap would otherwise take \
-                 the first column as the key. Add `_key` to the column list and bind a value for it — \
-                 `INSERT INTO t (_key, title) VALUES ($1, $2)` with `--params \"{{ [$nodes.id.hex, input.body.title] }}\"`, \
-                 where `$nodes.id` is a `crypto --op random_hex` node.",
-            ));
-        }
         let db = get_db(data_root, owner, project)?;
+        if statement_has_returning(trimmed) {
+            let rows = db
+                .query(trimmed, params)
+                .map_err(|e| store_error("PLATFORM_SEKEJAP_QUERY_FAILED", e))?;
+            let written = rows.len();
+            let (columns, rows, truncated) = payload_from_rows(rows, max_rows);
+            record_project_write(data_root, owner, project, written.max(1));
+            return Ok(QueryPayload {
+                columns,
+                row_count: rows.len(),
+                rows,
+                truncated,
+                affected_rows: Some(written as u64),
+                duration_ms: started.elapsed().as_millis() as u64,
+            });
+        }
         let affected_rows = db
             .execute(trimmed, params)
             .map_err(|e| store_error("PLATFORM_SEKEJAP_QUERY_FAILED", e))?;
@@ -1619,7 +1679,7 @@ pub fn execute_sql(
         if statement_is_explain_analyze(trimmed) {
             return Err(PlatformError::new(
                 "PLATFORM_SEKEJAP_QUERY_FAILED",
-                "EXPLAIN ANALYZE is not built in sekejap 0.17 (QL_CONTRACT: options refused); \
+                "EXPLAIN ANALYZE is not built in sekejap (QL_CONTRACT: options refused); \
                  EXPLAIN prints the plan the engine would build",
             ));
         }
@@ -2127,7 +2187,7 @@ mod tests {
             name: name.to_string(),
             kind: kind.to_string(),
             index_types: index_types.iter().map(|s| s.to_string()).collect(),
-            unique: false,
+            ..Default::default()
         }
     }
 
@@ -2449,6 +2509,141 @@ mod tests {
         assert_eq!(rows.len(), 0, "the record was rolled back with the edge");
     }
 
+    /// A table recreated from the schema document is declared exactly as the
+    /// original: types, NOT NULL, DEFAULTs (the key's own included), UNIQUE,
+    /// a named key column, and an edge table's columns. `SHOW CREATE TABLE`
+    /// on both sides is the same text.
+    #[test]
+    fn a_recreated_table_is_declared_exactly_as_the_original() {
+        let tmp = tmp_root();
+        let ddl = [
+            "CREATE TABLE members (_key TEXT PRIMARY KEY DEFAULT ulid(), name TEXT NOT NULL, email TEXT UNIQUE, status TEXT DEFAULT 'pending', score INT DEFAULT 0, admin BOOLEAN DEFAULT false, joined TIMESTAMPTZ DEFAULT now(), loc GEOMETRY(Point,4326))",
+            "CREATE TABLE things (id TEXT PRIMARY KEY DEFAULT uuid4(), label TEXT NOT NULL)",
+            "CREATE TABLE follows (src TEXT REFERENCES members, dst TEXT REFERENCES members, since INT DEFAULT 2000, PRIMARY KEY (src, dst))",
+            "CREATE PROPERTY GRAPH social VERTEX TABLES (members) EDGE TABLES (follows SOURCE KEY (src) REFERENCES members (_key) DESTINATION KEY (dst) REFERENCES members (_key))",
+        ];
+        {
+            let db = get_db(tmp.path(), "alice", "source").expect("open source");
+            for sql in ddl {
+                db.execute(sql, &[]).expect(sql);
+            }
+        }
+        sync_schema_to_repo(tmp.path(), "alice", "source").expect("sync");
+        let document = std::fs::read(
+            repo_schema_dir(tmp.path(), "alice", "source").join(SCHEMA_DOCUMENT_FILE),
+        )
+        .expect("schema document");
+        let target_schema = repo_schema_dir(tmp.path(), "alice", "target");
+        std::fs::create_dir_all(&target_schema).expect("target repo");
+        std::fs::write(target_schema.join(SCHEMA_DOCUMENT_FILE), &document).expect("copy");
+        apply_schema_from_repo(tmp.path(), "alice", "target")
+            .expect("apply")
+            .expect("a document");
+
+        let declared = |project: &str, table: &str| {
+            let db = get_db(tmp.path(), "alice", project).expect("open");
+            let rows = db
+                .query(&format!("SHOW CREATE TABLE {table}"), &[])
+                .expect("show create table");
+            rows.iter()
+                .next()
+                .and_then(|row| row.value("create_table"))
+                .map(sekejap::value_to_json)
+                .expect("create_table")
+        };
+        // The CREATE TABLE statement is the same text; the index statements
+        // are the same set, listed in the order each store built them.
+        let split = |value: Value| {
+            let text = value.as_str().unwrap_or_default().to_string();
+            let (table, indexes) = text.split_once(");").unwrap_or((&text, ""));
+            let mut indexes = indexes
+                .lines()
+                .map(str::trim)
+                .filter(|line| !line.is_empty())
+                .map(str::to_string)
+                .collect::<Vec<_>>();
+            indexes.sort();
+            (table.to_string(), indexes)
+        };
+        for table in ["members", "things", "follows"] {
+            assert_eq!(
+                split(declared("source", table)),
+                split(declared("target", table)),
+                "{table}"
+            );
+        }
+
+        // And the recreated table still mints its keys and fills its defaults.
+        let made = execute_sql(
+            tmp.path(),
+            "alice",
+            "target",
+            "INSERT INTO members (name) VALUES ('Ann') RETURNING _key, status, score",
+            &[],
+            10,
+            false,
+        )
+        .expect("insert into the recreated table");
+        assert_eq!(made.rows[0][0].as_str().map(str::len), Some(26));
+        assert_eq!(made.rows[0][1], json!("pending"));
+        assert_eq!(made.rows[0][2], json!(0));
+    }
+
+    /// The statements help topic `db/sekejap` teaches run as written through
+    /// `execute_sql`, the path every pipeline and the Studio take.
+    #[test]
+    fn the_help_page_statements_run_through_execute_sql() {
+        let tmp = tmp_root();
+        let run = |sql: &str, params: &[Value]| {
+            execute_sql(tmp.path(), "alice", "demo", sql, params, 100, false)
+                .unwrap_or_else(|err| panic!("{sql}: {}", err.message))
+        };
+        for sql in [
+            "CREATE TABLE members (_key TEXT PRIMARY KEY DEFAULT ulid(), name TEXT NOT NULL, email TEXT UNIQUE, status TEXT DEFAULT 'active')",
+            "CREATE TABLE institutions (_key TEXT PRIMARY KEY, name TEXT)",
+            "CREATE TABLE affiliated_with (member_id TEXT REFERENCES members, institution_id TEXT REFERENCES institutions, position TEXT, PRIMARY KEY (member_id, institution_id))",
+            "CREATE PROPERTY GRAPH network VERTEX TABLES (members, institutions) EDGE TABLES (affiliated_with SOURCE KEY (member_id) REFERENCES members (_key) DESTINATION KEY (institution_id) REFERENCES institutions (_key))",
+            "CREATE SCHEMA geo",
+            "CREATE TABLE geo.places (_key TEXT PRIMARY KEY, name TEXT)",
+            "INSERT INTO institutions (_key, name) VALUES ('u1', 'University One'), ('u2', 'University Two')",
+        ] {
+            run(sql, &[]);
+        }
+        let ann = run("INSERT INTO members (name, email) VALUES ($1, $2) RETURNING _key", &[json!("Ann Doe"), json!("ann@example.com")]);
+        let ann = ann.rows[0][0].as_str().expect("key").to_string();
+        let bo = run("INSERT INTO members (name, email) VALUES ($1, $2) RETURNING _key", &[json!("Bo Roe"), json!("bo@example.com")]);
+        let bo = bo.rows[0][0].as_str().expect("key").to_string();
+
+        run("INSERT INTO members (_key, name) VALUES ($1, $2) ON CONFLICT (_key) DO UPDATE SET name = EXCLUDED.name", &[json!(ann), json!("Ann Doe")]);
+        run("INSERT INTO members (_key, name) VALUES ($1, $2) ON CONFLICT (_key) DO NOTHING", &[json!(ann), json!("ignored")]);
+        run("INSERT INTO affiliated_with (member_id, institution_id, position) VALUES ($1, $2, $3)", &[json!(ann), json!("u1"), json!("Lecturer")]);
+        run("INSERT INTO affiliated_with (member_id, institution_id, position) VALUES ($1, $2, $3)", &[json!(bo), json!("u1"), json!("Researcher")]);
+        run("UPDATE affiliated_with SET position = $3 WHERE member_id = $1 AND institution_id = $2", &[json!(ann), json!("u1"), json!("Professor")]);
+
+        let found = run("SELECT _key, name FROM members WHERE name ILIKE $1", &[json!("%doe%")]);
+        assert_eq!(found.row_count, 1);
+        let newest = run("SELECT _key, name FROM members ORDER BY _key DESC LIMIT 1", &[]);
+        assert_eq!(newest.rows[0][1], json!("Bo Roe"));
+        let next = run("SELECT _key, name FROM members WHERE _key < $1 ORDER BY _key DESC LIMIT 1", &[json!(bo)]);
+        assert_eq!(next.rows[0][1], json!("Ann Doe"));
+        let edges = run("SELECT institution_id, position FROM affiliated_with WHERE member_id = $1", &[json!(ann)]);
+        assert_eq!(edges.rows, vec![vec![json!("u1"), json!("Professor")]]);
+        let walked = run(
+            "SELECT name, position FROM GRAPH_TABLE (network MATCH (m WHERE m._key = $1)-[a:affiliated_with]->(i) RETURN i.name AS name, a.position AS position)",
+            &[json!(ann)],
+        );
+        assert_eq!(walked.rows, vec![vec![json!("University One"), json!("Professor")]]);
+        let colleagues = run(
+            "SELECT g.name, COUNT(*) AS shared FROM GRAPH_TABLE (network MATCH (m WHERE m._key = $1)-[:affiliated_with]->(i)<-[:affiliated_with]-(o) WHERE o._key <> $1 RETURN DISTINCT o.name AS name) AS g GROUP BY g.name",
+            &[json!(ann)],
+        );
+        assert_eq!(colleagues.rows[0][0], json!("Bo Roe"));
+        run("DELETE FROM affiliated_with WHERE member_id = $1 AND institution_id = $2", &[json!(bo), json!("u1")]);
+        let shown = run("SHOW CREATE TABLE members", &[]);
+        assert!(shown.rows[0][0].as_str().unwrap_or_default().contains("DEFAULT ulid()"));
+        run("INSERT INTO geo.places (_key, name) VALUES ('p1', 'Here')", &[]);
+    }
+
     #[test]
     fn delete_table_removes_live_discovered_collection() {
         let tmp = tmp_root();
@@ -2546,24 +2741,39 @@ mod tests {
         assert_eq!(read.rows[0][1], Value::String("Hello".to_string()));
     }
 
-    /// sekejap would take the first column as the key; Zebflow says so
-    /// instead of letting a title become one.
+    /// sekejap refuses an INSERT that gives no key (23502) itself, a key its
+    /// DEFAULT mints comes back through RETURNING, and an edge table — which
+    /// has no `_key` — takes a plain INSERT.
     #[test]
-    fn an_insert_without_key_is_refused_by_name() {
+    fn keys_come_from_the_table_and_returning_answers_them() {
         let tmp = tmp_root();
-        create(tmp.path(), "alice", "demo", "posts", vec![attribute("title", "string", &[])]);
-        let err = execute_sql(
-            tmp.path(),
-            "alice",
-            "demo",
-            "INSERT INTO posts (title) VALUES ('Hello')",
-            &[],
-            100,
-            false,
-        )
-        .unwrap_err();
-        assert_eq!(err.code, "PLATFORM_SEKEJAP_INSERT_NO_KEY");
-        assert!(err.message.contains("_key"), "{}", err.message);
+        let run = |sql: &str| execute_sql(tmp.path(), "alice", "demo", sql, &[], 100, false);
+        run("CREATE TABLE posts (_key TEXT PRIMARY KEY, title TEXT)").expect("posts");
+        let missing = run("INSERT INTO posts (title) VALUES ('Hello')").unwrap_err();
+        assert!(missing.message.contains("23502"), "{}", missing.message);
+
+        run("CREATE TABLE notes (_key TEXT PRIMARY KEY DEFAULT ulid(), body TEXT, status TEXT DEFAULT 'draft')")
+            .expect("notes");
+        let made = run("INSERT INTO notes (body) VALUES ('first') RETURNING _key, status").expect("insert");
+        assert_eq!(made.affected_rows, Some(1));
+        assert_eq!(made.rows.len(), 1);
+        let key = made.rows[0][0].as_str().expect("a minted key").to_string();
+        assert_eq!(key.len(), 26, "a ULID: {key}");
+        assert_eq!(made.rows[0][1], Value::String("draft".to_string()));
+        // The word inside a value is not a clause.
+        let plain = run("INSERT INTO notes (body) VALUES ('returning soon')").expect("plain insert");
+        assert_eq!(plain.affected_rows, Some(1));
+        assert!(plain.rows.is_empty());
+
+        for sql in [
+            "CREATE TABLE people (_key TEXT PRIMARY KEY, name TEXT)",
+            "CREATE TABLE knows (src TEXT REFERENCES people, dst TEXT REFERENCES people, PRIMARY KEY (src, dst))",
+            "CREATE PROPERTY GRAPH social VERTEX TABLES (people) EDGE TABLES (knows SOURCE KEY (src) REFERENCES people (_key) DESTINATION KEY (dst) REFERENCES people (_key))",
+            "INSERT INTO people (_key, name) VALUES ('a', 'A'), ('b', 'B')",
+            "INSERT INTO knows (src, dst) VALUES ('a', 'b')",
+        ] {
+            run(sql).expect(sql);
+        }
     }
 
     #[test]

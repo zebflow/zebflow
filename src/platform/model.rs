@@ -1951,7 +1951,7 @@ pub struct TemplateCompileResponse {
 }
 
 /// One attribute definition in a Simple Table collection schema.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct CollectionAttribute {
     /// Field name (slug).
     pub name: String,
@@ -1963,6 +1963,22 @@ pub struct CollectionAttribute {
     /// Two rows may not hold the same value here (`UNIQUE`); NULLs never collide.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub unique: bool,
+    /// The SQL type as the database declared it (`INT`, `TIMESTAMPTZ`,
+    /// `GEOMETRY(Point,4326)`, `VECTOR(384)`), when it reports one. It is
+    /// what a table recreated from the schema document is declared with;
+    /// `kind` is the coarse family the Studio reasons about.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub declared: String,
+    /// The column's `DEFAULT` expression as declared (`'pending'`, `now()`).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub default: String,
+    /// `NOT NULL`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub not_null: bool,
+    /// This column is the table's named primary key (`id TEXT PRIMARY KEY`),
+    /// standing in for `_key`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub primary_key: bool,
 }
 
 /// One managed Simple Table definition stored inside the project runtime DB.
@@ -1992,6 +2008,10 @@ pub struct SimpleTableDefinition {
     pub spatial_fields: Vec<String>,
     /// Live row count.
     pub row_count: usize,
+    /// The `DEFAULT` of `_key` itself (`ulid()`, `uuid4()`), when the table
+    /// mints its keys and names no key column of its own.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub key_default: String,
     /// Named schema the table lives in; empty for the default (`public`).
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub schema: String,

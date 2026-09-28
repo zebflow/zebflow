@@ -28,10 +28,13 @@ pub fn definition() -> NodeDefinition {
             "Run SQL on the project's built-in database (connection `default-multimodel`; no credential, no setup). SQL goes in the body \
              after `--`, values in `--params` as `$1, $2, …`; writes need `--read-only false`. A read answers \
              `{ columns, rows, row_count, truncated }` with each row an object keyed by column (`input.rows[0].title`); a write answers \
-             `{ affected_rows }`. Every row has a `_key` you supply: an INSERT must name it. Sekejap's SQL is PostgreSQL-shaped with a \
-             typed catalog — `CREATE TABLE t (_key TEXT PRIMARY KEY, name TEXT, embedding VECTOR(384)) WITH (fulltext: [name])`; \
-             a WHERE needs an index on its column (scalar columns get one automatically); graph walks are `GRAPH_TABLE`; \
-             see help topic `db/sekejap`. An unknown table or column fails at run time, not at register."
+             `{ affected_rows }`; an `INSERT … RETURNING _key` answers the rows it wrote. Every row has a `_key`: name it in the \
+             INSERT, or declare `_key TEXT PRIMARY KEY DEFAULT ulid()` and read the minted key back with `RETURNING _key`. A plain \
+             INSERT never overwrites (a taken key is 23505); upsert with `ON CONFLICT (_key) DO UPDATE SET c = EXCLUDED.c`. \
+             Sekejap's SQL is PostgreSQL's outside graphs: `LIKE`/`ILIKE`, `UNIQUE`, `REFERENCES`, `DEFAULT`, `NOT NULL`; relations \
+             between rows are graph walks, not JOINs — `GRAPH_TABLE (g MATCH (a)-[e:knows]->(b) RETURN b.name AS name)`; pages \
+             continue after the last key (`WHERE _key < $1 ORDER BY _key DESC LIMIT 20`), there is no OFFSET. See help topic \
+             `db/sekejap`. An unknown table or column fails at run time, not at register."
                 .to_string(),
         input_schema: json!({
             "type": "object",
@@ -90,7 +93,7 @@ pub fn definition() -> NodeDefinition {
                 language: Some("sql".to_string()),
                 span: Some("full".to_string()),
                 help: Some(
-                    "SELECT _key, title FROM posts WHERE slug = $1\nINSERT INTO posts (_key, title) VALUES ($1, $2) — an INSERT always names _key"
+                    "SELECT _key, title FROM posts WHERE slug = $1\nINSERT INTO posts (title) VALUES ($1) RETURNING _key — with _key DEFAULT ulid()"
                         .to_string(),
                 ),
                 default_value: Some(json!("SELECT *\nFROM items\nLIMIT 20")),
@@ -150,13 +153,25 @@ pub fn definition() -> NodeDefinition {
         examples: vec![
             crate::pipeline::model::NodeExample::dsl("Read with a bound value", r#"sekejap.query --params "{{ [$trigger.params.slug] }}" -- "SELECT _key, title, body FROM posts WHERE slug = $1""#)
                 .output(serde_json::json!({ "columns": ["_key", "title", "body"], "rows": [{ "_key": "hello-world", "title": "Hello", "body": "…" }], "row_count": 1, "truncated": false })),
-            crate::pipeline::model::NodeExample::dsl("Insert from a form", r#"sekejap.query --read-only false --params "{{ [input.body.slug, input.body.title, new Date().toISOString()] }}" -- "INSERT INTO posts (_key, title, created_at) VALUES ($1, $2, $3)""#)
+            crate::pipeline::model::NodeExample::dsl("Insert from a form, learning the new key", r#"sekejap.query --read-only false --params "{{ [input.body.title] }}" -- "INSERT INTO posts (title) VALUES ($1) RETURNING _key""#)
+                .output(serde_json::json!({ "columns": ["_key"], "rows": [{ "_key": "01M3JSKZFJ4AZGVR0PG6ZXMDH5" }], "row_count": 1, "truncated": false, "affected_rows": 1 }))
+                .note("The table declares `_key TEXT PRIMARY KEY DEFAULT ulid()`, so the INSERT leaves the key out and `RETURNING` hands it back — `input.rows[0]._key` for a redirect."),
+            crate::pipeline::model::NodeExample::dsl("Upsert", r#"sekejap.query --read-only false --params "{{ [input.body.slug, input.body.title] }}" -- "INSERT INTO posts (_key, title) VALUES ($1, $2) ON CONFLICT (_key) DO UPDATE SET title = EXCLUDED.title""#)
                 .output(serde_json::json!({ "affected_rows": 1 }))
-                .note("The slug is the row's `_key`. For a key nobody typed, put a `crypto --op random_hex` node before this one and bind `$nodes.<id>.hex`."),
-            crate::pipeline::model::NodeExample::dsl("Create a table", r#"sekejap.query --read-only false -- "CREATE TABLE posts (_key TEXT PRIMARY KEY, title TEXT, slug TEXT, created_at TIMESTAMPTZ) WITH (fulltext: [title])""#)
+                .note("A plain INSERT of a key that exists is refused with 23505; ON CONFLICT is the upsert."),
+            crate::pipeline::model::NodeExample::dsl("Create a table", r#"sekejap.query --read-only false -- "CREATE TABLE posts (_key TEXT PRIMARY KEY DEFAULT ulid(), title TEXT NOT NULL, slug TEXT UNIQUE, status TEXT DEFAULT 'draft', created_at TIMESTAMPTZ DEFAULT now()) WITH (fulltext: [title])""#)
                 .note("Run once from `pipeline_run` or a `jobs/migrate` function pipeline; keep the SQL in `db/001_posts.sql`. Scalar columns are indexed automatically; `WITH` declares full-text, spatial and vector indexes."),
-            crate::pipeline::model::NodeExample::dsl("Walk the graph", r#"sekejap.query --params "{{ [$trigger.params.id] }}" -- "SELECT _key, name FROM GRAPH_TABLE (base MATCH (u:users WHERE u._key = $1)-[:follows]->(f:users) RETURN f._key AS _key, f.name AS name)""#)
-                .output(serde_json::json!({ "columns": ["_key", "name"], "rows": [{ "_key": "bob", "name": "Bob" }], "row_count": 1, "truncated": false })),
+            crate::pipeline::model::NodeExample::dsl("Search by part of a name", r#"sekejap.query --params "{{ ['%' + input.query.q + '%'] }}" -- "SELECT _key, name FROM members WHERE name ILIKE $1 ORDER BY name LIMIT 20""#)
+                .output(serde_json::json!({ "columns": ["_key", "name"], "rows": [{ "_key": "m1", "name": "Alex Doe" }], "row_count": 1, "truncated": false })),
+            crate::pipeline::model::NodeExample::dsl("Newest first, one page at a time", r#"sekejap.query --params "{{ [input.query.after || '~'] }}" -- "SELECT _key, title FROM posts WHERE _key < $1 ORDER BY _key DESC LIMIT 20""#)
+                .output(serde_json::json!({ "columns": ["_key", "title"], "rows": [{ "_key": "01M3JSKZFM6MM3GJFF0WKN71DD", "title": "Latest" }], "row_count": 1, "truncated": false }))
+                .note("ULID keys sort by time, so `ORDER BY _key DESC` is newest first. The next page passes the last `_key` shown as `after`; there is no OFFSET."),
+            crate::pipeline::model::NodeExample::dsl("Add an edge", r#"sekejap.query --read-only false --params "{{ [input.body.member, input.body.institution, input.body.position] }}" -- "INSERT INTO affiliated_with (member_id, institution_id, position) VALUES ($1, $2, $3)""#)
+                .output(serde_json::json!({ "affected_rows": 1 }))
+                .note("`affiliated_with` is an edge table: a table with two REFERENCES columns declared in `CREATE PROPERTY GRAPH … EDGE TABLES`. UPDATE and DELETE name an end: `DELETE FROM affiliated_with WHERE member_id = $1 AND institution_id = $2`."),
+            crate::pipeline::model::NodeExample::dsl("Walk the graph", r#"sekejap.query --params "{{ [$trigger.params.id] }}" -- "SELECT name, position FROM GRAPH_TABLE (network MATCH (m WHERE m._key = $1)-[a:affiliated_with]->(i) RETURN i.name AS name, a.position AS position)""#)
+                .output(serde_json::json!({ "columns": ["name", "position"], "rows": [{ "name": "University One", "position": "Lecturer" }], "row_count": 1, "truncated": false }))
+                .note("Name the edge (`[a:affiliated_with]`) to read its properties. Each matching path is one row; `RETURN DISTINCT` returns a node once."),
         ],
         ..Default::default()
     }
@@ -287,18 +302,17 @@ impl NodeHandler for Node {
     }
 }
 
-/// A `CREATE TABLE` that fails is nearly always a clause sekejap's catalog
-/// has no slot for — `UNIQUE`, `REFERENCES`, `CHECK`, a bare `VECTOR` with
-/// no dimension. Every agent tried each of those before reading the
-/// grammar, so the error says where the grammar is.
+/// A failed `CREATE TABLE` points at the grammar: which column clauses
+/// sekejap takes, and the one it does not.
 fn with_ddl_hint(query: &str, message: String) -> String {
     let upper = query.trim_start().to_ascii_uppercase();
     if !upper.starts_with("CREATE TABLE") {
         return message;
     }
     format!(
-        "{message} — Sekejap DDL: `CREATE TABLE t (_key TEXT PRIMARY KEY, name TEXT, created_at TIMESTAMPTZ DEFAULT now(), embedding VECTOR(384)) WITH (fulltext: [name], vector: [embedding])`; \
-         column clauses are DEFAULT now()/uuid4()/ulid() and NOT NULL only — no UNIQUE / REFERENCES / CHECK (help topic db/sekejap)"
+        "{message} — Sekejap DDL: `CREATE TABLE t (_key TEXT PRIMARY KEY DEFAULT ulid(), name TEXT NOT NULL, email TEXT UNIQUE, \
+         status TEXT DEFAULT 'draft', owner_id TEXT REFERENCES users, embedding VECTOR(384)) WITH (fulltext: [name], vector: [embedding])`; \
+         a VECTOR needs its dimension and CHECK is not supported; an edge table is declared with CREATE PROPERTY GRAPH (help topic db/sekejap)"
     )
 }
 
@@ -334,7 +348,7 @@ mod row_shape_tests {
     /// already deliver.
     #[test]
     fn a_failed_create_table_points_at_the_grammar() {
-        let hinted = with_ddl_hint("CREATE TABLE users (email TEXT UNIQUE)", "parse error".into());
+        let hinted = with_ddl_hint("CREATE TABLE users (age INT CHECK (age > 0))", "parse error".into());
         assert!(hinted.contains("db/sekejap"), "{hinted}");
         assert!(hinted.contains("VECTOR(384)"), "{hinted}");
         assert_eq!(with_ddl_hint("SELECT 1", "parse error".into()), "parse error");

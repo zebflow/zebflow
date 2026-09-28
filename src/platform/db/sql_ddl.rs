@@ -528,7 +528,7 @@ mod tests {
             name: name.to_string(),
             kind: kind.to_string(),
             index_types: indexes.iter().map(|s| s.to_string()).collect(),
-            unique: false,
+            ..Default::default()
         }
     }
 
