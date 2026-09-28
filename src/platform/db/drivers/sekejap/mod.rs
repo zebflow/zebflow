@@ -75,8 +75,9 @@ impl DbDriver for SekejapDbDriver {
             drop_table: true,
             // Health, sync and compact are sekejap's own maintenance surface.
             maintenance: true,
-            // Collections live in one flat namespace.
-            schemas: false,
+            // Tables live in schemas (`public` and any `CREATE SCHEMA`), and a
+            // statement names one outside `public` as `schema.table`.
+            schemas: true,
             // Attributes and index kinds are editable after creation.
             edit_table_properties: true,
             // Every sekejap row is addressed by `_key`.

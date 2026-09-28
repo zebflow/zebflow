@@ -21,16 +21,30 @@ export function edgeTableFor(tables, type) {
 }
 
 /** Every edge table with this table at one of its two ends. */
-export function edgeTablesTouching(tables, tableKey) {
+export function edgeTablesTouching(tables, graphName) {
   return (tables || []).filter((table) => {
     const edge = table?.edge;
-    return edge && (edge.source_table === tableKey || edge.destination_table === tableKey);
+    return edge && (edge.source_table === graphName || edge.destination_table === graphName);
   });
 }
 
-/** The table a catalog key names, if the catalog has it. */
-export function tableByKey(tables, key) {
-  return (tables || []).find((table) => table?.key === key || table?.table === key) || null;
+/**
+ * The table a name points at: its catalog key, or the name an edge and a
+ * graph walk use for it (bare in the default schema, `schema.table` else).
+ */
+export function tableByKey(tables, name) {
+  return (tables || []).find((table) => table?.key === name || table?.graphName === name) || null;
+}
+
+/**
+ * A node pattern for one table. A table outside the default schema is left
+ * unlabelled: a GQL label cannot name `schema.table` yet, and the edge type
+ * already fixes which table that end is in.
+ */
+function nodePattern(variable, graphName, anchorKey) {
+  const label = graphName && !graphName.includes(".") ? `:${graphName}` : "";
+  const anchor = anchorKey ? ` WHERE ${variable}._key = '${sqlStringLiteral(anchorKey)}'` : "";
+  return `(${variable}${label}${anchor})`;
 }
 
 const LABEL_COLUMNS = ["title", "name", "full_name", "fullname", "label", "slug", "email"];
@@ -57,15 +71,16 @@ export function labelColumn(table) {
  * Answers `_key` and, when the far table has one, `_label`.
  */
 export function relationWalkSql({ from, type, to, key, outgoing, farLabel }) {
-  const anchored = outgoing ? "a" : "b";
   const far = outgoing ? "b" : "a";
   const label = farLabel ? `, ${far}.${farLabel} AS _label` : "";
-  return `SELECT * FROM GRAPH_TABLE (base MATCH (a:${from}${anchored === "a" ? ` WHERE a._key = '${sqlStringLiteral(key)}'` : ""})-[:${type}]->(b:${to}${anchored === "b" ? ` WHERE b._key = '${sqlStringLiteral(key)}'` : ""}) RETURN ${far}._key AS _key${label})`;
+  const source = nodePattern("a", from, outgoing ? key : "");
+  const destination = nodePattern("b", to, outgoing ? "" : key);
+  return `SELECT * FROM GRAPH_TABLE (base MATCH ${source}-[:${type}]->${destination} RETURN ${far}._key AS _key${label})`;
 }
 
 /** How many edges of one type join two tables, as GQL. */
 export function relationCountSql({ from, type, to }) {
-  return `SELECT count(*) AS count FROM GRAPH_TABLE (base MATCH (a:${from})-[:${type}]->(b:${to}) RETURN b._key AS _key)`;
+  return `SELECT count(*) AS count FROM GRAPH_TABLE (base MATCH ${nodePattern("a", from, "")}-[:${type}]->${nodePattern("b", to, "")} RETURN b._key AS _key)`;
 }
 
 /** Removing one edge from its edge table: the WHERE names both ends. */

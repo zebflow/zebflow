@@ -30,7 +30,7 @@ import {
  */
 export default function RelationCreatePanel({ runDbQuery, tables, current, onCreated, onInvalidInput }) {
   const { table, record } = current;
-  const edgeTables = edgeTablesTouching(tables, table?.key || table?.table);
+  const edgeTables = edgeTablesTouching(tables, table?.graphName);
 
   const [open, setOpen] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
@@ -44,7 +44,7 @@ export default function RelationCreatePanel({ runDbQuery, tables, current, onCre
 
   const edgeTable = edgeTables.find((item) => item.key === edgeKey) || edgeTables[0];
   const edge = edgeTable.edge;
-  const currentIsSource = edge.source_table === (table.key || table.table);
+  const currentIsSource = edge.source_table === table.graphName;
   const otherTable = tableByKey(tables, currentIsSource ? edge.destination_table : edge.source_table);
   const otherTableKey = currentIsSource ? edge.destination_table : edge.source_table;
   const currentKey = String(record?._key || "").trim();

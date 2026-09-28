@@ -75,7 +75,7 @@ export function RelationTargetSearchDialog({ open, onOpenChange, tables, onSearc
 
   useEffect(() => {
     if (!open) return;
-    const first = tables?.[0]?.table || "";
+    const first = tables?.[0]?.key || tables?.[0]?.table || "";
     setCollection((current) => current || first);
     setQuery("");
     setResults([]);
@@ -110,7 +110,7 @@ export function RelationTargetSearchDialog({ open, onOpenChange, tables, onSearc
           <div className="grid gap-3 md:grid-cols-[12rem_minmax(0,1fr)_auto]">
             <Select value={collection} onChange={(event) => setCollection(event?.target?.value || "")} disabled={busy}>
               {(tables || []).map((table) => (
-                <SelectOption key={table.table} value={table.table} label={table.table} />
+                <SelectOption key={table.key || table.table} value={table.key || table.table} label={table.key || table.table} />
               ))}
             </Select>
             <Input value={query} onInput={(event) => setQuery(event?.target?.value || "")} placeholder="Search by _key, title, name, slug…" disabled={busy} />

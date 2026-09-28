@@ -22304,9 +22304,12 @@ async fn api_preview_db_connection_table(
     // An engine whose row identity is not among `*`'s columns has it named,
     // or the grid shows rows it cannot edit, delete or relate.
     let caps = state.platform.db_runtime.capabilities_for_kind(&database_kind);
+    // An engine that namespaces its tables is addressed by the whole name
+    // (`geo.places`); one that does not, by the bare table.
+    let addressed = if caps.schemas { table.as_str() } else { table_name };
     let hidden_identity = (caps.row_identity_hidden && !caps.row_identity.is_empty())
         .then_some(caps.row_identity);
-    let sql = build_table_preview_sql(dialect, &table, table_name, hidden_identity.as_deref(), limit);
+    let sql = build_table_preview_sql(dialect, &table, addressed, hidden_identity.as_deref(), limit);
     let req = QueryProjectDbConnectionRequest {
         table: Some(table_name.to_string()),
         sql,

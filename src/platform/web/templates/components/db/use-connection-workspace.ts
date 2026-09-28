@@ -70,7 +70,7 @@ export function useConnectionWorkspace(input) {
   const relationStats = useRelationStats({
     runDbQuery,
     enabled: caps.graphRelations && !!dbApi.query,
-    tableName: activeTable?.table || "",
+    tableName: activeTable?.graphName || "",
     tables: catalog.tables,
     reloadToken,
     onTypeOptions: setRelationTypeOptions,
@@ -86,7 +86,7 @@ export function useConnectionWorkspace(input) {
   const nodeRelations = useNodeRelations({
     runDbQuery,
     enabled: caps.graphRelations,
-    tableName: activeTable?.table || "",
+    tableName: activeTable?.graphName || "",
     tables: catalog.tables,
     record: selection.data,
     reloadToken,
@@ -178,9 +178,9 @@ export function useConnectionWorkspace(input) {
       indexCount: countIndexedColumns(activeTable),
       fieldCount: Math.max(preview.schemaRows.length, activeTable?.attributes.length || 0),
       fieldNames: readableFieldNames(preview.schemaRows, activeTable),
-      nodeSlug: relationNodeSlug(selection.data, activeTable?.table || ""),
+      nodeSlug: relationNodeSlug(selection.data, activeTable?.graphName || ""),
       nodeLabel: selection.data
-        ? relationNodeLabel(selection.data, activeTable?.table || "")
+        ? relationNodeLabel(selection.data, activeTable?.graphName || "")
         : "",
       pendingEditCount: Object.values(gridEditor.pendingEdits).reduce(
         (total, edits) => total + Object.keys(edits || {}).length,

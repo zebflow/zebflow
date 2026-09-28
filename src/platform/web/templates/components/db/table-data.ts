@@ -116,6 +116,9 @@ export function normalizeTableNodes(nodes) {
         spatialFields: Array.isArray(node?.meta?.spatial_fields) ? node.meta.spatial_fields : [],
         // Present when the table is an edge table: `{ source, source_table,
         // destination, destination_table, key, label, graph }`.
+        // The name edges and graph walks use: bare in the default schema,
+        // `schema.table` in any other — the form the engine's own catalog uses.
+        graphName: schema === "default" || schema === "public" ? table : `${schema}.${table}`,
         edge: node?.meta?.edge || null,
         keyDefault: String(node?.meta?.key_default || ""),
       };

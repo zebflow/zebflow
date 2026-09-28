@@ -1308,11 +1308,22 @@ pub fn update_table(
         })
 }
 
+/// The schema a table lives in, `public` when it names none.
+fn table_schema(def: &SimpleTableDefinition) -> String {
+    if def.schema.is_empty() {
+        "public".to_string()
+    } else {
+        def.schema.clone()
+    }
+}
+
+/// A table under its schema, by its bare name — the shape every engine's
+/// tree has, so the Studio reads sekejap and PostgreSQL alike.
 fn table_to_node(def: &SimpleTableDefinition) -> DbObjectNode {
     DbObjectNode {
         kind: "table".to_string(),
-        name: def.table.clone(),
-        schema: Some("default".to_string()),
+        name: def.table.rsplit('.').next().unwrap_or(&def.table).to_string(),
+        schema: Some(table_schema(def)),
         children: Vec::new(),
         meta: json!({
             "collection": def.collection,
@@ -1342,40 +1353,73 @@ pub fn describe_tables(
         .collect())
 }
 
+/// Every schema the store has, `public` first, including one with no tables
+/// yet — `collections()` only names schemas that hold one, the catalog view
+/// names them all.
+fn store_schemas(db: &Db) -> Result<Vec<String>, PlatformError> {
+    let rows = db
+        .query("SELECT nspname FROM pg_namespace", &[])
+        .map_err(|e| store_error("PLATFORM_SEKEJAP_CATALOG", e))?;
+    let mut names = rows
+        .iter()
+        .filter_map(|row| row.value("nspname").map(sekejap::value_to_json))
+        .filter_map(|value| value.as_str().map(str::to_string))
+        .filter(|name| name != "pg_catalog" && name != "information_schema" && name != "public")
+        .collect::<Vec<_>>();
+    names.sort();
+    names.insert(0, "public".to_string());
+    Ok(names)
+}
+
+fn schema_node(name: &str, children: Vec<DbObjectNode>) -> DbObjectNode {
+    DbObjectNode {
+        kind: "schema".to_string(),
+        name: name.to_string(),
+        schema: None,
+        children,
+        meta: json!({}),
+    }
+}
+
+/// The schemas, as tree nodes. A store with no tables and no schema of its
+/// own answers none, so a fresh project shows "no tables yet".
 pub fn describe_schemas(
     data_root: &Path,
     owner: &str,
     project: &str,
 ) -> Result<Vec<DbObjectNode>, PlatformError> {
-    let has_tables = !list_tables(data_root, owner, project)?.is_empty();
-    if !has_tables {
-        return Ok(Vec::new());
-    }
-    Ok(vec![DbObjectNode {
-        kind: "schema".to_string(),
-        name: "default".to_string(),
-        schema: None,
-        children: Vec::new(),
-        meta: json!({}),
-    }])
+    Ok(describe_tree(data_root, owner, project)?
+        .into_iter()
+        .map(|mut node| {
+            node.children.clear();
+            node
+        })
+        .collect())
 }
 
+/// Each schema with its tables, edge tables among them.
 pub fn describe_tree(
     data_root: &Path,
     owner: &str,
     project: &str,
 ) -> Result<Vec<DbObjectNode>, PlatformError> {
-    let tables = describe_tables(data_root, owner, project)?;
-    if tables.is_empty() {
+    let tables = list_tables(data_root, owner, project)?;
+    let db = get_db(data_root, owner, project)?;
+    let schemas = store_schemas(&db)?;
+    if tables.is_empty() && schemas.len() == 1 {
         return Ok(Vec::new());
     }
-    Ok(vec![DbObjectNode {
-        kind: "schema".to_string(),
-        name: "default".to_string(),
-        schema: None,
-        children: tables,
-        meta: json!({}),
-    }])
+    Ok(schemas
+        .iter()
+        .map(|schema| {
+            let children = tables
+                .iter()
+                .filter(|def| &table_schema(def) == schema)
+                .map(table_to_node)
+                .collect();
+            schema_node(schema, children)
+        })
+        .collect())
 }
 
 pub fn describe_columns(
@@ -2646,6 +2690,38 @@ mod tests {
         let shown = run("SHOW CREATE TABLE members", &[]);
         assert!(shown.rows[0][0].as_str().unwrap_or_default().contains("DEFAULT ulid()"));
         run("INSERT INTO geo.places (_key, name) VALUES ('p1', 'Here')", &[]);
+    }
+
+    /// The tree answers the store's own schemas, `public` first and an empty
+    /// one included, each table under its schema by its bare name — the shape
+    /// the Studio reads from every engine.
+    #[test]
+    fn the_tree_lists_real_schemas_with_tables_under_them() {
+        let tmp = tmp_root();
+        assert!(describe_tree(tmp.path(), "alice", "demo").expect("empty tree").is_empty());
+        {
+            let db = get_db(tmp.path(), "alice", "demo").expect("open db");
+            for ddl in [
+                "CREATE SCHEMA geo",
+                "CREATE SCHEMA archive",
+                "CREATE TABLE geo.places (_key TEXT PRIMARY KEY, name TEXT)",
+                "CREATE TABLE people (_key TEXT PRIMARY KEY, name TEXT)",
+            ] {
+                db.execute(ddl, &[]).expect(ddl);
+            }
+        }
+        let tree = describe_tree(tmp.path(), "alice", "demo").expect("tree");
+        let names = tree.iter().map(|node| node.name.as_str()).collect::<Vec<_>>();
+        assert_eq!(names, vec!["public", "archive", "geo"]);
+        let tables = |schema: &str| {
+            tree.iter()
+                .find(|node| node.name == schema)
+                .map(|node| node.children.iter().map(|t| (t.name.clone(), t.schema.clone())).collect::<Vec<_>>())
+                .unwrap_or_default()
+        };
+        assert_eq!(tables("public"), vec![("people".to_string(), Some("public".to_string()))]);
+        assert_eq!(tables("geo"), vec![("places".to_string(), Some("geo".to_string()))]);
+        assert!(tables("archive").is_empty());
     }
 
     #[test]
