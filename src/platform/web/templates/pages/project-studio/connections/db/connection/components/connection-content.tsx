@@ -56,7 +56,15 @@ export default function ConnectionContent({ input, workspace }) {
             />
           ) : null}
 
-          {tabFlags?.graph ? <GraphTabPanel /> : null}
+          {tabFlags?.graph ? (
+            <GraphTabPanel
+              tables={catalog.tables}
+              runDbQuery={workspace.runDbQuery}
+              // Where a box opens its table: the Tables tab, without the
+              // table this page was opened on.
+              tablesHref={String(workspace.suiteTabs.find((item) => item?.label === "Tables")?.href || "").split("?")[0]}
+            />
+          ) : null}
 
           {tabFlags?.schema ? (
             <SchemaTabPanel

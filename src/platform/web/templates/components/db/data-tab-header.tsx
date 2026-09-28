@@ -43,7 +43,9 @@ export default function DataTabHeader({ table, facts, tabs, schema }) {
           {table.active ? (
             <div className="flex flex-wrap items-center justify-end gap-2 text-[11px] uppercase tracking-[0.14em] text-muted-foreground">
               <span className="rounded-full border border-border/80 px-2 py-1">
-                {table.active.rowCount || 0} rows
+                {/* An edge table's edges are counted in its panel; the catalog
+                    has no row count for it. */}
+                {table.active.edge ? "edge table" : `${table.active.rowCount || 0} rows`}
               </span>
               <span className="rounded-full border border-border/80 px-2 py-1">
                 {facts.fieldCount} fields

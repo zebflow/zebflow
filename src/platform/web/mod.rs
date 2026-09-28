@@ -6411,11 +6411,6 @@ async fn project_db_suite_page(
                     "classes": if tab_key == "query" { "is-active" } else { "" },
                 }),
                 json!({
-                    "label": "Graph",
-                    "href": format!("{base}/graph{table_query}"),
-                    "classes": if tab_key == "graph" { "is-active" } else { "" },
-                }),
-                json!({
                     "label": "Schema",
                     "href": format!("{base}/schema{table_query}"),
                     "classes": if tab_key == "schema" { "is-active" } else { "" },
@@ -6426,6 +6421,18 @@ async fn project_db_suite_page(
                     "classes": if tab_key == "mart" { "is-active" } else { "" },
                 }),
             ];
+            // The graph tab draws edges and walks them, so it is offered where
+            // relations are a graph, placed after Query as before.
+            if capabilities.relations == crate::platform::model::DbRelationStyle::Graph {
+                suite_tabs.insert(
+                    2,
+                    json!({
+                        "label": "Graph",
+                        "href": format!("{base}/graph{table_query}"),
+                        "classes": if tab_key == "graph" { "is-active" } else { "" },
+                    }),
+                );
+            }
             if capabilities.maintenance {
                 suite_tabs.push(json!({
                     "label": "Maintenance",
@@ -6528,7 +6535,8 @@ async fn project_db_suite_page(
                 "tab_flags": {
                     "tables": tab_key == "tables",
                     "query": tab_key == "query",
-                    "graph": tab_key == "graph",
+                    "graph": tab_key == "graph"
+                        && capabilities.relations == crate::platform::model::DbRelationStyle::Graph,
                     "schema": tab_key == "schema",
                     "mart": tab_key == "mart",
                     "maintenance": tab_key == "maintenance",
