@@ -292,6 +292,8 @@ impl DbDriver for SqliteDbDriver {
             edit_table_properties: true,
             row_identity: IDENTITY_COLUMN.to_string(),
             row_identity_hidden: false,
+            column_constraints: false,
+            key_defaults: Vec::new(),
             // Geometry needs an extension that is not loaded here.
             geo: false,
             relations: DbRelationStyle::ForeignKey,

@@ -116,6 +116,7 @@ export function useConnectionWorkspace(input) {
     schemaSyncApi: api.schemaSync,
     table: activeTable,
     selectedTable,
+    columnConstraints: caps.columnConstraints,
     onTableChanged: catalog.refresh,
   });
 

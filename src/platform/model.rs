@@ -2268,6 +2268,15 @@ pub struct DbCapabilities {
     /// engine's key column is an ordinary one.
     #[serde(default)]
     pub row_identity_hidden: bool,
+    /// The table writer applies NOT NULL, DEFAULT and UNIQUE as a column
+    /// declares them. Where it does not, the studio shows them disabled
+    /// rather than accept values it would drop.
+    #[serde(default)]
+    pub column_constraints: bool,
+    /// The generators a table's key may be declared with (`ulid()`), so an
+    /// INSERT may leave the key out. Empty where the engine has none.
+    #[serde(default)]
+    pub key_defaults: Vec<String>,
     /// The engine can store and return geometry.
     pub geo: bool,
     /// How this engine relates rows to each other.
@@ -2289,6 +2298,8 @@ impl Default for DbCapabilities {
             edit_table_properties: false,
             row_identity: String::new(),
             row_identity_hidden: false,
+            column_constraints: false,
+            key_defaults: Vec::new(),
             geo: false,
             relations: DbRelationStyle::None,
         }
@@ -2404,10 +2415,14 @@ pub struct CreateSimpleTableRequest {
     /// Range indexed payload fields.
     #[serde(default)]
     pub range_indexed_fields: Vec<String>,
+    /// `_key`'s generator (`ulid()` / `uuid4()`), for a table that mints its
+    /// own keys; one of the driver's `key_defaults`, or empty.
+    #[serde(default)]
+    pub key_default: String,
 }
 
 /// Update payload for an existing sekejap table (attributes + indexes).
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct UpdateSimpleTableRequest {
     /// New attribute schema definitions (replaces existing).
     #[serde(default)]

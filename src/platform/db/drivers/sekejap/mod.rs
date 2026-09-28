@@ -13,20 +13,6 @@ use crate::platform::sekejap;
 
 pub struct SekejapDbDriver;
 
-/// One value as sekejap's SQL spells it.
-///
-/// Sekejap's parser takes literals rather than bind parameters here, so a
-/// string is quoted and its quotes doubled.
-fn sekejap_literal(value: &serde_json::Value) -> String {
-    match value {
-        serde_json::Value::Null => "NULL".to_string(),
-        serde_json::Value::Bool(b) => b.to_string(),
-        serde_json::Value::Number(n) => n.to_string(),
-        serde_json::Value::String(text) => format!("'{}'", text.replace('\'', "''")),
-        other => format!("'{}'", other.to_string().replace('\'', "''")),
-    }
-}
-
 async fn run_blocking<T, F>(f: F) -> Result<T, PlatformError>
 where
     T: Send + 'static,
@@ -47,8 +33,8 @@ impl DbDriver for SekejapDbDriver {
     }
 
     fn type_catalog(&self) -> Vec<DbTypeDef> {
-        // Sekejap stores values by kind rather than by SQL type, so these are
-        // its own words, not a dialect's.
+        // The SQL types a sekejap column can declare, the words `CREATE
+        // TABLE` takes. The Studio writes the chosen one as the column's type.
         let def = |name: &str, family: DbTypeFamily, parameterized: bool, note: &str| DbTypeDef {
             name: name.to_string(),
             family,
@@ -56,15 +42,20 @@ impl DbDriver for SekejapDbDriver {
             note: note.to_string(),
         };
         vec![
-            def("string", DbTypeFamily::Text, false, ""),
-            def("text", DbTypeFamily::Text, false, "long form"),
-            def("number", DbTypeFamily::Number, false, ""),
-            def("boolean", DbTypeFamily::Boolean, false, ""),
-            def("json", DbTypeFamily::Json, false, ""),
-            def("geo", DbTypeFamily::Geometry, false, "GeoJSON"),
-            // A vector column carries its dimension: `vector(384)`. There is
+            def("TEXT", DbTypeFamily::Text, false, ""),
+            def("INT", DbTypeFamily::Number, false, "whole number"),
+            def("BIGINT", DbTypeFamily::Number, false, "whole number"),
+            def("REAL", DbTypeFamily::Number, false, ""),
+            def("DOUBLE PRECISION", DbTypeFamily::Number, false, ""),
+            def("BOOLEAN", DbTypeFamily::Boolean, false, ""),
+            def("JSONB", DbTypeFamily::Json, false, ""),
+            def("TIMESTAMPTZ", DbTypeFamily::DateTime, false, ""),
+            def("DATE", DbTypeFamily::DateTime, false, ""),
+            // A shape and an SRID are optional: `GEOMETRY(Point,4326)`.
+            def("GEOMETRY", DbTypeFamily::Geometry, true, "optional shape and SRID, Point,4326"),
+            // A vector column carries its dimension: `VECTOR(384)`. There is
             // no default, because the number is the embedding model's.
-            def("vector", DbTypeFamily::Vector, true, "similarity search; write the dimension, vector(384)"),
+            def("VECTOR", DbTypeFamily::Vector, true, "the dimension, 384"),
         ]
     }
 
@@ -84,6 +75,9 @@ impl DbDriver for SekejapDbDriver {
             row_identity: "_key".to_string(),
             // `SELECT *` answers the declared columns; `_key` is named.
             row_identity_hidden: true,
+            // CREATE TABLE and ADD COLUMN take NOT NULL, DEFAULT and UNIQUE.
+            column_constraints: true,
+            key_defaults: vec!["ulid()".to_string(), "uuid4()".to_string()],
             geo: true,
             // Rows are joined by free edges rather than declared keys.
             relations: DbRelationStyle::Graph,
@@ -150,7 +144,8 @@ impl DbDriver for SekejapDbDriver {
         let data_root = ctx.data_root.clone();
         let owner = ctx.owner.clone();
         let project = ctx.project.clone();
-        let table = table.rsplit('.').next().unwrap_or(table).to_string();
+        // The name as the tree gave it: `geo.places` is not `places`.
+        let table = table.to_string();
         let req = req.clone();
         run_blocking(move || sekejap::update_table(&data_root, &owner, &project, &table, &req)).await
     }
@@ -161,36 +156,12 @@ impl DbDriver for SekejapDbDriver {
         table: &str,
         values: &serde_json::Map<String, serde_json::Value>,
     ) -> Result<serde_json::Value, PlatformError> {
-        let bare = table.rsplit('.').next().unwrap_or(table).to_string();
-        // A sekejap row carries the key its caller supplies, so one is minted
-        // here unless the caller chose it.
-        let key = values
-            .get("_key")
-            .and_then(serde_json::Value::as_str)
-            .map(str::to_string)
-            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-
-        let mut columns = vec!["_key".to_string()];
-        let mut literals = vec![format!("'{}'", key.replace('\'', "''"))];
-        for (name, value) in values {
-            if name == "_key" {
-                continue;
-            }
-            columns.push(name.clone());
-            literals.push(sekejap_literal(value));
-        }
-        let sql = format!(
-            "INSERT INTO {bare} ({}) VALUES ({})",
-            columns.join(", "),
-            literals.join(", ")
-        );
-        let req = QueryProjectDbConnectionRequest {
-            sql,
-            read_only: Some(false),
-            ..Default::default()
-        };
-        self.query(ctx, &req).await?;
-        Ok(serde_json::Value::String(key))
+        let data_root = ctx.data_root.clone();
+        let owner = ctx.owner.clone();
+        let project = ctx.project.clone();
+        let table = table.to_string();
+        let values = values.clone();
+        run_blocking(move || sekejap::insert_row(&data_root, &owner, &project, &table, &values)).await
     }
 
     async fn drop_table(&self, ctx: &DbDriverContext, table: &str) -> Result<(), PlatformError> {

@@ -21,6 +21,7 @@ export default function ConnectionDialogs({ workspace }) {
           onOpenChange={workspace.setCreateOpen}
           tablesApi={api.tables}
           types={dbTypes}
+          caps={caps}
           onCreated={(table) => catalog.reload(table)}
         />
       ) : null}

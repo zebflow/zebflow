@@ -2379,6 +2379,7 @@ async fn project_bundle_installs_spatial_blog_with_sekejap_schema_across_two_ins
         "superadmin",
         "spatial-blogging-source",
         &CreateSimpleTableRequest {
+            key_default: String::new(),
             table: "posts".to_string(),
             attributes: vec![
                 CollectionAttribute {

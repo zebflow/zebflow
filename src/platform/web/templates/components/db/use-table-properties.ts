@@ -1,5 +1,6 @@
 import { useEffect, useState } from "zeb/react";
 import { requestJson } from "@/components/lib/http";
+import { attributeFromTable, attributesPayload } from "@/components/db/attribute-editor";
 
 /**
  * Editing the open table: its columns, its index kinds, and deleting it.
@@ -16,6 +17,7 @@ export function useTableProperties({
   schemaSyncApi,
   table,
   selectedTable,
+  columnConstraints,
   onTableChanged,
 }) {
   const [attributes, setAttributes] = useState([]);
@@ -31,31 +33,23 @@ export function useTableProperties({
   const [deleteInput, setDeleteInput] = useState("");
   const [deleteBusy, setDeleteBusy] = useState(false);
 
+  // Keyed on what the catalog says the columns are, so a save that changed
+  // them refills the form with the table as it now stands.
   useEffect(() => {
     if (!table) return;
-    setAttributes(
-      (table.attributes || []).map((a) => ({
-        name: a.name || "",
-        kind: a.kind || "string",
-        index_types: Array.isArray(a.index_types) ? [...a.index_types] : [],
-      })),
-    );
+    setAttributes((table.attributes || []).map(attributeFromTable));
+  }, [table?.key, JSON.stringify(table?.attributes || [])]);
+
+  // A status belongs to the table it was about; "Saved" stays after a save.
+  useEffect(() => {
     setStatus("");
-  }, [table?.table, table?.updatedAt]);
+  }, [table?.key]);
 
   async function save(message = "Saving…") {
     if (!table) return null;
     setBusy(true);
     setStatus(message);
-    const payload = {
-      attributes: (attributes || [])
-        .map((item) => ({
-          name: String(item?.name || "").trim(),
-          kind: String(item?.kind || "string"),
-          index_types: Array.isArray(item?.index_types) ? item.index_types : [],
-        }))
-        .filter((item) => item.name),
-    };
+    const payload = { attributes: attributesPayload(attributes) };
     // Qualified as the tree named it, so a schema-namespaced engine alters the
     // right table.
     const response = await requestJson(
@@ -119,6 +113,8 @@ export function useTableProperties({
     setAttributes,
     section,
     setSection,
+    // Whether the column editor may set NOT NULL, DEFAULT and UNIQUE.
+    constraints: columnConstraints === true,
     busy,
     status,
     submit,

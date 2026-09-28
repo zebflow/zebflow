@@ -1,7 +1,7 @@
 import { useEffect, useState } from "zeb/react";
 import { requestJson } from "@/components/lib/http";
 
-const DESCRIBE_COLUMNS = ["field", "type", "nullable", "primary_key", "default"];
+const DESCRIBE_COLUMNS = ["field", "type", "nullable", "primary_key", "default", "unique"];
 
 /**
  * The first page of rows of the open table, and what the engine says its
@@ -73,10 +73,11 @@ export function useTablePreview({ previewUrl, describeUrl, table }) {
             const meta = node?.meta ?? {};
             return [
               String(node?.name ?? ""),
-              meta.type ?? meta.data_type ?? "",
+              meta.full_type ?? meta.type ?? meta.data_type ?? "",
               meta.nullable === undefined ? "" : String(meta.nullable),
               meta.pk === true ? "true" : "false",
               meta.default ?? "",
+              meta.unique === true ? "true" : "false",
             ];
           }),
         );

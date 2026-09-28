@@ -51,6 +51,8 @@ impl DbDriver for PostgresqlDbDriver {
             edit_table_properties: true,
             row_identity: IDENTITY_COLUMN.to_string(),
             row_identity_hidden: false,
+            column_constraints: false,
+            key_defaults: Vec::new(),
             // PostGIS may be absent; the grid asks per column rather than
             // assuming the whole connection can hold geometry.
             geo: true,

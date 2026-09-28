@@ -6,7 +6,7 @@ import {
   AttributeEditorHeader,
   AttributeEditorRow,
   DEFAULT_ATTRIBUTE,
-} from "@/components/db/create-table-dialog";
+} from "@/components/db/attribute-editor";
 import { PROPERTY_SECTIONS } from "@/components/db/table-data";
 
 /**
@@ -86,6 +86,7 @@ function ColumnsEditor({ properties, types }) {
                 key={idx}
                 item={attr}
                 types={types}
+                constraints={properties.constraints}
                 onChange={(next) => setAttributes((prev) => prev.map((a, i) => (i === idx ? next : a)))}
                 onRemove={() => setAttributes((prev) => prev.filter((_, i) => i !== idx))}
               />

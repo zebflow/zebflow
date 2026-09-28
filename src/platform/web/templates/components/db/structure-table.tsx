@@ -19,23 +19,51 @@ function indexBadgesForAttribute(tableItem, attrName) {
 }
 
 
+/** The constraints one described column carries, as short badges. */
+function constraintBadges(row) {
+  const [, , nullable, primaryKey, defaultValue, unique] = Array.isArray(row) ? row : [];
+  const badges = [];
+  if (primaryKey === "true") badges.push({ key: "pk", label: "key" });
+  if (nullable === "false" && primaryKey !== "true") badges.push({ key: "nn", label: "not null" });
+  if (unique === "true") badges.push({ key: "uq", label: "unique" });
+  if (defaultValue) badges.push({ key: "df", label: `default ${defaultValue}` });
+  return badges;
+}
+
+function Badges({ items }) {
+  return items.length ? (
+    <div className="flex flex-wrap gap-1.5">
+      {items.map((badge) => (
+        <span key={badge.key} className="inline-flex rounded-full border border-border px-2 py-0.5 font-mono text-[11px] text-muted-foreground">
+          {badge.label}
+        </span>
+      ))}
+    </div>
+  ) : (
+    <span className="text-muted-foreground">—</span>
+  );
+}
+
 export default function StructureTable({ activeTable, schemaColumns, schemaRows, schemaError, emptyMessage = "No declared or inferred structure available yet." }) {
+  // Every engine describes a column the same way: name, the type it
+  // declared, then what constrains it — shown as badges rather than a
+  // column of true/false per constraint.
   if (schemaRows.length) {
     return (
       <StudioTable>
         <StudioThead>
           <tr>
-            {schemaColumns.map((col, index) => (
-              <StudioTh key={`scol-${col}-${index}`}>{col}</StudioTh>
-            ))}
+            <StudioTh>Field</StudioTh>
+            <StudioTh>Type</StudioTh>
+            <StudioTh>Constraints</StudioTh>
           </tr>
         </StudioThead>
         <tbody>
           {schemaRows.map((row, rowIndex) => (
             <tr key={`srow-${rowIndex}`}>
-              {(Array.isArray(row) ? row : []).map((cell, cellIndex) => (
-                <StudioTd key={`scell-${rowIndex}-${cellIndex}`}>{stringifyCell(cell)}</StudioTd>
-              ))}
+              <StudioTd>{stringifyCell(row?.[0])}</StudioTd>
+              <StudioTd><span className="font-mono text-[12px]">{stringifyCell(row?.[1])}</span></StudioTd>
+              <StudioTd><Badges items={constraintBadges(row)} /></StudioTd>
             </tr>
           ))}
         </tbody>

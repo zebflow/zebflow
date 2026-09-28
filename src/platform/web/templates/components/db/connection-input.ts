@@ -32,6 +32,10 @@ export function readConnectionInput(input) {
       geo: caps.geo === true,
       editProperties: caps.edit_table_properties === true,
       qualifySchema: caps.schemas === true,
+      // NOT NULL, DEFAULT and UNIQUE in the column editor, and the key
+      // generators a new table may name for its rows.
+      columnConstraints: caps.column_constraints === true,
+      keyDefaults: Array.isArray(caps.key_defaults) ? caps.key_defaults.map(String) : [],
       // The column that addresses one row. Declared by the driver because it
       // differs: sekejap answers `_key`, SQL engines answer their primary key.
       // No fallback: a driver that forgets to declare this should show a
