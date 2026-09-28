@@ -81,6 +81,8 @@ impl DbDriver for SekejapDbDriver {
             edit_table_properties: true,
             // Every sekejap row is addressed by `_key`.
             row_identity: "_key".to_string(),
+            // `SELECT *` answers the declared columns; `_key` is named.
+            row_identity_hidden: true,
             geo: true,
             // Rows are joined by free edges rather than declared keys.
             relations: DbRelationStyle::Graph,

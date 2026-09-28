@@ -188,7 +188,6 @@ export default function ConnectionTablesView({ workspace, schemaExportFilename }
                 runDbQuery={workspace.runDbQuery}
                 tables={tables}
                 current={{ table: activeTable, record: selection.data }}
-                typeOptions={workspace.relationTypeOptions}
                 onCreated={() => nodeRelations.reload()}
                 onInvalidInput={workspace.setValidationNotice}
               />

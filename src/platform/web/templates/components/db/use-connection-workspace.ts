@@ -71,6 +71,7 @@ export function useConnectionWorkspace(input) {
     runDbQuery,
     enabled: caps.graphRelations && !!dbApi.query,
     tableName: activeTable?.table || "",
+    tables: catalog.tables,
     reloadToken,
     onTypeOptions: setRelationTypeOptions,
   });
@@ -86,6 +87,7 @@ export function useConnectionWorkspace(input) {
     runDbQuery,
     enabled: caps.graphRelations,
     tableName: activeTable?.table || "",
+    tables: catalog.tables,
     record: selection.data,
     reloadToken,
     onTypeOptions: setRelationTypeOptions,

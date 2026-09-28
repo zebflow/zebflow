@@ -3,20 +3,19 @@ import { Dialog } from "@/components/ui/dialog";
 import DialogContent from "@/components/ui/dialog-content";
 import DialogHeader from "@/components/ui/dialog-header";
 import DialogTitle from "@/components/ui/dialog-title";
-import DialogFooter from "@/components/ui/dialog-footer";
 import Button from "@/components/ui/button";
-import Field from "@/components/ui/field";
 import Input from "@/components/ui/input";
 import { Select, SelectOption } from "@/components/ui/select";
-import { StudioTable, StudioTd } from "@/components/ui/studio-data-table";
+import { StudioTable, StudioTd, StudioTh, StudioThead } from "@/components/ui/studio-data-table";
 
 /**
- * Free edges between rows, for engines whose relation style is `graph`.
+ * Edges between rows, for engines whose relation style is `graph`.
  *
  * Declared by `capabilities.relations === "graph"`. Only sekejap uses this
  * today; it is kept engine-neutral for multimodel engines such as ArangoDB
  * and SurrealDB, which express relationships the same way. Engines that
- * declare `foreign_key` render a different panel instead.
+ * declare `foreign_key` render a different panel instead. Writing an edge
+ * lives in `relation-create-panel`, through an edge table.
  */
 
 export function relationNodeSlug(record, fallbackCollection = "") {
@@ -40,27 +39,17 @@ export function relationNodeLabel(record, fallbackCollection = "") {
   );
 }
 
-export function normalizeRelationType(value) {
-  return String(value || "")
-    .trim()
-    .replace(/[^A-Za-z0-9_]+/g, "_")
-    .replace(/^_+|_+$/g, "");
-}
-
-export function relationSlugParts(slug) {
-  const text = String(slug || "").trim();
-  const [collection, key, ...rest] = text.split("/");
-  if (!collection || !key || rest.length) return null;
-  return { collection, key };
-}
-
+/**
+ * The edge types `SHOW EDGES` reports, once each. sekejap 0.18 names the
+ * columns `edge_type`, `from_table` and `to_table`.
+ */
 export function uniqueRelationDefs(defs) {
   const seen = new Set();
   return (defs || [])
     .map((item) => ({
-      from: String(item?.from || "").trim(),
-      to: String(item?.to || "").trim(),
-      type: String(item?.type || "").trim(),
+      from: String(item?.from_table || "").trim(),
+      to: String(item?.to_table || "").trim(),
+      type: String(item?.edge_type || "").trim(),
     }))
     .filter((item) => item.from && item.to && item.type)
     .filter((item) => {
@@ -75,105 +64,6 @@ export function relationCountFromRows(rows) {
   const first = Array.isArray(rows) && Array.isArray(rows[0]) ? rows[0][0] : null;
   const count = Number(first);
   return Number.isFinite(count) ? count : null;
-}
-
-export function RelationDialog({
-  open,
-  onOpenChange,
-  busy,
-  status,
-  direction,
-  setDirection,
-  relationType,
-  setRelationType,
-  relatedNodeSlug,
-  setRelatedNodeSlug,
-  currentNodeSlug,
-  relationTypeOptions,
-  relatedSlugWarning,
-  onOpenTargetSearch,
-  onSubmit,
-}) {
-  return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-xl border-border bg-card text-foreground">
-        <DialogHeader className="px-6 pt-6">
-          <DialogTitle>Create Relation</DialogTitle>
-          <p className="text-sm text-muted-foreground">
-            Link the current node to another node in the Sekejap store.
-          </p>
-          <p className={cx("text-xs", status.startsWith("Error") ? "text-danger" : status.startsWith("Created") ? "text-success" : "text-muted-foreground")}>
-            {status}
-          </p>
-        </DialogHeader>
-
-        <form onSubmit={onSubmit} className="flex flex-col gap-4 px-6 py-4">
-          <Field label="Current Node">
-            <Input value={currentNodeSlug} disabled />
-          </Field>
-
-          <div className="grid gap-3 md:grid-cols-2">
-            <Field label="Direction">
-              <Select value={direction} onChange={(event) => setDirection(event?.target?.value || "outgoing")} disabled={busy}>
-                <SelectOption value="outgoing" label="Current -> related" />
-                <SelectOption value="incoming" label="Related -> current" />
-              </Select>
-            </Field>
-            <Field label="Relation Type">
-              <div className="flex flex-col gap-2">
-                {relationTypeOptions?.length ? (
-                  <Select value={relationTypeOptions.includes(relationType) ? relationType : ""} onChange={(event) => setRelationType(event?.target?.value || "")} disabled={busy}>
-                    <SelectOption value="" label="New or custom type" />
-                    {relationTypeOptions.map((type) => (
-                      <SelectOption key={type} value={type} label={type} />
-                    ))}
-                  </Select>
-                ) : null}
-                <Input
-                  value={relationType}
-                  onInput={(event) => setRelationType(event?.target?.value || "")}
-                  placeholder="references"
-                  required
-                  disabled={busy}
-                />
-              </div>
-            </Field>
-          </div>
-
-          <Field label={direction === "outgoing" ? "Target Node Slug" : "Source Node Slug"}>
-            <div className="flex gap-2">
-              <Input
-                value={relatedNodeSlug}
-                onInput={(event) => setRelatedNodeSlug(event?.target?.value || "")}
-                placeholder="people/alice"
-                required
-                disabled={busy}
-              />
-              <Button type="button" variant="outline" size="sm" disabled={busy} onClick={onOpenTargetSearch}>
-                Search
-              </Button>
-            </div>
-            {relatedSlugWarning ? (
-              <p className="mt-1 text-xs text-amber-500">{relatedSlugWarning}</p>
-            ) : null}
-          </Field>
-
-          <p className="text-xs text-muted-foreground">
-            Use the Sekejap node slug format: <span className="font-mono">collection/key</span>.
-          </p>
-
-          <DialogFooter>
-            <Button type="button" variant="ghost" size="sm" onClick={() => onOpenChange(false)} disabled={busy}>
-              Cancel
-            </Button>
-            <Button type="submit" size="sm" disabled={busy}>
-              {busy ? "Creating…" : "Create"}
-            </Button>
-          </DialogFooter>
-        </form>
-      </DialogContent>
-    </Dialog>
-  );
 }
 
 export function RelationTargetSearchDialog({ open, onOpenChange, tables, onSearch, onSelect }) {
@@ -260,6 +150,21 @@ export function RelationTargetSearchDialog({ open, onOpenChange, tables, onSearc
   );
 }
 
+/**
+ * An edge with no edge table behind it: written by an API or an import, shown
+ * here, and changed only where it was written.
+ */
+function LooseTag() {
+  return (
+    <span
+      title="A loose edge has no edge table: it is shown, not edited, here."
+      className="ml-2 rounded border border-border px-1.5 py-px align-middle text-[10px] font-normal uppercase tracking-[0.08em] text-muted-foreground"
+    >
+      loose
+    </span>
+  );
+}
+
 export function RelationStatsList({ title, items, emptyText, peerKey }) {
   return (
     <div className="rounded-lg border border-border/80 bg-accent/10 p-3">
@@ -272,7 +177,10 @@ export function RelationStatsList({ title, items, emptyText, peerKey }) {
           {items.map((item, index) => (
             <div key={`${title}-${item.type}-${item.from}-${item.to}-${index}`} className="grid grid-cols-[minmax(0,1fr)_auto] gap-3 rounded-md border border-border/70 bg-popover px-3 py-2">
               <div className="min-w-0">
-                <p className="truncate text-sm font-medium text-foreground">{item.type}</p>
+                <p className="truncate text-sm font-medium text-foreground">
+                  {item.type}
+                  {item.loose ? <LooseTag /> : null}
+                </p>
                 <p className="truncate text-xs text-muted-foreground">{peerKey === "to" ? `to ${item.to}` : `from ${item.from}`}</p>
                 {item.countError ? (
                   <p className="mt-1 text-[11px] text-amber-500">Count unavailable</p>
@@ -307,13 +215,18 @@ export function RowRelationList({ title, items, emptyText, onDelete }) {
             <div key={`${title}-${entry.type}-${entry.otherSlug}-${index}`} className="rounded-md border border-border/70 bg-popover px-3 py-2">
               <div className="flex items-start justify-between gap-3">
                 <div className="min-w-0">
-                  <p className="text-sm font-medium text-foreground">{entry.type}</p>
+                  <p className="text-sm font-medium text-foreground">
+                    {entry.type}
+                    {entry.loose ? <LooseTag /> : null}
+                  </p>
                   <p className="truncate text-xs text-muted-foreground">{entry.otherLabel}</p>
                   <p className="truncate text-[11px] text-muted-foreground">{entry.otherSlug}</p>
                 </div>
-                <Button type="button" variant="ghost" size="sm" onClick={() => onDelete(entry)}>
-                  Delete
-                </Button>
+                {entry.loose ? null : (
+                  <Button type="button" variant="ghost" size="sm" onClick={() => onDelete(entry)}>
+                    Delete
+                  </Button>
+                )}
               </div>
             </div>
           ))}

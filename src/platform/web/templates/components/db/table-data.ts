@@ -114,6 +114,10 @@ export function normalizeTableNodes(nodes) {
         fulltextFields: Array.isArray(node?.meta?.fulltext_fields) ? node.meta.fulltext_fields : [],
         vectorFields: Array.isArray(node?.meta?.vector_fields) ? node.meta.vector_fields : [],
         spatialFields: Array.isArray(node?.meta?.spatial_fields) ? node.meta.spatial_fields : [],
+        // Present when the table is an edge table: `{ source, source_table,
+        // destination, destination_table, key, label, graph }`.
+        edge: node?.meta?.edge || null,
+        keyDefault: String(node?.meta?.key_default || ""),
       };
     })
     .filter((item) => item.schema && item.table && !item.schema.startsWith("_"))

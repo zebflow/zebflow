@@ -291,6 +291,7 @@ impl DbDriver for SqliteDbDriver {
             // than rebuilt, which is the same rule the other SQL engines get.
             edit_table_properties: true,
             row_identity: IDENTITY_COLUMN.to_string(),
+            row_identity_hidden: false,
             // Geometry needs an extension that is not loaded here.
             geo: false,
             relations: DbRelationStyle::ForeignKey,

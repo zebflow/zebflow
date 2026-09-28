@@ -1,5 +1,6 @@
 import { useEffect, useState } from "zeb/react";
 import { relationCountFromRows, uniqueRelationDefs } from "@/components/db/relations-graph";
+import { edgeTableFor, relationCountSql } from "@/components/db/edge-tables";
 
 /**
  * How many rows of each relation the open table takes part in.
@@ -12,7 +13,7 @@ import { relationCountFromRows, uniqueRelationDefs } from "@/components/db/relat
  * because the row-level hook discovers the same list from the same query, and
  * the create-relation dialog needs whichever ran last.
  */
-export function useRelationStats({ runDbQuery, enabled, tableName, reloadToken, onTypeOptions }) {
+export function useRelationStats({ runDbQuery, enabled, tableName, tables, reloadToken, onTypeOptions }) {
   const [outgoing, setOutgoing] = useState([]);
   const [incoming, setIncoming] = useState([]);
   const [busy, setBusy] = useState(false);
@@ -40,15 +41,15 @@ async function load(tableName) {
     const outgoingDefs = edgeDefs.filter((item) => item.from === tableName);
     const incomingDefs = edgeDefs.filter((item) => item.to === tableName);
 
+    // One count per edge type and pair of tables; the direction only decides
+    // which list it is shown in. `loose` marks a type with no edge table.
     async function withCount(def, direction) {
-      const query = direction === "outgoing"
-        ? `SELECT COUNT(*) AS count FROM MATCH (a:${def.from})-[:${def.type}]->(b:${def.to})`
-        : `SELECT COUNT(*) AS count FROM MATCH (a:${def.from})-[:${def.type}]->(b:${def.to})`;
+      const loose = !edgeTableFor(tables, def.type);
       try {
-        const counted = await runDbQuery(query, { readOnly: true, tableName, limit: 1 });
-        return { ...def, direction, count: relationCountFromRows(counted.rows), countError: "" };
+        const counted = await runDbQuery(relationCountSql(def), { readOnly: true, tableName, limit: 1 });
+        return { ...def, direction, loose, count: relationCountFromRows(counted.rows), countError: "" };
       } catch (error) {
-        return { ...def, direction, count: null, countError: String(error?.message || error) };
+        return { ...def, direction, loose, count: null, countError: String(error?.message || error) };
       }
     }
 
@@ -69,7 +70,7 @@ async function load(tableName) {
 
   useEffect(() => {
     load(tableName);
-  }, [tableName, reloadToken]);
+  }, [tableName, reloadToken, tables?.length]);
 
   return {
     outgoing,

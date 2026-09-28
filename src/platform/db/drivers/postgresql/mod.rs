@@ -50,6 +50,7 @@ impl DbDriver for PostgresqlDbDriver {
             // attribute model; nothing maps it onto ALTER TABLE yet.
             edit_table_properties: true,
             row_identity: IDENTITY_COLUMN.to_string(),
+            row_identity_hidden: false,
             // PostGIS may be absent; the grid asks per column rather than
             // assuming the whole connection can hold geometry.
             geo: true,

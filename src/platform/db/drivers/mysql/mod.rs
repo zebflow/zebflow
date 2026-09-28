@@ -552,6 +552,7 @@ impl DbDriver for MysqlDbDriver {
             schemas: true,
             edit_table_properties: true,
             row_identity: IDENTITY_COLUMN.to_string(),
+            row_identity_hidden: false,
             // Spatial types exist but are not managed by this driver.
             geo: false,
             relations: DbRelationStyle::ForeignKey,

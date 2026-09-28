@@ -22301,7 +22301,12 @@ async fn api_preview_db_connection_table(
     };
     let table_name = table.split('.').next_back().unwrap_or(&table).trim();
     let dialect = state.platform.db_runtime.sql_dialect_for_kind(&database_kind);
-    let sql = build_table_preview_sql(dialect, &table, table_name, limit);
+    // An engine whose row identity is not among `*`'s columns has it named,
+    // or the grid shows rows it cannot edit, delete or relate.
+    let caps = state.platform.db_runtime.capabilities_for_kind(&database_kind);
+    let hidden_identity = (caps.row_identity_hidden && !caps.row_identity.is_empty())
+        .then_some(caps.row_identity);
+    let sql = build_table_preview_sql(dialect, &table, table_name, hidden_identity.as_deref(), limit);
     let req = QueryProjectDbConnectionRequest {
         table: Some(table_name.to_string()),
         sql,
@@ -25724,15 +25729,20 @@ fn build_table_preview_sql(
     dialect: Option<SqlDialect>,
     raw_table: &str,
     bare_table: &str,
+    hidden_identity: Option<&str>,
     limit: usize,
 ) -> String {
+    let columns = match hidden_identity {
+        Some(identity) => format!("{identity}, *"),
+        None => "*".to_string(),
+    };
     match dialect {
         Some(dialect) => format!(
-            "SELECT * FROM {} LIMIT {}",
+            "SELECT {columns} FROM {} LIMIT {}",
             quote_sql_identifier_path(raw_table, dialect),
             limit
         ),
-        None => format!("SELECT * FROM {} LIMIT {}", bare_table.trim(), limit),
+        None => format!("SELECT {columns} FROM {} LIMIT {}", bare_table.trim(), limit),
     }
 }
 
@@ -25749,20 +25759,30 @@ mod preview_sql_tests {
     #[test]
     fn builds_unquoted_preview_sql_for_an_engine_with_no_dialect() {
         assert_eq!(
-            build_table_preview_sql(None, "default.posts", "posts", 120),
+            build_table_preview_sql(None, "default.posts", "posts", None, 120),
             "SELECT * FROM posts LIMIT 120"
+        );
+    }
+
+    /// An engine whose row identity is not among `*`'s columns has it named
+    /// first, so every previewed row can be edited, deleted and related.
+    #[test]
+    fn a_hidden_row_identity_is_named_in_the_preview() {
+        assert_eq!(
+            build_table_preview_sql(None, "default.posts", "posts", Some("_key"), 120),
+            "SELECT _key, * FROM posts LIMIT 120"
         );
     }
 
     #[test]
     fn each_sql_dialect_quotes_the_way_its_engine_requires() {
         assert_eq!(
-            build_table_preview_sql(Some(SqlDialect::Postgres), "public.posts", "posts", 50),
+            build_table_preview_sql(Some(SqlDialect::Postgres), "public.posts", "posts", None, 50),
             "SELECT * FROM \"public\".\"posts\" LIMIT 50"
         );
         // MySQL rejects double quotes around identifiers by default.
         assert_eq!(
-            build_table_preview_sql(Some(SqlDialect::MySql), "zebflow.orders", "orders", 10),
+            build_table_preview_sql(Some(SqlDialect::MySql), "zebflow.orders", "orders", None, 10),
             "SELECT * FROM `zebflow`.`orders` LIMIT 10"
         );
     }

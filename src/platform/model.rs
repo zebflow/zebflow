@@ -2263,6 +2263,11 @@ pub struct DbCapabilities {
     /// platform creates. The studio reads this rather than assuming a name,
     /// because a row it cannot address is a row it cannot change.
     pub row_identity: String,
+    /// The row identity is not among `*`'s columns, so a statement that
+    /// wants it names it: sekejap's `_key` is a system column, where a SQL
+    /// engine's key column is an ordinary one.
+    #[serde(default)]
+    pub row_identity_hidden: bool,
     /// The engine can store and return geometry.
     pub geo: bool,
     /// How this engine relates rows to each other.
@@ -2283,6 +2288,7 @@ impl Default for DbCapabilities {
             schemas: false,
             edit_table_properties: false,
             row_identity: String::new(),
+            row_identity_hidden: false,
             geo: false,
             relations: DbRelationStyle::None,
         }

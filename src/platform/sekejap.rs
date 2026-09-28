@@ -1323,6 +1323,10 @@ fn table_to_node(def: &SimpleTableDefinition) -> DbObjectNode {
             "fulltext_fields": def.fulltext_fields,
             "vector_fields": def.vector_fields,
             "spatial_fields": def.spatial_fields,
+            // An edge table's shape — the tables it joins, its key, its graph
+            // — so the Studio can tell edge tables from tables of rows.
+            "edge": def.edge,
+            "key_default": def.key_default,
         }),
     }
 }
