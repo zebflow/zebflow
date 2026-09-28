@@ -1,6 +1,6 @@
 import { useEffect, useState } from "zeb/react";
-import { relationCountFromRows, uniqueRelationDefs } from "@/components/db/relations-graph";
-import { edgeTableFor, relationCountSql } from "@/components/db/edge-tables";
+import { relationCountFromRows } from "@/components/db/relations-graph";
+import { edgeTableFor, relationCountSql, relationDefs } from "@/components/db/edge-tables";
 
 /**
  * How many rows of each relation the open table takes part in.
@@ -31,7 +31,7 @@ async function load(tableName) {
   setError("");
   try {
         const show = await runDbQuery("SHOW EDGES", { readOnly: true, tableName, limit: 500 });
-    const edgeDefs = uniqueRelationDefs(show.objects);
+    const edgeDefs = relationDefs(tables, show.objects);
     const allTypes = edgeDefs
       .map((item) => item.type)
       .filter((item, index, arr) => item && arr.indexOf(item) === index)

@@ -2419,6 +2419,31 @@ pub struct CreateSimpleTableRequest {
     /// own keys; one of the driver's `key_defaults`, or empty.
     #[serde(default)]
     pub key_default: String,
+    /// Present when the new table is an edge table: which column holds each
+    /// end, which table each end reaches, and its label.
+    #[serde(default)]
+    pub edge: Option<CreateEdgeTableRequest>,
+}
+
+/// The edge-table part of a create request. The two end columns are made by
+/// the create itself, ahead of the table's own columns, which become the
+/// edges' properties.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CreateEdgeTableRequest {
+    /// The column holding the source row's key.
+    pub source: String,
+    /// The table the source column references (`members`, `geo.places`).
+    pub source_table: String,
+    /// The column holding the destination row's key.
+    pub destination: String,
+    /// The table the destination column references.
+    pub destination_table: String,
+    /// The label the edges carry; the table's own name when empty.
+    #[serde(default)]
+    pub label: String,
+    /// One edge per source and destination pair: the two ends are the key.
+    #[serde(default)]
+    pub one_per_pair: bool,
 }
 
 /// Update payload for an existing sekejap table (attributes + indexes).

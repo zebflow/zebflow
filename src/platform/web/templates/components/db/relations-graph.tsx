@@ -39,27 +39,6 @@ export function relationNodeLabel(record, fallbackCollection = "") {
   );
 }
 
-/**
- * The edge types `SHOW EDGES` reports, once each. sekejap 0.18 names the
- * columns `edge_type`, `from_table` and `to_table`.
- */
-export function uniqueRelationDefs(defs) {
-  const seen = new Set();
-  return (defs || [])
-    .map((item) => ({
-      from: String(item?.from_table || "").trim(),
-      to: String(item?.to_table || "").trim(),
-      type: String(item?.edge_type || "").trim(),
-    }))
-    .filter((item) => item.from && item.to && item.type)
-    .filter((item) => {
-      const key = `${item.from}:${item.type}:${item.to}`;
-      if (seen.has(key)) return false;
-      seen.add(key);
-      return true;
-    });
-}
-
 export function relationCountFromRows(rows) {
   const first = Array.isArray(rows) && Array.isArray(rows[0]) ? rows[0][0] : null;
   const count = Number(first);

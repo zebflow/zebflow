@@ -130,3 +130,62 @@ export function edgePropertyColumns(edgeTable) {
     (attr) => attr?.name !== edge.source && attr?.name !== edge.destination,
   );
 }
+
+/** The edge type an edge table's edges carry, as the catalog reports it. */
+function edgeType(edgeTable) {
+  return String(edgeTable?.edge?.label || edgeTable?.graphName || "");
+}
+
+/** The walk over every edge of one edge table, from its source to its destination. */
+function edgeMatch(edgeTable) {
+  const edge = edgeTable.edge;
+  return `base MATCH ${nodePattern("a", edge.source_table, "")}-[e:${gqlLabel(edgeType(edgeTable))}]->${nodePattern("b", edge.destination_table, "")}`;
+}
+
+/**
+ * An edge table's edges as rows: its two end columns and its properties,
+ * named as the table names them. Read through the graph, because the table
+ * itself answers only a WHERE that names one end.
+ */
+export function edgeRowsSql(edgeTable, limit) {
+  const edge = edgeTable.edge;
+  const properties = edgePropertyColumns(edgeTable).map((attr) => `, e.${attr.name} AS ${attr.name}`).join("");
+  return `SELECT * FROM GRAPH_TABLE (${edgeMatch(edgeTable)} RETURN a._key AS ${edge.source}, b._key AS ${edge.destination}${properties}) ORDER BY ${edge.source}, ${edge.destination} LIMIT ${Number(limit) || 200}`;
+}
+
+/** How many edges one edge table holds. */
+export function edgeCountSql(edgeTable) {
+  return `SELECT count(*) AS count FROM GRAPH_TABLE (${edgeMatch(edgeTable)} RETURN b._key AS _key)`;
+}
+
+/**
+ * Every kind of relation a table can have, once each: `{ from, type, to }`.
+ *
+ * The catalog's edge tables come first — each one names its type and both
+ * ends, and is listed even before its first edge. `SHOW EDGES` (columns
+ * `edge_type`, `from_table`, `to_table`) adds the loose types, the edges an
+ * API or an import wrote with no edge table behind them. The catalog is the
+ * source for edge tables because `SHOW EDGES` is built from written edges and
+ * has been seen to leave a type out.
+ */
+export function relationDefs(tables, shownEdges) {
+  const declared = (tables || [])
+    .filter((table) => table?.edge?.source_table && table?.edge?.destination_table)
+    .map((table) => ({
+      from: String(table.edge.source_table),
+      to: String(table.edge.destination_table),
+      type: edgeType(table),
+    }));
+  const shown = (shownEdges || []).map((item) => ({
+    from: String(item?.from_table || "").trim(),
+    to: String(item?.to_table || "").trim(),
+    type: String(item?.edge_type || "").trim(),
+  }));
+  const seen = new Set();
+  return declared.concat(shown).filter((item) => {
+    const key = `${item.from}:${item.type}:${item.to}`;
+    if (!item.from || !item.to || !item.type || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}

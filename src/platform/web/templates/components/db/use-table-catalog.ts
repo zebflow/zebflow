@@ -34,9 +34,11 @@ export function useTableCatalog({ schemasUrl, tablesUrl, initialTable, qualifySc
     setTables(nextTables);
     setTreeError("");
 
+    // Asked for by the tree's key (`public.members`) or by the name a walk and
+    // a link use for it (`members`); either opens the same table.
     const requested = String(preferredTable || initialTable || "").trim();
-    const first = nextTables[0]?.key || "";
-    setSelectedTable(nextTables.some((item) => item.key === requested) ? requested : first);
+    const match = nextTables.find((item) => item.key === requested || item.graphName === requested);
+    setSelectedTable(match?.key || nextTables[0]?.key || "");
   }
 
   useEffect(() => {

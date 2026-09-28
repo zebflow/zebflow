@@ -49,6 +49,9 @@ export function useConnectionWorkspace(input) {
     previewUrl: dbApi.preview,
     describeUrl: dbApi.describe,
     table: selectedTable,
+    // Only once the catalog says what the table is: a link can name an edge
+    // table before the tree has loaded.
+    rowsReadable: !!activeTable && !activeTable.edge,
   });
 
   const valueInspector = useValueInspector();

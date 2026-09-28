@@ -11,7 +11,7 @@ const DESCRIBE_COLUMNS = ["field", "type", "nullable", "primary_key", "default",
  * screens, so they load together rather than from two places that could
  * disagree about which table is open.
  */
-export function useTablePreview({ previewUrl, describeUrl, table }) {
+export function useTablePreview({ previewUrl, describeUrl, table, rowsReadable = true }) {
   const [previewColumns, setPreviewColumns] = useState([]);
   const [previewRows, setPreviewRows] = useState([]);
   const [previewError, setPreviewError] = useState("");
@@ -20,7 +20,7 @@ export function useTablePreview({ previewUrl, describeUrl, table }) {
   const [schemaError, setSchemaError] = useState("");
 
   async function reloadPreview(target = table) {
-    if (!previewUrl || !target) return { columns: [], rows: [] };
+    if (!previewUrl || !target || !rowsReadable) return { columns: [], rows: [] };
     const payload = await requestJson(
       `${previewUrl}?table=${encodeURIComponent(target)}&limit=120`,
     );
@@ -37,11 +37,13 @@ export function useTablePreview({ previewUrl, describeUrl, table }) {
 
   useEffect(() => {
     if (!previewUrl) return;
-    if (!table) {
+    // An edge table has no rows to preview — its edges are read through the
+    // graph — so it is named in the address and nothing is asked for.
+    if (!table || !rowsReadable) {
       setPreviewColumns([]);
       setPreviewRows([]);
       setPreviewError("");
-      writeTableToUrl("");
+      writeTableToUrl(table || "");
       return;
     }
     let active = true;
@@ -55,7 +57,7 @@ export function useTablePreview({ previewUrl, describeUrl, table }) {
     return () => {
       active = false;
     };
-  }, [previewUrl, table]);
+  }, [previewUrl, table, rowsReadable]);
 
   useEffect(() => {
     if (!describeUrl || !table) return;

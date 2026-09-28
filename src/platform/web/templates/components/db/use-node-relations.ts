@@ -1,7 +1,7 @@
 import { useEffect, useState } from "zeb/react";
-import { uniqueRelationDefs } from "@/components/db/relations-graph";
 import {
   edgeDeleteSql,
+  relationDefs,
   edgeTableFor,
   labelColumn,
   relationWalkSql,
@@ -60,7 +60,7 @@ export function useNodeRelations({ runDbQuery, enabled, tableName, tables, recor
     setError("");
     try {
       const show = await runDbQuery("SHOW EDGES", { readOnly: true, tableName, limit: 500 });
-      const defs = uniqueRelationDefs(show.objects);
+      const defs = relationDefs(tables, show.objects);
       onTypeOptions(
         defs.map((def) => def.type).filter((type, index, all) => all.indexOf(type) === index).sort(),
       );

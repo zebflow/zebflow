@@ -7,6 +7,7 @@ import DataTabPanel from "@/components/db/data-tab-panel";
 import StructureTable from "@/components/db/structure-table";
 import RowInspectorPanel from "@/components/db/row-inspector-panel";
 import RelationCreatePanel from "@/components/db/relation-create-panel";
+import EdgeTablePanel from "@/components/db/edge-table-panel";
 
 /**
  * The Tables tab's own content: the schema tree, the Data/Relations/
@@ -35,6 +36,10 @@ export default function ConnectionTablesView({ workspace, schemaExportFilename }
     suiteTabs,
   } = workspace;
   const { tables, selectedTable, activeTable } = catalog;
+  // An edge table has edges, not rows: no row to inspect, and no relations
+  // of its own to summarise.
+  const isEdgeTable = !!activeTable?.edge;
+  const inspectorShown = workspace.contentTab !== "properties" && !isEdgeTable;
 
   return (
     <section className="db-suite-panel db-suite-panel-fill">
@@ -60,7 +65,7 @@ export default function ConnectionTablesView({ workspace, schemaExportFilename }
         <div
           className={cx(
             "db-suite-data-split",
-            workspace.contentTab === "properties" ? "!grid-cols-[minmax(0,1fr)]" : "",
+            inspectorShown ? "" : "!grid-cols-[minmax(0,1fr)]",
           )}
         >
           <div className="flex min-h-0 flex-col">
@@ -74,7 +79,7 @@ export default function ConnectionTablesView({ workspace, schemaExportFilename }
                 tabs={{
                   current: workspace.contentTab,
                   onSelect: workspace.setContentTab,
-                  showRelations: caps.graphRelations,
+                  showRelations: caps.graphRelations && !isEdgeTable,
                   showProperties: caps.editProperties,
                 }}
                 schema={{
@@ -90,7 +95,7 @@ export default function ConnectionTablesView({ workspace, schemaExportFilename }
                 }}
               />
 
-              {workspace.contentTab === "relations" && activeTable && caps.graphRelations ? (
+              {workspace.contentTab === "relations" && activeTable && caps.graphRelations && !isEdgeTable ? (
                 <RelationsSummaryPanel
                   tableName={activeTable.table}
                   stats={relationStats}
@@ -104,6 +109,8 @@ export default function ConnectionTablesView({ workspace, schemaExportFilename }
                   canDropTable={caps.dropTable}
                   onDeleted={() => catalog.setSelectedTable("")}
                 />
+              ) : isEdgeTable ? (
+                <EdgeTablePanel edgeTable={activeTable} runDbQuery={workspace.runDbQuery} />
               ) : (
               <DataTabPanel
                 activeTable={activeTable}
@@ -157,7 +164,7 @@ export default function ConnectionTablesView({ workspace, schemaExportFilename }
             ) : null}
           </div>
 
-          {workspace.contentTab === "properties" ? null : (
+          {inspectorShown ? (
           <RowInspectorPanel
             node={{
               record: selection.data,
@@ -193,7 +200,7 @@ export default function ConnectionTablesView({ workspace, schemaExportFilename }
               />
             ) : null}
           </RowInspectorPanel>
-          )}
+          ) : null}
         </div>
       </div>
     </section>

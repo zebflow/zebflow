@@ -614,7 +614,19 @@ fn normalize_definition(
         ));
     }
     let schema = table.split_once('.').map(|(schema, _)| schema.to_string()).unwrap_or_default();
-    let attrs = normalize_attributes(&req.attributes);
+    let mut attrs = normalize_attributes(&req.attributes);
+    let edge = match &req.edge {
+        Some(edge) => {
+            if !key_default.is_empty() {
+                return Err(PlatformError::new(
+                    "PLATFORM_SEKEJAP_TABLE_INVALID",
+                    "an edge table has no generated key: its two ends are its rows' address",
+                ));
+            }
+            Some(normalize_edge(&table, edge, &mut attrs)?)
+        }
+        None => None,
+    };
     let hash_indexed_fields = collect_index_fields(&attrs, &req.hash_indexed_fields, "hash");
     let range_indexed_fields = collect_index_fields(&attrs, &req.range_indexed_fields, "range");
     let fulltext_fields = collect_index_fields(&attrs, &[], "fulltext");
@@ -633,7 +645,56 @@ fn normalize_definition(
         row_count: 0,
         key_default,
         schema,
-        edge: None,
+        edge,
+    })
+}
+
+/// The edge part of a create request, checked, as the catalog will report
+/// it. The two end columns are put first among the columns, as `TEXT`
+/// holding the ends' keys; a property may not reuse either name.
+fn normalize_edge(
+    table: &str,
+    req: &crate::platform::model::CreateEdgeTableRequest,
+    attrs: &mut Vec<CollectionAttribute>,
+) -> Result<EdgeTableDefinition, PlatformError> {
+    let invalid = |message: String| PlatformError::new("PLATFORM_SEKEJAP_TABLE_INVALID", message);
+    let source = slug_segment(&req.source);
+    let destination = slug_segment(&req.destination);
+    let source_table = qualified_slug(&req.source_table);
+    let destination_table = qualified_slug(&req.destination_table);
+    if source.is_empty() || destination.is_empty() || source.starts_with('_') || destination.starts_with('_') {
+        return Err(invalid("an edge table names a column for each end, not starting with `_`".to_string()));
+    }
+    if source == destination {
+        return Err(invalid(format!("the two ends need two columns, not `{source}` twice")));
+    }
+    if source_table.is_empty() || destination_table.is_empty() {
+        return Err(invalid("an edge table names the table each end reaches".to_string()));
+    }
+    if let Some(taken) = attrs.iter().find(|attr| attr.name == source || attr.name == destination) {
+        return Err(invalid(format!("`{}` is an end column and cannot also be a property", taken.name)));
+    }
+    let end = |name: &str| CollectionAttribute {
+        name: name.to_string(),
+        kind: "string".to_string(),
+        declared: "TEXT".to_string(),
+        ..Default::default()
+    };
+    attrs.splice(0..0, [end(&source), end(&destination)]);
+    let bare = table.rsplit('.').next().unwrap_or(table);
+    let label = slug_segment(&req.label);
+    Ok(EdgeTableDefinition {
+        references: vec![
+            EdgeTableReference { column: source.clone(), table: source_table.clone() },
+            EdgeTableReference { column: destination.clone(), table: destination_table.clone() },
+        ],
+        key: if req.one_per_pair { vec![source.clone(), destination.clone()] } else { Vec::new() },
+        source,
+        source_table,
+        destination,
+        destination_table,
+        label: if label.is_empty() { bare.to_string() } else { label },
+        graph: String::new(),
     })
 }
 
@@ -1227,8 +1288,37 @@ pub fn create_table(
         ));
     }
 
+    if let Some(edge) = &def.edge {
+        for end in [&edge.source_table, &edge.destination_table] {
+            match existing.iter().find(|item| &item.table == end) {
+                Some(item) if item.edge.is_none() => {}
+                Some(_) => {
+                    return Err(PlatformError::new(
+                        "PLATFORM_SEKEJAP_TABLE_INVALID",
+                        format!("'{end}' is an edge table; an edge joins two tables of rows"),
+                    ));
+                }
+                None => {
+                    return Err(PlatformError::new(
+                        "PLATFORM_SEKEJAP_TABLE_INVALID",
+                        format!("an edge reaches a table that exists, and there is no '{end}'"),
+                    ));
+                }
+            }
+        }
+    }
+
     let db = get_db(data_root, owner, project)?;
     create_managed_table(&db, &def)?;
+    // An edge table's direction is fixed in `base`, which needs no named
+    // graph. If that is refused the table is dropped again, so no table is
+    // left that looks like an edge table and is not one.
+    if def.edge.is_some() {
+        if let Err(err) = db.execute(&build_graph_sql(BASE_GRAPH, &[&def], true), &[]) {
+            let _ = db.execute(&format!("DROP TABLE {}", def.collection), &[]);
+            return Err(store_error("PLATFORM_SEKEJAP_TABLE_CREATE", err));
+        }
+    }
     sync_schema_to_repo(data_root, owner, project)?;
     live_tables(&db)?
         .into_iter()
@@ -2464,6 +2554,7 @@ mod tests {
             project,
             &CreateSimpleTableRequest {
                 key_default: String::new(),
+                edge: None,
                 table: table.to_string(),
                 attributes: attrs,
                 hash_indexed_fields: Vec::new(),
@@ -2566,6 +2657,7 @@ mod tests {
             "demo",
             &CreateSimpleTableRequest {
                 key_default: String::new(),
+                edge: None,
                 table: "docs".to_string(),
                 attributes: vec![attribute("embedding", "vector", &["vector"])],
                 hash_indexed_fields: Vec::new(),
@@ -2985,6 +3077,7 @@ mod tests {
                 hash_indexed_fields: Vec::new(),
                 range_indexed_fields: Vec::new(),
                 key_default: "ulid()".to_string(),
+                edge: None,
             },
         )
         .expect("create");
@@ -3057,6 +3150,7 @@ mod tests {
                 hash_indexed_fields: Vec::new(),
                 range_indexed_fields: Vec::new(),
                 key_default: String::new(),
+                edge: None,
             },
         )
         .expect("a table in a schema");
@@ -3119,6 +3213,93 @@ mod tests {
         )
         .expect_err("an unknown column is refused");
         assert_eq!(refused.code, "PLATFORM_SEKEJAP_ROW_INVALID");
+    }
+
+    /// An edge table made from the Studio: its two end columns come first,
+    /// its direction is fixed in `base` with no named graph, one edge per
+    /// pair when asked, and a label of its own or its name. What cannot be an
+    /// edge table is refused before anything is created.
+    #[test]
+    fn a_studio_edge_table_is_fixed_in_base() {
+        let tmp = tmp_root();
+        let db = get_db(tmp.path(), "alice", "demo").expect("open");
+        for sql in [
+            "CREATE TABLE people (_key TEXT PRIMARY KEY, name TEXT)",
+            "CREATE SCHEMA atlas",
+            "CREATE TABLE atlas.places (_key TEXT PRIMARY KEY, name TEXT)",
+            "INSERT INTO people (_key, name) VALUES ('a', 'Ann'), ('b', 'Ben')",
+            "INSERT INTO atlas.places (_key, name) VALUES ('p', 'Park'), ('q', 'Quay')",
+        ] {
+            db.execute(sql, &[]).expect(sql);
+        }
+        let edge = |source: &str, source_table: &str, destination: &str, destination_table: &str, label: &str| {
+            Some(crate::platform::model::CreateEdgeTableRequest {
+                source: source.to_string(),
+                source_table: source_table.to_string(),
+                destination: destination.to_string(),
+                destination_table: destination_table.to_string(),
+                label: label.to_string(),
+                one_per_pair: true,
+            })
+        };
+        let request = |table: &str, attributes: Vec<CollectionAttribute>, edge| CreateSimpleTableRequest {
+            table: table.to_string(),
+            attributes,
+            hash_indexed_fields: Vec::new(),
+            range_indexed_fields: Vec::new(),
+            key_default: String::new(),
+            edge,
+        };
+        let since = CollectionAttribute { name: "since".to_string(), kind: "INT".to_string(), ..Default::default() };
+
+        let knows = create_table(
+            tmp.path(),
+            "alice",
+            "demo",
+            &request("knows", vec![since.clone()], edge("person", "people", "friend", "people", "")),
+        )
+        .expect("an edge table in public");
+        let info = knows.edge.as_ref().expect("an edge table");
+        assert_eq!((info.source.as_str(), info.destination.as_str()), ("person", "friend"));
+        assert_eq!(info.label, "knows");
+        assert!(info.graph.is_empty(), "no named graph: {info:?}");
+        assert_eq!(info.key, vec!["person".to_string(), "friend".to_string()]);
+        assert_eq!(
+            knows.attributes.iter().map(|a| a.name.as_str()).collect::<Vec<_>>(),
+            vec!["person", "friend", "since"]
+        );
+
+        let near = create_table(
+            tmp.path(),
+            "alice",
+            "demo",
+            &request("atlas.near", Vec::new(), edge("here", "atlas.places", "there", "atlas.places", "close_to")),
+        )
+        .expect("an edge table in a schema");
+        assert_eq!(near.edge.as_ref().map(|e| e.label.as_str()), Some("atlas.close_to"));
+
+        for sql in [
+            "INSERT INTO knows (person, friend, since) VALUES ('a', 'b', 2020)",
+            "INSERT INTO atlas.near (here, there) VALUES ('p', 'q')",
+        ] {
+            db.execute(sql, &[]).expect(sql);
+        }
+        assert!(db.execute("INSERT INTO knows (person, friend) VALUES ('a', 'b')", &[]).is_err(), "one edge per pair");
+        let walk = |sql: &str| db.query(sql, &[]).expect(sql).len();
+        assert_eq!(walk("SELECT * FROM GRAPH_TABLE (base MATCH (x:people WHERE x._key = 'a')-[:knows]->(y:people) RETURN y._key AS k)"), 1);
+        assert_eq!(walk("SELECT * FROM GRAPH_TABLE (base MATCH (x:places WHERE x._key = 'p')-[:\"atlas.close_to\"]->(y) RETURN y._key AS k)"), 1);
+
+        for (bad, why) in [
+            (request("e1", Vec::new(), edge("person", "people", "person", "people", "")), "twice"),
+            (request("e2", Vec::new(), edge("person", "people", "place", "nowhere", "")), "no 'nowhere'"),
+            (request("e3", Vec::new(), edge("person", "people", "k", "knows", "")), "is an edge table"),
+            (request("e4", vec![CollectionAttribute { name: "person".to_string(), kind: "TEXT".to_string(), ..Default::default() }], edge("person", "people", "friend", "people", "")), "cannot also be a property"),
+            (CreateSimpleTableRequest { key_default: "ulid()".to_string(), ..request("e5", Vec::new(), edge("person", "people", "friend", "people", "")) }, "no generated key"),
+        ] {
+            let err = create_table(tmp.path(), "alice", "demo", &bad).expect_err(why);
+            assert!(err.message.contains(why), "{why}: {}", err.message);
+        }
+        assert!(!list_tables(tmp.path(), "alice", "demo").expect("tables").iter().any(|t| t.table.starts_with('e')));
     }
 
     #[test]

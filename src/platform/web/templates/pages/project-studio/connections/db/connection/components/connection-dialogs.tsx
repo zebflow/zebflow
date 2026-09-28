@@ -22,7 +22,7 @@ export default function ConnectionDialogs({ workspace }) {
           tablesApi={api.tables}
           types={dbTypes}
           caps={caps}
-          onCreated={(table) => catalog.reload(table)}
+          catalog={catalog}
         />
       ) : null}
       <MapPicker

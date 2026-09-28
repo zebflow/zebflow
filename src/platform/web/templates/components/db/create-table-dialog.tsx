@@ -9,6 +9,7 @@ import Field from "@/components/ui/field";
 import Input from "@/components/ui/input";
 import { Select, SelectOption } from "@/components/ui/select";
 import { AttributeEditorHeader, AttributeEditorRow, DEFAULT_ATTRIBUTE } from "@/components/db/attribute-editor";
+import EdgeEndsFields from "@/components/db/edge-ends-fields";
 
 /**
  * Table creation for engines that allow it.
@@ -16,11 +17,14 @@ import { AttributeEditorHeader, AttributeEditorRow, DEFAULT_ATTRIBUTE } from "@/
  * Declared by `capabilities.create_table`. What the form holds belongs to
  * `CreateTablePanel` and arrives as `form`; what the engine can declare
  * arrives as `caps`, so an engine without column constraints or generated
- * keys shows those parts disabled or not at all.
+ * keys shows those parts disabled or not at all. An engine whose relations
+ * are a graph can also make an edge table: then the columns are the edges'
+ * properties, and `tables` is what its two ends may reach.
  */
-export default function CreateTableDialog({ open, onOpenChange, types, form, caps }) {
-  const { attributes, setAttributes, busy, status } = form;
+export default function CreateTableDialog({ open, onOpenChange, types, form, caps, tables }) {
+  const { attributes, setAttributes, busy, status, edge, setEdge } = form;
   const keyDefaults = Array.isArray(caps?.keyDefaults) ? caps.keyDefaults : [];
+  const isEdge = edge.enabled === true;
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -36,6 +40,15 @@ export default function CreateTableDialog({ open, onOpenChange, types, form, cap
         </DialogHeader>
 
         <form onSubmit={form.submit} className="flex flex-col gap-4 px-6 py-4">
+          {caps?.graphRelations ? (
+            <Field label="Kind">
+              <Select value={isEdge ? "edge" : "table"} onChange={(event) => setEdge({ ...edge, enabled: event?.target?.value === "edge" })} disabled={busy}>
+                <SelectOption value="table" label="Table · rows with a key" />
+                <SelectOption value="edge" label="Edge table · edges between two tables' rows" />
+              </Select>
+            </Field>
+          ) : null}
+
           <div className="grid gap-4 sm:grid-cols-[minmax(0,1fr)_minmax(0,14rem)]">
             <Field label="Table name">
               <Input
@@ -46,7 +59,7 @@ export default function CreateTableDialog({ open, onOpenChange, types, form, cap
                 disabled={busy}
               />
             </Field>
-            {keyDefaults.length ? (
+            {keyDefaults.length && !isEdge ? (
               <Field label="Row key">
                 <Select value={form.keyDefault} onChange={(event) => form.setKeyDefault(event?.target?.value || "")} disabled={busy}>
                   <SelectOption value="" label="Given on each insert" />
@@ -58,7 +71,9 @@ export default function CreateTableDialog({ open, onOpenChange, types, form, cap
             ) : null}
           </div>
 
-          <Field label="Columns">
+          {isEdge ? <EdgeEndsFields edge={edge} setEdge={setEdge} tables={tables} busy={busy} /> : null}
+
+          <Field label={isEdge ? "Edge properties" : "Columns"}>
             <div className="flex flex-col">
               <AttributeEditorHeader />
               {attributes.map((item, index) => (
