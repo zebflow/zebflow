@@ -860,7 +860,7 @@ impl SqliteDataAdapter {
         Ok(exists)
     }
 
-    fn migrations() -> [MigrationDef; 21] {
+    fn migrations() -> [MigrationDef; 22] {
         [
             MigrationDef {
                 version: 1,
@@ -967,6 +967,11 @@ impl SqliteDataAdapter {
                 name: "member_provenance_is_history_not_reference",
                 apply: Self::apply_migration_0021_member_provenance_is_history_not_reference,
             },
+            MigrationDef {
+                version: 22,
+                name: "worker_registry_office_projects",
+                apply: Self::apply_migration_0022_worker_registry_office_projects,
+            },
         ]
     }
 
@@ -989,7 +994,14 @@ impl SqliteDataAdapter {
                 continue;
             }
             let tx = conn.transaction().map_err(Self::qe)?;
-            (migration.apply)(&tx)?;
+            // Named, so a catalog that cannot be upgraded says which step
+            // refused and the process stops at startup, not at first use.
+            (migration.apply)(&tx).map_err(|err| {
+                PlatformError::new(
+                    err.code,
+                    format!("platform catalog migration {} ({}): {}", migration.version, migration.name, err.message),
+                )
+            })?;
             tx.execute(
                 "INSERT INTO schema_migrations (version, name, applied_at) VALUES (?1, ?2, strftime('%s','now'))",
                 params![migration.version, migration.name],
@@ -1204,12 +1216,6 @@ CREATE TABLE IF NOT EXISTS office_nodes (
             "worker_registry",
             "office_slug",
             "TEXT NOT NULL DEFAULT ''",
-        )?;
-        Self::ensure_table_column(
-            tx,
-            "worker_registry",
-            "projects_json",
-            "TEXT NOT NULL DEFAULT '[]'",
         )?;
         Self::ensure_table_column(
             tx,
@@ -2939,6 +2945,16 @@ CREATE INDEX IF NOT EXISTS idx_platform_service_instances_host
     /// not them. `member_user_id` keeps its RESTRICT — that one names the
     /// person the row is *about*, and it is the safety net that makes
     /// `delete_user` fail loudly if a membership survives the sweep.
+    /// The projects an office holds, carried on its heartbeat so the
+    /// controller's home can list them (0.10.0). A column added to a table a
+    /// released catalog already has is a migration of its own: an earlier
+    /// migration, already recorded as applied, never runs again.
+    fn apply_migration_0022_worker_registry_office_projects(
+        tx: &Transaction<'_>,
+    ) -> Result<(), PlatformError> {
+        Self::ensure_table_column(tx, "worker_registry", "projects_json", "TEXT NOT NULL DEFAULT '[]'")
+    }
+
     fn apply_migration_0021_member_provenance_is_history_not_reference(
         tx: &Transaction<'_>,
     ) -> Result<(), PlatformError> {
@@ -7735,6 +7751,67 @@ impl DataAdapter for SqliteDataAdapter {
 #[cfg(test)]
 mod tests {
     use serde_json::json;
+
+    /// Every table, its columns, and every index, as one catalog has them.
+    fn catalog_shape(path: &Path) -> Vec<String> {
+        let conn = Connection::open(path).expect("open catalog");
+        let names = conn
+            .prepare("SELECT type, name FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name")
+            .expect("prepare")
+            .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))
+            .expect("query")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("rows");
+        let mut shape = Vec::new();
+        for (kind, name) in names {
+            if kind != "table" {
+                shape.push(format!("{kind} {name}"));
+                continue;
+            }
+            let columns = conn
+                .prepare(&format!("PRAGMA table_info({name})"))
+                .expect("table_info")
+                .query_map([], |row| row.get::<_, String>(1))
+                .expect("columns")
+                .collect::<Result<Vec<_>, _>>()
+                .expect("column names");
+            let mut columns = columns;
+            columns.sort();
+            shape.push(format!("table {name} ({})", columns.join(", ")));
+        }
+        shape
+    }
+
+    /// A catalog written by a released version, opened by this one, ends up
+    /// exactly as a fresh install: every table, column and index. Each
+    /// fixture is one release's fresh catalog (its schema and recorded
+    /// migrations); every release adds its own. This is what fails when a column is added to a released
+    /// migration — which never runs again on an existing install — instead
+    /// of a new one: 0.10.0's controller answered every office heartbeat 500
+    /// "no such column: projects_json" for exactly that.
+    #[test]
+    fn a_catalog_from_a_released_version_upgrades_to_the_fresh_shape() {
+        let tmp = tempfile::tempdir().expect("tmp");
+        let fresh = tmp.path().join("fresh.db");
+        drop(SqliteDataAdapter::new_at_db_path(&fresh).expect("fresh catalog"));
+        let expected = catalog_shape(&fresh);
+
+        for (release, dump) in [
+            ("0.9.1", include_str!("../../../../tests/fixtures/platform-catalog/v0.9.1.sql")),
+            ("0.10.0", include_str!("../../../../tests/fixtures/platform-catalog/v0.10.0.sql")),
+        ] {
+            let path = tmp.path().join(format!("{release}.db"));
+            Connection::open(&path).expect("open").execute_batch(dump).expect("load the released catalog");
+            drop(SqliteDataAdapter::new_at_db_path(&path).unwrap_or_else(|e| panic!("{release} upgrades: {e:?}")));
+            let upgraded = catalog_shape(&path);
+            let missing = expected.iter().filter(|line| !upgraded.contains(line)).collect::<Vec<_>>();
+            let extra = upgraded.iter().filter(|line| !expected.contains(line)).collect::<Vec<_>>();
+            assert!(
+                missing.is_empty() && extra.is_empty(),
+                "a {release} catalog does not upgrade to the fresh shape — add a numbered migration, never edit a released one\n missing: {missing:#?}\n extra: {extra:#?}"
+            );
+        }
+    }
 
     use super::*;
     use crate::pipeline::model::NodeTraceEntry;

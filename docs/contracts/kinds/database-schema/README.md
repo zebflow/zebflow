@@ -207,6 +207,28 @@ Evidence: `src/platform/db/driver.rs`, `src/platform/db/registry.rs`,
 `src/platform/services/db_runtime.rs`,
 `src/platform/web/templates/pages/project-studio/connections/db/connection/page.tsx`.
 
+## The platform catalog upgrades itself
+
+`platform/catalog.db` (users, projects, offices, credentials) is SQLite,
+brought to the running version's shape when it opens.
+
+- The fresh shape is the schema a new install creates. An existing catalog
+  reaches it through numbered migrations, each recorded in
+  `schema_migrations` and run once, in order, at open.
+- A released migration never changes. A column, table or index an existing
+  catalog lacks is a new migration, written to be a no-op on a catalog that
+  already has it (a fresh install carries it from its schema).
+- A migration that fails stops the process at startup, naming the migration.
+  It never surfaces later as a query error.
+- Every release adds its own fresh catalog as a fixture
+  (`tests/fixtures/platform-catalog/v<version>.sql`). One test opens each
+  earlier catalog with the current code and requires exactly the fresh shape.
+
+Evidence: 0.10.0 added `worker_registry.projects_json` inside migration 5,
+already applied on every running controller; the upgraded controller answered
+every office heartbeat 500 "no such column". 0.10.1 moved it to migration 22,
+and the fixture test fails if the migration is removed.
+
 ## Open
 
 Deliberately unbuilt. Each is a decision, not an oversight.
