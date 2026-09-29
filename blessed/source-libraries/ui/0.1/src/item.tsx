@@ -14,9 +14,9 @@ import { Separator } from "zeb/ui/separator";
  */
 
 const ITEM_VARIANTS = {
-  default: "bg-transparent",
+  default: "border-transparent bg-transparent",
   outline: "border-border",
-  muted: "bg-muted/50",
+  muted: "border-transparent bg-muted/50",
 };
 
 const ITEM_SIZES = {
@@ -32,7 +32,7 @@ export function Item({ className, variant = "default", size = "default", as: Tag
       data-variant={variant}
       data-size={size}
       className={cx(
-        "flex flex-wrap items-center rounded-md border border-transparent text-sm transition-colors duration-100 outline-none focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50",
+        "flex flex-wrap items-center rounded-md border text-sm transition-colors duration-100 outline-none focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50",
         ITEM_VARIANTS[variant] ?? ITEM_VARIANTS.default,
         ITEM_SIZES[size] ?? ITEM_SIZES.default,
         className

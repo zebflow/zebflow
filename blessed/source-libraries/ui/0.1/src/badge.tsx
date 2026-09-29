@@ -8,20 +8,24 @@ import { cx } from "zeb/react";
  * variant; that bracket selector isn't compiled, so the hover class here
  * applies unconditionally regardless of tag — the visual result is the same
  * whether the badge renders as a `<span>` or an `<a>`.
+ *
+ * The border colour is set by the variant, never by the base: two colours on
+ * one element are decided by stylesheet order, not by which the variant
+ * meant to override, so `outline` would lose its border to the base.
  */
 
 const VARIANTS = {
-  default: "bg-primary text-primary-foreground hover:bg-primary/90",
-  secondary: "bg-secondary text-secondary-foreground hover:bg-secondary/90",
+  default: "border-transparent bg-primary text-primary-foreground hover:bg-primary/90",
+  secondary: "border-transparent bg-secondary text-secondary-foreground hover:bg-secondary/90",
   destructive:
-    "bg-destructive text-destructive-foreground hover:bg-destructive/90 focus-visible:ring-destructive/20 dark:bg-destructive/60 dark:focus-visible:ring-destructive/40",
+    "border-transparent bg-destructive text-destructive-foreground hover:bg-destructive/90 focus-visible:ring-destructive/20 dark:bg-destructive/60 dark:focus-visible:ring-destructive/40",
   outline: "border-border text-foreground hover:bg-accent hover:text-accent-foreground",
-  ghost: "hover:bg-accent hover:text-accent-foreground",
-  link: "text-primary underline-offset-4 hover:underline",
+  ghost: "border-transparent hover:bg-accent hover:text-accent-foreground",
+  link: "border-transparent text-primary underline-offset-4 hover:underline",
 };
 
 const BASE =
-  "inline-flex w-fit shrink-0 items-center justify-center gap-1 overflow-hidden rounded-full border border-transparent px-2 py-0.5 text-xs font-medium whitespace-nowrap transition-colors focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50 aria-invalid:border-destructive aria-invalid:ring-destructive/20 dark:aria-invalid:ring-destructive/40";
+  "inline-flex w-fit shrink-0 items-center justify-center gap-1 overflow-hidden rounded-full border px-2 py-0.5 text-xs font-medium whitespace-nowrap transition-colors focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50 aria-invalid:border-destructive aria-invalid:ring-destructive/20 dark:aria-invalid:ring-destructive/40";
 
 export function badgeVariants({ variant = "default", className = "" } = {}) {
   return cx(BASE, VARIANTS[variant] ?? VARIANTS.default, className);
