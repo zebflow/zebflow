@@ -1,10 +1,1 @@
-{
-  "type": "module",
-  "dependencies": {
-    "three": "^0.171.0",
-    "@pixiv/three-vrm": "^3.4.0"
-  },
-  "devDependencies": {
-    "esbuild": "^0.25.0"
-  }
-}
+{"type":"module","dependencies":{"three":"0.186.1","@pixiv/three-vrm":"3.5.5"},"devDependencies":{"esbuild":"0.25.12"}}

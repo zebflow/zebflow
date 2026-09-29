@@ -177,7 +177,7 @@ inst.setExpression("lookRight", 0.5);
 
 | Property | Value |
 |----------|-------|
-| Packages | `three` r0.171 + `@pixiv/three-vrm` 3.x |
+| Packages | `three` r186 (0.186.1) + `@pixiv/three-vrm` 3.5.5 |
 | Bundle | `runtime/threejs-vrm.bundle.mjs` (~862 KB minified) |
 | CDN fetches | **None** — fully offline |
 | VRM versions | VRM 0.x and VRM 1.0 |

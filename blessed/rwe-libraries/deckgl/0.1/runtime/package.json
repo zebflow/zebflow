@@ -1,17 +1,1 @@
-{
-  "name": "zeb-deckgl-build",
-  "version": "1.0.0",
-  "private": true,
-  "type": "module",
-  "dependencies": {
-    "@deck.gl/core": "^9.0.0",
-    "@deck.gl/layers": "^9.0.0",
-    "@deck.gl/aggregation-layers": "^9.0.0",
-    "@deck.gl/geo-layers": "^9.0.0",
-    "@deck.gl/mesh-layers": "^9.0.0",
-    "@deck.gl/extensions": "^9.0.0"
-  },
-  "devDependencies": {
-    "esbuild": "^0.25.0"
-  }
-}
+{"name":"zeb-deckgl-build","private":true,"type":"module","dependencies":{"@deck.gl/core":"9.4.0","@deck.gl/layers":"9.4.0","@deck.gl/aggregation-layers":"9.4.0","@deck.gl/geo-layers":"9.4.0","@deck.gl/mesh-layers":"9.4.0","@deck.gl/extensions":"9.4.0"},"devDependencies":{"esbuild":"0.25.12"}}

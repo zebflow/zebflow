@@ -11,6 +11,14 @@ The file named "patched" is a Zebflow wrapper around the bundle, not an edit of
 deck.gl's source. It adds layer construction from a declarative spec, tooltip
 handling, and instance bookkeeping. deck.gl's own code is imported, not altered.
 
+Upstream 9.4.0 (0.1.5)
+---------------------
+
+The bundle is deck.gl 9.4.0 built against luma.gl 9.4.2, pinned exactly in
+0.1/runtime/package.json. Not luma.gl 9.4.0: it drew stale triangles after a
+polygon shrank (deck.gl #10676, #10719), fixed in luma.gl 9.4.2. The wrapper
+is unchanged.
+
 Hydration adopts the mounted instance (0.1.4)
 ---------------------------------------------
 

@@ -296,7 +296,6 @@ mod tests {
     use sha2::{Digest, Sha256};
 
     use super::*;
-    use crate::platform::web::embedded::platform_library_asset;
 
     #[test]
     fn every_embedded_library_uses_the_canonical_contract() {
@@ -322,7 +321,10 @@ mod tests {
         for manifest in service.list() {
             for version in &manifest.versions {
                 let asset_path = format!("{}/{}", manifest.name, version.entry);
-                let bytes = platform_library_asset(&asset_path)
+                // The manifests describe the hub's bytes; the Studio's pinned
+                // copies under `vendor/` are looked up first by
+                // `platform_library_asset` and are not what they declare.
+                let bytes = crate::platform::web::embedded::hub_catalogue_asset(&asset_path)
                     .unwrap_or_else(|| panic!("embedded bundle '{asset_path}' exists"));
                 assert_eq!(
                     version.integrity,

@@ -3,12 +3,12 @@
   "version": "0.1",
   "kind": "web-library",
   "trust": "official",
-  "description": "Three.js r183 full bundle for TSX templates. All Three.js classes + scene runtime, canvas mounting, and RWE hooks.",
+  "description": "Three.js r186 full bundle for TSX templates. All Three.js classes + scene runtime, canvas mounting, and RWE hooks.",
   "source": {
     "provider": "zebflow",
     "package": "three",
-    "package_version": "0.183.2",
-    "packed_version": "full-r183",
+    "package_version": "0.186.1",
+    "packed_version": "full-r186",
     "packed_kind": "full",
     "entry": "runtime/threejs.bundle.mjs"
   },

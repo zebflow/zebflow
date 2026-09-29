@@ -25,9 +25,9 @@
       "full-9.x": {
         "entry": "0.1/runtime/deckgl.bundle.mjs",
         "source": "offline",
-        "package_version": "9.x",
-        "size_bytes": 1236825,
-        "integrity": "sha256:fe1def14dc6b7f4ce2d68a74189b035b0a063c3f43d8a2fad68460992ca83ffe",
+        "package_version": "9.4.0",
+        "size_bytes": 1644016,
+        "integrity": "sha256:e11289461ec621147e5b8f661db9431002b89604d1075eeed7789e27f3190f26",
         "note": "Bundles @deck.gl/core + layers + aggregation-layers + geo-layers + mesh-layers + extensions via esbuild. Build: cd /tmp/zeb-deckgl-build && npm install && node_modules/.bin/esbuild entry.mjs --bundle --format=esm --minify --outfile=deckgl.bundle.mjs"
       }
     },

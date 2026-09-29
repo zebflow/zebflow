@@ -20,7 +20,7 @@ against the reference, change one thing, repeat within a budget.
 | Asset | Build in | Render check |
 |---|---|---|
 | icon, logo mark, illustration, chart glyph, diagram | inline `<svg>` in TSX (server-rendered, themeable) or a `.svg` file under `static/` | the page, at 1× and 3× zoom |
-| a 3D prop, product, character, scene | `zeb/threejs` (Three.js r183) — a factory function that returns a `Group` | screenshots from ≥ 3 azimuths |
+| a 3D prop, product, character, scene | `zeb/threejs` (Three.js r186) — a factory function that returns a `Group` | screenshots from ≥ 3 azimuths |
 | another engine (Godot, Unity, Babylon, R3F) | the same passes and gates; only the primitives' names change | that engine's viewport |
 
 State the fidelity you are aiming for **before** starting — `stylized`, `low-poly`,

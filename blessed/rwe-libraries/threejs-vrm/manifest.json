@@ -16,10 +16,10 @@
       "full-3.x": {
         "entry": "0.1/runtime/threejs-vrm.bundle.mjs",
         "source": "offline",
-        "package_version": "3.x",
-        "size_bytes": 901961,
-        "integrity": "sha256:4a111103bd960382671abe753cd13eed9e9cdce208064840e9ec53116a487b1f",
-        "note": "Three.js r0.171 + @pixiv/three-vrm 3.x via esbuild. Build: cd /tmp/zeb-threejs-vrm-build && npm install && node_modules/.bin/esbuild entry.mjs --bundle --format=esm --minify --outfile=threejs-vrm.bundle.mjs"
+        "package_version": "3.5.5",
+        "size_bytes": 960609,
+        "integrity": "sha256:f138acd61a10914b59636f187b0d33ad1731b6ba6ee12126bf37afa5ee295e53",
+        "note": "Three.js r186 (three@0.186.1) + @pixiv/three-vrm 3.5.5 via esbuild. Build: npm install (0.1/runtime/package.json) && node_modules/.bin/esbuild entry.mjs --bundle --format=esm --minify --outfile=threejs-vrm.bundle.mjs"
       }
     },
     "license": {

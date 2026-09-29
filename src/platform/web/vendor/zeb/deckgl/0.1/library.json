@@ -7,7 +7,7 @@
   "source": {
     "provider": "zebflow",
     "package": "deck.gl",
-    "package_version": "9.x",
+    "package_version": "9.4.0",
     "packed_version": "full-9.x",
     "packed_kind": "full",
     "entry": "runtime/deckgl.patched.mjs"
