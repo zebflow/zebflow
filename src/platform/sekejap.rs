@@ -2139,12 +2139,15 @@ pub fn execute_connection_query(
     connection_slug: &str,
     req: &QueryProjectDbConnectionRequest,
 ) -> Result<ProjectDbConnectionQueryResult, PlatformError> {
+    // The request's `$1, $2, …` values, bound by the engine: the Studio's
+    // query tab and the DB API send them, and a value never has to be pasted
+    // into the statement's text.
     let result = execute_sql(
         data_root,
         owner,
         project,
         &req.sql,
-        &[],
+        &req.params,
         req.limit.unwrap_or(200),
         req.read_only.unwrap_or(true),
     )?;
@@ -3300,6 +3303,62 @@ mod tests {
             assert!(err.message.contains(why), "{why}: {}", err.message);
         }
         assert!(!list_tables(tmp.path(), "alice", "demo").expect("tables").iter().any(|t| t.table.starts_with('e')));
+    }
+
+    /// The DB API's parameters reach the engine: a value is bound to `$1`,
+    /// never pasted into the statement, so a quote in it is just a quote.
+    #[test]
+    fn a_connection_query_binds_its_parameters() {
+        let tmp = tmp_root();
+        get_db(tmp.path(), "alice", "demo")
+            .expect("open")
+            .execute("CREATE TABLE notes (_key TEXT PRIMARY KEY, body TEXT)", &[])
+            .expect("table");
+        let run = |sql: &str, params: Vec<Value>, read_only: bool| {
+            execute_connection_query(
+                tmp.path(),
+                "alice",
+                "demo",
+                "cid",
+                "default-multimodel",
+                &QueryProjectDbConnectionRequest {
+                    sql: sql.to_string(),
+                    params,
+                    read_only: Some(read_only),
+                    ..Default::default()
+                },
+            )
+        };
+        run("INSERT INTO notes (_key, body) VALUES ($1, $2)", vec![json!("n1"), json!("it's bound")], false)
+            .expect("insert with parameters");
+        let read = run("SELECT body FROM notes WHERE _key = $1", vec![json!("n1")], true).expect("read");
+        assert_eq!(read.rows, vec![vec![json!("it's bound")]]);
+    }
+
+    /// An edge with properties reads back in THIS build. Zebflow compiles
+    /// serde_json with `preserve_order` (deno and arrow turn it on, and Cargo
+    /// unifies features), and sekejap before 0.18.5 wrote such objects in
+    /// insertion order and then refused to read them: the first edge made
+    /// the table unreadable, undeletable and undroppable.
+    #[test]
+    fn an_edge_with_properties_reads_back_in_this_build() {
+        let tmp = tmp_root();
+        let run = |sql: &str| execute_sql(tmp.path(), "alice", "demo", sql, &[], 10, false).unwrap_or_else(|e| panic!("{sql}: {e:?}"));
+        for sql in [
+            "CREATE TABLE people (_key TEXT PRIMARY KEY, name TEXT)",
+            "CREATE TABLE places (_key TEXT PRIMARY KEY, name TEXT)",
+            "CREATE TABLE visited (person TEXT REFERENCES people, place TEXT REFERENCES places, position TEXT, department TEXT, from_year INT, is_current BOOLEAN, is_public BOOLEAN DEFAULT true)",
+            "ALTER PROPERTY GRAPH base ADD EDGE TABLES (visited SOURCE KEY (person) REFERENCES people (_key) DESTINATION KEY (place) REFERENCES places (_key))",
+            "INSERT INTO people (_key, name) VALUES ('a', 'Ann')",
+            "INSERT INTO places (_key, name) VALUES ('p', 'Park')",
+            "INSERT INTO visited (person, place, position, department, from_year, is_current) VALUES ('a', 'p', 'PhD', 'Engineering', 2024, true)",
+        ] {
+            run(sql);
+        }
+        let read = execute_sql(tmp.path(), "alice", "demo",
+            "SELECT * FROM GRAPH_TABLE (base MATCH (a:people)-[e:visited]->(b:places) RETURN e.position AS position, e.is_public AS is_public)",
+            &[], 10, true).expect("the edge reads back");
+        assert_eq!(read.rows, vec![vec![json!("PhD"), json!(true)]]);
     }
 
     #[test]
