@@ -446,6 +446,7 @@ impl PlatformOps {
              | a page or component | `help topic=\"web\"` then `skill_read name=\"zebflow-rwe\"` |\n\
              | a screen with forms, tables, dialogs | `skill_read name=\"zebflow-ui\"` |\n\
              | a query, a table, a migration | `connection_describe` then `skill_read name=\"zebflow-data\"` |\n\
+             | SQL on the built-in database (sekejap, graph walks) | `skill_read name=\"zebflow-sekejap\"` — the grammar for this engine version |\n\
              | sign-in, roles, a protected route | `skill_read name=\"zebflow-auth\"` |\n\
              | uploads, images, rich text | `skill_read name=\"zebflow-files-editor\"` |\n\
              | which node does X ({node_count} kinds, one line each) | `help topic=\"pipeline/nodes\"` |\n\
@@ -3207,6 +3208,7 @@ impl PlatformOps {
                     crate::platform::skills::SkillSource::Blessed => "blessed".to_string(),
                 };
                 let file = if path.is_empty() { "SKILL.md" } else { path };
+                let text = crate::platform::help::expand_sekejap_markers(&text);
                 OpsResult::ok(format!("<!-- skill {name} · {file} · {where_} -->\n{text}"))
             }
             None => {

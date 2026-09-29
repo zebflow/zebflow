@@ -38,18 +38,11 @@ query nodes in `pipeline/nodes`.
   third state will come, `locale` and `translation_of` on anything a person
   reads, `slug` unique per locale. Store rich text as the editor's JSON
   (`body_json`) with derived `body_html`.
-- Sekejap DDL is its own dialect: `CREATE TABLE t (_key TEXT PRIMARY KEY DEFAULT UUIDV4(), name TEXT, created_at TIMESTAMPTZ) WITH (hash: ['name'])`
-  — no `NOT NULL`/`UNIQUE`/`REFERENCES`/`DEFAULT NOW()` in `CREATE TABLE`
-  (the only default is a UUID on `_key`), indexes in the `WITH (…)` clause,
-  types `TEXT INTEGER REAL BOOLEAN JSON TIMESTAMPTZ VECTOR GEO`
-  (`help(topic="db/sekejap")` has the whole grammar). Timestamps come from
-  the pipeline: `--params "{{ [input.body.name, new Date().toISOString()] }}"`.
-  No `UPSERT`/`ON CONFLICT`: select by key, then `logic.if` between `UPDATE`
-  and `INSERT`. **Range predicates are numeric only**: `>=`, `<`, `BETWEEN`
-  on a `TEXT` or `TIMESTAMPTZ` column silently match nothing — store a
-  date you filter by as `INTEGER` (`20260914`, or epoch seconds), or keep
-  calendar tables in SQLite where `date >= '2026-09-13'` works. "Required" and "unique" are enforced in the pipeline
-  (`logic.if` on `input.body`, a `SELECT` before the `INSERT`), not in the schema.
+- Sekejap is PostgreSQL's SQL with graph walks instead of `JOIN`; its DDL,
+  what this engine version refuses, and the pinned grammar link are in
+  `skill_read name="zebflow-sekejap"` — read it before the first
+  `sekejap.query`. Timestamps come from the pipeline:
+  `--params "{{ [input.body.name, new Date().toISOString()] }}"`.
 - Seeds go in `initial-data/` so a fresh install of the project (or of a
   bundle made from it) gets them.
 

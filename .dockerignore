@@ -31,6 +31,8 @@ tests/
 # Markdown repo-wide, except content shipped in the binary via include_str!
 **/*.md
 !src/platform/help/**/*.md
+!blessed/skills/**/*.md
+!blessed/skill-extras/**/*.md
 
 # Library READMEs / notes — not referenced by include_bytes!
 libraries/**/*.md

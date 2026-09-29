@@ -30,11 +30,26 @@ fn generate_version() {
         }
     };
 
+    // The sekejap engine this binary links, read from Cargo.lock: the help and
+    // the skills name it and link its grammar at that tag, so an agent never
+    // reads a newer engine's grammar than the one it is talking to.
+    let sekejap_version = fs::read_to_string("Cargo.lock")
+        .ok()
+        .and_then(|lock| {
+            let at = lock.find("name = \"sekejap\"\nversion = \"")?;
+            let rest = &lock[at + "name = \"sekejap\"\nversion = \"".len()..];
+            Some(rest[..rest.find('"')?].to_string())
+        })
+        .unwrap_or_else(|| "unknown".to_string());
+    println!("cargo:rerun-if-changed=Cargo.lock");
+
     let out_dir = std::env::var("OUT_DIR").expect("OUT_DIR not set");
     let dest = std::path::Path::new(&out_dir).join("version_gen.rs");
     fs::write(
         &dest,
-        format!("pub const APP_VERSION: &str = \"{app_version}\";\n"),
+        format!(
+            "pub const APP_VERSION: &str = \"{app_version}\";\npub const SEKEJAP_ENGINE_VERSION: &str = \"{sekejap_version}\";\n"
+        ),
     )
     .expect("failed writing version_gen.rs");
 
@@ -163,6 +178,12 @@ fn generate_skill_assets() {
     let mut rel_paths: Vec<String> = Vec::new();
     collect_files(Path::new(root), root, &mut rel_paths);
     rel_paths.sort();
+    // A build context that drops markdown (a `.dockerignore` with `**/*.md`)
+    // would otherwise compile an empty skill table without a word.
+    assert!(
+        rel_paths.iter().any(|p| p.ends_with("/SKILL.md")),
+        "no SKILL.md under {root} — is the build context excluding markdown?"
+    );
 
     let text = [".md", ".json", ".yaml", ".yml", ".txt", ".ts", ".tsx", ".mjs", ".js", ".py", ".sh", ".sql", ".css"];
     let mut code = String::from("pub const PLATFORM_SKILL_ASSETS: &[EmbeddedAsset] = &[\n");
@@ -194,6 +215,12 @@ fn generate_skill_extra_assets() {
     let mut rel_paths: Vec<String> = Vec::new();
     collect_files(Path::new(root), root, &mut rel_paths);
     rel_paths.sort();
+    // A build context that drops markdown (a `.dockerignore` with `**/*.md`)
+    // would otherwise compile an empty skill table without a word.
+    assert!(
+        rel_paths.iter().any(|p| p.ends_with("/SKILL.md")),
+        "no SKILL.md under {root} — is the build context excluding markdown?"
+    );
 
     let text = [".md", ".json", ".yaml", ".yml", ".txt", ".ts", ".tsx", ".mjs", ".js", ".py", ".sh", ".sql", ".css"];
     let mut code = String::from("pub const PLATFORM_SKILL_EXTRA_ASSETS: &[EmbeddedAsset] = &[\n");

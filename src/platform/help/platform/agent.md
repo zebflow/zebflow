@@ -40,6 +40,7 @@ and the project's **skills**.
 | a page, a component, a script | `zebflow-rwe` |
 | a screen built from components | `zebflow-ui` |
 | tables, SQL, migrations | `zebflow-data` |
+| SekejapQL, graph walks, edge tables | `zebflow-sekejap` |
 | login, roles, protected routes | `zebflow-auth` |
 | uploads, images, rich text | `zebflow-files-editor` |
 | proving it works | `zebflow-verify` |

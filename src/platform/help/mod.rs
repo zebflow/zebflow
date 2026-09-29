@@ -285,13 +285,33 @@ pub fn help_root_index() -> String {
     out
 }
 
+/// The sekejap engine this binary links, and where its grammar is documented
+/// at exactly that release. `<!-- sekejap-version -->` renders the version;
+/// `<!-- sekejap-grammar -->` renders the links — the pinned tag first, the
+/// repository's main branch second and marked as possibly ahead — so a page
+/// or a skill never teaches a newer engine's syntax as if it were this one's.
+pub fn expand_sekejap_markers(content: &str) -> String {
+    let version = crate::version::SEKEJAP_ENGINE_VERSION;
+    let repo = "https://github.com/sekejapdb/sekejap";
+    let links = format!(
+        "- This engine (sekejap {version}): [QL_CONTRACT.md]({repo}/blob/v{version}/docs/lang/QL_CONTRACT.md) · \
+         [INDEX_CONTRACT.md]({repo}/blob/v{version}/docs/lang/INDEX_CONTRACT.md) · \
+         [CHANGELOG]({repo}/blob/v{version}/CHANGELOG.md)\n\
+         - Latest (main, may be ahead of this engine — do not use a feature it lists unless the pinned grammar has it): \
+         [QL_CONTRACT.md]({repo}/blob/main/docs/lang/QL_CONTRACT.md)"
+    );
+    content
+        .replace("<!-- sekejap-version -->", version)
+        .replace("<!-- sekejap-grammar -->", &links)
+}
+
 /// A prose page never copies a node's flags by hand: it writes
 /// `<!-- node-flags:web.response -->` and the table is rendered here from the
 /// node's `definition()`, so the help cannot drift from the code. Likewise
 /// `<!-- node-families -->` renders the kinds grouped by family. An unknown
 /// kind in a marker is a build-time failure (`help_lint` tests), never a blank.
 pub fn expand_definition_markers(content: &str) -> String {
-    let mut out = content.to_string();
+    let mut out = expand_sekejap_markers(content);
     let defs = official_node_definitions_for_help();
     let marker = regex::Regex::new(r"<!-- node-flags:([a-z0-9_.]+) -->").unwrap();
     let rendered = marker
@@ -613,5 +633,31 @@ mod help_lint {
             assert!(!expanded.contains("— unknown node -->"), "{}: a marker rendered as unknown", page.path);
         }
         assert!(failures.is_empty(), "markers naming unknown nodes:\n{}", failures.join("\n"));
+    }
+}
+
+#[cfg(test)]
+mod sekejap_markers {
+    use super::*;
+
+    /// The sekejap page and skill name the engine this binary links, pinned
+    /// to its tag, with main offered second — never a hand-typed version.
+    #[test]
+    fn the_sekejap_page_and_skill_pin_this_engine_version() {
+        let version = crate::version::SEKEJAP_ENGINE_VERSION;
+        assert_ne!(version, "unknown", "build.rs could not read sekejap from Cargo.lock");
+        let pinned = format!("sekejap/blob/v{version}/docs/lang/QL_CONTRACT.md");
+
+        let page = get_help("db/sekejap").expect("db/sekejap");
+        let skill = expand_sekejap_markers(
+            &crate::platform::skills::blessed_file("zebflow-sekejap", "").expect("zebflow-sekejap skill"),
+        );
+        for (name, text) in [("db/sekejap", &page), ("zebflow-sekejap", &skill)] {
+            assert!(!text.contains("<!-- sekejap-"), "{name}: a marker was left unexpanded");
+            assert!(text.contains(&pinned), "{name}: no link pinned to v{version}");
+            let pinned_at = text.find(&pinned).unwrap();
+            let main_at = text.find("sekejap/blob/main/").expect("a link to main");
+            assert!(pinned_at < main_at, "{name}: the pinned grammar must come before main");
+        }
     }
 }

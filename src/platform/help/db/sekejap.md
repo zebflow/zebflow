@@ -2,12 +2,18 @@
 
 Sekejap is Zebflow's embedded multimodel database: records, graph edges,
 spatial shapes, vectors and full text in one SQL, in-process, no server.
-Every project has one (connection `default-multimodel`), and it is on
-sekejap 0.18.3. Outside graph queries its SQL is PostgreSQL's; relations between
-rows are graph walks.
+Every project has one (connection `default-multimodel`), and this build runs
+sekejap <!-- sekejap-version -->. Outside graph queries its SQL is PostgreSQL's;
+relations between rows are graph walks.
 
-Engine reference: <https://github.com/sekejapdb/sekejap> — `docs/lang/QL_CONTRACT.md`
-is the whole dialect; this page is the short form for pipelines.
+The whole dialect is the engine's `QL_CONTRACT.md`; this page is the short
+form for pipelines. Read the copy for this engine's version — main may
+already describe syntax this build refuses:
+
+<!-- sekejap-grammar -->
+
+A refusal names its section (`QL_CONTRACT §4.1`, `§5 deviation 4`); open
+that section in the pinned copy.
 
 ## Three things to know first
 
@@ -32,7 +38,8 @@ is the whole dialect; this page is the short form for pipelines.
 From a pipeline the node is `sekejap.query` (SQL in the body, values in
 `--params` as `$1, $2, …`); to try one without saving anything,
 `pipeline_run body="| trigger.function | sekejap.query -- \"SELECT …\""`;
-over HTTP, `POST /api/projects/{o}/{p}/db/connections/default-multimodel/query`.
+over HTTP, `POST /api/projects/{o}/{p}/db/connections/{connection_id}/query` —
+the id from `GET …/db/connections`, not the slug.
 
 ```
 | sekejap.query -- "SELECT _key, title FROM posts LIMIT 20"
@@ -88,7 +95,13 @@ CREATE INDEX ON contacts USING gin (to_tsvector('simple', bio))
 CREATE INDEX ON contacts USING quantized (embedding vector_cosine_ops)
 DROP INDEX [IF EXISTS] contacts_bio_gin          -- indexes are named <table>_<column>_<family>
 ALTER TABLE contacts ADD COLUMN phone TEXT       -- indexed automatically, over the rows already there
-ALTER TABLE contacts DROP COLUMN phone
+ALTER TABLE contacts ADD COLUMN tier TEXT DEFAULT 'free'   -- rows already there read the default
+ALTER TABLE contacts RENAME COLUMN phone TO mobile          -- no row rewritten; indexes follow
+ALTER TABLE contacts DROP COLUMN mobile
+ALTER TABLE contacts ALTER COLUMN tier SET NOT NULL         -- checked against every row (23502)
+ALTER TABLE contacts SET SCHEMA archive  /  ALTER INDEX i RENAME TO j
+CREATE INDEX ON contacts USING gin (name gin_trgm_ops)      -- trigram: LIKE/ILIKE '%doe%' read only matching rows
+REINDEX TABLE contacts                                      -- rebuild indexes into this version's format
 DROP TABLE [IF EXISTS] contacts [CASCADE]        -- RESTRICT by default: refuses while edges reference its rows
 CREATE SCHEMA geo  /  CREATE TABLE geo.places (…)  -- a bare name resolves in public
 SHOW TABLES  |  SHOW contacts  |  SHOW CREATE TABLE contacts  |  SHOW INDEXES ON contacts  |  SHOW EDGES
@@ -123,7 +136,9 @@ SELECT _key, name FROM contacts WHERE _key < $1 ORDER BY _key DESC LIMIT 20     
 
 **Text matching** — `LIKE` and `ILIKE` with any pattern (`%`, `_`, `ESCAPE`,
 `NOT`), PostgreSQL's rules, no index needed. `name ILIKE $1` with
-`$1 = '%doe%'` checks each row; `LIKE 'abc%'` uses the column's index.
+`$1 = '%doe%'` checks each row; `LIKE 'abc%'` uses the column's index, and a
+trigram index (`USING gin (name gin_trgm_ops)`) makes any pattern with a
+three-character piece read only the rows that hold it.
 
 **Dates** are stored as UTC microseconds behind a `TIMESTAMPTZ` column; write
 an ISO-8601 string or the integer, read back ISO text, and filter with
@@ -266,6 +281,22 @@ An edge whose `type` is an edge table's type — its label, with the schema in
 front outside `public` (`atlas.connects`) — is written into that table,
 its `fields` as the table's columns; the target itself must be a table of
 rows. Records and edges land in one commit, or not at all.
+
+## Refused, and what to write instead
+
+Each of these fails the node at request time, never at register time, so
+`pipeline_run` the query before saving it.
+
+| Written | Answer | Instead |
+|---|---|---|
+| `VALUES (…, now())` | syntax error: expected a literal or a parameter | bind the time: `--params "{{ [new Date().toISOString()] }}"`, or a `DEFAULT now()` column |
+| `WHERE LOWER(name) = $1` | no expression index | store a lower-cased copy (`name_lc`) and match it |
+| `a ILIKE $1 OR b ILIKE $2` | a LIKE cannot be a boolean leaf — even with a trigram index | one `LIKE` per query, or a `fulltext` index and `search()` |
+| `meta->>'k'` in a `SELECT` list | `->>` is Tier 2 | return `meta` and read the key in the pipeline |
+| `OFFSET n` | keyset continuation only | `WHERE (name, _key) > ($1, $2)` (Reading, above) |
+| `COUNT(*)` on an edge table | its select list is `*` or its columns | walk the edges in `GRAPH_TABLE` and `COUNT(*)` the outer select |
+| `'{"a":1}'` into a `JSONB` column | stored as a *string* | bind the object: `--params "{{ [input.body.meta] }}"` |
+| a value over 1024 bytes in an indexed column | index entry too long | keep long text in an unindexed column (`WITH (index: none)`) or `JSONB` |
 
 ## Platform collections
 
