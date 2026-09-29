@@ -1,4 +1,4 @@
-//! The project's embedded multimodel store, on sekejap 0.18.
+//! The project's embedded multimodel store, on sekejap 0.19.
 //!
 //! One `Db` per project directory, pooled by path. sekejap locks internally
 //! and is `Send + Sync`, so the pool hands out `Arc<Db>` and nothing here
@@ -73,6 +73,7 @@ fn get_db(data_root: &Path, owner: &str, project: &str) -> Result<Arc<Db>, Platf
     // which is the shape this mode is for; single mode would put every read
     // and write through one mutex. The publish interval starts at zero, so
     // a commit is visible to the next reader.
+    move_to_current_format(&dir)?;
     let db = Db::open_service(&dir).map_err(|err| {
         PlatformError::new(
             "PLATFORM_SEKEJAP_OPEN",
@@ -83,6 +84,60 @@ fn get_db(data_root: &Path, owner: &str, project: &str) -> Result<Arc<Db>, Platf
     map.insert(dir, Arc::clone(&arc));
     Ok(arc)
 }
+
+/// Move a store written by sekejap 0.18 into the format this build reads.
+///
+/// 0.19 opens no 0.18-format store. `Db::upgrade` builds the new store beside
+/// the old one (`sekejap.v019-upgrading`), verifies it, and swaps it in,
+/// keeping the original untouched as `sekejap.v018-backup`; an interrupted
+/// move is finished by the next call, and a 0.19 store is left alone. No
+/// handle may be open meanwhile: callers hold the pool lock, or have just
+/// taken the store out of the pool.
+fn move_to_current_format(dir: &Path) -> Result<(), PlatformError> {
+    // `ensure_project_dir` makes the folder before the first open, and
+    // sekejap 0.19.1's `Db::upgrade` answers NotFound for a folder with no
+    // store in it rather than nothing. An empty folder has nothing to move.
+    let empty = std::fs::read_dir(dir).map(|mut d| d.next().is_none()).unwrap_or(false);
+    if empty {
+        return Ok(());
+    }
+    // Zebflow's move to sekejap 0.17 retired an empty 0.16 store's files into
+    // `legacy-0.16/` inside the store. The 0.19 upgrader reads a store as flat
+    // files and refuses a folder in it, so it goes beside the store, kept.
+    let retired = dir.join(LEGACY_016_DIR);
+    if retired.is_dir() {
+        let beside = dir.with_file_name(format!("{STORE_DIR}.{LEGACY_016_DIR}"));
+        std::fs::rename(&retired, &beside).map_err(|err| {
+            PlatformError::new(
+                "PLATFORM_SEKEJAP_UPGRADE",
+                format!("could not move {} out of the store before its format move: {err}", retired.display()),
+            )
+        })?;
+    }
+    let backup = Db::upgrade(dir).map_err(|err| {
+        PlatformError::new(
+            "PLATFORM_SEKEJAP_UPGRADE",
+            format!("could not move the sekejap store at {} to this version's format: {err}", dir.display()),
+        )
+    })?;
+    if let Some(backup) = backup {
+        eprintln!(
+            "sekejap: moved {} to this version's format; the original is kept at {}",
+            dir.display(),
+            backup.display()
+        );
+    }
+    Ok(())
+}
+
+/// The store's folder name, and the suffixes of the folders a format move
+/// leaves beside it. A transfer carries the store, never these.
+pub const STORE_DIR: &str = "sekejap";
+pub const BACKUP_SUFFIX: &str = ".v018-backup";
+pub const STAGING_SUFFIX: &str = ".v019-upgrading";
+/// The folder the 0.17 move retired an empty 0.16 store into; beside the
+/// store as `sekejap.legacy-0.16` once 0.19 has moved it out.
+pub const LEGACY_016_DIR: &str = "legacy-0.16";
 
 /// Fold the committed WAL into the data file.
 ///
@@ -117,6 +172,7 @@ fn fold_wal(dir: &Path) -> Result<bool, PlatformError> {
             }
         }
     }
+    move_to_current_format(dir)?;
     let single = Db::open(dir).map_err(|e| store_error("PLATFORM_SEKEJAP_COMPACT", e))?;
     let folded = single
         .checkpoint()
@@ -367,7 +423,7 @@ pub fn project_dir(data_root: &Path, owner: &str, project: &str) -> PathBuf {
         .join(slug_segment(project))
         .join("data")
         .join("store")
-        .join("sekejap")
+        .join(STORE_DIR)
 }
 
 fn repo_dir(data_root: &Path, owner: &str, project: &str) -> PathBuf {
@@ -3809,4 +3865,50 @@ mod tests {
         assert_eq!(sync.operation, "sync");
     }
 
+}
+
+#[cfg(test)]
+mod format_move {
+    use super::*;
+
+    /// A project whose store folder exists but holds nothing yet — the folder
+    /// is made before the first open — has nothing to move, and opens.
+    #[test]
+    fn an_empty_store_folder_is_not_a_store_to_move() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let dir = ensure_project_dir(root.path(), "demo", "site-a").expect("dir");
+        move_to_current_format(&dir).expect("an empty folder moves nothing");
+        let db = get_db(root.path(), "demo", "site-a").expect("opens");
+        drop(db);
+        evict_project_pool(root.path(), "demo", "site-a");
+    }
+
+    /// A folder that does not exist yet is not an error either.
+    #[test]
+    fn a_missing_store_folder_is_not_a_store_to_move() {
+        let root = tempfile::tempdir().expect("tempdir");
+        move_to_current_format(&root.path().join("none")).expect("nothing to move");
+    }
+}
+
+#[cfg(test)]
+mod legacy_016 {
+    use super::*;
+
+    /// A store carrying the `legacy-0.16/` folder Zebflow's 0.17 move made
+    /// has it moved beside the store before the format move reads the store.
+    #[test]
+    fn the_retired_016_folder_leaves_the_store_before_the_move() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let dir = ensure_project_dir(root.path(), "demo", "site-a").expect("dir");
+        drop(get_db(root.path(), "demo", "site-a").expect("create a 0.19 store"));
+        evict_project_pool(root.path(), "demo", "site-a");
+        std::fs::create_dir_all(dir.join(LEGACY_016_DIR)).expect("legacy dir");
+        std::fs::write(dir.join(LEGACY_016_DIR).join("wal.log"), b"header").expect("file");
+        move_to_current_format(&dir).expect("moves");
+        assert!(!dir.join(LEGACY_016_DIR).exists());
+        assert!(dir.with_file_name(format!("{STORE_DIR}.{LEGACY_016_DIR}")).join("wal.log").is_file());
+        drop(get_db(root.path(), "demo", "site-a").expect("still opens"));
+        evict_project_pool(root.path(), "demo", "site-a");
+    }
 }

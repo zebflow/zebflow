@@ -202,7 +202,18 @@ impl ProjectTransferService {
         for class in &classes {
             let source = class_source_dir(&layout, *class);
             let staged = staging.join(class.as_str());
-            let mut stats = copy_dir_recursive(&source, &staged)?;
+            let mut stats = if *class == ProjectBundleClass::Store {
+                // A sekejap format move leaves the original beside the store
+                // (and, mid-move, the new one), and the retired 0.16 files
+                // go beside it too. None is the project's data: the store
+                // itself is.
+                let legacy = format!(".{}", sekejap::LEGACY_016_DIR);
+                let beside = [sekejap::BACKUP_SUFFIX, sekejap::STAGING_SUFFIX, legacy.as_str()]
+                    .map(|suffix| format!("{}{suffix}", sekejap::STORE_DIR));
+                copy_dir_skipping(&source, &staged, &beside)?
+            } else {
+                copy_dir_recursive(&source, &staged)?
+            };
             // Where a project answers is instance configuration, never the
             // project's (`addressing.md` §0): it stays on this instance.
             if *class == ProjectBundleClass::Store {
@@ -1076,6 +1087,34 @@ fn extract_tar_archive(archive_path: &Path, output_dir: &Path) -> Result<(), Pla
         "PROJECT_TRANSFER_EXTRACT",
         String::from_utf8_lossy(&output.stderr).trim().to_string(),
     ))
+}
+
+/// `copy_dir_recursive`, leaving out the entries directly under `source`
+/// whose names are in `skip`.
+fn copy_dir_skipping(source: &Path, target: &Path, skip: &[String]) -> Result<DirectoryStats, PlatformError> {
+    let mut stats = DirectoryStats::default();
+    fs::create_dir_all(target)?;
+    if !source.exists() {
+        return Ok(stats);
+    }
+    for entry in fs::read_dir(source)? {
+        let entry = entry?;
+        if skip.iter().any(|name| entry.file_name() == name.as_str()) {
+            continue;
+        }
+        let file_type = entry.file_type()?;
+        let target_path = target.join(entry.file_name());
+        if file_type.is_dir() {
+            let child = copy_dir_recursive(&entry.path(), &target_path)?;
+            stats.file_count += child.file_count;
+            stats.total_bytes += child.total_bytes;
+        } else if file_type.is_file() {
+            fs::copy(entry.path(), &target_path)?;
+            stats.file_count += 1;
+            stats.total_bytes += entry.metadata()?.len();
+        }
+    }
+    Ok(stats)
 }
 
 fn copy_dir_recursive(source: &Path, target: &Path) -> Result<DirectoryStats, PlatformError> {

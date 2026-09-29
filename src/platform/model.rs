@@ -2602,7 +2602,7 @@ impl ProjectFileLayout {
 
     /// `.../data/store/sekejap` — the project's database: WAL, indexes, snapshot.
     pub fn data_store_sekejap_dir(&self) -> PathBuf {
-        self.data_store_dir().join("sekejap")
+        self.data_store_dir().join(crate::platform::sekejap::STORE_DIR)
     }
 
     /// `.../data/store/local.db` — the project's SQLite runtime database.
