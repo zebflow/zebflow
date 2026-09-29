@@ -13,6 +13,7 @@
 //! - unsupported tokens are ignored safely (no panic, no hard failure)
 
 pub mod compiler;
+mod order;
 mod source_scanner;
 mod variants;
 

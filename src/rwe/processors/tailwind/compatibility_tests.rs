@@ -112,6 +112,21 @@ fn gradient_stops_follow_tailwind_cascade_order() {
 }
 
 #[test]
+fn transition_timing_utilities_override_the_transition_shorthand() {
+    // `transition-all` carries a 150ms default; `duration-700`, `ease-out` and
+    // `delay-500` refine it only when they come later in the stylesheet.
+    let html = process_tailwind(
+        "<html><head></head><body><div class=\"delay-500 duration-700 ease-out transition-all transition-opacity\"></div></body></html>",
+        &HashSet::new(),
+    );
+    let latest_shorthand = html.find(".transition-all{").max(html.find(".transition-opacity{")).expect("transition rules");
+    for timing in [".duration-700{", ".ease-out{", ".delay-500{"] {
+        let at = html.find(timing).unwrap_or_else(|| panic!("missing {timing}"));
+        assert!(at > latest_shorthand, "{timing} is emitted before a transition shorthand, which then overrides it");
+    }
+}
+
+#[test]
 fn common_tailwind_variants_transform_selectors_and_at_rules() {
     assert_rule(
         "group-hover:text-white",
@@ -597,4 +612,159 @@ fn arbitrary_hex_colors_take_an_opacity_modifier() {
     assert_rule("text-[#ff0000]/90", &["color:rgba(255, 0, 0, 0.900)"]);
     assert_rule("bg-[#012169]/70", &["background-color:rgba(1, 33, 105, 0.700)"]);
     assert_rule("border-[#c4cee9]/50", &["border-color:rgba(196, 206, 233, 0.500)"]);
+}
+
+
+/// The generated stylesheet for one element carrying `classes`.
+fn stylesheet(classes: &str) -> String {
+    process_tailwind(
+        &format!("<html><head></head><body><div class=\"{classes}\"></div></body></html>"),
+        &HashSet::new(),
+    )
+}
+
+/// `later` must be emitted after `earlier`: with equal specificity it wins.
+fn assert_wins(later: &str, earlier: &str) {
+    let css = stylesheet(&format!("{later} {earlier}"));
+    let at = |token: &str| {
+        let selector = format!(".{}", super::compiler::escape_class_selector(token));
+        css.find(&selector).unwrap_or_else(|| panic!("no rule for {token}"))
+    };
+    assert!(at(later) > at(earlier), "{later} must win over {earlier}, but is emitted first");
+}
+
+#[test]
+fn a_narrower_utility_refines_the_broader_one_whatever_its_name() {
+    for (later, earlier) in [
+        ("pl-10", "px-4"),
+        ("pt-4", "py-2"),
+        ("mb-0", "my-4"),
+        ("ml-0", "mx-auto"),
+        ("px-4", "p-2"),
+        ("bottom-auto", "inset-0"),
+        ("bottom-4", "inset-y-0"),
+        ("inset-x-0", "inset-0"),
+        ("border-b-0", "border-y"),
+        ("rounded-br-none", "rounded-r-lg"),
+        ("rounded-r-lg", "rounded-md"),
+        ("gap-x-4", "gap-2"),
+        ("overflow-x-auto", "overflow-hidden"),
+    ] {
+        assert_wins(later, earlier);
+    }
+}
+
+#[test]
+fn plugins_follow_tailwinds_order_not_the_alphabet() {
+    for (later, earlier) in [
+        ("shadow-black/20", "shadow-lg"),
+        ("shadow-red-500", "shadow-xl"),
+        ("transform-none", "rotate-45"),
+        ("basis-0", "flex-1"),
+        ("h-6", "size-4"),
+        ("duration-700", "transition-all"),
+        ("ease-out", "transition"),
+        ("border-dashed", "border-t-2"),
+        ("border-red-500", "border-dashed"),
+        ("ring-red-500", "ring-2"),
+    ] {
+        assert_wins(later, earlier);
+    }
+}
+
+#[test]
+fn variants_follow_tailwinds_order_not_the_alphabet() {
+    for (later, earlier) in [
+        ("active:bg-blue-700", "hover:bg-blue-600"),
+        ("focus:bg-blue-500", "hover:bg-red-500"),
+        ("disabled:bg-gray-100", "hover:bg-gray-200"),
+        ("hover:bg-gray-100", "odd:bg-gray-50"),
+        ("hover:text-red-500", "visited:text-purple-500"),
+        ("data-[state=active]:bg-white", "hover:bg-gray-100"),
+        ("aria-selected:bg-white", "hover:bg-gray-100"),
+        ("dark:bg-gray-800", "hover:bg-gray-100"),
+        ("dark:bg-black", "md:bg-white"),
+        ("print:hidden", "md:block"),
+        ("md:block", "sm:hidden"),
+        ("md:hover:bg-red-500", "focus:bg-blue-500"),
+        ("hover:bg-red-500", "bg-blue-500"),
+    ] {
+        assert_wins(later, earlier);
+    }
+}
+
+#[test]
+fn selectors_compose_the_way_tailwind_stacks_variants() {
+    // A class cannot start with a digit; the rule must still match.
+    assert_rule("2xl:block", &[".\\32 xl\\:block", "(min-width: 1536px)"]);
+    // Inside-out: the dark root is outside the hovered group.
+    assert_rule("dark:group-hover:text-white", &[".dark .group:hover .dark\\:group-hover\\:text-white"]);
+    // The parent is hovered, then its children are spaced.
+    assert_rule("hover:space-x-4", &[".hover\\:space-x-4:hover > :not([hidden]) ~ :not([hidden])"]);
+    // Zero specificity, so a child's own utility still wins.
+    assert_rule("*:p-4", &[":where(.\\*\\:p-4 > *)"]);
+    // Named and arbitrary groups and peers.
+    assert_rule("group-hover/item:block", &[".group\\/item:hover .group-hover\\/item\\:block"]);
+    assert_rule("group-[.open]:block", &[".group.open .group-\\[\\.open\\]\\:block"]);
+    assert_rule("group-aria-selected:block", &[".group[aria-selected=\"true\"] .group-aria-selected\\:block"]);
+    assert_rule("peer-checked/opt:block", &[".peer\\/opt:checked ~ .peer-checked\\/opt\\:block"]);
+    // A pseudo-element comes last and exists only with content.
+    assert_rule("hover:before:block", &[":hover::before", "content:var(--tw-content)"]);
+}
+
+#[test]
+fn the_minifier_keeps_the_descendant_space_after_brackets() {
+    let css = stylesheet("rtl:text-right light:text-black");
+    assert!(css.contains("[dir=\"rtl\"] .rtl\\:text-right"), "rtl selector lost its space");
+    assert!(css.contains(":not(.dark) .light\\:text-black"), "light selector lost its space");
+}
+
+#[test]
+fn declarations_match_tailwind() {
+    assert_rule("text-sm", &["font-size:0.875rem", "line-height:1.25rem"]);
+    assert_rule("text-sm/6", &["font-size:0.875rem", "line-height:1.5rem"]);
+    assert_rule("text-lg/tight", &["font-size:1.125rem", "line-height:1.25"]);
+    assert_rule("text-white/80", &["color:rgba(255, 255, 255, 0.800)"]);
+    let top = token_css_rule("border-t-2").expect("border-t-2");
+    assert!(!top.contains("style"), "a width utility must not set a style: {top}");
+    let all = token_css_rule("border").expect("border");
+    assert!(!all.contains("style"), "a width utility must not set a style: {all}");
+    assert_rule("bg-[#ff0000]", &["background-color:#ff0000"]);
+    assert!(!token_css_rule("bg-[#ff0000]").unwrap().contains("background:"));
+    assert_rule("bg-[url(/a.png)]", &["background-image:url(/a.png)"]);
+    assert_rule("content-[attr(data-label)]", &["--tw-content:attr(data-label)"]);
+    assert_rule("content-['Hi']", &["--tw-content:'Hi'"]);
+    assert_rule("transition", &["transition-property:color,background-color"]);
+    assert_rule("transition-all", &["transition-property:all"]);
+    for direction in ["t", "tr", "r", "br", "b", "bl", "l", "tl"] {
+        assert_rule(&format!("bg-gradient-to-{direction}"), &["var(--tw-gradient-stops)"]);
+    }
+}
+
+#[test]
+fn arbitrary_values_tailwind_accepts_compile() {
+    assert_rule("opacity-[0.35]", &["opacity:0.35"]);
+    assert_rule("duration-[250ms]", &["transition-duration:250ms"]);
+    assert_rule("ease-[cubic-bezier(0.95,0.05,0.8,0.04)]", &["transition-timing-function:cubic-bezier(0.95,0.05,0.8,0.04)"]);
+    assert_rule("w-[calc(100%-2rem)]", &["width:calc(100% - 2rem)"]);
+    assert_rule("w-[calc(100%_+_1rem)]", &["width:calc(100% + 1rem)"]);
+    assert_rule("h-[calc(1.5rem*2)]", &["height:calc(1.5rem * 2)"]);
+    assert_rule("grid-cols-[repeat(auto-fill,minmax(10rem,1fr))]", &["repeat(auto-fill,minmax(10rem,1fr))"]);
+    assert_rule("w-[calc(100%-var(--gap))]", &["calc(100% - var(--gap))"]);
+}
+
+#[test]
+fn a_border_side_value_is_filtered_and_typed() {
+    assert_rule("border-t-[3px]", &["border-top-width:3px"]);
+    assert_rule("border-t-[#fff]", &["border-top-color:#fff"]);
+    assert_rule("border-l-[red]", &["border-left-color:red"]);
+    assert!(token_css_rule("border-t-[1px;color:red]").is_none(), "a value may not close the declaration");
+    assert!(token_css_rule("border-b-[1px}a{color:red]").is_none(), "a value may not close the rule");
+}
+
+#[test]
+fn the_preflight_resets_composable_variables_per_element() {
+    let css = stylesheet("rotate-45");
+    assert!(css.contains("--tw-rotate:0"), "children would inherit a parent's rotation");
+    assert!(css.contains("--tw-content:''"), "before/after need an empty content by default");
 }

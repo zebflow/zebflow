@@ -100,23 +100,30 @@ pub(crate) fn token_css_rule(token: &str) -> Option<String> {
 
 fn token_css_rule_uncached(token: &str) -> Option<String> {
     let (variants, raw_utility) = split_variants(token)?;
-    let selector = format!(".{}", escape_class_selector(token));
+    let class = format!(".{}", escape_class_selector(token));
     let (important, utility) = if let Some(rest) = raw_utility.strip_prefix('!') {
         (true, rest)
     } else {
         (false, raw_utility.as_str())
     };
-    let mut rule = utility_rule(utility, &selector, important)?;
+    let mut rule = utility_rule(utility, &class, important)?;
+    // What the utility adds after its own class (`space-x-*` targets the
+    // children) — variants belong on the class, before it.
+    let suffix = rule.selector.strip_prefix(class.as_str())?.to_string();
+    let mut selector = class.clone();
+    let mut pseudo_elements = String::new();
     let mut medias = Vec::new();
-    for variant in &variants {
+    // Stacked variants nest like calls, innermost last-written:
+    // `dark:group-hover:x` is dark(group-hover(x)) = `.dark .group:hover .x`.
+    for variant in variants.iter().rev() {
         if let Some(media) = variant_media_query(variant) {
             medias.push(media);
             continue;
         }
-        if apply_relational_variant(&mut rule.selector, variant) {
+        if apply_relational_variant(&mut selector, variant) {
             continue;
         }
-        if apply_attribute_variant(&mut rule.selector, variant) {
+        if apply_attribute_variant(&mut selector, variant) {
             continue;
         }
         match variant.as_str() {
@@ -124,39 +131,55 @@ fn token_css_rule_uncached(token: &str) -> Option<String> {
             // `.dark` is what `styles/main.css` switches on and what a page
             // toggles. Tailwind v4's `@custom-variant dark (&:is(.dark *))`.
             "dark" => {
-                rule.selector = format!(".dark {}", rule.selector);
+                selector = format!(".dark {}", selector);
                 continue;
             }
             "light" => {
-                rule.selector = format!(":not(.dark) {}", rule.selector);
+                selector = format!(":not(.dark) {}", selector);
                 continue;
             }
             "rtl" => {
-                rule.selector = format!("[dir=\"rtl\"] {}", rule.selector);
+                selector = format!("[dir=\"rtl\"] {}", selector);
                 continue;
             }
             "ltr" => {
-                rule.selector = format!("[dir=\"ltr\"] {}", rule.selector);
+                selector = format!("[dir=\"ltr\"] {}", selector);
                 continue;
             }
+            // Zero specificity, as Tailwind's: the child's own utilities win.
             "*" => {
-                rule.selector.push_str(" > *");
+                selector = format!(":where({} > *)", selector);
                 continue;
             }
             "**" => {
-                rule.selector.push_str(" *");
+                selector = format!(":where({} *)", selector);
                 continue;
             }
             _ => {}
         }
         if let Some(pseudo) = variant_pseudo(variant) {
-            rule.selector.push_str(pseudo);
+            if pseudo.starts_with("::") {
+                pseudo_elements = format!("{}{}", pseudo, pseudo_elements);
+            } else {
+                selector.push_str(pseudo);
+            }
             continue;
         }
         return None;
     }
+    rule.selector = format!("{}{}{}", selector, suffix, pseudo_elements);
+    // A generated box exists only with `content`; Tailwind gives every
+    // `before:`/`after:` rule the value `content-*` sets (default empty).
+    if (pseudo_elements.contains("::before") || pseudo_elements.contains("::after"))
+        && !rule.declarations.contains("content:")
+    {
+        rule.declarations = format!(
+            "{}content:var(--tw-content);",
+            rule.declarations
+        );
+    }
     let mut out = format!("{}{{{}}}", rule.selector, rule.declarations);
-    for media in medias.into_iter().rev() {
+    for media in medias.into_iter() {
         if media.starts_with("@supports ") {
             out = format!("{}{{{}}}", media, out);
         } else {
@@ -259,77 +282,38 @@ fn strip_generated_tailwind_style_blocks(html: &str) -> String {
     out
 }
 
-/// Orders utility tokens so generated CSS respects Tailwind-like cascade:
-///
-/// - base utilities first (`w-20`, `ml-20`)
-/// - non-media variants next (`hover:*`, `focus:*`)
-/// - responsive variants last (`sm:*`, `md:*`, `lg:*`, ...)
-///
-/// This avoids responsive rules being accidentally overridden by later base
-/// utilities when class tokens are sorted alphabetically.
+/// Orders utility tokens the way Tailwind 3.4 orders its stylesheet
+/// (`order.rs`): by variant, then plugin, then breadth inside the plugin.
+/// The class name only breaks ties, so no two classes can win by spelling.
 fn compare_token_precedence(a: &str, b: &str) -> std::cmp::Ordering {
     let ak = token_precedence_key(a);
     let bk = token_precedence_key(b);
     ak.cmp(&bk).then_with(|| a.cmp(b))
 }
 
-fn token_precedence_key(token: &str) -> (u8, u8, u8, u8) {
+/// `(variant ranks, latest first; plugin; breadth; gradient stop)`. The
+/// variant list compares like Tailwind's variant bits: the latest variant
+/// decides, and a token with no variants sorts before every variant.
+fn token_precedence_key(token: &str) -> (Vec<u16>, u16, u8, u8) {
     let Some((variants, utility)) = split_variants(token) else {
-        return (0, 0, 0, 0);
+        return (Vec::new(), 0, 0, 0);
     };
-    let utility_rank = utility_precedence_rank(&utility);
-    let depth = longhand_depth(&utility);
-    if variants.is_empty() {
-        return (0, 0, utility_rank, depth);
-    }
-
-    let mut has_non_media = false;
-    let mut max_media_rank = 0u8;
-    let mut has_media = false;
-
-    for variant in variants {
-        if let Some(rank) = variant_media_rank(&variant) {
-            has_media = true;
-            if rank > max_media_rank {
-                max_media_rank = rank;
-            }
-        } else {
-            has_non_media = true;
-        }
-    }
-
-    if has_media {
-        // Keep all responsive variants after base and pseudo variants.
-        // Use breakpoint rank so `sm` rules emit before `md`, `lg`, ...
-        return (2, max_media_rank, utility_rank, depth);
-    }
-    if has_non_media {
-        return (1, 0, utility_rank, depth);
-    }
-    (0, 0, utility_rank, depth)
+    let mut ranks: Vec<u16> = variants.iter().map(|v| super::order::variant_rank(v)).collect();
+    ranks.sort_unstable_by(|x, y| y.cmp(x));
+    let bare = utility.strip_prefix('!').unwrap_or(&utility);
+    let declarations = utility_rule(bare, ".x", false)
+        .map(|rule| rule.declarations)
+        .unwrap_or_default();
+    (
+        ranks,
+        super::order::family_rank(bare, &declarations),
+        super::order::narrowness(&declarations),
+        gradient_stop_rank(bare),
+    )
 }
 
-/// How specific a utility's properties are: a shorthand (`border-radius`,
-/// `border-width`, `margin`) sorts before the longhands that refine it
-/// (`border-top-left-radius`, `border-left-width`, `margin-left`), the way
-/// Tailwind orders its stylesheet — so `rounded-md rounded-l-none` squares
-/// the left corners whichever way the template spells it. Same specificity,
-/// so source order alone would let the alphabetically earlier class lose.
-fn longhand_depth(utility: &str) -> u8 {
-    let utility = utility.strip_prefix('!').unwrap_or(utility);
-    let Some(rule) = utility_rule(utility, ".x", false) else {
-        return 0;
-    };
-    rule.declarations
-        .split(';')
-        .filter_map(|decl| decl.split(':').next())
-        .map(|prop| prop.trim().matches('-').count() as u8)
-        .max()
-        .unwrap_or(0)
-}
-
-fn utility_precedence_rank(utility: &str) -> u8 {
-    let utility = utility.strip_prefix('!').unwrap_or(utility);
+/// `from-*` before `via-*` before `to-*`: each reads what the earlier set.
+fn gradient_stop_rank(utility: &str) -> u8 {
     if utility.starts_with("from-") {
         return 1;
     }
@@ -464,6 +448,12 @@ fn should_emit_space(prev: Option<char>, next: Option<char>) -> bool {
     if (p == '-' || p == '+') && n.is_ascii_alphanumeric() {
         return true;
     }
+    // After `]` or `)` a space before a selector is the descendant
+    // combinator: `[dir="rtl"] .x` is not `[dir="rtl"].x`. In a value it is
+    // merely harmless (`blur() brightness()`).
+    if (p == ']' || p == ')') && (n.is_ascii_alphanumeric() || matches!(n, '.' | '#' | '[' | ':' | '*' | '_')) {
+        return true;
+    }
     if is_css_punct(p) || is_css_punct(n) {
         return false;
     }
@@ -551,7 +541,13 @@ fn split_top_level_commas(input: &str) -> Vec<String> {
 
 pub fn escape_class_selector(token: &str) -> String {
     let mut out = String::new();
-    for ch in token.chars() {
+    let mut chars = token.chars().peekable();
+    // An identifier cannot start with a digit: `2xl:block` is `.\32 xl\:block`.
+    if let Some(first) = chars.peek().copied().filter(char::is_ascii_digit) {
+        chars.next();
+        out.push_str(&format!("\\3{} ", first));
+    }
+    for ch in chars {
         if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
             out.push(ch);
         } else if ch == '\\' {
@@ -630,17 +626,6 @@ fn variant_media_query(v: &str) -> Option<String> {
     Some(fixed.to_string())
 }
 
-fn variant_media_rank(v: &str) -> Option<u8> {
-    match v {
-        "sm" => Some(0),
-        "md" => Some(1),
-        "lg" => Some(2),
-        "xl" => Some(3),
-        "2xl" => Some(4),
-        _ => None,
-    }
-}
-
 fn variant_pseudo(v: &str) -> Option<&'static str> {
     match v {
         "hover" => Some(":hover"),
@@ -690,17 +675,31 @@ fn variant_pseudo(v: &str) -> Option<&'static str> {
 }
 
 fn apply_relational_variant(selector: &mut String, variant: &str) -> bool {
-    if let Some(state) = variant.strip_prefix("group-") {
-        if let Some(pseudo) = variant_pseudo(state) {
-            *selector = format!(".group{} {}", pseudo, selector);
-            return true;
+    for (kind, combinator) in [("group", " "), ("peer", " ~ ")] {
+        let Some(rest) = variant.strip_prefix(kind).and_then(|r| r.strip_prefix('-')) else {
+            continue;
+        };
+        // `group-hover/item` marks the ancestor named `group/item`.
+        let (state, marker) = match rest.rsplit_once('/') {
+            Some((state, name)) if !rest.ends_with(']') && is_safe_attribute_name(name) => {
+                (state, format!(".{kind}\\/{name}"))
+            }
+            _ => (rest, format!(".{kind}")),
+        };
+        let mut related = marker.clone();
+        if let Some(pseudo) = variant_pseudo(state).filter(|p| !p.starts_with("::")) {
+            related.push_str(pseudo);
+        } else if let Some(raw) = state.strip_prefix('[').and_then(|r| r.strip_suffix(']')) {
+            // `group-[.open]` → `.group.open`; a `&` placement is not supported.
+            if raw.contains('&') || !is_safe_css_fragment(raw) {
+                return false;
+            }
+            related.push_str(&raw.replace('_', " "));
+        } else if !apply_attribute_variant(&mut related, state) {
+            return false;
         }
-    }
-    if let Some(state) = variant.strip_prefix("peer-") {
-        if let Some(pseudo) = variant_pseudo(state) {
-            *selector = format!(".peer{} ~ {}", pseudo, selector);
-            return true;
-        }
+        *selector = format!("{related}{combinator}{selector}");
+        return true;
     }
     if let Some(raw) = variant
         .strip_prefix("has-[")
@@ -1474,6 +1473,9 @@ fn utility_rule(utility: &str, base_selector: &str, important: bool) -> Option<U
         ));
     }
     if let Some(v) = utility.strip_prefix("opacity-") {
+        if let Some(raw) = arbitrary_value(v) {
+            return Some(simple_rule(base_selector, &format!("opacity:{};", raw), important));
+        }
         let num = v.parse::<u32>().ok()?.min(100);
         let alpha = (num as f64) / 100.0;
         return Some(simple_rule(
@@ -1483,6 +1485,13 @@ fn utility_rule(utility: &str, base_selector: &str, important: bool) -> Option<U
         ));
     }
     if let Some(v) = utility.strip_prefix("duration-") {
+        if let Some(raw) = arbitrary_value(v) {
+            return Some(simple_rule(
+                base_selector,
+                &format!("transition-duration:{};", raw),
+                important,
+            ));
+        }
         let ms = v.parse::<u32>().ok()?;
         return Some(simple_rule(
             base_selector,
@@ -1501,10 +1510,20 @@ fn utility_rule(utility: &str, base_selector: &str, important: bool) -> Option<U
                     ));
                 }
             }
-            if let Some(size) = text_size_value(v) {
+            if let Some((size, leading)) = text_size_value(v) {
                 return Some(simple_rule(
                     base_selector,
-                    &format!("font-size:{};", size),
+                    &format!("font-size:{};line-height:{};", size, leading),
+                    important,
+                ));
+            }
+            // `text-sm/6`: the size with its line-height replaced.
+            if let Some((size, leading)) = v.split_once('/').and_then(|(size, leading)| {
+                Some((text_size_value(size)?.0, line_height_value(leading)?))
+            }) {
+                return Some(simple_rule(
+                    base_selector,
+                    &format!("font-size:{};line-height:{};", size, leading),
                     important,
                 ));
             }
@@ -1633,14 +1652,14 @@ fn utility_rule(utility: &str, base_selector: &str, important: bool) -> Option<U
         if let Ok(px) = v.parse::<u32>() {
             return Some(simple_rule(
                 base_selector,
-                &format!("border-top-width:{px}px;border-top-style:solid;"),
+                &format!("border-top-width:{px}px;"),
                 important,
             ));
         }
-        if let Some(raw) = v.strip_prefix('[').and_then(|s| s.strip_suffix(']')) {
+        if let Some(raw) = arbitrary_value(v).filter(|raw| !is_color_like(raw)) {
             return Some(simple_rule(
                 base_selector,
-                &format!("border-top-width:{raw};border-top-style:solid;"),
+                &format!("border-top-width:{raw};"),
                 important,
             ));
         }
@@ -1657,14 +1676,14 @@ fn utility_rule(utility: &str, base_selector: &str, important: bool) -> Option<U
         if let Ok(px) = v.parse::<u32>() {
             return Some(simple_rule(
                 base_selector,
-                &format!("border-right-width:{px}px;border-right-style:solid;"),
+                &format!("border-right-width:{px}px;"),
                 important,
             ));
         }
-        if let Some(raw) = v.strip_prefix('[').and_then(|s| s.strip_suffix(']')) {
+        if let Some(raw) = arbitrary_value(v).filter(|raw| !is_color_like(raw)) {
             return Some(simple_rule(
                 base_selector,
-                &format!("border-right-width:{raw};border-right-style:solid;"),
+                &format!("border-right-width:{raw};"),
                 important,
             ));
         }
@@ -1681,14 +1700,14 @@ fn utility_rule(utility: &str, base_selector: &str, important: bool) -> Option<U
         if let Ok(px) = v.parse::<u32>() {
             return Some(simple_rule(
                 base_selector,
-                &format!("border-bottom-width:{px}px;border-bottom-style:solid;"),
+                &format!("border-bottom-width:{px}px;"),
                 important,
             ));
         }
-        if let Some(raw) = v.strip_prefix('[').and_then(|s| s.strip_suffix(']')) {
+        if let Some(raw) = arbitrary_value(v).filter(|raw| !is_color_like(raw)) {
             return Some(simple_rule(
                 base_selector,
-                &format!("border-bottom-width:{raw};border-bottom-style:solid;"),
+                &format!("border-bottom-width:{raw};"),
                 important,
             ));
         }
@@ -1705,14 +1724,14 @@ fn utility_rule(utility: &str, base_selector: &str, important: bool) -> Option<U
         if let Ok(px) = v.parse::<u32>() {
             return Some(simple_rule(
                 base_selector,
-                &format!("border-left-width:{px}px;border-left-style:solid;"),
+                &format!("border-left-width:{px}px;"),
                 important,
             ));
         }
-        if let Some(raw) = v.strip_prefix('[').and_then(|s| s.strip_suffix(']')) {
+        if let Some(raw) = arbitrary_value(v).filter(|raw| !is_color_like(raw)) {
             return Some(simple_rule(
                 base_selector,
-                &format!("border-left-width:{raw};border-left-style:solid;"),
+                &format!("border-left-width:{raw};"),
                 important,
             ));
         }
@@ -1734,7 +1753,7 @@ fn utility_rule(utility: &str, base_selector: &str, important: bool) -> Option<U
                 return Some(simple_rule(
                     base_selector,
                     &format!(
-                        "{first}-width:{width};{second}-width:{width};{first}-style:solid;{second}-style:solid;"
+                        "{first}-width:{width};{second}-width:{width};"
                     ),
                     important,
                 ));
@@ -1796,7 +1815,7 @@ fn utility_rule(utility: &str, base_selector: &str, important: bool) -> Option<U
         return Some(UtilityRule {
             selector: format!("{} > :not([hidden]) ~ :not([hidden])", base_selector),
             declarations: maybe_important(
-                &format!("border-left-width:{};border-left-style:solid;", value),
+                &format!("border-left-width:{};", value),
                 important,
             ),
             prelude: None,
@@ -1806,7 +1825,7 @@ fn utility_rule(utility: &str, base_selector: &str, important: bool) -> Option<U
         return Some(UtilityRule {
             selector: format!("{} > :not([hidden]) ~ :not([hidden])", base_selector),
             declarations: maybe_important(
-                "border-left-width:1px;border-left-style:solid;",
+                "border-left-width:1px;",
                 important,
             ),
             prelude: None,
@@ -1817,7 +1836,7 @@ fn utility_rule(utility: &str, base_selector: &str, important: bool) -> Option<U
         return Some(UtilityRule {
             selector: format!("{} > :not([hidden]) ~ :not([hidden])", base_selector),
             declarations: maybe_important(
-                &format!("border-top-width:{};border-top-style:solid;", value),
+                &format!("border-top-width:{};", value),
                 important,
             ),
             prelude: None,
@@ -1827,7 +1846,7 @@ fn utility_rule(utility: &str, base_selector: &str, important: bool) -> Option<U
         return Some(UtilityRule {
             selector: format!("{} > :not([hidden]) ~ :not([hidden])", base_selector),
             declarations: maybe_important(
-                "border-top-width:1px;border-top-style:solid;",
+                "border-top-width:1px;",
                 important,
             ),
             prelude: None,
@@ -2102,15 +2121,30 @@ fn utility_rule(utility: &str, base_selector: &str, important: bool) -> Option<U
     // content-{value}
     if let Some(v) = utility.strip_prefix("content-") {
         if let Some(raw) = arbitrary_value(v) {
-            let inner = raw.trim_matches('\'');
+            // A CSS expression stays one (`attr(data-label)` reads the
+            // attribute); anything else is text and is quoted.
+            let is_expression = ["attr(", "counter(", "counters(", "var(", "url(", "open-quote", "close-quote"]
+                .iter()
+                .any(|f| raw.starts_with(f));
+            let value = if is_expression || raw.starts_with('\'') || raw.starts_with('"') {
+                raw.clone()
+            } else {
+                format!("'{}'", raw)
+            };
             return Some(simple_rule(
                 base_selector,
-                &format!("content:'{}';", inner),
+                &format!("--tw-content:{};content:var(--tw-content);", value),
                 important,
             ));
         }
         match v {
-            "none" => return Some(simple_rule(base_selector, "content:none;", important)),
+            "none" => {
+                return Some(simple_rule(
+                    base_selector,
+                    "--tw-content:none;content:none;",
+                    important,
+                ))
+            }
             "normal" => {
                 return Some(simple_rule(
                     base_selector,
@@ -2325,7 +2359,14 @@ fn utility_rule(utility: &str, base_selector: &str, important: bool) -> Option<U
             "in" => "cubic-bezier(0.4,0,1,1)",
             "out" => "cubic-bezier(0,0,0.2,1)",
             "in-out" => "cubic-bezier(0.4,0,0.2,1)",
-            _ => return None,
+            _ => {
+                let raw = arbitrary_value(v)?;
+                return Some(simple_rule(
+                    base_selector,
+                    &format!("transition-timing-function:{};", raw),
+                    important,
+                ));
+            }
         };
         return Some(simple_rule(
             base_selector,
@@ -2400,7 +2441,7 @@ fn utility_rule(utility: &str, base_selector: &str, important: bool) -> Option<U
         ));
     }
     match utility {
-        "flex" => Some(simple_rule(base_selector, "display:flex;", important)), "grid" => Some(simple_rule(base_selector, "display:grid;", important)), "block" => Some(simple_rule(base_selector, "display:block;", important)), "inline" => Some(simple_rule(base_selector, "display:inline;", important)), "inline-block" => Some(simple_rule(base_selector, "display:inline-block;", important)), "hidden" => Some(simple_rule(base_selector, "display:none;", important)), "flex-col" => Some(simple_rule(base_selector, "flex-direction:column;", important)), "flex-row" => Some(simple_rule(base_selector, "flex-direction:row;", important)), "flex-wrap" => Some(simple_rule(base_selector, "flex-wrap:wrap;", important)), "flex-1" => Some(simple_rule(base_selector, "flex:1 1 0%;", important)), "flex-0" => Some(simple_rule(base_selector, "flex:0 0 auto;", important)), "flex-none" => Some(simple_rule(base_selector, "flex:none;", important)), "shrink-0" => Some(simple_rule(base_selector, "flex-shrink:0;", important)), "basis-0" => Some(simple_rule(base_selector, "flex-basis:0;", important)), "items-start" => Some(simple_rule(base_selector, "align-items:flex-start;", important)), "items-center" => Some(simple_rule(base_selector, "align-items:center;", important)), "items-end" => Some(simple_rule(base_selector, "align-items:flex-end;", important)), "items-stretch" => Some(simple_rule(base_selector, "align-items:stretch;", important)), "items-baseline" => Some(simple_rule(base_selector, "align-items:baseline;", important)), "align-start" => Some(simple_rule(base_selector, "align-items:flex-start;", important)), "justify-start" => Some(simple_rule(base_selector, "justify-content:flex-start;", important)), "justify-center" => Some(simple_rule(base_selector, "justify-content:center;", important)), "justify-end" => Some(simple_rule(base_selector, "justify-content:flex-end;", important)), "justify-between" => Some(simple_rule(base_selector, "justify-content:space-between;", important)), "justify-around" => Some(simple_rule(base_selector, "justify-content:space-around;", important)), "justify-evenly" => Some(simple_rule(base_selector, "justify-content:space-evenly;", important)), "justify-stretch" => Some(simple_rule(base_selector, "justify-content:stretch;", important)), "rounded" => Some(simple_rule(base_selector, "border-radius:0.25rem;", important)), "rounded-sm" => Some(simple_rule(base_selector, "border-radius:calc(var(--radius,0.5rem) - 4px);", important)), "rounded-md" => Some(simple_rule(base_selector, "border-radius:calc(var(--radius,0.5rem) - 2px);", important)), "rounded-lg" => Some(simple_rule(base_selector, "border-radius:var(--radius,0.5rem);", important)), "rounded-xl" => Some(simple_rule(base_selector, "border-radius:calc(var(--radius,0.5rem) + 4px);", important)), "rounded-2xl" => Some(simple_rule(base_selector, "border-radius:calc(var(--radius,0.5rem) + 8px);", important)), "rounded-3xl" => Some(simple_rule(base_selector, "border-radius:calc(var(--radius,0.5rem) + 12px);", important)), "rounded-4xl" => Some(simple_rule(base_selector, "border-radius:calc(var(--radius,0.5rem) + 16px);", important)), "rounded-full" => Some(simple_rule(base_selector, "border-radius:9999px;", important)), "rounded-none" => Some(simple_rule(base_selector, "border-radius:0;", important)), "rounded-xs" => Some(simple_rule(base_selector, "border-radius:0.125rem;", important)), "shadow" | "shadow-sm" => Some(simple_rule(base_selector, "box-shadow:0 1px 2px rgba(0,0,0,0.05);", important)), "shadow-md" => Some(simple_rule(base_selector, "box-shadow:0 4px 12px rgba(0,0,0,0.08);", important)), "shadow-lg" => Some(simple_rule(base_selector, "box-shadow:0 12px 32px rgba(0,0,0,0.12);", important)), "shadow-2xl" => Some(simple_rule(base_selector, "box-shadow:0 20px 48px rgba(0,0,0,0.2);", important)), "shadow-xs" => Some(simple_rule(base_selector, "box-shadow:0 1px 1px rgba(0,0,0,0.04);", important)), "font-thin" => Some(simple_rule(base_selector, "font-weight:100;", important)), "font-extralight" => Some(simple_rule(base_selector, "font-weight:200;", important)), "font-light" => Some(simple_rule(base_selector, "font-weight:300;", important)), "font-normal" => Some(simple_rule(base_selector, "font-weight:400;", important)), "font-medium" => Some(simple_rule(base_selector, "font-weight:500;", important)), "font-semibold" => Some(simple_rule(base_selector, "font-weight:600;", important)), "font-bold" => Some(simple_rule(base_selector, "font-weight:700;", important)), "font-extrabold" => Some(simple_rule(base_selector, "font-weight:800;", important)), "font-black" => Some(simple_rule(base_selector, "font-weight:900;", important)), "font-mono" => Some(simple_rule(base_selector, "font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,'Liberation Mono','Courier New',monospace;", important)), "font-sans" => Some(simple_rule(base_selector, "font-family:ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',Arial,sans-serif;", important)), "font-serif" => Some(simple_rule(base_selector, "font-family:ui-serif,Georgia,Cambria,'Times New Roman',Times,serif;", important)), "italic" => Some(simple_rule(base_selector, "font-style:italic;", important)), "text-left" => Some(simple_rule(base_selector, "text-align:left;", important)), "text-center" => Some(simple_rule(base_selector, "text-align:center;", important)), "text-right" => Some(simple_rule(base_selector, "text-align:right;", important)), "text-justify" => Some(simple_rule(base_selector, "text-align:justify;", important)), "leading-none" => Some(simple_rule(base_selector, "line-height:1;", important)), "leading-tight" => Some(simple_rule(base_selector, "line-height:1.25;", important)), "leading-snug" => Some(simple_rule(base_selector, "line-height:1.375;", important)), "leading-normal" => Some(simple_rule(base_selector, "line-height:1.5;", important)), "leading-relaxed" => Some(simple_rule(base_selector, "line-height:1.625;", important)), "tracking-tight" => Some(simple_rule(base_selector, "letter-spacing:-0.025em;", important)), "tracking-normal" => Some(simple_rule(base_selector, "letter-spacing:0;", important)), "tracking-wide" => Some(simple_rule(base_selector, "letter-spacing:0.025em;", important)), "tracking-wider" => Some(simple_rule(base_selector, "letter-spacing:0.05em;", important)), "tracking-widest" => Some(simple_rule(base_selector, "letter-spacing:0.1em;", important)), "border" => Some(simple_rule(base_selector, "border-width:1px;border-style:solid;", important)), "border-0" => Some(simple_rule(base_selector, "border-width:0;", important)), "border-2" => Some(simple_rule(base_selector, "border-width:2px;border-style:solid;", important)), "border-4" => Some(simple_rule(base_selector, "border-width:4px;border-style:solid;", important)), "border-t" => Some(simple_rule(base_selector, "border-top-width:1px;border-top-style:solid;", important)), "border-r" => Some(simple_rule(base_selector, "border-right-width:1px;border-right-style:solid;", important)), "border-b" => Some(simple_rule(base_selector, "border-bottom-width:1px;border-bottom-style:solid;", important)), "border-l" => Some(simple_rule(base_selector, "border-left-width:1px;border-left-style:solid;", important)), "border-x" => Some(simple_rule(base_selector, "border-left-width:1px;border-right-width:1px;border-left-style:solid;border-right-style:solid;", important)), "border-y" => Some(simple_rule(base_selector, "border-top-width:1px;border-bottom-width:1px;border-top-style:solid;border-bottom-style:solid;", important)), "border-dashed" => Some(simple_rule(base_selector, "border-style:dashed;", important)), "border-solid" => Some(simple_rule(base_selector, "border-style:solid;", important)), "relative" => Some(simple_rule(base_selector, "position:relative;", important)), "absolute" => Some(simple_rule(base_selector, "position:absolute;", important)), "fixed" => Some(simple_rule(base_selector, "position:fixed;", important)), "sticky" => Some(simple_rule(base_selector, "position:sticky;", important)), "min-h-screen" => Some(simple_rule(base_selector, "min-height:100vh;", important)), "h-full" => Some(simple_rule(base_selector, "height:100%;", important)), "w-full" => Some(simple_rule(base_selector, "width:100%;", important)), "w-auto" => Some(simple_rule(base_selector, "width:auto;", important)), "h-auto" => Some(simple_rule(base_selector, "height:auto;", important)), "overflow-hidden" => Some(simple_rule(base_selector, "overflow:hidden;", important)), "overflow-auto" => Some(simple_rule(base_selector, "overflow:auto;", important)), "overflow-scroll" => Some(simple_rule(base_selector, "overflow:scroll;", important)), "overflow-visible" => Some(simple_rule(base_selector, "overflow:visible;", important)), "overflow-x-auto" => Some(simple_rule(base_selector, "overflow-x:auto;", important)), "overflow-y-auto" => Some(simple_rule(base_selector, "overflow-y:auto;", important)), "overflow-x-hidden" => Some(simple_rule(base_selector, "overflow-x:hidden;", important)), "overflow-y-hidden" => Some(simple_rule(base_selector, "overflow-y:hidden;", important)), "whitespace-normal" => Some(simple_rule(base_selector, "white-space:normal;", important)), "whitespace-nowrap" => Some(simple_rule(base_selector, "white-space:nowrap;", important)), "transition" => Some(simple_rule(base_selector, "transition-property:all;transition-duration:150ms;transition-timing-function:cubic-bezier(0.4,0,0.2,1);", important)), "transition-all" => Some(simple_rule(base_selector, "transition-property:all;transition-duration:150ms;transition-timing-function:cubic-bezier(0.4,0,0.2,1);", important)), "transition-colors" => Some(simple_rule(base_selector, "transition-property:background-color,border-color,color,fill,stroke;transition-duration:150ms;transition-timing-function:cubic-bezier(0.4,0,0.2,1);", important)), "transition-none" => Some(simple_rule(base_selector, "transition-property:none;", important)), "transition-opacity" => Some(simple_rule(base_selector, "transition-property:opacity;transition-duration:150ms;transition-timing-function:cubic-bezier(0.4,0,0.2,1);", important)), "transition-transform" => Some(simple_rule(base_selector, "transition-property:transform;transition-duration:150ms;transition-timing-function:cubic-bezier(0.4,0,0.2,1);", important)), "cursor-pointer" => Some(simple_rule(base_selector, "cursor:pointer;", important)), "cursor-default" => Some(simple_rule(base_selector, "cursor:default;", important)), "uppercase" => Some(simple_rule(base_selector, "text-transform:uppercase;", important)), "lowercase" => Some(simple_rule(base_selector, "text-transform:lowercase;", important)), "capitalize" => Some(simple_rule(base_selector, "text-transform:capitalize;", important)), "underline" => Some(simple_rule(base_selector, "text-decoration:underline;", important)), "inline-flex" => Some(simple_rule(base_selector, "display:inline-flex;", important)), "list-disc" => Some(simple_rule(base_selector, "list-style-type:disc;", important)), "list-none" => Some(simple_rule(base_selector, "list-style-type:none;", important)), "list-inside" => Some(simple_rule(base_selector, "list-style-position:inside;", important)), "break-words" => Some(simple_rule(base_selector, "overflow-wrap:break-word;", important)), "appearance-none" => Some(simple_rule(base_selector, "appearance:none;", important)), "backdrop-blur-sm" => Some(simple_rule(base_selector, "backdrop-filter:blur(4px);", important)), "backdrop-blur" => Some(simple_rule(base_selector, "backdrop-filter:blur(8px);", important)), "backdrop-blur-md" => Some(simple_rule(base_selector, "backdrop-filter:blur(12px);", important)), "backdrop-blur-lg" => Some(simple_rule(base_selector, "backdrop-filter:blur(16px);", important)), "backdrop-blur-xl" => Some(simple_rule(base_selector, "backdrop-filter:blur(24px);", important)), "backdrop-blur-none" => Some(simple_rule(base_selector, "backdrop-filter:none;", important)), "antialiased" => Some(simple_rule(base_selector, "-webkit-font-smoothing:antialiased;-moz-osx-font-smoothing:grayscale;", important)), "pointer-events-none" => Some(simple_rule(base_selector, "pointer-events:none;", important)), "pointer-events-auto" => Some(simple_rule(base_selector, "pointer-events:auto;", important)), "select-none" => Some(simple_rule(base_selector, "user-select:none;", important)), "fill-current" => Some(simple_rule(base_selector, "fill:currentColor;", important)), "align-top" => Some(simple_rule(base_selector, "vertical-align:top;", important)), "align-middle" => Some(simple_rule(base_selector, "vertical-align:middle;", important)), "resize-y" => Some(simple_rule(base_selector, "resize:vertical;", important)), "touch-pan-y" => Some(simple_rule(base_selector, "touch-action:pan-y;", important)), "tabular-nums" => Some(simple_rule(base_selector, "font-variant-numeric:tabular-nums;", important)), "sr-only" => Some(simple_rule(base_selector, "position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border-width:0;", important)), "prose-sm" => Some(simple_rule(base_selector, "font-size:0.875rem;line-height:1.7142857;", important)), "bg-center" => Some(simple_rule(base_selector, "background-position:center;", important)), "bg-bottom" => Some(simple_rule(base_selector, "background-position:bottom;", important)), "bg-repeat" => Some(simple_rule(base_selector, "background-repeat:repeat;", important)), "bg-repeat-x" => Some(simple_rule(base_selector, "background-repeat:repeat-x;", important)), "bg-repeat-y" => Some(simple_rule(base_selector, "background-repeat:repeat-y;", important)), "bg-no-repeat" => Some(simple_rule(base_selector, "background-repeat:no-repeat;", important)), "bg-cover" => Some(simple_rule(base_selector, "background-size:cover;", important)), "bg-contain" => Some(simple_rule(base_selector, "background-size:contain;", important)), "bg-gradient-to-r" => Some(simple_rule(base_selector, "background-image:linear-gradient(to right,var(--tw-gradient-from),var(--tw-gradient-to));", important)), "bg-gradient-to-b" => Some(simple_rule(base_selector, "background-image:linear-gradient(to bottom,var(--tw-gradient-from),var(--tw-gradient-to));", important)), "bg-gradient-to-br" => Some(simple_rule(base_selector, "background-image:linear-gradient(to bottom right,var(--tw-gradient-from),var(--tw-gradient-to));", important)), "outline-none" => Some(simple_rule(base_selector, "outline:2px solid transparent;outline-offset:2px;", important)), "outline-hidden" => Some(simple_rule(base_selector, "outline:none;", important)), "ring" => Some(simple_rule(base_selector, "box-shadow:0 0 0 1px rgba(59,130,246,0.5);", important)), "ring-1" => Some(simple_rule(base_selector, "box-shadow:0 0 0 1px rgba(59,130,246,0.5);", important)), "ring-2" => Some(simple_rule(base_selector, "box-shadow:0 0 0 2px rgba(59,130,246,0.5);", important)), "ring-4" => Some(simple_rule(base_selector, "box-shadow:0 0 0 4px rgba(59,130,246,0.5);", important)), "max-w-none" => Some(simple_rule(base_selector, "max-width:none;", important)), "w-px" => Some(simple_rule(base_selector, "width:1px;", important)), "size-full" => Some(simple_rule(base_selector, "width:100%;height:100%;", important)), "list-decimal" => Some(simple_rule(base_selector, "list-style-type:decimal;", important)), "animate-spin" => Some(UtilityRule { selector: base_selector.to_string(), declarations: maybe_important("animation:zebflow-spin 1s linear infinite;", important), prelude: Some("@keyframes zebflow-spin{to{transform:rotate(360deg);}}".to_string()) }), "animate-ping" => Some(UtilityRule { selector: base_selector.to_string(), declarations: maybe_important("animation:zebflow-ping 1s cubic-bezier(0,0,0.2,1) infinite;", important), prelude: Some("@keyframes zebflow-ping{75%,100%{transform:scale(2);opacity:0;}}".to_string()) }), "animate-pulse" => Some(UtilityRule { selector: base_selector.to_string(), declarations: maybe_important("animation:zebflow-pulse 2s cubic-bezier(0.4,0,0.6,1) infinite;", important), prelude: Some("@keyframes zebflow-pulse{0%,100%{opacity:1;}50%{opacity:.5;}}".to_string()) }), "animate-bounce" => Some(UtilityRule { selector: base_selector.to_string(), declarations: maybe_important("animation:zebflow-bounce 1s infinite;", important), prelude: Some("@keyframes zebflow-bounce{0%,100%{transform:translateY(-25%);animation-timing-function:cubic-bezier(.8,0,1,1);}50%{transform:none;animation-timing-function:cubic-bezier(0,0,.2,1);}}".to_string()) }),
+        "flex" => Some(simple_rule(base_selector, "display:flex;", important)), "grid" => Some(simple_rule(base_selector, "display:grid;", important)), "block" => Some(simple_rule(base_selector, "display:block;", important)), "inline" => Some(simple_rule(base_selector, "display:inline;", important)), "inline-block" => Some(simple_rule(base_selector, "display:inline-block;", important)), "hidden" => Some(simple_rule(base_selector, "display:none;", important)), "flex-col" => Some(simple_rule(base_selector, "flex-direction:column;", important)), "flex-row" => Some(simple_rule(base_selector, "flex-direction:row;", important)), "flex-wrap" => Some(simple_rule(base_selector, "flex-wrap:wrap;", important)), "flex-1" => Some(simple_rule(base_selector, "flex:1 1 0%;", important)), "flex-0" => Some(simple_rule(base_selector, "flex:0 0 auto;", important)), "flex-none" => Some(simple_rule(base_selector, "flex:none;", important)), "shrink-0" => Some(simple_rule(base_selector, "flex-shrink:0;", important)), "basis-0" => Some(simple_rule(base_selector, "flex-basis:0;", important)), "items-start" => Some(simple_rule(base_selector, "align-items:flex-start;", important)), "items-center" => Some(simple_rule(base_selector, "align-items:center;", important)), "items-end" => Some(simple_rule(base_selector, "align-items:flex-end;", important)), "items-stretch" => Some(simple_rule(base_selector, "align-items:stretch;", important)), "items-baseline" => Some(simple_rule(base_selector, "align-items:baseline;", important)), "align-start" => Some(simple_rule(base_selector, "align-items:flex-start;", important)), "justify-start" => Some(simple_rule(base_selector, "justify-content:flex-start;", important)), "justify-center" => Some(simple_rule(base_selector, "justify-content:center;", important)), "justify-end" => Some(simple_rule(base_selector, "justify-content:flex-end;", important)), "justify-between" => Some(simple_rule(base_selector, "justify-content:space-between;", important)), "justify-around" => Some(simple_rule(base_selector, "justify-content:space-around;", important)), "justify-evenly" => Some(simple_rule(base_selector, "justify-content:space-evenly;", important)), "justify-stretch" => Some(simple_rule(base_selector, "justify-content:stretch;", important)), "rounded" => Some(simple_rule(base_selector, "border-radius:0.25rem;", important)), "rounded-sm" => Some(simple_rule(base_selector, "border-radius:calc(var(--radius,0.5rem) - 4px);", important)), "rounded-md" => Some(simple_rule(base_selector, "border-radius:calc(var(--radius,0.5rem) - 2px);", important)), "rounded-lg" => Some(simple_rule(base_selector, "border-radius:var(--radius,0.5rem);", important)), "rounded-xl" => Some(simple_rule(base_selector, "border-radius:calc(var(--radius,0.5rem) + 4px);", important)), "rounded-2xl" => Some(simple_rule(base_selector, "border-radius:calc(var(--radius,0.5rem) + 8px);", important)), "rounded-3xl" => Some(simple_rule(base_selector, "border-radius:calc(var(--radius,0.5rem) + 12px);", important)), "rounded-4xl" => Some(simple_rule(base_selector, "border-radius:calc(var(--radius,0.5rem) + 16px);", important)), "rounded-full" => Some(simple_rule(base_selector, "border-radius:9999px;", important)), "rounded-none" => Some(simple_rule(base_selector, "border-radius:0;", important)), "rounded-xs" => Some(simple_rule(base_selector, "border-radius:0.125rem;", important)), "shadow" | "shadow-sm" => Some(simple_rule(base_selector, "box-shadow:0 1px 2px rgba(0,0,0,0.05);", important)), "shadow-md" => Some(simple_rule(base_selector, "box-shadow:0 4px 12px rgba(0,0,0,0.08);", important)), "shadow-lg" => Some(simple_rule(base_selector, "box-shadow:0 12px 32px rgba(0,0,0,0.12);", important)), "shadow-2xl" => Some(simple_rule(base_selector, "box-shadow:0 20px 48px rgba(0,0,0,0.2);", important)), "shadow-xs" => Some(simple_rule(base_selector, "box-shadow:0 1px 1px rgba(0,0,0,0.04);", important)), "font-thin" => Some(simple_rule(base_selector, "font-weight:100;", important)), "font-extralight" => Some(simple_rule(base_selector, "font-weight:200;", important)), "font-light" => Some(simple_rule(base_selector, "font-weight:300;", important)), "font-normal" => Some(simple_rule(base_selector, "font-weight:400;", important)), "font-medium" => Some(simple_rule(base_selector, "font-weight:500;", important)), "font-semibold" => Some(simple_rule(base_selector, "font-weight:600;", important)), "font-bold" => Some(simple_rule(base_selector, "font-weight:700;", important)), "font-extrabold" => Some(simple_rule(base_selector, "font-weight:800;", important)), "font-black" => Some(simple_rule(base_selector, "font-weight:900;", important)), "font-mono" => Some(simple_rule(base_selector, "font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,'Liberation Mono','Courier New',monospace;", important)), "font-sans" => Some(simple_rule(base_selector, "font-family:ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',Arial,sans-serif;", important)), "font-serif" => Some(simple_rule(base_selector, "font-family:ui-serif,Georgia,Cambria,'Times New Roman',Times,serif;", important)), "italic" => Some(simple_rule(base_selector, "font-style:italic;", important)), "text-left" => Some(simple_rule(base_selector, "text-align:left;", important)), "text-center" => Some(simple_rule(base_selector, "text-align:center;", important)), "text-right" => Some(simple_rule(base_selector, "text-align:right;", important)), "text-justify" => Some(simple_rule(base_selector, "text-align:justify;", important)), "leading-none" => Some(simple_rule(base_selector, "line-height:1;", important)), "leading-tight" => Some(simple_rule(base_selector, "line-height:1.25;", important)), "leading-snug" => Some(simple_rule(base_selector, "line-height:1.375;", important)), "leading-normal" => Some(simple_rule(base_selector, "line-height:1.5;", important)), "leading-relaxed" => Some(simple_rule(base_selector, "line-height:1.625;", important)), "tracking-tight" => Some(simple_rule(base_selector, "letter-spacing:-0.025em;", important)), "tracking-normal" => Some(simple_rule(base_selector, "letter-spacing:0;", important)), "tracking-wide" => Some(simple_rule(base_selector, "letter-spacing:0.025em;", important)), "tracking-wider" => Some(simple_rule(base_selector, "letter-spacing:0.05em;", important)), "tracking-widest" => Some(simple_rule(base_selector, "letter-spacing:0.1em;", important)), "border" => Some(simple_rule(base_selector, "border-width:1px;", important)), "border-0" => Some(simple_rule(base_selector, "border-width:0;", important)), "border-2" => Some(simple_rule(base_selector, "border-width:2px;", important)), "border-4" => Some(simple_rule(base_selector, "border-width:4px;", important)), "border-t" => Some(simple_rule(base_selector, "border-top-width:1px;", important)), "border-r" => Some(simple_rule(base_selector, "border-right-width:1px;", important)), "border-b" => Some(simple_rule(base_selector, "border-bottom-width:1px;", important)), "border-l" => Some(simple_rule(base_selector, "border-left-width:1px;", important)), "border-x" => Some(simple_rule(base_selector, "border-left-width:1px;border-right-width:1px;", important)), "border-y" => Some(simple_rule(base_selector, "border-top-width:1px;border-bottom-width:1px;", important)), "border-dashed" => Some(simple_rule(base_selector, "border-style:dashed;", important)), "border-solid" => Some(simple_rule(base_selector, "border-style:solid;", important)), "relative" => Some(simple_rule(base_selector, "position:relative;", important)), "absolute" => Some(simple_rule(base_selector, "position:absolute;", important)), "fixed" => Some(simple_rule(base_selector, "position:fixed;", important)), "sticky" => Some(simple_rule(base_selector, "position:sticky;", important)), "min-h-screen" => Some(simple_rule(base_selector, "min-height:100vh;", important)), "h-full" => Some(simple_rule(base_selector, "height:100%;", important)), "w-full" => Some(simple_rule(base_selector, "width:100%;", important)), "w-auto" => Some(simple_rule(base_selector, "width:auto;", important)), "h-auto" => Some(simple_rule(base_selector, "height:auto;", important)), "overflow-hidden" => Some(simple_rule(base_selector, "overflow:hidden;", important)), "overflow-auto" => Some(simple_rule(base_selector, "overflow:auto;", important)), "overflow-scroll" => Some(simple_rule(base_selector, "overflow:scroll;", important)), "overflow-visible" => Some(simple_rule(base_selector, "overflow:visible;", important)), "overflow-x-auto" => Some(simple_rule(base_selector, "overflow-x:auto;", important)), "overflow-y-auto" => Some(simple_rule(base_selector, "overflow-y:auto;", important)), "overflow-x-hidden" => Some(simple_rule(base_selector, "overflow-x:hidden;", important)), "overflow-y-hidden" => Some(simple_rule(base_selector, "overflow-y:hidden;", important)), "whitespace-normal" => Some(simple_rule(base_selector, "white-space:normal;", important)), "whitespace-nowrap" => Some(simple_rule(base_selector, "white-space:nowrap;", important)), "transition" => Some(simple_rule(base_selector, "transition-property:color,background-color,border-color,text-decoration-color,fill,stroke,opacity,box-shadow,transform,filter,backdrop-filter;transition-duration:150ms;transition-timing-function:cubic-bezier(0.4,0,0.2,1);", important)), "transition-all" => Some(simple_rule(base_selector, "transition-property:all;transition-duration:150ms;transition-timing-function:cubic-bezier(0.4,0,0.2,1);", important)), "transition-colors" => Some(simple_rule(base_selector, "transition-property:background-color,border-color,color,fill,stroke;transition-duration:150ms;transition-timing-function:cubic-bezier(0.4,0,0.2,1);", important)), "transition-none" => Some(simple_rule(base_selector, "transition-property:none;", important)), "transition-opacity" => Some(simple_rule(base_selector, "transition-property:opacity;transition-duration:150ms;transition-timing-function:cubic-bezier(0.4,0,0.2,1);", important)), "transition-transform" => Some(simple_rule(base_selector, "transition-property:transform;transition-duration:150ms;transition-timing-function:cubic-bezier(0.4,0,0.2,1);", important)), "cursor-pointer" => Some(simple_rule(base_selector, "cursor:pointer;", important)), "cursor-default" => Some(simple_rule(base_selector, "cursor:default;", important)), "uppercase" => Some(simple_rule(base_selector, "text-transform:uppercase;", important)), "lowercase" => Some(simple_rule(base_selector, "text-transform:lowercase;", important)), "capitalize" => Some(simple_rule(base_selector, "text-transform:capitalize;", important)), "underline" => Some(simple_rule(base_selector, "text-decoration:underline;", important)), "inline-flex" => Some(simple_rule(base_selector, "display:inline-flex;", important)), "list-disc" => Some(simple_rule(base_selector, "list-style-type:disc;", important)), "list-none" => Some(simple_rule(base_selector, "list-style-type:none;", important)), "list-inside" => Some(simple_rule(base_selector, "list-style-position:inside;", important)), "break-words" => Some(simple_rule(base_selector, "overflow-wrap:break-word;", important)), "appearance-none" => Some(simple_rule(base_selector, "appearance:none;", important)), "backdrop-blur-sm" => Some(simple_rule(base_selector, "backdrop-filter:blur(4px);", important)), "backdrop-blur" => Some(simple_rule(base_selector, "backdrop-filter:blur(8px);", important)), "backdrop-blur-md" => Some(simple_rule(base_selector, "backdrop-filter:blur(12px);", important)), "backdrop-blur-lg" => Some(simple_rule(base_selector, "backdrop-filter:blur(16px);", important)), "backdrop-blur-xl" => Some(simple_rule(base_selector, "backdrop-filter:blur(24px);", important)), "backdrop-blur-none" => Some(simple_rule(base_selector, "backdrop-filter:none;", important)), "antialiased" => Some(simple_rule(base_selector, "-webkit-font-smoothing:antialiased;-moz-osx-font-smoothing:grayscale;", important)), "pointer-events-none" => Some(simple_rule(base_selector, "pointer-events:none;", important)), "pointer-events-auto" => Some(simple_rule(base_selector, "pointer-events:auto;", important)), "select-none" => Some(simple_rule(base_selector, "user-select:none;", important)), "fill-current" => Some(simple_rule(base_selector, "fill:currentColor;", important)), "align-top" => Some(simple_rule(base_selector, "vertical-align:top;", important)), "align-middle" => Some(simple_rule(base_selector, "vertical-align:middle;", important)), "resize-y" => Some(simple_rule(base_selector, "resize:vertical;", important)), "touch-pan-y" => Some(simple_rule(base_selector, "touch-action:pan-y;", important)), "tabular-nums" => Some(simple_rule(base_selector, "font-variant-numeric:tabular-nums;", important)), "sr-only" => Some(simple_rule(base_selector, "position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border-width:0;", important)), "prose-sm" => Some(simple_rule(base_selector, "font-size:0.875rem;line-height:1.7142857;", important)), "bg-center" => Some(simple_rule(base_selector, "background-position:center;", important)), "bg-bottom" => Some(simple_rule(base_selector, "background-position:bottom;", important)), "bg-repeat" => Some(simple_rule(base_selector, "background-repeat:repeat;", important)), "bg-repeat-x" => Some(simple_rule(base_selector, "background-repeat:repeat-x;", important)), "bg-repeat-y" => Some(simple_rule(base_selector, "background-repeat:repeat-y;", important)), "bg-no-repeat" => Some(simple_rule(base_selector, "background-repeat:no-repeat;", important)), "bg-cover" => Some(simple_rule(base_selector, "background-size:cover;", important)), "bg-contain" => Some(simple_rule(base_selector, "background-size:contain;", important)), "bg-gradient-to-r" => Some(simple_rule(base_selector, "background-image:linear-gradient(to right,var(--tw-gradient-from),var(--tw-gradient-to));", important)), "bg-gradient-to-b" => Some(simple_rule(base_selector, "background-image:linear-gradient(to bottom,var(--tw-gradient-from),var(--tw-gradient-to));", important)), "bg-gradient-to-br" => Some(simple_rule(base_selector, "background-image:linear-gradient(to bottom right,var(--tw-gradient-from),var(--tw-gradient-to));", important)), "outline-none" => Some(simple_rule(base_selector, "outline:2px solid transparent;outline-offset:2px;", important)), "outline-hidden" => Some(simple_rule(base_selector, "outline:none;", important)), "ring" => Some(simple_rule(base_selector, "box-shadow:0 0 0 1px rgba(59,130,246,0.5);", important)), "ring-1" => Some(simple_rule(base_selector, "box-shadow:0 0 0 1px rgba(59,130,246,0.5);", important)), "ring-2" => Some(simple_rule(base_selector, "box-shadow:0 0 0 2px rgba(59,130,246,0.5);", important)), "ring-4" => Some(simple_rule(base_selector, "box-shadow:0 0 0 4px rgba(59,130,246,0.5);", important)), "max-w-none" => Some(simple_rule(base_selector, "max-width:none;", important)), "w-px" => Some(simple_rule(base_selector, "width:1px;", important)), "size-full" => Some(simple_rule(base_selector, "width:100%;height:100%;", important)), "list-decimal" => Some(simple_rule(base_selector, "list-style-type:decimal;", important)), "animate-spin" => Some(UtilityRule { selector: base_selector.to_string(), declarations: maybe_important("animation:zebflow-spin 1s linear infinite;", important), prelude: Some("@keyframes zebflow-spin{to{transform:rotate(360deg);}}".to_string()) }), "animate-ping" => Some(UtilityRule { selector: base_selector.to_string(), declarations: maybe_important("animation:zebflow-ping 1s cubic-bezier(0,0,0.2,1) infinite;", important), prelude: Some("@keyframes zebflow-ping{75%,100%{transform:scale(2);opacity:0;}}".to_string()) }), "animate-pulse" => Some(UtilityRule { selector: base_selector.to_string(), declarations: maybe_important("animation:zebflow-pulse 2s cubic-bezier(0.4,0,0.6,1) infinite;", important), prelude: Some("@keyframes zebflow-pulse{0%,100%{opacity:1;}50%{opacity:.5;}}".to_string()) }), "animate-bounce" => Some(UtilityRule { selector: base_selector.to_string(), declarations: maybe_important("animation:zebflow-bounce 1s infinite;", important), prelude: Some("@keyframes zebflow-bounce{0%,100%{transform:translateY(-25%);animation-timing-function:cubic-bezier(.8,0,1,1);}50%{transform:none;animation-timing-function:cubic-bezier(0,0,.2,1);}}".to_string()) }),
         // Overflow
         "overflow-x-scroll"   => Some(simple_rule(base_selector, "overflow-x:scroll;", important)),
         "overflow-y-scroll"   => Some(simple_rule(base_selector, "overflow-y:scroll;", important)),
@@ -3329,26 +3370,47 @@ fn max_width_value(v: &str) -> Option<String> {
         _ => minmax_size_value(v, SizeAxis::Width),
     }
 }
-fn text_size_value(v: &str) -> Option<&'static str> {
+/// Tailwind's font sizes, each with the line-height it sets.
+fn text_size_value(v: &str) -> Option<(&'static str, &'static str)> {
     match v {
-        "xs" => Some("0.75rem"),
-        "sm" => Some("0.875rem"),
-        "base" => Some("1rem"),
-        "lg" => Some("1.125rem"),
-        "xl" => Some("1.25rem"),
-        "2xl" => Some("1.5rem"),
-        "3xl" => Some("1.875rem"),
-        "4xl" => Some("2.25rem"),
-        "5xl" => Some("3rem"),
-        "6xl" => Some("3.75rem"),
-        "7xl" => Some("4.5rem"),
-        "8xl" => Some("6rem"),
-        "9xl" => Some("8rem"),
+        "xs" => Some(("0.75rem", "1rem")),
+        "sm" => Some(("0.875rem", "1.25rem")),
+        "base" => Some(("1rem", "1.5rem")),
+        "lg" => Some(("1.125rem", "1.75rem")),
+        "xl" => Some(("1.25rem", "1.75rem")),
+        "2xl" => Some(("1.5rem", "2rem")),
+        "3xl" => Some(("1.875rem", "2.25rem")),
+        "4xl" => Some(("2.25rem", "2.5rem")),
+        "5xl" => Some(("3rem", "1")),
+        "6xl" => Some(("3.75rem", "1")),
+        "7xl" => Some(("4.5rem", "1")),
+        "8xl" => Some(("6rem", "1")),
+        "9xl" => Some(("8rem", "1")),
         _ => None,
     }
 }
+
+/// The `/…` of `text-sm/6`: a spacing step, a `leading-*` name or `[value]`.
+fn line_height_value(v: &str) -> Option<String> {
+    if let Some(raw) = arbitrary_value(v) {
+        return Some(raw);
+    }
+    let named = match v {
+        "none" => "1",
+        "tight" => "1.25",
+        "snug" => "1.375",
+        "normal" => "1.5",
+        "relaxed" => "1.625",
+        "loose" => "2",
+        _ => {
+            let step = v.parse::<f64>().ok().filter(|n| *n >= 0.0)?;
+            return Some(format!("{}rem", step * 0.25));
+        }
+    };
+    Some(named.to_string())
+}
 fn border_rule(v: &str) -> Option<String> {
-    match v { "0" => Some("border-width:0;".to_string()), "2" => Some("border-width:2px;border-style:solid;".to_string()), "4" => Some("border-width:4px;border-style:solid;".to_string()), "8" => Some("border-width:8px;border-style:solid;".to_string()), "t" => Some("border-top-width:1px;border-top-style:solid;".to_string()), "r" => Some("border-right-width:1px;border-right-style:solid;".to_string()), "b" => Some("border-bottom-width:1px;border-bottom-style:solid;".to_string()), "l" => Some("border-left-width:1px;border-left-style:solid;".to_string()), "x" => Some("border-left-width:1px;border-right-width:1px;border-left-style:solid;border-right-style:solid;".to_string()), "y" => Some("border-top-width:1px;border-bottom-width:1px;border-top-style:solid;border-bottom-style:solid;".to_string()), "dashed" => Some("border-style:dashed;".to_string()), "dotted" => Some("border-style:dotted;".to_string()), "double" => Some("border-style:double;".to_string()), "hidden" => Some("border-style:hidden;".to_string()), "none" => Some("border-style:none;".to_string()), "solid" => Some("border-style:solid;".to_string()), _ => color_value(v).map(|c| format!("border-color:{};", c)) }
+    match v { "0" => Some("border-width:0;".to_string()), "2" => Some("border-width:2px;".to_string()), "4" => Some("border-width:4px;".to_string()), "8" => Some("border-width:8px;".to_string()), "t" => Some("border-top-width:1px;".to_string()), "r" => Some("border-right-width:1px;".to_string()), "b" => Some("border-bottom-width:1px;".to_string()), "l" => Some("border-left-width:1px;".to_string()), "x" => Some("border-left-width:1px;border-right-width:1px;".to_string()), "y" => Some("border-top-width:1px;border-bottom-width:1px;".to_string()), "dashed" => Some("border-style:dashed;".to_string()), "dotted" => Some("border-style:dotted;".to_string()), "double" => Some("border-style:double;".to_string()), "hidden" => Some("border-style:hidden;".to_string()), "none" => Some("border-style:none;".to_string()), "solid" => Some("border-style:solid;".to_string()), _ => color_value(v).map(|c| format!("border-color:{};", c)) }
 }
 fn outline_rule(v: &str) -> Option<String> {
     match v {
@@ -3364,6 +3426,17 @@ fn outline_rule(v: &str) -> Option<String> {
         }
     }
 }
+/// Whether an arbitrary value is a colour rather than a length: what decides
+/// `border-t-[#fff]` (colour) from `border-t-[3px]` (width).
+fn is_color_like(raw: &str) -> bool {
+    let t = raw.trim().to_ascii_lowercase();
+    ["#", "rgb(", "rgba(", "hsl(", "hsla(", "hwb(", "lab(", "lch(", "oklab(", "oklch(", "color(", "color-mix("]
+        .iter()
+        .any(|prefix| t.starts_with(prefix))
+        || (!t.is_empty()
+            && t.chars().all(|c| c.is_ascii_alphabetic())
+            && !matches!(t.as_str(), "thin" | "medium" | "thick"))
+}
 fn background_value(v: &str) -> Option<String> {
     arbitrary_value(v)
 }
@@ -3376,8 +3449,19 @@ fn background_declaration(v: &str) -> String {
         || t.starts_with("image(")
     {
         format!("background-image:{};", t)
+    } else if t.split_whitespace().all(|part| {
+        matches!(part, "top" | "bottom" | "left" | "right" | "center")
+            || part.ends_with('%')
+            || part.trim_start_matches('-').starts_with(|c: char| c.is_ascii_digit())
+    }) && !is_color_like(t)
+    {
+        // `bg-[center_top_1rem]` places the image.
+        format!("background-position:{};", t)
     } else {
-        format!("background:{};", t)
+        // Anything else is a colour, as Tailwind reads an untyped `bg-[…]`.
+        // Never the `background` shorthand: it would reset the image,
+        // position and size another utility set.
+        format!("background-color:{};", t)
     }
 }
 fn color_value(v: &str) -> Option<String> {
@@ -3767,14 +3851,77 @@ fn arbitrary_value(v: &str) -> Option<String> {
         c.is_ascii_alphanumeric()
             || matches!(
                 c,
-                '#' | '.' | ',' | '%' | '/' | '_' | '-' | '(' | ')' | ':' | '\'' | '"' | ' '
+                '#' | '.' | ',' | '%' | '/' | '_' | '-' | '+' | '*' | '(' | ')' | ':' | '\'' | '"' | ' '
             )
     });
     if !s || r.contains(';') || r.contains('{') || r.contains('}') {
         return None;
     }
-    Some(r.replace('_', " "))
+    Some(space_math_operators(&r.replace('_', " ")))
 }
+
+/// `calc(100%-2rem)` is invalid CSS: directly inside `calc`, `min`, `max`
+/// or `clamp`, a `+ - * /` between two operands needs spaces, as Tailwind
+/// adds them. An operand ends in a digit, `%`, `)` or a unit after a digit,
+/// so `auto-fill`, `-2px` and `--tw-x` are never split.
+fn space_math_operators(value: &str) -> String {
+    let chars: Vec<char> = value.chars().collect();
+    let mut out = String::with_capacity(value.len() + 8);
+    let mut functions: Vec<String> = Vec::new();
+    for (i, &c) in chars.iter().enumerate() {
+        match c {
+            '(' => {
+                let name: String = out
+                    .chars()
+                    .rev()
+                    .take_while(|ch| ch.is_ascii_alphanumeric() || *ch == '-')
+                    .collect::<Vec<_>>()
+                    .into_iter()
+                    .rev()
+                    .collect();
+                functions.push(name);
+                out.push(c);
+                continue;
+            }
+            ')' => {
+                functions.pop();
+                out.push(c);
+                continue;
+            }
+            _ => {}
+        }
+        let in_math = functions
+            .last()
+            .is_some_and(|f| matches!(f.as_str(), "calc" | "min" | "max" | "clamp"));
+        let next = chars.get(i + 1).copied();
+        let operand_after = next.is_some_and(|n| n.is_ascii_alphanumeric() || matches!(n, '(' | '.' | '-'));
+        let is_operator = matches!(c, '+' | '*' | '/') || (c == '-' && next != Some('-'));
+        if in_math && is_operator && operand_after && ends_an_operand(&chars[..i]) {
+            out.push(' ');
+            out.push(c);
+            out.push(' ');
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// Whether `before` ends with a value: `2`, `50%`, `)`, `1rem`, `1.5em`.
+fn ends_an_operand(before: &[char]) -> bool {
+    match before.last() {
+        Some(c) if c.is_ascii_digit() || *c == '%' || *c == ')' => true,
+        Some(c) if c.is_ascii_alphabetic() => {
+            let letters = before.iter().rev().take_while(|ch| ch.is_ascii_alphabetic()).count();
+            before
+                .len()
+                .checked_sub(letters + 1)
+                .is_some_and(|j| before[j].is_ascii_digit())
+        }
+        _ => false,
+    }
+}
+
 fn fraction_to_percent(v: &str) -> Option<String> {
     let (a, b) = v.split_once('/')?;
     let n = a.parse::<f64>().ok()?;
