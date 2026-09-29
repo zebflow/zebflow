@@ -3400,6 +3400,10 @@ fn color_value(v: &str) -> Option<String> {
         // on :root would compute once against :root's light values and be
         // inherited as that colour into `.dark`.
         format!("var(--{})", b)
+    } else if let Some(r) = arbitrary_value(b) {
+        // `[#ff0000]/90`: an arbitrary colour takes the opacity modifier like
+        // any named one. The bare form never reaches here — it returned above.
+        r
     } else {
         return None;
     };

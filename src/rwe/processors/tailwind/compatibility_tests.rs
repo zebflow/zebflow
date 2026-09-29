@@ -590,3 +590,11 @@ fn common_tailwind_v3_pareto_surface_is_supported() {
         );
     }
 }
+
+#[test]
+fn arbitrary_hex_colors_take_an_opacity_modifier() {
+    assert_rule("text-[#ff0000]", &["color:#ff0000"]);
+    assert_rule("text-[#ff0000]/90", &["color:rgba(255, 0, 0, 0.900)"]);
+    assert_rule("bg-[#012169]/70", &["background-color:rgba(1, 33, 105, 0.700)"]);
+    assert_rule("border-[#c4cee9]/50", &["border-color:rgba(196, 206, 233, 0.500)"]);
+}
