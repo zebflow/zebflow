@@ -4255,6 +4255,143 @@ async fn project_transfer_export_import_roundtrip_restores_repo_and_files() {
     assert!(items.iter().any(|item| item["kind"] == "import_files"));
 }
 
+/// POSTs `body` as JSON to `uri` with the session cookie and returns the JSON answer.
+async fn post_json(app: &axum::Router, cookie: &str, uri: &str, body: Value) -> Value {
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(uri)
+                .method("POST")
+                .header(header::COOKIE, cookie)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(body.to_string()))
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    let status = response.status();
+    let json = response_json(response).await;
+    assert_eq!(status, StatusCode::OK, "{uri}: {json}");
+    json
+}
+
+/// A webhook pipeline answering at `/{name}`.
+fn webhook_pipeline(name: &str) -> Value {
+    json!({
+        "file_rel_path": format!("pipelines/{name}.zf.json"),
+        "trigger_kind": "webhook",
+        "source": json!({
+            "apiVersion": "zebflow.com/v1",
+            "kind": "Pipeline",
+            "metadata": {"name": name},
+            "spec": {
+                "id": name,
+                "entry_nodes": ["t"],
+                "nodes": [
+                    {"id": "t", "kind": "n.trigger.webhook", "output_pins": ["out"],
+                     "config": {"path": format!("/{name}"), "method": "GET"}},
+                    {"id": "s", "kind": "n.script", "input_pins": ["in"], "output_pins": ["out"],
+                     "config": {"source": "return { ok: true };"}}
+                ],
+                "edges": [{"from_node": "t", "from_pin": "out", "to_node": "s", "to_pin": "in"}]
+            }
+        }).to_string()
+    })
+}
+
+#[tokio::test]
+async fn a_full_import_makes_the_active_set_what_the_archive_recorded() {
+    let mut config = PlatformConfig::default();
+    config.data_root = temp_test_dir("transfer-activation");
+    config.default_password = "test-pass".to_string();
+    let data_root = config.data_root.clone();
+    let app = build_router(config).await.expect("platform router");
+    let cookie = login_cookie(app.clone(), "superadmin", "test-pass").await;
+    let api = "/api/projects/superadmin/default";
+
+    for name in ["a", "b", "c"] {
+        post_json(&app, &cookie, &format!("{api}/pipelines/definition"), webhook_pipeline(name)).await;
+    }
+    for name in ["a", "b"] {
+        post_json(&app, &cookie, &format!("{api}/pipelines/activate"),
+            json!({"file_rel_path": format!("pipelines/{name}.zf.json")})).await;
+    }
+    let export = post_json(&app, &cookie, &format!("{api}/transfer/export/full"), json!({})).await;
+    let op = export["operation"]["operation_id"].as_str().expect("operation id");
+    let archive = data_root.join("platform").join("project-operations").join(op).join("project.full.tar");
+
+    // The target's own history: `a` switched off since, and `stale` active
+    // from a source the archive does not carry.
+    post_json(&app, &cookie, &format!("{api}/pipelines/deactivate"),
+        json!({"file_rel_path": "pipelines/a.zf.json"})).await;
+    post_json(&app, &cookie, &format!("{api}/pipelines/definition"), webhook_pipeline("stale")).await;
+    post_json(&app, &cookie, &format!("{api}/pipelines/activate"),
+        json!({"file_rel_path": "pipelines/stale.zf.json"})).await;
+
+    let bytes = fs::read(&archive).expect("archive bytes");
+    let (boundary, body) = multipart_body("archive", "project.full.tar", &bytes);
+    let import = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("{api}/transfer/import/full"))
+                .method("POST")
+                .header(header::COOKIE, &cookie)
+                .header(header::CONTENT_TYPE, format!("multipart/form-data; boundary={boundary}"))
+                .body(Body::from(body))
+                .expect("request"),
+        )
+        .await
+        .expect("import response");
+    assert_eq!(import.status(), StatusCode::OK);
+    let import = response_json(import).await;
+    let names = |key: &str| -> Vec<String> {
+        import["activation"][key]
+            .as_array()
+            .unwrap_or_else(|| panic!("activation.{key} in {import}"))
+            .iter()
+            .map(|v| v.as_str().unwrap_or_default().to_string())
+            .collect()
+    };
+    assert_eq!(names("activated"), vec!["pipelines/a.zf.json", "pipelines/b.zf.json"], "{import}");
+    assert_eq!(names("removed"), vec!["pipelines/stale.zf.json"], "{import}");
+    assert!(import["activation"]["skipped"].as_array().is_some_and(Vec::is_empty), "{import}");
+
+    let registry = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("{api}/pipelines/registry"))
+                .header(header::COOKIE, &cookie)
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("registry response");
+    let registry = response_json(registry).await;
+    let active: Vec<&str> = registry["items"]
+        .as_array()
+        .expect("registry items")
+        .iter()
+        .filter(|item| item["is_active"] == true)
+        .filter_map(|item| item["file_rel_path"].as_str())
+        .collect();
+    assert_eq!(active, vec!["pipelines/a.zf.json", "pipelines/b.zf.json"], "{registry}");
+
+    let stale = app
+        .oneshot(
+            Request::builder()
+                .uri("/wh/superadmin/default/stale")
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("stale route response");
+    assert_eq!(stale.status(), StatusCode::NOT_FOUND, "a displaced route still answers");
+    let _ = fs::remove_dir_all(&data_root);
+}
+
 #[tokio::test]
 async fn platform_import_creates_project_and_auto_initiates_repo_only_store() {
     let mut config = PlatformConfig::default();

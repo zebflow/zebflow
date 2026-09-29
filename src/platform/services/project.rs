@@ -9,7 +9,7 @@ use std::sync::Arc;
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
-use crate::contracts::kinds::DependencyLockSpec;
+use crate::contracts::kinds::{DependencyLockSpec, ProjectBundleActivePipeline};
 use crate::contracts::kinds::{
     decode_pipeline_graph, encode_pipeline_graph, validate_pipeline_activation,
 };
@@ -53,6 +53,26 @@ use crate::platform::model::{
 };
 use crate::platform::services::dependency_lock::DependencyLockService;
 use crate::platform::services::project_config::ProjectConfigurationService;
+
+/// What rebuilding the production set after an import did.
+#[derive(Debug, Clone, Default, serde::Serialize, PartialEq, Eq)]
+pub struct PipelineActivationRestore {
+    /// Activated again from the imported source.
+    pub activated: Vec<String>,
+    /// Active before the import, not listed by the archive.
+    pub deactivated: Vec<String>,
+    /// Rows whose source file the import removed, with their snapshots.
+    pub removed: Vec<String>,
+    /// Listed by the archive but left inactive, each with the reason.
+    pub skipped: Vec<PipelineActivationSkip>,
+}
+
+/// One pipeline the archive listed as active that was not activated.
+#[derive(Debug, Clone, serde::Serialize, PartialEq, Eq)]
+pub struct PipelineActivationSkip {
+    pub file_rel_path: String,
+    pub reason: String,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProjectWebhookTrigger {
@@ -1131,6 +1151,99 @@ impl ProjectService {
         self.put_pipeline_meta(&meta)?;
         self.remove_runtime_pipeline_snapshots(&layout, &meta.file_rel_path, None)?;
         Ok(meta)
+    }
+
+    /// The production set as a transfer archive records it: every active
+    /// pipeline whose source still exists, with the hash that was activated.
+    pub fn active_pipelines_for_bundle(
+        &self,
+        owner: &str,
+        project: &str,
+    ) -> Result<Vec<ProjectBundleActivePipeline>, PlatformError> {
+        let layout = self
+            .file
+            .ensure_project_layout(&slug_segment(owner), &slug_segment(project))?;
+        let source_dir = layout.repo_source_dir();
+        Ok(self
+            .list_active_pipeline_meta(owner, project)?
+            .into_iter()
+            .filter(|meta| source_dir.join(&meta.file_rel_path).is_file())
+            .filter_map(|meta| {
+                meta.active_hash.map(|hash| ProjectBundleActivePipeline {
+                    file_rel_path: meta.file_rel_path,
+                    hash,
+                })
+            })
+            .collect())
+    }
+
+    /// Makes the production set exactly what an imported archive recorded.
+    ///
+    /// The import replaced `repo/`, so the pipeline rows and snapshots left
+    /// here describe the project that was displaced: a row whose file is gone
+    /// is removed with its snapshots (its route would otherwise keep serving),
+    /// an active pipeline the archive does not list is deactivated, and each
+    /// listed one is activated again from the imported source — but only when
+    /// that source hashes to what was active, so a draft is never promoted.
+    pub fn restore_pipeline_activation(
+        &self,
+        owner: &str,
+        project: &str,
+        wanted: &[ProjectBundleActivePipeline],
+    ) -> Result<PipelineActivationRestore, PlatformError> {
+        let owner = slug_segment(owner);
+        let project = slug_segment(project);
+        let layout = self.file.ensure_project_layout(&owner, &project)?;
+        let source_dir = layout.repo_source_dir();
+        let mut report = PipelineActivationRestore::default();
+
+        for row in self.data.list_pipeline_meta(&owner, &project)? {
+            let meta = adopt_pipeline_meta(&layout.repo_layout, row.clone());
+            if source_dir.join(&meta.file_rel_path).is_file() {
+                continue;
+            }
+            self.remove_runtime_pipeline_snapshots(&layout, &meta.file_rel_path, None)?;
+            self.data
+                .delete_pipeline_meta(&row.owner, &row.project, &row.file_rel_path)?;
+            report.removed.push(meta.file_rel_path);
+        }
+
+        let wanted_paths: BTreeSet<String> = wanted
+            .iter()
+            .map(|entry| normalize_pipeline_file_rel_path(&layout.repo_layout, &entry.file_rel_path))
+            .collect();
+        for meta in self.list_active_pipeline_meta(&owner, &project)? {
+            if !wanted_paths.contains(&meta.file_rel_path) {
+                self.deactivate_pipeline_definition(&owner, &project, &meta.file_rel_path)?;
+                report.deactivated.push(meta.file_rel_path);
+            }
+        }
+
+        for entry in wanted {
+            let path = normalize_pipeline_file_rel_path(&layout.repo_layout, &entry.file_rel_path);
+            let skip = |reason: String| PipelineActivationSkip {
+                file_rel_path: path.clone(),
+                reason,
+            };
+            let source = match self.read_pipeline_source(&owner, &project, &path) {
+                Ok(source) => source,
+                Err(error) => {
+                    report.skipped.push(skip(error.message));
+                    continue;
+                }
+            };
+            if stable_hash_hex(&source) != entry.hash {
+                report
+                    .skipped
+                    .push(skip("the source differs from the version that was active".to_string()));
+                continue;
+            }
+            match self.activate_pipeline_definition(&owner, &project, &path) {
+                Ok(_) => report.activated.push(path),
+                Err(error) => report.skipped.push(skip(format!("{}: {}", error.code, error.message))),
+            }
+        }
+        Ok(report)
     }
 
     /// Lists active production pipeline metadata for one project.

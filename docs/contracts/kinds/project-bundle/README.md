@@ -103,7 +103,10 @@ different destination; none is a mechanism of its own.
     "carried_dependencies": [
       { "name": "zeb/my-chart", "source": "direct.file", "integrity": "sha256:ab12…" }
     ],
-    "counts": { "repo": 41, "store": 7, "files": 128, "total_bytes": 5242880 }
+    "counts": { "repo": 41, "store": 7, "files": 128, "total_bytes": 5242880 },
+    "active_pipelines": [
+      { "file_rel_path": "pipelines/pages/home.zf.json", "hash": "3f9a…" }
+    ]
   }
 }
 ```
@@ -113,6 +116,7 @@ different destination; none is a mechanism of its own.
 | `classes` | non-empty subset of `repo`, `store`, `files`; `store` without `repo` refused |
 | `class_digests` | one tree digest per carried class, `sha256:` + 64 hex; verified at staging before any swap — the class swaps as a unit, so it verifies as a unit |
 | `carried_dependencies` | every `direct.*` lock entry travels with its bytes; `hub.*` entries regenerate from the lock |
+| `active_pipelines` | the pipelines active at export, each with the source hash that was activated; sorted by path, only with `repo`, omitted when empty. `data/cache/` never travels, so this is how the production set crosses: import deactivates what the list does not name, removes rows (and snapshots) whose source the import took away, and activates each listed pipeline from the imported source only when that source hashes to the recorded one — a draft is reported as skipped, never promoted |
 | paths | every archive entry descends — no `..`, no absolute paths, no symlink escaping the extract root; refused at staging |
 | whole archive | its sha256 lives in the operation record, not the manifest |
 

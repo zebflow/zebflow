@@ -106,6 +106,21 @@ pub struct ProjectBundleSpec {
     pub carried_dependencies: Vec<ProjectBundleCarriedDependency>,
     /// Per-class file counts plus the total staged payload bytes.
     pub counts: ProjectBundleCounts,
+    /// The pipelines that were active at export, each with the source hash
+    /// that was activated. `data/cache/` never travels, so this is how the
+    /// production set is rebuilt on import. Only with the `repo` class.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub active_pipelines: Vec<ProjectBundleActivePipeline>,
+}
+
+/// One pipeline that was active when the archive was exported.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ProjectBundleActivePipeline {
+    /// The pipeline's file under `repo/`, as its identity is stored.
+    pub file_rel_path: String,
+    /// The activated source hash; import re-activates only an identical source.
+    pub hash: String,
 }
 
 /// One `direct.*` dependency whose bytes travel inside the archive.
@@ -266,6 +281,29 @@ impl ProjectBundleSpec {
                 &entry.integrity,
             )?;
         }
+        if !self.active_pipelines.is_empty() && !self.carries(ProjectBundleClass::Repo) {
+            return Err(ContractError::violation(
+                "ZF_PROJECT_BUNDLE_ACTIVE",
+                "spec.active_pipelines needs the repo class: an active pipeline without its source cannot be activated",
+            ));
+        }
+        let mut previous: Option<&str> = None;
+        for entry in &self.active_pipelines {
+            let path = entry.file_rel_path.as_str();
+            if path.trim().is_empty() || path.chars().any(char::is_control) || entry.hash.trim().is_empty() {
+                return Err(ContractError::violation(
+                    "ZF_PROJECT_BUNDLE_ACTIVE",
+                    "spec.active_pipelines entries need a non-empty file_rel_path and hash",
+                ));
+            }
+            if previous.is_some_and(|prior| prior >= path) {
+                return Err(ContractError::violation(
+                    "ZF_PROJECT_BUNDLE_ACTIVE",
+                    "spec.active_pipelines must be sorted by file_rel_path without duplicates",
+                ));
+            }
+            previous = Some(path);
+        }
         Ok(())
     }
 }
@@ -391,6 +429,29 @@ mod tests {
                 .category(),
             "unsupported_api_version"
         );
+    }
+
+    #[test]
+    fn active_pipelines_need_repo_and_sorted_unique_paths() {
+        let entry = |path: &str| json!({ "file_rel_path": path, "hash": "abc" });
+        let mut listed = valid_value();
+        listed["spec"]["active_pipelines"] = json!([entry("pipelines/a.zf.json"), entry("pipelines/b.zf.json")]);
+        assert!(decode_contract_value::<ProjectBundleContract>(listed).is_ok());
+
+        let mut unsorted = valid_value();
+        unsorted["spec"]["active_pipelines"] = json!([entry("pipelines/b.zf.json"), entry("pipelines/a.zf.json")]);
+        assert!(decode_contract_value::<ProjectBundleContract>(unsorted).is_err());
+
+        let mut files_only = valid_value();
+        files_only["spec"]["classes"] = json!(["files"]);
+        let files_digest = files_only["spec"]["class_digests"]["files"].clone();
+        files_only["spec"]["class_digests"] = json!({ "files": files_digest });
+        let files_count = files_only["spec"]["counts"]["files"].clone();
+        files_only["spec"]["counts"] = json!({ "files": files_count, "total_bytes": 1 });
+        files_only["spec"]["carried_dependencies"] = json!([]);
+        assert!(decode_contract_value::<ProjectBundleContract>(files_only.clone()).is_ok());
+        files_only["spec"]["active_pipelines"] = json!([entry("pipelines/a.zf.json")]);
+        assert!(decode_contract_value::<ProjectBundleContract>(files_only).is_err());
     }
 
     #[test]

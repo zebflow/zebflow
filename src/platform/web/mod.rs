@@ -10901,11 +10901,16 @@ async fn api_internal_project_transfer_export(
             .as_millis()
     );
     let output_path = state.platform.project_transfer.artifact_path(&op_id, kind);
+    let active = match state.platform.projects.active_pipelines_for_bundle(&owner, &project) {
+        Ok(active) => active,
+        Err(err) => return internal_error(err),
+    };
     let export = state.platform.project_transfer.export_project(
         &owner,
         &project,
         kind.classes(),
         local_office_id(&state).as_deref(),
+        &active,
         &output_path,
     );
     match export {
@@ -10972,9 +10977,46 @@ async fn api_internal_project_transfer_import(
     if let Err(err) = refresh_local_project_workspace(&state, &owner, &project) {
         return internal_error(err);
     }
+    let activation =
+        match restore_imported_activation(&state, &owner, &project, &outcome.active_pipelines).await {
+            Ok(report) => report,
+            Err(err) => return internal_error(err),
+        };
     let _ = fs::remove_dir_all(state.platform.project_transfer.operation_dir(&op_id));
     let dependencies = post_import_dependency_report(&state, &owner, &project);
-    Json(json!({"ok": true, "import": outcome, "dependencies": dependencies})).into_response()
+    Json(json!({"ok": true, "import": outcome, "activation": activation, "dependencies": dependencies}))
+        .into_response()
+}
+
+/// Rebuilds an imported project's production set from the archive's list
+/// (`kinds/project-bundle/README.md`, active pipelines) and brings every
+/// runtime that follows activation into line with it. Deactivation hooks do
+/// not run: the source they belong to is the one the import displaced.
+async fn restore_imported_activation(
+    state: &PlatformAppState,
+    owner: &str,
+    project: &str,
+    wanted: &[crate::contracts::kinds::ProjectBundleActivePipeline],
+) -> Result<crate::platform::services::project::PipelineActivationRestore, PlatformError> {
+    let report = state
+        .platform
+        .projects
+        .restore_pipeline_activation(owner, project, wanted)?;
+    state.platform.pipeline_runtime.refresh_project(owner, project)?;
+    for path in report
+        .removed
+        .iter()
+        .chain(&report.deactivated)
+        .chain(&report.activated)
+    {
+        state.scheduler.sync_pipeline(owner, project, path).await;
+        state.kv_subscriber.sync_pipeline(owner, project, path).await;
+        state.ws_client_manager.sync_pipeline(owner, project, path).await;
+    }
+    for path in &report.activated {
+        run_composite_lifecycle_hooks(state, owner, project, path, "on_activate").await;
+    }
+    Ok(report)
 }
 
 /// The dependency report an import owes its caller
@@ -11126,13 +11168,20 @@ async fn api_project_transfer_export(
             )),
         }
     } else {
-        match state.platform.project_transfer.export_project(
-            &owner,
-            &project,
-            kind.classes(),
-            local_office_id(&state).as_deref(),
-            &artifact_path,
-        ) {
+        match state
+            .platform
+            .projects
+            .active_pipelines_for_bundle(&owner, &project)
+            .and_then(|active| {
+                state.platform.project_transfer.export_project(
+                    &owner,
+                    &project,
+                    kind.classes(),
+                    local_office_id(&state).as_deref(),
+                    &active,
+                    &artifact_path,
+                )
+            }) {
             Ok(_) => Ok(()),
             Err(err) => Err(err),
         }
@@ -11361,6 +11410,26 @@ async fn api_project_transfer_import(
             return internal_error(err);
         }
     };
+    // A remote office rebuilt its own production set and answered for it;
+    // here the import ran locally, so the set is rebuilt here.
+    let activation = match &outcome {
+        Some(outcome) => {
+            match restore_imported_activation(&state, &owner, &project, &outcome.active_pipelines)
+                .await
+            {
+                Ok(report) => Some(report),
+                Err(err) => {
+                    let _ = state.platform.project_operations.mark_failed(
+                        &operation,
+                        "restoring active pipelines",
+                        err.message.clone(),
+                    );
+                    return internal_error(err);
+                }
+            }
+        }
+        None => None,
+    };
     // Provenance is recorded and shown, never a gate; the recovery copies are
     // named so rollback — the reverse swap — can find them.
     let step = match &outcome {
@@ -11391,6 +11460,7 @@ async fn api_project_transfer_import(
         "ok": true,
         "operation": operation,
         "import": outcome,
+        "activation": activation,
         "dependencies": dependencies,
     }))
     .into_response()

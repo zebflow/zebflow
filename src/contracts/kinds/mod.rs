@@ -54,7 +54,7 @@ pub use pipeline::{
 };
 pub use project_bundle::{
     PROJECT_BUNDLE_CARRIED_DEPENDENCIES_DIR, PROJECT_BUNDLE_MANIFEST_FILE,
-    ProjectBundleCarriedDependency, ProjectBundleClass, ProjectBundleContract, ProjectBundleCounts,
+    ProjectBundleActivePipeline, ProjectBundleCarriedDependency, ProjectBundleClass, ProjectBundleContract, ProjectBundleCounts,
     ProjectBundleSpec,
 };
 pub use project_configuration::{

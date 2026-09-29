@@ -24,7 +24,7 @@ use sha2::{Digest, Sha256};
 use crate::contracts::kinds::{
     DEPENDENCY_LOCK_FILE, DependencyLockContract, DependencyLockSource,
     PROJECT_BUNDLE_CARRIED_DEPENDENCIES_DIR, PROJECT_BUNDLE_MANIFEST_FILE,
-    PROJECT_CONFIGURATION_FILE, ProjectBundleCarriedDependency, ProjectBundleClass,
+    PROJECT_CONFIGURATION_FILE, ProjectBundleActivePipeline, ProjectBundleCarriedDependency, ProjectBundleClass,
     ProjectBundleContract, ProjectBundleCounts, ProjectBundleSpec, ProjectConfigurationContract,
 };
 use crate::contracts::{
@@ -100,6 +100,10 @@ pub struct ProjectImportOutcome {
     pub recovery: Vec<ProjectImportRecoverySwap>,
     /// Carried `direct.*` dependencies restored into `data/hub/`.
     pub restored_dependencies: Vec<String>,
+    /// The pipelines the archive recorded as active; the caller rebuilds the
+    /// production set from these once the project is refreshed.
+    #[serde(skip)]
+    pub active_pipelines: Vec<ProjectBundleActivePipeline>,
 }
 
 /// Export/import service for project-scoped portability archives.
@@ -161,6 +165,7 @@ impl ProjectTransferService {
         project: &str,
         classes: &[ProjectBundleClass],
         source_office_id: Option<&str>,
+        active_pipelines: &[ProjectBundleActivePipeline],
         output_path: &Path,
     ) -> Result<ContractDocument<ProjectBundleSpec>, PlatformError> {
         let owner = slug_segment(owner);
@@ -255,6 +260,7 @@ impl ProjectTransferService {
             carried_dependencies.sort_by(|left, right| left.name.cmp(&right.name));
         }
 
+        let classes_carry_repo = classes.contains(&ProjectBundleClass::Repo);
         let spec = ProjectBundleSpec {
             classes,
             exported_at: now_ts(),
@@ -262,6 +268,16 @@ impl ProjectTransferService {
             class_digests,
             carried_dependencies,
             counts,
+            // Activation is part of the source it points at: without `repo`
+            // there is nothing to activate on the other side.
+            active_pipelines: if classes_carry_repo {
+                let mut active = active_pipelines.to_vec();
+                active.sort_by(|left, right| left.file_rel_path.cmp(&right.file_rel_path));
+                active.dedup_by(|left, right| left.file_rel_path == right.file_rel_path);
+                active
+            } else {
+                Vec::new()
+            },
         };
         let metadata = ContractMetadata::named(format!("{owner}/{project}"));
         write_contract::<ProjectBundleContract>(
@@ -478,6 +494,7 @@ impl ProjectTransferService {
             source_office_id: staging.document.spec.source_office_id.clone(),
             recovery,
             restored_dependencies,
+            active_pipelines: staging.document.spec.active_pipelines.clone(),
         })
     }
 
@@ -1006,7 +1023,13 @@ pub(crate) fn refuse_symlinks(root: &Path) -> Result<(), PlatformError> {
 }
 
 fn create_tar_archive(source_dir: &Path, output_path: &Path) -> Result<(), PlatformError> {
+    // macOS tar writes a `._<name>` AppleDouble entry beside every file that
+    // carries extended attributes. Its own listing hides them, so a Mac never
+    // sees them; GNU tar on the receiving office extracts them as files the
+    // manifest does not declare, and the import is refused. COPYFILE_DISABLE
+    // is what macOS tar reads to leave them out; every other tar ignores it.
     let output = Command::new("tar")
+        .env("COPYFILE_DISABLE", "1")
         .arg("-cf")
         .arg(output_path)
         .arg("-C")
@@ -1173,6 +1196,7 @@ mod tests {
                 project,
                 &[ProjectBundleClass::Repo, ProjectBundleClass::Store],
                 None,
+                &[],
                 &archive,
             )
             .unwrap();
@@ -1292,6 +1316,7 @@ mod tests {
                 project,
                 ProjectTransferArtifactKind::Bundle.classes(),
                 Some("source-office"),
+                &[],
                 &archive,
             )
             .unwrap();
@@ -1367,6 +1392,7 @@ mod tests {
                 project,
                 ProjectTransferArtifactKind::Bundle.classes(),
                 None,
+                &[],
                 &archive,
             )
             .unwrap();
@@ -1448,6 +1474,7 @@ mod tests {
                 project,
                 ProjectTransferArtifactKind::Bundle.classes(),
                 None,
+                &[],
                 &archive,
             )
             .unwrap();
@@ -1540,6 +1567,55 @@ mod tests {
         );
     }
 
+    /// Entry names read from the raw ustar headers. macOS tar's own listing
+    /// hides `._` entries, so asking it would prove nothing.
+    fn raw_tar_entry_names(archive: &Path) -> Vec<String> {
+        let bytes = std::fs::read(archive).unwrap();
+        let mut names = Vec::new();
+        let mut at = 0;
+        while at + 512 <= bytes.len() && bytes[at] != 0 {
+            let header = &bytes[at..at + 512];
+            let field = |from: usize, len: usize| {
+                let raw = &header[from..from + len];
+                let end = raw.iter().position(|b| *b == 0).unwrap_or(len);
+                String::from_utf8_lossy(&raw[..end]).trim().to_string()
+            };
+            let prefix = field(345, 155);
+            let name = field(0, 100);
+            names.push(if prefix.is_empty() { name } else { format!("{prefix}/{name}") });
+            let size = u64::from_str_radix(&field(124, 12), 8).unwrap_or(0) as usize;
+            at += 512 + size.div_ceil(512) * 512;
+        }
+        names
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn an_export_archive_carries_no_macos_attribute_entries() {
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("source");
+        std::fs::create_dir_all(source.join("repo")).unwrap();
+        let file = source.join("repo").join("page.tsx");
+        std::fs::write(&file, "export default function Page() {}").unwrap();
+        let tagged = Command::new("xattr")
+            .args(["-w", "com.example.test", "1"])
+            .arg(&file)
+            .status()
+            .unwrap();
+        assert!(tagged.success(), "could not set an extended attribute");
+
+        let archive = root.path().join("out.tar");
+        create_tar_archive(&source, &archive).unwrap();
+
+        let names = raw_tar_entry_names(&archive);
+        assert!(names.iter().any(|n| n.ends_with("page.tsx")), "{names:?}");
+        let apple_double: Vec<_> = names
+            .iter()
+            .filter(|n| n.rsplit('/').next().is_some_and(|base| base.starts_with("._")))
+            .collect();
+        assert!(apple_double.is_empty(), "AppleDouble entries: {apple_double:?}");
+    }
+
     #[test]
     fn an_archive_of_the_wrong_class_set_is_refused_by_the_legacy_route_kind() {
         let root = tempfile::tempdir().unwrap();
@@ -1556,6 +1632,7 @@ mod tests {
                 project,
                 ProjectTransferArtifactKind::Files.classes(),
                 None,
+                &[],
                 &archive,
             )
             .unwrap();
@@ -1587,6 +1664,7 @@ mod tests {
                 project,
                 ProjectTransferArtifactKind::Files.classes(),
                 None,
+                &[],
                 &archive,
             )
             .unwrap();
