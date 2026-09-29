@@ -25,6 +25,9 @@ declares which classes the archive carries:
 Fixed rules, riding on sealed ground elsewhere:
 
 - `data/cache/` never travels — rebuildable (`instance-directory.md`).
+- `data/store/addressing.json` never travels — where a project answers is the
+  instance's (`addressing.md` §0). Export leaves it out; import keeps the
+  target's own.
 - `data/hub/` never travels raw — it regenerates from the lock; `direct.*`
   lock sources are the exception and the export carries their bytes
   (`distribution.md` §5 reproducibility table).

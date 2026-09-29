@@ -38,6 +38,7 @@ use crate::platform::model::{
     ProjectFileLayout, ProjectTransferArtifactKind, now_ts, recovery_date_stamp, slug_segment,
 };
 use crate::platform::sekejap;
+use crate::platform::services::addressing::ADDRESSING_FILE;
 
 #[derive(Default)]
 struct DirectoryStats {
@@ -201,7 +202,17 @@ impl ProjectTransferService {
         for class in &classes {
             let source = class_source_dir(&layout, *class);
             let staged = staging.join(class.as_str());
-            let stats = copy_dir_recursive(&source, &staged)?;
+            let mut stats = copy_dir_recursive(&source, &staged)?;
+            // Where a project answers is instance configuration, never the
+            // project's (`addressing.md` §0): it stays on this instance.
+            if *class == ProjectBundleClass::Store {
+                let address = staged.join(ADDRESSING_FILE);
+                if address.is_file() {
+                    stats.total_bytes -= fs::metadata(&address)?.len();
+                    stats.file_count -= 1;
+                    fs::remove_file(&address)?;
+                }
+            }
             let digest = directory_tree_sha256(&staged).map_err(|error| {
                 PlatformError::new(
                     "PROJECT_TRANSFER_EXPORT",
@@ -460,6 +471,12 @@ impl ProjectTransferService {
             swap_directory(&target, &incoming, &recovery_root.join(&recovery_dir))?;
             if *class == ProjectBundleClass::Store {
                 sekejap::evict_project_pool(&self.data_root, &owner, &project);
+                // The incoming store never carries this instance's addressing;
+                // the displaced store did, so it comes back from there.
+                let kept = recovery_root.join(&recovery_dir).join(ADDRESSING_FILE);
+                if kept.is_file() {
+                    fs::copy(&kept, target.join(ADDRESSING_FILE))?;
+                }
             }
             recovery.push(ProjectImportRecoverySwap {
                 class: *class,

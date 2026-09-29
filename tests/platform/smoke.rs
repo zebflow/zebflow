@@ -4392,6 +4392,70 @@ async fn a_full_import_makes_the_active_set_what_the_archive_recorded() {
     let _ = fs::remove_dir_all(&data_root);
 }
 
+/// Sets the default project's hosts through the settings API.
+async fn set_hosts(app: &axum::Router, cookie: &str, hosts: &[&str]) {
+    let body = json!({"commit_message": "", "data": {"hosts": hosts, "routes": [], "disabled": [], "api_on_hosts": false, "errors": "hidden"}});
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/projects/superadmin/default/settings/addressing")
+                .method("PUT")
+                .header(header::COOKIE, cookie)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(body.to_string()))
+                .expect("request"),
+        )
+        .await
+        .expect("addressing response");
+    assert_eq!(response.status(), StatusCode::OK, "{}", response_text(response).await);
+}
+
+#[tokio::test]
+async fn a_full_transfer_never_carries_or_replaces_where_the_project_answers() {
+    let mut config = PlatformConfig::default();
+    config.data_root = temp_test_dir("transfer-addressing");
+    config.default_password = "test-pass".to_string();
+    let data_root = config.data_root.clone();
+    let app = build_router(config).await.expect("platform router");
+    let cookie = login_cookie(app.clone(), "superadmin", "test-pass").await;
+    let api = "/api/projects/superadmin/default";
+
+    set_hosts(&app, &cookie, &["site-a.example"]).await;
+    let export = post_json(&app, &cookie, &format!("{api}/transfer/export/full"), json!({})).await;
+    let op = export["operation"]["operation_id"].as_str().expect("operation id");
+    let archive = data_root.join("platform").join("project-operations").join(op).join("project.full.tar");
+    let listing = std::process::Command::new("tar").arg("-tf").arg(&archive).output().expect("tar listing");
+    let listing = String::from_utf8_lossy(&listing.stdout);
+    assert!(!listing.contains("addressing.json"), "the archive carries the instance's addressing:\n{listing}");
+
+    // The receiving side answers somewhere else; the import must not move it.
+    set_hosts(&app, &cookie, &["site-b.example"]).await;
+    let bytes = fs::read(&archive).expect("archive bytes");
+    let (boundary, body) = multipart_body("archive", "project.full.tar", &bytes);
+    let import = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("{api}/transfer/import/full"))
+                .method("POST")
+                .header(header::COOKIE, &cookie)
+                .header(header::CONTENT_TYPE, format!("multipart/form-data; boundary={boundary}"))
+                .body(Body::from(body))
+                .expect("request"),
+        )
+        .await
+        .expect("import response");
+    assert_eq!(import.status(), StatusCode::OK);
+
+    let stored = fs::read_to_string(
+        data_root.join("users").join("superadmin").join("default").join("data").join("store").join("addressing.json"),
+    )
+    .expect("addressing after import");
+    assert!(stored.contains("site-b.example") && !stored.contains("site-a.example"), "{stored}");
+    let _ = fs::remove_dir_all(&data_root);
+}
+
 #[tokio::test]
 async fn platform_import_creates_project_and_auto_initiates_repo_only_store() {
     let mut config = PlatformConfig::default();
