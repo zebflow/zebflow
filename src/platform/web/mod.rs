@@ -1347,6 +1347,13 @@ pub async fn router(platform: Arc<PlatformService>) -> Router {
         Ok(hosts) => println!("✅ Addressing index built ({hosts} custom hosts)"),
         Err(err) => eprintln!("warning: addressing index: {err}"),
     }
+    // A store written by an older sekejap is moved to this version's format
+    // now, before the first request — not inside it, where a large store's
+    // move outlasts the visitor's patience.
+    let moved = crate::platform::sekejap::move_all_stores_to_current_format(&app_state.platform.config.data_root);
+    if moved > 0 {
+        println!("✅ Moved {moved} sekejap store(s) to this version's format");
+    }
     Router::new()
         .fallback_service(router)
         .layer(axum::middleware::from_fn_with_state(app_state, addressing_gate))
@@ -25484,13 +25491,9 @@ async fn build_webhook_ingress_input(
 
     // Form-urlencoded → form fields under .body
     if content_type_lc.contains("application/x-www-form-urlencoded") {
-        if let Ok(fields) = serde_urlencoded::from_bytes::<Vec<(String, String)>>(body) {
-            let mut form_obj = serde_json::Map::new();
-            for (k, v) in fields {
-                form_obj.insert(k, Value::String(v));
-            }
+        if let Some(form_obj) = urlencoded_form_to_json(body) {
             return Ok(build_structured_payload(
-                Value::Object(form_obj),
+                form_obj,
                 &query,
                 &params,
                 path,
@@ -25589,10 +25592,10 @@ async fn parse_multipart_envelope(
                     trust,
                 },
             )?;
-            insert_multipart_value(&mut files, &name, file_ref);
+            insert_form_value(&mut files, &name, file_ref);
         } else {
             let text = String::from_utf8_lossy(&data).to_string();
-            insert_multipart_value(&mut text_fields, &name, Value::String(text));
+            insert_form_value(&mut text_fields, &name, Value::String(text));
         }
     }
     Ok(Some((text_fields, files)))
@@ -25637,7 +25640,20 @@ fn parse_multipart_value_key(raw: &str) -> MultipartValueKey {
     }
 }
 
-fn insert_multipart_value(map: &mut serde_json::Map<String, Value>, raw_name: &str, value: Value) {
+/// An `application/x-www-form-urlencoded` body as the pipeline's `body`
+/// object. Same rule as multipart: a repeated field, `field[]` or `field[0]`
+/// becomes an array — a plain HTML form posts this encoding, so a group of
+/// checkboxes sharing one name keeps every ticked value, not only the last.
+fn urlencoded_form_to_json(body: &[u8]) -> Option<Value> {
+    let fields = serde_urlencoded::from_bytes::<Vec<(String, String)>>(body).ok()?;
+    let mut form_obj = serde_json::Map::new();
+    for (k, v) in fields {
+        insert_form_value(&mut form_obj, &k, Value::String(v));
+    }
+    Some(Value::Object(form_obj))
+}
+
+fn insert_form_value(map: &mut serde_json::Map<String, Value>, raw_name: &str, value: Value) {
     let key = parse_multipart_value_key(raw_name);
     if key.base.is_empty() {
         return;
@@ -25694,13 +25710,26 @@ fn insert_multipart_value(map: &mut serde_json::Map<String, Value>, raw_name: &s
 mod webhook_ingress_tests {
     use serde_json::{Map, json};
 
-    use super::{insert_multipart_value, parse_multipart_value_key};
+    use super::{insert_form_value, parse_multipart_value_key, urlencoded_form_to_json};
+
+    /// A checkbox group posted by a plain HTML form keeps every ticked value.
+    /// It used to keep only the last: `roles=official&roles=editor` arrived
+    /// as `"editor"`, and a member's `official` role was dropped on save.
+    #[test]
+    fn a_urlencoded_checkbox_group_keeps_every_value() {
+        let body = urlencoded_form_to_json(b"roles=official&roles=editor&name=A+B&sdgs%5B%5D=sdg-3").unwrap();
+        assert_eq!(body["roles"], json!(["official", "editor"]));
+        assert_eq!(body["name"], json!("A B"));
+        assert_eq!(body["sdgs"], json!(["sdg-3"]));
+        let one = urlencoded_form_to_json(b"roles=official").unwrap();
+        assert_eq!(one["roles"], json!("official"), "a single value stays a string");
+    }
 
     #[test]
     fn multipart_repeated_plain_fields_become_arrays() {
         let mut values = Map::new();
-        insert_multipart_value(&mut values, "photos", json!("a"));
-        insert_multipart_value(&mut values, "photos", json!("b"));
+        insert_form_value(&mut values, "photos", json!("a"));
+        insert_form_value(&mut values, "photos", json!("b"));
 
         assert_eq!(values.get("photos"), Some(&json!(["a", "b"])));
     }
@@ -25708,8 +25737,8 @@ mod webhook_ingress_tests {
     #[test]
     fn multipart_bracket_fields_become_arrays() {
         let mut values = Map::new();
-        insert_multipart_value(&mut values, "photos[]", json!("a"));
-        insert_multipart_value(&mut values, "photos[]", json!("b"));
+        insert_form_value(&mut values, "photos[]", json!("a"));
+        insert_form_value(&mut values, "photos[]", json!("b"));
 
         assert_eq!(values.get("photos"), Some(&json!(["a", "b"])));
     }
@@ -25717,8 +25746,8 @@ mod webhook_ingress_tests {
     #[test]
     fn multipart_indexed_fields_keep_index_order() {
         let mut values = Map::new();
-        insert_multipart_value(&mut values, "photos[1]", json!("b"));
-        insert_multipart_value(&mut values, "photos[0]", json!("a"));
+        insert_form_value(&mut values, "photos[1]", json!("b"));
+        insert_form_value(&mut values, "photos[0]", json!("a"));
 
         assert_eq!(values.get("photos"), Some(&json!(["a", "b"])));
     }

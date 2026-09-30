@@ -61,7 +61,8 @@ pub fn definition() -> NodeDefinition {
             User-submitted data is namespaced under input.body to prevent collisions with request context: \
             application/json → parsed value at input.body; \
             application/x-www-form-urlencoded → form fields at input.body (percent-decoded); \
-            multipart/form-data → text fields at input.body, files under input.files.{field} as FileRef metadata; repeated fields, field[], and field[0] become arrays. \
+            multipart/form-data → text fields at input.body, files under input.files.{field} as FileRef metadata; \
+            in both, a repeated field (a checkbox group sharing one name), field[] and field[0] become arrays. \
             GET requests → input.body is null. \
             Request context is at root: input.query (URL query params), input.params (path params), \
             input.path (request path), input.method (HTTP method). \
