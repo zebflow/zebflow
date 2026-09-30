@@ -1038,6 +1038,44 @@ mod tests {
 
     use super::{Config, INPUT_PIN_IN, NODE_KIND, Node, build_request_from_secure_credential};
 
+    /// A bundled pipeline is JSON, so a config key this node dropped still
+    /// parses and is ignored: the embedding bundle kept `body_path` after the
+    /// body moved to `body`, and sent every request empty.
+    #[test]
+    fn every_bundled_http_request_uses_only_keys_this_node_reads() {
+        let known: Vec<String> = match serde_json::to_value(Config::default()).expect("config serialises") {
+            Value::Object(map) => map.keys().cloned().collect(),
+            _ => unreachable!(),
+        };
+        let crate_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let mut stack = vec![crate_dir.join("src/pipeline/nodes/bundled")];
+        let (mut checked, mut stale) = (0, Vec::new());
+        while let Some(dir) = stack.pop() {
+            for entry in std::fs::read_dir(&dir).expect("read bundled dir").flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    stack.push(path);
+                    continue;
+                }
+                if !path.to_string_lossy().ends_with(".zf.json") {
+                    continue;
+                }
+                let doc: Value = serde_json::from_str(&std::fs::read_to_string(&path).expect("read bundle")).expect("bundle is JSON");
+                let spec = doc.get("spec").unwrap_or(&doc);
+                for node in spec["nodes"].as_array().into_iter().flatten().filter(|n| n["kind"] == NODE_KIND) {
+                    checked += 1;
+                    for key in node["config"].as_object().into_iter().flat_map(|c| c.keys()) {
+                        if !known.contains(key) {
+                            stale.push(format!("{}#{}: {key}", path.strip_prefix(crate_dir).unwrap_or(&path).display(), node["id"]));
+                        }
+                    }
+                }
+            }
+        }
+        assert!(checked > 0, "no bundled http.request found; the walk is looking in the wrong place");
+        assert!(stale.is_empty(), "keys http.request does not read:\n{}", stale.join("\n"));
+    }
+
     #[tokio::test(flavor = "current_thread")]
     async fn self_call_to_private_network_is_blocked_from_same_server_request_handler() {
         let listener = TcpListener::bind("127.0.0.1:0")
