@@ -471,6 +471,7 @@ export function DeckMap(props) {
       bearing: 0,
     },
     controller: props.controller !== false,
+    touchAction: props.touchAction || null,
     layers: props.layers || [],
     stateKey: props.stateKey || null,
     layerKey: props.layerKey || null,
@@ -494,6 +495,7 @@ export function DeckMap(props) {
     }, [
       props.background,
       props.controller,
+      props.touchAction,
       props.initialViewState,
       props.layerKey,
       props.layers,
@@ -593,6 +595,7 @@ function normalizeOptions(next = {}) {
       bearing: 0,
     },
     controller: next.controller !== false,
+    touchAction: next.touchAction || null,
     layers: Array.isArray(next.layers) ? next.layers : [],
     views: next.views || null,
     stateKey: next.stateKey || null,
@@ -681,6 +684,11 @@ function createPatchedDeckMapRuntime(host, options = {}) {
     const deckProps = {
       ...config.deckProps,
       controller: config.controller,
+      // deck.gl's own default is "none": the canvas takes every touch, so a
+      // phone cannot scroll the page past a map, even one that does not pan.
+      // A map without a controller lets the page scroll; a page may set its
+      // own ("pan-y" keeps vertical scrolling on an interactive map).
+      touchAction: config.touchAction || (config.controller === false ? "auto" : "none"),
       views: config.views || [new deckNamespace.MapView({ repeat: true })],
       initialViewState: currentViewState,
       layers: resolveRuntimeLayers(config),

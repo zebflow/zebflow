@@ -65,6 +65,7 @@ import {
 | `className` | `string` | — | Tailwind classes on the container |
 | `initialViewState` | `object` | world view | `{ longitude, latitude, zoom, pitch, bearing }` |
 | `controller` | `boolean` | `true` | Enable pan/zoom/rotate interaction |
+| `touchAction` | `string` | `"auto"` without a controller, `"none"` with one | CSS touch-action on the map. `"auto"` lets a phone scroll the page over a decorative map; `"pan-y"` keeps vertical page scrolling over an interactive one. |
 | `layers` | `LayerConfig[]` | `[]` | Declarative layer specs (see below) |
 | `stateKey` | `string` | — | Page state key for two-way view state sync |
 | `layerKey` | `string` | — | Page state key -> layer data array (auto-builds ScatterplotLayer) |

@@ -74,6 +74,13 @@ export default function Page() {
   try {
     await page.goto(await servePage(request, project, source));
     await expect.poll(() => countColour(page, "#deck", [0, 0, 255]), { timeout: 8000 }).toBeGreaterThan(2000);
+    // A map that does not pan must not claim the touch: on a phone the page
+    // scrolls over it. deck.gl's own default is "none".
+    const touch = await page.evaluate(() => {
+      const el = document.querySelector("#deck canvas") as HTMLElement | null;
+      return el ? getComputedStyle(el).touchAction : "no canvas";
+    });
+    expect(touch).toBe("auto");
     expect(realErrors(consoleErrors)).toEqual([]);
   } finally {
     await removeProject(request, project);

@@ -70,6 +70,7 @@ export default function DeckMap(props) {
   const config = {
     initialViewState: props.initialViewState,
     controller: props.controller !== false,
+    touchAction: props.touchAction || null,
     layers: props.layers || [],
     stateKey: props.stateKey || null,
     layerKey: props.layerKey || null,
@@ -93,6 +94,7 @@ export default function DeckMap(props) {
     }, [
       props.background,
       props.controller,
+      props.touchAction,
       props.initialViewState,
       props.layerKey,
       props.layers,

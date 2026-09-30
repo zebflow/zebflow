@@ -11,6 +11,17 @@ The file named "patched" is a Zebflow wrapper around the bundle, not an edit of
 deck.gl's source. It adds layer construction from a declarative spec, tooltip
 handling, and instance bookkeeping. deck.gl's own code is imported, not altered.
 
+A map that does not pan lets the page scroll (0.1.6)
+---------------------------------------------------
+
+deck.gl's `touchAction` defaults to "none": the canvas claims every touch, so
+on a phone a vertical drag over a map never scrolls the page, even over a
+decorative map with `controller={false}`. The wrapper now passes
+`touchAction: "auto"` when the map has no controller and keeps "none" when it
+does; a page may set its own (`touchAction="pan-y"` keeps vertical page
+scrolling over an interactive map). Both copies of the wrapper carry it; the
+bundle is untouched.
+
 Upstream 9.4.0 (0.1.5)
 ---------------------
 
