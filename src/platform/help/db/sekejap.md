@@ -134,6 +134,13 @@ SELECT _key, name FROM contacts WHERE (name, _key) > ($1, $2) ORDER BY name, _ke
 SELECT _key, name FROM contacts WHERE _key < $1 ORDER BY _key DESC LIMIT 20               -- newest first by ULID key
 ```
 
+**Also fine since 0.19.2**: `now()`, `current_timestamp` and `current_date`
+in `INSERT … VALUES` and `UPDATE … SET`; `meta->>'k'` in a select list; a
+quoted JSON literal into a `JSONB` column is parsed (non-JSON is refused by
+column); `lower(col) = $1` without an index is checked row by row — pass the
+value lower-cased, since an upper-case letter matches nothing, as in
+PostgreSQL.
+
 **Text matching** — `LIKE` and `ILIKE` with any pattern (`%`, `_`, `ESCAPE`,
 `NOT`), PostgreSQL's rules, no index needed. `name ILIKE $1` with
 `$1 = '%doe%'` checks each row; `LIKE 'abc%'` uses the column's index, and a
@@ -289,14 +296,10 @@ Each of these fails the node at request time, never at register time, so
 
 | Written | Answer | Instead |
 |---|---|---|
-| `VALUES (…, now())` | syntax error: expected a literal or a parameter | bind the time: `--params "{{ [new Date().toISOString()] }}"`, or a `DEFAULT now()` column |
-| `WHERE LOWER(name) = $1` | no expression index | store a lower-cased copy (`name_lc`) and match it |
-| `a ILIKE $1 OR b ILIKE $2` | a LIKE cannot be a boolean leaf — even with a trigram index | one `LIKE` per query, or a `fulltext` index and `search()` |
-| `meta->>'k'` in a `SELECT` list | `->>` is Tier 2 | return `meta` and read the key in the pipeline |
-| `OFFSET n` | keyset continuation only | `WHERE (name, _key) > ($1, $2)` (Reading, above) |
+| `a ILIKE $1 OR b ILIKE $2` | a LIKE inside OR/AND/NOT is a row check, so there is no set to combine — even with trigram indexes | one `LIKE` per query, or a `fulltext` index and `search()` |
+| `OFFSET n` | keyset continuation only; the message shows the rewrite | `WHERE (name, _key) > ($1, $2)` (Reading, above) |
 | `COUNT(*)` on an edge table | its select list is `*` or its columns | walk the edges in `GRAPH_TABLE` and `COUNT(*)` the outer select |
-| `'{"a":1}'` into a `JSONB` column | stored as a *string* | bind the object: `--params "{{ [input.body.meta] }}"` |
-| a value over 1024 bytes in an indexed column | index entry too long | keep long text in an unindexed column (`WITH (index: none)`) or `JSONB` |
+| a value over 1024 bytes in an indexed `TEXT` column | the btree cannot hold it as a key; the message names the index | leave the column out of the automatic indexes: `CREATE TABLE … WITH (index: [...])`, or `DROP INDEX <name>` |
 
 ## Platform collections
 

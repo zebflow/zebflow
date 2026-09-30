@@ -94,13 +94,6 @@ fn get_db(data_root: &Path, owner: &str, project: &str) -> Result<Arc<Db>, Platf
 /// handle may be open meanwhile: callers hold the pool lock, or have just
 /// taken the store out of the pool.
 fn move_to_current_format(dir: &Path) -> Result<(), PlatformError> {
-    // `ensure_project_dir` makes the folder before the first open, and
-    // sekejap 0.19.1's `Db::upgrade` answers NotFound for a folder with no
-    // store in it rather than nothing. An empty folder has nothing to move.
-    let empty = std::fs::read_dir(dir).map(|mut d| d.next().is_none()).unwrap_or(false);
-    if empty {
-        return Ok(());
-    }
     // Zebflow's move to sekejap 0.17 retired an empty 0.16 store's files into
     // `legacy-0.16/` inside the store. The 0.19 upgrader reads a store as flat
     // files and refuses a folder in it, so it goes beside the store, kept.

@@ -6686,9 +6686,9 @@ dependencies = [
 
 [[package]]
 name = "sekejap"
-version = "0.19.1"
+version = "0.19.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6b0f0183034aea5f3bd72347b8e0acaaeb2f172f81216c3c98a84b48acc9b385"
+checksum = "5f22d68ece89465b2da7565433f3ab6c18ed5b86219b765221de3ca73dd5b356"
 dependencies = [
  "sekejap-core",
  "sekejap-dist",
@@ -6698,9 +6698,9 @@ dependencies = [
 
 [[package]]
 name = "sekejap-core"
-version = "0.19.1"
+version = "0.19.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6fa82813a06ffe7f57e3f9cb2eaf055f990e0e4483d8667350d680a027739b14"
+checksum = "f84063c51ab21db83a3377d88dee61bb9a66820b7782e008fb1cd7832ac97f83"
 dependencies = [
  "crc32c",
  "geographiclib-rs",
@@ -6712,9 +6712,9 @@ dependencies = [
 
 [[package]]
 name = "sekejap-dist"
-version = "0.19.1"
+version = "0.19.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "809f9d63f1d020a5f421bf08e3ece836244e3de57ce974b0c78a755372f6f38e"
+checksum = "996d87e24584ff97fa6893d3b5b176cf25c2daad8c5edbd760fbea10de5751c7"
 dependencies = [
  "sekejap-core",
  "sekejap-kernel",
@@ -6724,9 +6724,9 @@ dependencies = [
 
 [[package]]
 name = "sekejap-kernel"
-version = "0.19.1"
+version = "0.19.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c04a4da6d0f661d60305176b53b2ac1f85e5cffc94d967367023407e5c80a8c2"
+checksum = "ceb84a5e27eb62e9f6f34db195cc9fd8fe674c8704a6ffcbd560cd1a45979598"
 dependencies = [
  "crc32c",
  "libc",
@@ -6736,9 +6736,9 @@ dependencies = [
 
 [[package]]
 name = "sekejap-lang"
-version = "0.19.1"
+version = "0.19.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8cfd9b356941638a8d74314a4be1da9c3b477f7aac33664bde5e3dec0a1936d3"
+checksum = "a06c17d34d41cde9327a0b458ebec18c2e1be9ae60c3e59f94f8de06245de0df"
 dependencies = [
  "bcrypt",
  "hmac",

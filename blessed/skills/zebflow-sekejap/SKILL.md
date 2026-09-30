@@ -44,15 +44,14 @@ short form with examples; this skill is the order of work.
   `SELECT *`, `COUNT(*)` or a filter on neither end is refused. To count
   edges, walk them in `GRAPH_TABLE` and `COUNT(*)` the outer select.
 - **Values go in `--params`, never in the SQL text.** A `JSONB` column takes
-  a bound object or array: `--params "{{ [input.body.meta] }}"`. A quoted
-  `'{"a":1}'` is stored as a string, and nothing warns you.
+  a bound object or array: `--params "{{ [input.body.meta] }}"`.
+- `now()` works in `VALUES` and `SET`; `meta->>'k'` works in a select list;
+  `lower(col) = $1` works without an index when `$1` is already lower-case.
 - **Refused here, and the replacement:**
-  - `now()` in `VALUES` → bind `new Date().toISOString()`, or `DEFAULT now()` on the column
-  - `LOWER(col) = $1` → store a lower-cased copy and match that
   - `LIKE … OR LIKE …` (even with a trigram index) → one `LIKE` per query, or a `fulltext` index with `search()`
-  - `col->>'k'` in the select list → return `col`, read the key in a script
   - `OFFSET` → keyset: `WHERE (name, _key) > ($1, $2) ORDER BY name, _key`
-  - an indexed value over 1024 bytes → keep long text unindexed
+  - a value over 1024 bytes in an indexed TEXT column → leave long-text columns
+    out of the automatic indexes (`WITH (index: [...])`) or `DROP INDEX` it
 - The refusal message names its `QL_CONTRACT §` — open that section in the
   pinned copy, not on main.
 
