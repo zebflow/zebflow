@@ -372,6 +372,8 @@ pub fn expand_kind(short: &str) -> Option<&'static str> {
         "fs.image.thumbnail" | "n.fs.image.thumbnail" => Some("n.fs.image.thumbnail"),
         "fs.image.chromakey" | "n.fs.image.chromakey" => Some("n.fs.image.chromakey"),
         "fs.svg.convert" | "n.fs.svg.convert" => Some("n.fs.svg.convert"),
+        "fs.barcode.qr" | "n.fs.barcode.qr" => Some("n.fs.barcode.qr"),
+        "fs.barcode.code128" | "n.fs.barcode.code128" => Some("n.fs.barcode.code128"),
         "fs.list" | "n.fs.list" => Some("n.fs.list"),
         "fs.head" | "n.fs.head" => Some("n.fs.head"),
         "fs.get" | "n.fs.get" => Some("n.fs.get"),

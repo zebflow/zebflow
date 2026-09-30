@@ -1741,6 +1741,28 @@ impl BasicPipelineEngine {
                 };
                 Ok(NodeDispatch::ImgChromakey(fs::image::chromakey::Node::new(config, platform.clone())?))
             }
+            fs::barcode::code128::NODE_KIND => {
+                let config: fs::barcode::code128::Config =
+                    serde_json::from_value(node.config.clone()).unwrap_or_default();
+                let Some(platform) = &self.platform else {
+                    return Err(PipelineError::new(
+                        "FS_BARCODE_CODE128",
+                        "platform service not available in this engine context",
+                    ));
+                };
+                Ok(NodeDispatch::BarcodeCode128(fs::barcode::code128::Node::new(config, platform.clone())?))
+            }
+            fs::barcode::qr::NODE_KIND => {
+                let config: fs::barcode::qr::Config =
+                    serde_json::from_value(node.config.clone()).unwrap_or_default();
+                let Some(platform) = &self.platform else {
+                    return Err(PipelineError::new(
+                        "FS_BARCODE_QR",
+                        "platform service not available in this engine context",
+                    ));
+                };
+                Ok(NodeDispatch::BarcodeQr(fs::barcode::qr::Node::new(config, platform.clone())?))
+            }
             fs::image::thumbnail::NODE_KIND => {
                 let config: fs::image::thumbnail::Config =
                     serde_json::from_value(node.config.clone()).unwrap_or_default();
@@ -3001,6 +3023,8 @@ impl BasicPipelineEngine {
                     NodeDispatch::ImgThumbnail(node) => {
                         node.execute_many_async(input_for_exec).await
                     }
+                    NodeDispatch::BarcodeQr(node) => node.execute_many_async(input_for_exec).await,
+                    NodeDispatch::BarcodeCode128(node) => node.execute_many_async(input_for_exec).await,
                     NodeDispatch::SvgConvert(node) => node.execute_many_async(input_for_exec).await,
                     NodeDispatch::ImgChromakey(node) => node.execute_many_async(input_for_exec).await,
                     NodeDispatch::Input(node) => node.execute_many_async(input_for_exec).await,
@@ -5899,6 +5923,8 @@ enum NodeDispatch {
     GeoConvert(geo::convert::Node),
     FilePdfConvert(fs::pdf::convert::Node),
     ImgThumbnail(fs::image::thumbnail::Node),
+    BarcodeQr(fs::barcode::qr::Node),
+    BarcodeCode128(fs::barcode::code128::Node),
     SvgConvert(fs::svg::convert::Node),
     ImgChromakey(fs::image::chromakey::Node),
     /// Any `n.input.*` kind — a pass-through validator of one envelope field.
