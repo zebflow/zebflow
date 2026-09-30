@@ -39,4 +39,4 @@
 pub mod resolver;
 pub mod scanner;
 
-pub use resolver::{build_expression_scope_input, resolve_config_expressions};
+pub use resolver::{FOREACH_METADATA_KEY, build_expression_scope_input, resolve_config_expressions};

@@ -184,7 +184,9 @@ string.
 
 **foreach** emits `{ item, index, count }` per element (add `--keep-input` to
 carry the whole upstream payload — off by default so a large table is not
-copied per row); **reduce** folds the series:
+copied per row); **reduce** folds the series. It may sit further down the
+branch — after a query or a script — and still waits for every run, and
+`$item` names the run's element in any node between:
 
 ```
 [a] trigger.manual

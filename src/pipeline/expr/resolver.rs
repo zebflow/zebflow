@@ -41,12 +41,28 @@ use crate::language::{
 use crate::pipeline::PipelineError;
 
 /// Build the flat DSL expression scope used by config expressions and logic nodes.
+/// Metadata key: `{ item, index, count }` of the nearest `logic.foreach` run a
+/// node belongs to. The engine carries it hop to hop in the metadata, not the
+/// payload, so a node between the loop and a later `$item` or `logic.reduce`
+/// may replace the payload without cutting the run off from its loop.
+pub const FOREACH_METADATA_KEY: &str = "foreach";
+
+/// `$item`, `$index` and `$count` come from the loop run the engine carries in
+/// the metadata, so they hold anywhere down a `logic.foreach` branch; the
+/// payload's own fields are the fallback for a node run outside the engine.
 pub fn build_expression_scope_input(input: &Value, metadata: &Value) -> Value {
+    let run = metadata.get(FOREACH_METADATA_KEY).filter(|v| v.is_object());
+    let loop_field = |name: &str| {
+        run.and_then(|r| r.get(name))
+            .or_else(|| input.get(name))
+            .cloned()
+            .unwrap_or(Value::Null)
+    };
     json!({
         "$input":       input,
-        "$item":        input.get("item").cloned().unwrap_or(Value::Null),
-        "$index":       input.get("index").cloned().unwrap_or(Value::Null),
-        "$count":       input.get("count").cloned().unwrap_or(Value::Null),
+        "$item":        loop_field("item"),
+        "$index":       loop_field("index"),
+        "$count":       loop_field("count"),
         "$trigger":     metadata.get("trigger").cloned().unwrap_or(Value::Null),
         "$nodes":       metadata.get("nodes").cloned().unwrap_or_else(|| json!({})),
         "$placeholder": metadata.get("placeholder").cloned().unwrap_or_else(|| json!({})),

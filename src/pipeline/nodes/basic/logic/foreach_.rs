@@ -38,8 +38,9 @@ pub fn definition() -> NodeDefinition {
         title: "Foreach".to_string(),
         description: "Loop. Evaluates `--items-expr` to an array and runs everything wired to its `item` pin once per element, in order. \
              Each run receives `{ item, index, count }` — the element is `input.item`, not `input`; the upstream payload is \
-             not carried unless `--keep-input` (then it is merged in beside `item`). Emissions are sequential; to fold the \
-             results back into one value, end the branch in `logic.reduce`. A non-array expression fails the node."
+             not carried unless `--keep-input` (then it is merged in beside `item`). `$item`, `$index` and `$count` name the \
+             run's element anywhere down the branch, even after a node replaced the payload. Emissions are sequential; to \
+             fold the results back into one value, end the branch in `logic.reduce`. A non-array expression fails the node."
             .to_string(),
         input_schema: serde_json::json!({ "type": "object" }),
         output_schema: serde_json::json!({ "type": "object" }),

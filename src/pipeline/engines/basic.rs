@@ -2246,6 +2246,7 @@ impl BasicPipelineEngine {
             let trace_node_id = node.id.clone();
             let trace_node_kind = node.kind.clone();
             let input_snapshot = input.payload.clone();
+            let series = input.metadata.get(crate::pipeline::expr::FOREACH_METADATA_KEY).cloned();
 
             // Per-node timeout: prevents slow HTTP/DB nodes from hanging pipelines.
             // Priority: node config `timeout_secs` → project config → env var → default(30s).
@@ -3411,8 +3412,10 @@ impl BasicPipelineEngine {
                     state.acc = Some(last_output.payload.clone());
                     state.received += 1;
                     if state.expected.is_none() {
-                        state.expected = input_snapshot
-                            .get("count")
+                        state.expected = series
+                            .as_ref()
+                            .and_then(|s| s.get("count"))
+                            .or_else(|| input_snapshot.get("count"))
                             .and_then(Value::as_u64)
                             .map(|n| n as usize);
                     }
@@ -3525,19 +3528,31 @@ impl BasicPipelineEngine {
                                     });
                                 }
                             } else {
+                                let mut metadata = execution_metadata(
+                                    ctx,
+                                    nodes_scope_for_target(to_node, &nodes_output, &nodes_retention),
+                                    ctx.placeholder.clone(),
+                                );
+                                // A loop starts a series; a reduce closes it.
+                                let run = if node.kind == logic::foreach_::NODE_KIND {
+                                    Some(json!({
+                                        "item": output.payload.get("item").cloned().unwrap_or(Value::Null),
+                                        "index": output.payload.get("index").cloned().unwrap_or(Value::Null),
+                                        "count": output.payload.get("count").cloned().unwrap_or(Value::Null),
+                                    }))
+                                } else if node.kind == logic::reduce::NODE_KIND {
+                                    None
+                                } else {
+                                    series.clone()
+                                };
+                                if let (Some(run), Some(map)) = (run, metadata.as_object_mut()) {
+                                    map.insert(crate::pipeline::expr::FOREACH_METADATA_KEY.to_string(), run);
+                                }
                                 queue.push_back(NodeExecutionInput {
                                     node_id: (*to_node).to_string(),
                                     input_pin: (*to_pin).to_string(),
                                     payload: output.payload.clone(),
-                                    metadata: execution_metadata(
-                                        ctx,
-                                        nodes_scope_for_target(
-                                            to_node,
-                                            &nodes_output,
-                                            &nodes_retention,
-                                        ),
-                                        ctx.placeholder.clone(),
-                                    ),
+                                    metadata,
                                     bus: bus.clone(),
                                 });
                             }
@@ -5462,6 +5477,78 @@ mod tests {
         assert_eq!(out.value["item"]["id"], "r2");
         assert_eq!(out.value["batch_marker"], "kept-only-when-requested");
         assert_eq!(out.value["rows"][0]["id"], "r1");
+    }
+
+    #[tokio::test]
+    async fn item_still_names_the_loop_element_after_a_node_replaced_the_payload() {
+        // [c] replaces the payload; [d]'s {{ $item }} must still be the element
+        // this run started from, not null and not another run's.
+        let dsl = r#"
+[a] trigger.manual
+[b] logic.foreach --items-expr "$input.rows"
+[c] script -- "return { unrelated: true };"
+[d] script --source-expr "'return { key: ' + JSON.stringify($item.key) + ' };'"
+[e] logic.reduce --init-expr "{ keys: [] }" --step-expr "{ keys: $acc.keys.concat([$input.key]) }"
+
+[a] -> [b]
+[b]:item -> [c]
+[c] -> [d]
+[d] -> [e]
+"#;
+        let graph = build_pipeline_graph("foreach-item-scope-test", dsl).expect("graph");
+        let out = BasicPipelineEngine::default()
+            .execute_async(
+                &graph,
+                &PipelineContext {
+                    owner: "test".to_string(),
+                    project: "test".to_string(),
+                    pipeline: "foreach-item-scope-test".to_string(),
+                    request_id: "req-item-scope".to_string(),
+                    route: String::new(),
+                    input: json!({ "rows": [{ "key": "a" }, { "key": "b" }, { "key": "c" }] }),
+                    trigger: None,
+                    placeholder: None,
+                },
+            )
+            .await
+            .expect("execute");
+
+        assert_eq!(out.value["keys"], json!(["a", "b", "c"]));
+    }
+
+    #[tokio::test]
+    async fn logic_reduce_waits_for_the_whole_series_when_a_node_sits_between() {
+        // The script replaces the payload, so `count` is gone from it; the
+        // reduce must still fold all three runs, not fire after each one.
+        let dsl = r#"
+[a] trigger.manual
+[b] logic.foreach --items-expr "$input.rows"
+[c] script -- "return { v: input.item.amount * 10 };"
+[d] logic.reduce --init-expr "{ vs: [] }" --step-expr "{ vs: $acc.vs.concat([$input.v]) }"
+
+[a] -> [b]
+[b]:item -> [c]
+[c] -> [d]
+"#;
+        let graph = build_pipeline_graph("logic-reduce-between-test", dsl).expect("graph");
+        let out = BasicPipelineEngine::default()
+            .execute_async(
+                &graph,
+                &PipelineContext {
+                    owner: "test".to_string(),
+                    project: "test".to_string(),
+                    pipeline: "logic-reduce-between-test".to_string(),
+                    request_id: "req-reduce-between".to_string(),
+                    route: String::new(),
+                    input: json!({ "rows": [{ "amount": 1 }, { "amount": 2 }, { "amount": 3 }] }),
+                    trigger: None,
+                    placeholder: None,
+                },
+            )
+            .await
+            .expect("execute");
+
+        assert_eq!(out.value["vs"], json!([10, 20, 30]));
     }
 
     #[tokio::test]
