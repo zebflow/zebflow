@@ -30,10 +30,10 @@ CREATE TABLE product_prices (_key TEXT PRIMARY KEY, name TEXT, price REAL, fetch
 
 ## DSL
 
-Sekejap has no `UPSERT`/`ON CONFLICT`. "Don't duplicate on re-run" means:
-look each item up by its natural key first, then branch — `UPDATE` if it's
-already there, `INSERT` if it isn't. All three scrapers follow the same
-shape: fetch → parse into an array → `logic.foreach` → look up → branch.
+"Don't duplicate on re-run" means the item's natural key is the row's `_key`,
+and each write is `INSERT … ON CONFLICT (_key) DO UPDATE`: a new key inserts,
+a known one updates in place. All three scrapers follow the same shape:
+fetch → parse into an array → `logic.foreach` → upsert.
 
 ### feed-scraper — fetch and parse JSON feed
 
@@ -43,18 +43,12 @@ register scraping/feed-scraper --
 [fetch] http.request --url "https://example.com/feed.json" --method GET
 [parse] script -- "const items = (input.response.body.items || []).map(i => ({ id: i.guid || i.url, title: i.title, url: i.url, summary: (i.description || '').slice(0,500), published_at: new Date(i.pubDate).getTime(), source: 'example-feed', fetched_at: Date.now() })); return { items: items.filter(i => i.id && i.title) };"
 [each] logic.foreach --items-expr "input.items"
-[find] sekejap.query --params "{{ [$item.id] }}" -- "SELECT _key FROM scraped_items WHERE _key = $1"
-[known] logic.if --expr "input.rows.length > 0"
-[update] sekejap.query --read-only false --params "{{ [$item.title, $item.url, $item.summary, $item.published_at, $item.fetched_at, $item.id] }}" -- "UPDATE scraped_items SET title = $1, url = $2, summary = $3, published_at = $4, fetched_at = $5 WHERE _key = $6"
-[insert] sekejap.query --read-only false --params "{{ [$item.id, $item.title, $item.url, $item.summary, $item.published_at, $item.source, $item.fetched_at] }}" -- "INSERT INTO scraped_items (_key, title, url, summary, published_at, source, fetched_at) VALUES ($1, $2, $3, $4, $5, $6, $7)"
+[save] sekejap.query --read-only false --params "{{ [$item.id, $item.title, $item.url, $item.summary, $item.published_at, $item.source, $item.fetched_at] }}" -- "INSERT INTO scraped_items (_key, title, url, summary, published_at, source, fetched_at) VALUES ($1, $2, $3, $4, $5, $6, $7) ON CONFLICT (_key) DO UPDATE SET title = EXCLUDED.title, url = EXCLUDED.url, summary = EXCLUDED.summary, published_at = EXCLUDED.published_at, source = EXCLUDED.source, fetched_at = EXCLUDED.fetched_at"
 
 [trig] -> [fetch]
 [fetch] -> [parse]
 [parse] -> [each]
-[each]:item -> [find]
-[find] -> [known]
-[known]:true -> [update]
-[known]:false -> [insert]
+[each]:item -> [save]
 ```
 
 ### api-paginated-scraper — multi-page API fetch
@@ -65,18 +59,12 @@ register scraping/api-paginated-scraper --
 [fetch] http.request --url "https://api.example.com/articles?page=1&per_page=100" --method GET
 [parse] script -- "const items = (input.response.body.data || []).map(a => ({ id: String(a.id), title: a.title, author: (a.author && a.author.name) || null, category: a.category, url: a.url, body: (a.content || '').slice(0,2000), fetched_at: Date.now() })); return { items };"
 [each] logic.foreach --items-expr "input.items"
-[find] sekejap.query --params "{{ [$item.id] }}" -- "SELECT _key FROM articles WHERE _key = $1"
-[known] logic.if --expr "input.rows.length > 0"
-[update] sekejap.query --read-only false --params "{{ [$item.title, $item.author, $item.category, $item.url, $item.body, $item.fetched_at, $item.id] }}" -- "UPDATE articles SET title = $1, author = $2, category = $3, url = $4, body = $5, fetched_at = $6 WHERE _key = $7"
-[insert] sekejap.query --read-only false --params "{{ [$item.id, $item.title, $item.author, $item.category, $item.url, $item.body, $item.fetched_at] }}" -- "INSERT INTO articles (_key, title, author, category, url, body, fetched_at) VALUES ($1, $2, $3, $4, $5, $6, $7)"
+[save] sekejap.query --read-only false --params "{{ [$item.id, $item.title, $item.author, $item.category, $item.url, $item.body, $item.fetched_at] }}" -- "INSERT INTO articles (_key, title, author, category, url, body, fetched_at) VALUES ($1, $2, $3, $4, $5, $6, $7) ON CONFLICT (_key) DO UPDATE SET title = EXCLUDED.title, author = EXCLUDED.author, category = EXCLUDED.category, url = EXCLUDED.url, body = EXCLUDED.body, fetched_at = EXCLUDED.fetched_at"
 
 [trig] -> [fetch]
 [fetch] -> [parse]
 [parse] -> [each]
-[each]:item -> [find]
-[find] -> [known]
-[known]:true -> [update]
-[known]:false -> [insert]
+[each]:item -> [save]
 ```
 
 Paginate by wiring another `trigger.schedule`/`http.request` per page, or
@@ -91,18 +79,12 @@ register scraping/html-scraper --
 [fetch] http.request --url "https://example.com/prices" --method GET --response-type text
 [parse] script -- "const html = input.response.body; const matches = [...html.matchAll(/<div class=\"product\"[^>]*>([\s\S]*?)<\/div>/g)]; const items = matches.map((m,i) => { const nameMatch = m[1].match(/<h3>([^<]+)<\/h3>/); const priceMatch = m[1].match(/\$([0-9.]+)/); return { id: 'product-' + i, name: nameMatch ? nameMatch[1] : null, price: priceMatch ? parseFloat(priceMatch[1]) : null }; }); return { items: items.filter(p => p.name && p.price !== null).map(p => ({ ...p, fetched_at: Date.now() })) };"
 [each] logic.foreach --items-expr "input.items"
-[find] sekejap.query --params "{{ [$item.id] }}" -- "SELECT _key FROM product_prices WHERE _key = $1"
-[known] logic.if --expr "input.rows.length > 0"
-[update] sekejap.query --read-only false --params "{{ [$item.name, $item.price, $item.fetched_at, $item.id] }}" -- "UPDATE product_prices SET name = $1, price = $2, fetched_at = $3 WHERE _key = $4"
-[insert] sekejap.query --read-only false --params "{{ [$item.id, $item.name, $item.price, $item.fetched_at] }}" -- "INSERT INTO product_prices (_key, name, price, fetched_at) VALUES ($1, $2, $3, $4)"
+[save] sekejap.query --read-only false --params "{{ [$item.id, $item.name, $item.price, $item.fetched_at] }}" -- "INSERT INTO product_prices (_key, name, price, fetched_at) VALUES ($1, $2, $3, $4) ON CONFLICT (_key) DO UPDATE SET name = EXCLUDED.name, price = EXCLUDED.price, fetched_at = EXCLUDED.fetched_at"
 
 [trig] -> [fetch]
 [fetch] -> [parse]
 [parse] -> [each]
-[each]:item -> [find]
-[find] -> [known]
-[known]:true -> [update]
-[known]:false -> [insert]
+[each]:item -> [save]
 ```
 
 `--response-type text` keeps the body a raw string instead of trying to parse
@@ -144,17 +126,19 @@ register scraping/scraped-item-detail --
 - `trigger.webhook` — browse/view endpoints
 - `http.request` — outbound HTTP to fetch external pages/APIs
 - `script` — HTML/JSON parsing, normalization
-- `logic.foreach` — one lookup-and-branch run per parsed item
-- `sekejap.query` — `SELECT` to check existence, `UPDATE`/`INSERT` to write; no `--table`/`--op`
+- `logic.foreach` — one upsert per parsed item
+- `sekejap.query` — `INSERT … ON CONFLICT (_key) DO UPDATE` to write; no `--table`/`--op`
 - `web.response` — display scraped data
 
 ---
 
 ## Tips
 
-**Dedup without upsert:** each scraper looks its item up by natural key
-(`_key`) before writing — `UPDATE` on a hit, `INSERT` on a miss. Re-running
-the scraper never creates a duplicate row as long as the key stays stable.
+**Dedup by key:** each scraper writes its item under its natural key
+(`_key`) with `ON CONFLICT (_key) DO UPDATE`. Re-running the scraper never
+creates a duplicate row as long as the key stays stable. `ON CONFLICT` takes
+`_key` only; a second unique column is a `UNIQUE` constraint, not a conflict
+target.
 
 **Rate limiting:** there is no in-pipeline delay node (`setTimeout` is blocked
 in the script sandbox). Space requests out with narrower cron windows, or

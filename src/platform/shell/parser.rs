@@ -1506,7 +1506,20 @@ fn is_graph_node_statement(line: &str) -> bool {
     let Some(raw_kind) = tokens.first().map(String::as_str) else {
         return false;
     };
-    looks_like_node_kind(raw_kind) || is_note_keyword(raw_kind)
+    looks_like_node_kind(raw_kind) || is_dotted_kind(raw_kind) || is_note_keyword(raw_kind)
+}
+
+/// A bundled or installed node's short name (`ai.embedding`, `telegram.send`)
+/// is in no built-in list, so a `[label]` line is a node when its first word
+/// is kind-shaped: lowercase words joined by dots. Without this the line was
+/// glued onto the statement above it and its label went missing; now an
+/// unknown kind reaches the catalogue and is refused by name.
+fn is_dotted_kind(raw_kind: &str) -> bool {
+    raw_kind.contains('.')
+        && raw_kind.split('.').all(|part| {
+            part.starts_with(|c: char| c.is_ascii_lowercase())
+                && part.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-')
+        })
 }
 
 #[cfg(test)]
@@ -1984,6 +1997,32 @@ return { values };
 
     /// Curated composites live in `n.*`, which no namespace rule can recognise,
     /// so the parser has to resolve kinds against the catalog it is given.
+    #[test]
+    fn a_graph_line_naming_a_catalogue_node_by_its_short_name_is_its_own_node() {
+        let embed = NodeDefinition {
+            kind: "n.ai.embedding".to_string(),
+            title: "AI Embedding".to_string(),
+            description: "Embed text.".to_string(),
+            input_pins: vec!["in".to_string()],
+            output_pins: vec!["out".to_string()],
+            dsl_flags: vec![DslFlag {
+                flag: "--input-expr".to_string(),
+                config_key: "input_expr".to_string(),
+                description: "What to embed.".to_string(),
+                kind: DslFlagKind::Scalar,
+                required: false,
+            }],
+            ..Default::default()
+        };
+        let dsl = "[a] trigger.manual\n[b] script -- \"return { text: ['x'] }\"\n[c] ai.embedding --input-expr input.text\n[a] -> [b]\n[b] -> [c]";
+        let graph = build_pipeline_graph_with_definitions("short-kind", dsl, &[embed]).expect("graph");
+        let c = graph.nodes.iter().find(|n| n.id == "c").expect("[c] is a node, not glued onto [b]'s body");
+        assert_eq!(c.kind, "n.ai.embedding");
+
+        let unknown = build_pipeline_graph_with_definitions("short-kind", "[a] trigger.manual\n[b] ai.nothing\n[a] -> [b]", &[]);
+        assert!(unknown.unwrap_err().contains("ai.nothing"), "an unknown short kind is refused by name");
+    }
+
     #[test]
     fn curated_and_third_party_kinds_both_resolve_from_the_catalog() {
         let curated = NodeDefinition {
