@@ -123,6 +123,32 @@ fn move_to_current_format(dir: &Path) -> Result<(), PlatformError> {
     Ok(())
 }
 
+/// Move every project's store to this version's format, at start, before
+/// the server takes requests. A store that fails to move is reported and left
+/// for the request path, which answers its error by name. Answers how many
+/// stores were moved.
+pub fn move_all_stores_to_current_format(data_root: &Path) -> usize {
+    let mut moved = 0;
+    let Ok(owners) = std::fs::read_dir(data_root.join("users")) else { return 0 };
+    for owner in owners.flatten() {
+        let Ok(projects) = std::fs::read_dir(owner.path()) else { continue };
+        for project in projects.flatten() {
+            let dir = project.path().join("data").join("store").join(STORE_DIR);
+            if !dir.is_dir() {
+                continue;
+            }
+            let backup = dir.with_file_name(format!("{STORE_DIR}{BACKUP_SUFFIX}"));
+            let had_backup = backup.exists();
+            match move_to_current_format(&dir) {
+                Ok(()) if !had_backup && backup.exists() => moved += 1,
+                Ok(()) => {}
+                Err(err) => eprintln!("warning: {err}"),
+            }
+        }
+    }
+    moved
+}
+
 /// The store's folder name, and the suffixes of the folders a format move
 /// leaves beside it. A transfer carries the store, never these.
 pub const STORE_DIR: &str = "sekejap";
@@ -3901,6 +3927,25 @@ mod legacy_016 {
         move_to_current_format(&dir).expect("moves");
         assert!(!dir.join(LEGACY_016_DIR).exists());
         assert!(dir.with_file_name(format!("{STORE_DIR}.{LEGACY_016_DIR}")).join("wal.log").is_file());
+        drop(get_db(root.path(), "demo", "site-a").expect("still opens"));
+        evict_project_pool(root.path(), "demo", "site-a");
+    }
+}
+
+#[cfg(test)]
+mod startup_move {
+    use super::*;
+
+    /// Start-up walks every project's store; a store already in this format,
+    /// and a project with no store, are left alone and counted as nothing.
+    #[test]
+    fn startup_leaves_current_and_missing_stores_alone() {
+        let root = tempfile::tempdir().expect("tempdir");
+        drop(get_db(root.path(), "demo", "site-a").expect("a current store"));
+        evict_project_pool(root.path(), "demo", "site-a");
+        std::fs::create_dir_all(root.path().join("users/demo/site-b/data")).expect("a project with no store");
+        assert_eq!(move_all_stores_to_current_format(root.path()), 0);
+        assert_eq!(move_all_stores_to_current_format(&root.path().join("absent")), 0);
         drop(get_db(root.path(), "demo", "site-a").expect("still opens"));
         evict_project_pool(root.path(), "demo", "site-a");
     }
