@@ -11,11 +11,11 @@
 //! |---|---|---|---|
 //! | `function` | string | yes | Slug of the function pipeline to call |
 //! | `input_value` | any | no | What the function receives — a literal or `{{ expr }}`. Omit to pass the whole payload |
-//! | `input` | string | no | Static JSON input (overrides input_path when set) |
+//! | `input` | string | no | Static JSON input (overrides input_value when set) |
 //!
 //! # DSL
 //! ```text
-//! | function.call --function my-fn --input-path /body
+//! | function.call --function my-fn --input-value "{{ input.body }}"
 //! | function.call --function my-fn --input '{"user_id": "abc"}'
 //! ```
 //!
@@ -118,7 +118,7 @@ pub fn definition() -> NodeDefinition {
             DslFlag {
                 flag: "--input".to_string(),
                 config_key: "input".to_string(),
-                description: "Static JSON input passed directly to the function (overrides --input-path).".to_string(),
+                description: "Static JSON input passed directly to the function (overrides --input-value).".to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
             },

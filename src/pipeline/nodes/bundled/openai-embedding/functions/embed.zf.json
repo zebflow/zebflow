@@ -40,6 +40,7 @@
             "Content-Type": "application/json"
           },
           "body": "{{ input }}",
+          "timeout_ms": 120000,
           "response_type": "json"
         },
         "input_pins": [

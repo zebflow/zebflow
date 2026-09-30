@@ -8,7 +8,7 @@
 //! | Flag | Type | Default | Description |
 //! |---|---|---|---|
 //! | `--channel` | string | required | Channel name |
-//! | `--payload-path` | string | `""` | JSON pointer to extract from payload; empty = whole payload |
+//! | `--payload` | any | whole payload | What to publish — a literal or `{{ expr }}` |
 //!
 //! # Example
 //!
@@ -40,7 +40,7 @@ pub fn definition() -> NodeDefinition {
         title: "KV Publish".to_string(),
         description: "Publish a message on a named channel in the project KV bus. \
             All pipelines listening via n.trigger.kv.subscribe on the same channel receive the message. \
-            Use --payload-path to send a sub-value; empty = whole payload."
+            Use --payload to send a literal or {{ expr }}; omit it to send the whole payload."
             .to_string(),
         input_schema: json!({ "type": "object" }),
         output_schema: json!({ "type": "object", "description": "Payload passed through unchanged." }),

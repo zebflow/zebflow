@@ -93,7 +93,7 @@ pub fn definition() -> NodeDefinition {
         output_pins: vec![OUTPUT_PIN_OUT.to_string()],
         input_schema: json!({
             "type": "object",
-            "description": "Any payload. Use --from-expr to select rows from upstream output, for example $input.rows."
+            "description": "Any payload. Use --from \"{{ $input.rows }}\" to take rows from upstream output."
         }),
         output_schema: json!({
             "type": "object",

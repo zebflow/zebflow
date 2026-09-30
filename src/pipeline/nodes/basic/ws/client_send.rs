@@ -8,14 +8,14 @@
 //! | Flag | Type | Default | Description |
 //! |---|---|---|---|
 //! | `--connection` | string | (required) | Node ID of the `n.trigger.ws.client` trigger that owns the connection |
-//! | `--message-path` | string | `""` | JSON pointer into payload to extract the message body |
+//! | `--message` | any | whole payload | What to send — a literal or `{{ expr }}` |
 //!
 //! # Example
 //!
 //! ```text
 //! | n.trigger.ws.client --url wss://stream.example.com/feed
 //! | n.script -- "return { reply: 'pong' };"
-//! | n.ws.client.send --connection trigger_node_id --message-path /reply
+//! | n.ws.client.send --connection trigger_node_id --message "{{ input.reply }}"
 //! ```
 
 use std::sync::Arc;
@@ -44,7 +44,7 @@ pub fn definition() -> NodeDefinition {
         description: "Send a message through an active outbound WebSocket client connection. \
             The connection must be owned by an n.trigger.ws.client node in an active pipeline. \
             Use --connection to specify which trigger's connection to send through. \
-            Use --message-path to extract a specific field from the payload as the message body."
+            Use --message to send a literal or {{ expr }}; omit it to send the whole payload."
             .to_string(),
         input_schema: json!({ "type": "object" }),
         output_schema: json!({ "type": "object" }),

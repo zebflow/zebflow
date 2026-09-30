@@ -674,6 +674,95 @@ pub fn builtin_nodes_markdown_reference() -> String {
 
 #[cfg(test)]
 mod tests {
+    /// A composite node is a pipeline in JSON, so a setting its inner node no
+    /// longer reads still parses and is silently ignored. That is how the
+    /// embedding node went on sending empty requests for nine days after
+    /// `http.request` renamed `body_path` to `body`. Every node in every
+    /// bundled function must use only settings its kind declares.
+    #[test]
+    fn every_composite_node_uses_only_settings_its_inner_nodes_read() {
+        use std::collections::{BTreeMap, BTreeSet};
+        let known: BTreeMap<String, BTreeSet<String>> = super::builtin_node_definitions()
+            .into_iter()
+            .map(|def| {
+                let mut keys: BTreeSet<String> = def.dsl_flags.iter().map(|f| f.config_key.clone()).collect();
+                keys.extend(def.fields.iter().map(|f| f.name.clone()));
+                if let Some(props) = def.config_schema.get("properties").and_then(|p| p.as_object()) {
+                    keys.extend(props.keys().cloned());
+                }
+                keys.insert("ui".to_string()); // the editor's canvas position
+                (def.kind, keys)
+            })
+            .collect();
+        let crate_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let mut stack = vec![crate_dir.join("src/pipeline/nodes/bundled")];
+        let (mut checked, mut problems) = (0, Vec::new());
+        while let Some(dir) = stack.pop() {
+            for entry in std::fs::read_dir(&dir).expect("read bundled dir").flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    stack.push(path);
+                    continue;
+                }
+                if !path.to_string_lossy().ends_with(".zf.json") {
+                    continue;
+                }
+                let shown = path.strip_prefix(crate_dir).unwrap_or(&path).display().to_string();
+                let doc: serde_json::Value =
+                    serde_json::from_str(&std::fs::read_to_string(&path).expect("read bundle")).expect("bundle is JSON");
+                let spec = doc.get("spec").unwrap_or(&doc);
+                for node in spec["nodes"].as_array().into_iter().flatten() {
+                    checked += 1;
+                    let kind = node["kind"].as_str().unwrap_or_default();
+                    let Some(keys) = known.get(kind) else {
+                        problems.push(format!("{shown}#{}: no built-in node '{kind}'", node["id"]));
+                        continue;
+                    };
+                    for key in node["config"].as_object().into_iter().flat_map(|c| c.keys()) {
+                        if !keys.contains(key) {
+                            problems.push(format!("{shown}#{}: {kind} does not read '{key}'", node["id"]));
+                        }
+                    }
+                }
+            }
+        }
+        assert!(checked > 0, "no bundled node found; the walk is looking in the wrong place");
+        assert!(problems.is_empty(), "stale composite-node settings:\n{}", problems.join("\n"));
+    }
+
+    /// On 2026-09-09 every `--…-path` / `--…-expr` flag that wanted a value
+    /// became a flag that takes the value. Descriptions that still named the
+    /// old flags taught agents a pipeline the parser refuses. A flag of that
+    /// shape named anywhere in a node's definition must exist on some node.
+    #[test]
+    fn no_node_definition_names_a_retired_path_or_expr_flag() {
+        let defs = super::builtin_node_definitions();
+        let declared: std::collections::BTreeSet<&str> =
+            defs.iter().flat_map(|d| d.dsl_flags.iter().map(|f| f.flag.as_str())).collect();
+        let mut stale = Vec::new();
+        for def in &defs {
+            let text = serde_json::to_string(def).expect("definition serialises");
+            let bytes = text.as_bytes();
+            let mut at = 0;
+            while let Some(pos) = text[at..].find("--") {
+                let start = at + pos;
+                let mut end = start + 2;
+                while end < bytes.len() && (bytes[end].is_ascii_lowercase() || bytes[end].is_ascii_digit() || bytes[end] == b'-') {
+                    end += 1;
+                }
+                let flag = &text[start..end];
+                let preceded_by_word = start > 0 && (bytes[start - 1].is_ascii_alphanumeric() || bytes[start - 1] == b'-');
+                if !preceded_by_word && (flag.ends_with("-path") || flag.ends_with("-expr")) && !declared.contains(flag) {
+                    stale.push(format!("{}: {flag}", def.kind));
+                }
+                at = end.max(start + 2);
+            }
+        }
+        stale.sort();
+        stale.dedup();
+        assert!(stale.is_empty(), "definitions naming a flag no node has:\n{}", stale.join("\n"));
+    }
+
     #[test]
     fn native_node_definitions_have_complete_contracts() {
         let mut failures = Vec::new();

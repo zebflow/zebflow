@@ -5,7 +5,7 @@
 //! | Flag | Type | Default | Description |
 //! |---|---|---|---|
 //! | `--key` | string | required | Storage key (supports `{{ expr }}`) |
-//! | `--value-path` | string | `""` | JSON pointer into payload to extract value; empty = whole payload |
+//! | `--value` | any | whole payload | What to store — a literal or `{{ expr }}` |
 //! | `--ttl` | number | `0` | TTL in seconds; 0 = no expiry |
 //! | `--durable` | bool | `false` | Persist to durable storage (survives restart) |
 //!
@@ -13,7 +13,7 @@
 //!
 //! ```text
 //! | n.trigger.webhook --path /save --method POST
-//! | n.kv.set --key "user:{{ input.user_id }}" --value-path /data --ttl 3600
+//! | n.kv.set --key "user:{{ input.user_id }}" --value "{{ input.data }}" --ttl 3600
 //! ```
 
 use async_trait::async_trait;
@@ -40,7 +40,7 @@ pub fn definition() -> NodeDefinition {
         description: "Store a value in the project-scoped KV store. \
             Ephemeral by default, use --durable for persistence across restarts. \
             Use --key to name the slot (supports {{ expr }}). \
-            Use --value-path to extract a sub-value from the payload; empty = whole payload. \
+            Use --value to store a literal or {{ expr }}; omit it to store the whole payload. \
             Use --ttl for automatic expiry in seconds (0 = forever)."
             .to_string(),
         input_schema: json!({ "type": "object" }),

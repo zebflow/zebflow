@@ -234,7 +234,7 @@ pub fn definition() -> NodeDefinition {
             .to_string(),
         input_schema: json!({
             "type": "object",
-            "description": "Current payload. Use --text-expr to choose what text to speak."
+            "description": "Current payload. Use --text to choose what text to speak — a literal or {{ expr }}."
         }),
         output_schema: json!({
             "type": "object",

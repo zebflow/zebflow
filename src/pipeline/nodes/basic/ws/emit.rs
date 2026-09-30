@@ -11,7 +11,7 @@
 //! |---|---|---|---|
 //! | `--event` | string | `"event"` | Application-level event name |
 //! | `--to` | `"all"` \| `"session"` \| `"others"` | `"all"` | Recipient selection |
-//! | `--payload-path` | string | `""` | JSON pointer into the payload to extract the emit body |
+//! | `--payload` | any | whole payload | What to emit — a literal or `{{ expr }}` |
 //! | `--room` | string | `""` | Static room id override for server-initiated pipelines |
 //!
 //! # Room resolution

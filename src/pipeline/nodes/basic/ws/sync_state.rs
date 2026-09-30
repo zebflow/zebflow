@@ -10,7 +10,7 @@
 //! |---|---|---|---|
 //! | `--op` | `"set"` \| `"merge"` \| `"delete"` | `"set"` | State mutation type |
 //! | `--path` | string | `""` (root) | JSON-pointer path; supports `{key}` placeholders |
-//! | `--value-path` | string | `""` | JSON pointer into the **payload** to extract the value; empty = whole payload |
+//! | `--value` | any | whole payload | What to write — a literal or `{{ expr }}` |
 //! | `--room` | string | `""` | Static room id override; if empty, `room_id` is read from the payload |
 //! | `--silent` | bool | `false` | Batch the update via the tick loop instead of broadcasting immediately |
 //!

@@ -23,16 +23,16 @@
 //! | Flag | Type | Default | Description |
 //! |---|---|---|---|
 //! | `--op` | string | *(required)* | Operation name (see table above) |
-//! | `--input-path` | string | `""` → `payload.input` | JSON pointer for primary input |
-//! | `--hash-path` | string | `""` → `payload.hash` | JSON pointer for stored hash (verify ops) |
-//! | `--key-path` | string | `""` → `payload.key` | JSON pointer for HMAC secret key |
+//! | `--input` | any | `payload.input` | The value to operate on — a literal or `{{ expr }}` |
+//! | `--hash` | any | `payload.hash` | The stored hash (verify ops) — a literal or `{{ expr }}` |
+//! | `--key` | any | `payload.key` | The HMAC secret — a literal or `{{ expr }}` |
 //! | `--cost` | integer | `12` | bcrypt cost factor (4–31) |
 //! | `--length` | integer | `32` | Random byte count for `random_hex` |
 //!
 //! # Payload extraction
 //!
-//! Each op reads its inputs from the flowing payload via JSON pointer paths.
-//! If a path flag is empty, a well-known field name is used as fallback:
+//! Each op reads its inputs from `--input`, `--hash` and `--key` (a literal or
+//! `{{ expr }}`). A flag left out falls back to a well-known payload field:
 //!
 //! | Op | Primary input field | Secondary input field |
 //! |---|---|---|
@@ -73,7 +73,7 @@
 //! **Webhook signature check (HMAC-SHA256):**
 //! ```text
 //! | n.trigger.webhook --path /webhooks/github --method POST
-//! | n.crypto --op hmac_sha256 --key-path /webhook_secret
+//! | n.crypto --op hmac_sha256 --key "{{ input.webhook_secret }}"
 //! | n.logic.if -- "payload.result === payload.expected_sig"
 //! ```
 //!
@@ -112,7 +112,7 @@ pub fn definition() -> NodeDefinition {
             Use --op to select the operation. Hash/encode ops add `result` to the payload \
             (everything else flows on unchanged) and emit to the 'out' pin. Verify ops (bcrypt_verify, argon2_verify) \
             route to 'true' or 'false' pin, forwarding the payload unchanged. \
-            Input defaults to payload.input; override with --input-path. \
+            Input defaults to payload.input; override with --input. \
             Use $trigger or $nodes references for upstream data."
             .to_string(),
         input_schema: json!({
