@@ -31,7 +31,7 @@ pub fn definition() -> NodeDefinition {
         kind: NODE_KIND.to_string(),
         capabilities: vec![NodeCapability::Credential],
         title: "Create Auth Token".to_string(),
-        description: "Signs a JWT access token from input data using a stored jwt_signing_key credential. Supports HS256 and RS256 algorithms. Claims marked with `:public` (e.g. `--claim \"name={{ input.fullname }}:public\"`) are the only ones exposed in the browser via `ctx.auth`; all others remain server-only.".to_string(),
+        description: "Signs a JWT access token from input data using a stored jwt_signing_key credential. Supports HS256 and RS256 algorithms. A claim whose name ends in `:public` (e.g. `--claim \"name:public={{ input.fullname }}\"`) is the only kind exposed in the browser via `ctx.auth`; all others remain server-only. The value keeps the type its expression gives.".to_string(),
         input_schema: json!({
             "type": "object",
             "description": "Input payload for claim extraction."
@@ -54,7 +54,7 @@ pub fn definition() -> NodeDefinition {
         "properties": {
             "credential_id": { "type": "string", "description": "ID of the jwt_signing_key credential." },
             "expires_in": { "type": "integer", "description": "Token lifetime in seconds (default 900)." },
-            "claims": { "type": "object", "description": "Map of claim_name → value. A value is a literal or {{ expr }}. Append `:public` to expose a claim in the browser. Claims without `:public` are signed into the JWT but never reach the browser DOM." },
+            "claims": { "type": "object", "description": "Map of claim_name → value. A value is a literal or {{ expr }}. End the name with `:public` (`roles:public`) to expose the claim in the browser. Claims without it are signed into the JWT but never reach the browser DOM." },
             "issuer": { "type": "string" },
             "audience": { "type": "string" }
         }
@@ -77,7 +77,7 @@ pub fn definition() -> NodeDefinition {
             crate::pipeline::model::DslFlag {
                 flag: "--claim".to_string(),
                 config_key: "claims".to_string(),
-                description: "Map a JWT claim from the input payload. Repeat for each claim. Format: claim_name={{ expr }} or claim_name=literal. Append :public to expose the claim in the browser via ctx.auth (e.g. --claim \"name={{ input.fullname }}:public\"). Claims without :public are signed but never reach the browser DOM. e.g. --claim \"sub={{ input.id }}\" --claim \"name={{ input.fullname }}:public\"".to_string(),
+                description: "Map a JWT claim from the input payload. Repeat for each claim. Format: claim_name={{ expr }} or claim_name=literal. End the name with :public to expose the claim in the browser via ctx.auth (e.g. --claim \"name:public={{ input.fullname }}\"); the value keeps its type. Claims without :public are signed but never reach the browser DOM. e.g. --claim \"sub={{ input.id }}\" --claim \"name:public={{ input.fullname }}\"".to_string(),
                 kind: crate::pipeline::model::DslFlagKind::KeyValuePairs,
                 required: false,
             },
@@ -114,7 +114,7 @@ pub fn definition() -> NodeDefinition {
         ],
         ai_tool: Default::default(),
         examples: vec![
-            crate::pipeline::model::NodeExample::dsl("Mint a session token after login", r#"auth.token.create --credential jwt_main --expires-in 86400 --claim "sub={{ input.rows[0]._key }}" --claim "name={{ input.rows[0].name }}:public" --claim "roles={{ input.rows[0].roles }}:public""#)
+            crate::pipeline::model::NodeExample::dsl("Mint a session token after login", r#"auth.token.create --credential jwt_main --expires-in 86400 --claim "sub={{ input.rows[0]._key }}" --claim "name:public={{ input.rows[0].name }}" --claim "roles:public={{ input.rows[0].roles }}""#)
                 .output(serde_json::json!({ "access_token": "eyJhbGciOiJIUzI1NiJ9…", "token_type": "bearer", "expires_in": 86400, "profile": { "name": "Ana", "roles": ["editor"] } }))
                 .note("Then `web.response --location /home --set-cookie \"name=zebflow_session,value={{ input.access_token }},http-only,max-age=86400,same-site=Lax\"`. `roles` must be an array for `--auth-required-role`."),
         ],
@@ -160,57 +160,92 @@ impl Node {
     }
 }
 
-/// A claim value arrives final: `{{ expr }}` resolution already happened
-/// engine-side before this node ran (`docs/contracts/kinds/node-io`), so a
-/// value here is the value — the old `$.path` convention is retired.
-fn resolve_claim(val: &Value, _payload: &Value) -> Value {
-    val.clone()
-}
-
-/// The value of a `:public` claim once the marker is removed. The marker made
-/// the flag an interpolated string, so a non-string the expression produced
-/// arrived as JSON text; it is read back so the claim keeps its type.
+/// The claims to sign, each with whether the browser may see it.
 ///
-/// Only shapes that cannot be text are read back: arrays, objects, booleans
-/// and null. Digits stay text — once interpolated, a NIM, a NIP or a phone
-/// number looks exactly like a number, and reading `123456789012345678` back
-/// as one rounded it in every browser to `123456789012345680`.
-fn public_claim_value(stripped: &str) -> Value {
-    let stripped = stripped.trim();
-    serde_json::from_str::<Value>(stripped)
-        .ok()
-        .filter(|v| v.is_array() || v.is_object() || v.is_boolean() || v.is_null())
-        .unwrap_or_else(|| Value::String(stripped.to_string()))
+/// Visibility rides on the claim's name — `roles:public={{ input.roles }}` —
+/// so the value stays a whole `{{ expr }}`, which the engine resolves to its
+/// native type before this node runs: a list stays a list, `null` stays null,
+/// an 18-digit NIP stays the text it was. The marker used to sit after the
+/// value (`{{ input.roles }}:public`); that turned every public claim into a
+/// sentence the engine stringified, and the node had to guess the type back.
+/// The old place is refused, not read, so nothing guesses again.
+fn claim_entries(claims: &Map<String, Value>) -> Result<Vec<(String, Value, bool)>, PipelineError> {
+    let mut out: Vec<(String, Value, bool)> = Vec::new();
+    for (key, val) in claims {
+        if let Value::String(s) = val {
+            if s.trim_end().ends_with(":public") {
+                return Err(PipelineError::new(
+                    "FW_NODE_AUTH_CLAIM_PUBLIC_ON_VALUE",
+                    format!(
+                        "claim '{key}': `:public` belongs on the name, not the value — \
+                         write --claim \"{key}:public=…\""
+                    ),
+                ));
+            }
+        }
+        let (name, public) = match key.strip_suffix(":public") {
+            Some(name) => (name.trim().to_string(), true),
+            None => (key.trim().to_string(), false),
+        };
+        if name.is_empty() {
+            return Err(PipelineError::new("FW_NODE_AUTH_CLAIM_NAME", "a claim needs a name before `:public`"));
+        }
+        if out.iter().any(|(n, _, _)| n == &name) {
+            return Err(PipelineError::new(
+                "FW_NODE_AUTH_CLAIM_NAME",
+                format!("claim '{name}' is given twice"),
+            ));
+        }
+        out.push((name, val.clone(), public));
+    }
+    Ok(out)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::public_claim_value;
-    use serde_json::json;
+    use super::claim_entries;
+    use serde_json::{Map, Value, json};
 
-    #[test]
-    fn a_public_array_claim_is_an_array_not_its_json_text() {
-        // `--claim "roles={{ input.roles }}:public"` interpolates the array to
-        // `["admin"]`; the verifier needs `roles.as_array()` to succeed.
-        assert_eq!(public_claim_value(r#"["admin","editor"]"#), json!(["admin", "editor"]));
-        assert_eq!(public_claim_value(r#"{"unit":"705"}"#), json!({ "unit": "705" }));
-        assert_eq!(public_claim_value("true"), json!(true));
+    fn claims(v: Value) -> Map<String, Value> {
+        v.as_object().cloned().unwrap()
     }
 
     #[test]
-    fn a_public_claim_of_digits_stays_text() {
-        // `--claim "identifier={{ input.identifier }}:public"` with an
-        // 18-digit NIP: read back as a number, every browser showed it rounded.
-        assert_eq!(public_claim_value("123456789012345678"), json!("123456789012345678"));
-        assert_eq!(public_claim_value("0812345678"), json!("0812345678"));
-        assert_eq!(public_claim_value("42"), json!("42"));
+    fn a_public_claim_keeps_the_type_its_expression_gave() {
+        // What the engine hands over after resolving whole `{{ }}` values.
+        let got = claim_entries(&claims(json!({
+            "roles:public": ["lecturer", "manager"],
+            "identifier:public": "123456789012345678",
+            "original_player_id:public": null,
+            "level:public": 3,
+            "nickname:public": "true",
+        })))
+        .unwrap();
+        let find = |n: &str| got.iter().find(|(k, _, _)| k == n).cloned().unwrap();
+        assert_eq!(find("roles"), ("roles".into(), json!(["lecturer", "manager"]), true));
+        assert_eq!(find("identifier").1, json!("123456789012345678"));
+        assert_eq!(find("original_player_id").1, Value::Null);
+        assert_eq!(find("level").1, json!(3));
+        assert_eq!(find("nickname").1, json!("true"), "a nickname that reads like a boolean stays text");
     }
 
     #[test]
-    fn a_public_string_claim_stays_a_string() {
-        assert_eq!(public_claim_value("Alice"), json!("Alice"));
-        assert_eq!(public_claim_value("\"quoted\""), json!("\"quoted\""));
-        assert_eq!(public_claim_value(""), json!(""));
+    fn a_claim_without_the_marker_is_private() {
+        let got = claim_entries(&claims(json!({ "highest_unit_id": "u-1" }))).unwrap();
+        assert_eq!(got, vec![("highest_unit_id".into(), json!("u-1"), false)]);
+    }
+
+    #[test]
+    fn the_marker_after_the_value_is_refused_with_the_fix() {
+        let err = claim_entries(&claims(json!({ "roles": "[\"admin\"]:public" }))).unwrap_err();
+        assert_eq!(err.code, "FW_NODE_AUTH_CLAIM_PUBLIC_ON_VALUE");
+        assert!(err.message.contains("roles:public="), "the error shows where it goes: {}", err.message);
+    }
+
+    #[test]
+    fn one_claim_given_public_and_private_is_refused() {
+        let err = claim_entries(&claims(json!({ "roles": [], "roles:public": [] }))).unwrap_err();
+        assert_eq!(err.code, "FW_NODE_AUTH_CLAIM_NAME");
     }
 }
 
@@ -285,27 +320,11 @@ impl NodeHandler for Node {
         // --- Build claims from input payload ---
         let mut claims_map = Map::new();
         let mut public_keys: Vec<String> = Vec::new();
-        for (key, val) in &self.config.claims {
-            // Check for `:public` suffix on the value string to mark this claim
-            // as safe to expose in the browser via __rwe_payload.
-            let (resolved_val, is_public) = if let Value::String(s) = val {
-                if let Some(stripped) = s.strip_suffix(":public") {
-                    // The `:public` suffix made this an interpolated string, so
-                    // an array or object the expression produced arrived as its
-                    // JSON text (`["admin"]`). Read it back: `roles` must be an
-                    // array for `--auth-required-role` to ever match, and a
-                    // marker about visibility must not change a claim's type.
-                    (resolve_claim(&public_claim_value(stripped), &input.payload), true)
-                } else {
-                    (resolve_claim(val, &input.payload), false)
-                }
-            } else {
-                (resolve_claim(val, &input.payload), false)
-            };
-            if is_public {
-                public_keys.push(key.clone());
+        for (name, value, public) in claim_entries(&self.config.claims)? {
+            if public {
+                public_keys.push(name.clone());
             }
-            claims_map.insert(key.clone(), resolved_val);
+            claims_map.insert(name, value);
         }
         // Embed public claim list into the JWT so web.response can filter at render time.
         if !public_keys.is_empty() {

@@ -65,7 +65,7 @@ Create a `jwt_signing_key` credential in the Credentials UI. Fields:
 | logic.if --expr "input.rows && input.rows.length > 0"
 (false pin → `web.response --status 401 --message "invalid credentials"`)
 | script -- "const user = input.rows[0]; return { id: user.id, username: user.username, roles: [user.role] };"
-| auth.token.create --credential my-jwt --claim "sub={{ input.id }}" --claim "username={{ input.username }}:public" --claim "roles={{ input.roles }}:public" --expires-in 86400
+| auth.token.create --credential my-jwt --claim "sub={{ input.id }}" --claim "username:public={{ input.username }}" --claim "roles:public={{ input.roles }}" --expires-in 86400
 | web.response --location /dashboard --set-cookie "name=session,value={{ input.access_token }},http-only,max-age=86400,path=/"
 ```
 
@@ -133,7 +133,7 @@ Role mismatch → `auth_forbidden_redirect` fires as a 303 redirect (browser nav
 - `trigger.webhook --auth-type jwt --auth-credential <id>` — auto-verify JWT; `input.auth` = decoded claims
 - `trigger.webhook --auth-required-role <roles>` — comma-separated roles; checks against JWT `roles` array claim. Empty = any authenticated user.
 - `pg.query` — user lookup and insert
-- `auth.token.create --claim "key={{ input.field }}"` — sign JWT; output `{{ input.access_token }}`. Append `:public` to expose that claim in the browser via `ctx.auth` (e.g. `--claim "role={{ input.role }}:public"`). Private claims like `sub` never reach the browser DOM.
+- `auth.token.create --claim "key={{ input.field }}"` — sign JWT; output `{{ input.access_token }}`. End the claim name with `:public` to expose that claim in the browser via `ctx.auth` (e.g. `--claim "role:public={{ input.role }}"`). Private claims like `sub` never reach the browser DOM.
 - `web.response --set-cookie` — set HttpOnly session cookie
 - `web.response --location` — redirect after login/logout/register
 - `web.response --template` — render protected pages

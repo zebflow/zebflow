@@ -91,6 +91,8 @@ pub const ERROR_CLASS_REGISTRY: &[(&str, ErrorClass)] = &[
     ("FW_NODE_AI_TTS_CONFIG", ErrorClass::Refused),
     ("FW_NODE_AUTH_TOKEN_ALGORITHM", ErrorClass::Refused),
     ("FW_NODE_AUTH_TOKEN_CONFIG", ErrorClass::Refused),
+    ("FW_NODE_AUTH_CLAIM_PUBLIC_ON_VALUE", ErrorClass::Refused),
+    ("FW_NODE_AUTH_CLAIM_NAME", ErrorClass::Refused),
     ("FW_NODE_AUTH_TOKEN_CREDENTIAL", ErrorClass::Refused),
     ("FW_NODE_AUTH_TOKEN_CREDENTIAL_KIND", ErrorClass::Refused),
     ("FW_NODE_AUTH_TOKEN_CREDENTIAL_MISSING", ErrorClass::Refused),

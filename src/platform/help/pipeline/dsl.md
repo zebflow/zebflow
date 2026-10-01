@@ -73,7 +73,7 @@ Flag value kinds, as each node declares them:
 | scalar | `--template pages/post.tsx` | `"pages/post.tsx"` |
 | bool | `--durable` | `true` — no value consumed |
 | comma-list | `--auth-required-role admin,editor` or `--cases a --cases b` | `["admin","editor"]` — one style per flag |
-| key-value-pairs | `--claim "sub={{ input.id }}" --claim "name={{ input.name }}:public"` | `{ sub: …, name: … }` — repeat the flag, one key each |
+| key-value-pairs | `--claim "sub={{ input.id }}" --claim "name:public={{ input.name }}"` | `{ sub: …, name: … }` — repeat the flag, one key each |
 
 Two flags exist on every node: `--timeout <seconds>` (engine timeout for this
 node, clamped 5–3600, default the project's `pipeline_node_timeout_secs`) and

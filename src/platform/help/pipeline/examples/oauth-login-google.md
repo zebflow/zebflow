@@ -132,7 +132,7 @@ register auth/google-callback --
 [member] sqlite.query --query "SELECT email, name, roles FROM members WHERE email = ?1" --params "{{ [input.email] }}"
 [known] logic.if --expr "input.rows && input.rows.length > 0"
 [claim] script -- "const m = input.rows[0]; return { sub: m.email, name: m.name, roles: JSON.parse(m.roles) };"
-[token] auth.token.create --credential session-signing-key --claim "sub={{ input.sub }}" --claim "name={{ input.name }}:public" --claim "roles={{ input.roles }}" --expires-in 86400
+[token] auth.token.create --credential session-signing-key --claim "sub={{ input.sub }}" --claim "name:public={{ input.name }}" --claim "roles={{ input.roles }}" --expires-in 86400
 [welcome] web.response --location /wh/OWNER/PROJECT/me --set-cookie "name=session,value={{ input.access_token }},http-only,same-site=Lax,max-age=86400,path=/"
 [stranger] web.response --status 403 --message "This Google account is not a member yet."
 [in] -> [state]
@@ -202,5 +202,5 @@ password form and every protected route stays as it is.
 - `http.request --credential <secure_request id> --bind NAME=<expr>` — the credential owns URL, method, headers and body; one `--bind` per declared variable; output `{ request, response }`
 - `sqlite.query --params "{{ [expr] }}"` — `?1` placeholders
 - `logic.if --expr <js>` — `true` / `false` pins
-- `auth.token.create --credential <jwt_signing_key id> --claim "k={{ v }}" [--claim "k={{ v }}:public"]` — output `{ access_token }`; quote each claim, an unquoted `{{ }}` is cut at its first space
+- `auth.token.create --credential <jwt_signing_key id> --claim "k={{ v }}" [--claim "k:public={{ v }}"]` — output `{ access_token }`; quote each claim, an unquoted `{{ }}` is cut at its first space
 - `web.response --location <url> --set-cookie <spec>` / `--status 403 --message <text>`

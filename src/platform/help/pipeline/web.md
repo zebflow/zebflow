@@ -105,7 +105,7 @@ The payload is `{ error_code, error_message, original_path, method }`.
 [c] logic.if --expr "input.rows.length === 1"
 [d] crypto --op argon2_verify --input "{{ $nodes.a.body.password }}" --hash "{{ input.rows[0].password_hash }}"
 [e] script -- "const u = input.rows[0]; return { id: u.id, name: u.name, roles: u.roles || ['member'] }"
-[f] auth.token.create --credential jwt_main --claim "sub={{ input.id }}" --claim "name={{ input.name }}:public" --claim "roles={{ input.roles }}:public"
+[f] auth.token.create --credential jwt_main --claim "sub={{ input.id }}" --claim "name:public={{ input.name }}" --claim "roles:public={{ input.roles }}"
 [g] web.response --location /home --set-cookie "name=zebflow_session,value={{ input.access_token }},http-only,max-age=86400,same-site=Lax"
 [h] web.response --status 401 --body "{{ { error: 'invalid credentials' } }}"
 [a] -> [b]
@@ -122,9 +122,9 @@ The payload is `{ error_code, error_message, original_path, method }`.
 hash from `--hash`, routes to `true`/`false`, and passes the payload through
 unchanged. The submitted password is no longer in `input` after the query, so
 it is read from the trigger's own output, `$nodes.a.body.password`. `roles`
-must be an array — a `:public` claim that produces one stays one, as do
-objects and booleans; digits stay text, so an 18-digit NIM or NIP is never
-rounded into a number. The full
+must be an array. `:public` goes on the claim's name (`roles:public=`), so
+the value is a whole `{{ }}` and keeps the type its expression gives: a list
+stays a list, an 18-digit NIM or NIP stays the text it was. The full
 recipe with registration: `help("pipeline/examples/cookie-jwt-auth")`.
 
 **Headers**

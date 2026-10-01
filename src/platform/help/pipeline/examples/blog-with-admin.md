@@ -128,7 +128,7 @@ register blog/auth-login --
 [lookup] sekejap.query --params "{{ [input.body.username] }}" -- "SELECT _key, password_hash, roles FROM users WHERE _key = $1"
 [found] logic.if --expr "input.rows.length > 0"
 [verify] crypto --op argon2_verify --input "{{ input.body.password }}" --hash "{{ input.rows[0].password_hash }}"
-[token] auth.token.create --credential blog-jwt --claim "sub={{ input.rows[0]._key }}" --claim "roles={{ input.rows[0].roles }}:public" --expires-in 86400
+[token] auth.token.create --credential blog-jwt --claim "sub={{ input.rows[0]._key }}" --claim "roles:public={{ input.rows[0].roles }}" --expires-in 86400
 [welcome] web.response --location /admin --set-cookie "name=session,value={{ input.access_token }},http-only,max-age=86400,same-site=Lax,path=/"
 [denied] web.response --status 401 --message "invalid credentials"
 

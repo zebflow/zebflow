@@ -1017,9 +1017,9 @@ fn schema_property_for_type(type_spec: &str) -> Result<Value, String> {
 /// stored says `{{`, which resolves to nothing.
 ///
 /// One rule closes it: a value that opens an expression must also close it.
-/// Close it *somewhere*, not at the end — `{{ input.name }}:public` is a whole
-/// claim with its visibility suffix, and the tokenizer never produces that
-/// shape from a cut.
+/// Close it *somewhere*, not at the end — `{{ input.name }} and more` is a
+/// whole value with text after the expression, and the tokenizer never
+/// produces that shape from a cut.
 fn reject_unquoted_expression(flag: &str, value: &str) -> Result<(), String> {
     let trimmed = value.trim();
     if trimmed.starts_with("{{") && !trimmed.contains("}}") {
@@ -1047,7 +1047,7 @@ fn parse_flags_for_patch(tokens: &[String], cmd: &str) -> (HashMap<String, Value
             let config_key = key.replace('-', "_");
             let new_val = coerce_scalar_value(&val);
             // Accumulate repeated flags as an array to preserve all occurrences
-            // (e.g. --claim sub=$.id --claim name=$.fullname:public)
+            // (e.g. --claim sub={{ input.id }} --claim name:public={{ input.fullname }})
             match flags.entry(config_key) {
                 std::collections::hash_map::Entry::Occupied(mut e) => match e.get_mut() {
                     Value::Array(arr) => arr.push(new_val),
@@ -3139,20 +3139,20 @@ mod key_value_quoting_tests {
         );
     }
 
-    /// A claim carries its visibility after the expression. `:public` is not
-    /// a cut, and the guard must not read it as one.
+    /// A claim carries its visibility on its name, so the value stays a whole
+    /// expression and keeps its type when it resolves.
     #[test]
-    fn a_quoted_expression_with_a_public_suffix_is_a_whole_claim() {
+    fn a_public_claim_keeps_a_whole_expression_as_its_value() {
         let graph = build_pipeline_graph(
             "claims-public",
             "[a] trigger.manual\n\
-             [b] auth.token.create --credential k --claim \"name={{ input.name }}:public\"\n\
+             [b] auth.token.create --credential k --claim \"name:public={{ input.name }}\"\n\
              [a] -> [b]\n",
         )
-        .expect("a quoted expression with :public must parse");
+        .expect("a public claim must parse");
         let node = graph.nodes.iter().find(|n| n.id == "b").expect("node b");
         let claims = node.config.get("claims").expect("claims");
-        assert_eq!(claims.get("name").and_then(|v| v.as_str()), Some("{{ input.name }}:public"));
+        assert_eq!(claims.get("name:public").and_then(|v| v.as_str()), Some("{{ input.name }}"));
     }
 
     /// Quoted, it parses and the whole expression survives.

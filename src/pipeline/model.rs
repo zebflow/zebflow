@@ -402,7 +402,7 @@ pub enum NodeFieldType {
     KeyValuePairs,
     /// Specialized claims editor for `auth.token.create`.
     /// Same layout as `KeyValuePairs` but each row has a "Public" checkbox
-    /// that appends/strips the `:public` suffix from the value string.
+    /// that adds/removes `:public` at the end of the claim's name.
     /// Claims marked public are exposed in the browser via `ctx.auth`;
     /// unmarked claims stay server-only.
     ClaimsPairs,

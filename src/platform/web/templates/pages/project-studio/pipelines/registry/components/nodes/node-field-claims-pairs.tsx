@@ -8,7 +8,8 @@ import Checkbox from "@/components/ui/checkbox";
  *
  * Each row renders: [claim name] [value / $.path] [Public ✓] [×]
  *
- * The "Public" checkbox appends/strips the `:public` suffix on the value string.
+ * The "Public" checkbox adds/removes `:public` at the end of the claim's name
+ * (`roles:public`), so the value stays a whole `{{ expr }}` and keeps its type.
  * Public claims are the only ones exposed in the browser via `ctx.auth`.
  * Private claims (no checkbox) are signed into the JWT but never reach the browser DOM.
  */
@@ -20,35 +21,35 @@ export default function NodeFieldClaimsPairs({ field, value, onChange }) {
 
   const pairs: [string, string][] = Object.entries(raw);
 
-  function isPublic(val: string): boolean {
-    return typeof val === "string" && val.endsWith(":public");
+  function isPublic(key: string): boolean {
+    return key.endsWith(":public");
   }
 
-  function baseVal(val: string): string {
-    return isPublic(val) ? val.slice(0, -7) : val;
+  function baseKey(key: string): string {
+    return isPublic(key) ? key.slice(0, -7) : key;
   }
 
   function commit(next: [string, string][]) {
     onChange(Object.fromEntries(next));
   }
 
-  function updateKey(idx: number, newKey: string) {
+  function updateKey(idx: number, newBase: string) {
     const next = [...pairs] as [string, string][];
-    next[idx] = [newKey, next[idx][1]];
+    const suffix = isPublic(next[idx][0]) ? ":public" : "";
+    next[idx] = [newBase + suffix, next[idx][1]];
     commit(next);
   }
 
-  function updateValue(idx: number, newBase: string) {
+  function updateValue(idx: number, newValue: string) {
     const next = [...pairs] as [string, string][];
-    const suffix = isPublic(next[idx][1]) ? ":public" : "";
-    next[idx] = [next[idx][0], newBase + suffix];
+    next[idx] = [next[idx][0], newValue];
     commit(next);
   }
 
   function togglePublic(idx: number, checked: boolean) {
     const next = [...pairs] as [string, string][];
-    const base = baseVal(next[idx][1]);
-    next[idx] = [next[idx][0], checked ? base + ":public" : base];
+    const base = baseKey(next[idx][0]);
+    next[idx] = [checked ? base + ":public" : base, next[idx][1]];
     commit(next);
   }
 
@@ -79,19 +80,19 @@ export default function NodeFieldClaimsPairs({ field, value, onChange }) {
           <div key={idx} className="flex gap-1.5 items-center">
             <Input
               type="text"
-              value={k}
+              value={baseKey(k)}
               placeholder="claim_name"
               onInput={(e) => updateKey(idx, e.currentTarget.value)}
             />
             <Input
               type="text"
-              value={baseVal(v)}
-              placeholder="$.field or literal"
+              value={v}
+              placeholder="{{ input.field }} or literal"
               onInput={(e) => updateValue(idx, e.currentTarget.value)}
             />
             <div className="w-14 flex justify-center">
               <Checkbox
-                checked={isPublic(v)}
+                checked={isPublic(k)}
                 title="Expose this claim in the browser via ctx.auth"
                 onChange={(e) => togglePublic(idx, e.currentTarget.checked)}
               />
