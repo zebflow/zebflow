@@ -229,6 +229,8 @@ impl PlatformService {
         ));
         let ws_hub = Arc::new(WsHub::new());
         let mem_hub = Arc::new(MemHub::new());
+        // Expired keys are removed even when nobody reads them again.
+        mem_hub.start_sweeper(std::time::Duration::from_secs(30));
         let state_bus: DynStateBus = Arc::new(MemStateBus::from_hub_with_durable(
             (*mem_hub).clone(),
             config.data_root.clone(),

@@ -4,7 +4,8 @@
 //!
 //! - **Ephemeral**: all data is lost on server restart.
 //! - **Per-project scoped**: keys/channels are namespaced as `{owner}/{project}/{name}`.
-//! - **TTL**: lazy expiry checked on every read — no background cleanup thread.
+//! - **TTL**: expiry is checked on every read, and [`MemHub::start_sweeper`] removes
+//!   expired keys in the background, so an unread key does not live forever.
 //! - **Pub/sub**: `tokio::sync::broadcast` channels per named channel.
 //!
 //! # Quick use in pipelines
@@ -123,21 +124,20 @@ impl MemHub {
 
     /// Atomically increment (or decrement with negative `amount`) an integer key.
     /// Non-existent or expired keys start from 0. Non-integer values are reset to 0.
-    /// Returns the new value. TTL is NOT preserved after an incr.
+    /// Returns the new value. A live key keeps its TTL — an incr used to clear it,
+    /// turning a counter with an expiry into one that never expired.
     pub fn incr(&self, owner: &str, project: &str, key: &str, amount: i64) -> i64 {
         let fk = Self::scoped(owner, project, key);
         let mut entries = self.entries.write().unwrap_or_else(|e| e.into_inner());
-        let current = entries
-            .get(&fk)
-            .filter(|e| !e.is_expired())
-            .and_then(|e| e.value.as_i64())
-            .unwrap_or(0);
+        let live = entries.get(&fk).filter(|e| !e.is_expired());
+        let current = live.and_then(|e| e.value.as_i64()).unwrap_or(0);
+        let expires_at = live.and_then(|e| e.expires_at);
         let new_val = current + amount;
         entries.insert(
             fk,
             MemEntry {
                 value: Value::Number(new_val.into()),
-                expires_at: None,
+                expires_at,
             },
         );
         new_val
@@ -227,6 +227,20 @@ impl MemHub {
         }
     }
 
+    /// Remove expired entries every `every`, in the background, for as long as a
+    /// Tokio runtime is running. Without a runtime (plain unit tests) it does nothing.
+    pub fn start_sweeper(&self, every: Duration) {
+        let Ok(rt) = tokio::runtime::Handle::try_current() else { return };
+        let hub = self.clone();
+        rt.spawn(async move {
+            let mut tick = tokio::time::interval(every);
+            loop {
+                tick.tick().await;
+                hub.purge_expired();
+            }
+        });
+    }
+
     /// Remove expired entries from the in-memory store.
     pub fn purge_expired(&self) -> usize {
         let mut entries = self.entries.write().unwrap_or_else(|e| e.into_inner());
@@ -239,5 +253,38 @@ impl MemHub {
 impl Default for MemHub {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn incr_keeps_a_live_keys_ttl() {
+        let hub = MemHub::new();
+        hub.set("o", "p", "hits", Value::from(1), Some(60));
+        assert_eq!(hub.incr("o", "p", "hits", 2), 3);
+        let entries = hub.entries.read().unwrap();
+        assert!(entries.get("o/p/hits").unwrap().expires_at.is_some(), "incr must not make the key permanent");
+    }
+
+    #[test]
+    fn incr_on_a_new_key_has_no_ttl() {
+        let hub = MemHub::new();
+        assert_eq!(hub.incr("o", "p", "n", 1), 1);
+        assert!(hub.entries.read().unwrap().get("o/p/n").unwrap().expires_at.is_none());
+    }
+
+    #[tokio::test]
+    async fn the_sweeper_removes_unread_expired_keys() {
+        let hub = MemHub::new();
+        hub.entries.write().unwrap().insert(
+            "o/p/gone".into(),
+            MemEntry { value: Value::from(1), expires_at: Some(Instant::now() - Duration::from_secs(1)) },
+        );
+        hub.start_sweeper(Duration::from_millis(20));
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(hub.entries.read().unwrap().is_empty(), "an expired key nobody reads is still removed");
     }
 }

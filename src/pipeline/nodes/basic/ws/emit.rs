@@ -2,8 +2,8 @@
 //!
 //! Unlike `n.ws.sync_state`, this node does **not** mutate shared state.
 //! It sends a transient `event` message to one or more connected clients.
-//! Clients receive the full JSON envelope and are responsible for filtering
-//! by `to` / `target_session`.
+//! The server decides who receives it: a `session` event reaches that one
+//! socket only, an `others` event every socket but that one.
 //!
 //! # Config flags
 //!
@@ -30,8 +30,9 @@
 //! | `others` | Deliver to all sessions *except* the triggering session |
 //!
 //! For `session` and `others`, `session_id` is read from `input.payload.session_id`
-//! (injected by `n.trigger.ws`).  For server-initiated pipelines without a
-//! WS trigger, `all` is the natural choice.
+//! (injected by `n.trigger.ws`); without one the node fails with
+//! `FW_WS_EMIT_NO_SESSION`. For server-initiated pipelines without a WS
+//! trigger, `all` is the natural choice.
 //!
 //! # Wire format (server → client)
 //!
@@ -39,9 +40,7 @@
 //! {
 //!   "type": "event",
 //!   "event": "<event-name>",
-//!   "payload": { ... },
-//!   "to": "all" | "session" | "others",
-//!   "target_session": "<session_id>" | null
+//!   "payload": { ... }
 //! }
 //! ```
 //!
@@ -289,6 +288,13 @@ impl NodeHandler for Node {
             .to_string();
 
         let room_key = format!("{}/{}/{}", owner, project, room_id);
+
+        if matches!(self.config.to.as_str(), "session" | "others") && session_id.is_empty() {
+            return Err(PipelineError::new(
+                "FW_WS_EMIT_NO_SESSION",
+                "n.ws.emit: --to session/others needs session_id in the payload (n.trigger.ws upstream)",
+            ));
+        }
 
         let target = match self.config.to.as_str() {
             "session" => EmitTarget::Session(session_id.clone()),

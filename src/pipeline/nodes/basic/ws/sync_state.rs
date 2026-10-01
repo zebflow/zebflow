@@ -20,6 +20,8 @@
 //!
 //! ```text
 //! --path /players/{session_id}         → /players/abc123
+//! (a placeholder missing from the payload fails with FW_WS_PATH_SEGMENT_EMPTY;
+//!  numbers are written as text)
 //! --path /places/house/{user_id}       → /places/house/u42
 //! --path /rooms/{room_type}/npcs/{id}  → /rooms/arena/npcs/boss1
 //! ```
@@ -304,8 +306,12 @@ impl NodeHandler for Node {
 
         let room_key = format!("{}/{}/{}", owner, project, room_id);
 
-        // Resolve dynamic path placeholders from the payload.
-        let resolved_path = interpolate_path(&self.config.path, &input.payload);
+        // Resolve dynamic path placeholders from the payload. A placeholder that
+        // resolves to nothing is refused: it used to collapse `/players/{id}` to
+        // `/players` and write into (or delete) the whole map.
+        let resolved_path = interpolate_path(&self.config.path, &input.payload).map_err(|e| {
+            PipelineError::new("FW_WS_PATH_SEGMENT_EMPTY", format!("n.ws.sync_state: {e} (path {})", self.config.path))
+        })?;
 
         let op = match self.config.op.as_str() {
             "merge" => StateOp::Merge,

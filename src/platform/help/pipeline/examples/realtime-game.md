@@ -138,11 +138,48 @@ Server-side room state is a JSON object. Clients receive:
 ```json
 { "type": "joined", "session_id": "...", "room": "room-abc123", "state": { "players": {}, "last_move": null } }
 { "type": "state_patch", "state": { "players": { "p1": { "id": "p1", "name": "...", "score": 0 } }, "last_move": null } }
-{ "type": "event", "event": "player.moved", "payload": { "player_id": "p1", "move": "...", "ts": 1234 }, "to": "all", "target_session": null }
+{ "type": "event", "event": "player.moved", "payload": { "player_id": "p1", "move": "...", "ts": 1234 } }
+{ "type": "resync", "state": { "players": {}, "last_move": null } }
 ```
 
-`state_patch` always carries the **full** current state, not a diff — the
-client replaces its local copy wholesale.
+`state_patch` and `resync` always carry the **full** current state, not a diff —
+the client replaces its local copy wholesale. `resync` arrives when the
+connection fell behind and messages were dropped.
+
+`ws.emit --to session` / `--to others` is enforced by the server: a session-only
+event reaches that one socket and no other.
+
+## Joining, leaving and who is online
+
+The server raises two reserved events on every connection's own ordered queue:
+
+- `$connect` — after `joined`.
+- `$disconnect` — when the socket ends, payload `{ "reason": "close" | "error" }`.
+  It runs even if the client never said goodbye, and after every event that
+  socket sent, so a late `move` can never resurrect a player who left.
+
+Only a trigger that names them receives them (`trigger.ws --event $disconnect`);
+a catch-all `trigger.ws` does not, and clients cannot send `$` events. Presence
+is two small pipelines:
+
+```
+register pipelines/presence-in --
+| trigger.ws --event $connect
+| ws.sync_state --op merge --path "/players/{session_id}" --value "{{ { since: Date.now() } }}"
+
+register pipelines/presence-out --
+| trigger.ws --event $disconnect
+| ws.sync_state --op delete --path "/players/{session_id}"
+```
+
+A path placeholder must resolve: `{session_id}` missing from the payload is the
+error `FW_WS_PATH_SEGMENT_EMPTY`, never a write to `/players` itself. Numbers are
+written as text. When the last connection leaves, the room and its state are
+disposed; the next visitor starts from `{}`.
+
+A connection is admitted to a room when the room has no `trigger.ws`, or one of
+them is open, or it passes the auth of at least one of them; otherwise the socket
+is closed with code 4401 before any state is sent.
 
 ---
 

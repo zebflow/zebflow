@@ -19,14 +19,31 @@
 //! - Placeholders are resolved from the **top-level string fields** of the payload
 //!   JSON object.  Nested lookups are intentionally not supported — keep entity
 //!   identifiers flat (`session_id`, `user_id`, `place_id`) rather than `user.id`.
-//! - Non-string values (numbers, booleans) are **not** coerced; the placeholder
-//!   resolves to `""`.  This produces a path like `/players/` which is valid JSON
-//!   pointer but may write to the wrong bucket — verify at the pipeline level.
-//! - Missing keys resolve to `""` with the same caveat.
+//! - Numbers and booleans are written as text (`{seat}` with `3` → `3`).
+//! - A placeholder that is missing, null, an object/array, or an empty string is
+//!   an error ([`PathError`]): resolving it to `""` turned `/players/{session_id}`
+//!   into `/players`, so a merge wrote into — and a delete wiped — the whole map.
 //! - Malformed placeholders (unclosed `{`) are emitted verbatim so they are
 //!   visible in trace logs.
 
 use serde_json::Value;
+
+/// A `{placeholder}` that resolved to nothing usable.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PathError {
+    /// The placeholder name, without braces.
+    pub placeholder: String,
+}
+
+impl std::fmt::Display for PathError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "path placeholder {{{}}} is missing, empty or not text/number in the payload",
+            self.placeholder
+        )
+    }
+}
 
 /// Expand `{key}` placeholders in a path template using top-level string
 /// fields from `payload`.
@@ -41,7 +58,8 @@ use serde_json::Value;
 /// # Returns
 ///
 /// A fully-resolved path string ready to be passed to [`crate::ws::room`]
-/// state operations.
+/// state operations, or [`PathError`] naming the placeholder that resolved
+/// to nothing.
 ///
 /// # Examples
 ///
@@ -51,26 +69,14 @@ use serde_json::Value;
 ///
 /// let p = json!({ "session_id": "abc123", "user_id": "u42" });
 ///
-/// // Static path — returned unchanged, zero allocations avoided by early return.
-/// assert_eq!(interpolate_path("/places/hall", &p), "/places/hall");
-///
-/// // Single placeholder.
-/// assert_eq!(interpolate_path("/players/{session_id}", &p), "/players/abc123");
-///
-/// // Nested dynamic path.
-/// assert_eq!(interpolate_path("/places/house/{user_id}", &p), "/places/house/u42");
-///
-/// // Multiple placeholders in one path.
-/// let p2 = json!({ "room_type": "arena", "user_id": "u9" });
-/// assert_eq!(
-///     interpolate_path("/rooms/{room_type}/players/{user_id}", &p2),
-///     "/rooms/arena/players/u9"
-/// );
+/// assert_eq!(interpolate_path("/places/hall", &p).unwrap(), "/places/hall");
+/// assert_eq!(interpolate_path("/players/{session_id}", &p).unwrap(), "/players/abc123");
+/// assert!(interpolate_path("/players/{missing}", &p).is_err());
 /// ```
-pub fn interpolate_path(template: &str, payload: &Value) -> String {
+pub fn interpolate_path(template: &str, payload: &Value) -> Result<String, PathError> {
     // Fast path: no placeholders → return immediately without allocating.
     if !template.contains('{') {
-        return template.to_string();
+        return Ok(template.to_string());
     }
 
     let mut result = String::with_capacity(template.len() + 32);
@@ -94,9 +100,17 @@ pub fn interpolate_path(template: &str, payload: &Value) -> String {
         }
 
         if closed && !key.is_empty() {
-            // Look up a top-level string field in the payload.
-            let value = payload.get(&key).and_then(|v| v.as_str()).unwrap_or("");
-            result.push_str(value);
+            // Look up a top-level field: text as is, numbers and booleans as text.
+            let value = match payload.get(&key) {
+                Some(Value::String(s)) => s.clone(),
+                Some(Value::Number(n)) => n.to_string(),
+                Some(Value::Bool(b)) => b.to_string(),
+                _ => String::new(),
+            };
+            if value.is_empty() {
+                return Err(PathError { placeholder: key });
+            }
+            result.push_str(&value);
         } else {
             // Malformed placeholder — emit verbatim so it shows up in traces.
             result.push('{');
@@ -105,7 +119,7 @@ pub fn interpolate_path(template: &str, payload: &Value) -> String {
         }
     }
 
-    result
+    Ok(result)
 }
 
 // ---- Unit tests ------------------------------------------------------------
@@ -115,66 +129,50 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    fn ok(t: &str, p: &Value) -> String {
+        interpolate_path(t, p).expect("resolves")
+    }
+
     #[test]
     fn static_path_returned_unchanged() {
         let p = json!({});
-        assert_eq!(interpolate_path("/places/hall", &p), "/places/hall");
-        assert_eq!(interpolate_path("/players", &p), "/players");
-        assert_eq!(interpolate_path("/", &p), "/");
-        assert_eq!(interpolate_path("", &p), "");
+        assert_eq!(ok("/places/hall", &p), "/places/hall");
+        assert_eq!(ok("/players", &p), "/players");
+        assert_eq!(ok("/", &p), "/");
+        assert_eq!(ok("", &p), "");
     }
 
     #[test]
-    fn single_placeholder_resolved() {
-        let p = json!({ "session_id": "abc123" });
-        assert_eq!(
-            interpolate_path("/players/{session_id}", &p),
-            "/players/abc123"
-        );
+    fn placeholders_resolved() {
+        let p = json!({ "session_id": "abc123", "room_type": "arena", "user_id": "u9" });
+        assert_eq!(ok("/players/{session_id}", &p), "/players/abc123");
+        assert_eq!(ok("/rooms/{room_type}/players/{user_id}", &p), "/rooms/arena/players/u9");
     }
 
     #[test]
-    fn single_placeholder_at_suffix() {
-        let p = json!({ "user_id": "u42" });
-        assert_eq!(
-            interpolate_path("/places/house/{user_id}", &p),
-            "/places/house/u42"
-        );
+    fn numbers_and_booleans_are_written_as_text() {
+        let p = json!({ "seat": 3, "ready": true });
+        assert_eq!(ok("/seats/{seat}/{ready}", &p), "/seats/3/true");
     }
 
     #[test]
-    fn multiple_placeholders() {
-        let p = json!({ "room_type": "arena", "user_id": "u9" });
-        assert_eq!(
-            interpolate_path("/rooms/{room_type}/players/{user_id}", &p),
-            "/rooms/arena/players/u9"
-        );
+    fn a_missing_placeholder_is_refused_not_collapsed() {
+        // `/players/` would have become `/players`: a delete wiped every player.
+        let err = interpolate_path("/players/{session_id}", &json!({})).unwrap_err();
+        assert_eq!(err.placeholder, "session_id");
     }
 
     #[test]
-    fn missing_key_produces_empty_segment() {
-        let p = json!({});
-        assert_eq!(interpolate_path("/players/{session_id}", &p), "/players/");
-    }
-
-    #[test]
-    fn non_string_value_produces_empty_segment() {
-        let p = json!({ "session_id": 42 });
-        assert_eq!(interpolate_path("/players/{session_id}", &p), "/players/");
+    fn empty_null_or_structured_values_are_refused() {
+        for v in [json!(""), Value::Null, json!({ "a": 1 }), json!([1])] {
+            let p = json!({ "session_id": v });
+            assert!(interpolate_path("/players/{session_id}", &p).is_err());
+        }
     }
 
     #[test]
     fn malformed_unclosed_placeholder_emitted_verbatim() {
         let p = json!({ "session_id": "abc" });
-        assert_eq!(
-            interpolate_path("/players/{session_id", &p),
-            "/players/{session_id"
-        );
-    }
-
-    #[test]
-    fn placeholder_at_root() {
-        let p = json!({ "entity": "ship" });
-        assert_eq!(interpolate_path("/{entity}", &p), "/ship");
+        assert_eq!(ok("/players/{session_id", &p), "/players/{session_id");
     }
 }

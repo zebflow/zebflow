@@ -363,6 +363,8 @@ pub const ERROR_CLASS_REGISTRY: &[(&str, ErrorClass)] = &[
     ("FW_TRACE_CONFIG", ErrorClass::Refused),
     ("FW_WS_CLIENT_SEND", ErrorClass::Failed),
     ("FW_WS_EMIT_NO_ROOM", ErrorClass::Failed),
+    ("FW_WS_EMIT_NO_SESSION", ErrorClass::Failed),
+    ("FW_WS_PATH_SEGMENT_EMPTY", ErrorClass::Failed),
     ("FW_WS_SYNC_STATE_NO_ROOM", ErrorClass::Failed),
 
     // The language namespace. These were emitted for as long as the sandbox

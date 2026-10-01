@@ -23,9 +23,9 @@
 //! │  Tick (33 ms)    ──► if dirty: broadcast state_patch        │
 //! └─────────────────────────────────────────────────────────────┘
 //!         │
-//!         │  broadcast::Sender<String>  (JSON)
+//!         │  broadcast::Sender<RoomBroadcast>  (JSON + target)
 //!         ▼
-//!    All subscribed WS sessions
+//!    Each WS session forwards what is for it
 //! ```
 //!
 //! # Immediate vs tick-batched state updates
@@ -49,11 +49,13 @@
 //! |---|---|---|
 //! | `"joined"` | `session_id`, `state` | Emitted once by the WS route handler on connect |
 //! | `"state_patch"` | `state` | After any state mutation (immediate or tick) |
-//! | `"event"` | `event`, `payload`, `to`, `target_session` | After [`RoomCmd::Emit`] |
+//! | `"event"` | `event`, `payload` | After [`RoomCmd::Emit`] |
+//! | `"resync"` | `state` | Sent by the WS route handler when a session fell behind |
 //!
-//! Clients receiving an `"event"` message should check `to` and
-//! `target_session` before acting, since all sessions receive the same
-//! broadcast stream.
+//! Delivery is decided on the server: every [`RoomBroadcast`] carries its
+//! [`EmitTarget`], and each session's socket loop forwards only what
+//! [`RoomBroadcast::is_for`] admits. A session-targeted event never reaches
+//! another socket.
 
 use std::sync::Arc;
 use std::sync::RwLock;
@@ -104,20 +106,15 @@ pub enum StateOp {
     Delete,
 }
 
-/// Emit target — controls which connected sessions receive an event message.
+/// Emit target — which connected sessions receive a message.
 ///
-/// All sessions subscribe to the same broadcast channel.  Clients are
-/// responsible for filtering by the `to` / `target_session` fields in the
-/// received JSON.
+/// Enforced by the server before a socket write (see [`RoomBroadcast::is_for`]).
 #[derive(Debug, Clone)]
 pub enum EmitTarget {
     /// Broadcast to all connected sessions (no filtering).
     All,
 
     /// Deliver only to the session with the given `session_id`.
-    ///
-    /// Other sessions will receive the message but the client SDK should
-    /// discard it.
     Session(String),
 
     /// Deliver to all sessions *except* the one with the given `session_id`.
@@ -181,12 +178,37 @@ pub enum RoomCmd {
     Shutdown,
 }
 
+/// One message on a room's broadcast channel: the JSON text and who it is for.
+#[derive(Debug, Clone)]
+pub struct RoomBroadcast {
+    /// Serialised JSON, shared by every receiver.
+    pub text: Arc<str>,
+    /// Which sessions may receive it.
+    pub to: EmitTarget,
+}
+
+impl RoomBroadcast {
+    fn all(text: String) -> Self {
+        Self { text: text.into(), to: EmitTarget::All }
+    }
+
+    /// Whether the session `session_id` may receive this message.
+    pub fn is_for(&self, session_id: &str) -> bool {
+        match &self.to {
+            EmitTarget::All => true,
+            EmitTarget::Session(id) => id == session_id,
+            EmitTarget::Others(id) => id != session_id,
+        }
+    }
+}
+
 // ---- Session guard ---------------------------------------------------------
 
 /// RAII guard that decrements the room's session count when dropped.
 ///
-/// Returned by [`RoomHandle::join_session`].  When the last guard is dropped,
-/// [`WsHub::remove_room`] will remove the room from the registry.
+/// Returned by [`crate::infra::transport::ws::WsHub::join_room`] and handed
+/// back to [`crate::infra::transport::ws::WsHub::leave_room`], which drops it
+/// and disposes the room when it was the last session.
 pub struct SessionGuard {
     count: Arc<AtomicUsize>,
 }
@@ -206,7 +228,7 @@ impl Drop for SessionGuard {
 /// from async contexts are safe without `await`.
 pub struct RoomHandle {
     cmd_tx: mpsc::UnboundedSender<RoomCmd>,
-    broadcast_tx: broadcast::Sender<String>,
+    broadcast_tx: broadcast::Sender<RoomBroadcast>,
     session_count: Arc<AtomicUsize>,
     /// Shared room state — readable without going through the actor.
     state: Arc<RwLock<Value>>,
@@ -238,11 +260,12 @@ impl RoomHandle {
 
     /// Subscribe to broadcasts from this room.
     ///
-    /// The receiver will receive all `state_patch` and `event` messages as
-    /// JSON strings.  If the subscriber falls behind by more than
+    /// The receiver gets every `state_patch` and `event` message with its
+    /// target; forward only those [`RoomBroadcast::is_for`] the session.  If
+    /// the subscriber falls behind by more than
     /// [`BROADCAST_CAPACITY`] messages, it receives a
     /// [`broadcast::error::RecvError::Lagged`] error.
-    pub fn subscribe(&self) -> broadcast::Receiver<String> {
+    pub fn subscribe(&self) -> broadcast::Receiver<RoomBroadcast> {
         self.broadcast_tx.subscribe()
     }
 
@@ -264,8 +287,9 @@ impl RoomHandle {
 
     /// Register a new session and return a guard that auto-decrements on drop.
     ///
-    /// Drop the returned [`SessionGuard`] when the WS connection closes.
-    pub fn join_session(&self) -> SessionGuard {
+    /// Crate-internal: sockets join through [`crate::infra::transport::ws::WsHub::join_room`],
+    /// which holds the registry lock so a join can never race the room's disposal.
+    pub(crate) fn join_session(&self) -> SessionGuard {
         self.session_count.fetch_add(1, Ordering::Relaxed);
         SessionGuard {
             count: self.session_count.clone(),
@@ -285,7 +309,7 @@ impl RoomHandle {
 /// Processes [`RoomCmd`] messages and drives the 33 ms tick loop.
 async fn run_room(
     mut cmd_rx: mpsc::UnboundedReceiver<RoomCmd>,
-    broadcast_tx: broadcast::Sender<String>,
+    broadcast_tx: broadcast::Sender<RoomBroadcast>,
     state: Arc<RwLock<Value>>,
     dirty: Arc<AtomicBool>,
 ) {
@@ -305,7 +329,7 @@ async fn run_room(
                         }
                         let snapshot = state.read().unwrap_or_else(|e| e.into_inner()).clone();
                         let msg = json!({ "type": "state_patch", "state": snapshot });
-                        let _ = broadcast_tx.send(msg.to_string());
+                        let _ = broadcast_tx.send(RoomBroadcast::all(msg.to_string()));
                     }
 
                     Some(RoomCmd::PatchStateSilent { op, path, value }) => {
@@ -316,19 +340,8 @@ async fn run_room(
                     }
 
                     Some(RoomCmd::Emit { event, payload, to }) => {
-                        let (to_label, target_session) = match &to {
-                            EmitTarget::All => ("all", None),
-                            EmitTarget::Session(id) => ("session", Some(id.clone())),
-                            EmitTarget::Others(id) => ("others", Some(id.clone())),
-                        };
-                        let msg = json!({
-                            "type": "event",
-                            "event": event,
-                            "payload": payload,
-                            "to": to_label,
-                            "target_session": target_session,
-                        });
-                        let _ = broadcast_tx.send(msg.to_string());
+                        let msg = json!({ "type": "event", "event": event, "payload": payload });
+                        let _ = broadcast_tx.send(RoomBroadcast { text: msg.to_string().into(), to });
                     }
                 }
             }
@@ -338,7 +351,7 @@ async fn run_room(
                 if dirty.swap(false, Ordering::Relaxed) {
                     let snapshot = state.read().unwrap_or_else(|e| e.into_inner()).clone();
                     let msg = json!({ "type": "state_patch", "state": snapshot });
-                    let _ = broadcast_tx.send(msg.to_string());
+                    let _ = broadcast_tx.send(RoomBroadcast::all(msg.to_string()));
                 }
             }
         }
@@ -461,5 +474,38 @@ fn json_ptr_delete(root: &mut Value, path: &str) {
     }
     if let Value::Object(map) = cur {
         map.remove(*parts.last().unwrap());
+    }
+}
+
+// ---- Unit tests ------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_session_targeted_message_is_only_for_that_session() {
+        let b = RoomBroadcast { text: "{}".into(), to: EmitTarget::Session("s1".into()) };
+        assert!(b.is_for("s1"));
+        assert!(!b.is_for("s2"));
+    }
+
+    #[test]
+    fn an_others_message_skips_only_the_sender() {
+        let b = RoomBroadcast { text: "{}".into(), to: EmitTarget::Others("s1".into()) };
+        assert!(!b.is_for("s1"));
+        assert!(b.is_for("s2"));
+    }
+
+    #[tokio::test]
+    async fn an_emit_reaches_subscribers_with_its_target() {
+        let room = RoomHandle::spawn();
+        let mut rx = room.subscribe();
+        room.send_cmd(RoomCmd::Emit { event: "hi".into(), payload: json!({ "a": 1 }), to: EmitTarget::Session("s1".into()) });
+        let got = rx.recv().await.expect("broadcast");
+        assert!(got.is_for("s1") && !got.is_for("s2"));
+        let v: Value = serde_json::from_str(&got.text).unwrap();
+        assert_eq!(v["event"], "hi");
+        assert!(v.get("target_session").is_none(), "targets no longer travel to clients");
     }
 }

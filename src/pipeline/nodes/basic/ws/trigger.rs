@@ -91,8 +91,11 @@ pub fn definition() -> NodeDefinition {
             board, a multiplayer scene. `--room` scopes it to one room (empty = any), `--event` to one event name (empty = any); the \
             same `--auth-*` flags as `trigger.webhook` guard the connection. The payload is `{ room_id, session_id, event, payload }` \
             — what the client sent is `input.payload`, not `input`. Answer with `ws.emit` (to the room or one session) or \
-            `ws.sync_state` (shared state every client mirrors); a `web.response` here answers nobody. The client side is \
-            `useSocket` / `useRoom` from `zeb/react` (help topic `web/hooks`)."
+            `ws.sync_state` (shared state every client mirrors); a `web.response` here answers nobody. The server raises \
+            `$connect` and `$disconnect` (payload `{ reason }`) on each connection's ordered queue — only `--event $connect` / \
+            `--event $disconnect` receive them, and clients cannot send `$` events. The client is a plain `WebSocket` to \
+            `/ws/{owner}/{project}/rooms/{room}` receiving `joined`, `state_patch`, `event` and `resync` \
+            (help topic `pipeline/examples/realtime-game`)."
             .to_string(),
         input_schema: json!({
             "type": "object",

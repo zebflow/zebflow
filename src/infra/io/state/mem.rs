@@ -513,20 +513,21 @@ impl StateBus for MemStateBus {
             .map_err(|e| StateBusError::new("STATE_BUS_DURABLE", e.to_string()))?;
         let ns = Self::namespace(owner, project);
         let now = Self::now_unix();
-        // Read current value
-        let current: i64 = conn.query_row(
-            "SELECT value FROM kv WHERE namespace = ?1 AND key = ?2 AND (expires_at IS NULL OR expires_at > ?3)",
+        // Read the current value and its expiry together: a live key keeps its
+        // TTL (an incr used to write NULL and make it permanent).
+        let (current, expires_at): (i64, Option<i64>) = conn.query_row(
+            "SELECT value, expires_at FROM kv WHERE namespace = ?1 AND key = ?2 AND (expires_at IS NULL OR expires_at > ?3)",
             rusqlite::params![ns, key, now],
             |row| {
                 let s: String = row.get(0)?;
-                Ok(serde_json::from_str::<i64>(&s).unwrap_or(0))
+                Ok((serde_json::from_str::<i64>(&s).unwrap_or(0), row.get(1)?))
             },
-        ).unwrap_or(0);
+        ).unwrap_or((0, None));
         let new_val = current + amount;
         let json_str = new_val.to_string();
         conn.execute(
-            "INSERT OR REPLACE INTO kv (namespace, key, value, expires_at) VALUES (?1, ?2, ?3, NULL)",
-            rusqlite::params![ns, key, json_str],
+            "INSERT OR REPLACE INTO kv (namespace, key, value, expires_at) VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params![ns, key, json_str, expires_at],
         ).map_err(|e| StateBusError::new("STATE_BUS_DURABLE", e.to_string()))?;
         Ok(new_val)
     }
@@ -632,6 +633,20 @@ mod tests {
             other.try_recv().is_err(),
             "other project must not receive the message"
         );
+    }
+
+    #[tokio::test]
+    async fn durable_incr_keeps_a_live_keys_ttl() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let bus = MemStateBus::new_with_durable(dir.path().to_path_buf());
+        bus.durable_set("demo", "site-a", "hits", json!(1), Some(60)).expect("set");
+        assert_eq!(bus.durable_incr("demo", "site-a", "hits", 1).expect("incr"), 2);
+        let db = bus.db("demo", "site-a").expect("db");
+        let conn = db.lock().expect("lock");
+        let expires_at: Option<i64> = conn
+            .query_row("SELECT expires_at FROM kv WHERE key = 'hits'", [], |row| row.get(0))
+            .expect("row");
+        assert!(expires_at.is_some(), "incr must not make the key permanent");
     }
 
     #[tokio::test]
