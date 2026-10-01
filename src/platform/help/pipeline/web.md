@@ -122,7 +122,9 @@ The payload is `{ error_code, error_message, original_path, method }`.
 hash from `--hash`, routes to `true`/`false`, and passes the payload through
 unchanged. The submitted password is no longer in `input` after the query, so
 it is read from the trigger's own output, `$nodes.a.body.password`. `roles`
-must be an array — a `:public` claim that produces one stays one. The full
+must be an array — a `:public` claim that produces one stays one, as do
+objects and booleans; digits stay text, so an 18-digit NIM or NIP is never
+rounded into a number. The full
 recipe with registration: `help("pipeline/examples/cookie-jwt-auth")`.
 
 **Headers**

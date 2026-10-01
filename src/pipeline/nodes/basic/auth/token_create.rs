@@ -170,11 +170,16 @@ fn resolve_claim(val: &Value, _payload: &Value) -> Value {
 /// The value of a `:public` claim once the marker is removed. The marker made
 /// the flag an interpolated string, so a non-string the expression produced
 /// arrived as JSON text; it is read back so the claim keeps its type.
+///
+/// Only shapes that cannot be text are read back: arrays, objects, booleans
+/// and null. Digits stay text — once interpolated, a NIM, a NIP or a phone
+/// number looks exactly like a number, and reading `123456789012345678` back
+/// as one rounded it in every browser to `123456789012345680`.
 fn public_claim_value(stripped: &str) -> Value {
     let stripped = stripped.trim();
     serde_json::from_str::<Value>(stripped)
         .ok()
-        .filter(|v| !v.is_string())
+        .filter(|v| v.is_array() || v.is_object() || v.is_boolean() || v.is_null())
         .unwrap_or_else(|| Value::String(stripped.to_string()))
 }
 
@@ -188,8 +193,17 @@ mod tests {
         // `--claim "roles={{ input.roles }}:public"` interpolates the array to
         // `["admin"]`; the verifier needs `roles.as_array()` to succeed.
         assert_eq!(public_claim_value(r#"["admin","editor"]"#), json!(["admin", "editor"]));
-        assert_eq!(public_claim_value("42"), json!(42));
+        assert_eq!(public_claim_value(r#"{"unit":"705"}"#), json!({ "unit": "705" }));
         assert_eq!(public_claim_value("true"), json!(true));
+    }
+
+    #[test]
+    fn a_public_claim_of_digits_stays_text() {
+        // `--claim "identifier={{ input.identifier }}:public"` with an
+        // 18-digit NIP: read back as a number, every browser showed it rounded.
+        assert_eq!(public_claim_value("123456789012345678"), json!("123456789012345678"));
+        assert_eq!(public_claim_value("0812345678"), json!("0812345678"));
+        assert_eq!(public_claim_value("42"), json!("42"));
     }
 
     #[test]
