@@ -27,6 +27,8 @@ use crate::platform::model::slug_segment;
 pub const ADDRESSING_FILE: &str = "addressing.json";
 /// The suffix every dev host ends in.
 pub const DEV_HOST_SUFFIX: &str = ".localhost";
+/// The suffix every dev file host ends in.
+pub const DEV_FILE_HOST_SUFFIX: &str = ".fs.localhost";
 /// The prefix reserved for platform surfaces on a project host; an app route
 /// may not start with it.
 pub const RESERVED_PREFIX: &str = "/_";
@@ -195,16 +197,11 @@ pub struct Resolution {
 }
 
 impl Resolution {
-    /// The platform-form path this request is served as.
-    ///
-    /// `files` is the *public* files surface: `/_files/photos/a.webp` is the
-    /// object at `public/photos/a.webp`, so the store's `public/` folder is
-    /// inserted here and never written by a page.
+    /// The platform-form path this request is served as. `files` maps one to
+    /// one onto the store key: `/_files/photos/a.webp` is `photos/a.webp`,
+    /// readable only when the project's exposure rules say so.
     pub fn platform_path(&self) -> String {
-        let mut prefix = self.surface.platform_prefix(&self.owner, &self.project);
-        if self.surface == Surface::Files {
-            prefix.push_str("/public");
-        }
+        let prefix = self.surface.platform_prefix(&self.owner, &self.project);
         if self.rest == "/" {
             match self.surface {
                 Surface::Pages | Surface::Mcp => prefix,
@@ -238,6 +235,32 @@ impl AddressingService {
     /// The automatic host every project has: `<project>.<owner>.localhost`.
     pub fn dev_host(owner: &str, project: &str) -> String {
         format!("{}.{}{}", slug_segment(project), slug_segment(owner), DEV_HOST_SUFFIX)
+    }
+
+    /// The automatic file host every project has:
+    /// `<project>.<owner>.fs.localhost`. Its own origin, never the Studio's or
+    /// a page's, so nothing it serves shares their cookies
+    /// (`kinds/zebfs-acl` §Resolution).
+    pub fn dev_file_host(owner: &str, project: &str) -> String {
+        format!(
+            "{}.{}{}",
+            slug_segment(project),
+            slug_segment(owner),
+            DEV_FILE_HOST_SUFFIX
+        )
+    }
+
+    /// `(owner, project)` when the host is a dev file host.
+    pub fn parse_dev_file_host(host: &str) -> Option<(String, String)> {
+        let host = normalize_host(host);
+        let stem = host.strip_suffix(DEV_FILE_HOST_SUFFIX)?;
+        let mut parts = stem.split('.');
+        let project = parts.next()?;
+        let owner = parts.next()?;
+        if parts.next().is_some() || project.is_empty() || owner.is_empty() {
+            return None;
+        }
+        Some((owner.to_string(), project.to_string()))
     }
 
     /// `(owner, project)` when the host is a dev host, whether or not the
@@ -623,6 +646,17 @@ mod tests {
     }
 
     #[test]
+    fn the_dev_file_host_is_its_own_grammar() {
+        assert_eq!(AddressingService::dev_file_host("o", "p"), "p.o.fs.localhost");
+        assert_eq!(
+            AddressingService::parse_dev_file_host("p.o.fs.localhost:10610"),
+            Some(("o".to_string(), "p".to_string()))
+        );
+        assert_eq!(AddressingService::parse_dev_host("p.o.fs.localhost"), None);
+        assert_eq!(AddressingService::parse_dev_file_host("p.o.localhost"), None);
+    }
+
+    #[test]
     fn a_resolution_maps_to_the_platform_form() {
         let r = Resolution {
             owner: "o".into(),
@@ -632,7 +666,7 @@ mod tests {
             host: "p.o.localhost".into(),
             dev_host: true,
         };
-        assert_eq!(r.platform_path(), "/files/o/p/public/a.jpg", "the public surface adds the store's public/ folder");
+        assert_eq!(r.platform_path(), "/files/o/p/a.jpg", "a folder name never decides exposure");
         let r = Resolution { surface: Surface::Pages, rest: "/".into(), ..r };
         assert_eq!(r.platform_path(), "/wh/o/p");
         let r = Resolution { surface: Surface::Pages, rest: "/book?x=1".into(), ..r };

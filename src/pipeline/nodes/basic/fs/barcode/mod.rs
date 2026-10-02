@@ -9,7 +9,7 @@ use uuid::Uuid;
 
 use crate::pipeline::PipelineError;
 use crate::pipeline::model::{DslFlag, DslFlagKind, NodeFieldDef, NodeFieldType, SelectOptionDef};
-use crate::pipeline::nodes::shared::file_ref::{BACKEND_ZEBFS, FILE_REF_TYPE, LIFECYCLE_DURABLE};
+use crate::pipeline::nodes::shared::file_ref::{FILE_REF_TYPE, LIFECYCLE_DURABLE};
 use crate::pipeline::nodes::shared::util::filename_stem;
 use crate::platform::services::PlatformService;
 
@@ -38,16 +38,10 @@ pub fn save(platform: &PlatformService, out: Output<'_>) -> Result<Value, Pipeli
     let stem = out.filename.map(filename_stem).filter(|s| !s.is_empty()).unwrap_or_else(|| Uuid::new_v4().to_string());
     let name = format!("{stem}.{}", out.format);
     let rel = if folder.is_empty() { name.clone() } else { format!("{folder}/{name}") };
-    let dest = layout.local_files_dir()?.join(&rel);
-    if let Some(parent) = dest.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| err(format!("mkdir: {e}")))?;
-    }
-    let tmp = dest.with_extension(format!("{}.tmp", out.format));
-    std::fs::write(&tmp, &out.bytes).map_err(|e| err(format!("write: {e}")))?;
-    std::fs::rename(&tmp, &dest).map_err(|e| err(format!("rename: {e}")))?;
+    layout.open_files().put(&rel, &out.bytes).map_err(|e| err(format!("write: {e}")))?;
     Ok(json!({
         "__zf_type": FILE_REF_TYPE,
-        "backend": BACKEND_ZEBFS,
+        "backend": layout.file_backend().as_str(),
         "ref": rel,
         "filename": name,
         "mime": if out.format == "svg" { "image/svg+xml" } else { "image/png" },

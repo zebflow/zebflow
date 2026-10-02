@@ -13,6 +13,7 @@ use pdfwrangler::{ExportOptions, export_document};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
+use crate::pipeline::nodes::shared::store_scratch::StoreScratch;
 use crate::pipeline::nodes::shared::file_ref::zebfs_rel_path_or_string;
 use crate::pipeline::nodes::shared::util::{metadata_scope, resolve_path};
 use crate::pipeline::model::NodeCapability;
@@ -320,18 +321,27 @@ impl NodeHandler for Node {
             .ensure_project_layout(owner, project)
             .map_err(|err| PipelineError::new("FW_NODE_PDF_CONVERT", err.to_string()))?;
 
-        let abs_path = layout.local_files_dir()?.join(&rel_path);
-        if !abs_path.is_file() {
-            return Err(PipelineError::new(
-                "FW_NODE_PDF_CONVERT",
-                format!("source PDF not found: {rel_path}"),
-            ));
+        // pdfium speaks paths and the project's files live in its one active
+        // store: the PDF is pulled into a scratch folder, exported there, and
+        // the export is put back into the store.
+        let zebfs = layout.open_files();
+        let scratch = StoreScratch::new("FW_NODE_PDF_CONVERT")?;
+        match zebfs.head(&rel_path) {
+            Ok(stat) if stat.kind == crate::zebfs::ZebFsEntryKind::Object => {}
+            _ => {
+                return Err(PipelineError::new(
+                    "FW_NODE_PDF_CONVERT",
+                    format!("source PDF not found: {rel_path}"),
+                ));
+            }
         }
+        let abs_path = scratch.pull(&zebfs, &rel_path)?;
 
         validate_pdf_magic(&abs_path)?;
 
         let output_rel_dir = resolve_output_dir(&self.config.output_dir, &rel_path);
-        let output_root = layout.local_files_dir()?.join(&output_rel_dir);
+        let output_root = scratch.path().join(".zf-out");
+        let output_root_local = output_root.clone();
 
         let options = ExportOptions {
             emit_fulltext: self.config.emit_fulltext,
@@ -352,6 +362,7 @@ impl NodeHandler for Node {
             )
         })?
         .map_err(|err| PipelineError::new("FW_NODE_PDF_CONVERT", err.to_string()))?;
+        scratch.push_tree(&zebfs, &output_root_local, &output_rel_dir)?;
 
         let pages = manifest
             .pages
@@ -463,7 +474,7 @@ fn validate_pdf_magic(path: &PathBuf) -> Result<(), PipelineError> {
     if !bytes.starts_with(b"%PDF-") {
         return Err(PipelineError::new(
             "FW_NODE_PDF_CONVERT",
-            format!("source file is not a PDF: {}", path.display()),
+            "source file is not a PDF".to_string(),
         ));
     }
     Ok(())

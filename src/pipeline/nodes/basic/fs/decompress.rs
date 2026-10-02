@@ -10,6 +10,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
+use crate::pipeline::nodes::shared::store_scratch::StoreScratch;
 use crate::pipeline::nodes::shared::file_ref::zebfs_rel_path_or_string;
 use crate::pipeline::nodes::shared::util::{metadata_scope, resolve_path};
 use crate::pipeline::model::NodeCapability;
@@ -256,16 +257,24 @@ impl NodeHandler for Node {
             .ensure_project_layout(owner, project)
             .map_err(|err| PipelineError::new("FW_NODE_FILE_DECOMPRESS", err.to_string()))?;
 
-        let source_abs = layout.local_files_dir()?.join(&source_rel);
-        if !source_abs.is_file() {
-            return Err(PipelineError::new(
-                "FW_NODE_FILE_DECOMPRESS",
-                format!("source archive not found: {source_rel}"),
-            ));
+        // tar speaks paths and the project's files live in its one active
+        // store: the archive is pulled into a scratch folder, extracted and
+        // checked there, and only the checked files are put into the store.
+        let zebfs = layout.open_files();
+        let scratch = StoreScratch::new("FW_NODE_FILE_DECOMPRESS")?;
+        match zebfs.head(&source_rel) {
+            Ok(stat) if stat.kind == crate::zebfs::ZebFsEntryKind::Object => {}
+            _ => {
+                return Err(PipelineError::new(
+                    "FW_NODE_FILE_DECOMPRESS",
+                    format!("source archive not found: {source_rel}"),
+                ));
+            }
         }
+        let source_abs = scratch.pull(&zebfs, &source_rel)?;
 
         let output_rel = resolve_output_dir(&self.config.output_dir, &source_rel);
-        let output_abs = layout.local_files_dir()?.join(&output_rel);
+        let output_abs = scratch.path().join(".zf-extract");
         std::fs::create_dir_all(&output_abs).map_err(|err| {
             PipelineError::new(
                 "FW_NODE_FILE_DECOMPRESS",
@@ -298,6 +307,8 @@ impl NodeHandler for Node {
             )
         })??;
 
+        scratch.push_tree(&zebfs, &output_abs, &output_rel)?;
+
         let full_entries: Vec<String> = entries
             .into_iter()
             .map(|entry| prefixed_output_path(&output_rel, &entry))
@@ -311,7 +322,7 @@ impl NodeHandler for Node {
 
         // Delete source archive after successful extraction.
         if self.config.delete_source {
-            let _ = std::fs::remove_file(&source_abs);
+            let _ = zebfs.delete(&source_rel);
         }
 
         let output = DecompressOutput {

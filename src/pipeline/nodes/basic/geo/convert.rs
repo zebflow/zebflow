@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::pipeline::nodes::shared::file_ref::zebfs_rel_path_or_string;
+use crate::pipeline::nodes::shared::store_scratch::StoreScratch;
 use crate::pipeline::nodes::shared::util::metadata_scope;
 use crate::pipeline::model::NodeCapability;
 use crate::pipeline::{
@@ -284,23 +285,31 @@ impl NodeHandler for Node {
             .ensure_project_layout(owner, project)
             .map_err(|err| PipelineError::new("FW_NODE_GEO_CONVERT", err.to_string()))?;
 
-        let input_abs = layout.local_files_dir()?.join(&input_rel);
-        if !input_abs.exists() {
-            return Err(PipelineError::new(
+        // GDAL speaks paths and the project's files live in its one active
+        // store: the input (and its sidecar files) is pulled into a scratch
+        // folder, converted there, and every file written is put back.
+        let zebfs = layout.open_files();
+        let scratch = StoreScratch::new("FW_NODE_GEO_CONVERT")?;
+        let input_abs = scratch.pull_with_siblings(&zebfs, &input_rel).map_err(|_| {
+            PipelineError::new(
                 "FW_NODE_GEO_CONVERT",
                 format!("input file not found: {input_rel}"),
-            ));
-        }
+            )
+        })?;
 
-        let output_abs = layout.local_files_dir()?.join(&output_rel);
-        if let Some(parent) = output_abs.parent() {
-            std::fs::create_dir_all(parent).map_err(|err| {
-                PipelineError::new(
-                    "FW_NODE_GEO_CONVERT",
-                    format!("creating output directory: {err}"),
-                )
-            })?;
-        }
+        let output_dir_local = scratch.path().join(".zf-out");
+        let output_leaf = output_rel.rsplit('/').next().unwrap_or(&output_rel).to_string();
+        let output_parent_rel = output_rel
+            .rsplit_once('/')
+            .map(|(parent, _)| parent.to_string())
+            .unwrap_or_default();
+        std::fs::create_dir_all(&output_dir_local).map_err(|err| {
+            PipelineError::new(
+                "FW_NODE_GEO_CONVERT",
+                format!("creating output directory: {err}"),
+            )
+        })?;
+        let output_abs = output_dir_local.join(&output_leaf);
 
         let to_crs = parse_optional_crs(&self.config.to_crs)?;
         let layer = if self.config.layer.trim().is_empty() {
@@ -339,6 +348,7 @@ impl NodeHandler for Node {
             )
         })?
         .map_err(|err| PipelineError::new("FW_NODE_GEO_CONVERT", err.to_string()))?;
+        scratch.push_tree(&zebfs, &output_dir_local, &output_parent_rel)?;
 
         Ok(NodeExecutionOutput {
             output_pins: vec![OUTPUT_PIN_OUT.to_string()],

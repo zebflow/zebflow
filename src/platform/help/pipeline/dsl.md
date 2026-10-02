@@ -459,8 +459,8 @@ or by any `fs.*` node. `fs.save` keeps an uploaded file:
 
 ```
 | trigger.webhook --path /upload --method POST
-| fs.save --field photo --folder public/uploads --allowed-kinds images --max-size 10
-| fs.image.thumbnail --width 320 --height 320 --fit cover --format webp --folder public/thumbs
+| fs.save --field photo --folder uploads --allowed-kinds images --max-size 10
+| fs.image.thumbnail --width 320 --height 320 --fit cover --format webp --folder thumbs
 ```
 
 `fs.save` adds `saved` — a durable FileRef and nothing else (`__zf_type`,
@@ -472,15 +472,19 @@ itself) adds `thumbnail` (a FileRef); the form's other fields
 (`input.body.caption`) stay beside them. `fs.put`, `fs.copy`, `fs.move`
 (their `object` under `fs`) and `fs.compress` (`compressed`) answer a stored
 file the same way: a bare FileRef. Store `ref` in a row; a URL is not a
-node's business — a page derives it from the folder (below).
-Anything under `public/` is served anonymously at
-`/files/{owner}/{project}/<path>`; everything else is private. The Studio
-(a preview cell, an input widget, the Files page) and an MCP session read any
-object, private or public, at
+node's business.
+
+**Every file is private** until the owner exposes its folder in Studio →
+Files (`PUT /api/projects/{owner}/{project}/files/access`); no folder name and
+no node can do it. `public_read` makes a folder readable on the project's file
+host (`<project>.<owner>.fs.localhost/<path>` on a dev machine), always inert:
+scripts in it never run as a page there. `public_execute` serves a folder as a
+site — a generated static site, say — with scripts running, only on the
+addresses listed in its `serve`. The Studio (a preview cell, an input widget,
+the Files page) and an MCP session read any object, private or exposed, at
 `GET /api/projects/{owner}/{project}/files/object?ref=<path>` with the
-session — `/fs/{owner}/{project}/<path>` is a public surface for sites, off
-until Settings → Addressing turns it on. Table files (`table.convert`,
-`table.query`) and map layers (`ms.*`) follow the same convention.
+session. Table files (`table.convert`, `table.query`) and map layers (`ms.*`)
+follow the same rules.
 
 **Provider APIs.** An image, video or speech provider (Runware, fal,
 Replicate, ElevenLabs) is called with a **Secure Request** credential. The

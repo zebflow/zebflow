@@ -8,6 +8,7 @@
 //! `input.files` as FileRef metadata.
 
 pub(crate) mod embedded;
+mod file_host;
 mod webhook_url;
 mod ws_room;
 
@@ -122,7 +123,6 @@ const SESSION_COOKIE_NAME: &str = "zebflow_session";
 const SESSION_TTL_SECS: i64 = 86_400;
 /// Shared internal auth header for the first controller/office control-plane slice.
 const INTERNAL_CLUSTER_TOKEN_HEADER: &str = "x-zebflow-cluster-token";
-const PUBLIC_FS_PROXY_HEADER: &str = "x-zebflow-public-fs-proxy";
 
 const BRAND_LOGO_SVG: &[u8] = include_bytes!("assets/branding/logo.svg");
 const BRAND_LOGO_PNG: &[u8] = include_bytes!("assets/branding/logo.png");
@@ -439,17 +439,23 @@ pub async fn router(platform: Arc<PlatformService>) -> Router {
             "/static/{owner}/{project}/_rwe/lib/{*path}",
             get(project_scoped_library_asset),
         )
-        .route("/static/{owner}/{project}/{*path}", get(project_asset))
+        .route(
+            "/static/{owner}/{project}/{*path}",
+            get(project_asset).layer(axum::middleware::map_response(harden_byte_response)),
+        )
         .route("/assets/libraries/{*path}", get(library_asset))
         .route(
             "/p/{owner}/{project}/assets/{*path}",
-            get(project_static_asset),
+            get(project_static_asset).layer(axum::middleware::map_response(harden_byte_response)),
         )
         .route(
             "/files/{owner}/{project}/{*path}",
-            get(project_legacy_file_serve),
+            get(project_legacy_file_serve).layer(axum::middleware::map_response(harden_byte_response)),
         )
-        .route("/fs/{owner}/{project}/{*path}", get(project_fs_serve))
+        .route(
+            "/fs/{owner}/{project}/{*path}",
+            get(project_fs_serve).layer(axum::middleware::map_response(harden_byte_response)),
+        )
         .route("/login", get(login_page).post(login_submit))
         .route("/logout", post(logout_submit))
         .route("/home", get(home_page))
@@ -870,7 +876,7 @@ pub async fn router(platform: Arc<PlatformService>) -> Router {
         )
         .route(
             "/api/projects/{owner}/{project}/files/object",
-            get(api_files_object),
+            get(api_files_object).layer(axum::middleware::map_response(harden_preview_response)),
         )
         .route(
             "/api/projects/{owner}/{project}/files/mkdir",
@@ -888,6 +894,10 @@ pub async fn router(platform: Arc<PlatformService>) -> Router {
         .route(
             "/api/projects/{owner}/{project}/files/access",
             put(api_files_access).post(api_files_access_form),
+        )
+        .route(
+            "/api/projects/{owner}/{project}/files/exposure",
+            get(api_files_exposure),
         )
         .route(
             "/api/projects/{owner}/{project}/credential-types",
@@ -1385,9 +1395,37 @@ async fn addressing_gate(
         .and_then(|v| v.to_str().ok())
         .map(str::to_string)
         .or_else(|| request.uri().authority().map(|a| a.to_string()));
+    // The project's file host answers stored files and nothing else — no
+    // page, no API, no cookie (kinds/zebfs-acl §Resolution).
+    if let Some(host) = host.as_deref()
+        && let Some((owner, project)) =
+            crate::platform::services::addressing::AddressingService::parse_dev_file_host(host)
+    {
+        if request.method() != Method::GET && request.method() != Method::HEAD {
+            return StatusCode::METHOD_NOT_ALLOWED.into_response();
+        }
+        return file_host::file_host_response(&state, &owner, &project, &path).await;
+    }
     if let Some(host) = host
         && let Some(resolution) = state.platform.addressing.resolve(&host, &path)
     {
+        // A host a `public_execute` folder names in `serve` answers only that
+        // folder, at `/`, with scripts running (kinds/zebfs-acl §Resolution).
+        let request_host = crate::platform::services::addressing::normalize_host(&host);
+        let request_port = host
+            .rsplit_once(':')
+            .map(|(_, port)| port)
+            .filter(|port| port.bytes().all(|b| b.is_ascii_digit()));
+        if let Some(response) = file_host::execute_site_response(
+            &state,
+            &resolution.owner,
+            &resolution.project,
+            &request_host,
+            request_port,
+            &path,
+        ) {
+            return response;
+        }
         // The platform forms for this very project stay valid on its host:
         // pages emit `/static/{o}/{p}/_rwe/…` and the Studio's API lives at
         // `/api/projects/{o}/{p}/…`; neither is an app path.
@@ -2656,211 +2694,53 @@ async fn project_static_asset(
     resp
 }
 
-/// Legacy route: GET /files/{owner}/{project}/{*path}
+/// Route: GET /files/{owner}/{project}/{*path} and GET /fs/{owner}/{project}/{*path}
 ///
-/// Keeps the older public/private convention:
-/// - `public/*` can be read anonymously;
-/// - every other path requires project `FilesRead`.
-///
-/// The newer `/fs/{owner}/{project}/{*path}` route remains private-by-default.
+/// Both are the ZebFS gateway under an older address: the project's exposure
+/// rules decide, never a folder name and never the session cookie, and the
+/// answer is inert (`file_host`). The project's own file host is the address
+/// to use; these remain until the URLs nodes answer are moved to it.
 async fn project_legacy_file_serve(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
     Path((owner, project, path)): Path<(String, String, String)>,
     uri: Uri,
 ) -> Response {
-    let valid_segment = |value: &str| {
-        value
-            .bytes()
-            .all(|ch| ch.is_ascii_alphanumeric() || ch == b'-' || ch == b'_')
-    };
-    if !valid_segment(&owner) || !valid_segment(&project) {
-        return (StatusCode::BAD_REQUEST, "invalid project scope").into_response();
-    }
-
-    let normalized = path.trim_start_matches('/').replace('\\', "/");
-    if normalized.is_empty() || normalized.contains("..") {
-        return (StatusCode::BAD_REQUEST, "invalid object path").into_response();
-    }
-
-    if !normalized.starts_with("public/")
-        && let Err(response) = require_project_api_capability(
-            &state,
-            &headers,
-            &owner,
-            &project,
-            ProjectCapability::FilesRead,
-        )
-    {
-        return response;
-    }
-
-    if let Ok(Some(worker_id)) = remote_project_worker_id(&state, &owner, &project) {
-        return match forward_project_api_request_to_worker(
-            &state,
-            &uri,
-            &Method::GET,
-            &headers,
-            Bytes::new(),
-            &worker_id,
-        )
-        .await
-        {
-            Ok(response) => response,
-            Err(err) => internal_error(err),
-        };
-    }
-
-    let layout = match state.platform.file.ensure_project_layout(&owner, &project) {
-        Ok(layout) => layout,
-        Err(err) => return internal_error(err),
-    };
-    let zebfs = layout.open_files();
-    // A local store's object must resolve inside the store's directory. A
-    // bucket has no path to check; its keys are its own.
-    let abs_path = match zebfs.local_path(&normalized) {
-        Ok(resolved) => resolved,
-        Err(err) if err.code == "ZEBFS_INVALID_PATH" => {
-            return (StatusCode::BAD_REQUEST, "invalid object path").into_response();
-        }
-        Err(err) => return internal_error(PlatformError::new(err.code, err.message)),
-    };
-    if let Some(abs_path) = abs_path
-        && let Ok(abs_canonical) = std::fs::canonicalize(&abs_path)
-    {
-        let root_canonical =
-            std::fs::canonicalize(&layout.files_dir).unwrap_or_else(|_| layout.files_dir.clone());
-        if !abs_canonical.starts_with(&root_canonical) {
-            return (StatusCode::BAD_REQUEST, "invalid object path").into_response();
-        }
-    }
-    let object = match zebfs.get(&normalized) {
-        Ok(object) => object,
-        Err(err) if err.code == "ZEBFS_NOT_FOUND" => {
-            return (StatusCode::NOT_FOUND, "object not found").into_response();
-        }
-        Err(err) if err.code == "ZEBFS_INVALID_PATH" => {
-            return (StatusCode::BAD_REQUEST, "invalid object path").into_response();
-        }
-        Err(err) => return internal_error(PlatformError::new(err.code, err.message)),
-    };
-
-    let mut resp = Response::new(Body::from(object.bytes));
-    *resp.status_mut() = StatusCode::OK;
-    let content_type = content_type_for_path(FsPath::new(&object.path));
-    if let Ok(v) = HeaderValue::from_str(content_type) {
-        resp.headers_mut().insert(CONTENT_TYPE, v);
-    }
-    if normalized.starts_with("public/") {
-        resp.headers_mut().insert(
-            CACHE_CONTROL,
-            HeaderValue::from_static("public, max-age=300"),
-        );
-    } else if let Ok(v) = HeaderValue::from_str("no-cache") {
-        resp.headers_mut().insert(CACHE_CONTROL, v);
-    }
-    resp
+    gateway_route(&state, &headers, &owner, &project, &path, &uri).await
 }
 
-/// Route: GET /fs/{owner}/{project}/{*path}
-/// Serves one object from the project default ZebFS namespace.
+/// Route: GET /fs/{owner}/{project}/{*path} — see [`project_legacy_file_serve`].
 async fn project_fs_serve(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
-    Query(params): Query<std::collections::HashMap<String, String>>,
     Path((owner, project, path)): Path<(String, String, String)>,
     uri: Uri,
+) -> Response {
+    gateway_route(&state, &headers, &owner, &project, &path, &uri).await
+}
+
+async fn gateway_route(
+    state: &PlatformAppState,
+    headers: &HeaderMap,
+    owner: &str,
+    project: &str,
+    path: &str,
+    uri: &Uri,
 ) -> Response {
     let valid_segment = |value: &str| {
         value
             .bytes()
             .all(|ch| ch.is_ascii_alphanumeric() || ch == b'-' || ch == b'_')
     };
-    if !valid_segment(&owner) || !valid_segment(&project) {
+    if !valid_segment(owner) || !valid_segment(project) {
         return (StatusCode::BAD_REQUEST, "invalid project scope").into_response();
     }
-
-    let public_proxy_request = is_controller_call(&state, &headers)
-        && headers
-            .get(PUBLIC_FS_PROXY_HEADER)
-            .and_then(|value| value.to_str().ok())
-            .map(|value| value == "1")
-            .unwrap_or(false);
-    if let Ok(Some(worker_id)) = remote_project_worker_id(&state, &owner, &project) {
-        match require_project_api_capability(
-            &state,
-            &headers,
-            &owner,
-            &project,
-            ProjectCapability::FilesRead,
-        ) {
-            Ok(_) => {
-                return match forward_project_api_request_to_worker(
-                    &state,
-                    &uri,
-                    &Method::GET,
-                    &headers,
-                    Bytes::new(),
-                    &worker_id,
-                )
-                .await
-                {
-                    Ok(response) => response,
-                    Err(err) => internal_error(err),
-                };
-            }
-            Err(_) => {
-                let mut public_headers = headers.clone();
-                public_headers.insert(PUBLIC_FS_PROXY_HEADER, HeaderValue::from_static("1"));
-                return match forward_project_api_request_to_worker(
-                    &state,
-                    &uri,
-                    &Method::GET,
-                    &public_headers,
-                    Bytes::new(),
-                    &worker_id,
-                )
-                .await
-                {
-                    Ok(response) => response,
-                    Err(err) => internal_error(err),
-                };
-            }
-        }
-    }
-
-    let layout = match state.platform.file.ensure_project_layout(&owner, &project) {
-        Ok(layout) => layout,
-        Err(err) => return internal_error(err),
-    };
-    let zebfs = layout.open_files();
-    let is_public = match crate::platform::services::zebfs_acl::is_public_read(&zebfs, &path) {
-        Ok(value) => value,
-        Err(err) if err.code == "ZEBFS_INVALID_PATH" || err.code == "ZEBFS_RESERVED_PATH" => {
-            return (StatusCode::BAD_REQUEST, "invalid object path").into_response();
-        }
-        Err(err) => return internal_error(PlatformError::new(err.code, err.message)),
-    };
-    if !is_public {
-        if public_proxy_request {
-            return StatusCode::UNAUTHORIZED.into_response();
-        }
-        if let Err(response) = require_project_api_capability(
-            &state,
-            &headers,
-            &owner,
-            &project,
-            ProjectCapability::FilesRead,
-        ) {
-            return response;
-        }
-    }
-    if let Ok(Some(worker_id)) = remote_project_worker_id(&state, &owner, &project) {
+    if let Ok(Some(worker_id)) = remote_project_worker_id(state, owner, project) {
         return match forward_project_api_request_to_worker(
-            &state,
-            &uri,
+            state,
+            uri,
             &Method::GET,
-            &headers,
+            headers,
             Bytes::new(),
             &worker_id,
         )
@@ -2870,40 +2750,7 @@ async fn project_fs_serve(
             Err(err) => internal_error(err),
         };
     }
-
-    let object = match zebfs.get(&path) {
-        Ok(object) => object,
-        Err(err) if err.code == "ZEBFS_NOT_FOUND" => {
-            return (StatusCode::NOT_FOUND, "object not found").into_response();
-        }
-        Err(err) if err.code == "ZEBFS_INVALID_PATH" => {
-            return (StatusCode::BAD_REQUEST, "invalid object path").into_response();
-        }
-        Err(err) => return internal_error(PlatformError::new(err.code, err.message)),
-    };
-
-    let mut resp = Response::new(Body::from(object.bytes));
-    *resp.status_mut() = StatusCode::OK;
-    let content_type = content_type_for_path(FsPath::new(&object.path));
-    if let Ok(v) = HeaderValue::from_str(content_type) {
-        resp.headers_mut().insert(CONTENT_TYPE, v);
-    }
-    let download_requested = query_flag_enabled(params.get("download").map(String::as_str));
-    if let Some(disposition) =
-        file_content_disposition(FsPath::new(&object.path), content_type, download_requested)
-    {
-        resp.headers_mut().insert(CONTENT_DISPOSITION, disposition);
-    }
-    if is_public {
-        resp.headers_mut().insert(
-            axum::http::header::CACHE_CONTROL,
-            HeaderValue::from_static("public, max-age=300"),
-        );
-    } else if let Ok(v) = HeaderValue::from_str("no-cache") {
-        resp.headers_mut()
-            .insert(axum::http::header::CACHE_CONTROL, v);
-    }
-    resp
+    file_host::file_host_response(state, owner, project, path).await
 }
 
 fn asset_response(content_type: &'static str, bytes: &[u8]) -> Response {
@@ -2915,58 +2762,85 @@ fn asset_response(content_type: &'static str, bytes: &[u8]) -> Response {
     resp
 }
 
-fn query_flag_enabled(value: Option<&str>) -> bool {
+
+
+/// Makes a response carrying stored or repository bytes inert as a page.
+///
+/// Applied to every route that hands back such bytes, after the handler and
+/// after a worker's forwarded answer alike. The browser may not guess a type;
+/// a document opened from the bytes gets a sandboxed, origin-less context with
+/// no script and no cookies; and the active document types (HTML, SVG, XML)
+/// download instead of rendering. Use as a subresource — `<img>`, `<script
+/// src>`, a stylesheet — is unaffected. PDF keeps its viewer: the sandbox
+/// would block it, and its scripts never run on this origin.
+async fn harden_byte_response(mut resp: Response) -> Response {
+    let headers = resp.headers_mut();
+    headers.insert(
+        "x-content-type-options",
+        HeaderValue::from_static("nosniff"),
+    );
+    let content_type = headers
+        .get(CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    if !content_type.starts_with("application/pdf") {
+        headers.insert(
+            axum::http::header::CONTENT_SECURITY_POLICY,
+            HeaderValue::from_static("sandbox"),
+        );
+    }
+    if is_active_document_type(&content_type) {
+        let disposition = headers
+            .get(CONTENT_DISPOSITION)
+            .and_then(|value| value.to_str().ok())
+            .map(|value| match value.strip_prefix("inline") {
+                Some(rest) => format!("attachment{rest}"),
+                None => value.to_string(),
+            })
+            .unwrap_or_else(|| "attachment".to_string());
+        if let Ok(value) = HeaderValue::from_str(&disposition) {
+            headers.insert(CONTENT_DISPOSITION, value);
+        }
+    }
+    resp
+}
+
+/// The Studio's own preview read: as inert as [`harden_byte_response`], but an
+/// HTML document stays inline so the preview dialog can show it — the sandbox
+/// already leaves it without script, cookies or an origin.
+async fn harden_preview_response(mut resp: Response) -> Response {
+    let headers = resp.headers_mut();
+    headers.insert(
+        "x-content-type-options",
+        HeaderValue::from_static("nosniff"),
+    );
+    let is_pdf = headers
+        .get(CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value.to_ascii_lowercase().starts_with("application/pdf"));
+    if !is_pdf {
+        headers.insert(
+            axum::http::header::CONTENT_SECURITY_POLICY,
+            HeaderValue::from_static("sandbox"),
+        );
+    }
+    resp
+}
+
+/// Document types a browser renders as a page that can carry script.
+fn is_active_document_type(content_type: &str) -> bool {
+    let essence = content_type.split(';').next().unwrap_or("").trim();
     matches!(
-        value.map(str::trim),
-        Some("1")
-            | Some("true")
-            | Some("TRUE")
-            | Some("yes")
-            | Some("YES")
-            | Some("on")
-            | Some("ON")
+        essence,
+        "text/html"
+            | "application/xhtml+xml"
+            | "image/svg+xml"
+            | "application/xml"
+            | "text/xml"
     )
 }
 
-fn file_content_disposition(
-    path: &FsPath,
-    content_type: &'static str,
-    download_requested: bool,
-) -> Option<HeaderValue> {
-    let file_name = path.file_name()?.to_string_lossy().replace('"', "");
-    let disposition_kind = if download_requested {
-        "attachment"
-    } else if is_inline_file_content_type(content_type) {
-        "inline"
-    } else {
-        return None;
-    };
-    HeaderValue::from_str(&format!("{disposition_kind}; filename=\"{file_name}\"")).ok()
-}
-
-fn is_inline_file_content_type(content_type: &str) -> bool {
-    matches!(
-        content_type,
-        "text/javascript; charset=utf-8"
-            | "application/json; charset=utf-8"
-            | "application/geo+json; charset=utf-8"
-            | "application/xml; charset=utf-8"
-            | "text/css; charset=utf-8"
-            | "image/svg+xml; charset=utf-8"
-            | "image/png"
-            | "image/jpeg"
-            | "image/gif"
-            | "image/webp"
-            | "image/x-icon"
-            | "application/pdf"
-            | "video/mp4"
-            | "audio/mpeg"
-            | "text/plain; charset=utf-8"
-            | "text/csv; charset=utf-8"
-            | "text/markdown; charset=utf-8"
-            | "application/yaml; charset=utf-8"
-    )
-}
 
 async fn login_page(State(state): State<PlatformAppState>) -> Response {
     match render_login_page(&state, None, StatusCode::OK) {
@@ -6659,7 +6533,8 @@ async fn render_files_page(
                                     let path = entry.path;
                                     let access =
                                         crate::platform::services::zebfs_acl::effective_access(
-                                            &zebfs, &path,
+                                            &layout.data_store_dir(),
+                                            &path,
                                         )
                                         .map(|value| value.as_str())
                                         .unwrap_or("private");
@@ -6668,7 +6543,7 @@ async fn render_files_page(
                                             "name": name,
                                             "path": path,
                                             "access": access,
-                                            "public": access == "public_read",
+                                            "public": access != "private",
                                             "protected": false,
                                         }));
                                     } else {
@@ -6685,7 +6560,7 @@ async fn render_files_page(
                                             "size": entry.size,
                                             "modified": modified,
                                             "access": access,
-                                            "public": access == "public_read",
+                                            "public": access != "private",
                                             "url": studio_file_object_url(&owner, &project, &path),
                                         }));
                                     }
@@ -6749,6 +6624,7 @@ async fn render_files_page(
                     "upload": format!("/api/projects/{owner}/{project}/files/upload"),
                     "rm":    format!("/api/projects/{owner}/{project}/files/rm"),
                     "access": format!("/api/projects/{owner}/{project}/files/access"),
+                    "exposure": format!("/api/projects/{owner}/{project}/files/exposure"),
                 },
                 "browser": {
                     "path": rel_path,
@@ -7930,6 +7806,8 @@ fn bearer_token_from_headers(headers: &HeaderMap) -> Option<String> {
 fn content_type_for_path(path: &FsPath) -> &'static str {
     match path.extension().and_then(|ext| ext.to_str()) {
         Some("mjs") | Some("js") => "text/javascript; charset=utf-8",
+        Some("html") | Some("htm") => "text/html; charset=utf-8",
+        Some("xhtml") => "application/xhtml+xml; charset=utf-8",
         Some("json") => "application/json; charset=utf-8",
         Some("geojson") => "application/geo+json; charset=utf-8",
         Some("xml") => "application/xml; charset=utf-8",
@@ -15051,6 +14929,55 @@ async fn api_template_diagnostics(
 
 // ── File browser API ──────────────────────────────────────────────────────────
 
+/// GET /api/projects/{owner}/{project}/files/exposure
+///
+/// Every exposed rule with what it exposes today, plus the project's file host
+/// — what the Files page shows at the top so exposure is never quiet.
+async fn api_files_exposure(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((owner, project)): Path<(String, String)>,
+    uri: Uri,
+) -> Response {
+    if let Err(r) = require_project_api_capability(
+        &state,
+        &headers,
+        &owner,
+        &project,
+        ProjectCapability::FilesRead,
+    ) {
+        return r;
+    }
+    if let Ok(Some(worker_id)) = remote_project_worker_id(&state, &owner, &project) {
+        return match forward_project_api_request_to_worker(
+            &state,
+            &uri,
+            &Method::GET,
+            &headers,
+            Bytes::new(),
+            &worker_id,
+        )
+        .await
+        {
+            Ok(response) => response,
+            Err(err) => internal_error(err),
+        };
+    }
+    let layout = match state.platform.file.ensure_project_layout(&owner, &project) {
+        Ok(layout) => layout,
+        Err(err) => return internal_error(err),
+    };
+    match crate::platform::services::zebfs_acl::exposure(&layout.data_store_dir(), &layout.open_files()) {
+        Ok(rules) => Json(json!({
+            "ok": true,
+            "rules": rules,
+            "file_host": crate::platform::services::addressing::AddressingService::dev_file_host(&owner, &project),
+        }))
+        .into_response(),
+        Err(err) => internal_error(PlatformError::new(err.code, err.message)),
+    }
+}
+
 /// GET /api/projects/{owner}/{project}/files/list?path=uploads
 /// Returns folders and files at a given path inside files_dir.
 async fn api_files_list(
@@ -15111,7 +15038,7 @@ async fn api_files_list(
     for entry in entries {
         let name = entry.name;
         let path = entry.path;
-        let access = crate::platform::services::zebfs_acl::effective_access(&zebfs, &path)
+        let access = crate::platform::services::zebfs_acl::effective_access(&layout.data_store_dir(), &path)
             .map(|value| value.as_str())
             .unwrap_or("private");
         if matches!(entry.kind, crate::zebfs::ZebFsEntryKind::Prefix) {
@@ -15119,7 +15046,7 @@ async fn api_files_list(
                 "name": name,
                 "path": path,
                 "access": access,
-                "public": access == "public_read",
+                "public": access != "private",
                 "protected": false,
             }));
         } else {
@@ -15134,7 +15061,7 @@ async fn api_files_list(
                 "size": entry.size,
                 "modified": modified,
                 "access": access,
-                "public": access == "public_read",
+                "public": access != "private",
                 "url": studio_file_object_url(&owner, &project, &path),
             }));
         }
@@ -15360,6 +15287,63 @@ mod file_object_tests {
         assert_eq!(header("content-disposition"), "inline; filename=\"one.jpg\"");
         assert_eq!(header("cache-control"), "private, no-store");
         assert_eq!(header("x-content-type-options"), "nosniff");
+    }
+
+    fn bytes_response(content_type: &str, disposition: Option<&str>) -> Response {
+        let mut resp = Response::new(Body::from(vec![1u8]));
+        resp.headers_mut()
+            .insert(CONTENT_TYPE, HeaderValue::from_str(content_type).unwrap());
+        if let Some(value) = disposition {
+            resp.headers_mut()
+                .insert(CONTENT_DISPOSITION, HeaderValue::from_str(value).unwrap());
+        }
+        resp
+    }
+
+    #[tokio::test]
+    async fn a_scripted_svg_downloads_and_is_sandboxed() {
+        let resp = harden_byte_response(bytes_response(
+            "image/svg+xml; charset=utf-8",
+            Some("inline; filename=\"logo.svg\""),
+        ))
+        .await;
+        let header = |name: &str| resp.headers().get(name).unwrap().to_str().unwrap().to_string();
+        assert_eq!(header("x-content-type-options"), "nosniff");
+        assert_eq!(header("content-security-policy"), "sandbox");
+        assert_eq!(header("content-disposition"), "attachment; filename=\"logo.svg\"");
+        for active in ["text/html; charset=utf-8", "application/xml", "text/xml", "application/xhtml+xml"] {
+            let resp = harden_byte_response(bytes_response(active, None)).await;
+            assert_eq!(resp.headers().get(CONTENT_DISPOSITION).unwrap(), "attachment", "{active}");
+        }
+    }
+
+    #[tokio::test]
+    async fn images_stay_inline_and_pdf_keeps_its_viewer() {
+        let image = harden_byte_response(bytes_response("image/png", None)).await;
+        assert!(image.headers().get(CONTENT_DISPOSITION).is_none());
+        assert_eq!(image.headers().get("content-security-policy").unwrap(), "sandbox");
+        let pdf = harden_byte_response(bytes_response("application/pdf", None)).await;
+        assert!(pdf.headers().get("content-security-policy").is_none());
+        assert_eq!(pdf.headers().get("x-content-type-options").unwrap(), "nosniff");
+    }
+
+    #[tokio::test]
+    async fn the_studio_preview_keeps_html_inline_but_sandboxed() {
+        let resp = harden_preview_response(bytes_response(
+            "text/html; charset=utf-8",
+            Some("inline; filename=\"page.html\""),
+        ))
+        .await;
+        assert_eq!(resp.headers().get(CONTENT_DISPOSITION).unwrap(), "inline; filename=\"page.html\"");
+        assert_eq!(resp.headers().get("content-security-policy").unwrap(), "sandbox");
+    }
+
+    #[test]
+    fn html_has_a_type_and_active_documents_are_recognised() {
+        assert_eq!(content_type_for_path(FsPath::new("a/index.html")), "text/html; charset=utf-8");
+        assert!(is_active_document_type(content_type_for_path(FsPath::new("a.svg"))));
+        assert!(is_active_document_type(content_type_for_path(FsPath::new("a.xml"))));
+        assert!(!is_active_document_type(content_type_for_path(FsPath::new("a.png"))));
     }
 }
 
@@ -15699,7 +15683,16 @@ async fn api_files_rm(
 
     let zebfs = layout.open_files();
     match zebfs.delete(&path_str) {
-        Ok(_) => Json(json!({ "ok": true })).into_response(),
+        Ok(_) => {
+            // A deleted path takes its exposure rules with it, so a new object
+            // of the same name starts private.
+            if let Err(err) =
+                crate::platform::services::zebfs_acl::forget(&layout.data_store_dir(), &path_str)
+            {
+                return internal_error(PlatformError::new(err.code, err.message));
+            }
+            Json(json!({ "ok": true })).into_response()
+        }
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({"error": e.to_string()})),
@@ -15714,6 +15707,10 @@ struct FileAccessRequest {
     access: String,
     #[serde(default)]
     scope: Option<String>,
+    /// `public_execute` only: the full origins it runs on, each a host this
+    /// project registered in Addressing.
+    #[serde(default)]
+    serve: Vec<String>,
 }
 
 #[derive(Deserialize)]
@@ -15753,7 +15750,7 @@ fn set_project_file_access(
     let access = crate::zebfs::ZebFsAccess::parse(&req.access).ok_or_else(|| {
         (
             StatusCode::BAD_REQUEST,
-            Json(json!({"ok": false, "error": "access must be private or public_read"})),
+            Json(json!({"ok": false, "error": "access must be private, public_read or public_execute"})),
         )
             .into_response()
     })?;
@@ -15772,13 +15769,55 @@ fn set_project_file_access(
         .file
         .ensure_project_layout(owner, project)
         .map_err(internal_error)?;
-    let zebfs = layout.open_files();
-    let path = crate::platform::services::zebfs_acl::set_access(&zebfs, &req.path, access, scope)
-        .map_err(|err| {
+    // Every serve origin must be a host this project already answers on: a
+    // project can never claim another project's domain.
+    if !req.serve.is_empty() {
+        let mut hosts = state
+            .platform
+            .addressing
+            .read(owner, project)
+            .map_err(internal_error)?
+            .hosts;
+        hosts.push(crate::platform::services::addressing::AddressingService::dev_host(owner, project));
+        for origin in &req.serve {
+            let normalized = crate::zebfs::acl::normalize_serve_origin(origin).map_err(|err| {
+                (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({"ok": false, "error": err.message})),
+                )
+                    .into_response()
+            })?;
+            let host = crate::zebfs::acl::serve_origin_host(&normalized);
+            if !hosts.iter().any(|known| known == host) {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({
+                        "ok": false,
+                        "error": format!("'{host}' is not a host of this project — add it in Settings → Addressing first"),
+                    })),
+                )
+                    .into_response());
+            }
+        }
+    }
+    let path = crate::platform::services::zebfs_acl::set_access(
+        &layout.data_store_dir(),
+        &req.path,
+        access,
+        scope,
+        &req.serve,
+    )
+    .map_err(|err| {
         if err.code == "ZEBFS_INVALID_PATH" || err.code == "ZEBFS_RESERVED_PATH" {
             (
                 StatusCode::BAD_REQUEST,
                 Json(json!({"ok": false, "error": "invalid path"})),
+            )
+                .into_response()
+        } else if err.code.starts_with("ZEBFS_ACL_SERVE") {
+            (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"ok": false, "error": err.message})),
             )
                 .into_response()
         } else {
@@ -15789,7 +15828,7 @@ fn set_project_file_access(
         ok: true,
         path: path.clone(),
         access: access.as_str().to_string(),
-        public: access == crate::zebfs::ZebFsAccess::PublicRead,
+        public: access.is_exposed(),
         scope: scope.as_str().to_string(),
         url: studio_file_object_url(&owner, &project, &path),
     })
@@ -15859,6 +15898,7 @@ async fn api_files_access_form(
         path: form.path,
         access: form.access,
         scope: form.scope,
+        serve: Vec::new(),
     };
     if let Ok(Some(worker_id)) = remote_project_worker_id(&state, &owner, &project) {
         let mut worker_headers = headers.clone();
@@ -17572,8 +17612,20 @@ async fn api_upsert_settings_section(
                             .into_response();
                     }
                 };
+            let mut hosts_after = payload.hosts.clone();
+            hosts_after.push(crate::platform::services::addressing::AddressingService::dev_host(&owner, &project));
             return match state.platform.addressing.write(&owner, &project, payload) {
                 Ok(_) => {
+                    // A host the project no longer has leaves every `serve`
+                    // (kinds/zebfs-acl §Lifetime).
+                    if let Ok(layout) = state.platform.file.ensure_project_layout(&owner, &project)
+                        && let Err(err) = crate::platform::services::zebfs_acl::retain_hosts(
+                            &layout.data_store_dir(),
+                            &hosts_after,
+                        )
+                    {
+                        return internal_error(PlatformError::new(err.code, err.message));
+                    }
                     let cfg = match state.platform.zebflow_cfg.read_or_default(&owner, &project) {
                         Ok(config) => config,
                         Err(err) => return internal_error(err),
@@ -25862,8 +25914,7 @@ mod preview_sql_tests {
     use std::path::Path;
 
     use super::{
-        build_table_preview_sql, content_type_for_path, file_content_disposition,
-        query_flag_enabled,
+        build_table_preview_sql, content_type_for_path,
     };
     use crate::platform::db::sql_ddl::SqlDialect;
 
@@ -25899,33 +25950,9 @@ mod preview_sql_tests {
     }
 
     #[test]
-    fn serves_geojson_with_inline_preview_headers_by_default() {
-        let path = Path::new("public/v2x-map/roads.geojson");
-        let content_type = content_type_for_path(path);
-        assert_eq!(content_type, "application/geo+json; charset=utf-8");
-        let disposition =
-            file_content_disposition(path, content_type, false).expect("inline disposition");
-        assert_eq!(
-            disposition.to_str().unwrap(),
-            "inline; filename=\"roads.geojson\""
-        );
-    }
-
-    #[test]
-    fn supports_explicit_download_flag_for_known_file_types() {
-        let path = Path::new("public/v2x-map/roads.geojson");
-        let content_type = content_type_for_path(path);
-        let disposition =
-            file_content_disposition(path, content_type, true).expect("attachment disposition");
-        assert_eq!(
-            disposition.to_str().unwrap(),
-            "attachment; filename=\"roads.geojson\""
-        );
-        assert!(query_flag_enabled(Some("1")));
-        assert!(query_flag_enabled(Some("true")));
-        assert!(query_flag_enabled(Some("yes")));
-        assert!(!query_flag_enabled(Some("0")));
-        assert!(!query_flag_enabled(None));
+    fn geojson_has_its_own_type() {
+        let path = Path::new("maps/roads.geojson");
+        assert_eq!(content_type_for_path(path), "application/geo+json; charset=utf-8");
     }
 }
 

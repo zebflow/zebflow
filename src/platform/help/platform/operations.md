@@ -23,7 +23,7 @@ users/{owner}/{project}/
 │   ├── cache/               pipelines/ (live snapshots) · agent_docs/ (AGENTS.md, SOUL.md) · mapserver-artifacts/
 │   ├── hub/                 nodes/ · rwe-libraries/
 │   ├── logs/  recovery/
-└── files/                   ZebFS objects (public/… is anonymous, the rest private)
+└── files/                   ZebFS objects (private; exposure lives in data/store/zebfs-acl.json)
 ```
 
 `spec.layout` keys and defaults: `source` = `""` (the repo root), `static` =

@@ -212,6 +212,20 @@ impl LocalZebFs {
         if !abs.starts_with(&self.root) {
             return Err(ZebFsError::new("ZEBFS_INVALID_PATH", "invalid object path"));
         }
+        // A link inside the store may point anywhere on the machine, so no
+        // verb reads, writes or lists through one — the object a key names
+        // is always inside the store.
+        let mut cursor = self.root.clone();
+        for part in Path::new(normalized_rel).components() {
+            cursor.push(part);
+            match fs::symlink_metadata(&cursor) {
+                Ok(meta) if meta.file_type().is_symlink() => {
+                    return Err(ZebFsError::new("ZEBFS_INVALID_PATH", "path crosses a link"));
+                }
+                Ok(_) => {}
+                Err(_) => break,
+            }
+        }
         Ok(abs)
     }
 }
@@ -273,6 +287,23 @@ fn ensure_user_object_path(path: &str) -> Result<(), ZebFsError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn no_verb_follows_a_link_out_of_the_store() {
+        let root = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("secret.txt"), b"secret").unwrap();
+        std::os::unix::fs::symlink(outside.path().join("secret.txt"), root.path().join("file-link")).unwrap();
+        std::os::unix::fs::symlink(outside.path(), root.path().join("dir-link")).unwrap();
+        let store = LocalZebFs::new(root.path().to_path_buf());
+        for key in ["file-link", "dir-link/secret.txt"] {
+            assert_eq!(store.get(key).unwrap_err().code, "ZEBFS_INVALID_PATH", "{key}");
+        }
+        assert!(store.put("dir-link/new.txt", b"x").is_err());
+        assert!(!outside.path().join("new.txt").exists());
+        assert!(store.list("dir-link").is_err());
+    }
 
     #[test]
     fn objects_roundtrip_through_durable_writes() {

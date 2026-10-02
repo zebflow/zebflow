@@ -346,7 +346,7 @@ pub fn definition() -> NodeDefinition {
         examples: vec![
             crate::pipeline::model::NodeExample::dsl("Build the docs site nightly", r#"web.docs.generate --docs-root handbook --output-dir public/docs --site-title "Acme Handbook""#)
                 .output(serde_json::json!({ "docs_generated": { "status": "written", "site_title": "Acme Handbook", "template": "docs/docs.template.tsx", "docs_root": "docs/handbook", "output_dir": "public/docs", "site_root": "public/docs" } }))
-                .note("Markdown under `docs/handbook/` becomes HTML under `public/docs/`, served anonymously."),
+                .note("Markdown under `docs/handbook/` becomes HTML under `public/docs/`, private until the owner serves that folder as a site in Studio → Files."),
         ],
         ..Default::default()
     }

@@ -12,6 +12,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
+use crate::pipeline::nodes::shared::store_scratch::StoreScratch;
 use crate::pipeline::nodes::shared::file_ref::{durable_file_ref, zebfs_rel_path_or_string};
 use crate::pipeline::nodes::shared::util::{metadata_scope, resolve_path};
 use crate::pipeline::model::NodeCapability;
@@ -281,20 +282,21 @@ impl NodeHandler for Node {
             .ensure_project_layout(owner, project)
             .map_err(|err| PipelineError::new("FW_NODE_FILE_COMPRESS", err.to_string()))?;
 
+        // tar speaks paths and the project's files live in its one active
+        // store, so the sources are pulled into a scratch folder, archived
+        // there, and the archive is put back into the store.
+        let zebfs = layout.open_files();
+        let scratch = StoreScratch::new("FW_NODE_FILE_COMPRESS")?;
         let mut source_rels_for_task = Vec::with_capacity(source_paths.len());
         for source_rel in &source_paths {
-            let source_abs = layout.local_files_dir()?.join(source_rel);
-            if !source_abs.exists() {
-                return Err(PipelineError::new(
-                    "FW_NODE_FILE_COMPRESS",
-                    format!("source path not found: {source_rel}"),
-                ));
-            }
+            scratch.pull(&zebfs, source_rel)?;
             source_rels_for_task.push(source_rel.clone());
         }
 
         let archive_rel = resolve_archive_leaf(&self.config.output_path, &primary_source_rel);
-        let archive_abs = layout.local_files_dir()?.join(&archive_rel);
+        let archive_abs = scratch.path().join(".zf-archive").join(
+            archive_rel.rsplit('/').next().unwrap_or(&archive_rel),
+        );
         if let Some(parent) = archive_abs.parent() {
             std::fs::create_dir_all(parent).map_err(|err| {
                 PipelineError::new(
@@ -305,7 +307,7 @@ impl NodeHandler for Node {
         }
 
         let archive_abs_for_task = archive_abs.clone();
-        let files_root_for_task = layout.local_files_dir()?.to_path_buf();
+        let files_root_for_task = scratch.path().to_path_buf();
         tokio::task::spawn_blocking(move || {
             compress_tar_gz(
                 &files_root_for_task,
@@ -321,24 +323,12 @@ impl NodeHandler for Node {
             )
         })??;
 
-        let size = std::fs::metadata(&archive_abs)
-            .map_err(|err| {
-                PipelineError::new(
-                    "FW_NODE_FILE_COMPRESS",
-                    format!("read archive metadata: {err}"),
-                )
-            })?
-            .len();
+        let archive_bytes = scratch.push_file(&zebfs, &archive_abs, &archive_rel)?;
+        let size = archive_bytes.len() as u64;
 
         // `compressed` is a bare durable FileRef for the archive, so `fs.copy
         // --from "{{ input.compressed }}"` or a `--preview` takes it as it is.
         let compressed = {
-            let archive_bytes = std::fs::read(&archive_abs).map_err(|err| {
-                PipelineError::new(
-                    "FW_NODE_FILE_COMPRESS",
-                    format!("read archive for digest: {err}"),
-                )
-            })?;
             let archive_name = archive_rel.rsplit('/').next().unwrap_or(&archive_rel).to_string();
             durable_file_ref(
                 layout.file_backend(),

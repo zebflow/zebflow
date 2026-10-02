@@ -10,8 +10,8 @@
 //! contract fields (`__zf_type: file_ref`, `backend`, `ref`, `filename`,
 //! `mime`, `kind`, `size`, `sha256`, `lifecycle: durable`, `origin: fs.save`,
 //! `trust` carried from the source). The store path is `saved.ref`; a URL is
-//! not a node's business (the Studio reads objects through `files/object`, a
-//! site serves `public/` at `/_files`).
+//! not a node's business (the Studio reads objects through `files/object`; a
+//! folder is exposed only by the owner, in Studio → Files).
 //!
 //! Files are stored as durable ZebFS object paths, usually `uploads/{uuid}.{ext}`.
 //!
@@ -255,7 +255,7 @@ pub fn definition() -> NodeDefinition {
         description: "Keep a file that came through the run. Reads `input.files.<field>` (a multipart form field, set by `trigger.webhook`; \
             `--field` names it, default `file`), else a FileRef at `input.<field>`, else `response.body` (`http.request --response-type bytes`), \
             else the one FileRef at the top of the payload (a node's own product: `image` from `fs.svg.convert`, `thumbnail`), checks the kind by MIME and magic bytes (`--allowed-kinds images|documents|…`) and the \
-            size (`--max-size` MB), then writes it under `--folder` (default `uploads/`; under `public/` for anonymous access) or at \
+            size (`--max-size` MB), then writes it under `--folder` (default `uploads/`; private until the owner exposes the folder in Studio → Files) or at \
             an exact `--path`. Adds `saved` — a durable FileRef and nothing else (`ref`, `filename`, `mime`, `kind`, `size`, `sha256`, \
             `lifecycle: durable`, `origin: fs.save`, `trust`) — to the \
             payload and keeps the rest, so `input.body.title` from the same form is still there for the INSERT. Store `saved.ref` \
@@ -433,9 +433,9 @@ pub fn definition() -> NodeDefinition {
             LayoutItem::Field("filename".to_string()),
         ],
         examples: vec![
-            crate::pipeline::model::NodeExample::dsl("Photo with a caption", "fs.save --field photo --folder public/uploads --allowed-kinds images --max-size 10")
+            crate::pipeline::model::NodeExample::dsl("Photo with a caption", "fs.save --field photo --folder uploads --allowed-kinds images --max-size 10")
                 .input(serde_json::json!({ "body": { "caption": "Sunset" }, "files": { "photo": { "__zf_type": "file_ref", "filename": "IMG_1.jpg", "mime": "image/jpeg", "size": 182331 } } }))
-                .output(serde_json::json!({ "body": { "caption": "Sunset" }, "files": { "photo": { "__zf_type": "file_ref", "filename": "IMG_1.jpg", "mime": "image/jpeg", "size": 182331 } }, "saved": { "__zf_type": "file_ref", "backend": "zebfs", "ref": "public/uploads/3f9c….jpg", "filename": "3f9c….jpg", "mime": "image/jpeg", "kind": "image", "size": 182331, "sha256": "sha256:…", "lifecycle": "durable", "origin": "fs.save", "trust": "untrusted" } }))
+                .output(serde_json::json!({ "body": { "caption": "Sunset" }, "files": { "photo": { "__zf_type": "file_ref", "filename": "IMG_1.jpg", "mime": "image/jpeg", "size": 182331 } }, "saved": { "__zf_type": "file_ref", "backend": "zebfs", "ref": "uploads/3f9c….jpg", "filename": "3f9c….jpg", "mime": "image/jpeg", "kind": "image", "size": 182331, "sha256": "sha256:…", "lifecycle": "durable", "origin": "fs.save", "trust": "untrusted" } }))
                 .note("Then `sekejap.query --read-only false --params \"{{ [input.body.caption, input.saved.ref] }}\" -- \"INSERT INTO photos (caption, path) VALUES ($1, $2)\"`. `saved` is a FileRef, so `fs.image.thumbnail`, `fs.copy --from \"{{ input.saved }}\"` and a `--preview image` all take it as it is."),
         ],
         ..Default::default()

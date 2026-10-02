@@ -103,7 +103,6 @@ records what is on disk today.
             │   └── logs/              BOUNDED — 30d or 512 MiB
             │
             └── files/                 OBJECT — user bytes, flat namespace
-                ├── .zebfs/acl.json    STORE (reserved prefix re-grades)
                 ├── tmp/runs/{request_id}/files/
                 │                      EPHEMERAL by intent, OBJECT by location —
                 │                      `lifecycle: temporary` FileRef bytes
@@ -256,9 +255,10 @@ them.
             │       └── invocations.db
             │
             └── files/                 AUTHORED — user objects, flat namespace,
-                │                      visibility per path via ACL
-                ├── .zebfs/
-                │   └── acl.json       path → {Private|PublicRead} × {Object|Prefix}
+                │                      private; exposure only via
+                │                      data/store/zebfs-acl.json (ZebFsAcl,
+                │                      target 2026-10-02 — code still keeps
+                │                      it at files/.zebfs/acl.json)
                 ├── tmp/runs/          `lifecycle: temporary` FileRef bytes; no
                 │   └── {request_id}/files/    writer removes them today
                 ├── mapserver/         map feature area

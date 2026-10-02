@@ -20,12 +20,12 @@ and **rich text is a JSON document, HTML is derived from it**. Facts:
 2. The webhook delivers the file as `input.files.photo` — a FileRef
    (`ref`, `filename`, `mime`, `kind`, `size`, `sha256`, `lifecycle: temporary`).
    It is discarded after the run unless a node keeps it.
-3. Keep it: `fs.save --field photo --folder public/uploads --allowed-kinds images --max-size 10`
+3. Keep it: `fs.save --field photo --folder uploads --allowed-kinds images --max-size 10`
    adds `saved` — a durable FileRef and nothing else (`ref`, `filename`,
    `mime`, `kind`, `size`, `sha256`, `lifecycle: durable`, `origin: fs.save`,
    `trust`) — to the payload; `input.body.caption` from the same form is
    still there.
-4. Derive what you need: `fs.image.thumbnail --width 320 --height 320 --fit cover --format webp --folder public/thumbs`
+4. Derive what you need: `fs.image.thumbnail --width 320 --height 320 --fit cover --format webp --folder thumbs`
    reads `saved` (its default `--source-key`) and adds `thumbnail` (a FileRef,
    `thumbnail.ref`) the same way.
 5. Store the **store path** (`saved.ref`) in your table, not a URL — URLs
@@ -33,7 +33,7 @@ and **rich text is a JSON document, HTML is derived from it**. Facts:
 
 ```
 | trigger.webhook --path /api/upload --method POST --auth-type jwt --auth-credential jwt_main
-| fs.save --field file --folder public/uploads --allowed-kinds images --max-size 10
+| fs.save --field file --folder uploads --allowed-kinds images --max-size 10
 ```
 
 The response carries `saved` (a FileRef). Store its **`ref`**; a page
@@ -44,12 +44,13 @@ renderer makes it absolute (`docs/contracts/addressing.md`).
 
 | Stored under | Path a page writes | Who |
 |---|---|---|
-| `public/…` | `/_files/…` (the part after `public/`) — e.g. `public/photos/jane.webp` → `/_files/photos/jane.webp` | anyone; the only kind an `og:image` or an `<img>` on a public page may use |
-| anything else | `/_fs/…` | a signed-in session with files access |
-| either, from outside a page (a tool, a mail) | the platform form `/files/{owner}/{project}/public/…` · `/fs/{owner}/{project}/…` — valid on every host, but it carries owner and project, so not in pages |
+| a folder exposed `public_read` in Studio → Files | the project's file host, `<project>.<owner>.fs.localhost/<path>` on a dev machine | anyone; inert — usable by an `<img>` or an `og:image`, never run as a page |
+| a folder exposed `public_execute` | `/` on each address in its `serve` | anyone; served as a site, scripts running |
+| anything else | nowhere without sign-in; the Studio reads it at `files/object?ref=…` | a signed-in session with files access |
 
-No node answers a URL — `saved` carries only `ref`. Decide visibility by
-folder when you save, not afterwards. Never put `input.files` or base64 into a payload, a script
+No node answers a URL — `saved` carries only `ref`. A folder name never
+decides visibility, and no node can expose anything: the owner does, per
+folder, in Studio → Files. Never put `input.files` or base64 into a payload, a script
 return, or a database column.
 
 ## Rich text: the editor

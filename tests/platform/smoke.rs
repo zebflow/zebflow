@@ -3241,7 +3241,7 @@ async fn project_hub_ui_is_project_surface_with_explicit_grant() {
 }
 
 #[tokio::test]
-async fn private_project_files_require_project_capability() {
+async fn stored_files_are_exposed_only_by_a_rule_never_by_a_name_or_a_cookie() {
     let mut config = PlatformConfig::default();
     config.data_root = temp_test_dir("private-file-authz");
     config.default_password = "test-pass".to_string();
@@ -3258,116 +3258,76 @@ async fn private_project_files_require_project_capability() {
     fs::write(project_files.join("public").join("hello.txt"), "hello").expect("public file");
     fs::write(project_files.join("private").join("secret.txt"), "secret").expect("private file");
 
-    let public = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .uri("/files/superadmin/default/public/hello.txt")
-                .method("GET")
-                .body(Body::empty())
-                .expect("request"),
-        )
-        .await
-        .expect("public response");
-    assert_eq!(public.status(), StatusCode::OK);
-    assert_eq!(response_text(public).await, "hello");
+    let get = |uri: &str, cookie: Option<&str>| {
+        let mut builder = Request::builder().uri(uri).method("GET");
+        if let Some(cookie) = cookie {
+            builder = builder.header(header::COOKIE, cookie);
+        }
+        let app = app.clone();
+        let request = builder.body(Body::empty()).expect("request");
+        async move { app.oneshot(request).await.expect("response") }
+    };
 
-    let anonymous_private = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .uri("/files/superadmin/default/private/secret.txt")
-                .method("GET")
-                .body(Body::empty())
-                .expect("request"),
-        )
-        .await
-        .expect("anonymous private response");
-    assert_eq!(anonymous_private.status(), StatusCode::UNAUTHORIZED);
-
-    let forged_private = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .uri("/files/superadmin/default/private/secret.txt")
-                .method("GET")
-                .header(header::COOKIE, "zebflow_session=superadmin")
-                .body(Body::empty())
-                .expect("request"),
-        )
-        .await
-        .expect("forged private response");
-    assert_eq!(forged_private.status(), StatusCode::UNAUTHORIZED);
+    // A folder called `public` is private like any other until a rule says so.
+    assert_eq!(get("/files/superadmin/default/public/hello.txt", None).await.status(), StatusCode::NOT_FOUND);
 
     let superadmin_cookie = login_cookie(app.clone(), "superadmin", "test-pass").await;
-    let create_user = app
+    let grant = app
         .clone()
         .oneshot(
             Request::builder()
-                .uri("/api/platform/users")
-                .method("POST")
+                .uri("/api/projects/superadmin/default/files/access")
+                .method("PUT")
                 .header(header::COOKIE, &superadmin_cookie)
                 .header(header::CONTENT_TYPE, "application/json")
-                .body(Body::from(
-                    json!({
-                        "owner": "bob",
-                        "password": "bob-pass",
-                        "role": "member"
-                    })
-                    .to_string(),
-                ))
+                .body(Body::from(json!({ "path": "public", "access": "public_read", "scope": "prefix" }).to_string()))
                 .expect("request"),
         )
         .await
-        .expect("create user response");
-    assert_eq!(create_user.status(), StatusCode::OK);
+        .expect("grant response");
+    assert_eq!(grant.status(), StatusCode::OK);
 
-    let bob_cookie = login_cookie(app.clone(), "bob", "bob-pass").await;
-    let other_user_private = app
+    let public = get("/files/superadmin/default/public/hello.txt", None).await;
+    assert_eq!(public.status(), StatusCode::OK);
+    assert_eq!(public.headers()["content-security-policy"], "sandbox");
+    assert_eq!(response_text(public).await, "hello");
+    let on_file_host = app
         .clone()
         .oneshot(
             Request::builder()
-                .uri("/files/superadmin/default/private/secret.txt")
-                .method("GET")
-                .header(header::COOKIE, bob_cookie)
+                .uri("/public/hello.txt")
+                .header(header::HOST, "default.superadmin.fs.localhost")
                 .body(Body::empty())
                 .expect("request"),
         )
         .await
-        .expect("other user private response");
-    assert_eq!(other_user_private.status(), StatusCode::FORBIDDEN);
+        .expect("file host response");
+    assert_eq!(on_file_host.status(), StatusCode::OK);
 
-    let owner_private = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .uri("/files/superadmin/default/private/secret.txt")
-                .method("GET")
-                .header(header::COOKIE, &superadmin_cookie)
-                .body(Body::empty())
-                .expect("request"),
-        )
-        .await
-        .expect("owner private response");
-    assert_eq!(owner_private.status(), StatusCode::OK);
-    assert_eq!(response_text(owner_private).await, "secret");
+    // A private file answers like a missing one — to strangers, to a forged
+    // cookie, and to the signed-in owner alike: the cookie is not a key here.
+    for cookie in [None, Some("zebflow_session=superadmin"), Some(superadmin_cookie.as_str())] {
+        assert_eq!(
+            get("/files/superadmin/default/private/secret.txt", cookie).await.status(),
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(
+            get("/fs/superadmin/default/private/secret.txt", cookie).await.status(),
+            StatusCode::NOT_FOUND
+        );
+    }
+
+    // The owner reads it through the Studio's own route.
+    let studio = get("/api/projects/superadmin/default/files/object?ref=private/secret.txt", Some(&superadmin_cookie)).await;
+    assert_eq!(studio.status(), StatusCode::OK);
+    assert_eq!(response_text(studio).await, "secret");
 
     #[cfg(unix)]
     {
-        std::os::unix::fs::symlink("/etc/passwd", project_files.join("private").join("escape"))
+        std::os::unix::fs::symlink("/etc/passwd", project_files.join("public").join("escape"))
             .expect("symlink");
-        let symlink_escape = app
-            .oneshot(
-                Request::builder()
-                    .uri("/files/superadmin/default/private/escape")
-                    .method("GET")
-                    .header(header::COOKIE, superadmin_cookie)
-                    .body(Body::empty())
-                    .expect("request"),
-            )
-            .await
-            .expect("symlink response");
-        assert_eq!(symlink_escape.status(), StatusCode::BAD_REQUEST);
+        let symlink_escape = get("/files/superadmin/default/public/escape", None).await;
+        assert_ne!(symlink_escape.status(), StatusCode::OK);
     }
 }
 

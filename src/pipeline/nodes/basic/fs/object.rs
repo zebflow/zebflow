@@ -323,8 +323,8 @@ pub fn copy_definition() -> NodeDefinition {
         "FS Copy",
         "Copy one file inside the project's file store. Needs `--from` and `--to` (full object paths, not folders). \
          Replaces the payload with `{ fs: { operation: \"copy\", path: <to>, object } }`, where `object` is a durable FileRef for the copy \
-         (`origin: fs.copy`), a bare FileRef and nothing else. An existing `--to` is overwritten; \
-         to publish a private upload, copy it under `public/`.",
+         (`origin: fs.copy`), a bare FileRef and nothing else. An existing `--to` is overwritten. \
+         A copy is private like any object until the owner exposes its folder in Studio → Files.",
     );
     def.examples = vec![example(
         "Publish a private upload",
@@ -593,6 +593,10 @@ impl NodeHandler for Node {
                 zebfs
                     .delete(path)
                     .map_err(|err| PipelineError::new("FW_NODE_FS_DELETE", err.to_string()))?;
+                // A deleted path takes its exposure rules with it, so a new
+                // object of the same name starts private.
+                crate::platform::services::zebfs_acl::forget(&layout.data_store_dir(), path)
+                    .map_err(|err| PipelineError::new("FW_NODE_FS_DELETE", err.to_string()))?;
                 json!({
                     "fs": {
                         "operation": op.label(),
@@ -610,6 +614,8 @@ impl NodeHandler for Node {
                 if matches!(op, Operation::Move) {
                     zebfs
                         .delete(from)
+                        .map_err(|err| PipelineError::new("FW_NODE_FS_MOVE", err.to_string()))?;
+                    crate::platform::services::zebfs_acl::forget(&layout.data_store_dir(), from)
                         .map_err(|err| PipelineError::new("FW_NODE_FS_MOVE", err.to_string()))?;
                 }
                 // A copied object is a stored file this node answers for, so

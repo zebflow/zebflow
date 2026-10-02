@@ -233,7 +233,7 @@ import { ThreeScene } from "zeb/threejs";
 import { VrmViewer } from "zeb/threejs-vrm";
 
 <ThreeScene height="400px" config={{ background: "#0b0b0f", cameraZ: 4, fov: 60 }} />
-<VrmViewer modelUrl="/files/o/p/public/avatar.vrm" height="480px" autoRotate />
+<VrmViewer modelUrl="/models/avatar.vrm" height="480px" autoRotate />
 ```
 
 `threejs` is the namespace; `ensureThree`, `createSceneRuntime` and

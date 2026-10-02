@@ -185,7 +185,7 @@ pub fn definition() -> NodeDefinition {
                 SelectOptionDef { value: "png".into(), label: "PNG".into() },
                 SelectOptionDef { value: "webp".into(), label: "WebP (lossless)".into() },
             ], ..Default::default() },
-            NodeFieldDef { name: "folder".into(), label: "Folder".into(), field_type: NodeFieldType::Text, default_value: Some(json!(DEFAULT_FOLDER)), help: Some("Destination store folder (default: cutouts). Under public/ for a page to show it anonymously.".into()), ..Default::default() },
+            NodeFieldDef { name: "folder".into(), label: "Folder".into(), field_type: NodeFieldType::Text, default_value: Some(json!(DEFAULT_FOLDER)), help: Some("Destination store folder (default: cutouts). Private until the owner exposes it in Studio → Files.".into()), ..Default::default() },
             NodeFieldDef { name: "source_key".into(), label: "Source key".into(), field_type: NodeFieldType::Text, default_value: Some(json!(DEFAULT_SOURCE_KEY)), help: Some("Dot-path into the payload: a FileRef or a store path string. Default: saved (what fs.save answers).".into()), ..Default::default() },
             NodeFieldDef { name: "delete_source".into(), label: "Delete source file".into(), field_type: NodeFieldType::Checkbox, default_value: Some(json!(false)), help: Some("Remove the green-screen original after the cutout is written; its key is dropped from the payload.".into()), ..Default::default() },
             NodeFieldDef { name: "filename".into(), label: "Filename".into(), field_type: NodeFieldType::Text, help: Some("Without extension (default: random UUID).".into()), ..Default::default() },
@@ -350,7 +350,7 @@ impl NodeHandler for Node {
             _ => serde_json::Map::new(),
         };
         if self.config.delete_source {
-            if let Err(e) = std::fs::remove_file(layout.local_files_dir()?.join(&rel)) {
+            if let Err(e) = zebfs.delete(&rel) {
                 eprintln!("[{NODE_KIND}] delete-source failed for {rel}: {e}");
             }
             if let Some(top) = key.split('.').next() {

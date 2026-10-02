@@ -183,6 +183,11 @@ root; they are read through the same rule, and
 
 ### spec.files
 
+> **Note 2026-10-02 (frozen text left as is):** the target
+> [`ZebFsAcl`](../zebfs-acl/README.md) design deletes the `/fs/` route; reads
+> go through a per-project file host. Amend "what a `/fs/` read serves from"
+> through [versioning](../../versioning.md) when that code lands.
+
 `backend` names the **native** store: where this project's own `files/` live,
 what a `/fs/` read serves from, and the word every FileRef written here carries
 in its `backend` field. The two must agree, because they name the same thing;

@@ -3,7 +3,7 @@
 //! | Use | DSL |
 //! |---|---|
 //! | The SVG a model wrote, kept as a PNG | `\| ai.agent --credential openrouter --schema '{"type":"object","required":["svg"],"properties":{"svg":{"type":"string"}}}' --prompt "…" \| fs.svg.convert --source-key data.svg --folder posters --preview image` |
-//! | A stored SVG at a size | `\| fs.svg.convert --source-key saved --width 512 --height 512 --fit contain --format webp --folder public/logos` |
+//! | A stored SVG at a size | `\| fs.svg.convert --source-key saved --width 512 --height 512 --fit contain --format webp --folder logos` |
 //!
 //! # The source
 //!
@@ -236,7 +236,7 @@ pub fn definition() -> NodeDefinition {
                 SelectOptionDef { value: "pdf".into(), label: "PDF (vector, selectable text)".into() },
             ], ..Default::default() },
             NodeFieldDef { name: "quality".into(), label: "JPEG quality".into(), field_type: NodeFieldType::Text, default_value: Some(json!("82")), help: Some("1–100, default 82. Only applies to JPEG output.".into()), ..Default::default() },
-            NodeFieldDef { name: "folder".into(), label: "Folder".into(), field_type: NodeFieldType::Text, default_value: Some(json!(DEFAULT_FOLDER)), help: Some("Destination store folder (default: images). Under public/ for a page to show it anonymously.".into()), ..Default::default() },
+            NodeFieldDef { name: "folder".into(), label: "Folder".into(), field_type: NodeFieldType::Text, default_value: Some(json!(DEFAULT_FOLDER)), help: Some("Destination store folder (default: images). Private until the owner exposes it in Studio → Files.".into()), ..Default::default() },
             NodeFieldDef { name: "source_key".into(), label: "Source key".into(), field_type: NodeFieldType::Text, default_value: Some(json!(DEFAULT_SOURCE_KEY)), help: Some("Dot-path into the payload: SVG text, a store path string, or a FileRef of a stored .svg. Default: svg.".into()), ..Default::default() },
             NodeFieldDef { name: "delete_source".into(), label: "Delete source file".into(), field_type: NodeFieldType::Checkbox, default_value: Some(json!(false)), help: Some("Remove a stored source after the picture is written; the source key is dropped from the payload.".into()), ..Default::default() },
             NodeFieldDef { name: "filename".into(), label: "Filename".into(), field_type: NodeFieldType::Text, help: Some("Without extension (default: random UUID). A same-named file is overwritten.".into()), ..Default::default() },
@@ -266,7 +266,7 @@ pub fn definition() -> NodeDefinition {
             NodeExample::dsl("A certificate as a PDF, the name shrunk to its line", "fs.svg.convert --source-key svg --format pdf --folder certificates --filename cert-2026-0412")
                 .input(json!({ "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"1123\" height=\"794\">…<text x=\"561\" y=\"420\" font-family=\"Inter\" font-size=\"64\" text-anchor=\"middle\" inline-size=\"900\" data-fit=\"shrink\" data-min-size=\"28\">Alexandra Josephine Montgomery Whitfield</text>…</svg>" }))
                 .note("A `fs.get` of the template .svg and a `script` that fills the placeholders come before it. The name is real text in the PDF; a long one shrinks instead of wrapping. `--width/--height/--fit` are refused with pdf."),
-            NodeExample::dsl("A stored SVG at a size", "fs.svg.convert --source-key saved --width 512 --height 512 --fit contain --format webp --folder public/logos")
+            NodeExample::dsl("A stored SVG at a size", "fs.svg.convert --source-key saved --width 512 --height 512 --fit contain --format webp --folder logos")
                 .input(json!({ "saved": { "__zf_type": "file_ref", "backend": "zebfs", "ref": "uploads/logo.svg", "filename": "logo.svg", "mime": "image/svg+xml", "kind": "image", "size": 2210, "sha256": "sha256:…", "lifecycle": "durable", "origin": "fs.save", "trust": "untrusted" } }))
                 .note("After `fs.save --allowed-kinds images`. `contain` keeps the proportions, so a wide logo answers 512×n."),
         ],

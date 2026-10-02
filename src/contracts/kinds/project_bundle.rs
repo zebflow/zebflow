@@ -51,7 +51,7 @@ impl PlatformContract for ProjectBundleContract {
 /// | --- | --- |
 /// | `repo` | `repo/` — source, `zebflow.yaml`, `zeb.lock`, schema/initial-data files |
 /// | `store` | `data/store/` — applied database state |
-/// | `files` | `files/` — objects + `.zebfs/acl.json` |
+/// | `files` | `files/` — objects (the `ZebFsAcl` document is store tier and rides `store`) |
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[serde(rename_all = "lowercase")]
 pub enum ProjectBundleClass {

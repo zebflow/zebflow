@@ -76,18 +76,18 @@ return {
 "
 | web.static.generate \
     --template pages/static-entry-page.tsx \
-    --output-path "public/collections/{{ input.collection.slug }}/{{ input.entry.slug }}/index.html" \
+    --output-path "site/collections/{{ input.collection.slug }}/{{ input.entry.slug }}/index.html" \
     --route "/collections/{{ input.collection.slug }}/{{ input.entry.slug }}" \
     --on-conflict overwrite
 ```
 
 Generated file:
 
-- `public/collections/field-notes/city-garden/index.html`
+- `site/collections/field-notes/city-garden/index.html`
 
-Served URL:
+Served URL, once the owner serves `site/` as a site on `https://www.example.com`:
 
-- `/files/{owner}/{project}/public/collections/field-notes/city-garden/index.html`
+- `https://www.example.com/collections/field-notes/city-garden/`
 
 ---
 
@@ -133,7 +133,7 @@ return {
 "
 | web.static.generate \
     --template pages/static-entry-page.tsx \
-    --output-path "public/collections/{{ input.collection.slug }}/{{ input.entry.slug }}/index.html"
+    --output-path "site/collections/{{ input.collection.slug }}/{{ input.entry.slug }}/index.html"
 ```
 
 ---
@@ -159,26 +159,22 @@ That is much easier to debug than hiding traversal and parallelism inside one gi
 
 ## Serving behavior
 
-Object paths in Zebflow FS are private by default. `--output-path` under
-`public/` is what makes the artifact anonymously readable, at the legacy
-`/files/{owner}/{project}/<path>` route (`public/*` is served without auth;
-every other path requires the project's `FilesRead` capability). Writing
-outside `public/` and reading it back through `/fs/{owner}/{project}/<path>`
-instead still requires that capability — `/fs/...` stays private unless the
-object is explicitly marked public in the project's ZebFS access rules.
+Everything generated is private, like any uploaded file: a folder name never
+exposes it, and no node can. The owner exposes the output folder in Studio →
+Files:
 
-If the output path is:
-
-- `public/collections/field-notes/city-garden/index.html`
-
-then it is already servable anonymously at:
-
-- `/files/{owner}/{project}/public/collections/field-notes/city-garden/index.html`
+- **Serve as a site** (`public_execute`) on the addresses written out in its
+  `serve` list — each a host the project has in Settings → Addressing. That
+  address answers the folder at `/`: `/collections/field-notes/city-garden/`
+  reads `site/collections/field-notes/city-garden/index.html`, scripts running.
+- **Public read** (`public_read`) instead makes the files readable on the
+  project's file host, but never run as a page — a downloaded HTML file, not a
+  site.
 
 So:
 - generation pipeline: `trigger.function` is enough
-- serving generated artifact: no webhook is required, as long as the output
-  path is under `public/`
+- serving generated artifact: no webhook is required once its folder is
+  served as a site
 
 Only add a webhook or ingress rewrite if you want a prettier public route like:
 

@@ -6,7 +6,6 @@
 //! Local provider assets are resolved from Zebflow FS using relative paths stored
 //! in the selected credential secret.
 
-use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -18,6 +17,7 @@ use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
+use crate::pipeline::nodes::shared::store_scratch::StoreScratch;
 use crate::pipeline::nodes::shared::util::metadata_scope;
 use crate::pipeline::PipelineError;
 use crate::pipeline::model::NodeCapability;
@@ -572,42 +572,36 @@ impl NodeHandler for Node {
             }
         }
 
-        let files_root = layout.local_files_dir()?.to_path_buf();
-        let model_abs = resolve_zebfs_abs(
-            &files_root,
-            required_secret_str(&secret.model_file, "model_file")?,
-        )?;
-        let config_abs = resolve_zebfs_abs(
-            &files_root,
-            required_secret_str(&secret.config_file, "config_file")?,
-        )?;
-        let espeak_abs = secret
+        // Piper reads its model from paths, and the project's files live in
+        // its one active store: model, config and espeak data are pulled into
+        // a scratch folder for the run.
+        let zebfs = layout.open_files();
+        let scratch = StoreScratch::new("AI_TTS_FILE")?;
+        let model_rel = normalize_zebfs_asset_rel_path(required_secret_str(&secret.model_file, "model_file")?)?;
+        let config_rel = normalize_zebfs_asset_rel_path(required_secret_str(&secret.config_file, "config_file")?)?;
+        let model_abs = scratch.pull(&zebfs, &model_rel).map_err(|_| {
+            PipelineError::new("AI_TTS_MODEL", format!("model file '{model_rel}' does not exist"))
+        })?;
+        let config_abs = scratch.pull(&zebfs, &config_rel).map_err(|_| {
+            PipelineError::new("AI_TTS_CONFIG", format!("config file '{config_rel}' does not exist"))
+        })?;
+        let espeak_abs = match secret
             .espeak_data_dir
             .as_deref()
             .map(str::trim)
             .filter(|value| !value.is_empty())
-            .map(|value| resolve_zebfs_abs(&files_root, value))
-            .transpose()?;
-        if !model_abs.is_file() {
-            return Err(PipelineError::new(
-                "AI_TTS_MODEL",
-                format!("model file '{}' does not exist", model_abs.display()),
-            ));
-        }
-        if !config_abs.is_file() {
-            return Err(PipelineError::new(
-                "AI_TTS_CONFIG",
-                format!("config file '{}' does not exist", config_abs.display()),
-            ));
-        }
-        if let Some(espeak_abs) = espeak_abs.as_ref() {
-            if !espeak_abs.is_dir() {
-                return Err(PipelineError::new(
-                    "AI_TTS_ESPEAK",
-                    format!("espeak data dir '{}' does not exist", espeak_abs.display()),
-                ));
+        {
+            Some(value) => {
+                let espeak_rel = normalize_zebfs_asset_rel_path(value)?;
+                Some(scratch.pull(&zebfs, &espeak_rel).map_err(|_| {
+                    PipelineError::new(
+                        "AI_TTS_ESPEAK",
+                        format!("espeak data dir '{espeak_rel}' does not exist"),
+                    )
+                })?)
             }
-        }
+            None => None,
+        };
 
         let speaker = self
             .config
@@ -647,16 +641,7 @@ impl NodeHandler for Node {
         let (file_rel_path, file_url) = if needs_file {
             let output_rel = resolve_output_rel_path(self.config.output_path.as_deref())?;
             let final_rel = normalize_audio_output_rel_path(&output_rel)?;
-            let abs_path = layout.local_files_dir()?.join(&final_rel);
-            if let Some(parent) = abs_path.parent() {
-                fs::create_dir_all(parent).map_err(|err| {
-                    PipelineError::new(
-                        "AI_TTS_FILE",
-                        format!("failed to create output directory: {err}"),
-                    )
-                })?;
-            }
-            fs::write(&abs_path, &wav_bytes).map_err(|err| {
+            zebfs.put(&final_rel, &wav_bytes).map_err(|err| {
                 PipelineError::new("AI_TTS_FILE", format!("failed to write wav file: {err}"))
             })?;
             (
@@ -1441,10 +1426,6 @@ fn resolve_output_rel_path(output_path: Option<&str>) -> Result<String, Pipeline
         ));
     };
     Ok(path.to_string())
-}
-
-fn resolve_zebfs_abs(files_root: &Path, raw: &str) -> Result<PathBuf, PipelineError> {
-    Ok(files_root.join(normalize_zebfs_asset_rel_path(raw)?))
 }
 
 fn normalize_zebfs_asset_rel_path(raw: &str) -> Result<String, PipelineError> {

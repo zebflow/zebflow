@@ -65,9 +65,9 @@ refuses the request before any node runs. Facts:
 
 ## Files
 
-Objects under `public/` are served anonymously at `/files/{owner}/{project}/…`;
-everything else is private (`/fs/…`, session required). Upload with
-`fs.save --folder public/uploads` only when the file is meant for everyone.
+Every stored object is private until the owner exposes its folder in Studio →
+Files; a folder name (`public/`) means nothing and no node can expose a file.
+A session cookie never opens a private file outside the Studio.
 
 ## Prove it — every row, every time
 

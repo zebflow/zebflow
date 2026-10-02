@@ -2401,10 +2401,12 @@ impl BasicPipelineEngine {
                         node.execute_many_async(input_for_exec).await
                     }
                     NodeDispatch::InlineWebDocsGenerate { node_id, config } => {
-                        let Some(data_root) = &self.data_root else {
+                        let Some(zebfs) =
+                            self.repo_layout.as_ref().map(|layout| layout.open_files())
+                        else {
                             return Err(PipelineError::new(
                                 "FW_NODE_WEB_DOCS_UNAVAILABLE",
-                                "data_root is not configured on this pipeline engine",
+                                "the project's file store is not configured on this pipeline engine",
                             ));
                         };
                         let Some(template_root) = &self.template_root else {
@@ -2479,12 +2481,10 @@ impl BasicPipelineEngine {
                             );
                             let mut page_records = Vec::new();
                             let mut asset_records = Vec::new();
-                            let site_root_abs = data_root
-                                .join("users")
-                                .join(&ctx.owner)
-                                .join(&ctx.project)
-                                .join("files")
-                                .join(&site.site_root_rel);
+                            let site_store = web::static_site::SiteStore {
+                                store: &zebfs,
+                                root_rel: site.site_root_rel.clone(),
+                            };
                             let project_asset_root = self
                                 .repo_layout
                                 .as_ref()
@@ -2552,7 +2552,7 @@ impl BasicPipelineEngine {
                                     self.template_root.as_deref(),
                                 );
                                 let localized = web::static_site::localize_static_html_assets(
-                                    &site_root_abs,
+                                    &site_store,
                                     &page.output_rel_path,
                                     &final_html,
                                     web::static_site::StaticAssetSources {
@@ -2570,14 +2570,9 @@ impl BasicPipelineEngine {
                                 );
                                 let rel_path =
                                     web::docs_generate::output_rel_path(page, &site.site_root_rel)?;
-                                let abs_path = data_root
-                                    .join("users")
-                                    .join(&ctx.owner)
-                                    .join(&ctx.project)
-                                    .join("files")
-                                    .join(&rel_path);
-                                let status = web::static_generate::write_generated_html(
-                                    &abs_path,
+                                let status = web::static_generate::write_generated_object(
+                                    &zebfs,
+                                    &rel_path,
                                     &final_html,
                                     "overwrite",
                                 )?;
@@ -2599,14 +2594,9 @@ impl BasicPipelineEngine {
                             if !site.sitemap_xml.trim().is_empty() {
                                 let sitemap_rel =
                                     web::docs_generate::sitemap_rel_path(&site.site_root_rel);
-                                let sitemap_abs = data_root
-                                    .join("users")
-                                    .join(&ctx.owner)
-                                    .join(&ctx.project)
-                                    .join("files")
-                                    .join(&sitemap_rel);
-                                let status = web::static_generate::write_generated_html(
-                                    &sitemap_abs,
+                                let status = web::static_generate::write_generated_object(
+                                    &zebfs,
+                                    &sitemap_rel,
                                     &site.sitemap_xml,
                                     "overwrite",
                                 )?;
@@ -2619,14 +2609,9 @@ impl BasicPipelineEngine {
 
                             let search_index_rel =
                                 web::docs_generate::search_index_rel_path(&site.site_root_rel);
-                            let search_index_abs = data_root
-                                .join("users")
-                                .join(&ctx.owner)
-                                .join(&ctx.project)
-                                .join("files")
-                                .join(&search_index_rel);
-                            let status = web::static_generate::write_generated_html(
-                                &search_index_abs,
+                            let status = web::static_generate::write_generated_object(
+                                &zebfs,
+                                &search_index_rel,
                                 &site.search_index_json,
                                 "overwrite",
                             )?;
@@ -2638,14 +2623,8 @@ impl BasicPipelineEngine {
 
                             let manifest_rel =
                                 web::static_site::site_manifest_rel_path(&site.site_root_rel);
-                            let manifest_abs = data_root
-                                .join("users")
-                                .join(&ctx.owner)
-                                .join(&ctx.project)
-                                .join("files")
-                                .join(&manifest_rel);
                             let _manifest = web::static_site::update_site_manifest(
-                                &manifest_abs,
+                                &site_store,
                                 &site.site_root_rel,
                                 site.deploy_base_url.as_deref(),
                                 &site.deploy_base_path,
@@ -2688,10 +2667,12 @@ impl BasicPipelineEngine {
                         })
                     }
                     NodeDispatch::InlineWebStaticGenerate { node_id, config } => {
-                        let Some(data_root) = &self.data_root else {
+                        let Some(zebfs) =
+                            self.repo_layout.as_ref().map(|layout| layout.open_files())
+                        else {
                             return Err(PipelineError::new(
                                 "FW_NODE_WEB_STATIC_UNAVAILABLE",
-                                "data_root is not configured on this pipeline engine",
+                                "the project's file store is not configured on this pipeline engine",
                             ));
                         };
 
@@ -2746,12 +2727,6 @@ impl BasicPipelineEngine {
 
                         compiled_result.and_then(|compiled| {
                             let rel_path = web::static_generate::effective_output_rel_path(&config)?;
-                            let abs_path = data_root
-                                .join("users")
-                                .join(&ctx.owner)
-                                .join(&ctx.project)
-                                .join("files")
-                                .join(&rel_path);
                             let route =
                                 if let Some(explicit_route) =
                                     config.route.clone().filter(|s| !s.trim().is_empty())
@@ -2844,14 +2819,12 @@ impl BasicPipelineEngine {
                             let localized = if let Some(site_root_rel) =
                                 web::static_generate::effective_site_root_rel_path(&config)?
                             {
-                                let site_root_abs = data_root
-                                    .join("users")
-                                    .join(&ctx.owner)
-                                    .join(&ctx.project)
-                                    .join("files")
-                                    .join(&site_root_rel);
+                                let site_store = web::static_site::SiteStore {
+                                    store: &zebfs,
+                                    root_rel: site_root_rel.clone(),
+                                };
                                 web::static_site::localize_static_html_assets(
-                                    &site_root_abs,
+                                    &site_store,
                                     &web::static_site::normalize_page_output_path(
                                         &config.output_path,
                                     )?,
@@ -2864,23 +2837,24 @@ impl BasicPipelineEngine {
                                     &asset_group,
                                 )?
                             } else {
-                                let page_dir_abs =
-                                    abs_path.parent().unwrap_or(abs_path.as_path()).to_path_buf();
-                                let page_file_name = abs_path
-                                    .file_name()
-                                    .and_then(|name| name.to_str())
-                                    .ok_or_else(|| {
-                                        PipelineError::new(
-                                            "FW_NODE_WEB_STATIC_OUTPUT_NAME",
-                                            format!(
-                                                "node '{node_id}' produced an invalid output path '{}'",
-                                                abs_path.display()
-                                            ),
-                                        )
-                                    })?
-                                    .to_string();
+                                let (page_dir_rel, page_file_name) = match rel_path.rsplit_once('/') {
+                                    Some((dir, name)) => (dir.to_string(), name.to_string()),
+                                    None => (String::new(), rel_path.clone()),
+                                };
+                                if page_file_name.is_empty() {
+                                    return Err(PipelineError::new(
+                                        "FW_NODE_WEB_STATIC_OUTPUT_NAME",
+                                        format!(
+                                            "node '{node_id}' produced an invalid output path '{rel_path}'"
+                                        ),
+                                    ));
+                                }
+                                let page_dir = web::static_site::SiteStore {
+                                    store: &zebfs,
+                                    root_rel: page_dir_rel,
+                                };
                                 web::static_site::localize_static_html_assets(
-                                    &page_dir_abs,
+                                    &page_dir,
                                     &page_file_name,
                                     &final_html,
                                     web::static_site::StaticAssetSources {
@@ -2891,8 +2865,9 @@ impl BasicPipelineEngine {
                                     &asset_group,
                                 )?
                             };
-                            let status = web::static_generate::write_generated_html(
-                                &abs_path,
+                            let status = web::static_generate::write_generated_object(
+                                &zebfs,
+                                &rel_path,
                                 &localized.html,
                                 &config.on_conflict,
                             )?;
@@ -2904,12 +2879,10 @@ impl BasicPipelineEngine {
                             {
                                 let manifest_rel =
                                     web::static_site::site_manifest_rel_path(site_root_rel);
-                                let manifest_abs = data_root
-                                    .join("users")
-                                    .join(&ctx.owner)
-                                    .join(&ctx.project)
-                                    .join("files")
-                                    .join(&manifest_rel);
+                                let site_store = web::static_site::SiteStore {
+                                    store: &zebfs,
+                                    root_rel: site_root_rel.to_string(),
+                                };
                                 let page_path = web::static_site::normalize_page_output_path(
                                     &config.output_path,
                                 )?;
@@ -2921,7 +2894,7 @@ impl BasicPipelineEngine {
                                     generator: web::static_generate::NODE_KIND.to_string(),
                                 };
                                 let _manifest = web::static_site::update_site_manifest(
-                                    &manifest_abs,
+                                    &site_store,
                                     site_root_rel,
                                     web::static_generate::effective_deploy_base_url(&config)
                                         .as_deref(),

@@ -233,64 +233,51 @@ pub fn build_static_html(
     html
 }
 
-/// Persist generated HTML with simple conflict handling and atomic replace.
-pub fn write_generated_html(
-    abs_path: &Path,
-    html: &str,
+/// Persist one generated file into the project's store — its one active
+/// backend — with simple conflict handling. The store writes atomically.
+pub fn write_generated_object(
+    store: &crate::zebfs::ZebFs,
+    rel_path: &str,
+    contents: &str,
     on_conflict: &str,
 ) -> Result<&'static str, PipelineError> {
-    let bytes = html.as_bytes();
-    if let Ok(existing) = std::fs::read(abs_path) {
-        if existing == bytes {
-            return Ok("unchanged");
+    let bytes = contents.as_bytes();
+    match store.get(rel_path) {
+        Ok(existing) => {
+            if existing.bytes == bytes {
+                return Ok("unchanged");
+            }
+            match on_conflict.trim() {
+                "overwrite" | "" => {}
+                "skip" => return Ok("skipped"),
+                "error" => {
+                    return Err(PipelineError::new(
+                        "WEB_STATIC_CONFLICT",
+                        format!("destination '{rel_path}' already exists"),
+                    ));
+                }
+                other => {
+                    return Err(PipelineError::new(
+                        "WEB_STATIC_CONFLICT_MODE",
+                        format!(
+                            "unsupported on_conflict value '{other}' — expected overwrite, skip, or error"
+                        ),
+                    ));
+                }
+            }
         }
-        match on_conflict.trim() {
-            "overwrite" | "" => {}
-            "skip" => return Ok("skipped"),
-            "error" => {
-                return Err(PipelineError::new(
-                    "WEB_STATIC_CONFLICT",
-                    format!("destination '{}' already exists", abs_path.display()),
-                ));
-            }
-            other => {
-                return Err(PipelineError::new(
-                    "WEB_STATIC_CONFLICT_MODE",
-                    format!(
-                        "unsupported on_conflict value '{other}' — expected overwrite, skip, or error"
-                    ),
-                ));
-            }
+        Err(err) if err.code == "ZEBFS_NOT_FOUND" => {}
+        Err(err) => {
+            return Err(PipelineError::new(
+                "WEB_STATIC_READ",
+                format!("failed reading '{rel_path}': {err}"),
+            ));
         }
     }
-
-    if let Some(parent) = abs_path.parent() {
-        std::fs::create_dir_all(parent).map_err(|err| {
-            PipelineError::new(
-                "WEB_STATIC_MKDIR",
-                format!("failed creating '{}': {err}", parent.display()),
-            )
-        })?;
-    }
-
-    let tmp_path = abs_path.with_extension(format!(
-        "{}.tmp",
-        abs_path
-            .extension()
-            .and_then(|ext| ext.to_str())
-            .unwrap_or("html")
-    ));
-    std::fs::write(&tmp_path, bytes).map_err(|err| {
+    store.put(rel_path, bytes).map_err(|err| {
         PipelineError::new(
             "WEB_STATIC_WRITE",
-            format!("failed writing '{}': {err}", tmp_path.display()),
-        )
-    })?;
-    std::fs::rename(&tmp_path, abs_path).map_err(|err| {
-        let _ = std::fs::remove_file(&tmp_path);
-        PipelineError::new(
-            "WEB_STATIC_RENAME",
-            format!("failed finalizing '{}': {err}", abs_path.display()),
+            format!("failed writing '{rel_path}': {err}"),
         )
     })?;
     Ok("written")

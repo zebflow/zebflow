@@ -1,188 +1,253 @@
-//! Platform-owned persistence for backend-neutral ZebFS access rules.
+//! Platform-owned persistence for a project's ZebFS exposure rules.
 //!
-//! The manifest is a document under the store's reserved `.zebfs/` prefix,
-//! read and written as bytes through the store itself, so it lives beside the
-//! objects it governs on whichever backend holds them.
+//! The document lives in the project's store tier, `data/store/zebfs-acl.json`,
+//! beside `addressing.json` — never inside the file backend. A bucket may be
+//! written by tools outside Zebflow, and whoever writes the bucket must not be
+//! able to grant exposure (`docs/contracts/kinds/zebfs-acl/README.md`).
+
+use std::path::{Path, PathBuf};
 
 use crate::contracts::kinds::ZebFsAclContract;
 use crate::contracts::{ContractMetadata, decode_contract, encode_contract};
-use crate::zebfs::acl::{ACL_MANIFEST_PATH, ZebFsAclManifest};
-use crate::zebfs::{ZebFs, ZebFsAccess, ZebFsAclScope, ZebFsError};
+use crate::zebfs::acl::{ZebFsAclManifest, ZebFsAclRule};
+use crate::zebfs::{ZebFsAccess, ZebFsAclScope, ZebFsError};
 
-pub fn read(zebfs: &ZebFs) -> Result<ZebFsAclManifest, ZebFsError> {
-    let Some(bytes) = zebfs.read_reserved(ACL_MANIFEST_PATH)? else {
-        return Ok(ZebFsAclManifest::default());
+/// The document's name under the project's `data/store/`.
+pub const ACL_DOCUMENT: &str = "zebfs-acl.json";
+
+fn document_path(store_dir: &Path) -> PathBuf {
+    store_dir.join(ACL_DOCUMENT)
+}
+
+/// The project's rules. No document means no rules: everything private. Only
+/// the enveloped shape is read; anything else is refused.
+pub fn read(store_dir: &Path) -> Result<ZebFsAclManifest, ZebFsError> {
+    let bytes = match std::fs::read(document_path(store_dir)) {
+        Ok(bytes) => bytes,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(ZebFsAclManifest::default());
+        }
+        Err(err) => return Err(ZebFsError::new("ZEBFS_ACL_READ", err.to_string())),
     };
-    match decode_contract::<ZebFsAclContract>(&bytes) {
-        Ok(document) => Ok(document.spec),
-        Err(err) => match read_pre_contract_manifest(&bytes) {
-            Some(manifest) => Ok(manifest),
-            None => Err(ZebFsError::new(
-                "ZEBFS_ACL_READ",
-                format!("{} ({})", err, err.category()),
-            )),
-        },
-    }
+    let manifest = decode_contract::<ZebFsAclContract>(&bytes)
+        .map_err(|err| ZebFsError::new("ZEBFS_ACL_READ", format!("{} ({})", err, err.category())))?
+        .spec;
+    manifest
+        .validate()
+        .map_err(|err| ZebFsError::new("ZEBFS_ACL_READ", err.message))?;
+    Ok(manifest)
 }
 
-/// Reads an ACL written before this document carried an envelope.
-///
-/// The pre-contract shape is bare: `{"version":N,"rules":{…}}`. An ACL is the
-/// one document here that cannot be regenerated — it records a human decision
-/// — so `kinds/zebfs-acl/README.md` accepts the old shape on read and lets the
-/// next change rewrite it enveloped. Refusing it instead turns every `/fs/…`
-/// read into a 500 with no repair path, because `set_access` reads before it
-/// writes and so cannot fix a file it will not open.
-///
-/// Only the bare shape is accepted, and the drifted `version` counter the
-/// envelope replaced is dropped. A document carrying `apiVersion` or `kind` is
-/// an envelope and is judged as one, so a future `apiVersion` still refuses.
-fn read_pre_contract_manifest(bytes: &[u8]) -> Option<ZebFsAclManifest> {
-    let mut value: serde_json::Value = serde_json::from_slice(bytes).ok()?;
-    let object = value.as_object_mut()?;
-    if object.contains_key("apiVersion") || object.contains_key("kind") {
-        return None;
-    }
-    object.remove("version");
-    serde_json::from_value(value).ok()
-}
-
-pub fn write(zebfs: &ZebFs, manifest: &ZebFsAclManifest) -> Result<(), ZebFsError> {
+pub fn write(store_dir: &Path, manifest: &ZebFsAclManifest) -> Result<(), ZebFsError> {
     let bytes = encode_contract::<ZebFsAclContract>(
         ContractMetadata::named("access-control"),
         manifest.clone(),
     )
     .map_err(|err| ZebFsError::new("ZEBFS_ACL_WRITE", format!("{} ({})", err, err.category())))?;
-    zebfs.write_reserved(ACL_MANIFEST_PATH, &bytes)
+    std::fs::create_dir_all(store_dir)
+        .map_err(|err| ZebFsError::new("ZEBFS_ACL_WRITE", err.to_string()))?;
+    let path = document_path(store_dir);
+    let tmp = path.with_extension("json.tmp");
+    std::fs::write(&tmp, bytes).map_err(|err| ZebFsError::new("ZEBFS_ACL_WRITE", err.to_string()))?;
+    std::fs::rename(&tmp, &path).map_err(|err| ZebFsError::new("ZEBFS_ACL_WRITE", err.to_string()))
 }
 
-pub fn effective_access(zebfs: &ZebFs, path: &str) -> Result<ZebFsAccess, ZebFsError> {
-    read(zebfs)?.effective_access(path)
+/// How exposed `path` is. An unreadable document means private: a
+/// permissions file may only fail in the safe direction.
+pub fn effective_access(store_dir: &Path, path: &str) -> Result<ZebFsAccess, ZebFsError> {
+    match read(store_dir) {
+        Ok(manifest) => manifest.effective_access(path),
+        Err(err) if err.code == "ZEBFS_ACL_READ" => Ok(ZebFsAccess::Private),
+        Err(err) => Err(err),
+    }
 }
 
-pub fn is_public_read(zebfs: &ZebFs, path: &str) -> Result<bool, ZebFsError> {
-    Ok(effective_access(zebfs, path)? == ZebFsAccess::PublicRead)
+/// The rule deciding `path`, with the path it was set on.
+pub fn effective_rule(store_dir: &Path, path: &str) -> Result<Option<(String, ZebFsAclRule)>, ZebFsError> {
+    let manifest = match read(store_dir) {
+        Ok(manifest) => manifest,
+        Err(err) if err.code == "ZEBFS_ACL_READ" => return Ok(None),
+        Err(err) => return Err(err),
+    };
+    Ok(manifest
+        .effective_rule(path)?
+        .map(|(key, rule)| (key.to_string(), rule.clone())))
+}
+
+/// Readable without sign-in on the project's file host.
+pub fn is_public_read(store_dir: &Path, path: &str) -> Result<bool, ZebFsError> {
+    Ok(effective_access(store_dir, path)?.is_exposed())
 }
 
 pub fn set_access(
-    zebfs: &ZebFs,
+    store_dir: &Path,
     path: &str,
     access: ZebFsAccess,
     scope: ZebFsAclScope,
+    serve: &[String],
 ) -> Result<String, ZebFsError> {
-    let mut manifest = read(zebfs)?;
-    let normalized = manifest.set_rule(path, access, scope)?;
-    write(zebfs, &manifest)?;
+    let mut manifest = read(store_dir)?;
+    let normalized = manifest.set_rule(path, access, scope, serve)?;
+    write(store_dir, &manifest)?;
     Ok(normalized)
+}
+
+/// A path was deleted: its rules, and the rules beneath it, go with it.
+pub fn forget(store_dir: &Path, path: &str) -> Result<usize, ZebFsError> {
+    let mut manifest = read(store_dir)?;
+    let removed = manifest.forget(path);
+    if removed > 0 {
+        write(store_dir, &manifest)?;
+    }
+    Ok(removed)
+}
+
+/// The project's hosts changed: origins on hosts it no longer has leave every
+/// `serve`, and a rule left with none becomes private. Answers those paths.
+pub fn retain_hosts(store_dir: &Path, hosts: &[String]) -> Result<Vec<String>, ZebFsError> {
+    let mut manifest = read(store_dir)?;
+    let before = serde_json::to_vec(&manifest.rules).unwrap_or_default();
+    let demoted = manifest.retain_hosts(hosts);
+    if serde_json::to_vec(&manifest.rules).unwrap_or_default() != before {
+        write(store_dir, &manifest)?;
+    }
+    Ok(demoted)
+}
+
+/// One exposed rule and what it currently exposes.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ExposedRule {
+    pub path: String,
+    pub access: &'static str,
+    pub scope: &'static str,
+    pub serve: Vec<String>,
+    pub files: u64,
+    pub bytes: u64,
+}
+
+/// Every exposed rule with the objects it decides today, for the Files page:
+/// exposure is never quiet. An object counts under the rule that decides it,
+/// so a private rule nested in a public folder takes its objects out.
+pub fn exposure(store_dir: &Path, store: &crate::zebfs::ZebFs) -> Result<Vec<ExposedRule>, ZebFsError> {
+    let manifest = read(store_dir)?;
+    let mut out = Vec::new();
+    for (path, rule) in &manifest.rules {
+        if !rule.access.is_exposed() {
+            continue;
+        }
+        let mut files = 0u64;
+        let mut bytes = 0u64;
+        let mut count = |key: &str, size: u64| {
+            if manifest
+                .effective_rule(key)
+                .ok()
+                .flatten()
+                .is_some_and(|(decider, _)| decider == path)
+            {
+                files += 1;
+                bytes += size;
+            }
+        };
+        match rule.scope {
+            ZebFsAclScope::Object => {
+                if let Ok(stat) = store.head(path)
+                    && stat.kind == crate::zebfs::ZebFsEntryKind::Object
+                {
+                    count(path, stat.size);
+                }
+            }
+            ZebFsAclScope::Prefix => walk(store, path, &mut count),
+        }
+        out.push(ExposedRule {
+            path: path.clone(),
+            access: rule.access.as_str(),
+            scope: rule.scope.as_str(),
+            serve: rule.serve.clone(),
+            files,
+            bytes,
+        });
+    }
+    Ok(out)
+}
+
+fn walk(store: &crate::zebfs::ZebFs, prefix: &str, count: &mut impl FnMut(&str, u64)) {
+    let Ok(entries) = store.list(prefix) else {
+        return;
+    };
+    for entry in entries {
+        match entry.kind {
+            crate::zebfs::ZebFsEntryKind::Prefix => walk(store, &entry.path, count),
+            crate::zebfs::ZebFsEntryKind::Object => count(&entry.path, entry.size),
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::zebfs::LocalZebFs;
 
     #[test]
-    fn acl_roundtrips_and_rejects_future_documents() {
+    fn rules_roundtrip_in_the_store_tier_and_a_future_document_reads_as_private() {
         let root = tempfile::tempdir().unwrap();
-        let zebfs = ZebFs::Local(LocalZebFs::new(root.path().to_path_buf()));
-        set_access(
-            &zebfs,
-            "public",
-            ZebFsAccess::PublicRead,
-            ZebFsAclScope::Prefix,
-        )
-        .unwrap();
-        assert!(is_public_read(&zebfs, "public/file.txt").unwrap());
+        let store = root.path();
+        set_access(store, "covers", ZebFsAccess::PublicRead, ZebFsAclScope::Prefix, &[]).unwrap();
+        assert!(is_public_read(store, "covers/a.jpg").unwrap());
+        assert!(!is_public_read(store, "uploads/a.jpg").unwrap());
+        assert!(store.join(ACL_DOCUMENT).is_file());
 
-        let acl_path = root.path().join(ACL_MANIFEST_PATH);
         std::fs::write(
-            &acl_path,
+            store.join(ACL_DOCUMENT),
             br#"{"apiVersion":"zebflow.com/v9","kind":"ZebFsAcl","metadata":{"name":"a"},"spec":{"rules":{}}}"#,
         )
         .unwrap();
-        assert_eq!(
-            effective_access(&zebfs, "public/file.txt")
-                .unwrap_err()
-                .code,
-            "ZEBFS_ACL_READ"
-        );
+        assert_eq!(read(store).unwrap_err().code, "ZEBFS_ACL_READ");
+        assert!(!is_public_read(store, "covers/a.jpg").unwrap());
     }
 
-    /// `kinds/zebfs-acl/README.md`: the bare pre-contract shape "is accepted on
-    /// read and rewritten in the enveloped form on the next change. Nobody
-    /// loses a sharing setting to a format change."
+    /// No backward compatibility: the bare pre-contract shape is refused, and
+    /// so is garbage or an envelope with an unknown field.
     #[test]
-    fn pre_contract_acl_is_read_and_rewritten_enveloped_on_the_next_change() {
+    fn only_the_enveloped_document_is_read() {
         let root = tempfile::tempdir().unwrap();
-        let zebfs = ZebFs::Local(LocalZebFs::new(root.path().to_path_buf()));
-        let acl_path = root.path().join(ACL_MANIFEST_PATH);
-        std::fs::create_dir_all(acl_path.parent().unwrap()).unwrap();
-        std::fs::write(
-            &acl_path,
-            br#"{"version":1,"rules":{"shared":{"access":"public_read","scope":"prefix","updated_at":1782287499}}}"#,
-        )
-        .unwrap();
-
-        // Read accepts it, and the sharing setting survives.
-        assert!(is_public_read(&zebfs, "shared/photo.jpg").unwrap());
-        assert!(!is_public_read(&zebfs, "private/photo.jpg").unwrap());
-
-        // The next change rewrites it enveloped, keeping the old rule.
-        set_access(
-            &zebfs,
-            "also-shared",
-            ZebFsAccess::PublicRead,
-            ZebFsAclScope::Prefix,
-        )
-        .unwrap();
-        let rewritten: serde_json::Value =
-            serde_json::from_slice(&std::fs::read(&acl_path).unwrap()).unwrap();
-        assert_eq!(rewritten["apiVersion"], "zebflow.com/v1");
-        assert_eq!(rewritten["kind"], "ZebFsAcl");
-        assert!(rewritten["spec"]["rules"]["shared"].is_object());
-        assert!(is_public_read(&zebfs, "shared/photo.jpg").unwrap());
-        assert!(is_public_read(&zebfs, "also-shared/photo.jpg").unwrap());
+        let store = root.path();
+        for bytes in [
+            &br#"{"version":1,"rules":{"shared":{"access":"public_read","scope":"prefix","updated_at":1}}}"#[..],
+            &br#"{"rules":{"a":{"access":"nope"}}}"#[..],
+            &b"not json at all"[..],
+            &br#"{"apiVersion":"zebflow.com/v1","kind":"ZebFsAcl","metadata":{"name":"a"},"spec":{"rules":{}},"extra":1}"#[..],
+            &br#"{"apiVersion":"zebflow.com/v1","kind":"ZebFsAcl","metadata":{"name":"a"},"spec":{"rules":{"site":{"access":"public_execute","scope":"prefix","updated_at":1}}}}"#[..],
+        ] {
+            std::fs::write(store.join(ACL_DOCUMENT), bytes).unwrap();
+            assert_eq!(read(store).unwrap_err().code, "ZEBFS_ACL_READ");
+        }
     }
 
-    /// The manifest is bytes under the store's reserved prefix, so it lives
-    /// beside the objects it governs on a bucket exactly as it does on disk.
     #[test]
-    fn the_acl_lives_in_the_bucket_beside_the_objects_it_governs() {
-        let (port, objects) = crate::zebfs::s3::tests::fake_s3();
-        let zebfs = ZebFs::S3(crate::zebfs::s3::tests::store(port, "projects/demo"));
-        assert!(!is_public_read(&zebfs, "public/logo.png").unwrap());
-        set_access(&zebfs, "public", ZebFsAccess::PublicRead, ZebFsAclScope::Prefix).unwrap();
-        assert!(is_public_read(&zebfs, "public/logo.png").unwrap());
-        assert!(!is_public_read(&zebfs, "private/notes.md").unwrap());
-        let key = format!("projects/demo/{ACL_MANIFEST_PATH}");
-        let bytes = objects.lock().unwrap().get(&key).cloned().expect("the manifest is a key");
-        let written: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-        assert_eq!(written["kind"], "ZebFsAcl");
-        // And it is not an object a user verb can see or touch.
-        assert!(zebfs.list("").unwrap().iter().all(|entry| entry.name != ".zebfs"));
-        assert_eq!(zebfs.get(ACL_MANIFEST_PATH).unwrap_err().code, "ZEBFS_RESERVED_PATH");
-    }
-
-    /// The allowance is for the bare shape only: garbage still refuses, and so
-    /// does an enveloped document with an unknown root field.
-    #[test]
-    fn pre_contract_allowance_does_not_accept_arbitrary_documents() {
+    fn deleting_and_host_removal_update_the_document() {
         let root = tempfile::tempdir().unwrap();
-        let zebfs = ZebFs::Local(LocalZebFs::new(root.path().to_path_buf()));
-        let acl_path = root.path().join(ACL_MANIFEST_PATH);
-        std::fs::create_dir_all(acl_path.parent().unwrap()).unwrap();
+        let store = root.path();
+        set_access(store, "site", ZebFsAccess::PublicExecute, ZebFsAclScope::Prefix, &["https://site.example".to_string()]).unwrap();
+        set_access(store, "covers/a.jpg", ZebFsAccess::PublicRead, ZebFsAclScope::Object, &[]).unwrap();
+        assert_eq!(effective_access(store, "site/index.html").unwrap(), ZebFsAccess::PublicExecute);
+        assert_eq!(forget(store, "covers/a.jpg").unwrap(), 1);
+        assert!(!is_public_read(store, "covers/a.jpg").unwrap());
+        assert_eq!(retain_hosts(store, &["other.example".to_string()]).unwrap(), vec!["site".to_string()]);
+        assert_eq!(effective_access(store, "site/index.html").unwrap(), ZebFsAccess::Private);
+    }
 
-        std::fs::write(&acl_path, br#"{"rules":{"a":{"access":"nope"}}}"#).unwrap();
-        assert_eq!(read(&zebfs).unwrap_err().code, "ZEBFS_ACL_READ");
-
-        std::fs::write(&acl_path, b"not json at all").unwrap();
-        assert_eq!(read(&zebfs).unwrap_err().code, "ZEBFS_ACL_READ");
-
-        std::fs::write(
-            &acl_path,
-            br#"{"apiVersion":"zebflow.com/v1","kind":"ZebFsAcl","metadata":{"name":"a"},"spec":{"rules":{}},"extra":1}"#,
-        )
-        .unwrap();
-        assert_eq!(read(&zebfs).unwrap_err().code, "ZEBFS_ACL_READ");
+    #[test]
+    fn exposure_counts_what_each_rule_decides() {
+        let root = tempfile::tempdir().unwrap();
+        let files = tempfile::tempdir().unwrap();
+        let store = crate::zebfs::ZebFs::Local(crate::zebfs::LocalZebFs::new(files.path().to_path_buf()));
+        store.put("covers/a.jpg", b"aaaa").unwrap();
+        store.put("covers/draft/b.jpg", b"bb").unwrap();
+        store.put("uploads/c.jpg", b"c").unwrap();
+        let dir = root.path();
+        set_access(dir, "covers", ZebFsAccess::PublicRead, ZebFsAclScope::Prefix, &[]).unwrap();
+        set_access(dir, "covers/draft", ZebFsAccess::Private, ZebFsAclScope::Prefix, &[]).unwrap();
+        let exposed = exposure(dir, &store).unwrap();
+        assert_eq!(exposed.len(), 1);
+        assert_eq!((exposed[0].path.as_str(), exposed[0].files, exposed[0].bytes), ("covers", 1, 4));
     }
 }

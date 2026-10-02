@@ -188,8 +188,8 @@ register pipelines/pwa/icons    -- | trigger.webhook --path /pwa/{file} --method
   (a member area at `/member/`) is a second file and route.
 - A worker controls only pages under the directory it is served from, so the
   site's worker answers at `/sw.js`; from deeper, add
-  `--header Service-Worker-Allowed=/`. A store object at `/_files/sw.js`
-  would control nothing.
+  `--header Service-Worker-Allowed=/`. A stored object on the file host
+  would control nothing — that host never runs scripts.
 - With `--folder`, `--file` is a bare filename, usually from the route, and can
   never leave that folder — safe to expose.
 - Every page carries the manifest and the Apple icon in `page.head.links` and

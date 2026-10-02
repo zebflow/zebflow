@@ -20,7 +20,7 @@ declares which classes the archive carries:
 | --- | --- | --- | --- | --- |
 | `repo` | `repo/` — source, `zebflow.yaml`, `zeb.lock`, schema/initial-data files | yes | yes | — |
 | `store` | `data/store/` — applied database state | yes | — | — |
-| `files` | `files/` — objects + `.zebfs/acl.json` | yes | — | yes |
+| `files` | `files/` — objects (the `ZebFsAcl` document is store tier and rides `store`, target 2026-10-02) | yes | — | yes |
 
 Fixed rules, riding on sealed ground elsewhere:
 

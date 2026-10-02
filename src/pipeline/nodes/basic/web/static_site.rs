@@ -13,6 +13,69 @@ use serde::{Deserialize, Serialize};
 
 use crate::pipeline::PipelineError;
 use crate::platform::web::embedded::{PLATFORM_LIBRARY_ASSETS, platform_public_asset};
+use crate::zebfs::ZebFs;
+
+/// The file every generator of one site root shares, inside that root.
+pub const SITE_MANIFEST_FILE: &str = ".zebflow-static-site.json";
+
+/// One generated site's place in the project's store.
+///
+/// Every page, asset and manifest goes through the project's one active
+/// backend — local disk or a bucket — never a path on this machine's disk, so
+/// a project whose files live in a bucket gets its site in that bucket.
+pub struct SiteStore<'a> {
+    pub store: &'a ZebFs,
+    /// The folder the site lives in, relative to the store; empty for the
+    /// store's top level.
+    pub root_rel: String,
+}
+
+impl SiteStore<'_> {
+    pub fn key(&self, rel: &str) -> String {
+        let rel = rel.trim_start_matches('/');
+        let root = self.root_rel.trim_matches('/');
+        if root.is_empty() {
+            rel.to_string()
+        } else {
+            format!("{root}/{rel}")
+        }
+    }
+
+    pub fn put(&self, rel: &str, bytes: &[u8]) -> Result<(), PipelineError> {
+        let key = self.key(rel);
+        self.store.put(&key, bytes).map(|_| ()).map_err(|err| {
+            PipelineError::new(
+                "WEB_STATIC_SITE_WRITE",
+                format!("failed writing '{key}': {err}"),
+            )
+        })
+    }
+
+    /// The object's bytes, or `None` when there is no such object.
+    pub fn get(&self, rel: &str) -> Result<Option<Vec<u8>>, PipelineError> {
+        let key = self.key(rel);
+        match self.store.get(&key) {
+            Ok(object) => Ok(Some(object.bytes)),
+            Err(err) if err.code == "ZEBFS_NOT_FOUND" => Ok(None),
+            Err(err) => Err(PipelineError::new(
+                "WEB_STATIC_SITE_READ",
+                format!("failed reading '{key}': {err}"),
+            )),
+        }
+    }
+
+    pub fn delete(&self, rel: &str) -> Result<(), PipelineError> {
+        let key = self.key(rel);
+        match self.store.delete(&key) {
+            Ok(()) => Ok(()),
+            Err(err) if err.code == "ZEBFS_NOT_FOUND" => Ok(()),
+            Err(err) => Err(PipelineError::new(
+                "WEB_STATIC_SITE_ASSET_DELETE",
+                format!("failed deleting stale asset '{key}': {err}"),
+            )),
+        }
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct StaticTemplateGroup {
@@ -141,10 +204,7 @@ pub fn page_rel_path_from_site_root(
 }
 
 pub fn site_manifest_rel_path(site_root_rel: &str) -> String {
-    format!(
-        "{}/.zebflow-static-site.json",
-        site_root_rel.trim_end_matches('/')
-    )
+    format!("{}/{SITE_MANIFEST_FILE}", site_root_rel.trim_end_matches('/'))
 }
 
 pub fn normalize_deploy_base_url(raw: Option<&str>) -> Option<String> {
@@ -219,7 +279,7 @@ pub fn absolute_deploy_url(base_url: Option<&str>, route_path: &str) -> Option<S
 }
 
 pub fn localize_static_html_assets(
-    site_root_abs: &Path,
+    site: &SiteStore<'_>,
     page_output_path: &str,
     html: &str,
     asset_sources: StaticAssetSources<'_>,
@@ -247,7 +307,7 @@ pub fn localize_static_html_assets(
             })?;
         let local_rel = origin.local_rel_path();
         materialize_asset(
-            site_root_abs,
+            site,
             &origin,
             &asset_sources,
             asset_group,
@@ -273,7 +333,7 @@ pub fn asset_group_id(template_rel_path: &str, template_markup: &str) -> String 
 }
 
 pub fn update_site_manifest(
-    manifest_abs_path: &Path,
+    site: &SiteStore<'_>,
     site_root_rel: &str,
     deploy_base_url: Option<&str>,
     deploy_base_path: &str,
@@ -286,14 +346,8 @@ pub fn update_site_manifest(
 ) -> Result<StaticSiteManifest, PipelineError> {
     let deploy_base_url = normalize_deploy_base_url(deploy_base_url);
     let deploy_base_path = normalize_deploy_base_path(Some(deploy_base_path), "/")?;
-    let mut manifest = if manifest_abs_path.is_file() {
-        let raw = std::fs::read_to_string(manifest_abs_path).map_err(|err| {
-            PipelineError::new(
-                "WEB_STATIC_SITE_MANIFEST_READ",
-                format!("failed reading '{}': {err}", manifest_abs_path.display()),
-            )
-        })?;
-        serde_json::from_str::<StaticSiteManifest>(&raw).unwrap_or_else(|_| {
+    let mut manifest = if let Some(raw) = site.get(SITE_MANIFEST_FILE)? {
+        serde_json::from_slice::<StaticSiteManifest>(&raw).unwrap_or_else(|_| {
             StaticSiteManifest::new(
                 site_root_rel.to_string(),
                 deploy_base_url.clone(),
@@ -376,28 +430,8 @@ pub fn update_site_manifest(
             })
             .map(|asset| asset.path.clone())
             .collect::<Vec<_>>();
-        let site_root_abs = manifest_abs_path.parent().ok_or_else(|| {
-            PipelineError::new(
-                "WEB_STATIC_SITE_MANIFEST_PARENT",
-                format!(
-                    "manifest path '{}' has no parent directory",
-                    manifest_abs_path.display()
-                ),
-            )
-        })?;
         for stale_path in &stale_asset_paths {
-            let stale_abs = site_root_abs.join(stale_path);
-            if stale_abs.is_file() {
-                std::fs::remove_file(&stale_abs).map_err(|err| {
-                    PipelineError::new(
-                        "WEB_STATIC_SITE_ASSET_DELETE",
-                        format!(
-                            "failed deleting stale asset '{}': {err}",
-                            stale_abs.display()
-                        ),
-                    )
-                })?;
-            }
+            site.delete(stale_path)?;
         }
         manifest.assets.retain(|asset| {
             asset.asset_group != asset_group || incoming_asset_paths.contains(asset.path.as_str())
@@ -417,26 +451,13 @@ pub fn update_site_manifest(
     }
     manifest.assets.sort_by(|a, b| a.path.cmp(&b.path));
 
-    if let Some(parent) = manifest_abs_path.parent() {
-        std::fs::create_dir_all(parent).map_err(|err| {
-            PipelineError::new(
-                "WEB_STATIC_SITE_MANIFEST_MKDIR",
-                format!("failed creating '{}': {err}", parent.display()),
-            )
-        })?;
-    }
     let payload = serde_json::to_vec_pretty(&manifest).map_err(|err| {
         PipelineError::new(
             "WEB_STATIC_SITE_MANIFEST_SERIALIZE",
             format!("failed serializing site manifest: {err}"),
         )
     })?;
-    std::fs::write(manifest_abs_path, payload).map_err(|err| {
-        PipelineError::new(
-            "WEB_STATIC_SITE_MANIFEST_WRITE",
-            format!("failed writing '{}': {err}", manifest_abs_path.display()),
-        )
-    })?;
+    site.put(SITE_MANIFEST_FILE, &payload)?;
 
     Ok(manifest)
 }
@@ -544,7 +565,7 @@ fn collect_static_asset_refs(
 }
 
 fn materialize_asset(
-    site_root_abs: &Path,
+    site: &SiteStore<'_>,
     origin: &AssetOrigin,
     asset_sources: &StaticAssetSources<'_>,
     asset_group: &str,
@@ -597,16 +618,6 @@ fn materialize_asset(
         }
     };
 
-    let local_abs = site_root_abs.join(&local_rel);
-    if let Some(parent) = local_abs.parent() {
-        std::fs::create_dir_all(parent).map_err(|err| {
-            PipelineError::new(
-                "WEB_STATIC_SITE_ASSET_MKDIR",
-                format!("failed creating '{}': {err}", parent.display()),
-            )
-        })?;
-    }
-
     let final_bytes = if local_rel.ends_with(".css") {
         localize_css_asset(
             String::from_utf8(raw_bytes).map_err(|err| {
@@ -615,7 +626,7 @@ fn materialize_asset(
                     format!("failed decoding CSS asset '{}': {err}", local_rel),
                 )
             })?,
-            site_root_abs,
+            site,
             &local_rel,
             origin,
             asset_sources,
@@ -628,12 +639,7 @@ fn materialize_asset(
         raw_bytes
     };
 
-    std::fs::write(&local_abs, &final_bytes).map_err(|err| {
-        PipelineError::new(
-            "WEB_STATIC_SITE_ASSET_WRITE",
-            format!("failed writing '{}': {err}", local_abs.display()),
-        )
-    })?;
+    site.put(&local_rel, &final_bytes)?;
 
     asset_records.push(StaticAssetRecord {
         path: local_rel,
@@ -645,7 +651,7 @@ fn materialize_asset(
 
     if let AssetOrigin::Library(path) = origin {
         materialize_library_runtime_family_siblings(
-            site_root_abs,
+            site,
             path,
             asset_sources,
             asset_group,
@@ -658,7 +664,7 @@ fn materialize_asset(
 }
 
 fn materialize_library_runtime_family_siblings(
-    site_root_abs: &Path,
+    site: &SiteStore<'_>,
     embedded_rel: &str,
     asset_sources: &StaticAssetSources<'_>,
     asset_group: &str,
@@ -685,15 +691,6 @@ fn materialize_library_runtime_family_siblings(
         if !written.insert(sibling_local_rel.clone()) {
             continue;
         }
-        let sibling_abs = site_root_abs.join(&sibling_local_rel);
-        if let Some(parent) = sibling_abs.parent() {
-            std::fs::create_dir_all(parent).map_err(|err| {
-                PipelineError::new(
-                    "WEB_STATIC_SITE_ASSET_MKDIR",
-                    format!("failed creating '{}': {err}", parent.display()),
-                )
-            })?;
-        }
         let final_bytes = if sibling_local_rel.ends_with(".css") {
             localize_css_asset(
                 String::from_utf8(asset.bytes.to_vec()).map_err(|err| {
@@ -702,7 +699,7 @@ fn materialize_library_runtime_family_siblings(
                         format!("failed decoding CSS asset '{}': {err}", sibling_local_rel),
                     )
                 })?,
-                site_root_abs,
+                site,
                 &sibling_local_rel,
                 &sibling,
                 asset_sources,
@@ -714,12 +711,7 @@ fn materialize_library_runtime_family_siblings(
         } else {
             asset.bytes.to_vec()
         };
-        std::fs::write(&sibling_abs, &final_bytes).map_err(|err| {
-            PipelineError::new(
-                "WEB_STATIC_SITE_ASSET_WRITE",
-                format!("failed writing '{}': {err}", sibling_abs.display()),
-            )
-        })?;
+        site.put(&sibling_local_rel, &final_bytes)?;
         asset_records.push(StaticAssetRecord {
             path: sibling_local_rel,
             source_url: sibling.source_url(asset_sources.owner, asset_sources.project),
@@ -733,7 +725,7 @@ fn materialize_library_runtime_family_siblings(
 
 fn localize_css_asset(
     css: String,
-    site_root_abs: &Path,
+    site: &SiteStore<'_>,
     css_local_rel: &str,
     origin: &AssetOrigin,
     asset_sources: &StaticAssetSources<'_>,
@@ -755,7 +747,7 @@ fn localize_css_asset(
         };
         let target_local_rel = target_origin.local_rel_path();
         materialize_asset(
-            site_root_abs,
+            site,
             &target_origin,
             asset_sources,
             asset_group,
@@ -772,7 +764,7 @@ fn localize_css_asset(
         };
         let target_local_rel = target_origin.local_rel_path();
         materialize_asset(
-            site_root_abs,
+            site,
             &target_origin,
             asset_sources,
             asset_group,
@@ -1027,9 +1019,14 @@ mod tests {
         absolute_deploy_url, asset_group_id, localize_static_html_assets,
         normalize_deploy_base_path, normalize_page_output_path, normalize_site_root_rel_path,
         page_rel_path_from_site_root, route_path_for_output_path, site_manifest_rel_path,
-        update_site_manifest,
+        update_site_manifest, SiteStore,
     };
+    use crate::zebfs::{LocalZebFs, ZebFs};
     use tempfile::tempdir;
+
+    fn local_store(root: &std::path::Path) -> ZebFs {
+        ZebFs::Local(LocalZebFs::new(root.to_path_buf()))
+    }
 
     #[test]
     fn normalizes_site_root_and_page_paths() {
@@ -1123,7 +1120,7 @@ mod tests {
             html: rewritten,
             assets,
         } = localize_static_html_assets(
-            temp.path(),
+            &SiteStore { store: &local_store(temp.path()), root_rel: String::new() },
             "basic/query/index.html",
             html,
             StaticAssetSources {
@@ -1211,14 +1208,15 @@ mod tests {
     #[test]
     fn manifest_prunes_full_group_assets_and_pages() {
         let temp = tempdir().expect("tempdir");
-        let manifest_abs = temp.path().join(".zebflow-static-site.json");
+        let store = local_store(temp.path());
+        let site = SiteStore { store: &store, root_rel: String::new() };
         let stale_asset_abs = temp.path().join("_assets/project/old.png");
         std::fs::create_dir_all(stale_asset_abs.parent().expect("asset parent"))
             .expect("create stale parent");
         std::fs::write(&stale_asset_abs, b"old").expect("write stale asset");
 
         let _ = update_site_manifest(
-            &manifest_abs,
+            &site,
             "docs",
             Some("https://db.docs.example"),
             "/docs",
@@ -1244,7 +1242,7 @@ mod tests {
         .expect("initial manifest");
 
         let manifest = update_site_manifest(
-            &manifest_abs,
+            &site,
             "docs",
             Some("https://db.docs.example"),
             "/docs",

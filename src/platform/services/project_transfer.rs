@@ -488,6 +488,25 @@ impl ProjectTransferService {
                 if kept.is_file() {
                     fs::copy(&kept, target.join(ADDRESSING_FILE))?;
                 }
+                // Exposure rules arrive with the store; an origin on a host this
+                // instance does not give the project leaves every `serve`
+                // (kinds/zebfs-acl §Lifetime).
+                let mut hosts = fs::read(target.join(ADDRESSING_FILE))
+                    .ok()
+                    .and_then(|bytes| {
+                        serde_json::from_slice::<
+                            crate::platform::services::addressing::ProjectAddressing,
+                        >(&bytes)
+                        .ok()
+                    })
+                    .map(|addressing| addressing.hosts)
+                    .unwrap_or_default();
+                hosts.push(crate::platform::services::addressing::AddressingService::dev_host(
+                    &owner, &project,
+                ));
+                crate::platform::services::zebfs_acl::retain_hosts(&target, &hosts).map_err(
+                    |err| PlatformError::new("PROJECT_TRANSFER_IMPORT", err.message),
+                )?;
             }
             recovery.push(ProjectImportRecoverySwap {
                 class: *class,

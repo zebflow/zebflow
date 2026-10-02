@@ -15,6 +15,7 @@ rely on them.
 - [Discoverability contract](./discoverability.md)
 - [UX contract](./ux.md)
 - [Interface contract](./interface.md)
+- [Node conventions](./node-conventions.md)
 - [Registered contract kinds](./kinds/README.md)
 - [Contract stability matrix](./stability-matrix.md)
 - [Versioning contract](./versioning.md)

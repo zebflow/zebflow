@@ -19,7 +19,7 @@ What belongs to which:
 |---|---|
 | the runtime and every node kind | its pipelines, pages, components, docs |
 | the Studio, at the platform address | its hosts and addressing switches |
-| `zeb/*` libraries, blessed skills, this help | its store (`public/` → `/_files`), databases, credentials |
+| `zeb/*` libraries, blessed skills, this help | its store (private; exposed only by Studio → Files), databases, credentials |
 | the `_` surfaces (`/_static`, `/_files`, `/_ws`, `/_fs`, `/_ms`, `/_mcp`) | its `static/` (→ `/_static`), its project skills |
 
 ## What a project contains
@@ -31,7 +31,7 @@ What belongs to which:
 | **Docs** | `docs/*.md` | the project's own documents; `AGENTS.md`, `SOUL.md`, `MEMORY.md` are kept separately for agents |
 | **Databases** | connections `default` (SQLite) and `default-multimodel` (Sekejap) in every project; PostgreSQL and others by credential | `help("db")` |
 | **Credentials** | encrypted at rest under the instance key; referenced by id from nodes | Studio → Credentials |
-| **Files** | ZebFS: `public/…` served anonymously at `/_files/…` on the project's hosts (`/files/{owner}/{project}/public/…` on the platform address), everything else private at `/_fs/…` (off by default) | `n.fs.*` nodes |
+| **Files** | ZebFS: every object private until Studio → Files exposes its folder — `public_read` on the project's file host (`<project>.<owner>.fs.localhost`), always inert; `public_execute` as a site on the addresses it lists | `n.fs.*` nodes |
 | **Static assets** | `static/` in the repository, served at `/_static/…` — icons, fonts, brand files that ship with the code | `help("web")` |
 | **Configuration** | `zebflow.yaml` (layout, libraries, locks, policy), `zeb.lock` (installed node bundles and libraries) | Studio → Settings |
 

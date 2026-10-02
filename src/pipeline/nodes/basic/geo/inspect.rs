@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::pipeline::nodes::shared::file_ref::zebfs_rel_path_or_string;
+use crate::pipeline::nodes::shared::store_scratch::StoreScratch;
 use crate::pipeline::nodes::shared::util::metadata_scope;
 use crate::pipeline::model::NodeCapability;
 use crate::pipeline::{
@@ -174,13 +175,16 @@ impl NodeHandler for Node {
             .ensure_project_layout(owner, project)
             .map_err(|err| PipelineError::new("FW_NODE_GEO_INSPECT", err.to_string()))?;
 
-        let abs_path = layout.local_files_dir()?.join(&rel_path);
-        if !abs_path.exists() {
-            return Err(PipelineError::new(
+        // GDAL reads paths and the project's files live in its one active
+        // store: the file (and its sidecars) is pulled into a scratch folder.
+        let zebfs = layout.open_files();
+        let scratch = StoreScratch::new("FW_NODE_GEO_INSPECT")?;
+        let abs_path = scratch.pull_with_siblings(&zebfs, &rel_path).map_err(|_| {
+            PipelineError::new(
                 "FW_NODE_GEO_INSPECT",
                 format!("file not found: {rel_path}"),
-            ));
-        }
+            )
+        })?;
 
         let path_for_task = abs_path.clone();
         let report =

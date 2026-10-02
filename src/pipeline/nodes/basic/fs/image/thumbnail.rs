@@ -25,7 +25,7 @@ use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use super::load_with_limits;
-use crate::pipeline::nodes::shared::file_ref::{BACKEND_ZEBFS, FILE_REF_TYPE, LIFECYCLE_DURABLE, zebfs_rel_path_or_string};
+use crate::pipeline::nodes::shared::file_ref::{FILE_REF_TYPE, LIFECYCLE_DURABLE, zebfs_rel_path_or_string};
 use crate::pipeline::nodes::shared::util::{filename_stem, metadata_scope, resolve_path};
 use crate::pipeline::model::NodeCapability;
 use crate::pipeline::{
@@ -135,7 +135,7 @@ pub fn definition() -> NodeDefinition {
         description:
             "Make a small image from a stored one. Reads the source at `--source-key` (default `saved` — the FileRef `fs.save` answers, or a store path string — i.e. right after \
              `fs.save`), resizes to `--width`×`--height` with `--fit cover|contain|fill`, writes `--format jpg|png|webp` into `--folder` \
-             (default `thumbnails/`; use `public/…` for a page to show it anonymously). Adds `thumbnail` (a FileRef: `ref`, `filename`, \
+             (default `thumbnails/`). Adds `thumbnail` (a FileRef: `ref`, `filename`, \
              `width`, `height`, `format`, `size`) to the payload and keeps the rest; with `--delete-source` the original is removed \
              and its key (`saved`) dropped. Store `thumbnail.ref` in the row."
             .to_string(),
@@ -393,16 +393,13 @@ impl NodeHandler for Node {
             .ensure_project_layout(owner, project)
             .map_err(|e| PipelineError::new("IMG_THUMBNAIL", e.to_string()))?;
 
-        let abs_path = layout.local_files_dir()?.join(&rel_path);
-        if !abs_path.exists() {
-            return Err(PipelineError::new(
-                "IMG_THUMBNAIL",
-                format!("source file not found: {rel_path}"),
-            ));
-        }
+        // Every read and write goes through the project's one active store.
+        let zebfs = layout.open_files();
+        let rel_path = crate::zebfs::normalize_object_path(rel_path.trim_start_matches('/'))
+            .map_err(|e| PipelineError::new("IMG_THUMBNAIL", e.to_string()))?;
 
         // ── Reject unsupported formats before loading ─────────────────────
-        let ext = abs_path
+        let ext = std::path::Path::new(&rel_path)
             .extension()
             .and_then(|e| e.to_str())
             .unwrap_or("")
@@ -417,8 +414,18 @@ impl NodeHandler for Node {
         }
 
         // ── Load with decompression-bomb limits ───────────────────────────
-        let raw_bytes = std::fs::read(&abs_path)
-            .map_err(|e| PipelineError::new("IMG_THUMBNAIL", format!("read error: {e}")))?;
+        let raw_bytes = match zebfs.get(&rel_path) {
+            Ok(object) => object.bytes,
+            Err(e) if e.code == "ZEBFS_NOT_FOUND" => {
+                return Err(PipelineError::new(
+                    "IMG_THUMBNAIL",
+                    format!("source file not found: {rel_path}"),
+                ));
+            }
+            Err(e) => {
+                return Err(PipelineError::new("IMG_THUMBNAIL", format!("read error: {e}")));
+            }
+        };
 
         let img = load_with_limits(&raw_bytes)?;
 
@@ -458,24 +465,14 @@ impl NodeHandler for Node {
             }
         };
         let thumb_rel = format!("{folder}/{storage_name}");
-        let abs_dest = layout.local_files_dir()?.join(&thumb_rel);
-
-        if let Some(parent) = abs_dest.parent() {
-            std::fs::create_dir_all(parent)
-                .map_err(|e| PipelineError::new("IMG_THUMBNAIL", format!("mkdir: {e}")))?;
-        }
-
-        // Atomic write: temp → rename
-        let tmp_dest = abs_dest.with_extension(format!("{ext_out}.tmp"));
-        std::fs::write(&tmp_dest, &encoded)
+        zebfs
+            .put(&thumb_rel, &encoded)
             .map_err(|e| PipelineError::new("IMG_THUMBNAIL", format!("write: {e}")))?;
-        std::fs::rename(&tmp_dest, &abs_dest)
-            .map_err(|e| PipelineError::new("IMG_THUMBNAIL", format!("rename: {e}")))?;
 
         // ── Delete source file if requested ───────────────────────────────
         // Best-effort: non-fatal. Thumbnail is already written successfully.
         if self.config.delete_source {
-            if let Err(e) = std::fs::remove_file(&abs_path) {
+            if let Err(e) = zebfs.delete(&rel_path) {
                 eprintln!("[IMG_THUMBNAIL] delete-source failed for {rel_path}: {e}");
             }
         }
@@ -488,7 +485,7 @@ impl NodeHandler for Node {
         };
         let thumbnail = json!({
             "__zf_type": FILE_REF_TYPE,
-            "backend": BACKEND_ZEBFS,
+            "backend": layout.file_backend().as_str(),
             "ref": thumb_rel,
             "filename": storage_name,
             "mime": thumb_mime,

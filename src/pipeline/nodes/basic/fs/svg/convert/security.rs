@@ -31,7 +31,7 @@
 //!
 //! What these tests do **not** cover, deliberately: the SVG *text* is still
 //! dangerous to serve to a browser. Nothing here makes a stored `.svg` safe
-//! under `public/`; only the picture this node answers is safe.
+//! to open as a page; only the picture this node answers is safe.
 //!
 //! Colours are written `rgb(r,g,b)` rather than `#rrggbb` so no fixture
 //! needs a `"#` inside a raw string.
