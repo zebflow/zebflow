@@ -35,7 +35,8 @@ logic.<verb>          control node   logic.if              logic.foreach
   chat id means nothing to WhatsApp, a Postgres statement is not SQLite's — the
   platform's own concepts are the grammar and the **brand is the family**,
   spelled in full (`telegram`, `whatsapp`, `slack`, `discord`), as an engine
-  keeps its own (`pg`, `sqlite`, `sekejap`).
+  keeps its own (`pg`, `sqlite`, `sekejap`) and a language its own
+  (`js.script.run`, `ts.script.run`).
 - Brand families still speak the dictionary: the same nouns, verbs and words
   where the meaning is the same (`telegram.message.send` and
   `whatsapp.message.send` both take `--recipient` `--text` `--file` and answer
@@ -60,7 +61,7 @@ logic.<verb>          control node   logic.if              logic.foreach
 
 | Families | |
 | --- | --- |
-| Now | `ai` `auth` `browser` `crypto` `fs` `function` `geo` `http` `input` `kv` `logic` `mail` `mcp` `ms` `pg` `pipeline` `script` `sekejap` `sqlite` `table` `trigger` `web` `ws` |
+| Now | `ai` `auth` `browser` `crypto` `fs` `function` `geo` `http` `input` `kv` `logic` `mail` `js` `mcp` `ms` `pg` `pipeline` `sekejap` `sqlite` `table` `trigger` `ts` `web` `ws` |
 | Brands | `telegram` (now, from the curated bundle) · `whatsapp` `slack` `discord` (when built) |
 | Reserved | `cloud` (provider-neutral resources: queue, function, bucket — `--provider aws\|gcp\|azure`) · `job` (external commands) · `sec` (scanning, detection) |
 
@@ -229,7 +230,7 @@ pg.query.run           → query:   { rows, columns, row_count }
 kv.entry.get           → entry:   { key, value, ttl }
 auth.token.create      → token:   { access_token, token_type, expires_in, profile }
 fs.folder.list         → folder:  { path, items, count }
-script.result.run      → result:  <what the code returned>
+js.script.run          → script:  <what the code returned>
 ```
 
 - A list answers `{ items, count }` (and `next` when `--offset` applies).
