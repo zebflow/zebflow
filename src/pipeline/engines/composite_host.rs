@@ -543,7 +543,7 @@ mod tests {
                 "hosts": hosts,
                 "functions": { "main": "functions/main.zf.json" },
                 "nodes": [{
-                    "kind": format!("x.{}.call", slug),
+                    "kind": format!("x.{}.result.call", slug),
                     "title": "Call",
                     "description": "Run the bundle's outbound request.",
                     "icon": "icon.svg",
@@ -603,7 +603,7 @@ mod tests {
 
     async fn run_bundle_node(platform: &Arc<PlatformService>, slug: &str) -> Value {
         let outputs = super::execute_installed_node(
-            format!("x.{slug}.call"),
+            format!("x.{slug}.result.call"),
             json!({}),
             platform.clone(),
             None,
@@ -716,7 +716,7 @@ mod tests {
             root.path(),
             "outer",
             json!(["api.outer.invalid"]),
-            "x.inner.call",
+            "x.inner.result.call",
             json!({}),
         );
         write_bundle(

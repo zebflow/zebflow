@@ -30,7 +30,7 @@ branching, fan-out, fan-in and loops.
 ```
 [a] trigger.webhook --route /status --method GET
 [b] http.response.fetch --url https://example.com/health --method GET
-[c] logic.if --expr "input.response.status >= 400"
+[c] logic.if --when "input.response.status >= 400"
 [d] http.response.fetch --url https://hooks.example.com/alert --method POST --body "{{ input }}"
 [e] web.response.send --body "{{ { ok: true } }}"
 [a] -> [b]
@@ -72,7 +72,8 @@ Flag value kinds, as each node declares them:
 |---|---|---|
 | scalar | `--template pages/post.tsx` | `"pages/post.tsx"` |
 | bool | `--durable` | `true` — no value consumed |
-| comma-list | `--accept pdf,docx` or `--cases a --cases b` | `["pdf","docx"]` — one style per flag |
+| comma-list | `--accept pdf,docx` or `--accept pdf --accept docx` | `["pdf","docx"]` — one style per flag |
+| repeated | `--case create --case update` | `["create","update"]` — one value per flag |
 | key-value-pairs | `--claim "sub={{ input.id }}" --claim "name:public={{ input.name }}"` | `{ sub: …, name: … }` — repeat the flag, one key each |
 
 Two flags exist on every node: `--timeout <duration>` (engine timeout for this
@@ -161,12 +162,12 @@ string.
 
 | Node | Pins | Flags |
 |---|---|---|
-| `logic.if` | `true`, `false` | `--expr "input.count > 0"` |
-| `logic.match` | one per case + `--default` | `--expr "input.webhook.body.type" --cases create,update --default other` |
-| `logic.foreach` | `item` | `--items-expr "input.rows" [--chunk-size N] [--keep-input]` |
-| `logic.collect` | `out` | none — fires once every wired input has arrived; payload `{ <upstream id>: payload, … }` |
-| `logic.reduce` | `out` | `--init-expr "{ total: 0 }" --step-expr "{ total: $acc.total + $input.item.amount }"` |
-| `logic.retry` | `retry`, `failed`, `done` | `--max-attempts 3 [--delay-ms 250] [--backoff 2] [--max-delay-ms 8000] [--max-elapsed-ms 30000] [--when "<expr>"]`, wired from an `:error` pin or fed a verdict (`retry: true`) |
+| `logic.if` | `true`, `false` | `--when "input.count > 0"` |
+| `logic.match` | one per case + `--default` | `--from "input.webhook.body.type" --case create --case update --default other` |
+| `logic.foreach` | `item` | `--from "input.rows" [--batch-size N] [--keep-input]` |
+| `logic.collect` | `out` | none — fires once every wired input has arrived; answers `collect: { items, count }` (the delivered payloads in DSL text order) over those payloads merged |
+| `logic.reduce` | `out` | `--initial "{ total: 0 }" --step "{ total: $acc.total + $input.item.amount }"`; answers `reduce: <final $acc>` |
+| `logic.retry` | `retry`, `failed`, `done` | `--max-attempts 3 [--delay 250ms] [--backoff 2] [--max-delay 8s] [--max-elapsed 30s] [--when "<expr>"]`, wired from an `:error` pin or fed a verdict (`retry: true`) |
 
 **Fan-out** is any node with several outgoing edges; **fan-in** is `logic.collect`:
 
@@ -175,7 +176,7 @@ string.
 [b] http.response.fetch --url https://source-a.example.com/data --method GET
 [c] http.response.fetch --url https://source-b.example.com/data --method GET
 [d] logic.collect
-[e] javascript.script.run -- "return { a: input.b.response.body, b: input.c.response.body }"
+[e] javascript.script.run -- "return { a: $nodes.b.response.body, b: $nodes.c.response.body, count: input.collect.count }"
 [a] -> [b]
 [a] -> [c]
 [b] -> [d]
@@ -185,14 +186,15 @@ string.
 
 **foreach** emits `{ item, index, count }` per element (add `--keep-input` to
 carry the whole upstream payload — off by default so a large table is not
-copied per row); **reduce** folds the series. It may sit further down the
+copied per row); **reduce** folds the series and answers the final `$acc` as
+`input.reduce` (`input.reduce.total` below). It may sit further down the
 branch — after a query or a script — and still waits for every run, and
 `$item` names the run's element in any node between:
 
 ```
 [a] trigger.manual
-[b] logic.foreach --items-expr "input.rows"
-[c] logic.reduce --init-expr "{ total: 0 }" --step-expr "{ total: $acc.total + $input.item.amount }"
+[b] logic.foreach --from "input.rows"
+[c] logic.reduce --initial "{ total: 0 }" --step "{ total: $acc.total + $input.item.amount }"
 [a] -> [b]
 [b]:item -> [c]
 ```
@@ -202,7 +204,7 @@ branch — after a query or a script — and still waits for every run, and
 ```
 [a] trigger.manual
 [b] http.response.fetch --url https://api.example.com/work --method POST
-[r] logic.retry --max-attempts 3 --delay-ms 250
+[r] logic.retry --max-attempts 3 --delay 250ms
 [c] javascript.script.run -- "return input"
 [d] javascript.script.run -- "return { failed: true }"
 [a] -> [b]
@@ -217,17 +219,18 @@ the attempt `retry` (or `error_routed` when the edge reaches something other
 than `logic.retry`), the canvas draws an orange ring with the count, and the
 run's status is untouched. Red is for a failure nothing consumed.
 
-**Back-off and a time cap.** `--backoff 2` doubles `--delay-ms` each attempt
-and `--max-delay-ms` holds the grown wait (`--max-attempts 6 --delay-ms 500
---backoff 2 --max-delay-ms 8000` waits 500, 1000, 2000, 4000, 8000 ms);
-`--max-elapsed-ms` is a wall-time budget from the first attempt — when it is
+**Back-off and a time cap.** `--backoff 2` doubles `--delay` each attempt
+and `--max-delay` holds the grown wait (`--max-attempts 6 --delay 500ms
+--backoff 2 --max-delay 8s` waits 500ms, 1s, 2s, 4s, 8s; every time is a
+duration);
+`--max-elapsed` is a wall-time budget from the first attempt — when it is
 spent, or the next wait would overrun it, `failed` fires with attempts left,
-and `__zf_retry.reason` (`max_attempts` | `max_elapsed_ms`) and
+and `__zf_retry.reason` (`max_attempts` | `max_elapsed`) and
 `__zf_retry.message` on the payload say which budget ran out.
 
 **Polling** is a wait, not an error, so it need not throw. `logic.retry` also
 takes a **verdict** on an ordinary edge: `retry: true` on the payload (or
-`--when "<expr>"` true — JavaScript over `input`, as `logic.if --expr`) fires
+`--when "<expr>"` true — JavaScript over `input`, as `logic.if --when`) fires
 `retry` with that payload; false passes it through on `done`; the budget
 spent fires `failed`. The node counts its own attempts
 (`$nodes.<r>.__zf_retry.attempt`), so a poll that reshapes the payload each
@@ -238,7 +241,7 @@ round still counts 1, 2, 3; each round is a `retry` entry on the retry node
 [t] trigger.manual
 [poll] http.response.fetch --url https://api.example.com/jobs/42 --method GET
 [check] javascript.script.run -- "const d = (input.response.body.data || [])[0] || {}; return { retry: d.status !== 'success', url: d.videoURL }"
-[wait] logic.retry --max-attempts 40 --delay-ms 5000 --when "input.script.retry"
+[wait] logic.retry --max-attempts 40 --delay 5s --when "input.script.retry"
 [download] http.response.fetch --url "{{ input.script.url }}" --parse bytes
 [gaveup] javascript.script.run -- "return { gaveup: true, attempts: input.__zf_retry.attempt }"
 [t] -> [poll]
@@ -254,9 +257,9 @@ round still counts 1, 2, 3; each round is a `retry` entry on the retry node
 ```
 [a] trigger.manual
 [b] javascript.script.run -- "const n = (input.script?.attempts || 0) + 1; return { attempts: n, status: n < 3 ? 'retry' : 'done' }"
-[c] logic.match --expr "input.script.status" --cases done --default retry
+[c] logic.match --from "input.script.status" --case done --default retry
 [d] javascript.script.run -- "return input"
-[e] logic.if --expr "input.script.attempts < 5"
+[e] logic.if --when "input.script.attempts < 5"
 [f] javascript.script.run -- "return { gave_up: true }"
 [a] -> [b]
 [b] -> [c]

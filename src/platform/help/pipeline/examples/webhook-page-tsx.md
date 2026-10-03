@@ -55,7 +55,7 @@ case:
 ```
 [find]  trigger.webhook --route /programmes/:unit_id --method GET
 [query] postgres.query.run --credential my-pg --param "1={{ input.webhook.params.unit_id }}" -- "SELECT unit_id::text, code, title, description FROM academic.academic_unit WHERE unit_id = $1::uuid AND is_active = true"
-[found] logic.if --expr "input.query.rows && input.query.rows.length > 0"
+[found] logic.if --when "input.query.rows && input.query.rows.length > 0"
 [ok]    web.response.send --template pages/programme-detail.tsx
 [gone]  web.response.send --status 404 --template pages/not-found.tsx
 [find] -> [query]
@@ -95,7 +95,7 @@ export default function Page(input) {
 
 - `trigger.webhook` — GET endpoint; path params in `input.webhook.params.<name>`, query string in `input.webhook.query.<name>` right after the trigger (`$trigger.params`, `$trigger.query` anywhere later)
 - `postgres.query.run --credential <id>` — fetch data; `--param "1={{ input.webhook.params.unit_id }}"` binds `:unit_id` as `$1`
-- `logic.if --expr "input.query.rows.length > 0"` — branch on `true`/`false` pins; the only way to answer 404 conditionally, since a script cannot set the status
+- `logic.if --when "input.query.rows.length > 0"` — branch on `true`/`false` pins; the only way to answer 404 conditionally, since a script cannot set the status
 - `javascript.script.run` (TypeScript: `typescript.script.run`) — static payloads, data transform; its answer sits under `script` in the payload (`input.script.<field>`), the rest is kept
 - `web.response.send` — renders TSX template; upstream output = `input` in template; supports `--status` and `--header` (`Set-Cookie`, `Location`, …)
 

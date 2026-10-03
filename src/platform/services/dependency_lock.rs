@@ -2378,7 +2378,7 @@ mod tests {
 	                "title":"Example",
 	                "description":"Example composite node bundle.",
 	                "nodes":[{
-	                  "kind":"x.example.thing",
+	                  "kind":"x.example.thing.run",
 	                  "title":"Example",
 	                  "description":"Execute the example function.",
 	                  "trigger":{"type":"webhook"},
@@ -2397,7 +2397,7 @@ mod tests {
                 source_id: "project/example".to_string(),
                 entry: "nodes/example/definition.json".to_string(),
                 integrity: directory_tree_sha256(&package_dir).unwrap(),
-                definitions: vec!["x.example.thing".to_string()],
+                definitions: vec!["x.example.thing.run".to_string()],
             },
         );
         service.write("owner", "project", &lock).unwrap();
@@ -2431,7 +2431,7 @@ mod tests {
             entry_nodes: vec!["custom".to_string()],
             nodes: vec![PipelineNode {
                 id: "custom".to_string(),
-                kind: "x.example.absent".to_string(),
+                kind: "x.example.absent.run".to_string(),
                 input_pins: Vec::new(),
                 output_pins: vec!["out".to_string()],
                 config: serde_json::json!({}),
@@ -2465,7 +2465,7 @@ mod tests {
                 "entry_nodes":["custom"],
                 "nodes":[{
                   "id":"custom",
-                  "kind":"x.example.thing",
+                  "kind":"x.example.thing.run",
                   "output_pins":["out"]
                 }],
                 "edges":[]
@@ -2480,7 +2480,7 @@ mod tests {
         assert!(!report.ok);
         assert!(report.items.iter().any(|item| {
             item.family == "node_kind"
-                && item.name == "x.example.thing"
+                && item.name == "x.example.thing.run"
                 && item.status == DependencyResolutionStatus::Missing
         }));
     }
@@ -2589,7 +2589,7 @@ mod tests {
             },
             entry: "nodes/example/definition.json".to_string(),
             integrity: format!("sha256:{}", digest.to_string().repeat(64)),
-            definitions: vec!["x.example.thing".to_string()],
+            definitions: vec!["x.example.thing.run".to_string()],
         }
     }
 

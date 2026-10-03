@@ -27,7 +27,7 @@
     "modules": {},
     "nodes": [
       {
-        "kind": "x.composite.load",
+        "kind": "x.composite.data.load",
         "title": "Load Dataset",
         "description": "Fetch and parse a dataset.",
         "icon": "",

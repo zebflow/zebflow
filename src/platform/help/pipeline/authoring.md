@@ -78,7 +78,7 @@ zebflow:
 | `spec.entry_nodes` | nodes with no incoming edge; computed by the DSL |
 | `spec.nodes[].id` | `n0, n1, …` in pipe mode; the `[label]` you wrote in graph mode |
 | `spec.nodes[].kind` | the full kind, always `n.…` |
-| `spec.nodes[].input_pins` / `output_pins` | `[]`/`["out"]` for triggers, `["in"]`/`["out"]` for most nodes; logic nodes declare named output pins (`true`/`false`, the `--cases`, `item`) |
+| `spec.nodes[].input_pins` / `output_pins` | `[]`/`["out"]` for triggers, `["in"]`/`["out"]` for most nodes; logic nodes declare named output pins (`true`/`false`, one per `--case`, `item`) |
 | `spec.nodes[].config` | the node's config keys — each DSL flag maps to one (`--credential` → `credential_id`); the `-- "body"` maps to `query` for query nodes and `source` for `script` |
 | `spec.edges[]` | `from_node:from_pin → to_node:to_pin`; `from_pin` names a pin (`out`, `true`, a case). Any node's failure may also be routed from the pin `error`. |
 

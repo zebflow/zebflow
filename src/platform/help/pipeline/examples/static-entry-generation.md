@@ -56,7 +56,7 @@ payload and adds its own answer under `script` instead of replacing it.
 Minimal version as a callable function pipeline:
 
 ```zf
-| trigger.function --description "Generate the static page for one entry" --argument "entry_slug:string!" "Slug of the entry to generate"
+| trigger.function --description "Generate the static page for one entry" --parameter "entry_slug:string!" "Slug of the entry to generate"
 | javascript.script.run -- "
 const collection = {
   name: 'Field Notes',
@@ -102,7 +102,7 @@ Served URL, once the owner serves `site/` as a site on `https://www.example.com`
 This is a more realistic content-backed version:
 
 ```zf
-| trigger.function --description "Generate the static page for one content entry" --argument "entry_id:string!" "Entry UUID"
+| trigger.function --description "Generate the static page for one content entry" --parameter "entry_id:string!" "Entry UUID"
 | postgres.query.run --credential content-db --param "1={{ input.function.entry_id }}" -- "
 SELECT
   e.entry_id::text AS entry_id,

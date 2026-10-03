@@ -36,7 +36,7 @@ refuses the request before any node runs. Facts:
 
    ```
    | trigger.webhook --route /auth/register --method POST
-   | logic.if --expr "typeof $trigger.body?.email === 'string' && typeof $trigger.body?.password === 'string' && $trigger.body.password.length >= 12"
+   | logic.if --when "typeof $trigger.body?.email === 'string' && typeof $trigger.body?.password === 'string' && $trigger.body.password.length >= 12"
    | crypto.password.hash --from "{{ $trigger.body.password }}"
    | sekejap.query.run --write --param "1={{ $trigger.body.email }}" --param "2={{ input.password.hash }}" --param "3={{ ['user'] }}" --param "4={{ new Date().toISOString() }}" -- "INSERT INTO users (email, password_hash, roles, created_at) VALUES ($1, $2, $3, $4)"
    | web.response.send --status 302 --header "Location=/login?registered=1"

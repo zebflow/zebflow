@@ -50,7 +50,7 @@ If `auth_redirect` / `auth_forbidden_redirect` are not set, auth failure returns
 | trigger.webhook --route /auth/login --method POST
 | postgres.query.run --credential my-pg --param "1={{ input.webhook.body.identifier }}" \
     -- "SELECT player_id::text, fullname, role FROM app.player WHERE identifier = $1 AND is_active = true"
-| logic.if --expr "input.query.rows && input.query.rows.length > 0"
+| logic.if --when "input.query.rows && input.query.rows.length > 0"
 (false pin → `web.response.send --status 401 --body "invalid credentials"`)
 | javascript.script.run -- "const user = input.query.rows[0]; return { player_id: user.player_id, name: user.fullname, roles: [user.role] };"
 | auth.token.create --credential my-jwt --claim "sub={{ input.script.player_id }}" --claim "name:public={{ input.script.name }}" --claim "roles:public={{ input.script.roles }}" --ttl 1d

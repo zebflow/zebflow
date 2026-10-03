@@ -2942,7 +2942,7 @@ pub struct MultiNodePackageDefinition {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct MultiNodeEntry {
-    /// Node kind. Must be `x.{package_token}.{rest}`.
+    /// Node kind. Must be `x.{package_token}.{noun}.{verb}`.
     pub kind: String,
     /// Node title.
     pub title: String,

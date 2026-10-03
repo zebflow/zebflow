@@ -22,7 +22,7 @@
     },
     "nodes": [
       {
-        "kind": "x.wasmpkg.train",
+        "kind": "x.wasmpkg.model.train",
         "title": "Train Model",
         "description": "Train a gradient boosting model.",
         "icon": "icons/train.svg",
@@ -53,7 +53,7 @@
         }
       },
       {
-        "kind": "x.wasmpkg.score",
+        "kind": "x.wasmpkg.model.score",
         "title": "Score Model",
         "description": "Score rows against a trained model.",
         "icon": "",

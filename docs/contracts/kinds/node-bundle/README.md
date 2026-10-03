@@ -239,7 +239,7 @@ underscore, because kind segments allow underscores but not hyphens.
 ```text
 platform bundle             → n.telegram.send
 package "ml"                → x.ml.gb.train
-package "openai-embedding"  → x.openai_embedding.embed
+package "openai-embedding"  → x.openai_embedding.embedding.generate
 ```
 
 For a project-scope bundle, kind ownership is structural: the kind names the
@@ -355,9 +355,9 @@ So a project also carries the **interface** of every third-party node it uses:
 ```text
 repo/
   zeb.lock                        which bundle, which digest, which source
-  pipelines/blog.zf.json          references x.acme.thing
+  pipelines/blog.zf.json          references x.acme.thing.run
   nodes/
-    x.acme.thing.json           a frozen NodeDefinition document
+    x.acme.thing.run.json           a frozen NodeDefinition document
 
 data/
   hub/nodes/acme/                 the materialized bundle

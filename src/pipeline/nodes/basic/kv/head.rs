@@ -47,7 +47,7 @@ pub fn definition() -> NodeDefinition {
         examples: vec![
             NodeExample::dsl("Skip work that is already cached", r#"kv.entry.head --key "profile:{{ $trigger.params.id }}""#)
                 .output(json!({ "entry": { "key": "profile:7", "exists": false } }))
-                .note("Then `logic.if --expression \"input.entry.exists\"`."),
+                .note("Then `logic.if --when \"input.entry.exists\"`."),
         ],
         ..Default::default()
     }

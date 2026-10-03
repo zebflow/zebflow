@@ -48,7 +48,7 @@ which rooms exist and whether they're joinable.
 register game/room --
 [a] trigger.webhook --route /game/:room --method GET
 [b] sekejap.query.run --param "1={{ input.webhook.params.room }}" -- "SELECT * FROM game_rooms WHERE _key = $1"
-[c] logic.if --expr "input.query.rows.length > 0"
+[c] logic.if --when "input.query.rows.length > 0"
 [d] javascript.script.run -- "return { room: input.query.rows[0] };"
 [e] web.response.send --template pages/game-room.tsx
 [f] web.response.send --status 302 --header "Location=/game"
@@ -98,7 +98,7 @@ register game/ws-player-join --
 ```zf
 register game/ws-player-move --
 [a] trigger.room --event player.move
-[guard] logic.if --expr "!!(input.room.payload && input.room.payload.player_id && input.room.payload.move)"
+[guard] logic.if --when "!!(input.room.payload && input.room.payload.player_id && input.room.payload.move)"
 [set] ws.state.put --key /last_move --value "{{ { player_id: $trigger.payload.player_id, move: $trigger.payload.move, ts: Date.now() } }}"
 [emit] ws.message.send --event player.moved --body "{{ { player_id: $trigger.payload.player_id, move: $trigger.payload.move } }}"
 

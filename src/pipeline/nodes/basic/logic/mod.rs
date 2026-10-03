@@ -23,3 +23,30 @@ pub fn definitions() -> Vec<NodeDefinition> {
         concept::definition(),
     ]
 }
+
+/// An expression flag's text (`--when`, `--from`, `--initial`, `--step`).
+/// The DSL reads a bare `true` or `42` as a JSON scalar; as an expression it
+/// is that JavaScript literal, so it is taken back as its text.
+pub(crate) fn expression_text<'de, D: serde::Deserializer<'de>>(de: D) -> Result<String, D::Error> {
+    use serde::Deserialize;
+    match serde_json::Value::deserialize(de)? {
+        serde_json::Value::String(text) => Ok(text),
+        serde_json::Value::Null => Ok(String::new()),
+        other @ (serde_json::Value::Bool(_) | serde_json::Value::Number(_)) => Ok(other.to_string()),
+        other => Err(serde::de::Error::custom(format!("an expression is text, got {other}"))),
+    }
+}
+
+/// The text of a required expression flag, refused when it is empty
+/// ("empty is not a value").
+pub(crate) fn required_expression<'a>(
+    text: &'a str,
+    flag: &str,
+    code: &'static str,
+) -> Result<&'a str, crate::pipeline::PipelineError> {
+    let text = text.trim();
+    if text.is_empty() {
+        return Err(crate::pipeline::PipelineError::new(code, format!("{flag} is empty; it needs an expression")));
+    }
+    Ok(text)
+}

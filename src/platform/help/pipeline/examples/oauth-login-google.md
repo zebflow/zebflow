@@ -130,7 +130,7 @@ register auth/google-callback --
 [exchange] http.response.fetch --credential google-token-exchange --argument "CODE={{ input.script.code }}"
 [identity] javascript.script.run -- "const b = (input.response && input.response.body) || {}; const idt = b.id_token; if (!idt) throw new Error('google returned no id_token'); const seg = idt.split('.')[1]; const claims = JSON.parse(atob(seg.replace(/-/g, '+').replace(/_/g, '/'))); if (!claims.email) throw new Error('id_token carried no email'); return { email: String(claims.email).toLowerCase(), name: claims.name || '' };"
 [member] sqlite.query.run --query "SELECT email, name, roles FROM members WHERE email = ?1" --param "1={{ input.script.email }}"
-[known] logic.if --expr "input.query.rows && input.query.rows.length > 0"
+[known] logic.if --when "input.query.rows && input.query.rows.length > 0"
 [claim] javascript.script.run -- "const m = input.query.rows[0]; return { sub: m.email, name: m.name, roles: JSON.parse(m.roles) };"
 [token] auth.token.create --credential session-signing-key --claim "sub={{ input.script.sub }}" --claim "name:public={{ input.script.name }}" --claim "roles={{ input.script.roles }}" --ttl 1d
 [welcome] web.response.send --status 302 --header "Location=/wh/OWNER/PROJECT/me" --header "Set-Cookie=session={{ input.token.access_token }}; Path=/; Max-Age=86400; SameSite=Lax; HttpOnly"
@@ -201,6 +201,6 @@ password form and every protected route stays as it is.
 - `kv.entry.put --key <k> --value <JSON> [--ttl <duration>]` / `kv.entry.get --key <k>` / `kv.entry.delete --key <k>` — state store; `kv.entry.get` adds `entry: { key, value, found }`, `kv.entry.delete` adds `entry: { key, deleted }` and keeps the rest of the payload
 - `http.response.fetch --credential <secure_request id> --argument "NAME={{ expr }}"` — the credential owns URL, method, headers and body; one `--argument` per declared variable; output `{ request, response }`
 - `sqlite.query.run --param "1={{ expr }}"` — `?1` placeholders
-- `logic.if --expr <js>` — `true` / `false` pins
+- `logic.if --when <js>` — `true` / `false` pins
 - `auth.token.create --credential <jwt_signing_key id> --claim "k={{ v }}" [--claim "k:public={{ v }}"] [--ttl <duration>]` — output `token: { access_token, token_type, expires_in, profile }`; read `input.token.access_token`; quote each claim, an unquoted `{{ }}` is cut at its first space
 - `web.response.send --status 302 --header "Location=<url>" --header "Set-Cookie=<cookie>"` / `--status 403 --body <text>`

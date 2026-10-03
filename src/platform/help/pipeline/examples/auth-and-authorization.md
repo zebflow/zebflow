@@ -62,7 +62,7 @@ Create a `jwt_signing_key` credential in the Credentials UI. Fields:
 | trigger.webhook --route /auth/login --method POST
 | postgres.query.run --credential main-db --param "1={{ input.webhook.body.username }}" \
     -- "SELECT id::text, username, role FROM users WHERE username = $1 LIMIT 1"
-| logic.if --expr "input.query.rows && input.query.rows.length > 0"
+| logic.if --when "input.query.rows && input.query.rows.length > 0"
 (false pin → `web.response.send --status 401 --body "invalid credentials"`)
 | javascript.script.run -- "const user = input.query.rows[0]; return { id: user.id, username: user.username, roles: [user.role] };"
 | auth.token.create --credential my-jwt --claim "sub={{ input.script.id }}" --claim "username:public={{ input.script.username }}" --claim "roles:public={{ input.script.roles }}" --ttl 1d
@@ -82,7 +82,7 @@ Create a `jwt_signing_key` credential in the Credentials UI. Fields:
 
 ```
 | trigger.webhook --route /auth/register --method POST
-| logic.if --expr "input.webhook.body.username && input.webhook.body.email && input.webhook.body.password && input.webhook.body.password.length >= 12"
+| logic.if --when "input.webhook.body.username && input.webhook.body.email && input.webhook.body.password && input.webhook.body.password.length >= 12"
 (false pin → `web.response.send --status 400 --body "username, email and a password of at least 12 characters are required"`)
 | crypto.password.hash --from "{{ $trigger.body.password }}"
 (`crypto.password.hash` adds `password: { hash, algorithm }` to the payload and

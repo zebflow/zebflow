@@ -268,7 +268,6 @@ pub const ERROR_CLASS_REGISTRY: &[(&str, ErrorClass)] = &[
     ("FW_NODE_KV_MESSAGE_PUBLISH_TOPIC", ErrorClass::Refused),
     ("FW_NODE_KV_MESSAGE_PUBLISH_UNAVAILABLE", ErrorClass::Failed),
     ("FW_NODE_LOGIC_COLLECT_CONFIG", ErrorClass::Refused),
-    ("FW_NODE_LOGIC_FOREACH_CHUNK", ErrorClass::Failed),
     ("FW_NODE_LOGIC_FOREACH_COMPILE", ErrorClass::Failed),
     ("FW_NODE_LOGIC_FOREACH_CONFIG", ErrorClass::Refused),
     ("FW_NODE_LOGIC_FOREACH_EMPTY", ErrorClass::Refused),

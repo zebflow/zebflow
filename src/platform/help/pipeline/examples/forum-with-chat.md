@@ -62,7 +62,7 @@ register forum/room --
 ```zf
 register forum/api-room-create --
 [trig] trigger.webhook --route /api/forum/rooms --method POST
-[has_name] logic.if --expr "!!(input.webhook.body && input.webhook.body.name)"
+[has_name] logic.if --when "!!(input.webhook.body && input.webhook.body.name)"
 [bad] web.response.send --status 400 --body "{{ { ok: false, error: 'name required' } }}"
 [draft] javascript.script.run -- "const id = String($trigger.body.name).toLowerCase().replace(/[^a-z0-9]+/g,'-'); return { id, name: $trigger.body.name };"
 [ins] sekejap.query.run --write --param "1={{ $nodes.draft.script.id }}" --param "2={{ $nodes.draft.script.name }}" --param "3={{ Date.now() }}" --param "4={{ Date.now() }}" -- "INSERT INTO forum_rooms (_key, name, created_at, last_activity) VALUES ($1, $2, $3, $4)"
@@ -87,7 +87,7 @@ answers under `room` — `input.room.room_id` right after the trigger, or
 ```zf
 register forum/ws-chat-message --
 [a] trigger.room --event chat.message
-[guard] logic.if --expr "!!(input.room.payload && input.room.payload.user && input.room.payload.text)"
+[guard] logic.if --when "!!(input.room.payload && input.room.payload.user && input.room.payload.text)"
 [save] javascript.script.run -- "return { id: Date.now().toString(), room: $trigger.room_id, user: $trigger.payload.user, text: $trigger.payload.text, ts: Date.now() };"
 [ins] sekejap.query.run --write --param "1={{ $nodes.save.script.id }}" --param "2={{ $nodes.save.script.room }}" --param "3={{ $nodes.save.script.user }}" --param "4={{ $nodes.save.script.text }}" --param "5={{ $nodes.save.script.ts }}" -- "INSERT INTO forum_messages (_key, room, user, text, ts) VALUES ($1, $2, $3, $4, $5)"
 [emit] ws.message.send --room "{{ $nodes.save.script.room }}" --event chat.message --body "{{ $nodes.save.script }}"

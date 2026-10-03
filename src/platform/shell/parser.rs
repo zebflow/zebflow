@@ -200,7 +200,7 @@ fn command_accepts_opaque_body(prefix: &str) -> bool {
 ///
 /// `expand_kind` only knows native shorthands, so anything provided by a bundle
 /// has to be resolved by existence. Namespace is deliberately not consulted: a
-/// curated `n.telegram.send` and a third-party `x.acme.thing` are both just
+/// curated `n.telegram.send` and a third-party `x.acme.thing.run` are both just
 /// kinds the catalog either has or does not.
 fn resolve_catalog_kind(raw_kind: &str, definitions: &[NodeDefinition]) -> Option<String> {
     if let Some(kind) = expand_kind(raw_kind) {
@@ -1388,7 +1388,6 @@ pub fn body_config_key(kind: &str) -> &'static str {
     match kind {
         "postgres.query.run" | "sekejap.query.run" | "sqlite.query.run" | "table.query.run" => "query",
         "javascript.script.run" | "typescript.script.run" => "source",
-        "logic.match" | "logic.if" => "expression",
         "browser.page.run" => "code",
         "ai.text.generate" => "prompt",
         _ => "body",
@@ -1787,10 +1786,10 @@ mod tests {
     }
 
     #[test]
-    fn logic_match_cases_accept_compact_list_form() {
+    fn logic_match_cases_are_repeated_and_each_is_a_pin() {
         let dsl = r#"
 [a] trigger.manual
-[b] logic.match --expr "$input.type" --cases create,update,delete --default unknown
+[b] logic.match --from "$input.type" --case create --case "New York" --case 404 --default unknown
 
 [a] -> [b]
 "#;
@@ -1802,53 +1801,35 @@ mod tests {
             .find(|node| node.id == "b")
             .expect("match node");
 
-        assert_eq!(
-            node.config.get("cases"),
-            Some(&json!(["create", "update", "delete"]))
-        );
-        assert_eq!(
-            node.output_pins,
-            vec![
-                "create".to_string(),
-                "update".to_string(),
-                "delete".to_string(),
-                "unknown".to_string()
-            ]
-        );
+        assert_eq!(node.config.get("cases"), Some(&json!(["create", "New York", "404"])));
+        // The pins are the ones the node routes to: a case is slugged the
+        // same way on both sides.
+        assert_eq!(node.output_pins, vec!["create", "new-york", "404", "unknown"]);
     }
 
     #[test]
-    fn logic_match_cases_accept_repeated_list_form() {
-        let dsl = r#"
-[a] trigger.manual
-[b] logic.match --expr "$input.type" --cases create --cases update --cases delete --default unknown
-
-[a] -> [b]
-"#;
-
-        let graph = build_pipeline_graph("parser-match-cases-repeated-test", dsl).expect("graph");
-        let node = graph
-            .nodes
-            .iter()
-            .find(|node| node.id == "b")
-            .expect("match node");
-
-        assert_eq!(
-            node.config.get("cases"),
-            Some(&json!(["create", "update", "delete"]))
-        );
+    fn logic_match_renders_one_case_flag_per_case() {
+        let dsl = "trigger.manual | logic.match --from \"input.manual.kind\" --case a --case b --default other";
+        let graph = build_pipeline_graph("parser-match-render-test", dsl).expect("graph");
+        let rendered = graph_to_dsl(&graph);
+        let line = rendered.lines().find(|l| l.contains("logic.match")).expect("match line");
+        assert!(line.contains("--case a --case b"), "{line}");
+        assert!(line.contains("--from") && line.contains("--default other"), "{line}");
+        let again = build_pipeline_graph("parser-match-render-test", &rendered).expect("re-parse");
+        assert_eq!(again.nodes[1].config["cases"], graph.nodes[1].config["cases"]);
+        assert_eq!(again.nodes[1].output_pins, vec!["a", "b", "other"]);
     }
 
     #[test]
     fn list_flags_reject_mixed_compact_and_repeated_forms() {
         let dsl = r#"
 [a] trigger.manual
-[b] logic.match --expr "$input.type" --cases create,update --cases delete --default unknown
+[b] ai.text.generate --credential c --tools lookup,search --tools notify -- Hello
 
 [a] -> [b]
 "#;
 
-        let err = build_pipeline_graph("parser-match-cases-mixed-test", dsl)
+        let err = build_pipeline_graph("parser-list-mixed-test", dsl)
             .expect_err("mixed list syntax must fail");
         assert!(err.contains("must use one style"));
     }
@@ -2053,7 +2034,7 @@ return { values };
             ..Default::default()
         };
         let third_party = NodeDefinition {
-            kind: "x.acme.thing".to_string(),
+            kind: "x.acme.thing.run".to_string(),
             title: "Acme Thing".to_string(),
             description: "Do the thing.".to_string(),
             input_pins: vec!["in".to_string()],
@@ -2072,8 +2053,8 @@ return { values };
             "the n. prefix stays optional for authors"
         );
         assert_eq!(
-            super::resolve_catalog_kind("x.acme.thing", &definitions),
-            Some("x.acme.thing".to_string())
+            super::resolve_catalog_kind("x.acme.thing.run", &definitions),
+            Some("x.acme.thing.run".to_string())
         );
         assert_eq!(
             super::resolve_catalog_kind("n.telegramm.send", &definitions),
@@ -2086,7 +2067,7 @@ return { values };
     fn registry_definitions_parse_composite_dsl_flags() {
         let mut definitions = crate::pipeline::nodes::builtin_node_definitions();
         definitions.push(NodeDefinition {
-            kind: "x.openai_embedding.embed".to_string(),
+            kind: "x.openai_embedding.embedding.generate".to_string(),
             title: "AI Embedding".to_string(),
             description: "Composite embedding node.".to_string(),
             input_pins: vec!["in".to_string()],
@@ -2124,7 +2105,7 @@ return { values };
             "composite-embedding-dsl",
             r#"
 | trigger.manual
-| x.openai_embedding.embed --credential qwen-embed --model text-embedding-v4 --input-expr input.text
+| x.openai_embedding.embedding.generate --credential qwen-embed --model text-embedding-v4 --input-expr input.text
 "#,
             &definitions,
         )
@@ -2132,7 +2113,7 @@ return { values };
         let node = graph
             .nodes
             .iter()
-            .find(|node| node.kind == "x.openai_embedding.embed")
+            .find(|node| node.kind == "x.openai_embedding.embedding.generate")
             .expect("composite node");
         assert_eq!(node.config["credential_id"], json!("qwen-embed"));
         assert_eq!(node.config["model"], json!("text-embedding-v4"));
@@ -2143,7 +2124,7 @@ return { values };
     fn registry_definitions_parse_wasm_node_dsl_flags() {
         let mut definitions = crate::pipeline::nodes::builtin_node_definitions();
         definitions.push(NodeDefinition {
-            kind: "x.wasmpkg.add".to_string(),
+            kind: "x.wasmpkg.number.add".to_string(),
             title: "WASM Test Add".to_string(),
             description: "WASM test node.".to_string(),
             input_pins: vec!["in".to_string()],
@@ -2173,7 +2154,7 @@ return { values };
             "wasm-test-dsl",
             r#"
 | trigger.manual
-| x.wasmpkg.add --a 2 --b 3
+| x.wasmpkg.number.add --a 2 --b 3
 "#,
             &definitions,
         )
@@ -2181,7 +2162,7 @@ return { values };
         let node = graph
             .nodes
             .iter()
-            .find(|node| node.kind == "x.wasmpkg.add")
+            .find(|node| node.kind == "x.wasmpkg.number.add")
             .expect("wasm node");
         assert_eq!(node.config["a"], json!(2));
         assert_eq!(node.config["b"], json!(3));
@@ -2230,7 +2211,7 @@ return { ok, label: "lat|lon", pair: `${lat || ""}|${lon || ""}` };"#;
     #[test]
     fn function_trigger_schema_field_flags_build_json_schema() {
         let dsl = r#"
-[fn] trigger.function --title "Inspect CSV" --description "Reads a CSV." --argument source:file! "CSV file reference." --argument options:any "Provider options." --result ok:boolean! "Whether it worked." --result columns:string[] "Detected columns."
+[fn] trigger.function --title "Inspect CSV" --description "Reads a CSV." --parameter source:file! "CSV file reference." --parameter options:any "Provider options." --result ok:boolean! "Whether it worked." --result columns:string[] "Detected columns."
 [fn] -> [done]
 [done] javascript.script.run -- return input;
 "#;
@@ -2257,7 +2238,7 @@ return { ok, label: "lat|lon", pair: `${lat || ""}|${lon || ""}` };"#;
         // Written back whole, through the flag that takes the whole schema.
         let segment = super::node_to_segment_no_body(node);
         assert!(segment.contains("--schema ") && segment.contains("--result-schema "), "{segment}");
-        assert!(!segment.contains("--argument") && !segment.contains("--result "), "{segment}");
+        assert!(!segment.contains("--parameter") && !segment.contains("--result "), "{segment}");
     }
 }
 
@@ -2303,29 +2284,7 @@ fn parse_graph_node(
     }
     // For logic.match, output pins are dynamic: the declared cases + the default pin.
     if full_kind == "logic.match" {
-        if let Value::Object(ref map) = config {
-            let cases: Vec<String> = map
-                .get("cases")
-                .and_then(|v| v.as_array())
-                .map(|arr| {
-                    arr.iter()
-                        .filter_map(|v| v.as_str().map(|s| s.to_string()))
-                        .collect()
-                })
-                .unwrap_or_default();
-            let default_pin = map
-                .get("default")
-                .and_then(|v| v.as_str())
-                .unwrap_or("default")
-                .to_string();
-            let mut pins = cases;
-            if !pins.contains(&default_pin) {
-                pins.push(default_pin);
-            }
-            if !pins.is_empty() {
-                output_pins = pins;
-            }
-        }
+        output_pins = crate::pipeline::nodes::basic::logic::match_::output_pins(&config);
     }
     nodes.push(PipelineNode {
         id: label.to_string(),
@@ -2429,7 +2388,7 @@ fn node_to_segment(node: &PipelineNode) -> String {
 
     // The body key (`query`, `source`, `expression`, `prompt`, …) may also be
     // a declared flag. It is written once: as the `-- body` when the flag
-    // table declares it, never as both — `logic.if --expr "x" -- x` was the
+    // table declares it, never as both — `logic.if --when "x" -- x` was the
     // shape this produced before.
     let body_key = body_config_key(&node.kind);
 
@@ -2560,7 +2519,6 @@ pub fn node_to_segment_no_body(node: &PipelineNode) -> String {
             "sqlite.query.run" => "query",
             "table.query.run" => "query",
             "javascript.script.run" | "typescript.script.run" => "source",
-            "logic.match" | "logic.if" => "expression",
             _ => "body",
         };
         if flag.config_key == body_key {
@@ -2641,7 +2599,7 @@ pub fn node_to_segment_no_body(node: &PipelineNode) -> String {
     parts.join(" ")
 }
 
-/// A schema built from repeated field declarations (`--argument a:string!`)
+/// A schema built from repeated field declarations (`--parameter a:string!`)
 /// is written back whole, through the flag that takes the whole schema under
 /// the same config key (`--schema`); the field flag itself when none does.
 fn schema_flag_for(dsl_flags: &[DslFlag], field_flag: &DslFlag) -> String {
@@ -2842,29 +2800,7 @@ fn build_pipe_mode(
 
         // For logic.match, output pins are dynamic: the declared cases + the default pin.
         if full_kind == "logic.match" {
-            if let Value::Object(ref map) = config {
-                let cases: Vec<String> = map
-                    .get("cases")
-                    .and_then(|v| v.as_array())
-                    .map(|arr| {
-                        arr.iter()
-                            .filter_map(|v| v.as_str().map(|s| s.to_string()))
-                            .collect()
-                    })
-                    .unwrap_or_default();
-                let default_pin = map
-                    .get("default")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("default")
-                    .to_string();
-                let mut pins = cases;
-                if !pins.contains(&default_pin) {
-                    pins.push(default_pin);
-                }
-                if !pins.is_empty() {
-                    output_pins = pins;
-                }
-            }
+            output_pins = crate::pipeline::nodes::basic::logic::match_::output_pins(&config);
         }
 
         // Determine from_node for edge
@@ -2943,17 +2879,17 @@ mod register_shape_tests {
 
     #[test]
     fn a_body_key_that_is_also_a_flag_is_rendered_once() {
-        let g = build_pipeline_graph("p", "trigger.webhook --route /x | logic.if --expr \"$trigger.query.who == 'm'\" | ai.text.generate --credential c --output-mode final_only -- Classify: {{ $trigger.body.review }}").expect("parse");
+        let g = build_pipeline_graph("p", "trigger.webhook --route /x | logic.if --when \"$trigger.query.who == 'm'\" | ai.text.generate --credential c --output-mode final_only -- Classify: {{ $trigger.body.review }}").expect("parse");
         let dsl = graph_to_dsl(&g);
         let if_line = dsl.lines().find(|l| l.contains("logic.if")).unwrap();
         assert_eq!(if_line.matches("$trigger.query.who").count(), 1, "{if_line}");
-        assert!(!if_line.contains("--expr"), "{if_line}");
+        assert!(if_line.contains("--when") && !if_line.contains(" -- "), "{if_line}");
         let agent_line = dsl.lines().find(|l| l.contains("ai.text.generate")).unwrap();
         assert_eq!(agent_line.matches("Classify:").count(), 1, "{agent_line}");
         assert!(!agent_line.contains("--prompt"), "{agent_line}");
         // and it round-trips
         let again = build_pipeline_graph("p", &dsl).expect("re-parse");
-        assert_eq!(again.nodes[1].config.get("expression"), g.nodes[1].config.get("expression"));
+        assert_eq!(again.nodes[1].config.get("when"), g.nodes[1].config.get("when"));
         assert_eq!(again.nodes[2].config.get("prompt"), g.nodes[2].config.get("prompt"));
     }
 
@@ -3010,7 +2946,7 @@ mod note_tests {
     fn notes_survive_the_dsl_round_trip_in_both_modes() {
         for body in [
             "trigger.webhook --route /x | web.response.send --template pages/x.tsx | note --id n1 --text \"keep me\" --at 10,20 --size 200x80 --color blue",
-            "[t] trigger.webhook --route /x\n[a] logic.if --expr \"true\"\n[b] web.response.send --template pages/a.tsx\n[c] web.response.send --template pages/b.tsx\n[t] -> [a]\n[a]:then -> [b]\n[a]:else -> [c]\n[n1] note --text \"keep me\" --color blue",
+            "[t] trigger.webhook --route /x\n[a] logic.if --when \"true\"\n[b] web.response.send --template pages/a.tsx\n[c] web.response.send --template pages/b.tsx\n[t] -> [a]\n[a]:then -> [b]\n[a]:else -> [c]\n[n1] note --text \"keep me\" --color blue",
         ] {
             let first = build_pipeline_graph("p", body).expect("parse");
             let rendered = graph_to_dsl(&first);
@@ -3081,7 +3017,7 @@ mod quoting_tests {
     const COMPLEX: &str = r#"
 [t] trigger.webhook --route /orders --method POST
 [k] kv.entry.get --key "order:{{ $trigger.query.id }}"
-[c] logic.if --expr "input.entry.found"
+[c] logic.if --when "input.entry.found"
 [m] mail.message.send --credential relay --recipient "{{ input.entry.value.email }}" --subject "Order {{ $trigger.query.id }}" --text "Thank you."
 [f] kv.entry.put --key "seen:{{ $trigger.query.id }}" --value "{{ input.entry.value }}" --ttl 10m
 [w] web.response.send --status 200 --body "ok"

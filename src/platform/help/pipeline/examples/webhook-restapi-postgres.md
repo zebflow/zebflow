@@ -84,7 +84,7 @@ JSON body fields sit under `input.webhook.body` right after the trigger
 
 ```
 | trigger.webhook --route /api/posts --method POST
-| logic.if --expr "input.webhook.body.title && input.webhook.body.body"
+| logic.if --when "input.webhook.body.title && input.webhook.body.body"
 (false pin → `web.response.send --status 400`; see **Answering with a status**)
 | postgres.query.run --credential my-pg --write --param "1={{ $trigger.body.title }}" --param "2={{ $trigger.body.body }}" --param "3={{ $trigger.body.author_id }}" \
     -- "INSERT INTO posts (title, body, author_id, created_at) VALUES ($1, $2, $3, now()) RETURNING id, title"
@@ -135,7 +135,7 @@ happens next. To answer 404, branch and let `web.response.send` answer:
 
 ```
 [find]  postgres.query.run --credential my-pg --param "1={{ input.webhook.params.id }}" -- "SELECT …"
-[found] logic.if --expr "input.query.rows && input.query.rows.length > 0"
+[found] logic.if --when "input.query.rows && input.query.rows.length > 0"
 [ok]    web.response.send --body "{{ { ok: true, data: input.query.rows[0] } }}"
 [gone]  web.response.send --status 404 --body "{{ { ok: false, error: 'not found' } }}"
 [find] -> [found]

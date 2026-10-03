@@ -59,7 +59,7 @@ run
 register blog/detail --
 [a] trigger.webhook --route /blog/:slug --method GET
 [b] sekejap.query.run --param "1={{ input.webhook.params.slug }}" -- "SELECT * FROM posts WHERE _key = $1 AND published = true"
-[c] logic.if --expr "input.query.rows.length > 0"
+[c] logic.if --when "input.query.rows.length > 0"
 [d] javascript.script.run -- "return { post: input.query.rows[0] };"
 [e] web.response.send --template pages/blog-detail.tsx
 [f] web.response.send --status 302 --header "Location=/blog"
@@ -90,11 +90,11 @@ Sekejap has no `UPSERT`/`ON CONFLICT`. Look the slug up first, then branch:
 ```zf
 register blog/api-post-upsert --
 [trig] trigger.webhook --route /api/posts --method POST --auth jwt --credential blog-jwt --role admin
-[has_title] logic.if --expr "!!(input.webhook.body && input.webhook.body.title)"
+[has_title] logic.if --when "!!(input.webhook.body && input.webhook.body.title)"
 [bad] web.response.send --status 400 --body "{{ { ok: false, error: 'title required' } }}"
 [draft] javascript.script.run -- "const slug = $trigger.body.slug || String($trigger.body.title).toLowerCase().replace(/[^a-z0-9]+/g,'-'); return { slug, title: $trigger.body.title, body: $trigger.body.body || '', published: !!$trigger.body.published };"
 [find] sekejap.query.run --param "1={{ $nodes.draft.script.slug }}" -- "SELECT _key FROM posts WHERE _key = $1"
-[exists] logic.if --expr "input.query.rows.length > 0"
+[exists] logic.if --when "input.query.rows.length > 0"
 [update] sekejap.query.run --write --param "1={{ $nodes.draft.script.title }}" --param "2={{ $nodes.draft.script.body }}" --param "3={{ $nodes.draft.script.published }}" --param "4={{ Date.now() }}" --param "5={{ $nodes.draft.script.slug }}" -- "UPDATE posts SET title = $1, body = $2, published = $3, updated_at = $4 WHERE _key = $5"
 [insert] sekejap.query.run --write --param "1={{ $nodes.draft.script.slug }}" --param "2={{ $nodes.draft.script.title }}" --param "3={{ $nodes.draft.script.body }}" --param "4={{ $nodes.draft.script.published }}" --param "5={{ Date.now() }}" --param "6={{ Date.now() }}" -- "INSERT INTO posts (_key, title, body, published, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6)"
 [ok] web.response.send --body "{{ { ok: true, slug: $nodes.draft.script.slug } }}"
@@ -129,7 +129,7 @@ register blog/api-post-upsert --
 register blog/auth-login --
 [trig] trigger.webhook --route /auth/login --method POST
 [lookup] sekejap.query.run --param "1={{ input.webhook.body.username }}" -- "SELECT _key, password_hash, roles FROM users WHERE _key = $1"
-[found] logic.if --expr "input.query.rows.length > 0"
+[found] logic.if --when "input.query.rows.length > 0"
 [verify] crypto.password.verify --from "{{ $trigger.body.password }}" --hash "{{ input.query.rows[0]?.password_hash }}"
 [token] auth.token.create --credential blog-jwt --claim "sub={{ input.query.rows[0]._key }}" --claim "roles:public={{ input.query.rows[0].roles }}" --ttl 1d
 [welcome] web.response.send --status 302 --header "Location=/admin" --header "Set-Cookie=session={{ input.token.access_token }}; Path=/; Max-Age=86400; SameSite=Lax; HttpOnly"

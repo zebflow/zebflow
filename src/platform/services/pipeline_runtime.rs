@@ -799,10 +799,10 @@ mod trigger_tests {
     }
 
     #[test]
-    fn a_function_declares_its_arguments_and_result_under_the_new_keys() {
+    fn a_function_declares_its_parameters_and_result_under_the_new_keys() {
         let graph = build_pipeline_graph(
             "fn",
-            "| trigger.function --description \"Find one user.\" --argument email:string! \"Address.\" --result user:object",
+            "| trigger.function --description \"Find one user.\" --parameter email:string! \"Address.\" --result user:object",
         )
         .expect("graph");
         let config = &graph.nodes[0].config;

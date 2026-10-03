@@ -50,7 +50,7 @@ Facts live in `help(topic="pipeline")`, `pipeline/dsl`, `pipeline/authoring`,
   Read it downstream at `input.script` (`$nodes.<id>.script` from elsewhere).
   A script cannot set a status or a header, `return null` does not stop the
   pipeline, and `setTimeout` / `fetch` are blocked in it. Branch with
-  `logic.if --expr`, answer with `web.response.send`, call out with
+  `logic.if --when`, answer with `web.response.send`, call out with
   `http.response.fetch`.
 - **`web.response.send`** decides the response: nothing → JSON of the payload;
   `--template pages/x.tsx` → the page; `--body VALUE` → text (a string) or JSON;
@@ -69,7 +69,7 @@ Facts live in `help(topic="pipeline")`, `pipeline/dsl`, `pipeline/authoring`,
 ```
 register api/posts/create --title "Create post"
 [a] trigger.webhook --route /api/posts --method POST --auth jwt --credential jwt_main --role editor
-[b] logic.if --expr "typeof input.webhook.body?.title === 'string' && input.webhook.body.title.length > 0"
+[b] logic.if --when "typeof input.webhook.body?.title === 'string' && input.webhook.body.title.length > 0"
 [c] sekejap.query.run --param "1={{ $trigger.body.title }}" --param "2={{ $trigger.body.slug }}" --write -- "INSERT INTO posts (title, slug) VALUES ($1, $2)"
 [d] web.response.send --status 302 --header "Location=/admin/posts"
 [e] web.response.send --status 400 --body "{{ { error: 'title is required' } }}"

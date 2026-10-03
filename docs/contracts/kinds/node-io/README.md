@@ -128,8 +128,8 @@ that is a new code, not an edit. `logic.retry` retries only `failed`;
 - Literal is the default because the common case must never break: a URL is
   a URL, not a division of undefined by undefined. `{{ }}` marks intent.
 - The expression *is* the subject — not a dynamic twin — for
-  `logic.if/match/foreach/reduce --expr` and `script`; those keep their
-  form.
+  `logic.if`/`logic.retry --when`, `logic.match`/`logic.foreach --from`,
+  `logic.reduce --initial`/`--step` and `script`; those keep their form.
 
 **Retired by this rule** (migration is its own loop, after this document):
 the paired `--*-expr` twins (~30), every payload-extraction flag in all four

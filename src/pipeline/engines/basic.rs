@@ -2455,17 +2455,11 @@ impl BasicPipelineEngine {
                         let attempt = state.get("attempt").and_then(Value::as_u64).unwrap_or(1);
                         let max_attempts = state.get("max_attempts").and_then(Value::as_u64);
                         // The reason a wait is a wait: the pause the node
-                        // took before the next attempt — the wait it stamped
-                        // (grown by `--backoff`), or its `--delay-ms` when
-                        // an older record has no stamp.
+                        // took before the next attempt, as it stamped it
+                        // (`--delay` grown by `--backoff`).
                         let message = state
                             .get("next_delay_ms")
                             .and_then(Value::as_u64)
-                            .or_else(|| {
-                                node.config.get("delay_ms").and_then(|d| {
-                                    d.as_u64().or_else(|| d.as_str().and_then(|s| s.trim().parse().ok()))
-                                })
-                            })
                             .filter(|d| *d > 0)
                             .map(|d| format!("next attempt in {d} ms"));
                         emit_lifecycle(
@@ -2648,7 +2642,7 @@ impl BasicPipelineEngine {
                 let mut final_outputs = Vec::new();
                 if let Some(last_output) = outputs.last() {
                     let state = reduce_pending.entry(node.id.clone()).or_default();
-                    state.acc = Some(last_output.payload.clone());
+                    state.acc = Some(logic::reduce::accumulator(&last_output.payload));
                     state.received += 1;
                     if state.expected.is_none() {
                         state.expected = series
@@ -2755,12 +2749,15 @@ impl BasicPipelineEngine {
                                 pending.insert(key, output.payload.clone());
                                 let expected = incoming_counts.get(*to_node).copied().unwrap_or(1);
                                 if pending.len() >= expected {
-                                    let combined = Value::Object(
-                                        pending
-                                            .iter()
-                                            .map(|(k, v)| (k.clone(), v.clone()))
-                                            .collect(),
-                                    );
+                                    // The delivered payloads in DSL text
+                                    // order (`node-conventions.md` §4): a
+                                    // node declared earlier comes first.
+                                    let mut delivered: Vec<(&String, &Value)> = pending.iter().collect();
+                                    delivered.sort_by_key(|(key, _)| {
+                                        let from = key.split(':').next().unwrap_or_default();
+                                        (graph.nodes.iter().position(|n| n.id == from).unwrap_or(usize::MAX), (*key).clone())
+                                    });
+                                    let combined = Value::Array(delivered.into_iter().map(|(_, v)| v.clone()).collect());
                                     collect_pending.remove(*to_node);
                                     queue.push_back(NodeExecutionInput {
                                         node_id: (*to_node).to_string(),
@@ -2942,7 +2939,7 @@ mod tests {
             "trace-capture",
             r#"
 [a] trigger.manual
-[b] logic.if --expr "1 == 1"
+[b] logic.if --when "1 == 1"
 [c] javascript.script.run -- "return { count: input.manual.rows.length, last: input.manual.rows[input.manual.rows.length - 1] };"
 [a] -> [b]
 [b]:true -> [c]
@@ -4064,8 +4061,11 @@ mod tests {
             .await
             .expect("execute");
 
-        assert_eq!(out.value["script"]["b"]["script"]["user"]["id"], "u_42");
-        assert_eq!(out.value["script"]["c"]["script"]["orders"][0]["id"], "o_1");
+        // `collect: { items, count }`, the deliveries in DSL text order (b
+        // is declared before c), over those payloads merged.
+        assert_eq!(out.value["script"]["collect"]["count"], 2, "{}", out.value);
+        assert_eq!(out.value["script"]["collect"]["items"][0]["script"]["user"]["id"], "u_42");
+        assert_eq!(out.value["script"]["collect"]["items"][1]["script"]["orders"][0]["id"], "o_1");
     }
 
     #[tokio::test]
@@ -4622,7 +4622,7 @@ mod tests {
         let dsl = r#"
 [a] trigger.manual
 [b] javascript.script.run -- "return { type: 'billing' };"
-[c] logic.if --expr "$input.script.type == 'billing'"
+[c] logic.if --when "$input.script.type == 'billing'"
 [d] javascript.script.run -- "return { branch: 'true' };"
 [e] javascript.script.run -- "return { branch: 'false' };"
 
@@ -4659,7 +4659,7 @@ mod tests {
         let dsl = r#"
 [a] trigger.manual
 [b] javascript.script.run -- "return { kind: 'billing' };"
-[c] logic.match --expr "$nodes.b.script.kind" --cases billing,technical --default default
+[c] logic.match --from "$nodes.b.script.kind" --case billing --case technical --default default
 [d] javascript.script.run -- "return { lane: 'billing' };"
 [e] javascript.script.run -- "return { lane: 'technical' };"
 [f] javascript.script.run -- "return { lane: 'default' };"
@@ -4742,7 +4742,7 @@ mod tests {
     async fn logic_foreach_emits_one_run_per_item() {
         let dsl = r#"
 [a] trigger.manual
-[b] logic.foreach --items-expr "$input.manual.rows"
+[b] logic.foreach --from "$input.manual.rows"
 
 [a] -> [b]
 "#;
@@ -4801,7 +4801,7 @@ mod tests {
     async fn logic_foreach_keep_input_preserves_parent_payload_when_requested() {
         let dsl = r#"
 [a] trigger.manual
-[b] logic.foreach --items-expr "$input.manual.rows" --keep-input
+[b] logic.foreach --from "$input.manual.rows" --keep-input
 
 [a] -> [b]
 "#;
@@ -4842,10 +4842,10 @@ mod tests {
         // element this run started from, not null and not another run's.
         let dsl = r#"
 [a] trigger.manual
-[b] logic.foreach --items-expr "$input.manual.rows"
+[b] logic.foreach --from "$input.manual.rows"
 [c] javascript.script.run -- "return { unrelated: true };"
 [d] crypto.base64.encode --text "{{ $item.key }}"
-[e] logic.reduce --init-expr "{ keys: [] }" --step-expr "{ keys: $acc.keys.concat([$input.base64.value]) }"
+[e] logic.reduce --initial "{ keys: [] }" --step "{ keys: $acc.keys.concat([$input.base64.value]) }"
 
 [a] -> [b]
 [b]:item -> [c]
@@ -4871,7 +4871,7 @@ mod tests {
             .expect("execute");
 
         // base64 of "a", "b", "c".
-        assert_eq!(out.value["keys"], json!(["YQ==", "Yg==", "Yw=="]), "{}", out.value);
+        assert_eq!(out.value["reduce"]["keys"], json!(["YQ==", "Yg==", "Yw=="]), "{}", out.value);
     }
 
     #[tokio::test]
@@ -4880,9 +4880,9 @@ mod tests {
         // fold all three runs, not fire after each one.
         let dsl = r#"
 [a] trigger.manual
-[b] logic.foreach --items-expr "$input.manual.rows"
+[b] logic.foreach --from "$input.manual.rows"
 [c] javascript.script.run -- "return { v: input.item.amount * 10 };"
-[d] logic.reduce --init-expr "{ vs: [] }" --step-expr "{ vs: $acc.vs.concat([$input.script.v]) }"
+[d] logic.reduce --initial "{ vs: [] }" --step "{ vs: $acc.vs.concat([$input.script.v]) }"
 
 [a] -> [b]
 [b]:item -> [c]
@@ -4906,15 +4906,15 @@ mod tests {
             .await
             .expect("execute");
 
-        assert_eq!(out.value["vs"], json!([10, 20, 30]));
+        assert_eq!(out.value["reduce"]["vs"], json!([10, 20, 30]));
     }
 
     #[tokio::test]
     async fn logic_reduce_accumulates_foreach_series() {
         let dsl = r#"
 [a] trigger.manual
-[b] logic.foreach --items-expr "$input.manual.rows"
-[c] logic.reduce --init-expr "{ total: 0 }" --step-expr "{ total: $acc.total + $input.item.amount }"
+[b] logic.foreach --from "$input.manual.rows"
+[c] logic.reduce --initial "{ total: 0 }" --step "{ total: $acc.total + $input.item.amount }"
 
 [a] -> [b]
 [b]:item -> [c]
@@ -4945,7 +4945,7 @@ mod tests {
             .await
             .expect("execute");
 
-        assert_eq!(out.value["total"], 32);
+        assert_eq!(out.value["reduce"]["total"], 32);
     }
 
 
@@ -5085,7 +5085,7 @@ mod tests {
         let dsl = r#"
 [t] trigger.webhook --route /hello --method POST
 [a] javascript.script.run -- "return { replaced: true };"
-[b] logic.if --expr "$trigger.body.name === 'Ana'"
+[b] logic.if --when "$trigger.body.name === 'Ana'"
 [c] javascript.script.run -- "return { name: $trigger.body.name, sub: $trigger.auth ? $trigger.auth.sub : null, kept: input.script.replaced, answer: ctx.nodes.t.webhook.body.name };"
 [t] -> [a]
 [a] -> [b]

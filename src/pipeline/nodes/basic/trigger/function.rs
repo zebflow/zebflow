@@ -10,7 +10,7 @@
 //! | Field | Type | Required | Description |
 //! |---|---|---|---|
 //! | `description` | string | yes | What the function does and when to use it |
-//! | `schema` | object | no | JSON Schema object of the arguments (`--argument` / `--schema`) |
+//! | `schema` | object | no | JSON Schema object of the parameters (`--parameter` / `--schema`) |
 //! | `result_schema` | object | no | JSON Schema object of the result (`--result` / `--result-schema`) |
 //! | `examples` | array | no | Optional input/output examples for tool callers |
 //!
@@ -22,7 +22,7 @@
 //! # DSL
 //! ```text
 //! | trigger.function --title "Lookup user" --description "Looks up one user." \
-//!     --argument user_id:string! "User id." --result ok:boolean! "Whether lookup succeeded."
+//!     --parameter user_id:string! "User id." --result ok:boolean! "Whether lookup succeeded."
 //! | javascript.script.run -- return { greeting: "hello " + input.function.user_id }
 //! ```
 
@@ -45,7 +45,7 @@ pub struct Config {
     /// What this function does and when callers should use it.
     #[serde(default)]
     pub description: String,
-    /// Full JSON Schema object of the arguments (`--argument`, `--schema`).
+    /// Full JSON Schema object of the parameters (`--parameter`, `--schema`).
     #[serde(default)]
     pub schema: Value,
     /// Full JSON Schema object of the result (`--result`, `--result-schema`).
@@ -74,7 +74,7 @@ pub fn definition() -> NodeDefinition {
         description: "Makes this pipeline a function other pipelines call with `function.result.call --function <slug>` — the slug is the file's \
             stem (`jobs/send-welcome` → `send-welcome`). Answers one key, `function`: exactly the arguments the caller passed \
             (`input.function.<name>`, `$trigger.<name>`); the function's result is its last node's payload. Declare the contract with \
-            `--argument name:type! \"doc\"` / `--result name:type!` (or full `--schema` / `--result-schema` JSON) so callers and the \
+            `--parameter name:type! \"doc\"` / `--result name:type!` (or full `--schema` / `--result-schema` JSON) so callers and the \
             assistant see typed fields. Also the trigger for one-off runs through `pipeline_run` (`| trigger.function | …`), where the \
             `input` argument is what it answers."
             .to_string(),
@@ -119,10 +119,11 @@ pub fn definition() -> NodeDefinition {
                 ..Default::default()
             },
             DslFlag {
-                flag: "--argument".to_string(),
+                flag: "--parameter".to_string(),
                 config_key: "schema".to_string(),
-                description: "One argument the function takes, repeated: name:type! plus an optional description. \
-                    Example: --argument columns:string[]! \"Source column names.\""
+                description: "One parameter the function declares, repeated: name:type! plus an optional description. \
+                    A caller fills it with `function.result.call --argument name=value`. \
+                    Example: --parameter columns:string[]! \"Source column names.\""
                     .to_string(),
                 kind: DslFlagKind::SchemaField,
                 required: false,
@@ -143,7 +144,7 @@ pub fn definition() -> NodeDefinition {
             DslFlag {
                 flag: "--schema".to_string(),
                 config_key: "schema".to_string(),
-                description: "The arguments as one full JSON Schema object (instead of --argument).".to_string(),
+                description: "The parameters as one full JSON Schema object (instead of --parameter).".to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
                 value: "json".to_string(),
@@ -224,7 +225,7 @@ pub fn definition() -> NodeDefinition {
             },
         ],
         examples: vec![
-            crate::pipeline::model::NodeExample::dsl("A reusable lookup", r#"trigger.function --description "Find one user by email." --argument email:string! "Address to look up." --result user:object "The row, or null.""#)
+            crate::pipeline::model::NodeExample::dsl("A reusable lookup", r#"trigger.function --description "Find one user by email." --parameter email:string! "Address to look up." --result user:object "The row, or null.""#)
                 .input(serde_json::json!({ "email": "a@example.com" }))
                 .output(serde_json::json!({ "function": { "email": "a@example.com" } }))
                 .note("Registered as `jobs/find-user`; called with `function.result.call --function find-user --argument \"email={{ $trigger.body.email }}\"`; the next node reads `input.function.email`."),
@@ -233,7 +234,7 @@ pub fn definition() -> NodeDefinition {
     }
 }
 
-/// The arguments' schema (`--argument` / `--schema`), an open object when
+/// The parameters' schema (`--parameter` / `--schema`), an open object when
 /// none is declared.
 pub fn input_schema_from_config(config: &Value) -> Value {
     schema_from_config(config, "schema").unwrap_or_else(empty_object_schema)

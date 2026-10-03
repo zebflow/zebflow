@@ -1511,7 +1511,7 @@ TRUNCATE TABLE tags;
             &ResolvedProjectLayout::platform_default(),
             &[pipeline_entry(
                 "pipelines/demo.zf.json",
-                &["x.nowhere.thing", "fs.file.put"],
+                &["x.nowhere.thing.run", "fs.file.put"],
             )],
             Vec::new(),
             PackageReviewOptions::default(),
@@ -1521,7 +1521,7 @@ TRUNCATE TABLE tags;
             review
                 .warnings
                 .iter()
-                .any(|warning| warning.contains("x.nowhere.thing")),
+                .any(|warning| warning.contains("x.nowhere.thing.run")),
             "{:?}",
             review.warnings
         );
@@ -1543,7 +1543,7 @@ TRUNCATE TABLE tags;
                     "description": "A bundle whose function reaches the network.",
                     "functions": {"main": "functions/main.zf.json"},
                     "nodes": [{
-                        "kind": "x.acme.sync",
+                        "kind": "x.acme.record.sync",
                         "title": "Sync",
                         "description": "Push a payload somewhere.",
                         "run": {"function": "main"},
@@ -1561,7 +1561,7 @@ TRUNCATE TABLE tags;
                 "functions/main.zf.json",
                 &["trigger.function", "http.response.fetch"],
             ),
-            pipeline_entry("pipelines/uses-it.zf.json", &["x.acme.sync"]),
+            pipeline_entry("pipelines/uses-it.zf.json", &["x.acme.record.sync"]),
         ];
 
         let review = review_package_entries(
@@ -1580,7 +1580,7 @@ TRUNCATE TABLE tags;
         assert!(
             review
                 .network_effects
-                .contains(&"x.acme.sync".to_string()),
+                .contains(&"x.acme.record.sync".to_string()),
             "{:?}",
             review.network_effects
         );
@@ -1664,7 +1664,7 @@ TRUNCATE TABLE tags;
                     "description": "A bundle that owns the kind it declares.",
                     "functions": {"main": "functions/main.zf.json"},
                     "nodes": [{
-                        "kind": "x.acme.request",
+                        "kind": "x.acme.request.send",
                         "title": "Acme Request",
                         "description": "Its own node.",
                         "run": {"function": "main"},

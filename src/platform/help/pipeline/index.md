@@ -78,7 +78,7 @@ For branching, fan-out and loops.
 
 ```
 [a] trigger.webhook --route /ingest --method POST
-[b] logic.match --expr "input.webhook.body.type" --cases normal,urgent --default other
+[b] logic.match --from "input.webhook.body.type" --case normal --case urgent --default other
 [c] sekejap.query.run --param "1={{ $trigger.body.id }}" --param "2={{ $trigger.body }}" --write -- "INSERT INTO normal_queue (id, data) VALUES ($1, $2)"
 [d] http.response.fetch --url https://alert.example.com/send --method POST --body "{{ $trigger.body }}"
 [e] sekejap.query.run --param "1={{ $trigger.body.id }}" --param "2={{ $trigger.body }}" --write -- "INSERT INTO other_queue (id, data) VALUES ($1, $2)"
@@ -168,7 +168,7 @@ To try a body without saving anything: `pipeline_run body="| trigger.function | 
 
 ```
 [a] trigger.webhook --route /api/posts --method POST
-[b] logic.if --expr "typeof input.webhook.body?.title === 'string' && input.webhook.body.title.length > 0"
+[b] logic.if --when "typeof input.webhook.body?.title === 'string' && input.webhook.body.title.length > 0"
 [c] sekejap.query.run --param "1={{ $trigger.body.title }}" --param "2={{ $trigger.body.title.toLowerCase().replace(/\s+/g, '-') }}" --write -- "INSERT INTO posts (title, slug) VALUES ($1, $2)"
 [d] javascript.script.run -- "return { ok: true }"
 [e] web.response.send --status 400 --body "{{ { error: 'title is required' } }}"

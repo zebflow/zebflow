@@ -42,7 +42,7 @@ register scraping/feed-scraper --
 [trig] trigger.schedule --cron "*/30 * * * *"
 [fetch] http.response.fetch --url "https://example.com/feed.json" --method GET
 [parse] javascript.script.run -- "const items = (input.response.body.items || []).map(i => ({ id: i.guid || i.url, title: i.title, url: i.url, summary: (i.description || '').slice(0,500), published_at: new Date(i.pubDate).getTime(), source: 'example-feed', fetched_at: Date.now() })); return { items: items.filter(i => i.id && i.title) };"
-[each] logic.foreach --items-expr "input.script.items"
+[each] logic.foreach --from "input.script.items"
 [save] sekejap.query.run --write --param "1={{ $item.id }}" --param "2={{ $item.title }}" --param "3={{ $item.url }}" --param "4={{ $item.summary }}" --param "5={{ $item.published_at }}" --param "6={{ $item.source }}" --param "7={{ $item.fetched_at }}" -- "INSERT INTO scraped_items (_key, title, url, summary, published_at, source, fetched_at) VALUES ($1, $2, $3, $4, $5, $6, $7) ON CONFLICT (_key) DO UPDATE SET title = EXCLUDED.title, url = EXCLUDED.url, summary = EXCLUDED.summary, published_at = EXCLUDED.published_at, source = EXCLUDED.source, fetched_at = EXCLUDED.fetched_at"
 
 [trig] -> [fetch]
@@ -58,7 +58,7 @@ register scraping/api-paginated-scraper --
 [trig] trigger.schedule --cron "0 3 * * *"
 [fetch] http.response.fetch --url "https://api.example.com/articles?page=1&per_page=100" --method GET
 [parse] javascript.script.run -- "const items = (input.response.body.data || []).map(a => ({ id: String(a.id), title: a.title, author: (a.author && a.author.name) || null, category: a.category, url: a.url, body: (a.content || '').slice(0,2000), fetched_at: Date.now() })); return { items };"
-[each] logic.foreach --items-expr "input.script.items"
+[each] logic.foreach --from "input.script.items"
 [save] sekejap.query.run --write --param "1={{ $item.id }}" --param "2={{ $item.title }}" --param "3={{ $item.author }}" --param "4={{ $item.category }}" --param "5={{ $item.url }}" --param "6={{ $item.body }}" --param "7={{ $item.fetched_at }}" -- "INSERT INTO articles (_key, title, author, category, url, body, fetched_at) VALUES ($1, $2, $3, $4, $5, $6, $7) ON CONFLICT (_key) DO UPDATE SET title = EXCLUDED.title, author = EXCLUDED.author, category = EXCLUDED.category, url = EXCLUDED.url, body = EXCLUDED.body, fetched_at = EXCLUDED.fetched_at"
 
 [trig] -> [fetch]
@@ -78,7 +78,7 @@ register scraping/html-scraper --
 [trig] trigger.schedule --cron "0 * * * *"
 [fetch] http.response.fetch --url "https://example.com/prices" --method GET --parse text
 [parse] javascript.script.run -- "const html = input.response.body; const matches = [...html.matchAll(/<div class=\"product\"[^>]*>([\s\S]*?)<\/div>/g)]; const items = matches.map((m,i) => { const nameMatch = m[1].match(/<h3>([^<]+)<\/h3>/); const priceMatch = m[1].match(/\$([0-9.]+)/); return { id: 'product-' + i, name: nameMatch ? nameMatch[1] : null, price: priceMatch ? parseFloat(priceMatch[1]) : null }; }); return { items: items.filter(p => p.name && p.price !== null).map(p => ({ ...p, fetched_at: Date.now() })) };"
-[each] logic.foreach --items-expr "input.script.items"
+[each] logic.foreach --from "input.script.items"
 [save] sekejap.query.run --write --param "1={{ $item.id }}" --param "2={{ $item.name }}" --param "3={{ $item.price }}" --param "4={{ $item.fetched_at }}" -- "INSERT INTO product_prices (_key, name, price, fetched_at) VALUES ($1, $2, $3, $4) ON CONFLICT (_key) DO UPDATE SET name = EXCLUDED.name, price = EXCLUDED.price, fetched_at = EXCLUDED.fetched_at"
 
 [trig] -> [fetch]
@@ -106,7 +106,7 @@ HTML as JSON.
 register scraping/scraped-item-detail --
 [a] trigger.webhook --route /data/items/:id --method GET
 [b] sekejap.query.run --param "1={{ input.webhook.params.id }}" -- "SELECT * FROM scraped_items WHERE _key = $1"
-[c] logic.if --expr "input.query.rows.length > 0"
+[c] logic.if --when "input.query.rows.length > 0"
 [d] javascript.script.run -- "return { item: input.query.rows[0] };"
 [e] web.response.send --template pages/scraped-item-detail.tsx
 [f] web.response.send --status 302 --header "Location=/data/items"

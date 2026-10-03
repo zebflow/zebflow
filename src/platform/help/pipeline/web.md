@@ -73,7 +73,7 @@ unless a `Content-Type` header says otherwise. At most one of `--body`,
 ```
 [a] trigger.webhook --route /blog/:slug --method GET
 [b] sekejap.query.run --param "1={{ $trigger.params.slug }}" -- "SELECT * FROM posts WHERE slug = $1"
-[c] logic.if --expr "input.query.rows.length > 0"
+[c] logic.if --when "input.query.rows.length > 0"
 [d] web.response.send --template pages/post.tsx
 [e] web.response.send --status 404 --template pages/not-found.tsx
 [a] -> [b]
@@ -116,7 +116,7 @@ The trigger answers under `error`: `input.error.error_code`,
 ```
 [a] trigger.webhook --route /auth/login --method POST
 [b] sekejap.query.run --param "1={{ input.webhook.body.email }}" -- "SELECT id, name, password_hash, roles FROM users WHERE email = $1"
-[c] logic.if --expr "input.query.rows.length === 1"
+[c] logic.if --when "input.query.rows.length === 1"
 [d] crypto.password.verify --from "{{ $nodes.a.webhook.body.password }}" --hash "{{ input.query.rows[0]?.password_hash }}"
 [e] javascript.script.run -- "const u = input.query.rows[0]; return { id: u.id, name: u.name, roles: u.roles || ['member'] }"
 [f] auth.token.create --credential jwt_main --claim "sub={{ input.script.id }}" --claim "name:public={{ input.script.name }}" --claim "roles:public={{ input.script.roles }}"

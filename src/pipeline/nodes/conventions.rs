@@ -74,6 +74,94 @@ mod tests {
         }
     }
 
+    /// The contract is the one source of the closed lists these checks hold
+    /// nodes to: read at test time, so editing the contract is editing the
+    /// check.
+    const CONTRACT: &str = include_str!("../../../docs/contracts/node-conventions.md");
+
+    /// The dictionary's words: every `--flag` in the table under "### The dictionary".
+    fn dictionary_words() -> std::collections::BTreeSet<String> {
+        let start = CONTRACT.find("### The dictionary").expect("dictionary section");
+        let table = CONTRACT[start..].split("\n\n").find(|block| block.starts_with("| Area")).expect("dictionary table");
+        table.split('`').skip(1).step_by(2).filter(|w| w.starts_with("--")).map(str::to_string).collect()
+    }
+
+    /// Native nodes and the official composites shipped in the binary: the
+    /// two origins that share plain names (§1).
+    fn official_definitions() -> Vec<crate::pipeline::model::NodeDefinition> {
+        let mut defs = crate::pipeline::nodes::builtin_node_definitions();
+        defs.extend(crate::platform::services::NodeRegistryService::embedded_official_definitions());
+        defs
+    }
+
+    /// §2: a flag two kinds share is a dictionary word, and is a switch, a
+    /// map or a value the same way everywhere.
+    #[test]
+    fn shared_words_mean_one_thing() {
+        use crate::pipeline::model::DslFlagKind;
+        let dictionary = dictionary_words();
+        let common: std::collections::BTreeSet<String> =
+            crate::pipeline::model::engine_common_dsl_flags().into_iter().map(|f| f.flag).collect();
+        let mut uses: std::collections::BTreeMap<String, Vec<(String, &'static str)>> = std::collections::BTreeMap::new();
+        for def in official_definitions() {
+            for flag in &def.dsl_flags {
+                if common.contains(&flag.flag) {
+                    continue;
+                }
+                let shape = match flag.kind {
+                    DslFlagKind::Bool => "a switch",
+                    DslFlagKind::KeyValuePairs => "a map",
+                    _ => "a value",
+                };
+                uses.entry(flag.flag.clone()).or_default().push((def.kind.clone(), shape));
+            }
+        }
+        let mut problems = Vec::new();
+        for (flag, kinds) in &uses {
+            let distinct_kinds: std::collections::BTreeSet<&String> = kinds.iter().map(|(k, _)| k).collect();
+            if distinct_kinds.len() < 2 {
+                continue;
+            }
+            if !dictionary.contains(flag) {
+                problems.push(format!("{flag} is shared by {} kinds but is not a dictionary word: {}", distinct_kinds.len(), distinct_kinds.iter().map(|k| k.as_str()).collect::<Vec<_>>().join(", ")));
+            }
+            let shapes: std::collections::BTreeSet<&str> = kinds.iter().map(|(_, s)| *s).collect();
+            if shapes.len() > 1 {
+                problems.push(format!("{flag} is {}", kinds.iter().map(|(k, s)| format!("{s} on {k}")).collect::<Vec<_>>().join(", ")));
+            }
+        }
+        report("shared_words_mean_one_thing", problems);
+    }
+
+    /// §1, §12: the official composites shipped in the binary pass the same
+    /// shape and flag rules as native nodes (the checks above read both), and
+    /// an installed bundle's kinds are `x.<package>.<noun>.<verb>`.
+    #[test]
+    fn composites_follow_the_grammar() {
+        use crate::contracts::kinds::{BundleScope, validate_bundle_namespace};
+        let composites = crate::platform::services::NodeRegistryService::embedded_official_definitions();
+        assert!(!composites.is_empty(), "the binary ships official composites");
+        // A real installable bundle (package `composite`), its first node's
+        // kind changed per case.
+        let fixture = crate::contracts::kinds::decode_node_bundle(
+            include_str!("../../../tests/fixtures/contracts/node-bundle/v1-composite.json").as_bytes(),
+        )
+        .expect("the composite bundle fixture decodes")
+        .spec;
+        let bundle = |kind: &str| {
+            let mut spec = fixture.clone();
+            spec.nodes[0].kind = kind.to_string();
+            spec
+        };
+        assert!(validate_bundle_namespace(&bundle("x.composite.invoice.create"), BundleScope::Project).is_ok());
+        for wrong in ["x.composite.invoice", "x.composite.invoice.create.now", "x.other.invoice.create", "invoice.document.create"] {
+            assert!(
+                validate_bundle_namespace(&bundle(wrong), BundleScope::Project).is_err(),
+                "an installed kind '{wrong}' must be refused"
+            );
+        }
+    }
+
     /// §1: no `--no-*`, no `-path` but `--path`, no `url` answered, and a
     /// select field lists its words.
     #[test]

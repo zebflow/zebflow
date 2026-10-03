@@ -81,13 +81,23 @@ pub fn validate_bundle_namespace(
             }
         }
         BundleScope::Project => {
+            // `x.<package>.<noun>.<verb>` (`node-conventions.md` §1): after
+            // the package's namespace, exactly a noun and a verb.
             let namespace = package_kind_namespace(&spec.package);
             for node in &spec.nodes {
-                if !node.kind.starts_with(&namespace) || node.kind.len() == namespace.len() {
+                let Some(rest) = node.kind.strip_prefix(&namespace) else {
                     return Err(ContractError::invalid(format!(
                         "installed node kind '{}' must start with '{namespace}' owned by \
                          package '{}'",
                         node.kind, spec.package
+                    )));
+                };
+                let segments: Vec<&str> = rest.split('.').collect();
+                if segments.len() != 2 || segments.iter().any(|segment| segment.is_empty()) {
+                    return Err(ContractError::invalid(format!(
+                        "installed node kind '{}' must be '{namespace}<noun>.<verb>': \
+                         the package's namespace, then one noun and one verb",
+                        node.kind
                     )));
                 }
             }
@@ -891,9 +901,9 @@ mod tests {
         assert_eq!(
             sources,
             vec![
-                ("x.mixed.load", NodePackageSource::Composite),
-                ("x.mixed.crunch", NodePackageSource::Wasm),
-                ("x.mixed.inbox", NodePackageSource::Declarative),
+                ("x.mixed.data.load", NodePackageSource::Composite),
+                ("x.mixed.data.crunch", NodePackageSource::Wasm),
+                ("x.mixed.inbox.receive", NodePackageSource::Declarative),
             ]
         );
     }
@@ -922,7 +932,7 @@ mod tests {
         let manifests = normalize_node_bundle(&bundle(V1_MIXED).spec).expect("normalize");
         let load = &manifests[0];
         let crunch = &manifests[1];
-        assert_eq!(load.definition.kind, "x.mixed.load");
+        assert_eq!(load.definition.kind, "x.mixed.data.load");
         assert_eq!(
             load.credentials
                 .iter()
@@ -1028,7 +1038,13 @@ mod tests {
             "a curated bundle may not use the third-party namespace"
         );
 
-        for kind in ["x.other.load", "n.composite.load", "x.composite"] {
+        for kind in [
+            "x.other.data.load",
+            "composite.data.load",
+            "x.composite",
+            "x.composite.data",
+            "x.composite.data.load.now",
+        ] {
             let spec = bundle(&mutate(V1_COMPOSITE, |value| {
                 value["spec"]["nodes"][0]["kind"] = serde_json::json!(kind);
             }))
@@ -1057,7 +1073,7 @@ mod tests {
     fn rejects_duplicate_node_kind() {
         assert!(
             decode_node_bundle(&mutate(V1_WASM, |value| {
-                value["spec"]["nodes"][1]["kind"] = serde_json::json!("x.wasmpkg.train");
+                value["spec"]["nodes"][1]["kind"] = serde_json::json!("x.wasmpkg.model.train");
             }))
             .is_err()
         );

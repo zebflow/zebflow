@@ -1077,7 +1077,7 @@ mod tests {
   },
   "nodes": [
     {
-      "kind": "x.wasm_test_add.add",
+      "kind": "x.wasm_test_add.number.add",
       "title": "WASM Test Add",
       "description": "Run a tiny WASM addition function for local node package smoke tests.",
       "icon": "icon.svg",
@@ -1143,7 +1143,7 @@ mod tests {
             manifest.source,
             crate::platform::model::NodePackageSource::Wasm
         );
-        assert_eq!(manifest.definition.kind, "x.wasm_test_add.add");
+        assert_eq!(manifest.definition.kind, "x.wasm_test_add.number.add");
         let (module, export) = manifest.wasm_target().expect("wasm target");
         assert_eq!(module.path, "module.wasm");
         assert_eq!(export, "zebflow_add");
@@ -1163,7 +1163,7 @@ mod tests {
             temp.path(),
             "alpha",
             "alpha",
-            "x.alpha.thing",
+            "x.alpha.thing.run",
             "icons/alpha.svg",
         );
         registry
@@ -1171,7 +1171,7 @@ mod tests {
             .expect("initial refresh");
         assert!(
             registry
-                .get_by_kind("superadmin", "default", "x.alpha.thing")
+                .get_by_kind("superadmin", "default", "x.alpha.thing.run")
                 .is_some()
         );
 
@@ -1185,7 +1185,7 @@ mod tests {
         assert_eq!(error.code, "NODE_BUNDLE_MANIFEST_MISSING");
         assert!(
             registry
-                .get_by_kind("superadmin", "default", "x.alpha.thing")
+                .get_by_kind("superadmin", "default", "x.alpha.thing.run")
                 .is_some(),
             "failed refresh must not publish a partial registry"
         );
@@ -1200,7 +1200,7 @@ mod tests {
     fn refresh_rejects_a_bundle_claiming_a_foreign_kind() {
         let temp = tempfile::tempdir().expect("temp dir");
         let registry = make_registry(temp.path());
-        write_composite_bundle(temp.path(), "one", "one", "x.one.same", "");
+        write_composite_bundle(temp.path(), "one", "one", "x.one.same.run", "");
         registry
             .refresh_project("superadmin", "default")
             .expect("owned kind refreshes");
@@ -1233,7 +1233,7 @@ mod tests {
         // The previous valid registry stays active.
         assert!(
             registry
-                .get_by_kind("superadmin", "default", "x.one.same")
+                .get_by_kind("superadmin", "default", "x.one.same.run")
                 .is_some()
         );
     }
@@ -1244,7 +1244,7 @@ mod tests {
     fn refresh_rejects_a_bundle_with_a_missing_artifact() {
         let temp = tempfile::tempdir().expect("temp dir");
         let registry = make_registry(temp.path());
-        write_composite_bundle(temp.path(), "gap", "gap", "x.gap.thing", "");
+        write_composite_bundle(temp.path(), "gap", "gap", "x.gap.thing.run", "");
         registry
             .refresh_project("superadmin", "default")
             .expect("complete bundle refreshes");
@@ -1261,7 +1261,7 @@ mod tests {
         // The previous valid registry stays active.
         assert!(
             registry
-                .get_by_kind("superadmin", "default", "x.gap.thing")
+                .get_by_kind("superadmin", "default", "x.gap.thing.run")
                 .is_some()
         );
     }
@@ -1272,7 +1272,7 @@ mod tests {
     fn refresh_rejects_a_bundle_with_an_invalid_function_pipeline() {
         let temp = tempfile::tempdir().expect("temp dir");
         let registry = make_registry(temp.path());
-        write_composite_bundle(temp.path(), "broken", "broken", "x.broken.thing", "");
+        write_composite_bundle(temp.path(), "broken", "broken", "x.broken.thing.run", "");
         registry
             .refresh_project("superadmin", "default")
             .expect("valid bundle refreshes");
@@ -1290,7 +1290,7 @@ mod tests {
         assert_eq!(error.code, "NODE_BUNDLE_FUNCTION_INVALID");
         assert!(
             registry
-                .get_by_kind("superadmin", "default", "x.broken.thing")
+                .get_by_kind("superadmin", "default", "x.broken.thing.run")
                 .is_some(),
             "the previous valid registry stays active"
         );
@@ -1301,7 +1301,7 @@ mod tests {
     fn third_party_interfaces_are_written_pruned_and_kept_when_the_bundle_goes() {
         let temp = tempfile::tempdir().expect("temp dir");
         let registry = make_registry(temp.path());
-        write_composite_bundle(temp.path(), "acme", "acme", "x.acme.thing", "");
+        write_composite_bundle(temp.path(), "acme", "acme", "x.acme.thing.run", "");
         registry
             .refresh_project("superadmin", "default")
             .expect("refresh");
@@ -1320,7 +1320,7 @@ mod tests {
             .expect("nodes")
             .last_mut()
             .expect("at least one node");
-        last["kind"] = serde_json::json!("x.acme.thing");
+        last["kind"] = serde_json::json!("x.acme.thing.run");
         std::fs::write(
             pipelines.join("uses-acme.zf.json"),
             serde_json::to_vec_pretty(&graph).expect("graph"),
@@ -1331,13 +1331,13 @@ mod tests {
             .sync_project_node_interfaces("superadmin", "default")
             .expect("sync");
 
-        let interface = project.join("repo/nodes/x.acme.thing.json");
+        let interface = project.join("repo/nodes/x.acme.thing.run.json");
         assert!(interface.is_file(), "the interface is materialized");
         let document = crate::contracts::kinds::decode_node_definition(
             &std::fs::read(&interface).expect("read interface"),
         )
         .expect("interface is a valid NodeDefinition");
-        assert_eq!(document.spec.kind, "x.acme.thing");
+        assert_eq!(document.spec.kind, "x.acme.thing.run");
         assert_eq!(document.spec.output_pins, vec!["out".to_string()]);
 
         // Curated nodes carry no portability risk, so they get no interface.
@@ -1358,7 +1358,7 @@ mod tests {
         // resolve even though nothing can run it.
         let unavailable = registry.unavailable_interface_definitions("superadmin", "default");
         assert_eq!(unavailable.len(), 1);
-        assert_eq!(unavailable[0].kind, "x.acme.thing");
+        assert_eq!(unavailable[0].kind, "x.acme.thing.run");
         assert_eq!(unavailable[0].output_pins, vec!["out".to_string()]);
 
         // Dropping the reference prunes it.
@@ -1375,7 +1375,7 @@ mod tests {
     fn an_installed_bundle_is_not_also_reported_as_unavailable() {
         let temp = tempfile::tempdir().expect("temp dir");
         let registry = make_registry(temp.path());
-        write_composite_bundle(temp.path(), "acme", "acme", "x.acme.thing", "");
+        write_composite_bundle(temp.path(), "acme", "acme", "x.acme.thing.run", "");
         registry
             .refresh_project("superadmin", "default")
             .expect("refresh");
@@ -1383,15 +1383,15 @@ mod tests {
         let interfaces = temp.path().join("users/superadmin/default/repo/nodes");
         std::fs::create_dir_all(&interfaces).expect("interfaces dir");
         let definition = registry
-            .get_manifest("superadmin", "default", "x.acme.thing")
+            .get_manifest("superadmin", "default", "x.acme.thing.run")
             .expect("installed")
             .definition;
         let bytes = crate::contracts::kinds::encode_node_definition(
-            crate::contracts::ContractMetadata::named("x.acme.thing"),
+            crate::contracts::ContractMetadata::named("x.acme.thing.run"),
             definition,
         )
         .expect("encode");
-        std::fs::write(interfaces.join("x.acme.thing.json"), bytes).expect("write interface");
+        std::fs::write(interfaces.join("x.acme.thing.run.json"), bytes).expect("write interface");
 
         assert!(
             registry
@@ -1415,13 +1415,13 @@ mod tests {
 
         // Interrupted after the files landed but before the lock was written.
         // Nothing references the bundle yet, so the refresh adopts and pins it.
-        write_composite_bundle(temp.path(), "landed", "landed", "x.landed.thing", "");
+        write_composite_bundle(temp.path(), "landed", "landed", "x.landed.thing.run", "");
         registry
             .refresh_project("superadmin", "default")
             .expect("a complete package with no lock entry is adopted");
         assert!(
             registry
-                .get_by_kind("superadmin", "default", "x.landed.thing")
+                .get_by_kind("superadmin", "default", "x.landed.thing.run")
                 .is_some()
         );
         let lock = registry
@@ -1432,7 +1432,7 @@ mod tests {
             lock.nodes
                 .bundles
                 .values()
-                .any(|bundle| bundle.definitions.iter().any(|k| k == "x.landed.thing")),
+                .any(|bundle| bundle.definitions.iter().any(|k| k == "x.landed.thing.run")),
             "the lock self-heals to describe what is on disk"
         );
 
@@ -1447,7 +1447,7 @@ mod tests {
         assert_eq!(error.code, "NODE_BUNDLE_MANIFEST_MISSING");
         assert!(
             registry
-                .get_by_kind("superadmin", "default", "x.landed.thing")
+                .get_by_kind("superadmin", "default", "x.landed.thing.run")
                 .is_some(),
             "the previously published registry stays active"
         );
@@ -1460,7 +1460,7 @@ mod tests {
             .expect("refresh recovers once the partial package is gone");
         assert!(
             registry
-                .get_by_kind("superadmin", "default", "x.landed.thing")
+                .get_by_kind("superadmin", "default", "x.landed.thing.run")
                 .is_some()
         );
     }
@@ -1470,14 +1470,14 @@ mod tests {
     fn uninstall_removes_only_the_owning_bundle() {
         let temp = tempfile::tempdir().expect("temp dir");
         let registry = make_registry(temp.path());
-        write_composite_bundle(temp.path(), "alpha", "alpha", "x.alpha.thing", "");
-        write_composite_bundle(temp.path(), "beta", "beta", "x.beta.thing", "");
+        write_composite_bundle(temp.path(), "alpha", "alpha", "x.alpha.thing.run", "");
+        write_composite_bundle(temp.path(), "beta", "beta", "x.beta.thing.run", "");
         registry
             .refresh_project("superadmin", "default")
             .expect("refresh");
 
         registry
-            .uninstall_package("superadmin", "default", "x.alpha.thing")
+            .uninstall_package("superadmin", "default", "x.alpha.thing.run")
             .expect("uninstall alpha");
 
         let nodes_dir = temp.path().join("users/superadmin/default/data/hub/nodes");
@@ -1488,12 +1488,12 @@ mod tests {
         );
         assert!(
             registry
-                .get_by_kind("superadmin", "default", "x.alpha.thing")
+                .get_by_kind("superadmin", "default", "x.alpha.thing.run")
                 .is_none()
         );
         assert!(
             registry
-                .get_by_kind("superadmin", "default", "x.beta.thing")
+                .get_by_kind("superadmin", "default", "x.beta.thing.run")
                 .is_some()
         );
 
@@ -1506,13 +1506,13 @@ mod tests {
                 .nodes
                 .bundles
                 .values()
-                .any(|bundle| bundle.definitions.iter().any(|k| k == "x.alpha.thing"))
+                .any(|bundle| bundle.definitions.iter().any(|k| k == "x.alpha.thing.run"))
         );
         assert!(
             lock.nodes
                 .bundles
                 .values()
-                .any(|bundle| bundle.definitions.iter().any(|k| k == "x.beta.thing")),
+                .any(|bundle| bundle.definitions.iter().any(|k| k == "x.beta.thing.run")),
             "the surviving bundle keeps its lock entry"
         );
     }
@@ -1525,14 +1525,14 @@ mod tests {
             temp.path(),
             "icon-test",
             "icon-test",
-            "x.icon_test.badge",
+            "x.icon_test.badge.render",
             "icons/custom.svg",
         );
         registry
             .refresh_project("superadmin", "default")
             .expect("refresh");
         let icon = registry
-            .load_icon("superadmin", "default", "x.icon_test.badge")
+            .load_icon("superadmin", "default", "x.icon_test.badge.render")
             .expect("declared icon");
         assert_eq!(icon, b"<svg xmlns=\"http://www.w3.org/2000/svg\"/>");
     }

@@ -2,13 +2,17 @@
 //!
 //! The node evaluates:
 //!
-//! - `init_expr` once to create the initial accumulator
-//! - `step_expr` for each arrival to produce the next accumulator
+//! - `--initial` once to create the initial accumulator
+//! - `--step` for each arrival to produce the next accumulator
 //!
 //! Scope inside both expressions:
 //!
 //! - `$input` = current arriving payload
 //! - `$acc`   = current accumulator (`null` for init)
+//!
+//! It answers one key, `reduce`: the accumulator, added to the arriving
+//! payload. The engine carries the accumulator between arrivals by reading
+//! that key back ([`accumulator`]).
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -19,6 +23,7 @@ use crate::language::{
     SourceKind,
 };
 use crate::pipeline::model::NodeCapability;
+use crate::pipeline::nodes::shared::util::with_answer;
 use crate::pipeline::model::{DslFlag, DslFlagKind, LayoutItem};
 use crate::pipeline::{
     NodeDefinition, PipelineError,
@@ -34,10 +39,10 @@ pub fn definition() -> NodeDefinition {
         kind: NODE_KIND.to_string(),
         capabilities: vec![NodeCapability::Process],
         title: "Reduce".to_string(),
-        description: "Fold. Placed after `logic.foreach` (directly or further down the branch), it runs `--init-expr` once and \
-             `--step-expr` for every emission, with `$acc` the accumulator so far and `$input` the arriving payload, then fires \
-             `out` once with the final `$acc` when the series is complete. Expressions are JavaScript object/values without `{{ }}`. \
-             The output is exactly the last `$acc` — wrap it (`{ total: … }`) if the next node expects an object."
+        description: "Fold. Placed after `logic.foreach` (directly or further down the branch), it runs `--initial` once and \
+             `--step` for every emission, with `$acc` the accumulator so far and `$input` the arriving payload, then fires \
+             `out` once when the series is complete. Expressions are JavaScript values without `{{ }}`. \
+             Answers one key, `reduce`: the final `$acc` (`input.reduce.total`)."
             .to_string(),
         input_schema: serde_json::json!({ "type": "object" }),
         output_schema: serde_json::json!({ "type": "object" }),
@@ -48,20 +53,22 @@ pub fn definition() -> NodeDefinition {
         config_schema: Default::default(),
         dsl_flags: vec![
             DslFlag {
-                flag: "--init-expr".to_string(),
-                config_key: "init_expr".to_string(),
-                description: "Expression producing the initial accumulator.".to_string(),
+                flag: "--initial".to_string(),
+                config_key: "initial".to_string(),
+                description: "The initial accumulator: a JavaScript value (`{ total: 0 }`).".to_string(),
                 kind: DslFlagKind::Scalar,
                 required: true,
+                value: "expression".to_string(),
                 ..Default::default()
             },
             DslFlag {
-                flag: "--step-expr".to_string(),
-                config_key: "step_expr".to_string(),
-                description: "Expression producing the next accumulator from $acc and $input."
+                flag: "--step".to_string(),
+                config_key: "step".to_string(),
+                description: "The next accumulator from `$acc` and `$input`: a JavaScript value."
                     .to_string(),
                 kind: DslFlagKind::Scalar,
                 required: true,
+                value: "expression".to_string(),
                 ..Default::default()
             },
         ],
@@ -69,16 +76,16 @@ pub fn definition() -> NodeDefinition {
             use crate::pipeline::model::{NodeFieldDef, NodeFieldType};
             vec![
                 NodeFieldDef {
-                    name: "init_expr".to_string(),
-                    label: "Init Expression".to_string(),
+                    name: "initial".to_string(),
+                    label: "Initial".to_string(),
                     field_type: NodeFieldType::Textarea,
                     rows: Some(3),
                     help: Some("Expression that creates the initial accumulator before processing inputs.".to_string()),
                     ..Default::default()
                 },
                 NodeFieldDef {
-                    name: "step_expr".to_string(),
-                    label: "Step Expression".to_string(),
+                    name: "step".to_string(),
+                    label: "Step".to_string(),
                     field_type: NodeFieldType::Textarea,
                     rows: Some(5),
                     help: Some("Expression that returns the next accumulator from $acc and the current $input.".to_string()),
@@ -87,23 +94,36 @@ pub fn definition() -> NodeDefinition {
             ]
         },
         layout: vec![
-            LayoutItem::Field("init_expr".to_string()),
-            LayoutItem::Field("step_expr".to_string()),
+            LayoutItem::Field("initial".to_string()),
+            LayoutItem::Field("step".to_string()),
         ],
         ai_tool: Default::default(),
         examples: vec![
-            crate::pipeline::model::NodeExample::dsl("Sum a column", r#"logic.reduce --init-expr "{ total: 0, n: 0 }" --step-expr "{ total: $acc.total + $input.item.amount, n: $acc.n + 1 }""#)
-                .output(serde_json::json!({ "total": 42.5, "n": 3 }))
-                .note("After `logic.foreach --items-expr \"input.query.rows\"` over three rows."),
+            crate::pipeline::model::NodeExample::dsl("Sum a column", r#"logic.reduce --initial "{ total: 0, n: 0 }" --step "{ total: $acc.total + $input.item.amount, n: $acc.n + 1 }""#)
+                .output(serde_json::json!({ "item": { "amount": 12.5 }, "index": 2, "count": 3, "reduce": { "total": 42.5, "n": 3 } }))
+                .note("After `logic.foreach --from \"input.query.rows\"` over three rows: the last arrival, with the sum under `reduce`."),
         ],
         ..Default::default()
     }
 }
 
+/// The key `logic.reduce` answers under.
+pub const ANSWER_KEY: &str = "reduce";
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
-    pub init_expr: String,
-    pub step_expr: String,
+    /// `--initial`: the first accumulator.
+    #[serde(deserialize_with = "super::expression_text")]
+    pub initial: String,
+    /// `--step`: the next accumulator from `$acc` and `$input`.
+    #[serde(deserialize_with = "super::expression_text")]
+    pub step: String,
+}
+
+/// The accumulator a reduce answered: what the engine hands back as `$acc`
+/// on the next arrival.
+pub fn accumulator(payload: &Value) -> Value {
+    payload.get(ANSWER_KEY).cloned().unwrap_or(Value::Null)
 }
 
 pub struct Node {
@@ -119,16 +139,10 @@ impl Node {
         config: Config,
         language: std::sync::Arc<dyn LanguageEngine>,
     ) -> Result<Self, PipelineError> {
-        let init_compiled = compile_expr(
-            &language,
-            &format!("logic.reduce:init:{node_id}"),
-            &config.init_expr,
-        )?;
-        let step_compiled = compile_expr(
-            &language,
-            &format!("logic.reduce:step:{node_id}"),
-            &config.step_expr,
-        )?;
+        let initial = super::required_expression(&config.initial, "--initial", "FW_NODE_LOGIC_REDUCE_CONFIG")?;
+        let step = super::required_expression(&config.step, "--step", "FW_NODE_LOGIC_REDUCE_CONFIG")?;
+        let init_compiled = compile_expr(&language, &format!("logic.reduce:initial:{node_id}"), initial)?;
+        let step_compiled = compile_expr(&language, &format!("logic.reduce:step:{node_id}"), step)?;
         Ok(Self {
             node_id: node_id.to_string(),
             init_compiled,
@@ -221,6 +235,7 @@ impl NodeHandler for Node {
             metadata: input.metadata.clone(),
         };
 
+        let arriving = input.payload.clone();
         let out = if acc.is_null() {
             let init_out = self
                 .language
@@ -273,11 +288,70 @@ impl NodeHandler for Node {
 
         Ok(NodeExecutionOutput {
             output_pins: vec![OUTPUT_PIN_OUT.to_string()],
-            payload: out.value,
+            payload: with_answer(&arriving, json!({ ANSWER_KEY: out.value })),
             trace: vec![
                 format!("node_kind={NODE_KIND}"),
                 format!("phase={}", if acc.is_null() { "init+step" } else { "step" }),
             ],
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn node(initial: &str, step: &str) -> Result<Node, PipelineError> {
+        Node::new(
+            "r",
+            Config { initial: initial.to_string(), step: step.to_string() },
+            std::sync::Arc::new(crate::language::DenoSandboxEngine::default()),
+        )
+    }
+
+    fn run(node: &Node, payload: Value, metadata: Value) -> NodeExecutionOutput {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime")
+            .block_on(node.execute_async(NodeExecutionInput {
+                node_id: "r".to_string(),
+                input_pin: INPUT_PIN_IN.to_string(),
+                payload,
+                metadata,
+                bus: None,
+            }))
+            .expect("run")
+    }
+
+    /// The flags are `--initial` and `--step`, both expressions.
+    #[test]
+    fn the_flags_are_initial_and_step() {
+        let def = definition();
+        let flags: Vec<(&str, &str)> = def.dsl_flags.iter().map(|f| (f.flag.as_str(), f.value.as_str())).collect();
+        assert_eq!(flags, [("--initial", "expression"), ("--step", "expression")]);
+    }
+
+    /// The accumulator is answered under `reduce`, the arriving payload kept,
+    /// and read back as the next `$acc`.
+    #[test]
+    fn the_accumulator_is_answered_under_reduce() {
+        let node = node("{ total: 0 }", "{ total: $acc.total + $input.item }").expect("node");
+        let first = run(&node, json!({ "item": 10, "index": 0, "count": 2 }), json!({}));
+        assert_eq!(first.payload["reduce"], json!({ "total": 10 }));
+        assert_eq!(first.payload["item"], 10, "the arriving payload is kept");
+        let acc = accumulator(&first.payload);
+        let second = run(&node, json!({ "item": 5, "index": 1, "count": 2 }), json!({ "reduce_acc": acc }));
+        assert_eq!(second.payload["reduce"], json!({ "total": 15 }));
+    }
+
+    /// Empty is not a value: either expression empty is refused at build.
+    #[test]
+    fn an_empty_expression_is_refused() {
+        for (initial, step, flag) in [("", "$acc", "--initial"), ("0", " ", "--step")] {
+            let err = node(initial, step).err().expect("refused");
+            assert_eq!(err.code, "FW_NODE_LOGIC_REDUCE_CONFIG");
+            assert!(err.message.contains(flag), "{}", err.message);
+        }
     }
 }

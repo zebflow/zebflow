@@ -1,7 +1,8 @@
 //! `logic.if` — binary branch node.
 //!
-//! Evaluates a DSL expression against the current execution scope.
-//! Emits to the `true` pin when truthy, `false` pin otherwise.
+//! Evaluates `--when` (JavaScript over `input`) against the current execution
+//! scope. Emits to the `true` pin when truthy, `false` pin otherwise; the
+//! payload passes on unchanged — a control node adds no key.
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -29,7 +30,7 @@ pub fn definition() -> NodeDefinition {
         capabilities: vec![NodeCapability::Process],
         title: "If".to_string(),
         description:
-            "Two-way branch. Evaluates `--expr` (JavaScript over `input`, `$trigger`, `$nodes`) and sends the payload, unchanged, \
+            "Two-way branch. Evaluates `--when` (JavaScript over `input`, `$trigger`, `$nodes`) and sends the payload, unchanged, \
              down the `true` pin or the `false` pin. This is how a pipeline validates, guards and answers 404/400: wire \
              `[b]:true -> [c]` and `[b]:false -> [e]` in graph mode — in pipe mode only `true` continues and `false` ends the run silently. \
              The expression sees the payload as `input` (right after a webhook, `input.webhook.body.x`; anywhere, `$trigger.body.x`), not `$input`."
@@ -42,20 +43,21 @@ pub fn definition() -> NodeDefinition {
         script_bridge: None,
         config_schema: Default::default(),
         dsl_flags: vec![DslFlag {
-            flag: "--expr".to_string(),
-            config_key: "expression".to_string(),
-            description: "JS expression returning truthy/falsy to route to true or false pin."
+            flag: "--when".to_string(),
+            config_key: "when".to_string(),
+            description: "JavaScript over `input` (and `$trigger`, `$nodes`): truthy routes to the `true` pin, falsy to `false`."
                 .to_string(),
             kind: DslFlagKind::Scalar,
-            required: false,
+            required: true,
+            value: "expression".to_string(),
             ..Default::default()
         }],
         fields: {
             use crate::pipeline::model::{NodeFieldDef, NodeFieldType};
             vec![
                 NodeFieldDef {
-                    name: "expression".to_string(),
-                    label: "Condition".to_string(),
+                    name: "when".to_string(),
+                    label: "When".to_string(),
                     field_type: NodeFieldType::Textarea,
                     rows: Some(5),
                     help: Some(
@@ -67,14 +69,14 @@ pub fn definition() -> NodeDefinition {
             ]
         },
         layout: vec![
-            LayoutItem::Field("expression".to_string()),
+            LayoutItem::Field("when".to_string()),
         ],
         ai_tool: Default::default(),
         examples: vec![
-            crate::pipeline::model::NodeExample::dsl("Guard a form field", r#"logic.if --expr "typeof $trigger.body?.title === 'string' && $trigger.body.title.length > 0""#)
+            crate::pipeline::model::NodeExample::dsl("Guard a form field", r#"logic.if --when "typeof $trigger.body?.title === 'string' && $trigger.body.title.length > 0""#)
                 .note("`true` carries the same payload on; wire `false` to a `web.response.send --status 400`."),
-            crate::pipeline::model::NodeExample::dsl("Found or not found", r#"logic.if --expr "input.query.rows.length > 0""#)
-                .input(serde_json::json!({ "rows": [] }))
+            crate::pipeline::model::NodeExample::dsl("Found or not found", r#"logic.if --when "input.query.rows.length > 0""#)
+                .input(serde_json::json!({ "query": { "rows": [] } }))
                 .note("Fires the `false` pin; the payload is unchanged."),
         ],
         ..Default::default()
@@ -83,7 +85,9 @@ pub fn definition() -> NodeDefinition {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
-    pub expression: String,
+    /// `--when`: the condition, JavaScript over `input`.
+    #[serde(deserialize_with = "super::expression_text")]
+    pub when: String,
 }
 
 pub struct Node {
@@ -98,6 +102,7 @@ impl Node {
         config: Config,
         language: std::sync::Arc<dyn LanguageEngine>,
     ) -> Result<Self, PipelineError> {
+        let when = super::required_expression(&config.when, "--when", "FW_NODE_LOGIC_IF_CONFIG")?;
         let source = format!(
             // `input` is the payload here, as it is in every `{{ }}` block, in
             // javascript.script.run, and in every document that teaches either. Binding only
@@ -113,8 +118,7 @@ impl Node {
              var $count = __scope.$count;\n\
              var $trigger = __scope.$trigger || null;\n\
              var $nodes = __scope.$nodes || {{}};\n\
-             return Boolean({});",
-            config.expression
+             return Boolean({when});"
         );
         let module = ModuleSource {
             id: format!("logic.if:{node_id}"),
@@ -224,5 +228,68 @@ impl NodeHandler for Node {
             payload: input.payload,
             trace: vec![format!("node_kind={NODE_KIND}"), format!("result={pin}")],
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn node(when: serde_json::Value) -> Result<Node, PipelineError> {
+        let config: Config = serde_json::from_value(json!({ "when": when })).expect("config");
+        Node::new("b", config, std::sync::Arc::new(crate::language::DenoSandboxEngine::default()))
+    }
+
+    fn run(node: &Node, payload: serde_json::Value) -> NodeExecutionOutput {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime")
+            .block_on(node.execute_async(NodeExecutionInput {
+                node_id: "b".to_string(),
+                input_pin: INPUT_PIN_IN.to_string(),
+                payload,
+                metadata: json!({}),
+                bus: None,
+            }))
+            .expect("run")
+    }
+
+    /// `--when` is the one flag: an expression, required.
+    #[test]
+    fn the_condition_is_when_an_expression() {
+        let def = definition();
+        assert_eq!(def.dsl_flags.len(), 1);
+        let flag = &def.dsl_flags[0];
+        assert_eq!((flag.flag.as_str(), flag.config_key.as_str(), flag.value.as_str()), ("--when", "when", "expression"));
+        assert!(flag.required);
+    }
+
+    /// The pin follows the condition and the payload passes on unchanged.
+    #[test]
+    fn it_routes_and_passes_the_payload_on() {
+        let node = node(json!("input.query.rows.length > 0")).expect("node");
+        let payload = json!({ "query": { "rows": [{ "id": 1 }] } });
+        let out = run(&node, payload.clone());
+        assert_eq!(out.output_pins, vec![OUTPUT_PIN_TRUE.to_string()]);
+        assert_eq!(out.payload, payload);
+        let out = run(&node, json!({ "query": { "rows": [] } }));
+        assert_eq!(out.output_pins, vec![OUTPUT_PIN_FALSE.to_string()]);
+    }
+
+    /// The DSL reads `--when true` as a JSON boolean; it is the literal.
+    #[test]
+    fn a_bare_literal_is_its_javascript_text() {
+        let out = run(&node(json!(true)).expect("node"), json!({}));
+        assert_eq!(out.output_pins, vec![OUTPUT_PIN_TRUE.to_string()]);
+    }
+
+    /// Empty is not a value: an empty condition is refused at build.
+    #[test]
+    fn an_empty_condition_is_refused() {
+        let err = node(json!("  ")).err().expect("refused");
+        assert_eq!(err.code, "FW_NODE_LOGIC_IF_CONFIG");
+        assert!(err.message.contains("--when"), "{}", err.message);
     }
 }

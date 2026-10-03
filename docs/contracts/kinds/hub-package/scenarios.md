@@ -304,10 +304,10 @@ then something you can check yourself:
       {
         "rel_path": "definition.json",
         "kind": "node_definition",
-        "size_bytes": 30,
+        "size_bytes": 33,
         "reason": "package",
         "encoding": "text",
-        "content": "{\n  \"kind\": \"x.demo.load\"\n}\n"
+        "content": "{\n  \"kind\": \"x.demo.data.load\"\n}\n"
       },
       {
         "rel_path": "icon.svg",

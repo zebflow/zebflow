@@ -3754,7 +3754,7 @@ mod tests {
   "entry_nodes":["trigger_webhook"],
   "nodes":[
     {"id":"trigger_webhook","kind":"trigger.webhook","input_pins":[],"output_pins":["out"],"config":{"route":"/router","method":"POST"}},
-    {"id":"kind_route","kind":"logic.match","input_pins":["in"],"output_pins":["csv","geojson","archive","default"],"config":{"expression":"$input.input_kind","cases":["csv","geojson","archive"],"default":"default"}},
+    {"id":"kind_route","kind":"logic.match","input_pins":["in"],"output_pins":["csv","geojson","archive","default"],"config":{"from":"$input.input_kind","cases":["csv","geojson","archive"],"default":"default"}},
     {"id":"csv_branch","kind":"web.response.send","input_pins":["in"],"output_pins":["out"],"config":{}}
   ],
   "edges":[
@@ -3774,7 +3774,7 @@ mod tests {
   "entry_nodes":["trigger_webhook"],
   "nodes":[
     {"id":"trigger_webhook","kind":"trigger.webhook","input_pins":[],"output_pins":["out"],"config":{"route":"/router","method":"POST"}},
-    {"id":"kind_route","kind":"logic.match","input_pins":["in"],"output_pins":["csv","geojson","archive","default"],"config":{"expression":"$input.input_kind","cases":["csv","geojson","archive"],"default":"default"}},
+    {"id":"kind_route","kind":"logic.match","input_pins":["in"],"output_pins":["csv","geojson","archive","default"],"config":{"from":"$input.input_kind","cases":["csv","geojson","archive"],"default":"default"}},
     {"id":"csv_branch","kind":"web.response.send","input_pins":["in"],"output_pins":["out"],"config":{}}
   ],
   "edges":[

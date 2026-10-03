@@ -58,7 +58,7 @@ Graph DSL:
 ```zf
 register tts/api --
 [a] trigger.webhook --route /api/tts --method POST
-[guard] logic.if --expr "!!(input.webhook.body && input.webhook.body.text && String(input.webhook.body.text).trim())"
+[guard] logic.if --when "!!(input.webhook.body && input.webhook.body.text && String(input.webhook.body.text).trim())"
 [bad]   web.response.send --status 400 --body "{{ { ok: false, error: 'text is required' } }}"
 [b] javascript.script.run -- "
 return {

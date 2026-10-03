@@ -231,7 +231,7 @@ pub fn definition() -> NodeDefinition {
             crate::pipeline::model::NodeExample::dsl("One call: classify to JSON", r#"ai.text.generate --credential openai_main --output-mode final_only --schema '{"type":"object","required":["sentiment"],"properties":{"sentiment":{"enum":["positive","neutral","negative"]}}}' -- Classify this review: {{ $trigger.body.review }}"#)
                 .input(json!({ "body": { "review": "Booking was easy but the wait was long." } }))
                 .output(json!({ "response": "{\"sentiment\":\"neutral\"}", "data": { "sentiment": "neutral" }, "verified": true }))
-                .note("`data` is the parsed, checked answer; branch on it with `logic.if --expr \"$nodes.a.data.sentiment == 'negative'\"`. A failed check is fed back once (--max-repairs)."),
+                .note("`data` is the parsed, checked answer; branch on it with `logic.if --when \"$nodes.a.data.sentiment == 'negative'\"`. A failed check is fed back once (--max-repairs)."),
             crate::pipeline::model::NodeExample::dsl("Tools: answer from the project's data", r#"ai.text.generate --credential openai_main --tools lookup-order --budget 6 --system-prompt "You answer questions about orders. Use the tools; never guess." --prompt "{{ $trigger.body.message }}""#)
                 .input(json!({ "body": { "message": "Where is order o_91?" } }))
                 .output(json!({ "response": "Order o_91 shipped yesterday and arrives Friday.", "verified": true, "tools_called": ["lookup-order"], "iterations": 2, "budget_exhausted": false }))

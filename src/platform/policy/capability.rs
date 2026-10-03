@@ -235,7 +235,7 @@ mod tests {
             "title": "Acme",
             "functions": {"main": "functions/main.zf.json"},
             "nodes": [{
-                "kind": "x.acme.sync",
+                "kind": "x.acme.record.sync",
                 "title": "Sync",
                 "run": {"function": "main"},
                 "definition": {}
@@ -263,7 +263,7 @@ mod tests {
         );
 
         assert_eq!(
-            derived.nodes["x.acme.sync"],
+            derived.nodes["x.acme.record.sync"],
             BTreeSet::from([NodeCapability::Network, NodeCapability::Filesystem])
         );
         assert!(derived.unresolved.is_empty());
@@ -280,7 +280,7 @@ mod tests {
             "title": "Acme",
             "modules": {"core": {"path": "wasm/core.wasm", "abi": "zebflow-wasm-json-v1"}},
             "nodes": [{
-                "kind": "x.acme.crunch",
+                "kind": "x.acme.data.crunch",
                 "title": "Crunch",
                 "run": {"module": "core", "export": "run"},
                 "definition": {}
@@ -289,7 +289,7 @@ mod tests {
 
         let derived = derive_bundle_capabilities(&spec, |_| None, &BTreeMap::new());
 
-        assert!(derived.nodes["x.acme.crunch"].is_empty());
+        assert!(derived.nodes["x.acme.data.crunch"].is_empty());
         assert!(derived.unresolved.is_empty());
     }
 
@@ -306,9 +306,9 @@ mod tests {
                 "inner": "functions/inner.zf.json"
             },
             "nodes": [
-                {"kind": "x.acme.outer", "title": "Outer",
+                {"kind": "x.acme.outer.call", "title": "Outer",
                  "run": {"function": "outer"}, "definition": {}},
-                {"kind": "x.acme.inner", "title": "Inner",
+                {"kind": "x.acme.inner.call", "title": "Inner",
                  "run": {"function": "inner"}, "definition": {}}
             ]
         }));
@@ -322,16 +322,16 @@ mod tests {
             |rel| match rel {
                 // The cycle is deliberate: outer names inner and inner names
                 // outer back.
-                "functions/outer.zf.json" => Some(graph(&["x.acme.inner"])),
-                "functions/inner.zf.json" => Some(graph(&["postgres.query.run", "x.acme.outer"])),
+                "functions/outer.zf.json" => Some(graph(&["x.acme.inner.call"])),
+                "functions/inner.zf.json" => Some(graph(&["postgres.query.run", "x.acme.outer.call"])),
                 _ => None,
             },
             &known,
         );
 
         let expected = BTreeSet::from([NodeCapability::Database, NodeCapability::Credential]);
-        assert_eq!(derived.nodes["x.acme.outer"], expected);
-        assert_eq!(derived.nodes["x.acme.inner"], expected);
+        assert_eq!(derived.nodes["x.acme.outer.call"], expected);
+        assert_eq!(derived.nodes["x.acme.inner.call"], expected);
     }
 
     /// A kind neither this build nor the bundle provides is reported, not
@@ -344,7 +344,7 @@ mod tests {
             "title": "Acme",
             "functions": {"main": "functions/main.zf.json"},
             "nodes": [{
-                "kind": "x.acme.sync",
+                "kind": "x.acme.record.sync",
                 "title": "Sync",
                 "run": {"function": "main"},
                 "definition": {}
@@ -353,15 +353,15 @@ mod tests {
 
         let derived = derive_bundle_capabilities(
             &spec,
-            |_| Some(graph(&["x.elsewhere.thing"])),
+            |_| Some(graph(&["x.elsewhere.thing.run"])),
             &BTreeMap::new(),
         );
 
         assert_eq!(
             derived.unresolved,
-            BTreeSet::from(["x.elsewhere.thing".to_string()])
+            BTreeSet::from(["x.elsewhere.thing.run".to_string()])
         );
-        assert!(derived.nodes["x.acme.sync"].is_empty());
+        assert!(derived.nodes["x.acme.record.sync"].is_empty());
     }
 
     /// The bundles this binary ships are the derivation's real input, and the

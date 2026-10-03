@@ -110,7 +110,7 @@ const SIGNAL_STATES: Record<string, NodeRunState> = {
 /**
  * One engine lifecycle signal applied; any other signal leaves the map as it
  * is. A node re-entered after a `retry` keeps its count while `running`: the
- * wait itself happens inside the retry node's next run (its `--delay-ms`),
+ * wait itself happens inside the retry node's next run (its `--delay`),
  * so the ring with "2/40" would otherwise show for a few milliseconds and
  * the pulsing dot for the rest.
  */

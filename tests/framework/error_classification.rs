@@ -118,7 +118,7 @@ async fn a_logic_expression_reads_input_as_the_payload() {
     let graph = build_pipeline_graph(
         "input-binding",
         "[a] trigger.manual\n\
-         [b] logic.if --expr \"input.manual.rows && input.manual.rows.length > 0\"\n\
+         [b] logic.if --when \"input.manual.rows && input.manual.rows.length > 0\"\n\
          [yes] javascript.script.run -- \"return { took: 'true' };\"\n\
          [no] javascript.script.run -- \"return { took: 'false' };\"\n\
          [a] -> [b]\n[b]:true -> [yes]\n[b]:false -> [no]\n",
@@ -149,7 +149,7 @@ async fn a_logic_expression_reads_input_as_the_payload() {
     let graph = build_pipeline_graph(
         "input-binding-dollar",
         "[a] trigger.manual\n\
-         [b] logic.if --expr \"$input.manual.rows.length > 0\"\n\
+         [b] logic.if --when \"$input.manual.rows.length > 0\"\n\
          [yes] javascript.script.run -- \"return { took: 'true' };\"\n\
          [no] javascript.script.run -- \"return { took: 'false' };\"\n\
          [a] -> [b]\n[b]:true -> [yes]\n[b]:false -> [no]\n",

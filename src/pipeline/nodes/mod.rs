@@ -589,12 +589,14 @@ pub fn node_signature(def: &NodeDefinition) -> String {
 }
 
 /// The key a kind answers under (`node-conventions.md` §1, §6): an acting
-/// node's noun, an entry node's source; control nodes and run inputs (whose
+/// node's noun, an entry node's source, and the two closing loop nodes'
+/// verbs (`reduce`, `collect`); the other control nodes and run inputs (whose
 /// key is their `--name`) have none fixed.
 pub fn answer_key(short_kind: &str) -> Option<String> {
     let parts: Vec<&str> = short_kind.split('.').collect();
     match parts.as_slice() {
         ["trigger", source, ..] => Some((*source).to_string()),
+        ["logic", verb @ ("reduce" | "collect")] => Some((*verb).to_string()),
         ["logic", ..] | ["input", ..] => None,
         // It answers the caller and passes its payload on (§4, §6).
         ["web", "response", "send"] => None,

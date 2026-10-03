@@ -244,7 +244,7 @@ pub enum DslFlagKind {
     ///
     /// The parser accepts either `--key a,b,c` or `--key a --key b --key c`,
     /// but rejects mixing those styles for the same flag in one node command.
-    /// `--cases create,update` → `config["cases"] = ["create","update"]`
+    /// `--case create --case update` → `config["cases"] = ["create","update"]`
     CommaSeparatedList,
     /// List value with repeated flag form as the recommended rendering.
     ///

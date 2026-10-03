@@ -8334,7 +8334,7 @@ mod tests {
                 "modules": {
                     "core": { "path": "wasm/core.wasm", "abi": "zebflow-wasm-json-v1" }
                 },
-                "nodes": [wasm_node_entry("x.localpkg.train", "Train", "e2e_train")]
+                "nodes": [wasm_node_entry("x.localpkg.model.train", "Train", "e2e_train")]
             }
         })
         .to_string();
@@ -8381,7 +8381,7 @@ mod tests {
 
         let installed = platform
             .node_registry
-            .get_by_kind(owner, project, "x.localpkg.train")
+            .get_by_kind(owner, project, "x.localpkg.model.train")
             .expect("the node is installed");
         assert_eq!(
             installed.manifest.source,
@@ -8450,7 +8450,7 @@ mod tests {
                     "core": { "path": "wasm/core.wasm", "abi": "zebflow-wasm-json-v1" }
                 },
                 "nodes": [wasm_node_entry(
-                    &format!("x.{package_id}.train"),
+                    &format!("x.{package_id}.model.train"),
                     "Train",
                     "e2e_train"
                 )]
@@ -8728,7 +8728,7 @@ mod tests {
         assert_eq!(
             platform
                 .node_registry
-                .get_by_kind(owner, project, "x.storepkg.train")
+                .get_by_kind(owner, project, "x.storepkg.model.train")
                 .expect("the node is installed")
                 .manifest
                 .source,
@@ -8790,7 +8790,7 @@ mod tests {
         assert!(
             platform
                 .node_registry
-                .get_by_kind(owner, project, "x.filepkg.train")
+                .get_by_kind(owner, project, "x.filepkg.model.train")
                 .is_some()
         );
     }
@@ -9130,7 +9130,7 @@ mod tests {
                 "description": "A bundle whose function pipeline travels with it.",
                 "functions": { "main": "functions/main.zf.json" },
                 "nodes": [{
-                    "kind": "x.acme.sync",
+                    "kind": "x.acme.record.sync",
                     "title": "Sync",
                     "description": "Push a payload somewhere.",
                     "run": { "function": "main" },
@@ -9499,7 +9499,7 @@ mod tests {
         assert!(
             platform
                 .node_registry
-                .get_by_kind("superadmin", "default", &format!("x.{package_id}.train"))
+                .get_by_kind("superadmin", "default", &format!("x.{package_id}.model.train"))
                 .is_some(),
             "the previously installed node still resolves"
         );
@@ -9624,7 +9624,7 @@ mod tests {
 
         let module =
             include_bytes!("../../../tests/fixtures/contracts/node-bundle/two-exports.wasm");
-        let mut trigger = wasm_node_entry("x.wasmtrig.inbox", "Inbox", "e2e_train");
+        let mut trigger = wasm_node_entry("x.wasmtrig.inbox.receive", "Inbox", "e2e_train");
         trigger["trigger"] = serde_json::json!({
             "type": "webhook",
             "path_template": "/wasmtrig/{{ hook_key }}"
@@ -9698,7 +9698,7 @@ mod tests {
 
         let installed = platform
             .node_registry
-            .get_by_kind(owner, project, "x.wasmtrig.inbox")
+            .get_by_kind(owner, project, "x.wasmtrig.inbox.receive")
             .expect("trigger is installed");
         assert!(
             installed.manifest.trigger.is_some(),
@@ -9714,7 +9714,7 @@ mod tests {
         // export is what actually processes the inbound event.
         let (module_spec, export) = installed.manifest.wasm_target().expect("wasm target");
         let output = crate::pipeline::engines::wasm_host::run_wasm_export(
-            "x.wasmtrig.inbox",
+            "x.wasmtrig.inbox.receive",
             &installed.package_dir,
             module_spec,
             export,
@@ -9769,8 +9769,8 @@ mod tests {
                     "core": { "path": "wasm/core.wasm", "abi": "zebflow-wasm-json-v1" }
                 },
                 "nodes": [
-                    wasm_node_entry("x.e2ewasm.train", "E2E Train", "e2e_train"),
-                    wasm_node_entry("x.e2ewasm.score", "E2E Score", "e2e_score")
+                    wasm_node_entry("x.e2ewasm.model.train", "E2E Train", "e2e_train"),
+                    wasm_node_entry("x.e2ewasm.model.score", "E2E Score", "e2e_score")
                 ]
             }
         })
@@ -9828,8 +9828,8 @@ mod tests {
 
         // Each node resolves its own export from the shared module.
         for (kind, export) in [
-            ("x.e2ewasm.train", "e2e_train"),
-            ("x.e2ewasm.score", "e2e_score"),
+            ("x.e2ewasm.model.train", "e2e_train"),
+            ("x.e2ewasm.model.score", "e2e_score"),
         ] {
             let installed = platform
                 .node_registry
@@ -9956,7 +9956,7 @@ mod tests {
         // the slug, metadata name, and kind namespace must move together.
         let definition =
             include_str!("../../pipeline/nodes/bundled/openai-embedding/definition.json")
-                .replace("ai.embedding.generate", "x.openai_embedding_test.embed")
+                .replace("ai.embedding.generate", "x.openai_embedding_test.embedding.generate")
                 .replace("\"openai-embedding\"", "\"openai-embedding-test\"");
         let function =
             include_str!("../../pipeline/nodes/bundled/openai-embedding/functions/embed.zf.json");
@@ -10025,14 +10025,14 @@ mod tests {
                 .node_registry
                 .merged_definitions(owner, project)
                 .iter()
-                .any(|definition| definition.kind == "x.openai_embedding_test.embed")
+                .any(|definition| definition.kind == "x.openai_embedding_test.embedding.generate")
         );
         let lock = platform.dependency_lock.read(owner, project).unwrap();
         let bundle = lock
             .nodes
             .bundles
             .values()
-            .find(|bundle| bundle.definitions == ["x.openai_embedding_test.embed"])
+            .find(|bundle| bundle.definitions == ["x.openai_embedding_test.embedding.generate"])
             .unwrap();
         assert_eq!(
             bundle.source,
@@ -12265,8 +12265,8 @@ mod tests {
             "src/hub/demo/schemas/sekejap/schema.json"
         );
         assert_eq!(
-            placement.destination("nodes/x.acme.thing.json"),
-            "src/hub/demo/nodes/x.acme.thing.json"
+            placement.destination("nodes/x.acme.thing.run.json"),
+            "src/hub/demo/nodes/x.acme.thing.run.json"
         );
         assert_eq!(
             placement.destination("zebflow.yaml"),

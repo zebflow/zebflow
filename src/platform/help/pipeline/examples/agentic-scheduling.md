@@ -88,7 +88,7 @@ URL from.
 | trigger.schedule --cron "*/15 * * * *"
 | sekejap.query.run -- "SELECT * FROM incoming_queue WHERE processed = false LIMIT 10"
 | ai.text.generate --credential my-llm --output-mode final_only --schema '{"type":"array","items":{"type":"object","required":["key","urgency","category"],"properties":{"urgency":{"enum":["high","medium","low"]}}}}' -- Classify each item by urgency (high, medium, low) and category. Reply with a JSON array of { key, urgency, category }, where key is the _key of that item. Items: {{ input.query.rows }}
-| logic.foreach --items-expr "input.data"
+| logic.foreach --from "input.data"
 | sekejap.query.run --write --param "1={{ $item.urgency }}" --param "2={{ $item.category }}" --param "3={{ $item.key }}" -- "UPDATE incoming_queue SET urgency = $1, category = $2, processed = true WHERE _key = $3"
 ```
 
