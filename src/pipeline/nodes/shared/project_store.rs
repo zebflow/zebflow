@@ -35,6 +35,21 @@ impl NodeStore {
     ) -> Value {
         super::file_ref::durable_file_ref(self.backend, &self.id, rel_path, filename, mime, bytes, origin, trust)
     }
+
+    /// A durable FileRef for bytes in a local file, digested by streaming.
+    pub fn file_ref_from_file(
+        &self,
+        rel_path: &str,
+        filename: &str,
+        mime: &str,
+        path: &std::path::Path,
+        origin: &str,
+        trust: &str,
+        code: &'static str,
+    ) -> Result<Value, PipelineError> {
+        super::file_ref::durable_file_ref_from_file(self.backend, &self.id, rel_path, filename, mime, path, origin, trust)
+            .map_err(|err| PipelineError::new(code, format!("digest '{rel_path}': {err}")))
+    }
 }
 
 /// Opens one of the project's stores by id; `None` is the project's default.

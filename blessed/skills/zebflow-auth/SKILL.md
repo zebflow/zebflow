@@ -23,7 +23,7 @@ refuses the request before any node runs. Facts:
 | the cookie | `web.response --set-cookie "name=zebflow_session,value={{ input.access_token }},http-only,max-age=86400,same-site=Lax"` — the verifier reads `Authorization: Bearer` first, then this cookie. Behind HTTPS add `secure`. |
 | `--auth-required-role` | matches one entry of the token's **`roles` array** claim. A scalar `role` never authorises. |
 | `:public` | only claims marked `:public` reach the browser as `input.auth`; everything else stays server-side (`$trigger.auth`, `ctx.trigger.auth`). A public array claim stays an array. |
-| `crypto` | `--op argon2_hash --input "{{ input.body.password }}"` → payload plus `result` (`input.body` kept); `--op argon2_verify --input "{{ … }}" --hash "{{ input.rows[0].password_hash }}"` → `true`/`false` pins, payload unchanged |
+| `crypto` | `--op argon2_hash --value "{{ input.body.password }}"` → payload plus `result` (`input.body` kept); `--op argon2_verify --value "{{ … }}" --hash "{{ input.rows[0].password_hash }}"` → `true`/`false` pins, payload unchanged |
 
 ## Build order
 
@@ -37,7 +37,7 @@ refuses the request before any node runs. Facts:
    ```
    | trigger.webhook --path /auth/register --method POST
    | logic.if --expr "typeof input.body?.email === 'string' && typeof input.body?.password === 'string' && input.body.password.length >= 12"
-   | crypto --op argon2_hash --input "{{ input.body.password }}"
+   | crypto --op argon2_hash --value "{{ input.body.password }}"
    | sekejap.query --read-only false --params "{{ [input.body.email, input.result, ['user'], new Date().toISOString()] }}" -- "INSERT INTO users (email, password_hash, roles, created_at) VALUES ($1, $2, $3, $4)"
    | web.response --location /login?registered=1
    ```
@@ -46,7 +46,7 @@ refuses the request before any node runs. Facts:
    "email is unique" is a `SELECT` before the `INSERT`, not a constraint
    (`zebflow-data`).
 3. **Login.** `POST /auth/login`: look the user up by `input.body.email`,
-   `logic.if` one row, `crypto --op argon2_verify` with `--input "{{ $nodes.<trigger id>.body.password }}"`
+   `logic.if` one row, `crypto --op argon2_verify` with `--value "{{ $nodes.<trigger id>.body.password }}"`
    and `--hash "{{ input.rows[0].password_hash }}"`, mint the token with
    `roles` as an array, set the cookie, `--location /home`. The `false` pins
    answer `401` — never a different message for "no such user" and "wrong

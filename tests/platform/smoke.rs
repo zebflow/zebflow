@@ -6554,6 +6554,21 @@ async fn a_web_published_layer_serves_and_shows_only_the_chosen_properties() {
         "only the named property leaves the server"
     );
 
+    // A caller's filter may narrow on a published column, never probe a
+    // hidden one (finding sa-mapserver-filter-override).
+    let filtered = |query: &'static str| {
+        let app = app.clone();
+        async move {
+            app.oneshot(Request::builder().uri(format!("/ms/superadmin/default/roads?limit=10&filter={query}")).body(Body::empty()).expect("request"))
+                .await
+                .expect("filter response")
+        }
+    };
+    assert_eq!(filtered("owner_phone:%2B62811000000").await.status(), StatusCode::BAD_REQUEST);
+    let narrowed = filtered("name:Nowhere").await;
+    assert_eq!(narrowed.status(), StatusCode::OK);
+    assert_eq!(response_json(narrowed).await["count"], json!(0));
+
     // The operator view is authenticated and shows both the whole source and
     // what is exposed today, so the choice can be made without the public
     // endpoint ever carrying the hidden columns.

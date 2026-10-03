@@ -11,6 +11,20 @@ use crate::language::{
 use crate::pipeline::PipelineError;
 use crate::pipeline::expr::build_expression_scope_input;
 
+/// A node's answer added to the payload it was given, the rest kept
+/// (`docs/contracts/node-conventions.md` §5): each top-level key of `answer`
+/// replaces the payload's key of that name.
+pub fn with_answer(input: &Value, answer: Value) -> Value {
+    let mut payload = match input {
+        Value::Object(map) => map.clone(),
+        _ => serde_json::Map::new(),
+    };
+    if let Value::Object(answer) = answer {
+        payload.extend(answer);
+    }
+    Value::Object(payload)
+}
+
 pub fn metadata_scope(metadata: &Value) -> Result<(&str, &str, &str, &str), PipelineError> {
     let owner = metadata
         .get("owner")

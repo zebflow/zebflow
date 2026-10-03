@@ -185,14 +185,10 @@ impl NodeHandler for Node {
 
         Ok(NodeExecutionOutput {
             output_pins: vec![OUTPUT_PIN_OUT.to_string()],
-            payload: {
-                let mut payload = match &input.payload {
-                    serde_json::Value::Object(map) => map.clone(),
-                    _ => serde_json::Map::new(),
-                };
-                payload.insert("inspect".to_string(), json!({ "report": report_json, "source": rel_path, "store": source_store.id }));
-                serde_json::Value::Object(payload)
-            },
+            payload: crate::pipeline::nodes::shared::util::with_answer(
+                &input.payload,
+                json!({ "inspect": { "report": report_json, "source": rel_path, "store": source_store.id } }),
+            ),
             trace: vec![format!("node_kind={NODE_KIND} path={rel_path}")],
         })
     }

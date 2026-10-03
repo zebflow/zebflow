@@ -293,14 +293,9 @@ impl NodeHandler for Node {
                 format: "tar.gz".to_string(),
                 files: Vec::new(),
             };
-            let mut payload = match &input.payload {
-                serde_json::Value::Object(map) => map.clone(),
-                _ => serde_json::Map::new(),
-            };
-            payload.insert("decompressed".to_string(), json!(output));
             return Ok(NodeExecutionOutput {
                 output_pins: vec![OUTPUT_PIN_OUT.to_string()],
-                payload: serde_json::Value::Object(payload),
+                payload: crate::pipeline::nodes::shared::util::with_answer(&input.payload, json!({ "decompressed": output })),
                 trace: vec![format!("node_kind={NODE_KIND} src={source_rel} out={folder} skipped=true")],
             });
         }

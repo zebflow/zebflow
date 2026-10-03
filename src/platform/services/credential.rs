@@ -885,6 +885,16 @@ pub fn builtin_credential_types() -> Vec<CredentialTypeDef> {
                 F { ..f("access_key_id", "Access key ID") },
                 F { full_width: true, ..fp("secret_access_key", "Secret access key") },
                 F { placeholder: Some("path".into()), help: Some("path (default): endpoint/bucket/key — MinIO, SeaweedFS, Garage, R2. virtual: bucket.endpoint/key — AWS's default.".into()), ..f("addressing", "Addressing") },
+                F {
+                    field_type: "select".into(),
+                    default: Some("read_write".into()),
+                    options: vec![
+                        O { value: "read_write".into(), label: "Read and write".into() },
+                        O { value: "read_only".into(), label: "Read only".into() },
+                    ],
+                    help: Some("read_only: a bucket this project reads but does not own — every write is refused by the store. It cannot be the project's default store.".into()),
+                    ..f("access", "Access")
+                },
             ],
             ..Default::default()
         },

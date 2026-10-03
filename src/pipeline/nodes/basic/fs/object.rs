@@ -4,7 +4,7 @@
 //! FileRef IR and backend/lifecycle rules, read
 //! `src/pipeline/nodes/shared/file_ref.rs`.
 //!
-//! `fs.put --from-key` accepts text-like JSON, legacy byte envelopes, and FileRef
+//! `fs.put --source-key` accepts text-like JSON, legacy byte envelopes, and FileRef
 //! metadata. FileRef values are read through the shared helper instead of treating
 //! `ref` as a local filesystem path.
 //!
@@ -93,11 +93,9 @@ pub struct Config {
     #[serde(default)]
     pub path: String,
     #[serde(default)]
-    pub prefix: String,
-    #[serde(default)]
     pub from: String,
     #[serde(default)]
-    pub from_key: String,
+    pub source_key: String,
     #[serde(default)]
     pub text: Option<String>,
     #[serde(default)]
@@ -132,7 +130,6 @@ pub fn list_definition() -> NodeDefinition {
                 "path",
                 "Prefix to list. Empty lists the project root.",
             ),
-            scalar_flag("--prefix", "prefix", "Alias for --path."),
         ],
         vec![
             text_field(
@@ -140,15 +137,9 @@ pub fn list_definition() -> NodeDefinition {
                 "Path",
                 "Prefix to list. Empty lists the project root.",
             ),
-            text_field(
-                "prefix",
-                "Prefix",
-                "Alias for Path; useful for S3-style wording.",
-            ),
         ],
         vec![
             LayoutItem::Field("path".to_string()),
-            LayoutItem::Field("prefix".to_string()),
         ],
     );
     def.examples = vec![example(
@@ -248,7 +239,7 @@ pub fn put_definition() -> NodeDefinition {
         PUT_NODE_KIND,
         "FS Put",
         "Write one file into the project's file store. Needs `--filename` (in `--folder`, default `files`) or an exact `--path`, and one source: \
-         `--text` (literal or {{ expr }}), `--base64`, or `--from-key <dot.path>` (a string, a FileRef, or JSON in the payload). \
+         `--text` (literal or {{ expr }}), `--base64`, or `--source-key <dot.path>` (a string, a FileRef, or JSON in the payload). \
          Adds `fs: { operation, path, object }` to the payload, \
          where `object` is a bare durable FileRef (`ref`, `filename`, `mime`, `kind`, `size`, `sha256`, `origin: fs.put`, …) and nothing else. \
          For a browser upload use `fs.save`, not this; `fs.put` is for content the pipeline already has.",
@@ -256,8 +247,8 @@ pub fn put_definition() -> NodeDefinition {
             .into_iter()
             .chain([
             scalar_flag(
-                "--from-key",
-                "from_key",
+                "--source-key",
+                "source_key",
                 "Dot-path in payload to write. FileRef values are read as file bytes.",
             ),
             scalar_flag("--text", "text", "Literal UTF-8 content."),
@@ -268,8 +259,8 @@ pub fn put_definition() -> NodeDefinition {
             .into_iter()
             .chain([
             text_field(
-                "from_key",
-                "From Key",
+                "source_key",
+                "Source Key",
                 "Dot-path in payload to write. FileRef values are read as file bytes.",
             ),
             NodeFieldDef {
@@ -297,14 +288,14 @@ pub fn put_definition() -> NodeDefinition {
             LayoutItem::Field("filename".to_string()),
             LayoutItem::Field("path".to_string()),
             LayoutItem::Field("on_conflict".to_string()),
-            LayoutItem::Field("from_key".to_string()),
+            LayoutItem::Field("source_key".to_string()),
             LayoutItem::Field("text".to_string()),
             LayoutItem::Field("base64".to_string()),
         ],
     );
     def.examples = vec![example(
         "Write a generated file",
-        "fs.put --folder exports --filename report.json --from-key report",
+        "fs.put --folder exports --filename report.json --source-key report",
         json!({ "report": { "total": 3 }, "fs": { "operation": "put", "path": "exports/report.json", "object": { "__zf_type": "file_ref", "backend": "zebfs", "store": "local", "ref": "exports/report.json", "filename": "report.json", "mime": "application/json", "kind": "json", "size": 812, "sha256": "sha256:…", "lifecycle": "durable", "origin": "fs.put", "trust": "generated" } } }),
     )];
     def
@@ -551,9 +542,7 @@ impl NodeHandler for Node {
         let op = self.operation;
         let payload = match op {
             Operation::List => {
-                let path =
-                    first_non_empty([self.config.path.as_str(), self.config.prefix.as_str()])
-                        .unwrap_or("");
+                let path = self.config.path.trim();
                 let entries = zebfs
                     .list(path)
                     .map_err(|err| PipelineError::new("FW_NODE_FS_LIST", err.to_string()))?;
@@ -765,12 +754,12 @@ impl Node {
         project: &str,
         payload: &Value,
     ) -> Result<Vec<u8>, PipelineError> {
-        let from_key = self.config.from_key.trim();
-        if !from_key.is_empty() {
-            let value = resolve_path(payload, from_key).ok_or_else(|| {
+        let source_key = self.config.source_key.trim();
+        if !source_key.is_empty() {
+            let value = resolve_path(payload, source_key).ok_or_else(|| {
                 PipelineError::new(
                     "FW_NODE_FS_PUT_SOURCE",
-                    format!("payload key '{from_key}' was not found"),
+                    format!("payload key '{source_key}' was not found"),
                 )
             })?;
             if is_file_ref(value) {
@@ -794,7 +783,7 @@ impl Node {
         }
         Err(PipelineError::new(
             "FW_NODE_FS_PUT_SOURCE",
-            "set one of --from-key, --base64, or --text",
+            "set one of --source-key, --base64, or --text",
         ))
     }
 }
@@ -827,13 +816,6 @@ fn required<'a>(value: &'a str, flag: &str, code: &'static str) -> Result<&'a st
         return Err(PipelineError::new(code, format!("{flag} is required")));
     }
     Ok(trimmed)
-}
-
-fn first_non_empty<'a>(items: impl IntoIterator<Item = &'a str>) -> Option<&'a str> {
-    items
-        .into_iter()
-        .map(str::trim)
-        .find(|value| !value.is_empty())
 }
 
 fn normalize_output_path(path: &str) -> String {

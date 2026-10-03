@@ -2650,7 +2650,7 @@ impl BasicPipelineEngine {
 
                             Ok(vec![NodeExecutionOutput {
                                 output_pins: vec![web::docs_generate::OUTPUT_PIN_OUT.to_string()],
-                                payload: merged_payload(&input.payload, json!({
+                                payload: crate::pipeline::nodes::shared::util::with_answer(&input.payload, json!({
                                     "docs_generated": {
                                         "status": "ok",
                                         "site_title": site.site_title,
@@ -2948,7 +2948,7 @@ impl BasicPipelineEngine {
 
                             Ok(vec![NodeExecutionOutput {
                                 output_pins: vec![web::static_generate::OUTPUT_PIN_OUT.to_string()],
-                                payload: merged_payload(&input.payload, json!({
+                                payload: crate::pipeline::nodes::shared::util::with_answer(&input.payload, json!({
                                     "generated": {
                                         "status": status,
                                         "path": rel_path,
@@ -6093,15 +6093,3 @@ fn is_logic_collect(node: &PipelineNode) -> bool {
     node.kind == logic::collect::NODE_KIND
 }
 
-/// A node's answer added to the payload it was given, the rest kept
-/// (`docs/contracts/node-conventions.md` §5).
-fn merged_payload(input: &Value, answer: Value) -> Value {
-    let mut payload = match input {
-        Value::Object(map) => map.clone(),
-        _ => Map::new(),
-    };
-    if let Value::Object(answer) = answer {
-        payload.extend(answer);
-    }
-    Value::Object(payload)
-}

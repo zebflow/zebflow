@@ -16129,7 +16129,13 @@ async fn api_mapserver_layer_stats(
     };
     let source_path = item.source_path.clone();
     let source_store = item.store.clone();
-    let manifest = match mapserver_record_to_manifest(&state, &owner, &project, item) {
+    let resolved = {
+        let (state, owner, project) = (state.clone(), owner.to_string(), project.to_string());
+        tokio::task::spawn_blocking(move || mapserver_record_to_manifest(&state, &owner, &project, item))
+            .await
+            .unwrap_or_else(|err| Err(PlatformError::new("MAPSERVER_RESOLVE", err.to_string())))
+    };
+    let manifest = match resolved {
         Ok(manifest) => manifest,
         Err(err) => return internal_error(err),
     };
@@ -16221,6 +16227,13 @@ async fn api_mapserver_layers_publish(
         )
             .into_response();
     }
+    if !crate::contracts::kinds::valid_layer_id(layer_id) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"ok": false, "error": "layer_id must be 1–64 letters, digits, '-' or '_'"})),
+        )
+            .into_response();
+    }
     let source_path = match crate::zebfs::normalize_object_path(source_path) {
         Ok(path) if path.starts_with("mapserver/") => path,
         _ => {
@@ -16279,18 +16292,8 @@ async fn api_mapserver_layers_publish(
         Ok(path) => path,
         Err(err) => return internal_error(err),
     };
-    let safe_layer_id = layer_id
-        .chars()
-        .map(|ch| {
-            if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
-                ch
-            } else {
-                '_'
-            }
-        })
-        .collect::<String>();
-    let artifact_abs_dir = artifact_root.join(&safe_layer_id);
-    let artifact_rel_dir = format!("mapserver-artifacts/{instance}/{safe_layer_id}");
+    let artifact_abs_dir = artifact_root.join(layer_id);
+    let artifact_rel_dir = format!("mapserver-artifacts/{instance}/{layer_id}");
     let build = match crate::mapserver::publish::build::build_geojson_artifact(
         &source_abs_path,
         layer_id,
@@ -16345,10 +16348,19 @@ async fn api_mapserver_layers_publish(
     if let Err(err) = write_mapserver_layers(&state, &owner, &project, &instance, &items) {
         return internal_error(err);
     }
+    // The URL is real only while the `ms` surface is on (off by default).
+    let serving = state
+        .platform
+        .addressing
+        .read(&owner, &project)
+        .map(|a| a.is_enabled(crate::platform::services::addressing::Surface::Ms))
+        .unwrap_or(false);
     Json(json!({
         "ok": true,
         "item": record,
-        "public_url": format!("/ms/{owner}/{project}/{}", record.path)
+        "serving": serving,
+        "public_url": format!("/ms/{owner}/{project}/{}", record.path),
+        "note": (!serving).then_some("the ms surface is off for this project; switch it on in Settings → Addressing to serve this layer"),
     }))
     .into_response()
 }
@@ -16406,8 +16418,11 @@ async fn api_mapserver_layers_delete(
                 // Move a pre-tier artifact tree to its cache home first so the
                 // cleanup hits the tree wherever it actually lives.
                 let _ = layout.ensure_mapserver_artifacts_home();
-                let artifact_manifest = layout.resolve_mapserver_artifact_path(&artifact_rel);
-                if let Some(dir) = artifact_manifest.parent() {
+                if let Some(dir) = layout
+                    .resolve_mapserver_artifact_path(&artifact_rel)
+                    .as_deref()
+                    .and_then(std::path::Path::parent)
+                {
                     let _ = std::fs::remove_dir_all(dir);
                 }
             }
@@ -17779,6 +17794,11 @@ async fn api_upsert_settings_section(
                         Ok(config) => config,
                         Err(err) => return bad_request(format!("credential '{credential_id}': {}", err.message)),
                     };
+                    if config.read_only {
+                        return bad_request(format!(
+                            "credential '{credential_id}' is read-only; the default store must take writes"
+                        ));
+                    }
                     if let Err(err) = crate::zebfs::backend::open(&FileStore::S3(config)).list("") {
                         return bad_request(format!("the bucket does not answer: {}", err.message));
                     }
@@ -24403,7 +24423,15 @@ async fn public_mapserver_ingress(
         raw_path.clone()
     };
 
-    let manifest = match resolve_mapserver_manifest_for_path(&state, &owner, &project, &path) {
+    // Resolving may fetch a bucket object into the mirror for the first time,
+    // which is blocking work that must not hold an async worker.
+    let resolved = {
+        let (state, owner, project, path) = (state.clone(), owner.to_string(), project.to_string(), path.clone());
+        tokio::task::spawn_blocking(move || resolve_mapserver_manifest_for_path(&state, &owner, &project, &path))
+            .await
+            .unwrap_or_else(|err| Err(PlatformError::new("MAPSERVER_RESOLVE", err.to_string())))
+    };
+    let manifest = match resolved {
         Ok(Some(m)) => m,
         Ok(None) => {
             return (
@@ -24594,10 +24622,32 @@ async fn public_mapserver_ingress(
         cache_ttl_secs,
     );
 
-    let filter_param = params.get("filter").cloned();
-    // Merge: URL filter param > manifest default filter
-    let effective_filter: Option<String> = filter_param.or_else(|| manifest.filter.clone());
-    // Validate filter syntax early (return 400 on parse error)
+    // A caller's `?filter=` only narrows: its conditions are added to the
+    // publisher's default (all must hold), and may name only published
+    // columns — filtering on a hidden one would answer yes/no about it.
+    let filter_param = params.get("filter").map(|f| f.trim().to_string()).filter(|f| !f.is_empty());
+    if let Some(ref f) = filter_param {
+        let parsed = match crate::mapserver::resolve::filter_dsl::parse_filter(f) {
+            Ok(parsed) => parsed,
+            Err(e) => {
+                return (axum::http::StatusCode::BAD_REQUEST, format!("invalid filter: {e}")).into_response();
+            }
+        };
+        if let Some(hidden) = crate::mapserver::resolve::filter_dsl::filter_field_names(&parsed)
+            .into_iter()
+            .find(|field| !manifest.allowed_properties.iter().any(|allowed| allowed == field))
+        {
+            return (
+                axum::http::StatusCode::BAD_REQUEST,
+                format!("filter field '{hidden}' is not a published property of this layer"),
+            )
+                .into_response();
+        }
+    }
+    let effective_filter: Option<String> = match (manifest.filter.clone(), filter_param) {
+        (Some(default), Some(caller)) => Some(format!("{default};{caller}")),
+        (default, caller) => default.or(caller),
+    };
     if let Some(ref f) = effective_filter {
         if let Err(e) = crate::mapserver::resolve::filter_dsl::parse_filter(f) {
             return (
@@ -25292,12 +25342,22 @@ async fn public_mapserver_ingress_root(
 
 use crate::contracts::kinds::MapserverLayerRecord;
 
+/// An instance name from the URL is a file and folder name: a plain slug.
+fn require_mapserver_instance(instance: &str) -> Result<(), PlatformError> {
+    if crate::contracts::kinds::valid_layer_id(instance) {
+        Ok(())
+    } else {
+        Err(PlatformError::new("MAPSERVER_INSTANCE", format!("'{instance}' is not a map server instance name")))
+    }
+}
+
 fn mapserver_layers_manifest_path(
     state: &PlatformAppState,
     owner: &str,
     project: &str,
     instance: &str,
 ) -> Result<std::path::PathBuf, PlatformError> {
+    require_mapserver_instance(instance)?;
     let layout = state.platform.file.ensure_project_layout(owner, project)?;
     Ok(crate::mapserver::publish::registry::layers_manifest_path(
         &layout.data_store_dir(),
@@ -25314,6 +25374,7 @@ fn mapserver_artifacts_root(
     project: &str,
     instance: &str,
 ) -> Result<std::path::PathBuf, PlatformError> {
+    require_mapserver_instance(instance)?;
     let layout = state.platform.file.ensure_project_layout(owner, project)?;
     let root = layout
         .ensure_mapserver_artifacts_home()
@@ -25425,6 +25486,9 @@ fn mapserver_record_to_manifest(
                 crate::mapserver::publish::manifest::SourceKind::GeoJsonArtifact,
                 layout
                     .resolve_mapserver_artifact_path(&artifact_rel)
+                    .ok_or_else(|| {
+                        PlatformError::new("MAPSERVER_ARTIFACT_PATH", format!("'{artifact_rel}' is not an artifact path"))
+                    })?
                     .display()
                     .to_string(),
             )

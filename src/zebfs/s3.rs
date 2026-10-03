@@ -49,6 +49,9 @@ pub struct S3Config {
     /// `true`: `endpoint/bucket/key` (MinIO, SeaweedFS, Garage, R2).
     /// `false`: `bucket.endpoint/key` (AWS's default).
     pub path_style: bool,
+    /// The store refuses every write (`ZEBFS_READ_ONLY`): a bucket the
+    /// project reads but does not own.
+    pub read_only: bool,
 }
 
 impl fmt::Debug for S3Config {
@@ -62,6 +65,7 @@ impl fmt::Debug for S3Config {
             .field("access_key_id", &self.access_key_id)
             .field("secret_access_key", &"***")
             .field("path_style", &self.path_style)
+            .field("read_only", &self.read_only)
             .finish()
     }
 }
@@ -106,6 +110,16 @@ impl S3Config {
             normalize_object_path(&prefix)?
         };
         let path_style = !field("addressing").eq_ignore_ascii_case("virtual");
+        let read_only = match field("access").as_str() {
+            "" | "read_write" => false,
+            "read_only" => true,
+            other => {
+                return Err(ZebFsError::new(
+                    "ZEBFS_S3_CREDENTIAL",
+                    format!("access '{other}' must be read_write or read_only"),
+                ));
+            }
+        };
         Ok(Self {
             endpoint,
             region,
@@ -114,6 +128,7 @@ impl S3Config {
             access_key_id: required("access_key_id")?,
             secret_access_key: required("secret_access_key")?,
             path_style,
+            read_only,
         })
     }
 
@@ -142,6 +157,17 @@ impl S3ZebFs {
         Self { config, agent }
     }
 
+    /// Refuses a write to a read-only store.
+    fn writable(&self) -> Result<(), ZebFsError> {
+        if self.config.read_only {
+            return Err(ZebFsError::new(
+                "ZEBFS_READ_ONLY",
+                format!("the store '{}' is read-only", self.config.bucket),
+            ));
+        }
+        Ok(())
+    }
+
     pub fn config(&self) -> &S3Config {
         &self.config
     }
@@ -149,6 +175,7 @@ impl S3ZebFs {
     // ── the seven verbs ─────────────────────────────────────────────────
 
     pub fn put(&self, path: &str, bytes: &[u8]) -> Result<ZebFsStat, ZebFsError> {
+        self.writable()?;
         let rel = normalize_object_path(path)?;
         ensure_user_object_path(&rel)?;
         self.put_key(&self.key_for(&rel), bytes)?;
@@ -253,6 +280,7 @@ impl S3ZebFs {
     /// A prefix is a zero-byte key ending in `/`, the convention every S3
     /// console uses; listings hide it.
     pub fn create_prefix(&self, prefix: &str) -> Result<ZebFsStat, ZebFsError> {
+        self.writable()?;
         let rel = normalize_object_path(prefix)?;
         ensure_user_object_path(&rel)?;
         self.put_key(&format!("{}/", self.key_for(&rel)), &[])?;
@@ -267,6 +295,7 @@ impl S3ZebFs {
     /// Deletes the object at `path` and everything beneath `path/`. Absent
     /// is not an error, as on disk.
     pub fn delete(&self, path: &str) -> Result<(), ZebFsError> {
+        self.writable()?;
         let rel = normalize_object_path(path)?;
         ensure_user_object_path(&rel)?;
         let key = self.key_for(&rel);
@@ -278,6 +307,7 @@ impl S3ZebFs {
     }
 
     pub fn copy(&self, from: &str, to: &str) -> Result<ZebFsStat, ZebFsError> {
+        self.writable()?;
         let from_rel = normalize_object_path(from)?;
         let to_rel = normalize_object_path(to)?;
         ensure_user_object_path(&from_rel)?;
@@ -316,6 +346,7 @@ impl S3ZebFs {
     }
 
     pub fn write_reserved(&self, path: &str, bytes: &[u8]) -> Result<(), ZebFsError> {
+        self.writable()?;
         let rel = normalize_object_path(path)?;
         self.put_key(&self.key_for(&rel), bytes)
     }
@@ -501,6 +532,7 @@ impl S3ZebFs {
     /// Streams a local file into one object without holding it in memory:
     /// one pass to hash it for the signature, one to send it.
     pub fn put_from_file(&self, path: &str, src: &std::path::Path) -> Result<ZebFsStat, ZebFsError> {
+        self.writable()?;
         let rel = normalize_object_path(path)?;
         ensure_user_object_path(&rel)?;
         let key = self.key_for(&rel);
@@ -720,6 +752,7 @@ pub(crate) mod tests {
             access_key_id: "zebflowdev".into(),
             secret_access_key: "zebflowdev-secret-local-only".into(),
             path_style: true,
+            read_only: false,
         };
         let empty = hex::encode(Sha256::digest(b""));
         let headers = sign(
@@ -883,6 +916,7 @@ pub(crate) mod tests {
             access_key_id: "ak".into(),
             secret_access_key: "sk".into(),
             path_style: true,
+            read_only: false,
         })
     }
 
@@ -952,6 +986,32 @@ pub(crate) mod tests {
         assert_eq!(std::fs::read(&dest).unwrap(), vec![7u8; 70_000]);
         assert_eq!(fs.get_to_file("maps/none", &dest).unwrap_err().code, "ZEBFS_NOT_FOUND");
         assert_eq!(fs.put_from_file(".zebfs/acl.json", &src).unwrap_err().code, "ZEBFS_RESERVED_PATH");
+    }
+
+    #[test]
+    fn a_read_only_store_reads_and_refuses_every_write() {
+        let (port, objects) = fake_s3();
+        objects.lock().unwrap().insert("data/a.csv".into(), b"x".to_vec());
+        let mut fs = store(port, "data");
+        fs.config.read_only = true;
+        assert_eq!(fs.get("a.csv").unwrap().bytes, b"x");
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("f");
+        std::fs::write(&src, b"y").unwrap();
+        for err in [
+            fs.put("b.csv", b"y").unwrap_err(),
+            fs.put_from_file("b.csv", &src).unwrap_err(),
+            fs.create_prefix("p").unwrap_err(),
+            fs.copy("a.csv", "c.csv").unwrap_err(),
+        ] {
+            assert_eq!(err.code, "ZEBFS_READ_ONLY");
+        }
+        assert_eq!(fs.delete("a.csv").unwrap_err().code, "ZEBFS_READ_ONLY");
+        assert_eq!(objects.lock().unwrap().len(), 1, "nothing was written or removed");
+        let secret = serde_json::json!({ "endpoint": "http://x", "bucket": "b", "access_key_id": "k", "secret_access_key": "s", "access": "read_only" });
+        assert!(S3Config::from_credential(&secret).unwrap().read_only);
+        let wrong = serde_json::json!({ "endpoint": "http://x", "bucket": "b", "access_key_id": "k", "secret_access_key": "s", "access": "ro" });
+        assert!(S3Config::from_credential(&wrong).is_err());
     }
 
     #[test]

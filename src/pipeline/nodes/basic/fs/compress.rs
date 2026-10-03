@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::json;
 
 use crate::pipeline::nodes::shared::project_store::{OnConflict, on_conflict_flag, open_source, open_store, store_fields, store_flag, target_key};
 use crate::pipeline::nodes::shared::store_scratch::StoreScratch;
@@ -344,15 +344,9 @@ impl NodeHandler for Node {
         // --from "{{ input.compressed }}"` or a `--preview` takes it as it is.
         let leaf = archive_rel.rsplit('/').next().unwrap_or(&archive_rel).to_string();
         let compressed = store.file_ref(&archive_rel, &leaf, "application/gzip", &archive_bytes, "fs.compress", "generated");
-        let mut payload = match &input.payload {
-            Value::Object(map) => map.clone(),
-            _ => serde_json::Map::new(),
-        };
-        payload.insert("compressed".to_string(), compressed);
-
         Ok(NodeExecutionOutput {
             output_pins: vec![OUTPUT_PIN_OUT.to_string()],
-            payload: Value::Object(payload),
+            payload: crate::pipeline::nodes::shared::util::with_answer(&input.payload, serde_json::json!({ "compressed": compressed })),
             trace: vec![format!(
                 "node_kind={NODE_KIND} srcs={} archive={} store={} size={}",
                 source_paths.join(","),

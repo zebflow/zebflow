@@ -255,7 +255,7 @@ pub fn definition() -> NodeDefinition {
         examples: vec![
             crate::pipeline::model::NodeExample::dsl("Shapefile to GeoParquet in WGS84", "geo.convert --from uploads/suburbs.zip --folder datasets --filename suburbs.parquet --to-crs EPSG:4326 --hilbert")
                 .output(serde_json::json!({ "converted": { "source": "uploads/suburbs.zip", "store": "local", "file": { "__zf_type": "file_ref", "backend": "zebfs", "store": "local", "ref": "datasets/suburbs.parquet", "filename": "suburbs.parquet", "mime": "application/vnd.apache.parquet", "kind": "parquet", "size": 918233, "sha256": "sha256:…", "lifecycle": "durable", "origin": "geo.convert", "trust": "generated" }, "files": ["…every file written, sidecars too"], "features": 312, "elapsed_secs": 0.8 } }))
-                .note("Then `ms.publish --name suburbs --path suburbs --source-path datasets/suburbs.parquet --source-kind geoparquet`."),
+                .note("Then `ms.publish --name suburbs --route suburbs --from datasets/suburbs.parquet --source-kind geoparquet`."),
         ],
         ..Default::default()
     }
@@ -418,14 +418,9 @@ impl NodeHandler for Node {
 
 /// `converted` added to the payload, the rest kept.
 fn answer(input: &serde_json::Value, converted: serde_json::Value, trace: String) -> NodeExecutionOutput {
-    let mut payload = match input {
-        serde_json::Value::Object(map) => map.clone(),
-        _ => serde_json::Map::new(),
-    };
-    payload.insert("converted".to_string(), converted);
     NodeExecutionOutput {
         output_pins: vec![OUTPUT_PIN_OUT.to_string()],
-        payload: serde_json::Value::Object(payload),
+        payload: crate::pipeline::nodes::shared::util::with_answer(input, serde_json::json!({ "converted": converted })),
         trace: vec![trace],
     }
 }

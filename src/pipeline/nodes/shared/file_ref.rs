@@ -100,6 +100,27 @@ pub fn durable_file_ref(
     })
 }
 
+/// [`durable_file_ref`] for bytes already in a local file: the digest is
+/// taken by streaming it, so a large output never sits in memory.
+#[allow(clippy::too_many_arguments)]
+pub fn durable_file_ref_from_file(
+    backend: FileBackend,
+    store_id: &str,
+    rel_path: &str,
+    filename: &str,
+    mime: &str,
+    path: &std::path::Path,
+    origin: &str,
+    trust: &str,
+) -> std::io::Result<Value> {
+    let mut hasher = Sha256::new();
+    let size = std::io::copy(&mut std::fs::File::open(path)?, &mut hasher)?;
+    let mut value = durable_file_ref(backend, store_id, rel_path, filename, mime, &[], origin, trust);
+    value["size"] = json!(size);
+    value["sha256"] = json!(format!("sha256:{:x}", hasher.finalize()));
+    Ok(value)
+}
+
 /// A stored project object as a durable FileRef.
 ///
 /// The one door from a **store path** (`uploads/cat.png`, `public/logo.svg`)

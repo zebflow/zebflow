@@ -102,11 +102,10 @@ fn store_optimized(
     Ok(())
 }
 
-fn layer_to_json(owner: &str, project: &str, record: &LayerRecord) -> Value {
+fn layer_to_json(record: &LayerRecord) -> Value {
     json!({
         "layer_id": record.layer_id,
         "path": record.path,
-        "url": format!("/ms/{owner}/{project}/{}", record.path),
         "source_path": record.source_path,
         "source_kind": if record.source_kind.is_empty() {
             if record.artifact_manifest_path.is_some() { "geojson_artifact" } else { "geojson_file" }
@@ -155,10 +154,12 @@ impl Operation {
 pub struct Config {
     #[serde(default)]
     pub name: String,
+    /// Where the layer answers, under `/ms/{owner}/{project}/`.
     #[serde(default)]
-    pub path: String,
+    pub route: String,
+    /// The source: a store key, or a FileRef through `{{ }}`.
     #[serde(default)]
-    pub source_path: String,
+    pub from: Value,
     #[serde(default)]
     pub source_kind: String,
     #[serde(default)]
@@ -249,7 +250,8 @@ pub fn publish_definition() -> NodeDefinition {
         capabilities: vec![NodeCapability::Filesystem],
         title: "MS Publish".to_string(),
         description: "Publish or update a map layer in the project layer registry. \
-            The layer becomes immediately queryable on `/ms/{owner}/{project}/{path}`. \
+            The layer answers on `/ms/{owner}/{project}/{route}` while the project's `ms` surface is on (off by default); \
+            the answer's `ms.serving` says which. Adds `ms` to the payload and keeps the rest. \
             Supports geojson_file, geojson_artifact, geoparquet, and geojson_function source kinds. \
             Use --function for dynamic layers backed by a function pipeline."
             .to_string(),
@@ -274,14 +276,14 @@ pub fn publish_definition() -> NodeDefinition {
         dsl_flags: vec![
             scalar_flag("--name", "name", "Unique layer identifier (required)."),
             scalar_flag(
-                "--path",
-                "path",
-                "URL path under /ms/{owner}/{project}/ (required).",
+                "--route",
+                "route",
+                "Where the layer answers, under /ms/{owner}/{project}/ (required).",
             ),
             scalar_flag(
-                "--source-path",
-                "source_path",
-                "ZebFS path to source file (required). Can also come from input payload.source_path.",
+                "--from",
+                "from",
+                "The source: a store key, or a FileRef through {{ }} (read from the store it names). Required unless --function.",
             ),
             DslFlag {
                 flag: "--source-kind".to_string(),
@@ -338,7 +340,7 @@ pub fn publish_definition() -> NodeDefinition {
             scalar_flag(
                 "--function",
                 "function",
-                "Function pipeline slug for dynamic GeoJSON source. Mutually exclusive with --source-path.",
+                "Function pipeline slug for dynamic GeoJSON source. Mutually exclusive with --from.",
             ),
             scalar_flag(
                 "--cache-ttl",
@@ -349,8 +351,8 @@ pub fn publish_definition() -> NodeDefinition {
         ],
         fields: vec![
             text_field("name", "Layer ID", "Unique layer identifier."),
-            text_field("path", "URL Path", "Path under /ms/{owner}/{project}/."),
-            text_field("source_path", "Source Path", "ZebFS path to source file."),
+            text_field("route", "Route", "Where the layer answers, under /ms/{owner}/{project}/."),
+            text_field("from", "From", "A store key, or a FileRef through {{ }}."),
             NodeFieldDef {
                 name: "source_kind".to_string(),
                 label: "Source Kind".to_string(),
@@ -457,10 +459,10 @@ pub fn publish_definition() -> NodeDefinition {
             LayoutItem::Row {
                 row: vec![
                     LayoutItem::Field("name".to_string()),
-                    LayoutItem::Field("path".to_string()),
+                    LayoutItem::Field("route".to_string()),
                 ],
             },
-            LayoutItem::Field("source_path".to_string()),
+            LayoutItem::Field("from".to_string()),
             LayoutItem::Row {
                 row: vec![
                     LayoutItem::Field("bbox_required".to_string()),
@@ -484,8 +486,8 @@ pub fn publish_definition() -> NodeDefinition {
         ],
         ai_tool: Default::default(),
         examples: vec![
-            crate::pipeline::model::NodeExample::dsl("Publish a GeoParquet layer", "ms.publish --name suburbs --path suburbs --source-path datasets/suburbs.parquet --source-kind geoparquet --min-zoom 8 --max-zoom 14")
-                .output(serde_json::json!({ "ms": { "operation": "publish", "layer": { "name": "suburbs", "path": "suburbs", "url": "/ms/acme/shop/suburbs", "source_kind": "geoparquet" } } }))
+            crate::pipeline::model::NodeExample::dsl("Publish a GeoParquet layer", "ms.publish --name suburbs --route suburbs --from datasets/suburbs.parquet --source-kind geoparquet --min-zoom 8 --max-zoom 14")
+                .output(serde_json::json!({ "ms": { "operation": "publish", "layer": { "name": "suburbs", "path": "suburbs", "source_kind": "geoparquet" } } }))
                 .note("A page loads it with `zeb/deckgl` from `/ms/{owner}/{project}/suburbs` (help topic `guide/mapserver`)."),
         ],
         ..Default::default()
@@ -498,7 +500,7 @@ pub fn unpublish_definition() -> NodeDefinition {
         capabilities: vec![NodeCapability::Filesystem],
         title: "MS Unpublish".to_string(),
         description: "Take a published map layer offline: removes `--name` from the project's layer registry so `/ms/{owner}/{project}/{path}` \
-            stops answering. The source file in the file store is left where it is. Replaces the payload with \
+            stops answering. The source file in the file store is left where it is. Adds to the payload \
             `{ ms: { operation: \"unpublish\", removed, layer_id } }`; an unknown name answers `removed: false` rather than failing."
             .to_string(),
         input_schema: json!({"type": "object"}),
@@ -546,7 +548,7 @@ pub fn get_definition() -> NodeDefinition {
         capabilities: vec![NodeCapability::Filesystem],
         title: "MS Get".to_string(),
         description: "Read one published map layer's registry entry by `--name`: its path, url, source, zoom range, style and cache \
-            settings. Replaces the payload with `{ ms: { operation: \"get\", layer } }`. Use it in an admin page's pipeline to show \
+            settings. Adds `ms: { operation: \"get\", layer }` to the payload. Use it in an admin page's pipeline to show \
             what is live, or before `ms.publish` to decide between create and update; a name that is not published fails the node."
             .to_string(),
         input_schema: json!({"type": "object"}),
@@ -581,7 +583,7 @@ pub fn get_definition() -> NodeDefinition {
         ai_tool: Default::default(),
         examples: vec![
             crate::pipeline::model::NodeExample::dsl("Show a layer's settings", "ms.get --name suburbs")
-                .output(serde_json::json!({ "ms": { "operation": "get", "layer": { "name": "suburbs", "path": "suburbs", "url": "/ms/acme/shop/suburbs", "source_kind": "geoparquet", "min_zoom": 8, "max_zoom": 14 } } })),
+                .output(serde_json::json!({ "ms": { "operation": "get", "layer": { "name": "suburbs", "path": "suburbs", "source_kind": "geoparquet", "min_zoom": 8, "max_zoom": 14 } } })),
         ],
         ..Default::default()
     }
@@ -593,7 +595,7 @@ pub fn list_definition() -> NodeDefinition {
         capabilities: vec![NodeCapability::Filesystem],
         title: "MS List".to_string(),
         description: "List every map layer this project has published, with the same registry fields `ms.get` returns for one. \
-            No flags. Replaces the payload with `{ ms: { operation: \"list\", count, layers } }` — a page reads `input.ms.layers`. \
+            No flags. Adds `ms: { operation: \"list\", count, layers }` to the payload — a page reads `input.ms.layers`. \
             This is the registry, not the file store: a GeoParquet file nobody published is not in it."
             .to_string(),
         input_schema: json!({"type": "object"}),
@@ -621,7 +623,7 @@ pub fn list_definition() -> NodeDefinition {
         ai_tool: Default::default(),
         examples: vec![
             crate::pipeline::model::NodeExample::dsl("Layers for a map picker", "ms.list")
-                .output(serde_json::json!({ "ms": { "operation": "list", "count": 1, "layers": [{ "name": "suburbs", "path": "suburbs", "url": "/ms/acme/shop/suburbs" }] } })),
+                .output(serde_json::json!({ "ms": { "operation": "list", "count": 1, "layers": [{ "name": "suburbs", "path": "suburbs" }] } })),
         ],
         ..Default::default()
     }
@@ -670,7 +672,7 @@ impl NodeHandler for Node {
         let (owner, project, ..) = metadata_scope(&input.metadata)?;
 
         let payload = match self.operation {
-            Operation::Publish => self.exec_publish(owner, project, &input)?,
+            Operation::Publish => self.exec_publish(owner, project)?,
             Operation::Unpublish => self.exec_unpublish(owner, project)?,
             Operation::Get => self.exec_get(owner, project)?,
             Operation::List => self.exec_list(owner, project)?,
@@ -678,7 +680,7 @@ impl NodeHandler for Node {
 
         Ok(NodeExecutionOutput {
             output_pins: vec![OUTPUT_PIN_OUT.to_string()],
-            payload,
+            payload: crate::pipeline::nodes::shared::util::with_answer(&input.payload, payload),
             trace: vec![format!(
                 "node_kind={} operation={}",
                 self.operation.kind(),
@@ -698,33 +700,31 @@ impl Node {
         &self,
         owner: &str,
         project: &str,
-        input: &NodeExecutionInput,
     ) -> Result<Value, PipelineError> {
-        let name = require_non_empty(&self.config.name, "--name", "FW_NODE_MS_PUBLISH")?;
-        let path = require_non_empty(&self.config.path, "--path", "FW_NODE_MS_PUBLISH")?;
+        let name = require_layer_id(&self.config.name, "FW_NODE_MS_PUBLISH")?;
+        let path = require_non_empty(&self.config.route, "--route", "FW_NODE_MS_PUBLISH")?;
 
-        // ── GeoJsonFunction mode: --function set → skip source-path / optimization
+        // ── GeoJsonFunction mode: --function set → skip --from / optimization
         let is_function_mode = self
             .config
             .function
             .as_ref()
             .is_some_and(|s| !s.trim().is_empty());
 
-        // source_path: config takes priority, then input payload (not required for function mode)
-        let mut source_path = if is_function_mode {
-            String::new()
-        } else if !self.config.source_path.trim().is_empty() {
-            self.config.source_path.trim().to_string()
+        // `--from` is a store key, or a FileRef that names its own store.
+        let (mut source_path, from_store) = if is_function_mode {
+            (String::new(), None)
         } else {
-            source_path_from_payload(&input.payload)?
+            let key = zebfs_rel_path_or_string(&self.config.from)?
                 .map(|s| s.trim().to_string())
                 .filter(|s| !s.is_empty())
                 .ok_or_else(|| {
-                    PipelineError::new(
-                        "FW_NODE_MS_PUBLISH",
-                        "--source-path is required (config or input payload.source_path), or use --function for dynamic sources",
-                    )
-                })?
+                    PipelineError::new("FW_NODE_MS_PUBLISH", "--from is required, or use --function for dynamic sources")
+                })?;
+            let store = crate::pipeline::nodes::shared::file_ref::is_file_ref(&self.config.from)
+                .then(|| self.config.from.get("store").and_then(Value::as_str).map(str::to_string))
+                .flatten();
+            (key, store)
         };
 
         let layout = self
@@ -733,7 +733,12 @@ impl Node {
             .ensure_project_layout(owner, project)
             .map_err(|e| PipelineError::new("FW_NODE_MS_PUBLISH", e.to_string()))?;
 
-        let store = project_store::open_store(&self.platform, owner, project, self.config.store.as_deref())?;
+        let store = project_store::open_store(
+            &self.platform,
+            owner,
+            project,
+            from_store.as_deref().or(self.config.store.as_deref()),
+        )?;
         if !is_function_mode {
             store.fs.head(&source_path).map_err(|e| {
                 PipelineError::new(
@@ -1074,12 +1079,24 @@ impl Node {
         }
         write_layers(&self.platform, owner, project, &layers)?;
 
+        // A layer answers only while the project's `ms` surface is on; say
+        // so rather than imply it is already reachable.
+        let serving = self
+            .platform
+            .addressing
+            .read(owner, project)
+            .map(|a| a.is_enabled(crate::platform::services::addressing::Surface::Ms))
+            .unwrap_or(false);
         let mut result = json!({
             "ms": {
                 "operation": "publish",
-                "layer": layer_to_json(owner, project, &record)
+                "layer": layer_to_json(&record),
+                "serving": serving
             }
         });
+        if !serving {
+            result["ms"]["note"] = json!("the ms surface is off for this project; switch it on in Settings → Addressing to serve this layer");
+        }
         if let Some(opt) = optimization_info {
             result["ms"]["optimization"] = opt;
         }
@@ -1087,7 +1104,7 @@ impl Node {
     }
 
     fn exec_unpublish(&self, owner: &str, project: &str) -> Result<Value, PipelineError> {
-        let name = require_non_empty(&self.config.name, "--name", "FW_NODE_MS_UNPUBLISH")?;
+        let name = require_layer_id(&self.config.name, "FW_NODE_MS_UNPUBLISH")?;
         let mut layers = read_layers(&self.platform, owner, project)?;
         let removed_record = layers.iter().find(|l| l.layer_id == name).cloned();
         let before = layers.len();
@@ -1105,9 +1122,11 @@ impl Node {
                     .as_ref()
                     .and_then(|record| record.artifact_manifest_path.as_deref())
                 {
-                    // The record's own rel path covers legacy shapes such as
-                    // `mapserver/.artifacts/{name}` (no instance segment).
-                    if let Some(dir) = layout.resolve_mapserver_artifact_path(rel).parent() {
+                    if let Some(dir) = layout
+                        .resolve_mapserver_artifact_path(rel)
+                        .as_deref()
+                        .and_then(std::path::Path::parent)
+                    {
                         let _ = std::fs::remove_dir_all(dir);
                     }
                 }
@@ -1144,7 +1163,7 @@ impl Node {
     }
 
     fn exec_get(&self, owner: &str, project: &str) -> Result<Value, PipelineError> {
-        let name = require_non_empty(&self.config.name, "--name", "FW_NODE_MS_GET")?;
+        let name = require_layer_id(&self.config.name, "FW_NODE_MS_GET")?;
         let layers = read_layers(&self.platform, owner, project)?;
         let layer = layers.iter().find(|l| l.layer_id == name);
 
@@ -1153,7 +1172,7 @@ impl Node {
                 "ms": {
                     "operation": "get",
                     "found": true,
-                    "layer": layer_to_json(owner, project, record)
+                    "layer": layer_to_json(record)
                 }
             })),
             None => Ok(json!({
@@ -1170,7 +1189,7 @@ impl Node {
         let layers = read_layers(&self.platform, owner, project)?;
         let items: Vec<Value> = layers
             .iter()
-            .map(|r| layer_to_json(owner, project, r))
+            .map(|r| layer_to_json(r))
             .collect();
 
         Ok(json!({
@@ -1181,6 +1200,15 @@ impl Node {
             }
         }))
     }
+}
+
+/// `--name` is a folder and file name in the cache and the store.
+fn require_layer_id<'a>(value: &'a str, code: &'static str) -> Result<&'a str, PipelineError> {
+    let name = require_non_empty(value, "--name", code)?;
+    if !crate::contracts::kinds::valid_layer_id(name) {
+        return Err(PipelineError::new(code, format!("--name '{name}' must be 1–64 letters, digits, '-' or '_'")));
+    }
+    Ok(name)
 }
 
 fn require_non_empty<'a>(
@@ -1195,64 +1223,23 @@ fn require_non_empty<'a>(
     Ok(trimmed)
 }
 
-fn source_path_from_payload(payload: &Value) -> Result<Option<String>, PipelineError> {
-    payload
-        .get("source_path")
-        .map(zebfs_rel_path_or_string)
-        .transpose()
-        .map(Option::flatten)
-}
-
 #[cfg(test)]
 mod tests {
     use serde_json::json;
 
-    use super::source_path_from_payload;
-
-    #[test]
-    fn publish_source_path_accepts_file_ref_payload() {
-        let payload = json!({
-            "source_path": {
-                "__zf_type": "file_ref",
-                "backend": "zebfs",
-                "ref": "mapserver/sources/roads.geojson",
-                "sha256": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-                "mime": "application/geo+json",
-                "size": 1,
-                "lifecycle": "durable"
-            }
-        });
-
-        assert_eq!(
-            source_path_from_payload(&payload).unwrap(),
-            Some("mapserver/sources/roads.geojson".to_string())
-        );
-    }
 
     /// `ref` is opaque to every node but its own backend
     /// (`kinds/file-ref/README.md`): a remote handle is never joined to a
     /// local path.
     #[test]
-    fn publish_source_path_refuses_a_foreign_backend_ref() {
-        let payload = json!({
-            "source_path": {
-                "__zf_type": "file_ref",
-                "backend": "gdrive",
-                "ref": "1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgvE2upms",
-                "filename": "roads.geojson",
-                "mime": "application/geo+json",
-                "kind": "geojson",
-                "size": 1,
-                "sha256": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-                "lifecycle": "durable",
-                "origin": "webhook",
-                "trust": "untrusted"
-            }
+    fn from_refuses_a_foreign_backend_ref() {
+        let from = json!({
+            "__zf_type": "file_ref", "backend": "gdrive", "store": "x",
+            "ref": "1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgvE2upms", "filename": "roads.geojson",
+            "mime": "application/geo+json", "kind": "geojson", "size": 1,
+            "sha256": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "lifecycle": "durable", "origin": "webhook", "trust": "untrusted"
         });
-
-        assert_eq!(
-            source_path_from_payload(&payload).unwrap_err().code,
-            "FW_FILE_REF_BACKEND"
-        );
+        assert_eq!(super::zebfs_rel_path_or_string(&from).unwrap_err().code, "FW_FILE_REF_BACKEND");
     }
 }

@@ -36,7 +36,7 @@ pub fn definition() -> NodeDefinition {
         capabilities: vec![NodeCapability::Database],
         title: "Sekejap Insert".to_string(),
         description: "Bulk-insert records (and optional graph edges) into a Sekejap collection, as one commit. Reads an array at \
-            `--records-path` (default `records`), each `{ key, fields: { … } }`, and writes them typed against the collection's \
+            `--records-key` (default `records`), each `{ key, fields: { … } }`, and writes them typed against the collection's \
             declared columns into `--target` — the collection must already exist (`CREATE TABLE`), a `VECTOR(n)` field must have \
             exactly n numbers, and an edge's two endpoints must exist, in this batch or before it. An edge whose `type` is an \
             edge table's label is written into that table, its `fields` as the table's columns; the target itself must be a \
@@ -92,36 +92,36 @@ pub fn definition() -> NodeDefinition {
         config_schema: Default::default(),
         dsl_flags: vec![
             DslFlag { flag: "--target".to_string(), config_key: "target".to_string(), description: "Sekejap collection/type for records.".to_string(), kind: DslFlagKind::Scalar, required: true },
-            DslFlag { flag: "--records-path".to_string(), config_key: "records_path".to_string(), description: "Dot path to the input records array. Default: records.".to_string(), kind: DslFlagKind::Scalar, required: false },
-            DslFlag { flag: "--edges-path".to_string(), config_key: "edges_path".to_string(), description: "Dot path to the optional native edges array. Default: edges.".to_string(), kind: DslFlagKind::Scalar, required: false },
-            DslFlag { flag: "--key-path".to_string(), config_key: "key_path".to_string(), description: "Dot path inside each record for the record key. Default: key.".to_string(), kind: DslFlagKind::Scalar, required: false },
+            DslFlag { flag: "--records-key".to_string(), config_key: "records_key".to_string(), description: "Dot path to the input records array. Default: records.".to_string(), kind: DslFlagKind::Scalar, required: false },
+            DslFlag { flag: "--edges-key".to_string(), config_key: "edges_key".to_string(), description: "Dot path to the optional native edges array. Default: edges.".to_string(), kind: DslFlagKind::Scalar, required: false },
+            DslFlag { flag: "--record-key".to_string(), config_key: "record_key".to_string(), description: "Dot path inside each record for the record key. Default: key.".to_string(), kind: DslFlagKind::Scalar, required: false },
             DslFlag { flag: "--max-records".to_string(), config_key: "max_records".to_string(), description: "Maximum records accepted in one execution. Default: 1000.".to_string(), kind: DslFlagKind::Scalar, required: false },
             DslFlag { flag: "--max-edges".to_string(), config_key: "max_edges".to_string(), description: "Maximum edges accepted in one execution. Default: 1000.".to_string(), kind: DslFlagKind::Scalar, required: false },
         ],
         fields: vec![
             NodeFieldDef { name: "target".to_string(), label: "Target".to_string(), field_type: NodeFieldType::Text, help: Some("Sekejap collection/type for inserted records.".to_string()), ..Default::default() },
-            NodeFieldDef { name: "records_path".to_string(), label: "Records Path".to_string(), field_type: NodeFieldType::Text, default_value: Some(json!("records")), help: Some("Dot path to records in the input payload.".to_string()), ..Default::default() },
-            NodeFieldDef { name: "edges_path".to_string(), label: "Edges Path".to_string(), field_type: NodeFieldType::Text, default_value: Some(json!("edges")), help: Some("Dot path to optional native edges in the input payload.".to_string()), ..Default::default() },
-            NodeFieldDef { name: "key_path".to_string(), label: "Key Path".to_string(), field_type: NodeFieldType::Text, default_value: Some(json!("key")), help: Some("Dot path inside each record for the record key.".to_string()), ..Default::default() },
+            NodeFieldDef { name: "records_key".to_string(), label: "Records Key".to_string(), field_type: NodeFieldType::Text, default_value: Some(json!("records")), help: Some("Dot path to records in the input payload.".to_string()), ..Default::default() },
+            NodeFieldDef { name: "edges_key".to_string(), label: "Edges Key".to_string(), field_type: NodeFieldType::Text, default_value: Some(json!("edges")), help: Some("Dot path to optional native edges in the input payload.".to_string()), ..Default::default() },
+            NodeFieldDef { name: "record_key".to_string(), label: "Record Key".to_string(), field_type: NodeFieldType::Text, default_value: Some(json!("key")), help: Some("Dot path inside each record for the record key.".to_string()), ..Default::default() },
             NodeFieldDef { name: "max_records".to_string(), label: "Max Records".to_string(), field_type: NodeFieldType::Number, default_value: Some(json!(1000)), help: Some("Maximum records accepted in one execution.".to_string()), ..Default::default() },
             NodeFieldDef { name: "max_edges".to_string(), label: "Max Edges".to_string(), field_type: NodeFieldType::Number, default_value: Some(json!(1000)), help: Some("Maximum edges accepted in one execution.".to_string()), ..Default::default() },
         ],
         layout: vec![
             LayoutItem::Field("target".to_string()),
-            LayoutItem::Row { row: vec![LayoutItem::Field("records_path".to_string()), LayoutItem::Field("edges_path".to_string())] },
-            LayoutItem::Row { row: vec![LayoutItem::Field("key_path".to_string()), LayoutItem::Field("max_records".to_string()), LayoutItem::Field("max_edges".to_string())] },
+            LayoutItem::Row { row: vec![LayoutItem::Field("records_key".to_string()), LayoutItem::Field("edges_key".to_string())] },
+            LayoutItem::Row { row: vec![LayoutItem::Field("record_key".to_string()), LayoutItem::Field("max_records".to_string()), LayoutItem::Field("max_edges".to_string())] },
         ],
         ai_tool: crate::pipeline::model::NodeAiToolDefinition {
             registered: true,
             tool_name: "sekejap_insert".to_string(),
-            tool_description: "Bulk insert records and native Sekejap edges without generating SQL strings. Args: target, records_path, edges_path, key_path, max_records, max_edges. Vector fields are optimized automatically.".to_string(),
+            tool_description: "Bulk insert records and native Sekejap edges without generating SQL strings. Args: target, records_key, edges_key, record_key, max_records, max_edges. Vector fields are optimized automatically.".to_string(),
             tool_input_schema: json!({
                 "type": "object",
                 "properties": {
                     "target": { "type": "string" },
-                    "records_path": { "type": "string" },
-                    "edges_path": { "type": "string" },
-                    "key_path": { "type": "string" },
+                    "records_key": { "type": "string" },
+                    "edges_key": { "type": "string" },
+                    "record_key": { "type": "string" },
                     "max_records": { "type": "integer" },
                     "max_edges": { "type": "integer" }
                 },
@@ -129,7 +129,7 @@ pub fn definition() -> NodeDefinition {
             }),
         },
         examples: vec![
-            crate::pipeline::model::NodeExample::dsl("Seed from a prepared array", r#"sekejap.insert --target products --records-path items"#)
+            crate::pipeline::model::NodeExample::dsl("Seed from a prepared array", r#"sekejap.insert --target products --records-key items"#)
                 .input(serde_json::json!({ "items": [{ "key": "sku-1", "fields": { "name": "Mug", "price": 12 } }] }))
                 .output(serde_json::json!({ "inserted_records": 1, "inserted_edges": 0 })),
         ],
@@ -140,27 +140,27 @@ pub fn definition() -> NodeDefinition {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
     pub target: String,
-    #[serde(default = "default_records_path")]
-    pub records_path: String,
-    #[serde(default = "default_edges_path")]
-    pub edges_path: String,
-    #[serde(default = "default_key_path")]
-    pub key_path: String,
+    #[serde(default = "default_records_key")]
+    pub records_key: String,
+    #[serde(default = "default_edges_key")]
+    pub edges_key: String,
+    #[serde(default = "default_record_key")]
+    pub record_key: String,
     #[serde(default = "default_max_records")]
     pub max_records: usize,
     #[serde(default = "default_max_edges")]
     pub max_edges: usize,
 }
 
-fn default_records_path() -> String {
+fn default_records_key() -> String {
     "records".to_string()
 }
 
-fn default_edges_path() -> String {
+fn default_edges_key() -> String {
     "edges".to_string()
 }
 
-fn default_key_path() -> String {
+fn default_record_key() -> String {
     "key".to_string()
 }
 
@@ -185,22 +185,22 @@ impl Node {
                 "target must not be empty",
             ));
         }
-        if config.records_path.trim().is_empty() {
+        if config.records_key.trim().is_empty() {
             return Err(PipelineError::new(
                 "FW_NODE_SEKEJAP_INSERT_CONFIG",
-                "records_path must not be empty",
+                "records_key must not be empty",
             ));
         }
-        if config.edges_path.trim().is_empty() {
+        if config.edges_key.trim().is_empty() {
             return Err(PipelineError::new(
                 "FW_NODE_SEKEJAP_INSERT_CONFIG",
-                "edges_path must not be empty",
+                "edges_key must not be empty",
             ));
         }
-        if config.key_path.trim().is_empty() {
+        if config.record_key.trim().is_empty() {
             return Err(PipelineError::new(
                 "FW_NODE_SEKEJAP_INSERT_CONFIG",
-                "key_path must not be empty",
+                "record_key must not be empty",
             ));
         }
         if config.max_records == 0 {
@@ -239,8 +239,8 @@ impl NodeHandler for Node {
     ) -> Result<NodeExecutionOutput, PipelineError> {
         let (owner, project, _pipeline, _request_id) = metadata_scope(&input.metadata)?;
         let records_array =
-            optional_array_at_path(&input.payload, self.config.records_path.trim())?;
-        let edges_array = optional_array_at_path(&input.payload, self.config.edges_path.trim())?;
+            optional_array_at_path(&input.payload, self.config.records_key.trim())?;
+        let edges_array = optional_array_at_path(&input.payload, self.config.edges_key.trim())?;
         if records_array.len() > self.config.max_records {
             return Err(PipelineError::new(
                 "FW_NODE_SEKEJAP_INSERT_LIMIT",
@@ -271,12 +271,12 @@ impl NodeHandler for Node {
         let mut records = Vec::with_capacity(records_array.len());
         for (index, record) in records_array.iter().enumerate() {
             let key =
-                scalar_key(resolve_path(record, self.config.key_path.trim())).ok_or_else(|| {
+                scalar_key(resolve_path(record, self.config.record_key.trim())).ok_or_else(|| {
                     PipelineError::new(
                         "FW_NODE_SEKEJAP_INSERT_INPUT",
                         format!(
                             "record {index} missing scalar key at '{}'",
-                            self.config.key_path
+                            self.config.record_key
                         ),
                     )
                 })?;
@@ -452,9 +452,9 @@ mod tests {
         let node = Node::new(
             Config {
                 target: "people".to_string(),
-                records_path: "records".to_string(),
-                edges_path: "edges".to_string(),
-                key_path: "key".to_string(),
+                records_key: "records".to_string(),
+                edges_key: "edges".to_string(),
+                record_key: "key".to_string(),
                 max_records: 10,
                 max_edges: 10,
             },
@@ -517,9 +517,9 @@ mod tests {
         let node = Node::new(
             Config {
                 target: "documents".to_string(),
-                records_path: "records".to_string(),
-                edges_path: "edges".to_string(),
-                key_path: "key".to_string(),
+                records_key: "records".to_string(),
+                edges_key: "edges".to_string(),
+                record_key: "key".to_string(),
                 max_records: 10,
                 max_edges: 10,
             },

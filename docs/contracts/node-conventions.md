@@ -1,11 +1,13 @@
 # Node Conventions
 
 Status: **review** — decided 2026-10-03 from an inventory of every official
-node under `src/pipeline/nodes/basic/`. Code caught up the same day for §1
-destinations and sources, §3 (store pinning, FileRef `store`, no `url`), §4
-and §5 on every file node (`src/pipeline/nodes/shared/project_store.rs`), and
-§6 (every node code under `FW_NODE_`, registered). Still owed, tracked in the
-project ledger: the `-value` / `--input` cleanup outside the file nodes.
+node under `src/pipeline/nodes/basic/`. Code caught up the same day for §1–§6
+on every file node (`src/pipeline/nodes/shared/project_store.rs`), and in a
+second sweep for the rest: `ms.publish --route/--from`, `fs.put --source-key`,
+`sekejap.insert --records-key/--edges-key/--record-key`, `crypto --value`
+(no payload fallback), `fs.list` without `--prefix`, `ms.*` without `url`,
+and one `with_answer` for §5. `function.call --input` stays: it supplies what
+`trigger.function --input` declares.
 
 How an official node spells what it takes and what it answers.
 [`NodeDefinition`](./kinds/node-definition/README.md) is the shape of a
@@ -66,6 +68,9 @@ node writes ──▶ project store (the one named by --store) ──▶ answers
 - No node answers a `url`. Where a file can be reached is the owner's
   exposure decision ([`ZebFsAcl`](./kinds/zebfs-acl/README.md)), not a node's.
 - A node never exposes anything.
+- A store registered `read_only` (an `s3` credential with `access: read_only`)
+  refuses every write itself (`ZEBFS_READ_ONLY`) and cannot be the project's
+  default store; a node may read from it, never write.
 
 ## 4. Collisions
 

@@ -48,12 +48,12 @@ served, what it was built from, and what the public may see of it.
 
 | Field | Rule |
 | --- | --- |
-| `layer_id` | non-empty, unique within the manifest |
+| `layer_id` | 1–64 of `A-Z a-z 0-9 - _`, unique within the manifest — it is a folder and file name in the cache and the store |
 | `path` | where the layer is served, **stored without a leading slash**; one writer adding one and another not is how a published layer fails to serve |
 | `store` | the project store `source_path` is a key in — `local` or an `s3` credential id, pinned at publish like a node's `--store` |
 | `source_path` | the store key the layer serves; an engine reads it through the project's bounded mirror (`data/cache/zebfs-mirror/`), which answers a directory store's own file in place |
 | `source_kind` | how to read that source |
-| `artifact_manifest_path` | the generated artifacts, in the CACHE tier: rebuildable from `source_path`, never the only copy |
+| `artifact_manifest_path` | exactly `mapserver-artifacts/{instance}/{layer}/manifest.json`, in the CACHE tier: rebuildable from `source_path`, never the only copy; a delete removes its folder |
 | `mode`, `min_zoom`, `max_zoom`, `bbox_required`, `max_features` | serving limits |
 | `allowed_properties` | see below |
 | `feature_count`, `chunk_count` | counts of the built artifact |
@@ -82,9 +82,18 @@ fetched. This is the same closed default as
 
 ## Rejections
 
-An empty or duplicate `layer_id`. A `source_path` that escapes the store — a
+A `layer_id` outside its slug shape, or a duplicate. An `artifact_manifest_path`
+of any other shape. A `source_path` that escapes the store — a
 project bundle carries the registry, so a record can arrive already written. A
 record without `store`. An unknown field at any level.
+
+## Serving
+
+A caller's `?filter=` only narrows: its conditions are added to the
+publisher's `filter` (all must hold), and it may name only columns in
+`allowed_properties` — a filter on a hidden column is refused (400), since its
+yes/no answer would reveal the column. A layer answers only while the
+project's `ms` surface is on; publishing says which (`serving`).
 
 A `path` carrying a leading slash is **normalised on read**, not refused: both
 publishers strip it before writing, and stripping it on read repairs a record

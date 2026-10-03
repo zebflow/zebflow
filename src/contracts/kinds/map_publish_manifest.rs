@@ -39,6 +39,12 @@ pub struct MapserverLayerRecord {
     pub cache_ttl_secs: Option<u64>,
 }
 
+/// A layer id is a folder and file name in the cache and the store, so it is
+/// a plain slug: 1–64 of `A-Z a-z 0-9 - _`.
+pub fn valid_layer_id(id: &str) -> bool {
+    (1..=64).contains(&id.len()) && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+}
+
 /// Canonical published layer registry for one MapServer instance.
 pub struct MapPublishManifestContract;
 
@@ -49,8 +55,22 @@ impl PlatformContract for MapPublishManifestContract {
     fn validate(_metadata: &ContractMetadata, spec: &Self::Spec) -> Result<(), ContractError> {
         let mut layer_ids = HashSet::new();
         for layer in spec {
-            if layer.layer_id.trim().is_empty() {
-                return Err(ContractError::invalid("map layer_id must not be empty"));
+            if !valid_layer_id(&layer.layer_id) {
+                return Err(ContractError::invalid(format!(
+                    "map layer_id '{}' must be 1–64 letters, digits, '-' or '_'",
+                    layer.layer_id
+                )));
+            }
+            // The artifact path names a folder a delete removes, so it has
+            // exactly one shape and never climbs out of it.
+            if let Some(artifact) = &layer.artifact_manifest_path {
+                let rest = artifact.strip_prefix("mapserver-artifacts/").unwrap_or("..");
+                if crate::infra::io::path::rel_path_escapes_root(rest) || rest.split('/').count() != 3 {
+                    return Err(ContractError::invalid(format!(
+                        "map layer '{}' artifact_manifest_path '{artifact}' is not mapserver-artifacts/{{instance}}/{{layer}}/manifest.json",
+                        layer.layer_id
+                    )));
+                }
             }
             if !layer_ids.insert(layer.layer_id.as_str()) {
                 return Err(ContractError::invalid(format!(

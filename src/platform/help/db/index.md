@@ -17,7 +17,7 @@ shows tables and columns. Read the schema before writing SQL.
 | Node | Database | Binds |
 |---|---|---|
 | `sekejap.query` | Sekejap | `$1, $2 …` |
-| `sekejap.insert` | Sekejap — bulk records and graph edges from a payload (`--target`, `--records-path`, `--edges-path`) | |
+| `sekejap.insert` | Sekejap — bulk records and graph edges from a payload (`--target`, `--records-key`, `--edges-key`) | |
 | `sqlite.query` / `sqlite.mutate` | the project's `default` SQLite | `?1, ?2 …` |
 | `pg.query` | PostgreSQL — `--credential <id from credential_list>` | `$1, $2 …` |
 | `table.query` | files (CSV, JSON, NDJSON, Parquet) with SQL | `$1, $2 …` |

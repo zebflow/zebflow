@@ -267,7 +267,7 @@ Bulk records and graph edges, typed against the table's columns, as one
 commit:
 
 ```
-| sekejap.insert --target contacts --records-path items --edges-path links
+| sekejap.insert --target contacts --records-key items --edges-key links
 ```
 
 with a payload shaped

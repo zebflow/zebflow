@@ -405,6 +405,7 @@ pub const ERROR_CLASS_REGISTRY: &[(&str, ErrorClass)] = &[
     ("ZEBFS_RESERVED_PATH", ErrorClass::Refused),
     ("ZEBFS_UNKNOWN_BACKEND", ErrorClass::Refused),
     ("ZEBFS_S3_CREDENTIAL", ErrorClass::Refused),
+    ("ZEBFS_READ_ONLY", ErrorClass::Refused),
     // Disk and the bucket's own answers: a retry may well succeed.
     ("ZEBFS_IO", ErrorClass::Failed),
     ("ZEBFS_S3", ErrorClass::Failed),

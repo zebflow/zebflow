@@ -125,6 +125,31 @@ mod tests {
         assert!(err.to_string().contains("escapes the project"), "{err}");
     }
 
+    /// A delete removes the folder an artifact path names and joins the layer
+    /// id into cache and store names, so both have one shape (finding
+    /// astra-map-layer-deletion-permits-traversal-to).
+    #[test]
+    fn a_layer_cannot_name_a_folder_outside_its_own() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = layers_manifest_path(dir.path(), DEFAULT_INSTANCE);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        for (layer_id, artifact) in [
+            ("roads", Some("../../../../home")),
+            ("roads", Some("mapserver-artifacts/../../x/manifest.json")),
+            ("roads", Some("mapserver/.artifacts/roads/manifest.json")),
+            ("../roads", None),
+            ("ro ads", None),
+        ] {
+            let mut item = record("roads");
+            item.layer_id = layer_id.to_string();
+            item.artifact_manifest_path = artifact.map(str::to_string);
+            assert!(write_layers(&path, DEFAULT_INSTANCE, &[item]).is_err(), "{layer_id} {artifact:?}");
+        }
+        let mut ok = record("roads");
+        ok.artifact_manifest_path = Some("mapserver-artifacts/default-mapserver/roads/manifest.json".into());
+        write_layers(&path, DEFAULT_INSTANCE, &[ok]).unwrap();
+    }
+
     fn record(path: &str) -> MapserverLayerRecord {
         MapserverLayerRecord {
             layer_id: "roads".to_string(),

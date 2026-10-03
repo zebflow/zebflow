@@ -22,7 +22,7 @@ use crate::pipeline::{
     nodes::{NodeExecutionInput, NodeExecutionOutput, NodeHandler},
 };
 use crate::platform::services::PlatformService;
-use crate::zebfs::{ZebFs, normalize_object_path};
+use crate::zebfs::normalize_object_path;
 
 use crate::pipeline::nodes::shared::file_ref::zebfs_rel_path;
 use super::convert::{
@@ -44,7 +44,7 @@ pub fn definition() -> NodeDefinition {
         description: "Run SQL across files — CSV, JSON, NDJSON, Parquet objects in the project's file store — as if they were tables. \
             Each `--from \"<path> as <alias>\"` binds one file; the SQL in the body queries the aliases; `--params` binds `$1, $2`. \
             Adds `table: { engine, rows, columns, preview, data?, to?, file? }` to the payload — rows are in `input.table.data` only with \
-            `--to-json`, otherwise they are written to `--to <path>` and only `preview` rows travel in the payload. For database \
+            `--to-json`, otherwise they are written to the store (`--folder`/`--filename` or `--path`, `--store`) and only `preview` rows travel in the payload. For database \
             tables use `sekejap.query` / `pg.query`; this node is for files and analytics over them."
             .to_string(),
         input_pins: vec![INPUT_PIN_IN.to_string()],
@@ -106,7 +106,7 @@ pub fn definition() -> NodeDefinition {
             DslFlag {
                 flag: "--format".to_string(),
                 config_key: "to_format".to_string(),
-                description: "Output format for --to: csv, json, ndjson, parquet. Defaults from path extension.".to_string(),
+                description: "Format of the written file: csv, json, ndjson, parquet. Default: from the destination extension.".to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
             },
@@ -406,13 +406,13 @@ impl NodeHandler for Node {
             ));
         }
         let (owner, project, ..) = metadata_scope(&input.metadata)?;
-        let zebfs = crate::pipeline::nodes::shared::project_store::open_store(
+        let store = crate::pipeline::nodes::shared::project_store::open_store(
             &self.platform,
             owner,
             project,
             self.config.store.as_deref(),
-        )?
-        .fs;
+        )?;
+        let source_stores = SourceStores { platform: &self.platform, owner, project, store_id: &store.id };
         let QueryRows {
             rows,
             source_labels,
@@ -420,7 +420,7 @@ impl NodeHandler for Node {
             &self.config.sources,
             &sql,
             &params,
-            &zebfs,
+            &source_stores,
             &input,
             self.language.as_ref(),
             self.config.limit.unwrap_or(MAX_INLINE_ROWS),
@@ -478,14 +478,7 @@ impl NodeHandler for Node {
 
         Ok(NodeExecutionOutput {
             output_pins: vec![OUTPUT_PIN_OUT.to_string()],
-            payload: {
-                let mut payload = match &input.payload {
-                    Value::Object(map) => map.clone(),
-                    _ => Map::new(),
-                };
-                payload.insert("table".to_string(), Value::Object(table));
-                Value::Object(payload)
-            },
+            payload: crate::pipeline::nodes::shared::util::with_answer(&input.payload, json!({ "table": table })),
             trace: vec![
                 format!("node_kind={NODE_KIND}"),
                 format!("engine={engine_label} rows={}", rows.len()),
@@ -513,7 +506,7 @@ async fn execute_geodatafusion_engine(
     sources: &[SourceBindingConfig],
     sql: &str,
     params: &[Value],
-    zebfs: &ZebFs,
+    stores: &SourceStores<'_>,
     input: &NodeExecutionInput,
     language: &dyn LanguageEngine,
     max_inline_rows: usize,
@@ -528,7 +521,7 @@ async fn execute_geodatafusion_engine(
             continue;
         }
         let binding = source_config.to_binding()?;
-        register_source(&ctx, zebfs, &binding, input, language, &mut temps).await?;
+        register_source(&ctx, stores, &binding, input, language, &mut temps).await?;
         source_labels.push(json!({
             "alias": binding.alias,
             "source": binding.source,
@@ -622,9 +615,27 @@ fn valid_alias(alias: &str) -> bool {
             .unwrap_or(true)
 }
 
+/// Where table sources are read from: the node's store, or the store a
+/// FileRef names, each through the project's mirror.
+struct SourceStores<'a> {
+    platform: &'a PlatformService,
+    owner: &'a str,
+    project: &'a str,
+    store_id: &'a str,
+}
+
+impl SourceStores<'_> {
+    fn local_path(&self, store: Option<&str>, key: &str) -> Result<std::path::PathBuf, PipelineError> {
+        self.platform
+            .file
+            .object_local_path(self.owner, self.project, Some(store.unwrap_or(self.store_id)), key)
+            .map_err(|err| PipelineError::new("FW_NODE_TABLE_QUERY_SOURCE", format!("'{key}': {}", err.message)))
+    }
+}
+
 async fn register_source(
     ctx: &SessionContext,
-    zebfs: &ZebFs,
+    stores: &SourceStores<'_>,
     binding: &SourceBinding,
     input: &NodeExecutionInput,
     language: &dyn LanguageEngine,
@@ -633,7 +644,9 @@ async fn register_source(
     if binding.source.trim_start().starts_with('$') {
         let value = eval_deno_expr(language, &binding.source, &input.payload, &input.metadata)?;
         if let Some(path) = zebfs_rel_path(&value)? {
-            register_table_path(ctx, zebfs, binding.alias.as_str(), &path).await?;
+            // A FileRef is read from the store it names, not the node's.
+            let store = value.get("store").and_then(Value::as_str);
+            register_table_path(ctx, stores, store, binding.alias.as_str(), &path).await?;
             return Ok(());
         }
         let rows = rows_from_json_value(value);
@@ -661,12 +674,13 @@ async fn register_source(
         return Ok(());
     }
 
-    register_table_path(ctx, zebfs, binding.alias.as_str(), &binding.source).await
+    register_table_path(ctx, stores, None, binding.alias.as_str(), &binding.source).await
 }
 
 async fn register_table_path(
     ctx: &SessionContext,
-    zebfs: &ZebFs,
+    stores: &SourceStores<'_>,
+    store: Option<&str>,
     alias: &str,
     source: &str,
 ) -> Result<(), PipelineError> {
@@ -675,17 +689,9 @@ async fn register_table_path(
     } else {
         let rel = normalize_object_path(source)
             .map_err(|err| PipelineError::new("FW_NODE_TABLE_QUERY", err.to_string()))?;
-        // DataFusion streams from a file path. A bucket has none, and pulling
-        // the object down to read it is a design the node does not have yet.
-        let abs = zebfs
-            .local_path(&rel)
-            .map_err(|err| PipelineError::new("FW_NODE_TABLE_QUERY", err.to_string()))?
-            .ok_or_else(|| {
-                PipelineError::new(
-                    "FW_NODE_TABLE_QUERY",
-                    format!("'{rel}': this project's files live in a bucket, and table.query streams a source from local disk; an object-store source is not supported yet"),
-                )
-            })?;
+        // DataFusion streams from a file path: a directory store's own file,
+        // or a bucket object's copy in the project's mirror.
+        let abs = stores.local_path(store, &rel)?;
         ensure_local_table_file(&abs)?;
         (rel, abs.to_string_lossy().into_owned())
     };

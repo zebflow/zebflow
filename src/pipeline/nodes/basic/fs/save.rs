@@ -763,17 +763,10 @@ impl NodeHandler for Node {
 
         // The form's other fields ride along: an upload form has a title and a
         // caption beside the file, and the INSERT after this node needs them.
-        let mut payload = match &input.payload {
-            Value::Object(map) => map.clone(),
-            _ => serde_json::Map::new(),
-        };
-        payload.insert(
-            "saved".to_string(),
-            store.file_ref(&rel_path, &storage_name, &effective_mime, &bytes, "fs.save", &trust),
-        );
+        let saved = store.file_ref(&rel_path, &storage_name, &effective_mime, &bytes, "fs.save", &trust);
         Ok(NodeExecutionOutput {
             output_pins: vec![OUTPUT_PIN_OUT.to_string()],
-            payload: Value::Object(payload),
+            payload: crate::pipeline::nodes::shared::util::with_answer(&input.payload, serde_json::json!({ "saved": saved })),
             trace: vec![format!(
                 "node_kind={NODE_KIND} field={field} path={rel_path} store={} written={written}",
                 store.id

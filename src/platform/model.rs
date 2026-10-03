@@ -2678,24 +2678,17 @@ impl ProjectFileLayout {
         Ok(new_root)
     }
 
-    /// Resolves a layer registry's stored artifact-manifest rel path to its
-    /// absolute location under the cache root.
-    ///
-    /// Registry records written before the tier move carry
-    /// `mapserver/.artifacts/{...}`; records written after carry
-    /// `mapserver-artifacts/{...}`. Both are identifiers into the same moved
-    /// tree — the registry (`{instance}.layers.json`, STORE) is not rewritten
-    /// by the move, so both shapes must keep resolving.
-    pub fn resolve_mapserver_artifact_path(&self, rel: &str) -> PathBuf {
-        let rel = rel.trim_start_matches('/');
-        if let Some(rest) = rel.strip_prefix("mapserver/.artifacts/") {
-            self.data_cache_mapserver_artifacts_dir().join(rest)
-        } else if let Some(rest) = rel.strip_prefix("mapserver-artifacts/") {
-            self.data_cache_mapserver_artifacts_dir().join(rest)
-        } else {
-            // Unknown shape: resolve against files/ as before the move.
-            self.files_dir.join(rel)
+    /// Resolves a layer record's `artifact_manifest_path`
+    /// (`mapserver-artifacts/{instance}/{layer}/manifest.json`) under the
+    /// cache root. Any other shape, or one climbing out, is `None`: the path
+    /// arrives in a registry a bundle may carry, and its parent is what a
+    /// delete removes.
+    pub fn resolve_mapserver_artifact_path(&self, rel: &str) -> Option<PathBuf> {
+        let rest = rel.strip_prefix("mapserver-artifacts/")?;
+        if crate::infra::io::path::rel_path_escapes_root(rest) || rest.split('/').count() != 3 {
+            return None;
         }
+        Some(self.data_cache_mapserver_artifacts_dir().join(rest))
     }
 
     /// `.../data/hub` — the INSTALLED tier: content unpacked from a hub or a

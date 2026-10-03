@@ -103,7 +103,7 @@ The payload is `{ error_code, error_message, original_path, method }`.
 [a] trigger.webhook --path /auth/login --method POST
 [b] sekejap.query --params "{{ [input.body.email] }}" -- "SELECT id, name, password_hash, roles FROM users WHERE email = $1"
 [c] logic.if --expr "input.rows.length === 1"
-[d] crypto --op argon2_verify --input "{{ $nodes.a.body.password }}" --hash "{{ input.rows[0].password_hash }}"
+[d] crypto --op argon2_verify --value "{{ $nodes.a.body.password }}" --hash "{{ input.rows[0].password_hash }}"
 [e] script -- "const u = input.rows[0]; return { id: u.id, name: u.name, roles: u.roles || ['member'] }"
 [f] auth.token.create --credential jwt_main --claim "sub={{ input.id }}" --claim "name:public={{ input.name }}" --claim "roles:public={{ input.roles }}"
 [g] web.response --location /home --set-cookie "name=zebflow_session,value={{ input.access_token }},http-only,max-age=86400,same-site=Lax"
@@ -118,7 +118,7 @@ The payload is `{ error_code, error_message, original_path, method }`.
 [f] -> [g]
 ```
 
-`crypto --op argon2_verify` reads the candidate from `--input` and the stored
+`crypto --op argon2_verify` reads the candidate from `--value` and the stored
 hash from `--hash`, routes to `true`/`false`, and passes the payload through
 unchanged. The submitted password is no longer in `input` after the query, so
 it is read from the trigger's own output, `$nodes.a.body.password`. `roles`

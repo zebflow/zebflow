@@ -154,7 +154,7 @@ pub fn definition() -> NodeDefinition {
                 flag: "--to-format".to_string(),
                 config_key: "to_format".to_string(),
                 description:
-                    "Target format: csv, json, ndjson, or parquet. Inferred from --to when omitted."
+                    "Target format: csv, json, ndjson, or parquet. Default: from the destination extension."
                         .to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
@@ -373,7 +373,7 @@ impl NodeHandler for Node {
         }
 
         if let Some(output) = self
-            .try_streaming_file_conversion(&zebfs, owner, project, &input.payload)
+            .try_streaming_file_conversion(owner, project, &input.payload)
             .await?
         {
             return Ok(output);
@@ -435,7 +435,7 @@ impl NodeHandler for Node {
 
         Ok(NodeExecutionOutput {
             output_pins: vec![OUTPUT_PIN_OUT.to_string()],
-            payload: merged(&input.payload, table),
+            payload: crate::pipeline::nodes::shared::util::with_answer(&input.payload, json!({ "table": table })),
             trace: vec![format!(
                 "node_kind={NODE_KIND} from_format={} rows={}",
                 from_format.as_str(),
@@ -523,7 +523,6 @@ impl Node {
 
     async fn try_streaming_file_conversion(
         &self,
-        zebfs: &ZebFs,
         owner: &str,
         project: &str,
         payload: &Value,
@@ -546,19 +545,20 @@ impl Node {
             project,
             self.config.store.as_deref(),
         )?;
-        // Streaming reads and writes one local store; a FileRef held by
-        // another store is read the materialised way below.
-        if crate::pipeline::nodes::shared::file_ref::is_file_ref(&self.config.from)
-            && self.config.from.get("store").and_then(Value::as_str) != Some(store.id.as_str())
-        {
-            return Ok(None);
-        }
+        // A FileRef is read from the store that holds it; a bare key from the
+        // node's own store. Either is streamed from a local path: the store's
+        // own file, or a bucket object's copy in the project's mirror.
+        let source_store = if crate::pipeline::nodes::shared::file_ref::is_file_ref(&self.config.from) {
+            self.config.from.get("store").and_then(Value::as_str).unwrap_or(&store.id).to_string()
+        } else {
+            store.id.clone()
+        };
         let on_conflict = crate::pipeline::nodes::shared::project_store::OnConflict::parse(
             self.config.on_conflict.as_deref(),
             crate::pipeline::nodes::shared::project_store::OnConflict::Error,
             "FW_NODE_TABLE_CONVERT",
         )?;
-        if zebfs.head(&to_path).is_ok() && on_conflict != crate::pipeline::nodes::shared::project_store::OnConflict::Overwrite {
+        if store.fs.head(&to_path).is_ok() && on_conflict != crate::pipeline::nodes::shared::project_store::OnConflict::Overwrite {
             // skip and error both leave the streamed write; the materialised
             // path answers them with the same rule.
             return Ok(None);
@@ -574,14 +574,6 @@ impl Node {
         )?;
         let rel_to = normalize_object_path(&to_path)
             .map_err(|err| PipelineError::new("FW_NODE_TABLE_CONVERT", err.to_string()))?;
-        // The streamed path writes straight to a file; a bucket has none, so
-        // that project takes the materialised path below.
-        let Some(abs_to) = zebfs
-            .local_path(&rel_to)
-            .map_err(|err| PipelineError::new("FW_NODE_TABLE_CONVERT", err.to_string()))?
-        else {
-            return Ok(None);
-        };
         let to_format =
             normalize_format(self.config.to_format.as_deref(), Some(&rel_to), "target")?;
         if from_format != TableFormat::Csv || to_format != TableFormat::Parquet {
@@ -590,23 +582,44 @@ impl Node {
 
         let rel_from = normalize_object_path(&source_path)
             .map_err(|err| PipelineError::new("FW_NODE_TABLE_CONVERT", err.to_string()))?;
-        let Some(abs_from) = zebfs
-            .local_path(&rel_from)
-            .map_err(|err| PipelineError::new("FW_NODE_TABLE_CONVERT", err.to_string()))?
-        else {
-            return Ok(None);
-        };
+        let abs_from = self
+            .platform
+            .file
+            .object_local_path(owner, project, Some(&source_store), &rel_from)
+            .map_err(|err| PipelineError::new("FW_NODE_TABLE_CONVERT", format!("'{rel_from}': {}", err.message)))?;
         ensure_local_table_file(&abs_from)?;
 
+        // A directory store is written in place; a bucket gets the file built
+        // in scratch and streamed up.
+        let scratch = crate::pipeline::nodes::shared::store_scratch::StoreScratch::new("FW_NODE_TABLE_CONVERT")?;
+        let (abs_to, staged) = match store
+            .fs
+            .local_path(&rel_to)
+            .map_err(|err| PipelineError::new("FW_NODE_TABLE_CONVERT", err.to_string()))?
+        {
+            Some(path) => (path, false),
+            None => (scratch.local("out.parquet"), true),
+        };
         let columns = stream_csv_to_parquet(&abs_from, &abs_to, self.config.limit).await?;
         let size = fs::metadata(&abs_to)
             .map(|metadata| metadata.len())
             .unwrap_or(0);
-        let written = zebfs
-            .get(&rel_to)
-            .map_err(|err| PipelineError::new("FW_NODE_TABLE_CONVERT", err.to_string()))?;
         let leaf = rel_to.rsplit('/').next().unwrap_or(&rel_to).to_string();
-        let file = store.file_ref(&rel_to, &leaf, super::table_mime("parquet"), &written.bytes, "table.convert", "generated");
+        let file = store.file_ref_from_file(
+            &rel_to,
+            &leaf,
+            super::table_mime("parquet"),
+            &abs_to,
+            "table.convert",
+            "generated",
+            "FW_NODE_TABLE_CONVERT",
+        )?;
+        if staged {
+            store
+                .fs
+                .put_from_file(&rel_to, &abs_to)
+                .map_err(|err| PipelineError::new("FW_NODE_TABLE_CONVERT", format!("write '{rel_to}': {err}")))?;
+        }
 
         let mut table = Map::new();
         table.insert("from".to_string(), Value::String(rel_from));
@@ -625,7 +638,7 @@ impl Node {
 
         Ok(Some(NodeExecutionOutput {
             output_pins: vec![OUTPUT_PIN_OUT.to_string()],
-            payload: merged(payload, table),
+            payload: crate::pipeline::nodes::shared::util::with_answer(payload, json!({ "table": table })),
             trace: vec![
                 format!("node_kind={NODE_KIND} from_format=csv to_format=parquet streamed=true"),
                 format!("to={rel_to} bytes={size}"),
@@ -1487,13 +1500,3 @@ mod tests {
     }
 }
 
-/// The answer added to the payload under `table`, the rest kept
-/// (`docs/contracts/node-conventions.md` §5).
-fn merged(input: &Value, table: Map<String, Value>) -> Value {
-    let mut payload = match input {
-        Value::Object(map) => map.clone(),
-        _ => Map::new(),
-    };
-    payload.insert("table".to_string(), Value::Object(table));
-    Value::Object(payload)
-}

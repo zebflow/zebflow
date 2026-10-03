@@ -84,7 +84,7 @@ Create a `jwt_signing_key` credential in the Credentials UI. Fields:
 | trigger.webhook --path /auth/register --method POST
 | logic.if --expr "input.body.username && input.body.email && input.body.password && input.body.password.length >= 12"
 (false pin → `web.response --status 400 --message "username, email and a password of at least 12 characters are required"`)
-| crypto --op argon2_hash --input "{{ input.body.password }}"
+| crypto --op argon2_hash --value "{{ input.body.password }}"
 (`n.crypto` adds `result` — the hash — to the payload and keeps everything
 else, so `input.body.username` is still there for the insert.)
 | pg.query --credential main-db --params "{{ [input.body.username, input.body.email, input.result, 'user'] }}" \
