@@ -1261,13 +1261,13 @@ impl BasicPipelineEngine {
             sqlite::query::NODE_KIND => {
                 let Some(data_root) = &self.data_root else {
                     return Err(PipelineError::new(
-                        "FW_NODE_SQLITE_UNAVAILABLE",
+                        "FW_NODE_SQLITE_QUERY_RUN_UNAVAILABLE",
                         "data_root is not configured on this pipeline engine",
                     ));
                 };
                 Ok(NodeDispatch::SqliteQuery(sqlite::query::Node::new(
                     serde_json::from_value(node.config.clone()).map_err(|err| {
-                        PipelineError::new("FW_NODE_SQLITE_QUERY_CONFIG", err.to_string())
+                        PipelineError::new(sqlite::query::CONFIG_CODE, err.to_string())
                     })?,
                     data_root.clone(),
                 )?))
@@ -1275,41 +1275,27 @@ impl BasicPipelineEngine {
             sekejap::query::NODE_KIND => {
                 let Some(data_root) = &self.data_root else {
                     return Err(PipelineError::new(
-                        "FW_NODE_SEKEJAP_UNAVAILABLE",
+                        "FW_NODE_SEKEJAP_QUERY_RUN_UNAVAILABLE",
                         "data_root is not configured on this pipeline engine",
                     ));
                 };
                 Ok(NodeDispatch::SekejapQuery(sekejap::query::Node::new(
                     serde_json::from_value(node.config.clone()).map_err(|err| {
-                        PipelineError::new("FW_NODE_SEKEJAP_QUERY_CONFIG", err.to_string())
+                        PipelineError::new(sekejap::query::CONFIG_CODE, err.to_string())
                     })?,
                     data_root.clone(),
                 )?))
             }
-            sekejap::insert::NODE_KIND => {
+            sekejap::record::NODE_KIND => {
                 let Some(data_root) = &self.data_root else {
                     return Err(PipelineError::new(
-                        "FW_NODE_SEKEJAP_UNAVAILABLE",
+                        "FW_NODE_SEKEJAP_RECORD_CREATE_UNAVAILABLE",
                         "data_root is not configured on this pipeline engine",
                     ));
                 };
-                Ok(NodeDispatch::SekejapInsert(sekejap::insert::Node::new(
+                Ok(NodeDispatch::SekejapRecord(sekejap::record::Node::new(
                     serde_json::from_value(node.config.clone()).map_err(|err| {
-                        PipelineError::new("FW_NODE_SEKEJAP_INSERT_CONFIG", err.to_string())
-                    })?,
-                    data_root.clone(),
-                )?))
-            }
-            sqlite::mutate::NODE_KIND => {
-                let Some(data_root) = &self.data_root else {
-                    return Err(PipelineError::new(
-                        "FW_NODE_SQLITE_UNAVAILABLE",
-                        "data_root is not configured on this pipeline engine",
-                    ));
-                };
-                Ok(NodeDispatch::SqliteMutate(sqlite::mutate::Node::new(
-                    serde_json::from_value(node.config.clone()).map_err(|err| {
-                        PipelineError::new("FW_NODE_SQLITE_MUTATE_CONFIG", err.to_string())
+                        PipelineError::new(sekejap::record::CONFIG_CODE, err.to_string())
                     })?,
                     data_root.clone(),
                 )?))
@@ -1332,13 +1318,13 @@ impl BasicPipelineEngine {
             pg::query::NODE_KIND => {
                 let Some(credentials) = &self.credentials else {
                     return Err(PipelineError::new(
-                        "FW_NODE_PG_UNAVAILABLE",
+                        "FW_NODE_PG_QUERY_RUN_UNAVAILABLE",
                         "credential service is not configured on this framework engine",
                     ));
                 };
                 Ok(NodeDispatch::Postgres(pg::query::Node::new(
                     serde_json::from_value(node.config.clone())
-                        .map_err(|err| PipelineError::new("FW_NODE_PG_CONFIG", err.to_string()))?,
+                        .map_err(|err| PipelineError::new(pg::query::CONFIG_CODE, err.to_string()))?,
                     credentials.clone(),
                 )?))
             }
@@ -2261,10 +2247,7 @@ impl BasicPipelineEngine {
                     NodeDispatch::SekejapQuery(node) => {
                         node.execute_many_async(input_for_exec).await
                     }
-                    NodeDispatch::SekejapInsert(node) => {
-                        node.execute_many_async(input_for_exec).await
-                    }
-                    NodeDispatch::SqliteMutate(node) => {
+                    NodeDispatch::SekejapRecord(node) => {
                         node.execute_many_async(input_for_exec).await
                     }
                     NodeDispatch::Postgres(node) => node.execute_many_async(input_for_exec).await,
@@ -5938,8 +5921,7 @@ enum NodeDispatch {
     BrowserRun(browser::run::Node),
     SqliteQuery(sqlite::query::Node),
     SekejapQuery(sekejap::query::Node),
-    SekejapInsert(sekejap::insert::Node),
-    SqliteMutate(sqlite::mutate::Node),
+    SekejapRecord(sekejap::record::Node),
     Postgres(pg::query::Node),
     InlineWebResponse {
         node_id: String,

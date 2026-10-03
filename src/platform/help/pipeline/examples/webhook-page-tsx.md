@@ -12,7 +12,7 @@ A server-rendered HTML page triggered by HTTP GET. The query result flows direct
 trigger.webhook → (optional query node) → web.response.send --template pages/foo.tsx
 ```
 
-The upstream node's entire output becomes `input` inside the TSX template. `input.rows` for pg.query.run results, `input.data` or whatever shape the script returns.
+The upstream node's entire output becomes `input` inside the TSX template. `input.query.rows` for pg.query.run results, `input.data` or whatever shape the script returns.
 
 ---
 
@@ -35,10 +35,10 @@ The upstream node's entire output becomes `input` inside the TSX template. `inpu
 | web.response.send --template pages/programmes.tsx
 ```
 
-In `pages/programmes.tsx` — `input.rows` is the array of DB rows:
+In `pages/programmes.tsx` — `input.query.rows` is the array of DB rows:
 
 ```tsx
-const rows = input?.rows ?? [];
+const rows = input?.query?.rows ?? [];
 return (
   <ul>
     {rows.map(p => <li key={p.unit_id}>{p.title} ({p.code})</li>)}
@@ -54,8 +54,8 @@ case:
 
 ```
 [find]  trigger.webhook --path /programmes/:unit_id --method GET
-[query] pg.query.run --credential my-pg --params "{{ input.params.unit_id }}" -- "SELECT unit_id::text, code, title, description FROM academic.academic_unit WHERE unit_id = $1::uuid AND is_active = true"
-[found] logic.if --expr "input.rows && input.rows.length > 0"
+[query] pg.query.run --credential my-pg --param "1={{ input.params.unit_id }}" -- "SELECT unit_id::text, code, title, description FROM academic.academic_unit WHERE unit_id = $1::uuid AND is_active = true"
+[found] logic.if --expr "input.query.rows && input.query.rows.length > 0"
 [ok]    web.response.send --template pages/programme-detail.tsx
 [gone]  web.response.send --status 404 --template pages/not-found.tsx
 [find] -> [query]
@@ -64,11 +64,11 @@ case:
 [found]:false -> [gone]
 ```
 
-`[ok]` receives `{ rows }` as `input` in `pages/programme-detail.tsx`:
+`[ok]` receives `{ query: { rows } }` as `input` in `pages/programme-detail.tsx`:
 
 ```tsx
 export default function Page(input) {
-  const row = input?.rows?.[0];
+  const row = input?.query?.rows?.[0];
   return (
     <Page>
       <main>
@@ -84,7 +84,7 @@ export default function Page(input) {
 
 ```
 | trigger.webhook --path /programmes --method GET
-| pg.query.run --credential my-pg --params "{{ [input.query.faculty_id ?? null] }}" \
+| pg.query.run --credential my-pg --param "1={{ input.query.faculty_id ?? null }}" \
     -- "SELECT unit_id::text, code, title->>'id' as title FROM academic.academic_unit WHERE unit_type = 'programme' AND ($1::uuid IS NULL OR parent_unit_id = $1::uuid) ORDER BY code"
 | web.response.send --template pages/programmes.tsx
 ```
@@ -94,8 +94,8 @@ export default function Page(input) {
 ## Nodes Used
 
 - `trigger.webhook` — GET endpoint; path params in `input.params.<name>`, query string in `input.query.<name>`
-- `pg.query.run --credential <id>` — fetch data; `--params "{{ input.params.unit_id }}"` binds `:unit_id` as `$1`
-- `logic.if --expr "input.rows.length > 0"` — branch on `true`/`false` pins; the only way to answer 404 conditionally, since a script cannot set the status
+- `pg.query.run --credential <id>` — fetch data; `--param "1={{ input.params.unit_id }}"` binds `:unit_id` as `$1`
+- `logic.if --expr "input.query.rows.length > 0"` — branch on `true`/`false` pins; the only way to answer 404 conditionally, since a script cannot set the status
 - `script` — static payloads, data transform
 - `web.response.send` — renders TSX template; upstream output = `input` in template; supports `--status`, `--set-cookie`, `--header`
 

@@ -2,9 +2,9 @@
 
 use crate::pipeline::NodeDefinition;
 
-pub mod insert;
 pub mod query;
+pub mod record;
 
 pub fn definitions() -> Vec<NodeDefinition> {
-    vec![insert::definition(), query::definition()]
+    vec![record::definition(), query::definition()]
 }

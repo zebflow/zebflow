@@ -60,7 +60,7 @@ zebflow:
       { "id": "n0", "kind": "trigger.webhook", "input_pins": [], "output_pins": ["out"],
         "config": { "path": "/api/login", "method": "POST" } },
       { "id": "n1", "kind": "sekejap.query.run", "input_pins": ["in"], "output_pins": ["out"],
-        "config": { "query": "SELECT * FROM users WHERE email = $1", "params": "{{ [input.body.email] }}" } },
+        "config": { "query": "SELECT * FROM users WHERE email = $1", "param": { "1": "{{ input.body.email }}" } } },
       { "id": "n2", "kind": "web.response.send", "input_pins": ["in"], "output_pins": ["out"],
         "config": { "template": "pages/login.tsx" } }
     ],
@@ -156,7 +156,7 @@ A node's flags are declared in its definition and the parser refuses any it
 does not know, so `help(topic="pipeline/nodes/<kind>")` is the reference.
 Three conventions hold everywhere:
 
-- **Query nodes take SQL in the body**: `sekejap.query.run --params "{{ [input.body.id] }}" -- "SELECT … WHERE id = $1"`. `--query "…"` is the same thing as a flag. `sqlite.*` binds `?1, ?2`.
+- **Query nodes take SQL in the body**: `sekejap.query.run --param "1={{ input.body.id }}" -- "SELECT … WHERE id = $1"`. `--query "…"` is the same thing as a flag. `sqlite.*` binds `?1, ?2`.
 - **`script` takes code in the body**: `script -- "return { ok: true }"`. `input` and `ctx` are in scope; the return value is the next payload.
 - **Any value with `{{ }}` or a space is one quoted argument.** A whole-value expression keeps its JSON type; an interpolated one stringifies.
 

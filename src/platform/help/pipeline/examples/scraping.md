@@ -43,7 +43,7 @@ register scraping/feed-scraper --
 [fetch] http.response.fetch --url "https://example.com/feed.json" --method GET
 [parse] script.result.run -- "const items = (input.response.body.items || []).map(i => ({ id: i.guid || i.url, title: i.title, url: i.url, summary: (i.description || '').slice(0,500), published_at: new Date(i.pubDate).getTime(), source: 'example-feed', fetched_at: Date.now() })); return { items: items.filter(i => i.id && i.title) };"
 [each] logic.foreach --items-expr "input.items"
-[save] sekejap.query.run --read-only false --params "{{ [$item.id, $item.title, $item.url, $item.summary, $item.published_at, $item.source, $item.fetched_at] }}" -- "INSERT INTO scraped_items (_key, title, url, summary, published_at, source, fetched_at) VALUES ($1, $2, $3, $4, $5, $6, $7) ON CONFLICT (_key) DO UPDATE SET title = EXCLUDED.title, url = EXCLUDED.url, summary = EXCLUDED.summary, published_at = EXCLUDED.published_at, source = EXCLUDED.source, fetched_at = EXCLUDED.fetched_at"
+[save] sekejap.query.run --write --param "1={{ $item.id }}" --param "2={{ $item.title }}" --param "3={{ $item.url }}" --param "4={{ $item.summary }}" --param "5={{ $item.published_at }}" --param "6={{ $item.source }}" --param "7={{ $item.fetched_at }}" -- "INSERT INTO scraped_items (_key, title, url, summary, published_at, source, fetched_at) VALUES ($1, $2, $3, $4, $5, $6, $7) ON CONFLICT (_key) DO UPDATE SET title = EXCLUDED.title, url = EXCLUDED.url, summary = EXCLUDED.summary, published_at = EXCLUDED.published_at, source = EXCLUDED.source, fetched_at = EXCLUDED.fetched_at"
 
 [trig] -> [fetch]
 [fetch] -> [parse]
@@ -59,7 +59,7 @@ register scraping/api-paginated-scraper --
 [fetch] http.response.fetch --url "https://api.example.com/articles?page=1&per_page=100" --method GET
 [parse] script.result.run -- "const items = (input.response.body.data || []).map(a => ({ id: String(a.id), title: a.title, author: (a.author && a.author.name) || null, category: a.category, url: a.url, body: (a.content || '').slice(0,2000), fetched_at: Date.now() })); return { items };"
 [each] logic.foreach --items-expr "input.items"
-[save] sekejap.query.run --read-only false --params "{{ [$item.id, $item.title, $item.author, $item.category, $item.url, $item.body, $item.fetched_at] }}" -- "INSERT INTO articles (_key, title, author, category, url, body, fetched_at) VALUES ($1, $2, $3, $4, $5, $6, $7) ON CONFLICT (_key) DO UPDATE SET title = EXCLUDED.title, author = EXCLUDED.author, category = EXCLUDED.category, url = EXCLUDED.url, body = EXCLUDED.body, fetched_at = EXCLUDED.fetched_at"
+[save] sekejap.query.run --write --param "1={{ $item.id }}" --param "2={{ $item.title }}" --param "3={{ $item.author }}" --param "4={{ $item.category }}" --param "5={{ $item.url }}" --param "6={{ $item.body }}" --param "7={{ $item.fetched_at }}" -- "INSERT INTO articles (_key, title, author, category, url, body, fetched_at) VALUES ($1, $2, $3, $4, $5, $6, $7) ON CONFLICT (_key) DO UPDATE SET title = EXCLUDED.title, author = EXCLUDED.author, category = EXCLUDED.category, url = EXCLUDED.url, body = EXCLUDED.body, fetched_at = EXCLUDED.fetched_at"
 
 [trig] -> [fetch]
 [fetch] -> [parse]
@@ -79,7 +79,7 @@ register scraping/html-scraper --
 [fetch] http.response.fetch --url "https://example.com/prices" --method GET --response-type text
 [parse] script.result.run -- "const html = input.response.body; const matches = [...html.matchAll(/<div class=\"product\"[^>]*>([\s\S]*?)<\/div>/g)]; const items = matches.map((m,i) => { const nameMatch = m[1].match(/<h3>([^<]+)<\/h3>/); const priceMatch = m[1].match(/\$([0-9.]+)/); return { id: 'product-' + i, name: nameMatch ? nameMatch[1] : null, price: priceMatch ? parseFloat(priceMatch[1]) : null }; }); return { items: items.filter(p => p.name && p.price !== null).map(p => ({ ...p, fetched_at: Date.now() })) };"
 [each] logic.foreach --items-expr "input.items"
-[save] sekejap.query.run --read-only false --params "{{ [$item.id, $item.name, $item.price, $item.fetched_at] }}" -- "INSERT INTO product_prices (_key, name, price, fetched_at) VALUES ($1, $2, $3, $4) ON CONFLICT (_key) DO UPDATE SET name = EXCLUDED.name, price = EXCLUDED.price, fetched_at = EXCLUDED.fetched_at"
+[save] sekejap.query.run --write --param "1={{ $item.id }}" --param "2={{ $item.name }}" --param "3={{ $item.price }}" --param "4={{ $item.fetched_at }}" -- "INSERT INTO product_prices (_key, name, price, fetched_at) VALUES ($1, $2, $3, $4) ON CONFLICT (_key) DO UPDATE SET name = EXCLUDED.name, price = EXCLUDED.price, fetched_at = EXCLUDED.fetched_at"
 
 [trig] -> [fetch]
 [fetch] -> [parse]
@@ -96,7 +96,7 @@ HTML as JSON.
 | trigger.webhook --path /data/items --method GET
 | script.result.run -- "return { limit: Math.min(parseInt((input.query && input.query.limit) || '50', 10) || 50, 200) }"
 | sekejap.query.run -- "SELECT * FROM scraped_items ORDER BY fetched_at DESC LIMIT {{ input.limit }}"
-| script.result.run -- "return { items: input.rows, count: input.rows.length }"
+| script.result.run -- "return { items: input.query.rows, count: input.query.rows.length }"
 | web.response.send --template pages/scraped-items.tsx
 ```
 
@@ -105,9 +105,9 @@ HTML as JSON.
 ```zf
 register scraping/scraped-item-detail --
 [a] trigger.webhook --path /data/items/:id --method GET
-[b] sekejap.query.run --params "{{ [input.params.id] }}" -- "SELECT * FROM scraped_items WHERE _key = $1"
-[c] logic.if --expr "input.rows.length > 0"
-[d] script.result.run -- "return { item: input.rows[0] };"
+[b] sekejap.query.run --param "1={{ input.params.id }}" -- "SELECT * FROM scraped_items WHERE _key = $1"
+[c] logic.if --expr "input.query.rows.length > 0"
+[d] script.result.run -- "return { item: input.query.rows[0] };"
 [e] web.response.send --template pages/scraped-item-detail.tsx
 [f] web.response.send --location /data/items
 

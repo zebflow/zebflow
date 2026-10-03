@@ -513,15 +513,6 @@
         "sekejap.query.run"
       ]
     },
-    "n.sqlite.mutate": {
-      "label": "SQL+",
-      "method": "brand-svg+badge",
-      "path": "/assets/node-icons/zebflow/n.sqlite.mutate.svg",
-      "source_url": "https://commons.wikimedia.org/wiki/File:Sqlite-square-icon.svg",
-      "supports": [
-        "n.sqlite.mutate"
-      ]
-    },
     "sqlite.query.run": {
       "label": "SQL",
       "method": "brand-svg",

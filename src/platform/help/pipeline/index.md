@@ -5,12 +5,12 @@ transforms it, the last node answers.
 
 ```
 | trigger.webhook --path /posts/:slug --method GET
-| sekejap.query.run --params "{{ [$trigger.params.slug] }}" -- "SELECT * FROM posts WHERE slug = $1"
+| sekejap.query.run --param "1={{ $trigger.params.slug }}" -- "SELECT * FROM posts WHERE slug = $1"
 | web.response.send --template pages/post.tsx
 ```
 
 Every node receives the previous node's output as **`input`** and returns the
-next payload. `sekejap.query.run` replaces it with `{ columns, rows, … }`; a
+next payload. `sekejap.query.run` replaces it with `{ query: { columns, rows, … } }`; a
 `script` shapes it; `web.response.send` turns it into an HTTP response or a page.
 Nothing flows unless a node passes it on.
 
@@ -68,7 +68,7 @@ Full recipe: `help(topic="pipeline/examples/cookie-jwt-auth")`.
 ```
 | trigger.webhook --path /api/notes --method GET
 | sekejap.query.run -- "SELECT id, title FROM notes ORDER BY created_at DESC LIMIT 50"
-| script.result.run -- "return { notes: input.rows }"
+| script.result.run -- "return { notes: input.query.rows }"
 ```
 
 **Graph mode** — label nodes `[id]`, wire edges with `->`, name pins with `:pin`.
@@ -77,9 +77,9 @@ For branching, fan-out and loops.
 ```
 [a] trigger.webhook --path /ingest --method POST
 [b] logic.match --expr "input.body.type" --cases normal,urgent --default other
-[c] sekejap.query.run --params "{{ [input.body.id, input.body] }}" --read-only false -- "INSERT INTO normal_queue (id, data) VALUES ($1, $2)"
+[c] sekejap.query.run --param "1={{ input.body.id }}" --param "2={{ input.body }}" --write -- "INSERT INTO normal_queue (id, data) VALUES ($1, $2)"
 [d] http.response.fetch --url https://alert.example.com/send --method POST --body "{{ input.body }}"
-[e] sekejap.query.run --params "{{ [input.body.id, input.body] }}" --read-only false -- "INSERT INTO other_queue (id, data) VALUES ($1, $2)"
+[e] sekejap.query.run --param "1={{ input.body.id }}" --param "2={{ input.body }}" --write -- "INSERT INTO other_queue (id, data) VALUES ($1, $2)"
 [a] -> [b]
 [b]:normal -> [c]
 [b]:urgent -> [d]
@@ -94,7 +94,7 @@ edge is a second entry and runs on every request.
 ## Nodes
 
 - **Triggers** start a run: `trigger.webhook`, `trigger.schedule`, `trigger.function`, `trigger.manual`, `trigger.room`, `trigger.socket`, `trigger.topic`, `trigger.mcp`, `trigger.error`.
-- **Middle nodes** read, transform or decide: `sekejap.query.run`, `sekejap.record.create`, `pg.query.run`, `sqlite.query.run`, `sqlite.mutate`, `script`, `http.response.fetch`, `kv.entry.get`, `kv.entry.put`, `kv.entry.increment`, `logic.if`, `logic.match`, `logic.foreach`, `logic.collect`, `logic.reduce`, `logic.retry`, `crypto`, `auth.token.create`, `auth.token.verify`, `fs.file.put`, `fs.image.thumbnail`, `fs.*`, `table.query.run`, `table.data.convert`, `geo.*`, `mail.message.send`, `ai.text.generate`, `ai.embedding.generate`, `ai.audio.generate`, `browser.page.run`, …
+- **Middle nodes** read, transform or decide: `sekejap.query.run`, `sekejap.record.create`, `pg.query.run`, `sqlite.query.run`, `script`, `http.response.fetch`, `kv.entry.get`, `kv.entry.put`, `kv.entry.increment`, `logic.if`, `logic.match`, `logic.foreach`, `logic.collect`, `logic.reduce`, `logic.retry`, `crypto`, `auth.token.create`, `auth.token.verify`, `fs.file.put`, `fs.image.thumbnail`, `fs.*`, `table.query.run`, `table.data.convert`, `geo.*`, `mail.message.send`, `ai.text.generate`, `ai.embedding.generate`, `ai.audio.generate`, `browser.page.run`, …
 - **Last nodes** answer: `web.response.send` (JSON, page, redirect, cookie — `help(topic="pipeline/web")`), or push: `ws.emit`, `ws.sync_state`, `kv.message.publish`, `telegram.send`, `ms.layer.publish`.
 
 Flags are declared per node and an undeclared flag is a parse error, so read
@@ -167,7 +167,7 @@ To try a body without saving anything: `pipeline_run body="| trigger.function | 
 ```
 [a] trigger.webhook --path /api/posts --method POST
 [b] logic.if --expr "typeof input.body?.title === 'string' && input.body.title.length > 0"
-[c] sekejap.query.run --params "{{ [input.body.title, input.body.title.toLowerCase().replace(/\s+/g, '-')] }}" --read-only false -- "INSERT INTO posts (title, slug) VALUES ($1, $2)"
+[c] sekejap.query.run --param "1={{ input.body.title }}" --param "2={{ input.body.title.toLowerCase().replace(/\s+/g, '-') }}" --write -- "INSERT INTO posts (title, slug) VALUES ($1, $2)"
 [d] script.result.run -- "return { ok: true }"
 [e] web.response.send --status 400 --body "{{ { error: 'title is required' } }}"
 [a] -> [b]
@@ -180,7 +180,7 @@ To try a body without saving anything: `pipeline_run body="| trigger.function | 
 
 ```
 | trigger.webhook --path /dashboard --method GET --auth-type jwt --auth-credential jwt_main
-| sekejap.query.run --params "{{ [$trigger.auth.sub] }}" -- "SELECT id, name FROM users WHERE id = $1"
+| sekejap.query.run --param "1={{ $trigger.auth.sub }}" -- "SELECT id, name FROM users WHERE id = $1"
 | web.response.send --template pages/dashboard.tsx
 ```
 

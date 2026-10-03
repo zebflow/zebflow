@@ -204,10 +204,10 @@ pipeline_register
   file_rel_path=pages/blog-post.zf.json
   body="""
   | trigger.webhook --path /blog/post --method GET
-  | pg.query.run --credential main-db -- "
+  | pg.query.run --credential main-db --param "1={{ input.query.slug }}" -- "
       SELECT id, slug, title, body, created_at
       FROM posts
-      WHERE slug = '{{input.query.slug}}'
+      WHERE slug = $1
         AND status = 'published'
       LIMIT 1
     "
@@ -240,10 +240,10 @@ pipeline_register
   body="""
   | trigger.webhook --path /admin/post --method GET \
       --auth-type jwt --auth-credential session-key --auth-required-role admin
-  | pg.query.run --credential main-db -- "
+  | pg.query.run --credential main-db --param "1={{ input.query.slug }}" -- "
       SELECT id, slug, title, body, status
       FROM posts
-      WHERE slug = '{{input.query.slug}}'
+      WHERE slug = $1
       LIMIT 1
     "
   | web.response.send --template pages/admin-editor.tsx
@@ -262,9 +262,9 @@ pipeline_register
       const { slug, title, body, status } = input.body
       return { slug, title, body, status: status || 'draft' }
     "
-  | pg.query.run --credential main-db -- "
+  | pg.query.run --credential main-db --write --param "1={{ input.slug }}" --param "2={{ input.title }}" --param "3={{ input.body }}" --param "4={{ input.status }}" -- "
       INSERT INTO posts (slug, title, body, status)
-      VALUES ('{{input.slug}}', '{{input.title}}', '{{input.body}}', '{{input.status}}')
+      VALUES ($1, $2, $3, $4)
       ON CONFLICT (slug) DO UPDATE
         SET title = EXCLUDED.title,
             body  = EXCLUDED.body,
@@ -304,7 +304,7 @@ file_write
   rel_path=pages/blog-list.tsx
   content="""
   export default function BlogList(input) {
-    const posts = input.rows ?? [];
+    const posts = input.query?.rows ?? [];
     return (
       <div className="max-w-2xl mx-auto px-4 py-12">
         <h1 className="text-4xl font-bold text-slate-900 mb-2">Blog</h1>
@@ -339,7 +339,7 @@ file_write
   import { Markdown } from "zeb/markdown";
 
   export default function BlogPost(input) {
-    const post = input.rows?.[0];
+    const post = input.query?.rows?.[0];
     if (!post) return (
       <div className="max-w-2xl mx-auto px-4 py-12">
         <h1 className="text-2xl font-bold text-slate-800">Post not found</h1>
@@ -372,7 +372,7 @@ file_write
   import { Button } from "zeb/ui/button";
 
   export default function AdminPosts(input) {
-    const posts = input.rows ?? [];
+    const posts = input.query?.rows ?? [];
     return (
       <div className="max-w-4xl mx-auto px-4 py-10">
         <div className="flex items-center justify-between mb-8">
@@ -429,7 +429,7 @@ file_write
   import { Label } from "zeb/ui/label";
 
   export default function AdminEditor(input) {
-    const post = input.rows?.[0] ?? {};
+    const post = input.query?.rows?.[0] ?? {};
     const [slug, setSlug]     = useState(post.slug    ?? '');
     const [title, setTitle]   = useState(post.title   ?? '');
     const [body, setBody]     = useState(post.body    ?? '');
@@ -539,7 +539,7 @@ Output is the pipeline result followed by an inline node trace:
 ```
 Pipeline 'pages/blog-list.zf.json' executed.
 {
-  "rows": []
+  "query": { "rows": [], "columns": [], "row_count": 0, "truncated": false }
 }
 --- node trace (2 nodes, 8ms total) ---
   ✓  n0  (trigger.webhook)  0ms
@@ -592,7 +592,7 @@ docs_agent_write
 | Pattern | Where shown |
 |---------|-------------|
 | Write spec before code | Phase 1–3: docs/REQUIREMENTS.md, docs/schema.md, docs/architecture.md |
-| Data flows from pipeline to template: `input` IS the pipeline's final payload | Phase 4 pipelines → Phase 5 `input.rows` |
+| Data flows from pipeline to template: `input` IS the pipeline's final payload | Phase 4 pipelines → Phase 5 `input.query.rows` |
 | Auth verified at the trigger, before the pipeline runs | admin-posts, admin-post-get, admin-post-put pipelines |
 | `hydration: "static"` for read-only pages | blog-list, blog-post, admin-posts |
 | `hydration: "reactive"` for interactive forms | admin-editor |

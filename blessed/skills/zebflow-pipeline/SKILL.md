@@ -20,7 +20,7 @@ Facts live in `help(topic="pipeline")`, `pipeline/dsl`, `pipeline/authoring`,
    do not add a second one on the same path.
 2. For each node you will use for the first time this session:
    `help(topic="pipeline/nodes/<kind>")`. Flags are declared per node and an
-   undeclared flag is a parse error — `--params` exists on the query nodes,
+   undeclared flag is a parse error — `--param` exists on the query nodes,
    `--route` exists on nothing, `--table`/`--op` never existed.
 3. Names you must not guess: `--template` from `file_list` (ends in `.tsx`),
    `--credential` from `credential_list` (an id, not a connection slug), a
@@ -35,13 +35,13 @@ Facts live in `help(topic="pipeline")`, `pipeline/dsl`, `pipeline/authoring`,
   or for a `<form method="post">` an object of its fields (`<input name="email">`
   → `input.body.email`); `null` on GET — plus `input.params`, `input.query`,
   `input.files.<field>` (FileRef), `input.auth` when the trigger verified a
-  token. After a query node: `{ columns, rows, … }` — the rows are
-  `input.rows`, objects keyed by column (`input.rows[0].title`), never `input`.
+  token. After a query node: `query: { columns, rows, … }` — the rows are
+  `input.query.rows`, objects keyed by column (`input.query.rows[0].title`), never `input`.
   After `crypto` hash/encode ops: the same payload plus `result`
   (`input.result`, `input.body` still there). Reach an earlier node's output
   with `$nodes.<id>` in `{{ }}`.
-- **SQL in the body, values in `--params`:**
-  `sekejap.query.run --params "{{ [input.body.email] }}" -- "SELECT * FROM users WHERE email = $1"`.
+- **SQL in the body, values in `--param`:**
+  `sekejap.query.run --param "1={{ input.body.email }}" -- "SELECT * FROM users WHERE email = $1"`.
   Never interpolate a value into SQL text.
 - **A script returns the next payload and nothing else.** It cannot set a
   status or a header, `return null` does not stop the pipeline, and
@@ -63,7 +63,7 @@ Facts live in `help(topic="pipeline")`, `pipeline/dsl`, `pipeline/authoring`,
 register api/posts/create --title "Create post"
 [a] trigger.webhook --path /api/posts --method POST --auth-type jwt --auth-credential jwt_main --auth-required-role editor
 [b] logic.if --expr "typeof input.body?.title === 'string' && input.body.title.length > 0"
-[c] sekejap.query.run --params "{{ [input.body.title, input.body.slug] }}" --read-only false -- "INSERT INTO posts (title, slug) VALUES ($1, $2)"
+[c] sekejap.query.run --param "1={{ input.body.title }}" --param "2={{ input.body.slug }}" --write -- "INSERT INTO posts (title, slug) VALUES ($1, $2)"
 [d] web.response.send --location /admin/posts
 [e] web.response.send --status 400 --body "{{ { error: 'title is required' } }}"
 [a] -> [b]
@@ -111,5 +111,5 @@ To try a body without saving: `pipeline_run body="| trigger.function | …" inpu
 - the template is "not found" — the path in `--template` is not an exact
   `file_list` path, or lacks `.tsx`.
 - `input.title is undefined` in a script after a webhook — it is `input.body.title`.
-- rows missing after a query — you read `input`, the rows are `input.rows`.
+- rows missing after a query — you read `input`, the rows are `input.query.rows`.
 - the route answers the old behaviour — the pipeline is `stale`; activate.

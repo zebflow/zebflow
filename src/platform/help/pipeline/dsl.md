@@ -20,7 +20,7 @@ receives the previous node's output as `input`. Node ids are `n0, n1, …`.
 
 ```
 | trigger.webhook --path /posts/:slug --method GET
-| sekejap.query.run --params "{{ [$trigger.params.slug] }}" -- "SELECT * FROM posts WHERE slug = $1"
+| sekejap.query.run --param "1={{ $trigger.params.slug }}" -- "SELECT * FROM posts WHERE slug = $1"
 | web.response.send --template pages/post.tsx
 ```
 
@@ -116,8 +116,8 @@ answers the bytes at `input.fs.object.base64`, which a `{{ }}` body can prefix w
 a 640 px thumbnail (~120 KB as a data URI) rather than the 1200 px original.
 
 ```
-| sekejap.query.run --params "{{ [$trigger.params.id] }}" -- "SELECT * FROM users WHERE id = $1"
-| http.response.fetch --url "https://api.example.com/{{ $nodes.n1.rows[0].slug }}"
+| sekejap.query.run --param "1={{ $trigger.params.id }}" -- "SELECT * FROM users WHERE id = $1"
+| http.response.fetch --url "https://api.example.com/{{ $nodes.n1.query.rows[0].slug }}"
 | http.response.fetch --url https://notify.example.com/send --method POST --body "{{ { userId: $trigger.auth.sub, data: input } }}"
 | web.response.send --location "{{ $trigger.query.next || '/dashboard' }}"
 ```

@@ -5,7 +5,7 @@ hydrated in the browser. A pipeline serves it:
 
 ```
 | trigger.webhook --path /posts/:slug --method GET
-| sekejap.query.run --params "{{ [$trigger.params.slug] }}" -- "SELECT * FROM posts WHERE slug = $1"
+| sekejap.query.run --param "1={{ $trigger.params.slug }}" -- "SELECT * FROM posts WHERE slug = $1"
 | web.response.send --template pages/post.tsx
 ```
 
@@ -54,7 +54,7 @@ import { Button } from "zeb/ui/button";
 import "@/globals.css";
 
 export default function Post(input) {
-  const post = input.rows?.[0];
+  const post = input.query?.rows?.[0];
   const [liked, setLiked] = useState(false);
   return (
     <main className="mx-auto max-w-2xl p-8">
@@ -72,7 +72,7 @@ export const page = {
 
 // Optional: config that depends on the data. Merged over `page`.
 export function getPage(input) {
-  const post = input.rows?.[0];
+  const post = input.query?.rows?.[0];
   return { head: { title: post?.title, og: { title: post?.title, image: post?.cover } } };
 }
 ```
@@ -116,7 +116,7 @@ context merged in at the top level (never overwriting a key the pipeline set):
 | `headers` | request headers |
 | `auth` | the verified token's public claims, when the trigger had `--auth-*` |
 
-So after `sekejap.query.run`, `input.rows` is the result; after `script -- "return { base: '/x' }"`,
+So after `sekejap.query.run`, `input.query.rows` is the result; after `script -- "return { base: '/x' }"`,
 `input.base` is `/x`. There is no `input.state` or `input.request` wrapper.
 
 Server data comes from `input`. Client state is `useState` (local) or

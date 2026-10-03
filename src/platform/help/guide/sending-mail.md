@@ -45,9 +45,9 @@ never appears in a pipeline definition, a trace, or the node's output.
 ```
 register account/activate --title "Activate account"
   | trigger.webhook --path /account/activate --method POST
-  | sekejap.query.run --params "{{ [input.body.email] }}" -- "SELECT * FROM users WHERE email = $1"
+  | sekejap.query.run --param "1={{ input.body.email }}" -- "SELECT * FROM users WHERE email = $1"
   | mail.message.send --credential relay
-              --to "{{ input.rows[0].email }}"
+              --to "{{ input.query.rows[0].email }}"
               --subject "Activate your Researchsite account"
               --text "Follow the link we sent to activate your account."
   | web.response.send
@@ -55,8 +55,8 @@ register account/activate --title "Activate account"
 
 The submitted address is under `input.body.email` — webhook bodies never merge
 onto the root (`guide/pipeline` payload conventions). `sekejap.query.run` answers
-`{ columns, rows, row_count, … }`, so the row is `input.rows[0]`, never a bare
-`input.email`.
+`query: { columns, rows, row_count, … }`, so the row is `input.query.rows[0]`,
+never a bare `input.email`.
 
 `--to`, `--subject`, `--text`, `--html`, `--from` and `--reply-to` each take
 either a literal or a whole `{{ expr }}` into the flowing payload — the same

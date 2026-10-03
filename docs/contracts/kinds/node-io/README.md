@@ -111,7 +111,7 @@ that is a new code, not an edit. `logic.retry` retries only `failed`;
 - Interpolated inside a string, the result is stringified into place
   (JSON-encoded for objects, plain for scalars). As the **whole** field, the
   expression's *typed* value replaces the string — objects, arrays, and
-  numbers flow intact: `--params "{{ [input.user_id, 10] }}"`.
+  numbers flow intact: `--param "1={{ input.user_id }}" --param "2={{ 10 }}"`.
 - Object literals are sanctioned: the evaluator's parenthesized wrap
   (`return (expr)`) is contract, not accident — `{{ { id: input.id } }}`
   is an object, never a block.

@@ -499,7 +499,7 @@ pub fn definition() -> NodeDefinition {
             LayoutItem::Field("text".to_string()),
         ],
         examples: vec![
-            crate::pipeline::model::NodeExample::dsl("Read a post aloud", r#"ai.audio.generate --provider piper --credential piper_en --text "{{ input.rows[0].body }}" --filename "{{ $trigger.params.slug }}" --return file"#)
+            crate::pipeline::model::NodeExample::dsl("Read a post aloud", r#"ai.audio.generate --provider piper --credential piper_en --text "{{ input.query.rows[0].body }}" --filename "{{ $trigger.params.slug }}" --return file"#)
                 .output(serde_json::json!({ "audio": { "provider": "piper", "format": "wav", "mime_type": "audio/wav", "file": { "__zf_type": "file_ref", "backend": "zebfs", "store": "local", "ref": "audio/hello.wav", "filename": "hello.wav", "mime": "audio/wav", "kind": "audio", "size": 88244, "sha256": "sha256:…", "lifecycle": "durable", "origin": "ai.audio.generate", "trust": "generated" } } })),
         ],
         ..Default::default()

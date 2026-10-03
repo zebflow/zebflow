@@ -57,7 +57,7 @@
 //!                  NodeDefinition (kind = "pg.query.run")
 //!                  ├── config_schema: { credential_id: required, query: required, ... }
 //!                  ├── input_schema:  { type: object }
-//!                  ├── output_schema: { rows: array } | { affected_rows: integer }
+//!                  ├── output_schema: { query: { rows, columns, row_count, … } }
 //!                  ├── input_pins:    ["in"]
 //!                  └── output_pins:  ["out"]
 //!
@@ -1627,7 +1627,7 @@ pub struct PipelineOutput {
 /// A typed error produced at any point during pipeline execution.
 ///
 /// `code` is a stable SCREAMING_SNAKE_CASE string prefixed by the node kind
-/// (e.g. `"FW_NODE_PG_CONFIG"`, `"FW_NODE_WEB_RENDER_COMPILE"`).  It is safe to
+/// (e.g. `"FW_NODE_PG_QUERY_RUN_CONFIG"`, `"FW_NODE_WEB_RENDER_COMPILE"`).  It is safe to
 /// match on in tests and error handlers.  `message` is the human-readable detail.
 ///
 /// `node_id` and `node_kind` are optionally populated by the engine at the BFS execution

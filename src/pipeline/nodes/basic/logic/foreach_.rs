@@ -92,7 +92,7 @@ pub fn definition() -> NodeDefinition {
                     name: "items_expr".to_string(),
                     label: "Items".to_string(),
                     field_type: NodeFieldType::Text,
-                    placeholder: Some("$input.rows".to_string()),
+                    placeholder: Some("input.query.rows".to_string()),
                     help: Some("JS expression returning the array to emit.".to_string()),
                     ..Default::default()
                 },
@@ -133,7 +133,7 @@ pub fn definition() -> NodeDefinition {
         ],
         ai_tool: Default::default(),
         examples: vec![
-            crate::pipeline::model::NodeExample::dsl("One run per row", r#"logic.foreach --items-expr "input.rows""#)
+            crate::pipeline::model::NodeExample::dsl("One run per row", r#"logic.foreach --items-expr "input.query.rows""#)
                 .input(serde_json::json!({ "rows": [{ "email": "a@x.io" }, { "email": "b@x.io" }] }))
                 .output(serde_json::json!({ "item": { "email": "a@x.io" }, "index": 0, "count": 2 }))
                 .note("The first of two emissions on the `item` pin; the next node reads `input.item.email`."),

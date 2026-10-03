@@ -81,7 +81,7 @@ sysinfo = { version = "0.32", default-features = false, features = ["system", "d
 dirs-next = "2"
 jsonwebtoken = "9"
 bcrypt = "0.15"
-rusqlite = { version = "0.32", features = ["bundled"] }
+rusqlite = { version = "0.32", features = ["bundled", "limits"] }
 sekejap = "0.19.2"
 argon2 = { version = "0.5", features = ["std"] }
 hmac = "0.12"

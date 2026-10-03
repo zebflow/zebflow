@@ -151,7 +151,7 @@ pub fn definition() -> NodeDefinition {
         examples: vec![
             crate::pipeline::model::NodeExample::dsl("Fetch JSON", r#"http.response.fetch --url "https://api.example.com/rates?base={{ $trigger.params.currency }}" --method GET"#)
                 .output(serde_json::json!({ "request": { "url": "https://api.example.com/rates?base=AUD", "method": "GET" }, "response": { "status": 200, "ok": true, "headers": { "content-type": "application/json" }, "body": { "AUD": 1, "USD": 0.65 } } })),
-            crate::pipeline::model::NodeExample::dsl("POST with a credential", r#"http.response.fetch --url https://hooks.example.com/notify --method POST --credential notify_key --body "{{ { text: 'New order ' + input.rows[0]._key } }}""#),
+            crate::pipeline::model::NodeExample::dsl("POST with a credential", r#"http.response.fetch --url https://hooks.example.com/notify --method POST --credential notify_key --body "{{ { text: 'New order ' + input.query.rows[0]._key } }}""#),
         ],
         ..Default::default()
     }

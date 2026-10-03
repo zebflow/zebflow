@@ -63,7 +63,7 @@ import { useState } from "zeb/react";
 import { Editor } from "zeb/ui/editor";
 import { DocumentView, renderDocumentHtml, documentText } from "zeb/ui/editor-render";
 
-const [doc, setDoc] = useState(input.rows?.[0]?.body_json ?? null);
+const [doc, setDoc] = useState(input.query?.rows?.[0]?.body_json ?? null);
 
 async function uploadImage(file) {                       // the page decides where images go
   const form = new FormData();

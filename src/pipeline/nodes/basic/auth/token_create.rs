@@ -119,7 +119,7 @@ pub fn definition() -> NodeDefinition {
         ],
         ai_tool: Default::default(),
         examples: vec![
-            crate::pipeline::model::NodeExample::dsl("Mint a session token after login", r#"auth.token.create --credential jwt_main --expires-in 86400 --claim "sub={{ input.rows[0]._key }}" --claim "name:public={{ input.rows[0].name }}" --claim "roles:public={{ input.rows[0].roles }}""#)
+            crate::pipeline::model::NodeExample::dsl("Mint a session token after login", r#"auth.token.create --credential jwt_main --expires-in 86400 --claim "sub={{ input.query.rows[0]._key }}" --claim "name:public={{ input.query.rows[0].name }}" --claim "roles:public={{ input.query.rows[0].roles }}""#)
                 .output(serde_json::json!({ "access_token": "eyJhbGciOiJIUzI1NiJ9…", "token_type": "bearer", "expires_in": 86400, "profile": { "name": "Ana", "roles": ["editor"] } }))
                 .note("Then `web.response.send --location /home --set-cookie \"name=zebflow_session,value={{ input.access_token }},http-only,max-age=86400,same-site=Lax\"`. `roles` must be an array for `--auth-required-role`."),
         ],

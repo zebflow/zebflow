@@ -2438,7 +2438,7 @@ async fn project_bundle_installs_spatial_blog_with_sekejap_schema_across_two_ins
             "pages/spatial-blog.tsx",
             r#"
 export default function SpatialBlogPage({ input }) {
-  const count = Array.isArray(input?.rows) ? input.rows.length : 0;
+  const count = Array.isArray(input?.query?.rows) ? input.query.rows.length : 0;
   return (
     <main className="min-h-screen bg-slate-950 px-8 py-10 text-white">
       <section className="mx-auto max-w-4xl">
@@ -2479,7 +2479,7 @@ export default function SpatialBlogPage({ input }) {
   "entry_nodes":["trigger"],
   "nodes":[
     {"id":"trigger","kind":"trigger.webhook","input_pins":[],"output_pins":["out"],"config":{"path":"/blog","method":"GET"}},
-    {"id":"query","kind":"sekejap.query.run","input_pins":["in"],"output_pins":["out"],"config":{"query":"SELECT * FROM posts LIMIT 20","limit":20,"read_only":true}},
+    {"id":"query","kind":"sekejap.query.run","input_pins":["in"],"output_pins":["out"],"config":{"query":"SELECT * FROM posts LIMIT 20","limit":20}},
     {"id":"response","kind":"web.response.send","input_pins":["in"],"output_pins":["out"],"config":{"template":"pages/spatial-blog.tsx"}}
   ],
   "edges":[

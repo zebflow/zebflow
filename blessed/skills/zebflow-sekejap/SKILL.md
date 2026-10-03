@@ -43,8 +43,8 @@ short form with examples; this skill is the order of work.
 - **An edge table is read by one of its ends**: `WHERE member = $1` works;
   `SELECT *`, `COUNT(*)` or a filter on neither end is refused. To count
   edges, walk them in `GRAPH_TABLE` and `COUNT(*)` the outer select.
-- **Values go in `--params`, never in the SQL text.** A `JSONB` column takes
-  a bound object or array: `--params "{{ [input.body.meta] }}"`.
+- **Values go in `--param`, never in the SQL text.** A `JSONB` column takes
+  a bound object or array: `--param "1={{ input.body.meta }}"`.
 - `now()` works in `VALUES` and `SET`; `meta->>'k'` works in a select list;
   `lower(col) = $1` works without an index when `$1` is already lower-case.
 - **Refused here, and the replacement:**
@@ -59,11 +59,11 @@ short form with examples; this skill is the order of work.
 
 - Several queries feeding one script: chain them in a line
   (`| q_a | q_b | merge`), reading each by literal id in the script
-  (`ctx.nodes.q_a.rows`). Plain edges from parallel nodes into one node do
+  (`ctx.nodes.q_a.query.rows`). Plain edges from parallel nodes into one node do
   **not** join — it runs once per edge, seeing one predecessor each time.
   Use `logic.collect` if you truly need a fan-in.
-- A read answers `{ columns, rows, row_count }`; each row is an object
-  (`input.rows[0].title`). A write needs `--read-only false`.
+- A read answers `query: { columns, rows, row_count }`; each row is an object
+  (`input.query.rows[0].title`). A write needs `--write`.
 
 ## 4. Prove it before you save it
 

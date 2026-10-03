@@ -36,25 +36,26 @@ that section in the pinned copy.
 ## Running a query
 
 From a pipeline the node is `sekejap.query.run` (SQL in the body, values in
-`--params` as `$1, $2, …`); to try one without saving anything,
+`--param` as `$1, $2, …`); to try one without saving anything,
 `pipeline_run body="| trigger.function | sekejap.query.run -- \"SELECT …\""`;
 over HTTP, `POST /api/projects/{o}/{p}/db/connections/{connection_id}/query` —
 the id from `GET …/db/connections`, not the slug.
 
 ```
 | sekejap.query.run -- "SELECT _key, title FROM posts LIMIT 20"
-| sekejap.query.run --params "{{ [$trigger.params.slug] }}" -- "SELECT _key, title FROM posts WHERE slug = $1"
-| sekejap.query.run --params "{{ [input.body.title] }}" --read-only false -- "INSERT INTO posts (title) VALUES ($1) RETURNING _key"
+| sekejap.query.run --param "1={{ $trigger.params.slug }}" -- "SELECT _key, title FROM posts WHERE slug = $1"
+| sekejap.query.run --param "1={{ input.body.title }}" --write -- "INSERT INTO posts (title) VALUES ($1) RETURNING _key"
 ```
 
-Flags: `--params` (bind values; a whole `{{ }}` keeps its type, so
-`"{{ [a, b] }}"` is a real array and a single value is wrapped), `--limit <n>`
-(default 200 rows for reads), `--read-only true|false` (set `false` for
-INSERT/UPDATE/DELETE/CREATE), `--query` (the SQL as a flag instead of the
-body). Output: `{ columns, rows, row_count, truncated, affected_rows,
-duration_ms }` — each row an object keyed by column name
-(`input.rows[0].name`), `columns` the positional list beside it. A write
-answers `affected_rows`; a write with `RETURNING` also answers its rows.
+Flags: `--param key=value` (repeated; the key is the placeholder position —
+`--param "1={{ a }}" --param "2={{ b }}"` binds `$1, $2`; a whole `{{ expr }}`
+keeps its type, so a number stays a number), `--limit <n>` (default 200 rows),
+`--write` (bare switch; required for INSERT/UPDATE/DELETE/CREATE), `--query`
+(the SQL as a flag instead of the body). Output: one key, `query: { rows,
+columns, row_count, truncated }`, plus `rows_affected` when run with
+`--write` — each row an object keyed by column name (`input.query.rows[0].name`),
+`columns` the positional list beside it. A write with `RETURNING` also answers
+its rows.
 
 ## Creating a table
 
@@ -267,17 +268,22 @@ Bulk records and graph edges, typed against the table's columns, as one
 commit:
 
 ```
-| sekejap.record.create --target contacts --records-key items --edges-key links
+| sekejap.record.create --table contacts --record "{{ input.items }}" --edge "{{ input.links }}"
 ```
 
-with a payload shaped
+`--record` and `--edge` take the values themselves — one expression that is a
+list, or repeat the flag for single items — nothing is read from a default
+payload key. Each record is shaped
 
 ```json
-{
-  "items": [{ "key": "a", "fields": { "name": "Ann", "embedding": [0.1, 0.2, "…"] } }],
-  "links": [{ "from": { "target": "contacts", "key": "a" }, "type": "knows",
-              "to": { "target": "contacts", "key": "b" }, "fields": { "since": 2026 } }]
-}
+{ "key": "a", "fields": { "name": "Ann", "embedding": [0.1, 0.2, "…"] } }
+```
+
+and each edge:
+
+```json
+{ "from": { "target": "contacts", "key": "a" }, "type": "knows",
+  "to": { "target": "contacts", "key": "b" }, "fields": { "since": 2026 } }
 ```
 
 The table must already exist; a `VECTOR(n)` field takes exactly n numbers;
@@ -287,7 +293,9 @@ the table does not declare is stored as an extra and is not indexed.
 An edge whose `type` is an edge table's type — its label, with the schema in
 front outside `public` (`atlas.connects`) — is written into that table,
 its `fields` as the table's columns; the target itself must be a table of
-rows. Records and edges land in one commit, or not at all.
+rows. Records and edges land in one commit, or not at all. `--max-items`
+(default 1000) caps records and edges together; the node adds
+`record: { created, edges, table }` and keeps the rest of the payload.
 
 ## Refused, and what to write instead
 

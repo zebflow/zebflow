@@ -90,7 +90,7 @@ pub fn definition() -> NodeDefinition {
         examples: vec![
             crate::pipeline::model::NodeExample::dsl("Do the slow part after the request", "trigger.topic --channel order.placed")
                 .output(serde_json::json!({ "trigger": "kv.subscribe", "channel": "order.placed", "node_id": "n0", "message": { "order_id": "o_91", "email": "a@x.io" } }))
-                .note("The publisher: `| kv.message.publish --channel order.placed --payload \"{{ { order_id: input.rows[0]._key, email: input.body.email } }}\"`."),
+                .note("The publisher: `| kv.message.publish --channel order.placed --payload \"{{ { order_id: input.query.rows[0]._key, email: input.body.email } }}\"`."),
         ],
         ..Default::default()
     }

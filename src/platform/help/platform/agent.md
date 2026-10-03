@@ -140,7 +140,7 @@ tool of its own, named by the pipeline.
 
 ```
 connection_describe  slug=default-multimodel                       ← what tables exist
-pipeline_run  body="| trigger.function | sekejap.query.run --read-only false -- \"CREATE TABLE posts (id TEXT, title TEXT, slug TEXT, body_json JSON, created_at TEXT)\""
+pipeline_run  body="| trigger.function | sekejap.query.run --write -- \"CREATE TABLE posts (id TEXT, title TEXT, slug TEXT, body_json JSON, created_at TEXT)\""
 file_create   kind=page  name=blog-home  parent_rel_path=pages
 file_write    rel_path=pages/blog-home.tsx  content="…"           ← help(topic="web")
 pipeline_register  file_rel_path="pages/blog-home"  title="Blog home"

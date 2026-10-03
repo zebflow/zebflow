@@ -50,13 +50,13 @@
 //! ```text
 //! | trigger.webhook --path /auth/register --method POST
 //! | n.crypto --op bcrypt_hash
-//! | pg.query.run --credential main-db -- "INSERT INTO users (email, pw_hash) VALUES ({{ input.email }}, {{ input.result }})"
+//! | pg.query.run --credential main-db --write --param "1={{ input.email }}" --param "2={{ input.result }}" -- "INSERT INTO users (email, pw_hash) VALUES ($1, $2)"
 //! ```
 //!
 //! **User login — verify password and issue JWT:**
 //! ```text
 //! | trigger.webhook --path /auth/login --method POST
-//! | pg.query.run --credential main-db -- "SELECT pw_hash AS hash FROM users WHERE email = {{ input.email }}"
+//! | pg.query.run --credential main-db --param "1={{ input.email }}" -- "SELECT pw_hash AS hash FROM users WHERE email = $1"
 //! | n.crypto --op bcrypt_verify
 //! | [true]  → auth.token.create --credential jwt-key
 //! | [false] → script.result.run -- "return { _status: 401, error: 'Invalid credentials' }"
@@ -73,7 +73,7 @@
 //! ```text
 //! | trigger.webhook --path /auth/session --method POST
 //! | n.crypto --op random_hex --length 32
-//! | pg.query.run --credential main-db -- "INSERT INTO sessions (token, user_id) VALUES ({{ input.result }}, {{ input.user_id }})"
+//! | pg.query.run --credential main-db --write --param "1={{ input.result }}" --param "2={{ input.user_id }}" -- "INSERT INTO sessions (token, user_id) VALUES ($1, $2)"
 //! ```
 
 use async_trait::async_trait;
@@ -170,7 +170,7 @@ pub fn definition() -> NodeDefinition {
                 .input(serde_json::json!({ "body": { "email": "a@x.io", "password": "correct horse" } }))
                 .output(serde_json::json!({ "body": { "email": "a@x.io", "password": "correct horse" }, "result": "$argon2id$v=19$m=19456,t=2,p=1$…" }))
                 .note("`result` is added; `input.body.email` is still there for the INSERT."),
-            crate::pipeline::model::NodeExample::dsl("Check a password at login", r#"crypto --op argon2_verify --value "{{ $nodes.n0.body.password }}" --hash "{{ input.rows[0].password_hash }}""#)
+            crate::pipeline::model::NodeExample::dsl("Check a password at login", r#"crypto --op argon2_verify --value "{{ $nodes.n0.body.password }}" --hash "{{ input.query.rows[0].password_hash }}""#)
                 .note("Fires `true` or `false`; the payload (the user row) passes through unchanged. Wire `false` to a 401."),
             crate::pipeline::model::NodeExample::dsl("A random token", "crypto --op random_hex --length 16")
                 .output(serde_json::json!({ "result": "9f2c…" })),

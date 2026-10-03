@@ -45,7 +45,7 @@ Logout is `--set-cookie "name=session,value=,max-age=0"`.
 ```
 | trigger.webhook --path /api/posts --method GET
 | sekejap.query.run -- "SELECT id, title FROM posts ORDER BY created_at DESC"
-| web.response.send --body "{{ input.rows }}"
+| web.response.send --body "{{ input.query.rows }}"
 ```
 
 **A page**
@@ -60,8 +60,8 @@ Logout is `--set-cookie "name=session,value=,max-age=0"`.
 
 ```
 [a] trigger.webhook --path /blog/:slug --method GET
-[b] sekejap.query.run --params "{{ [$trigger.params.slug] }}" -- "SELECT * FROM posts WHERE slug = $1"
-[c] logic.if --expr "input.rows.length > 0"
+[b] sekejap.query.run --param "1={{ $trigger.params.slug }}" -- "SELECT * FROM posts WHERE slug = $1"
+[c] logic.if --expr "input.query.rows.length > 0"
 [d] web.response.send --template pages/post.tsx
 [e] web.response.send --status 404 --template pages/not-found.tsx
 [a] -> [b]
@@ -93,18 +93,18 @@ The payload is `{ error_code, error_message, original_path, method }`.
 
 ```
 | trigger.webhook --path /after-login --method GET --auth-type jwt --auth-credential jwt_main
-| sekejap.query.run --params "{{ [$trigger.auth.sub] }}" -- "SELECT home FROM users WHERE id = $1"
-| web.response.send --location "{{ input.rows[0]?.home || '/home' }}"
+| sekejap.query.run --param "1={{ $trigger.auth.sub }}" -- "SELECT home FROM users WHERE id = $1"
+| web.response.send --location "{{ input.query.rows[0]?.home || '/home' }}"
 ```
 
 **Login — mint a token, set the cookie**
 
 ```
 [a] trigger.webhook --path /auth/login --method POST
-[b] sekejap.query.run --params "{{ [input.body.email] }}" -- "SELECT id, name, password_hash, roles FROM users WHERE email = $1"
-[c] logic.if --expr "input.rows.length === 1"
-[d] crypto --op argon2_verify --value "{{ $nodes.a.body.password }}" --hash "{{ input.rows[0].password_hash }}"
-[e] script.result.run -- "const u = input.rows[0]; return { id: u.id, name: u.name, roles: u.roles || ['member'] }"
+[b] sekejap.query.run --param "1={{ input.body.email }}" -- "SELECT id, name, password_hash, roles FROM users WHERE email = $1"
+[c] logic.if --expr "input.query.rows.length === 1"
+[d] crypto --op argon2_verify --value "{{ $nodes.a.body.password }}" --hash "{{ input.query.rows[0].password_hash }}"
+[e] script.result.run -- "const u = input.query.rows[0]; return { id: u.id, name: u.name, roles: u.roles || ['member'] }"
 [f] auth.token.create --credential jwt_main --claim "sub={{ input.id }}" --claim "name:public={{ input.name }}" --claim "roles:public={{ input.roles }}"
 [g] web.response.send --location /home --set-cookie "name=zebflow_session,value={{ input.access_token }},http-only,max-age=86400,same-site=Lax"
 [h] web.response.send --status 401 --body "{{ { error: 'invalid credentials' } }}"
@@ -132,7 +132,7 @@ recipe with registration: `help("pipeline/examples/cookie-jwt-auth")`.
 ```
 | trigger.webhook --path /api/data --method GET
 | sekejap.query.run -- "SELECT * FROM data"
-| web.response.send --body "{{ input.rows }}" --header Cache-Control=max-age=60 --header X-Version=2
+| web.response.send --body "{{ input.query.rows }}" --header Cache-Control=max-age=60 --header X-Version=2
 ```
 
 ## What a template receives
@@ -151,7 +151,7 @@ export default function Dashboard(input) {
   const user = input.auth;            // { name, roles } — public claims only
   const tab = input.query?.tab ?? "overview";
   if (!user) return <main>Not signed in</main>;
-  return <main><h1>Hello {user.name}</h1>{input.rows.map((r) => <p key={r.id}>{r.title}</p>)}</main>;
+  return <main><h1>Hello {user.name}</h1>{input.query.rows.map((r) => <p key={r.id}>{r.title}</p>)}</main>;
 }
 ```
 
@@ -162,7 +162,7 @@ export default function Dashboard(input) {
 `{{ }}` works in every flag value and is resolved just before the response:
 
 ```
-| web.response.send --location "/users/{{ $trigger.params.id }}/{{ $nodes.lookup.rows[0].slug }}"
+| web.response.send --location "/users/{{ $trigger.params.id }}/{{ $nodes.lookup.query.rows[0].slug }}"
 | web.response.send --header "X-User-Id={{ $trigger.auth.sub }}"
 ```
 

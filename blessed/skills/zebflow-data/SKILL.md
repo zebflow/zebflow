@@ -30,7 +30,7 @@ query nodes in `pipeline/nodes`.
 
 - Tables and migrations are files: `db/001_posts.sql` (or under
   `schemas/sekejap/` for a declared schema, `schemas/sqlite/schema.sql` for
-  SQLite), applied through the node — `sekejap.query.run --read-only false -- "CREATE TABLE …"`
+  SQLite), applied through the node — `sekejap.query.run --write -- "CREATE TABLE …"`
   — from a one-off `pipeline_run` or a `jobs/migrate` function pipeline. Keep
   the file; the database is not the record.
 - Conventions that pay for themselves: an `id` (or Sekejap's `_key`), `created_at`
@@ -42,24 +42,24 @@ query nodes in `pipeline/nodes`.
   what this engine version refuses, and the pinned grammar link are in
   `skill_read name="zebflow-sekejap"` — read it before the first
   `sekejap.query.run`. Timestamps come from the pipeline:
-  `--params "{{ [input.body.name, new Date().toISOString()] }}"`.
+  `--param "1={{ input.body.name }}" --param "2={{ new Date().toISOString() }}"`.
 - Seeds go in `initial-data/` so a fresh install of the project (or of a
   bundle made from it) gets them.
 
 ## Querying
 
 ```
-| sekejap.query.run --params "{{ [$trigger.params.slug] }}" -- "SELECT id, title, body_json FROM posts WHERE slug = $1"
-| sekejap.query.run --params "{{ [input.body.title, input.body.slug] }}" --read-only false -- "INSERT INTO posts (title, slug) VALUES ($1, $2)"
-| sqlite.query.run --params "{{ [input.body.email] }}" -- "SELECT * FROM users WHERE email = ?1"
-| pg.query.run --credential pg_main --params "{{ [$trigger.auth.sub] }}" -- "SELECT * FROM accounts WHERE id = $1"
+| sekejap.query.run --param "1={{ $trigger.params.slug }}" -- "SELECT id, title, body_json FROM posts WHERE slug = $1"
+| sekejap.query.run --param "1={{ input.body.title }}" --param "2={{ input.body.slug }}" --write -- "INSERT INTO posts (title, slug) VALUES ($1, $2)"
+| sqlite.query.run --param "1={{ input.body.email }}" -- "SELECT * FROM users WHERE email = ?1"
+| pg.query.run --credential pg_main --param "1={{ $trigger.auth.sub }}" -- "SELECT * FROM accounts WHERE id = $1"
 ```
 
-- SQL in the body, values in `--params`; a whole `{{ }}` keeps its type, so
-  `"{{ [a, b] }}"` is a real array. Never build SQL text from input.
-- The result is `{ columns, rows, row_count, … }` for reads and
-  `{ affected_rows }` for writes. The next node reads `input.rows`; a page
-  reads `input.rows` too. `--read-only false` is required for any write.
+- SQL in the body, values in `--param` (repeated, one key each); a whole
+  `{{ }}` keeps its type. Never build SQL text from input.
+- The result is one key, `query: { columns, rows, row_count, truncated }`,
+  plus `rows_affected` for writes. The next node reads `input.query.rows`; a
+  page reads `input.query.rows` too. `--write` is required for any write.
 - Reads default to 200 rows (`--limit`); paginate with `LIMIT $1 OFFSET $2`
   bound from `$trigger.query.page`.
 - In PostgreSQL text, use `format()`/`concat()` rather than `||` inside a DSL

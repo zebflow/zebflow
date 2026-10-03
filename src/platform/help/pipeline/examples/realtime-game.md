@@ -38,7 +38,7 @@ which rooms exist and whether they're joinable.
 ```
 | trigger.webhook --path /game --method GET
 | sekejap.query.run -- "SELECT * FROM game_rooms WHERE status = 'waiting'"
-| script.result.run -- "return { rooms: input.rows }"
+| script.result.run -- "return { rooms: input.query.rows }"
 | web.response.send --template pages/game-lobby.tsx
 ```
 
@@ -47,9 +47,9 @@ which rooms exist and whether they're joinable.
 ```zf
 register game/room --
 [a] trigger.webhook --path /game/:room --method GET
-[b] sekejap.query.run --params "{{ [input.params.room] }}" -- "SELECT * FROM game_rooms WHERE _key = $1"
-[c] logic.if --expr "input.rows.length > 0"
-[d] script.result.run -- "return { room: input.rows[0] };"
+[b] sekejap.query.run --param "1={{ input.params.room }}" -- "SELECT * FROM game_rooms WHERE _key = $1"
+[c] logic.if --expr "input.query.rows.length > 0"
+[d] script.result.run -- "return { room: input.query.rows[0] };"
 [e] web.response.send --template pages/game-room.tsx
 [f] web.response.send --location /game
 
@@ -66,7 +66,7 @@ register game/room --
 register game/api-room-create --
 [trig] trigger.webhook --path /api/game/rooms --method POST
 [draft] script.result.run -- "const id = 'room-' + Math.random().toString(36).slice(2,8); return { id, name: (input.body && input.body.name) || id };"
-[ins] sekejap.query.run --read-only false --params "{{ [$nodes.draft.id, $nodes.draft.name, Date.now()] }}" -- "INSERT INTO game_rooms (_key, name, status, created_at) VALUES ($1, $2, 'waiting', $3)"
+[ins] sekejap.query.run --write --param "1={{ $nodes.draft.id }}" --param "2={{ $nodes.draft.name }}" --param "3={{ Date.now() }}" -- "INSERT INTO game_rooms (_key, name, status, created_at) VALUES ($1, $2, 'waiting', $3)"
 [ok] script.result.run -- "return { ok: true, room_id: $nodes.draft.id };"
 
 [trig] -> [draft]

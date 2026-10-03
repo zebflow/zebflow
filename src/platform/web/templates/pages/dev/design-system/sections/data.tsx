@@ -108,7 +108,7 @@ export default function DataSection() {
           <Alert variant="info">Templates are compiled into the binary; restart to see edits.</Alert>
           <Alert variant="success">Pipeline registered — 12 nodes.</Alert>
           <Alert variant="warning">The signing key was regenerated; existing sessions are invalid.</Alert>
-          <Alert variant="error">FW_NODE_SQLITE_MUTATE: NOT NULL constraint failed: members.name</Alert>
+          <Alert variant="error">FW_NODE_SQLITE_QUERY_RUN: NOT NULL constraint failed: members.name</Alert>
         </div>
       </Entry>
 

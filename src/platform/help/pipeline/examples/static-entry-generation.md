@@ -97,7 +97,7 @@ This is a more realistic content-backed version:
 
 ```zf
 | trigger.function --description "Generate the static page for one content entry" --input "entry_id:string!" "Entry UUID"
-| pg.query.run --credential content-db --params "{{ [input.entry_id] }}" -- "
+| pg.query.run --credential content-db --param "1={{ input.entry_id }}" -- "
 SELECT
   e.entry_id::text AS entry_id,
   e.slug AS entry_slug,
@@ -112,7 +112,7 @@ JOIN content.collection c ON c.collection_id = e.collection_id
 WHERE e.entry_id = $1::uuid
 "
 | script.result.run -- "
-const row = input.rows?.[0];
+const row = input.query.rows?.[0];
 if (!row) throw new Error('entry not found');
 return {
   collection: {

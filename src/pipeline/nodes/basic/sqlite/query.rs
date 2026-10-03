@@ -1,15 +1,23 @@
-//! SQLite query node — SELECT against the project's embedded SQLite database.
+//! `sqlite.query.run` — SQL on the project's built-in SQLite database
+//! (connection `default`, `data/store/local.db`).
+//!
+//! Reads and writes are one kind. Without `--write` the database is opened
+//! read-only (`SQLITE_OPEN_READ_ONLY`), so SQLite itself refuses any statement
+//! that would change it (`SQLITE_READONLY`) and the node answers
+//! `FW_NODE_SQLITE_QUERY_RUN_WRITE`. Values bind from `--param`: `1=…` binds
+//! `?1`, a name binds `:name`, `@name` or `$name`. The answer is one key,
+//! `query` (`shared/query.rs`).
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use async_trait::async_trait;
-use rusqlite::types::ValueRef;
+use rusqlite::{OpenFlags, types::ValueRef};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use crate::pipeline::nodes::shared::util::metadata_scope;
-use crate::pipeline::model::NodeCapability;
-use crate::pipeline::model::{DslFlag, DslFlagKind, LayoutItem, NodeFieldDef, NodeFieldType};
+use crate::pipeline::model::{LayoutItem, NodeCapability, NodeExample, NodeFieldDef, NodeFieldType};
+use crate::pipeline::nodes::shared::query::{self, Params};
+use crate::pipeline::nodes::shared::util::{metadata_scope, with_answer};
 use crate::pipeline::{
     NodeDefinition, PipelineError,
     nodes::{NodeExecutionInput, NodeExecutionOutput, NodeHandler},
@@ -19,83 +27,78 @@ pub const NODE_KIND: &str = "sqlite.query.run";
 pub const INPUT_PIN_IN: &str = "in";
 pub const OUTPUT_PIN_OUT: &str = "out";
 
+/// The statement failed, or the database file could not be opened.
+pub const CODE: &str = "FW_NODE_SQLITE_QUERY_RUN";
+/// A flag the author set wrong.
+pub const CONFIG_CODE: &str = "FW_NODE_SQLITE_QUERY_RUN_CONFIG";
+/// The project's database could not be moved to its current path.
+const MIGRATE_CODE: &str = "FW_NODE_SQLITE_QUERY_RUN_MIGRATE";
+/// `--param` keys that do not fit the statement's placeholders.
+const PARAM_CODE: &str = "FW_NODE_SQLITE_QUERY_RUN_PARAM";
+/// `--limit` outside `1..=5000`.
+const LIMIT_CODE: &str = "FW_NODE_SQLITE_QUERY_RUN_LIMIT";
+/// A write without `--write`, refused by the read-only connection.
+pub const WRITE_CODE: &str = "FW_NODE_SQLITE_QUERY_RUN_WRITE";
+
+const PLACEHOLDERS: &str = "`1=…` binds ?1, `name=…` binds :name (or @name, $name)";
+
 /// Unified node-definition metadata for `sqlite.query.run`.
 pub fn definition() -> NodeDefinition {
     NodeDefinition {
         kind: NODE_KIND.to_string(),
         capabilities: vec![NodeCapability::Database, NodeCapability::Process],
         title: "SQLite Query".to_string(),
-        description: "Read from the project's built-in SQLite database (connection `default`; no credential). SQL in the body after `--`, \
-            values in `--params` bound as `?1, ?2, …`. Answers `{ rows: [ { column: value } ] }` — the next node and the page read \
-            `input.rows`. Reads only: an INSERT/UPDATE/DELETE/CREATE here fails; use `sqlite.mutate`. Standard SQLite DDL and \
-            constraints work (unlike Sekejap)."
+        description: "Run SQL on the project's built-in SQLite database (connection `default`; no credential). SQL in the body after `--` \
+            (or `--query`); values bind from `--param`: `1=…` binds `?1`, `name=…` binds `:name` — a literal is text, a whole `{{ expr }}` \
+            keeps its type. The database is opened read-only unless `--write` is set, so an INSERT/UPDATE/DELETE/CREATE without it is \
+            refused. Adds `query: { rows, columns, row_count, truncated }` (`input.query.rows[0].name`), plus `rows_affected` with `--write`; \
+            `INSERT … RETURNING id` answers the rows it wrote. `--limit` caps the rows (default 200, at most 5000). Standard SQLite DDL \
+            and constraints work (unlike Sekejap)."
             .to_string(),
         input_schema: json!({
             "type": "object",
-            "description": "Input context — values accessible via {{ $input.* }} in the SQL."
+            "description": "Input context — values reach the SQL only through --param."
         }),
-        output_schema: json!({
-            "type": "object",
-            "properties": { "rows": { "type": "array" } }
-        }),
+        output_schema: query::output_schema(),
         input_pins: vec![INPUT_PIN_IN.to_string()],
         output_pins: vec![OUTPUT_PIN_OUT.to_string()],
         script_available: false,
         script_bridge: None,
         config_schema: Default::default(),
         dsl_flags: vec![
-            DslFlag {
-                flag: "--query".to_string(),
-                config_key: "query".to_string(),
-                description: "SQL query (alternative to body `-- \"SELECT ...\"`)".to_string(),
-                kind: DslFlagKind::Scalar,
-                required: false,
-                ..Default::default()
-            },
-            DslFlag {
-                flag: "--params".to_string(),
-                config_key: "params".to_string(),
-                description:
-                    "Bind values for ?1, ?2, … — a literal or {{ expr }}. A whole {{ }} carries \
-                     its typed value, so \"{{ [input.id, 10] }}\" is a real array."
-                        .to_string(),
-                kind: DslFlagKind::Scalar,
-                required: false,
-                ..Default::default()
-            },
+            query::query_flag("SQLite"),
+            query::param_flag(PLACEHOLDERS),
+            query::write_flag(),
+            query::limit_flag(),
         ],
-        fields: vec![
-            NodeFieldDef {
-                name: "params".to_string(),
-                label: "Params".to_string(),
-                field_type: NodeFieldType::Text,
-                help: Some("Bind values for ?1, ?2, … — a literal or {{ expr }}.".to_string()),
-                ..Default::default()
-            },
-            NodeFieldDef {
+        fields: {
+            let mut fields = vec![NodeFieldDef {
                 name: "query".to_string(),
                 label: "Query".to_string(),
                 field_type: NodeFieldType::CodeEditor,
                 language: Some("sql".to_string()),
                 span: Some("full".to_string()),
                 help: Some(
-                    "SELECT id, title FROM posts LIMIT 20\n\
-                     Use $1, $2 with params."
+                    "SELECT id, title FROM posts WHERE id = ?1\n\
+                     Read-only unless Write is ticked; bind values from Params."
                         .to_string(),
                 ),
                 default_value: Some(json!("SELECT id\nFROM items\nLIMIT 20")),
                 ..Default::default()
-            },
-        ],
+            }];
+            fields.extend(query::fields("1 binds ?1, a name binds :name"));
+            fields
+        },
         layout: vec![
             LayoutItem::Field("query".to_string()),
-            LayoutItem::Field("params".to_string()),
+            LayoutItem::Field("param".to_string()),
+            LayoutItem::Row { row: vec![LayoutItem::Field("limit".to_string()), LayoutItem::Field("write".to_string())] },
         ],
         ai_tool: crate::pipeline::model::NodeAiToolDefinition {
             registered: true,
             tool_name: "sqlite_query".to_string(),
             tool_description:
-                "Run a SQL SELECT query against the project's embedded SQLite database. \
+                "Run a read-only SQL query against the project's embedded SQLite database. \
                 Arg: query (required) — SQL SELECT string."
                     .to_string(),
             tool_input_schema: json!({
@@ -107,8 +110,12 @@ pub fn definition() -> NodeDefinition {
             }),
         },
         examples: vec![
-            crate::pipeline::model::NodeExample::dsl("Read with a bound value", r#"sqlite.query.run --params "{{ [input.body.email] }}" -- "SELECT id, name FROM users WHERE email = ?1""#)
-                .output(serde_json::json!({ "rows": [{ "id": 1, "name": "Ana" }] })),
+            NodeExample::dsl("Read with a bound value", r#"sqlite.query.run --param "1={{ input.body.email }}" -- "SELECT id, name FROM users WHERE email = ?1""#)
+                .output(json!({ "query": { "rows": [{ "id": 1, "name": "Ana" }], "columns": ["id", "name"], "row_count": 1, "truncated": false } })),
+            NodeExample::dsl("Insert from a form", r#"sqlite.query.run --write --param "email={{ input.body.email }}" --param "name={{ input.body.name }}" -- "INSERT INTO users (email, name) VALUES (:email, :name) RETURNING id""#)
+                .output(json!({ "query": { "rows": [{ "id": 2 }], "columns": ["id"], "row_count": 1, "truncated": false, "rows_affected": 1 } })),
+            NodeExample::dsl("Create a table", r#"sqlite.query.run --write -- "CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY, email TEXT UNIQUE NOT NULL, name TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP)""#)
+                .output(json!({ "query": { "rows": [], "columns": [], "row_count": 0, "truncated": false, "rows_affected": 0 } })),
         ],
         ..Default::default()
     }
@@ -118,11 +125,15 @@ pub fn definition() -> NodeDefinition {
 pub struct Config {
     #[serde(default)]
     pub query: String,
-    /// Bind values for `?1`, `?2`, … A whole `{{ }}` carries its typed value,
-    /// so `--params "{{ [input.id, 10] }}"` is a real array; anything else
-    /// binds as one parameter.
+    /// `{ "1": value }` binds `?1`; `{ "name": value }` binds `:name`.
     #[serde(default)]
-    pub params: Value,
+    pub param: Value,
+    /// Let the statement change data.
+    #[serde(default)]
+    pub write: bool,
+    /// Rows answered.
+    #[serde(default)]
+    pub limit: Value,
 }
 
 pub struct Node {
@@ -131,30 +142,13 @@ pub struct Node {
 }
 
 impl Node {
-    pub fn new(
-        config: Config,
-        data_root: PathBuf,
-    ) -> Result<Self, PipelineError> {
-        // One flag per thing now, so there is no "set one or the other" left
-        // to adjudicate. A `{{ }}` resolving to empty is caught at run time,
-        // where the resolved value is known.
+    pub fn new(config: Config, data_root: PathBuf) -> Result<Self, PipelineError> {
+        // A `{{ }}` resolving to empty is caught at run time, where the
+        // resolved value is known.
         if config.query.trim().is_empty() {
-            return Err(PipelineError::new(
-                "FW_NODE_SQLITE_QUERY_CONFIG",
-                "config.query must not be empty",
-            ));
+            return Err(PipelineError::new(CONFIG_CODE, "--query (or the body after --) must not be empty"));
         }
         Ok(Self { config, data_root })
-    }
-}
-
-fn sqlite_value_to_json(v: ValueRef<'_>) -> Value {
-    match v {
-        ValueRef::Null => Value::Null,
-        ValueRef::Integer(i) => json!(i),
-        ValueRef::Real(f) => json!(f),
-        ValueRef::Text(t) => Value::String(String::from_utf8_lossy(t).into_owned()),
-        ValueRef::Blob(b) => Value::String(hex::encode(b)),
     }
 }
 
@@ -175,83 +169,159 @@ impl NodeHandler for Node {
         input: NodeExecutionInput,
     ) -> Result<NodeExecutionOutput, PipelineError> {
         let (owner, project, _pipeline, _request_id) = metadata_scope(&input.metadata)?;
-        // Both arrive final — `{{ }}` resolved engine-side before this node
-        // ran (NodeIO §Value resolution).
+        // Arrives final — `{{ }}` resolved engine-side before this node ran
+        // (NodeIO §Value resolution).
         let sql = self.config.query.trim().to_string();
         if sql.is_empty() {
-            return Err(PipelineError::new(
-                "FW_NODE_SQLITE_QUERY",
-                "query must not be empty",
-            ));
+            return Err(PipelineError::new(CONFIG_CODE, "--query resolved empty"));
         }
-        // A whole `{{ }}` carries its typed value, so an array stays an array
-        // and anything else binds as one parameter.
-        let param_values: Vec<Value> = match self.config.params.clone() {
-            Value::Null => Vec::new(),
-            Value::Array(items) => items,
-            other => vec![other],
-        };
+        let params = query::params(&self.config.param, true, PARAM_CODE)?;
+        let limit = query::limit(&self.config.limit, LIMIT_CODE)?;
+        let write = self.config.write;
         crate::platform::sqlite_schema::ensure_local_db_migrated(&self.data_root, owner, project)
-            .map_err(|err| PipelineError::new("FW_NODE_SQLITE_QUERY_MIGRATE", err.message))?;
-        let db_path = self
-            .data_root
-            .join("users")
-            .join(owner)
-            .join(project)
-            .join("data")
-            .join("store")
-            .join("local.db");
-        let rows = tokio::task::spawn_blocking(move || -> Result<Vec<Value>, String> {
-            let conn = rusqlite::Connection::open(&db_path).map_err(|e| format!("open db: {e}"))?;
-            let mut stmt = conn.prepare(&sql).map_err(|e| format!("prepare: {e}"))?;
-            let col_count = stmt.column_count();
-            let col_names: Vec<String> = (0..col_count)
-                .map(|i| stmt.column_name(i).unwrap_or("?").to_string())
-                .collect();
-            let params: Vec<Box<dyn rusqlite::types::ToSql>> = param_values
-                .iter()
-                .map(|v| -> Box<dyn rusqlite::types::ToSql> {
-                    match v {
-                        Value::Null => Box::new(Option::<String>::None),
-                        Value::Bool(b) => Box::new(*b),
-                        Value::Number(n) => {
-                            if let Some(i) = n.as_i64() {
-                                Box::new(i)
-                            } else if let Some(f) = n.as_f64() {
-                                Box::new(f)
-                            } else {
-                                Box::new(n.to_string())
-                            }
-                        }
-                        Value::String(s) => Box::new(s.clone()),
-                        other => Box::new(other.to_string()),
-                    }
-                })
-                .collect();
-            let param_refs: Vec<&dyn rusqlite::types::ToSql> =
-                params.iter().map(|p| p.as_ref()).collect();
-            let rows = stmt
-                .query_map(param_refs.as_slice(), |row| {
-                    let mut obj = serde_json::Map::new();
-                    for (i, name) in col_names.iter().enumerate() {
-                        let v = sqlite_value_to_json(row.get_ref(i)?);
-                        obj.insert(name.clone(), v);
-                    }
-                    Ok(Value::Object(obj))
-                })
-                .map_err(|e| format!("query: {e}"))?
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(|e| format!("row: {e}"))?;
-            Ok(rows)
-        })
-        .await
-        .map_err(|e| PipelineError::new("FW_NODE_SQLITE_QUERY", format!("task: {e}")))?
-        .map_err(|e| PipelineError::new("FW_NODE_SQLITE_QUERY", e))?;
-
+            .map_err(|err| PipelineError::new(MIGRATE_CODE, err.message))?;
+        let db_path = crate::platform::sqlite_schema::local_db_path(&self.data_root, owner, project);
+        let answer = tokio::task::spawn_blocking(move || run(&db_path, &sql, &params, write, limit))
+            .await
+            .map_err(|err| PipelineError::new(CODE, format!("task: {err}")))??;
         Ok(NodeExecutionOutput {
             output_pins: vec![OUTPUT_PIN_OUT.to_string()],
-            payload: crate::pipeline::nodes::shared::util::with_answer(&input.payload, json!({ "rows": rows })),
+            payload: with_answer(&input.payload, answer),
             trace: vec![format!("node_kind={NODE_KIND}")],
         })
     }
 }
+
+/// One statement against the database at `db_path`: on a read-only
+/// connection unless `write`. Answers the `query` key.
+pub fn run(db_path: &Path, sql: &str, params: &Params, write: bool, limit: usize) -> Result<Value, PipelineError> {
+    let conn = open(db_path, write)?;
+    let mut stmt = conn.prepare(sql).map_err(|err| sqlite_error(&err, "prepare"))?;
+    bind(&mut stmt, params)?;
+    let columns: Vec<String> = stmt.column_names().into_iter().map(str::to_string).collect();
+    let mut rows = Vec::new();
+    let mut truncated = false;
+    {
+        let mut cursor = stmt.raw_query();
+        while let Some(row) = cursor.next().map_err(|err| sqlite_error(&err, "run"))? {
+            if rows.len() < limit {
+                let mut object = serde_json::Map::with_capacity(columns.len());
+                for (index, name) in columns.iter().enumerate() {
+                    let cell = row.get_ref(index).map_err(|err| sqlite_error(&err, "row"))?;
+                    object.insert(name.clone(), cell_to_json(cell));
+                }
+                rows.push(Value::Object(object));
+            } else {
+                truncated = true;
+                // A read stops here; a write steps to its end so every row
+                // it changes is changed and counted.
+                if !write {
+                    break;
+                }
+            }
+        }
+    }
+    let affected = write.then(|| conn.changes());
+    Ok(query::answer(columns, rows, truncated, affected))
+}
+
+/// Read-only unless `write`: SQLite refuses every change on a read-only
+/// connection itself, whatever the statement looks like. No connection may
+/// attach another database: `ATTACH` names any file the process can open, so
+/// a statement could otherwise read or write outside the project's database.
+fn open(db_path: &Path, write: bool) -> Result<rusqlite::Connection, PipelineError> {
+    if let Some(parent) = db_path.parent() {
+        std::fs::create_dir_all(parent).map_err(|err| PipelineError::new(CODE, format!("open db: {err}")))?;
+    }
+    if write || !db_path.exists() {
+        // A first read creates the empty database, so it is not "missing".
+        let conn = rusqlite::Connection::open(db_path).map_err(|err| PipelineError::new(CODE, format!("open db: {err}")))?;
+        conn.execute_batch("PRAGMA journal_mode=WAL;").map_err(|err| PipelineError::new(CODE, format!("pragma: {err}")))?;
+        if write {
+            return Ok(no_attach(conn));
+        }
+    }
+    let flags = OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX;
+    rusqlite::Connection::open_with_flags(db_path, flags)
+        .map(no_attach)
+        .map_err(|err| PipelineError::new(CODE, format!("open db: {err}")))
+}
+
+fn no_attach(conn: rusqlite::Connection) -> rusqlite::Connection {
+    conn.set_limit(rusqlite::limits::Limit::SQLITE_LIMIT_ATTACHED, 0);
+    conn
+}
+
+/// Binds `--param` to the statement's placeholders, refusing a count or a
+/// name that does not match.
+fn bind(stmt: &mut rusqlite::Statement<'_>, params: &Params) -> Result<(), PipelineError> {
+    let wanted = stmt.parameter_count();
+    match params {
+        Params::Positional(values) => {
+            if values.len() != wanted {
+                return Err(PipelineError::new(
+                    PARAM_CODE,
+                    format!("the statement has {wanted} placeholder(s); --param gives {}", values.len()),
+                ));
+            }
+            for (index, value) in values.iter().enumerate() {
+                bind_one(stmt, index + 1, value)?;
+            }
+        }
+        Params::Named(values) => {
+            if values.len() != wanted {
+                return Err(PipelineError::new(
+                    PARAM_CODE,
+                    format!("the statement has {wanted} placeholder(s); --param names {}", values.len()),
+                ));
+            }
+            for (name, value) in values {
+                let index = [":", "@", "$"]
+                    .iter()
+                    .find_map(|prefix| stmt.parameter_index(&format!("{prefix}{name}")).ok().flatten())
+                    .ok_or_else(|| PipelineError::new(PARAM_CODE, format!("the statement has no :{name} placeholder")))?;
+                bind_one(stmt, index, value)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn bind_one(stmt: &mut rusqlite::Statement<'_>, index: usize, value: &Value) -> Result<(), PipelineError> {
+    let bound = match value {
+        Value::Null => stmt.raw_bind_parameter(index, rusqlite::types::Null),
+        Value::Bool(b) => stmt.raw_bind_parameter(index, *b),
+        Value::Number(n) => match (n.as_i64(), n.as_f64()) {
+            (Some(i), _) => stmt.raw_bind_parameter(index, i),
+            (None, Some(f)) => stmt.raw_bind_parameter(index, f),
+            _ => stmt.raw_bind_parameter(index, n.to_string()),
+        },
+        Value::String(s) => stmt.raw_bind_parameter(index, s.as_str()),
+        other => stmt.raw_bind_parameter(index, other.to_string()),
+    };
+    bound.map_err(|err| PipelineError::new(PARAM_CODE, format!("bind {index}: {err}")))
+}
+
+/// SQLite's own refusal of a write on a read-only connection is the author's
+/// missing `--write`; anything else is the statement's failure.
+fn sqlite_error(err: &rusqlite::Error, stage: &str) -> PipelineError {
+    if let rusqlite::Error::SqliteFailure(code, _) = err {
+        if code.code == rusqlite::ErrorCode::ReadOnly {
+            return PipelineError::new(WRITE_CODE, query::write_refusal(NODE_KIND, &err.to_string()));
+        }
+    }
+    PipelineError::new(CODE, format!("{stage}: {err}"))
+}
+
+fn cell_to_json(v: ValueRef<'_>) -> Value {
+    match v {
+        ValueRef::Null => Value::Null,
+        ValueRef::Integer(i) => json!(i),
+        ValueRef::Real(f) => json!(f),
+        ValueRef::Text(t) => Value::String(String::from_utf8_lossy(t).into_owned()),
+        ValueRef::Blob(b) => Value::String(hex::encode(b)),
+    }
+}
+
+#[cfg(test)]
+mod tests;

@@ -44,8 +44,8 @@ the browser starts empty and applies defaults the same way, so server and
 client agree.
 
 Server data does **not** flow through `usePageState` — it is already in
-`input` (see `help("web")`). Read `input.rows` directly; put only client-side
-state into page state.
+`input` (see `help("web")`). Read `input.query.rows` directly (after a db
+query node); put only client-side state into page state.
 
 The object form `usePageState()` (no key) returns `{ ...state, setPageState(patch) }`.
 It is a plain object, not a proxy: assigning to a property changes nothing.

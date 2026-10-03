@@ -39,7 +39,7 @@ every call (format, tone, constraints) go in `--system-prompt`.
 
 | Flag | Description |
 |------|-------------|
-| `--prompt "…"` / `-- …` | The prompt; `{{ input.rows }}` and friends resolve before the call. |
+| `--prompt "…"` / `-- …` | The prompt; `{{ input.query.rows }}` and friends resolve before the call. |
 | `--system-prompt "…"` | Standing instructions, e.g. "reply with strict JSON only". |
 | `--credential <id>` | Credential of kind openai or openrouter; its kind is the provider. |
 | `--schema '{…}'` | JSON Schema the answer must satisfy; the parsed answer comes back as `data`. |
@@ -59,10 +59,10 @@ parsed JSON when `--schema` was given and passed. With `--schema` there is no
 ```
 | trigger.schedule --cron "0 * * * *"
 | script.result.run -- "return { cutoff: Date.now() - 3600000 }"
-| sekejap.query.run --params "{{ [input.cutoff] }}" -- "SELECT * FROM events WHERE ts > $1"
-| ai.text.generate --credential my-llm --output-mode final_only --system-prompt "You are an operations analyst." --schema '{"type":"object","required":["summary","patterns","anomalies"],"properties":{"summary":{"type":"string"},"patterns":{"type":"array"},"anomalies":{"type":"array"}}}' -- Summarize these events, count patterns, and flag anything unusual. Events: {{ input.rows }}
+| sekejap.query.run --param "1={{ input.cutoff }}" -- "SELECT * FROM events WHERE ts > $1"
+| ai.text.generate --credential my-llm --output-mode final_only --system-prompt "You are an operations analyst." --schema '{"type":"object","required":["summary","patterns","anomalies"],"properties":{"summary":{"type":"string"},"patterns":{"type":"array"},"anomalies":{"type":"array"}}}' -- Summarize these events, count patterns, and flag anything unusual. Events: {{ input.query.rows }}
 | script.result.run -- "const r = input.data; return { key: 'summary-' + Date.now(), summary: r.summary, patterns: r.patterns, anomalies: r.anomalies, period: 'hourly', generated_at: Date.now() }"
-| sekejap.query.run --read-only false --params "{{ [input.key, input.summary, input.patterns, input.anomalies, input.period, input.generated_at] }}" -- "INSERT INTO ai_summaries (_key, summary, patterns, anomalies, period, generated_at) VALUES ($1, $2, $3, $4, $5, $6)"
+| sekejap.query.run --write --param "1={{ input.key }}" --param "2={{ input.summary }}" --param "3={{ input.patterns }}" --param "4={{ input.anomalies }}" --param "5={{ input.period }}" --param "6={{ input.generated_at }}" -- "INSERT INTO ai_summaries (_key, summary, patterns, anomalies, period, generated_at) VALUES ($1, $2, $3, $4, $5, $6)"
 ```
 
 ### daily-metrics-report — aggregate + report + send
@@ -70,8 +70,8 @@ parsed JSON when `--schema` was given and passed. With `--schema` there is no
 ```
 | trigger.schedule --cron "0 8 * * *"
 | script.result.run -- "return { cutoff: Date.now() - 86400000 }"
-| sekejap.query.run --params "{{ [input.cutoff] }}" -- "SELECT * FROM ai_summaries WHERE generated_at > $1"
-| ai.text.generate --credential my-llm --output-mode final_only --system-prompt "Reply with the markdown report only, no commentary." -- Write a daily operations report in markdown from these hourly summaries — executive summary, key metrics, trends, recommendations. Summaries: {{ input.rows }}
+| sekejap.query.run --param "1={{ input.cutoff }}" -- "SELECT * FROM ai_summaries WHERE generated_at > $1"
+| ai.text.generate --credential my-llm --output-mode final_only --system-prompt "Reply with the markdown report only, no commentary." -- Write a daily operations report in markdown from these hourly summaries — executive summary, key metrics, trends, recommendations. Summaries: {{ input.query.rows }}
 | kv.entry.get --key report_webhook_url --out-key webhook_url --durable
 | http.response.fetch --url "{{ input.webhook_url }}" --method POST --body "{{ { report: input.response } }}"
 ```
@@ -85,9 +85,9 @@ page) before this pipeline runs; there is no `env` scope to read a URL from.
 ```
 | trigger.schedule --cron "*/15 * * * *"
 | sekejap.query.run -- "SELECT * FROM incoming_queue WHERE processed = false LIMIT 10"
-| ai.text.generate --credential my-llm --output-mode final_only --schema '{"type":"array","items":{"type":"object","required":["key","urgency","category"],"properties":{"urgency":{"enum":["high","medium","low"]}}}}' -- Classify each item by urgency (high, medium, low) and category. Reply with a JSON array of { key, urgency, category }, where key is the _key of that item. Items: {{ input.rows }}
+| ai.text.generate --credential my-llm --output-mode final_only --schema '{"type":"array","items":{"type":"object","required":["key","urgency","category"],"properties":{"urgency":{"enum":["high","medium","low"]}}}}' -- Classify each item by urgency (high, medium, low) and category. Reply with a JSON array of { key, urgency, category }, where key is the _key of that item. Items: {{ input.query.rows }}
 | logic.foreach --items-expr "input.data"
-| sekejap.query.run --read-only false --params "{{ [$item.urgency, $item.category, $item.key] }}" -- "UPDATE incoming_queue SET urgency = $1, category = $2, processed = true WHERE _key = $3"
+| sekejap.query.run --write --param "1={{ $item.urgency }}" --param "2={{ $item.category }}" --param "3={{ $item.key }}" -- "UPDATE incoming_queue SET urgency = $1, category = $2, processed = true WHERE _key = $3"
 ```
 
 `logic.foreach` fans out one run per array element; `$item` stays in scope
@@ -99,7 +99,7 @@ for every downstream node in that run even after `sekejap.query.run` replaces
 ```
 | trigger.webhook --path /admin/reports --method GET
 | sekejap.query.run -- "SELECT * FROM ai_summaries ORDER BY generated_at DESC LIMIT 30"
-| script.result.run -- "return { reports: input.rows }"
+| script.result.run -- "return { reports: input.query.rows }"
 | web.response.send --template pages/admin-reports.tsx
 ```
 
@@ -108,7 +108,7 @@ for every downstream node in that run even after `sekejap.query.run` replaces
 ## Nodes Used
 
 - `trigger.schedule` — cron-based scheduling (`0 * * * *` = hourly, `0 8 * * *` = daily 8am)
-- `sekejap.query.run` — SQL against Sekejap; output is `{ columns, rows, row_count, affected_rows, duration_ms }`
+- `sekejap.query.run` — SQL against Sekejap; output is `query: { columns, rows, row_count, truncated }`, plus `rows_affected` with `--write`
 - `script` — shape rows for insert
 - `ai.text.generate` — analysis, classification, report generation; `--schema` returns checked JSON as `data`
 - `logic.foreach` — one downstream run per classified item

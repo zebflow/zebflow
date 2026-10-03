@@ -1369,7 +1369,7 @@ fn graph_note_statement(line: &str) -> Option<(String, Vec<String>)> {
 /// SQL silently won.
 pub fn body_config_key(kind: &str) -> &'static str {
     match kind {
-        "pg.query.run" | "sekejap.query.run" | "sqlite.query.run" | "n.sqlite.mutate" | "table.query.run" => "query",
+        "pg.query.run" | "sekejap.query.run" | "sqlite.query.run" | "table.query.run" => "query",
         "script.result.run" => "source",
         "logic.match" | "logic.if" => "expression",
         "browser.page.run" => "code",
@@ -2504,7 +2504,6 @@ pub fn node_to_segment_no_body(node: &PipelineNode) -> String {
             "pg.query.run" => "query",
             "sekejap.query.run" => "query",
             "sqlite.query.run" => "query",
-            "n.sqlite.mutate" => "query",
             "table.query.run" => "query",
             "script.result.run" => "source",
             "logic.match" | "logic.if" => "expression",

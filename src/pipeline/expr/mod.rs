@@ -22,7 +22,7 @@
 //!
 //! Whole-field expression (preserves native type):
 //! ```text
-//! --params-expr "{{ [$trigger.auth.sub] }}"
+//! --param "1={{ $trigger.auth.sub }}"
 //! --url "{{ $input.endpoint }}"
 //! ```
 //!
@@ -33,7 +33,7 @@
 //!
 //! Accessing previous node output:
 //! ```text
-//! --url "{{ $nodes.userLookup.rows[0].api_endpoint }}"
+//! --url "{{ $nodes.userLookup.query.rows[0].api_endpoint }}"
 //! ```
 
 pub mod resolver;

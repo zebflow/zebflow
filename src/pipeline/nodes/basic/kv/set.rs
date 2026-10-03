@@ -70,7 +70,7 @@ pub fn definition() -> NodeDefinition {
             DslFlag {
                 flag: "--value".to_string(),
                 config_key: "value".to_string(),
-                description: "What to store — a literal or {{ expr }} (e.g. \"{{ input.rows }}\"). Omit to store the whole payload."
+                description: "What to store — a literal or {{ expr }} (e.g. \"{{ input.query.rows }}\"). Omit to store the whole payload."
                     .to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
@@ -134,7 +134,7 @@ pub fn definition() -> NodeDefinition {
         examples: vec![
             crate::pipeline::model::NodeExample::dsl("Remember an OAuth state for ten minutes", r#"kv.entry.put --key "oauth:state:{{ input.result }}" --value "{{ { started: new Date().toISOString() } }}" --ttl 600"#)
                 .note("Payload passes through unchanged; read it back with `kv.entry.get --key … --out-key state`."),
-            crate::pipeline::model::NodeExample::dsl("Cache a query result across restarts", r#"kv.entry.put --key "home:posts" --value "{{ input.rows }}" --ttl 300 --durable"#),
+            crate::pipeline::model::NodeExample::dsl("Cache a query result across restarts", r#"kv.entry.put --key "home:posts" --value "{{ input.query.rows }}" --ttl 300 --durable"#),
         ],
         ..Default::default()
     }

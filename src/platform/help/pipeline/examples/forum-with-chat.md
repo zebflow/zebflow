@@ -34,7 +34,7 @@ CREATE TABLE forum_messages (_key TEXT PRIMARY KEY, room TEXT, user TEXT, text T
 ```
 | trigger.webhook --path /forum --method GET
 | sekejap.query.run -- "SELECT * FROM forum_rooms ORDER BY last_activity DESC"
-| script.result.run -- "return { rooms: input.rows }"
+| script.result.run -- "return { rooms: input.query.rows }"
 | web.response.send --template pages/forum-home.tsx
 ```
 
@@ -46,9 +46,9 @@ being overwritten by the messages query:
 ```zf
 register forum/room --
 [a] trigger.webhook --path /forum/:room --method GET
-[room] sekejap.query.run --params "{{ [input.params.room] }}" -- "SELECT * FROM forum_rooms WHERE _key = $1"
-[msgs] sekejap.query.run --params "{{ [input.params.room] }}" -- "SELECT * FROM forum_messages WHERE room = $1 ORDER BY ts DESC LIMIT 50"
-[merge] script.result.run -- "return { room: $nodes.room.rows[0] || null, messages: input.rows.slice().reverse() };"
+[room] sekejap.query.run --param "1={{ input.params.room }}" -- "SELECT * FROM forum_rooms WHERE _key = $1"
+[msgs] sekejap.query.run --param "1={{ input.params.room }}" -- "SELECT * FROM forum_messages WHERE room = $1 ORDER BY ts DESC LIMIT 50"
+[merge] script.result.run -- "return { room: $nodes.room.query.rows[0] || null, messages: input.query.rows.slice().reverse() };"
 [b] web.response.send --template pages/forum-room.tsx
 
 [a] -> [room]
@@ -65,7 +65,7 @@ register forum/api-room-create --
 [has_name] logic.if --expr "!!(input.body && input.body.name)"
 [bad] web.response.send --status 400 --body "{{ { ok: false, error: 'name required' } }}"
 [draft] script.result.run -- "const id = String(input.body.name).toLowerCase().replace(/[^a-z0-9]+/g,'-'); return { id, name: input.body.name };"
-[ins] sekejap.query.run --read-only false --params "{{ [$nodes.draft.id, $nodes.draft.name, Date.now(), Date.now()] }}" -- "INSERT INTO forum_rooms (_key, name, created_at, last_activity) VALUES ($1, $2, $3, $4)"
+[ins] sekejap.query.run --write --param "1={{ $nodes.draft.id }}" --param "2={{ $nodes.draft.name }}" --param "3={{ Date.now() }}" --param "4={{ Date.now() }}" -- "INSERT INTO forum_rooms (_key, name, created_at, last_activity) VALUES ($1, $2, $3, $4)"
 [ok] script.result.run -- "return { ok: true, id: $nodes.draft.id };"
 
 [trig] -> [has_name]
@@ -86,7 +86,7 @@ register forum/ws-chat-message --
 [a] trigger.room --event chat.message
 [guard] logic.if --expr "!!(input.payload && input.payload.user && input.payload.text)"
 [save] script.result.run -- "return { id: Date.now().toString(), room: input.room_id, user: input.payload.user, text: input.payload.text, ts: Date.now() };"
-[ins] sekejap.query.run --read-only false --params "{{ [$nodes.save.id, $nodes.save.room, $nodes.save.user, $nodes.save.text, $nodes.save.ts] }}" -- "INSERT INTO forum_messages (_key, room, user, text, ts) VALUES ($1, $2, $3, $4, $5)"
+[ins] sekejap.query.run --write --param "1={{ $nodes.save.id }}" --param "2={{ $nodes.save.room }}" --param "3={{ $nodes.save.user }}" --param "4={{ $nodes.save.text }}" --param "5={{ $nodes.save.ts }}" -- "INSERT INTO forum_messages (_key, room, user, text, ts) VALUES ($1, $2, $3, $4, $5)"
 [emit] ws.emit --to all --event chat.message --payload "{{ $nodes.save }}"
 
 [a] -> [guard]

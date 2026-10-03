@@ -23,7 +23,7 @@ bundle per page. Facts: `help(topic="web")`, `web/hooks`, `web/tailwind`,
    on the next. Nothing is inherited.
 3. **`input` is the payload.** The page's parameter is what the pipeline's last
    node produced, plus `route`, `params`, `query`, `search`, `headers`,
-   `auth`. After `sekejap.query.run` that is `input.rows`. There is no
+   `auth`. After `sekejap.query.run` that is `input.query.rows`. There is no
    `input.state`, no `input.request`.
 4. **Server data from `input`; client state from hooks.** `useState` for local
    state, `usePageState("key", default)` for state shared across the page's
@@ -50,7 +50,7 @@ import PostCard from "@/components/post-card";
 import "@/globals.css";
 
 export default function Posts(input) {
-  const posts = input.rows ?? [];
+  const posts = input.query?.rows ?? [];
   const [open, setOpen] = useState(false);
   return (
     <main className="mx-auto max-w-3xl p-8">
@@ -67,7 +67,7 @@ export const page = {
 };
 
 export function getPage(input) {            // optional: head derived from data
-  return { head: { title: `${input.rows?.length ?? 0} posts` } };
+  return { head: { title: `${input.query?.rows?.length ?? 0} posts` } };
 }
 ```
 

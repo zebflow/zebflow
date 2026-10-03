@@ -86,7 +86,7 @@ article `<Title> — <Brand>`; pricing `Plans and pricing — <Brand>`; auth `Si
 ```
 | trigger.webhook --path /sitemap.xml --method GET
 | sekejap.query.run -- "SELECT slug, updated_at FROM posts WHERE status = 'published'"
-| script.result.run -- "const h = ctx.trigger.headers; const base = (h['x-forwarded-proto'] || 'http') + '://' + (h['x-forwarded-host'] || h.host); const urls = ['/', '/services', '/about', '/contact'].concat(input.rows.map(r => '/blog/' + r.slug)); return { xml: '<?xml version=\"1.0\" encoding=\"UTF-8\"?><urlset xmlns=\"http://www.sitemaps.org/schemas/sitemap/0.9\">' + urls.map(u => '<url><loc>' + base + u + '</loc></url>').join('') + '</urlset>' }"
+| script.result.run -- "const h = ctx.trigger.headers; const base = (h['x-forwarded-proto'] || 'http') + '://' + (h['x-forwarded-host'] || h.host); const urls = ['/', '/services', '/about', '/contact'].concat(input.query.rows.map(r => '/blog/' + r.slug)); return { xml: '<?xml version=\"1.0\" encoding=\"UTF-8\"?><urlset xmlns=\"http://www.sitemaps.org/schemas/sitemap/0.9\">' + urls.map(u => '<url><loc>' + base + u + '</loc></url>').join('') + '</urlset>' }"
 | web.response.send --body "{{ input.xml }}" --header Content-Type=application/xml
 ```
 

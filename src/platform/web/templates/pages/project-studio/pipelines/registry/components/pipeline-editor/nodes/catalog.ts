@@ -32,7 +32,6 @@ const NODE_KIND_COLORS: Record<string, string> = {
   "n.crypto": "#6b21a8",
   "browser.page.run": "#0369a1",
   "trigger.function": "#166534",
-  "n.sekejap.mutate": "#0f766e",
   "function.result.call": "#1e40af",
   "web.response.send": "#9d174d",
   "ms.layer.publish": "#0f766e",

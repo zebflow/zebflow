@@ -60,11 +60,11 @@ Create a `jwt_signing_key` credential in the Credentials UI. Fields:
 
 ```
 | trigger.webhook --path /auth/login --method POST
-| pg.query.run --credential main-db --params "{{ [input.body.username] }}" \
+| pg.query.run --credential main-db --param "1={{ input.body.username }}" \
     -- "SELECT id::text, username, role FROM users WHERE username = $1 LIMIT 1"
-| logic.if --expr "input.rows && input.rows.length > 0"
+| logic.if --expr "input.query.rows && input.query.rows.length > 0"
 (false pin → `web.response.send --status 401 --message "invalid credentials"`)
-| script.result.run -- "const user = input.rows[0]; return { id: user.id, username: user.username, roles: [user.role] };"
+| script.result.run -- "const user = input.query.rows[0]; return { id: user.id, username: user.username, roles: [user.role] };"
 | auth.token.create --credential my-jwt --claim "sub={{ input.id }}" --claim "username:public={{ input.username }}" --claim "roles:public={{ input.roles }}" --expires-in 86400
 | web.response.send --location /dashboard --set-cookie "name=session,value={{ input.access_token }},http-only,max-age=86400,path=/"
 ```
@@ -87,7 +87,7 @@ Create a `jwt_signing_key` credential in the Credentials UI. Fields:
 | crypto --op argon2_hash --value "{{ input.body.password }}"
 (`n.crypto` adds `result` — the hash — to the payload and keeps everything
 else, so `input.body.username` is still there for the insert.)
-| pg.query.run --credential main-db --params "{{ [input.body.username, input.body.email, input.result, 'user'] }}" \
+| pg.query.run --credential main-db --write --param "1={{ input.body.username }}" --param "2={{ input.body.email }}" --param "3={{ input.result }}" --param "4=user" \
     -- "INSERT INTO users (username, email, password_hash, role, created_at) VALUES ($1, $2, $3, $4, NOW()) RETURNING id::text"
 | web.response.send --location /auth/login?registered=1
 ```
@@ -108,9 +108,9 @@ answers on `true`/`false` pins, so the branch is the check.
 
 ```
 | trigger.webhook --path /dashboard --method GET --auth-type jwt --auth-credential my-jwt
-| pg.query.run --credential main-db --params "{{ input.auth.sub }}" \
+| pg.query.run --credential main-db --param "1={{ input.auth.sub }}" \
     -- "SELECT id::text, username, email, role FROM users WHERE id = $1::uuid"
-| script.result.run -- "const u = input.rows?.[0]; return { user: u }"
+| script.result.run -- "const u = input.query.rows?.[0]; return { user: u }"
 | web.response.send --template pages/dashboard.tsx
 ```
 

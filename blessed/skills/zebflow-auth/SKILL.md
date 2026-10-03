@@ -23,7 +23,7 @@ refuses the request before any node runs. Facts:
 | the cookie | `web.response.send --set-cookie "name=zebflow_session,value={{ input.access_token }},http-only,max-age=86400,same-site=Lax"` — the verifier reads `Authorization: Bearer` first, then this cookie. Behind HTTPS add `secure`. |
 | `--auth-required-role` | matches one entry of the token's **`roles` array** claim. A scalar `role` never authorises. |
 | `:public` | only claims marked `:public` reach the browser as `input.auth`; everything else stays server-side (`$trigger.auth`, `ctx.trigger.auth`). A public array claim stays an array. |
-| `crypto` | `--op argon2_hash --value "{{ input.body.password }}"` → payload plus `result` (`input.body` kept); `--op argon2_verify --value "{{ … }}" --hash "{{ input.rows[0].password_hash }}"` → `true`/`false` pins, payload unchanged |
+| `crypto` | `--op argon2_hash --value "{{ input.body.password }}"` → payload plus `result` (`input.body` kept); `--op argon2_verify --value "{{ … }}" --hash "{{ input.query.rows[0].password_hash }}"` → `true`/`false` pins, payload unchanged |
 
 ## Build order
 
@@ -38,7 +38,7 @@ refuses the request before any node runs. Facts:
    | trigger.webhook --path /auth/register --method POST
    | logic.if --expr "typeof input.body?.email === 'string' && typeof input.body?.password === 'string' && input.body.password.length >= 12"
    | crypto --op argon2_hash --value "{{ input.body.password }}"
-   | sekejap.query.run --read-only false --params "{{ [input.body.email, input.result, ['user'], new Date().toISOString()] }}" -- "INSERT INTO users (email, password_hash, roles, created_at) VALUES ($1, $2, $3, $4)"
+   | sekejap.query.run --write --param "1={{ input.body.email }}" --param "2={{ input.result }}" --param "3={{ ['user'] }}" --param "4={{ new Date().toISOString() }}" -- "INSERT INTO users (email, password_hash, roles, created_at) VALUES ($1, $2, $3, $4)"
    | web.response.send --location /login?registered=1
    ```
 
@@ -47,7 +47,7 @@ refuses the request before any node runs. Facts:
    (`zebflow-data`).
 3. **Login.** `POST /auth/login`: look the user up by `input.body.email`,
    `logic.if` one row, `crypto --op argon2_verify` with `--value "{{ $nodes.<trigger id>.body.password }}"`
-   and `--hash "{{ input.rows[0].password_hash }}"`, mint the token with
+   and `--hash "{{ input.query.rows[0].password_hash }}"`, mint the token with
    `roles` as an array, set the cookie, `--location /home`. The `false` pins
    answer `401` — never a different message for "no such user" and "wrong
    password".
@@ -57,7 +57,7 @@ refuses the request before any node runs. Facts:
    that needs a user and `--auth-required-role` on every route that needs a
    role — pages **and** their POST/API pipelines. A protected page whose API
    is open is open.
-6. **Use identity server-side.** `$trigger.auth.sub` in `--params`,
+6. **Use identity server-side.** `$trigger.auth.sub` in `--param`,
    `ctx.trigger.auth.sub` in scripts; never trust an id from `input.body`.
 7. **OAuth** (Google) is the same shape with `http.response.fetch` for the token
    exchange and `kv.entry.put/kv.get` for the state parameter —

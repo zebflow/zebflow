@@ -81,7 +81,7 @@ pub fn definition() -> NodeDefinition {
         layout: vec![],
         ai_tool: Default::default(),
         examples: vec![
-            crate::pipeline::model::NodeExample::dsl("Hand off slow work after answering", r#"kv.message.publish --channel order.placed --payload "{{ { order_id: input.rows[0]._key, email: input.body.email } }}""#)
+            crate::pipeline::model::NodeExample::dsl("Hand off slow work after answering", r#"kv.message.publish --channel order.placed --payload "{{ { order_id: input.query.rows[0]._key, email: input.body.email } }}""#)
                 .note("A pipeline starting with `trigger.topic --channel order.placed` receives it as `input.message`. Payload passes through unchanged."),
         ],
         ..Default::default()

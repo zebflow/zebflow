@@ -2046,6 +2046,20 @@ fn payload(
     }
 }
 
+/// A write refused because the caller asked for a read-only run.
+pub const READ_ONLY_CODE: &str = "PLATFORM_SEKEJAP_QUERY_READ_ONLY";
+
+/// The engine's own `Error::ReadOnly`: raised by the core directly, or
+/// carried through the SQL layer, which keeps only its name
+/// (`SqlError::Engine("ReadOnly")`).
+fn is_read_only_refusal(err: &sekejap::Error) -> bool {
+    match err {
+        sekejap::Error::Engine(sekejap::core::collections::Error::ReadOnly) => true,
+        sekejap::Error::Sql(sekejap::SqlError::Engine(message)) => message == "ReadOnly",
+        _ => false,
+    }
+}
+
 pub fn execute_sql(
     data_root: &Path,
     owner: &str,
@@ -2068,7 +2082,7 @@ pub fn execute_sql(
     if statement_is_write(trimmed) {
         if read_only {
             return Err(PlatformError::new(
-                "PLATFORM_SEKEJAP_QUERY_READ_ONLY",
+                READ_ONLY_CODE,
                 "write statement rejected in read-only mode",
             ));
         }
@@ -2199,9 +2213,17 @@ pub fn execute_sql(
         }
     }
 
-    let rows = db
-        .query(trimmed, params)
-        .map_err(|e| store_error("PLATFORM_SEKEJAP_QUERY_FAILED", e))?;
+    // `Db::query` writes only through its INSERT door, which the check above
+    // closes in read-only mode; everything else it runs on the published
+    // snapshot, where the engine refuses a write with `Error::ReadOnly`
+    // whatever the statement's first word is.
+    let rows = db.query(trimmed, params).map_err(|e| {
+        if read_only && is_read_only_refusal(&e) {
+            PlatformError::new(READ_ONLY_CODE, "the statement writes and the read-only snapshot refused it")
+        } else {
+            store_error("PLATFORM_SEKEJAP_QUERY_FAILED", e)
+        }
+    })?;
     let (columns, rows, truncated) = payload_from_rows(rows, max_rows);
     Ok(payload(columns, rows, truncated, started))
 }

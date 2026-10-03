@@ -129,9 +129,9 @@ register auth/google-callback --
 [burn] kv.entry.delete --key "oauth:state:{{ input.state }}"
 [exchange] http.response.fetch --credential google-token-exchange --bind CODE=input.code
 [identity] script.result.run -- "const b = (input.response && input.response.body) || {}; const idt = b.id_token; if (!idt) throw new Error('google returned no id_token'); const seg = idt.split('.')[1]; const claims = JSON.parse(atob(seg.replace(/-/g, '+').replace(/_/g, '/'))); if (!claims.email) throw new Error('id_token carried no email'); return { email: String(claims.email).toLowerCase(), name: claims.name || '' };"
-[member] sqlite.query.run --query "SELECT email, name, roles FROM members WHERE email = ?1" --params "{{ [input.email] }}"
-[known] logic.if --expr "input.rows && input.rows.length > 0"
-[claim] script.result.run -- "const m = input.rows[0]; return { sub: m.email, name: m.name, roles: JSON.parse(m.roles) };"
+[member] sqlite.query.run --query "SELECT email, name, roles FROM members WHERE email = ?1" --param "1={{ input.email }}"
+[known] logic.if --expr "input.query.rows && input.query.rows.length > 0"
+[claim] script.result.run -- "const m = input.query.rows[0]; return { sub: m.email, name: m.name, roles: JSON.parse(m.roles) };"
 [token] auth.token.create --credential session-signing-key --claim "sub={{ input.sub }}" --claim "name:public={{ input.name }}" --claim "roles={{ input.roles }}" --expires-in 86400
 [welcome] web.response.send --location /wh/OWNER/PROJECT/me --set-cookie "name=session,value={{ input.access_token }},http-only,same-site=Lax,max-age=86400,path=/"
 [stranger] web.response.send --status 403 --message "This Google account is not a member yet."
@@ -176,7 +176,7 @@ Node by node:
 ```zf
 register auth/me --
 | trigger.webhook --path /me --method GET --auth-type jwt --auth-credential session-signing-key
-| sqlite.query.run --query "SELECT email, name, accepted_at FROM members WHERE email = ?1" --params "{{ [input.auth.sub] }}"
+| sqlite.query.run --query "SELECT email, name, accepted_at FROM members WHERE email = ?1" --param "1={{ input.auth.sub }}"
 | web.response.send --template pages/me.tsx
 ```
 
@@ -200,7 +200,7 @@ password form and every protected route stays as it is.
 - `crypto --op random_hex --length <bytes>` — output `{ result }`
 - `kv.entry.put --key <k> --ttl <secs>` / `kv.entry.get --key <k> --out-key <k>` / `kv.entry.delete --key <k>` — state store; `kv.entry.get` merges, `kv.entry.delete` passes the payload through
 - `http.response.fetch --credential <secure_request id> --bind NAME=<expr>` — the credential owns URL, method, headers and body; one `--bind` per declared variable; output `{ request, response }`
-- `sqlite.query.run --params "{{ [expr] }}"` — `?1` placeholders
+- `sqlite.query.run --param "1={{ expr }}"` — `?1` placeholders
 - `logic.if --expr <js>` — `true` / `false` pins
 - `auth.token.create --credential <jwt_signing_key id> --claim "k={{ v }}" [--claim "k:public={{ v }}"]` — output `{ access_token }`; quote each claim, an unquoted `{{ }}` is cut at its first space
 - `web.response.send --location <url> --set-cookie <spec>` / `--status 403 --message <text>`

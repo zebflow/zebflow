@@ -37,7 +37,7 @@
 //! **Database lookup tool:**
 //! ```text
 //! | trigger.mcp --tool-name lookup_user --tool-description "Look up user by email" --params email:string
-//! | pg.query.run --credential main-db --params "{{ [input.arguments.email] }}" -- "SELECT * FROM users WHERE email = $1"
+//! | pg.query.run --credential main-db --param "1={{ input.arguments.email }}" -- "SELECT * FROM users WHERE email = $1"
 //! | web.response.send
 //! ```
 
@@ -170,7 +170,7 @@ pub fn definition() -> NodeDefinition {
             crate::pipeline::model::NodeExample::dsl("A tool that looks up stock", r#"trigger.mcp --tool-name stock_lookup --tool-description "Current stock level for one SKU. Use before promising availability." --params sku:string"#)
                 .input(serde_json::json!({ "sku": "MUG-01" }))
                 .output(serde_json::json!({ "sku": "MUG-01" }))
-                .note("Then `| sekejap.query.run --params \"{{ [input.sku] }}\" -- \"SELECT sku, on_hand FROM stock WHERE sku = $1\"`."),
+                .note("Then `| sekejap.query.run --param \"1={{ input.sku }}\" -- \"SELECT sku, on_hand FROM stock WHERE sku = $1\"`."),
         ],
         ..Default::default()
     }

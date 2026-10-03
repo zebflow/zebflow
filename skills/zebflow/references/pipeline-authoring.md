@@ -61,7 +61,6 @@ Common work nodes:
 - `script.result.run`
 - `pg.query.run`
 - `sqlite.query.run`
-- `n.sqlite.mutate`
 - `sekejap.query.run`
 - `sekejap.record.create`
 - `http.response.fetch`

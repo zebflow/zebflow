@@ -48,11 +48,11 @@ If `auth_redirect` / `auth_forbidden_redirect` are not set, auth failure returns
 
 ```
 | trigger.webhook --path /auth/login --method POST
-| pg.query.run --credential my-pg --params "{{ [input.body.identifier] }}" \
+| pg.query.run --credential my-pg --param "1={{ input.body.identifier }}" \
     -- "SELECT player_id::text, fullname, role FROM app.player WHERE identifier = $1 AND is_active = true"
-| logic.if --expr "input.rows && input.rows.length > 0"
+| logic.if --expr "input.query.rows && input.query.rows.length > 0"
 (false pin → `web.response.send --status 401 --message "invalid credentials"`)
-| script.result.run -- "const user = input.rows[0]; return { player_id: user.player_id, name: user.fullname, roles: [user.role] };"
+| script.result.run -- "const user = input.query.rows[0]; return { player_id: user.player_id, name: user.fullname, roles: [user.role] };"
 | auth.token.create --credential my-jwt --claim "sub={{ input.player_id }}" --claim "name:public={{ input.name }}" --claim "roles:public={{ input.roles }}" --expires-in 86400
 | web.response.send --location /dashboard --set-cookie "name=session,value={{ input.access_token }},http-only,max-age=86400,path=/"
 ```
@@ -61,9 +61,9 @@ If `auth_redirect` / `auth_forbidden_redirect` are not set, auth failure returns
 
 ```
 | trigger.webhook --path /dashboard --method GET --auth-type jwt --auth-credential my-jwt
-| pg.query.run --credential my-pg --params "{{ input.auth.sub }}" \
+| pg.query.run --credential my-pg --param "1={{ input.auth.sub }}" \
     -- "SELECT player_id::text, fullname, email FROM app.player WHERE player_id = $1::uuid"
-| script.result.run -- "const user = input.rows?.[0]; return { user }"
+| script.result.run -- "const user = input.query.rows?.[0]; return { user }"
 | web.response.send --template pages/dashboard.tsx
 ```
 
@@ -101,7 +101,7 @@ An empty `value` is allowed and clears the cookie.
 
 - `trigger.webhook --auth-type jwt --auth-credential <id>` — auto-verify JWT; `input.auth` = decoded claims
 - `trigger.webhook --auth-required-role <roles>` — role check; comma-separated list from credential `auth_roles`
-- `pg.query.run --credential <id> --params` — look up user by identifier or sub claim, e.g. `--params "{{ [input.body.identifier] }}"` or `--params "{{ input.auth.sub }}"`
+- `pg.query.run --credential <id> --param` — look up user by identifier or sub claim, e.g. `--param "1={{ input.body.identifier }}"` or `--param "1={{ input.auth.sub }}"`
 - `auth.token.create --claim "key={{ input.field }}"` — sign JWT; output `{{ input.access_token }}`. End the claim name with `:public` (e.g. `--claim "name:public={{ input.name }}"`) to expose that claim in the browser via `ctx.auth`. `sub` and other private claims stay server-only.
 - `web.response.send --set-cookie` — set HttpOnly cookie in response
 - `web.response.send --location` — redirect

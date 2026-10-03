@@ -1,10 +1,10 @@
-//! `sqlite.*` — SQLite files in the project: `sqlite.query.run`, `sqlite.mutate`.
+//! `sqlite.*` — the project's built-in SQLite database: `sqlite.query.run`
+//! (reads, and writes with `--write`).
 
 use crate::pipeline::NodeDefinition;
 
-pub mod mutate;
 pub mod query;
 
 pub fn definitions() -> Vec<NodeDefinition> {
-    vec![mutate::definition(), query::definition()]
+    vec![query::definition()]
 }

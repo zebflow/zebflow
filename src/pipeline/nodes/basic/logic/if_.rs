@@ -73,7 +73,7 @@ pub fn definition() -> NodeDefinition {
         examples: vec![
             crate::pipeline::model::NodeExample::dsl("Guard a form field", r#"logic.if --expr "typeof input.body?.title === 'string' && input.body.title.length > 0""#)
                 .note("`true` carries the same payload on; wire `false` to a `web.response.send --status 400`."),
-            crate::pipeline::model::NodeExample::dsl("Found or not found", r#"logic.if --expr "input.rows.length > 0""#)
+            crate::pipeline::model::NodeExample::dsl("Found or not found", r#"logic.if --expr "input.query.rows.length > 0""#)
                 .input(serde_json::json!({ "rows": [] }))
                 .note("Fires the `false` pin; the payload is unchanged."),
         ],

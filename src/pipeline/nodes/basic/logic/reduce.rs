@@ -94,7 +94,7 @@ pub fn definition() -> NodeDefinition {
         examples: vec![
             crate::pipeline::model::NodeExample::dsl("Sum a column", r#"logic.reduce --init-expr "{ total: 0, n: 0 }" --step-expr "{ total: $acc.total + $input.item.amount, n: $acc.n + 1 }""#)
                 .output(serde_json::json!({ "total": 42.5, "n": 3 }))
-                .note("After `logic.foreach --items-expr \"input.rows\"` over three rows."),
+                .note("After `logic.foreach --items-expr \"input.query.rows\"` over three rows."),
         ],
         ..Default::default()
     }

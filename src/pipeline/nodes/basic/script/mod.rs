@@ -158,10 +158,10 @@ pub fn definition() -> NodeDefinition {
             }),
         },
         examples: vec![
-            crate::pipeline::model::NodeExample::dsl("Shape rows for a page", r#"script.result.run -- "return { posts: input.rows.map(r => ({ ...r, when: r.created_at.slice(0, 10) })), total: input.row_count }""#)
+            crate::pipeline::model::NodeExample::dsl("Shape rows for a page", r#"script.result.run -- "return { posts: input.query.rows.map(r => ({ ...r, when: r.created_at.slice(0, 10) })), total: input.query.row_count }""#)
                 .input(serde_json::json!({ "columns": ["title", "created_at"], "rows": [{ "title": "Hi", "created_at": "2026-09-13T04:00:00Z" }], "row_count": 1 }))
                 .output(serde_json::json!({ "posts": [{ "title": "Hi", "created_at": "2026-09-13T04:00:00Z", "when": "2026-09-13" }], "total": 1 })),
-            crate::pipeline::model::NodeExample::dsl("Combine two earlier nodes", r#"script.result.run -- "return { user: ctx.nodes.b.rows[0], orders: ctx.nodes.c.rows }""#)
+            crate::pipeline::model::NodeExample::dsl("Combine two earlier nodes", r#"script.result.run -- "return { user: ctx.nodes.b.query.rows[0], orders: ctx.nodes.c.query.rows }""#)
                 .note("After `logic.collect`, or anywhere in graph mode where `b` and `c` already ran."),
         ],
         ..Default::default()
