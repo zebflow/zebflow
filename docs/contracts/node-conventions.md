@@ -28,18 +28,30 @@ logic.<verb>          control node   logic.if              logic.foreach
   what the node produces or acts on and is its **answer key** (§6); the
   **verb** says what happens to it. An entry node's answer key is its source
   (`trigger.webhook` → `webhook`); a run input's is its `--name`.
-- The **family** is a domain from the closed list; only the owner adds one. A
-  provider is never a family (§11). An engine whose own language is the node's
-  grammar keeps its family (`pg`, `sqlite`, `sekejap`).
+- The **family** is a domain or a brand from the closed list; only the owner
+  adds one. **The swap test decides which:** if replacing the vendor leaves the
+  rest of the pipeline meaningful — a video is a video, a completion is text —
+  the task is one kind with `--provider` (§11). If it does not — a Telegram
+  chat id means nothing to WhatsApp, a Postgres statement is not SQLite's — the
+  platform's own concepts are the grammar and the **brand is the family**,
+  spelled in full (`telegram`, `whatsapp`, `slack`, `discord`), as an engine
+  keeps its own (`pg`, `sqlite`, `sekejap`).
+- Brand families still speak the dictionary: the same nouns, verbs and words
+  where the meaning is the same (`telegram.message.send` and
+  `whatsapp.message.send` both take `--recipient` `--text` `--file` and answer
+  `message: { id, recipient, sent_at }`); only the platform's own concepts are
+  local words (`--keyboard`, `--template`). A brand's entry node is
+  `trigger.<brand>`.
 - **Same task, same answer — one kind.** A difference of format is a flag
-  (`fs.barcode.render --symbology qr|code128`); a task only some providers
-  offer is a new noun or verb (`ai.video.edit`), never `vendor.*`.
+  (`fs.barcode.render --symbology qr|code128`); a task only some providers of
+  a swappable task offer is a new noun or verb (`ai.video.edit`).
 - `logic.*` is closed: `if` `match` `foreach` `reduce` `collect` `retry`
   `concept` (a stand-in for a step not built yet; passes its input on).
 
 | Families | |
 | --- | --- |
-| Now | `ai` `auth` `browser` `chat` `crypto` `fs` `function` `geo` `http` `input` `kv` `logic` `mail` `mcp` `ms` `pg` `pipeline` `script` `sekejap` `sqlite` `table` `trigger` `web` `ws` |
+| Now | `ai` `auth` `browser` `crypto` `fs` `function` `geo` `http` `input` `kv` `logic` `mail` `mcp` `ms` `pg` `pipeline` `script` `sekejap` `sqlite` `table` `trigger` `web` `ws` |
+| Brands | `telegram` (now, from the curated bundle) · `whatsapp` `slack` `discord` (when built) |
 | Reserved | `cloud` (provider-neutral resources: queue, function, bucket — `--provider aws\|gcp\|azure`) · `job` (external commands) · `sec` (scanning, detection) |
 
 | Verbs | |
@@ -278,7 +290,7 @@ folder it writes; with none, it writes host-relative links and no sitemap.
 
 ## 11. Providers
 
-One kind serves every provider of a task. Its definition holds the shared
+For a swappable task (§1, the swap test) one kind serves every provider. Its definition holds the shared
 roles and, per provider and model, a **profile**: which roles it accepts
 (required, optional, how many), the allowed values of its choices
 (`--duration 5s|10s`), and its own settings as typed, closed `--option` keys.
