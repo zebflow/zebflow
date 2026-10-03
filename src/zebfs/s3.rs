@@ -418,6 +418,24 @@ impl S3ZebFs {
         body: Option<&[u8]>,
         extra: &[(&str, &str)],
     ) -> Result<ureq::Response, ZebFsError> {
+        let payload_hash = hex::encode(Sha256::digest(body.unwrap_or(&[])));
+        let (request, canonical_uri) = self.prepare(method, key, query, &payload_hash, extra);
+        let result = match body {
+            Some(bytes) => request.send_bytes(bytes),
+            None => request.call(),
+        };
+        finish(method, &canonical_uri, result)
+    }
+
+    /// The signed request, not yet sent, and its canonical URI for errors.
+    fn prepare(
+        &self,
+        method: &str,
+        key: &str,
+        query: &[(String, String)],
+        payload_hash: &str,
+        extra: &[(&str, &str)],
+    ) -> (ureq::Request, String) {
         let (scheme, host) = self.config.scheme_and_host();
         let encoded_key = uri_encode(key, false);
         let (host_header, canonical_uri) = if self.config.path_style {
@@ -446,7 +464,6 @@ impl S3ZebFs {
             format!("{scheme}://{host_header}{canonical_uri}?{canonical_query}")
         };
 
-        let payload_hash = hex::encode(Sha256::digest(body.unwrap_or(&[])));
         let now = chrono::Utc::now();
         let signed = sign(
             &self.config,
@@ -454,7 +471,7 @@ impl S3ZebFs {
             &canonical_uri,
             &canonical_query,
             &host_header,
-            &payload_hash,
+            payload_hash,
             now.format("%Y%m%dT%H%M%SZ").to_string().as_str(),
             extra,
         );
@@ -465,32 +482,59 @@ impl S3ZebFs {
                 request = request.set(name, value);
             }
         }
-        let result = match body {
-            Some(bytes) => request.send_bytes(bytes),
-            None => request.call(),
-        };
-        match result {
-            Ok(response) => Ok(response),
-            Err(ureq::Error::Status(404, _)) => {
-                Err(ZebFsError::new("ZEBFS_NOT_FOUND", "object not found"))
-            }
-            Err(ureq::Error::Status(code, response)) => {
-                let detail = response
-                    .into_string()
-                    .unwrap_or_default()
-                    .chars()
-                    .take(300)
-                    .collect::<String>();
-                Err(ZebFsError::new(
-                    CODE,
-                    format!("{method} {canonical_uri}: the store answered {code}: {detail}"),
-                ))
-            }
-            Err(ureq::Error::Transport(err)) => Err(ZebFsError::new(
+        (request, canonical_uri)
+    }
+
+    /// Streams one object into `dest` without holding it in memory.
+    pub fn get_to_file(&self, path: &str, dest: &std::path::Path) -> Result<ZebFsStat, ZebFsError> {
+        let rel = normalize_object_path(path)?;
+        ensure_user_object_path(&rel)?;
+        let key = self.key_for(&rel);
+        let response = self.request("GET", &key, &[], None, &[])?;
+        let modified = header_time(&response, "last-modified");
+        let mut file = std::fs::File::create(dest)?;
+        let size = std::io::copy(&mut response.into_reader(), &mut file)
+            .map_err(|err| ZebFsError::new(CODE, format!("reading {key}: {err}")))?;
+        Ok(ZebFsStat { path: rel, size, modified, kind: ZebFsEntryKind::Object })
+    }
+
+    /// Streams a local file into one object without holding it in memory:
+    /// one pass to hash it for the signature, one to send it.
+    pub fn put_from_file(&self, path: &str, src: &std::path::Path) -> Result<ZebFsStat, ZebFsError> {
+        let rel = normalize_object_path(path)?;
+        ensure_user_object_path(&rel)?;
+        let key = self.key_for(&rel);
+        let mut hasher = Sha256::new();
+        std::io::copy(&mut std::fs::File::open(src)?, &mut hasher)?;
+        let payload_hash = hex::encode(hasher.finalize());
+        let length = std::fs::metadata(src)?.len().to_string();
+        let (request, canonical_uri) = self.prepare("PUT", &key, &[], &payload_hash, &[]);
+        let result = request.set("content-length", &length).send(std::fs::File::open(src)?);
+        finish("PUT", &canonical_uri, result)?;
+        self.head(&rel)
+    }
+}
+
+/// Maps a sent request's outcome onto the store's errors.
+fn finish(
+    method: &str,
+    canonical_uri: &str,
+    result: Result<ureq::Response, ureq::Error>,
+) -> Result<ureq::Response, ZebFsError> {
+    match result {
+        Ok(response) => Ok(response),
+        Err(ureq::Error::Status(404, _)) => Err(ZebFsError::new("ZEBFS_NOT_FOUND", "object not found")),
+        Err(ureq::Error::Status(code, response)) => {
+            let detail = response.into_string().unwrap_or_default().chars().take(300).collect::<String>();
+            Err(ZebFsError::new(
                 CODE,
-                format!("{method} {canonical_uri}: cannot reach the store: {err}"),
-            )),
+                format!("{method} {canonical_uri}: the store answered {code}: {detail}"),
+            ))
         }
+        Err(ureq::Error::Transport(err)) => Err(ZebFsError::new(
+            CODE,
+            format!("{method} {canonical_uri}: cannot reach the store: {err}"),
+        )),
     }
 }
 
@@ -891,6 +935,23 @@ pub(crate) mod tests {
         assert_eq!(fs.read_reserved(".zebfs/acl.json").unwrap().unwrap(), b"{}");
         assert_eq!(fs.put(".zebfs/acl.json", b"no").unwrap_err().code, "ZEBFS_RESERVED_PATH");
         assert!(fs.list("").unwrap().iter().all(|e| e.name != ".zebfs"));
+    }
+
+    #[test]
+    fn a_file_streams_into_an_object_and_back_out() {
+        let (port, objects) = fake_s3();
+        let fs = store(port, "projects/demo");
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("in.parquet");
+        std::fs::write(&src, vec![7u8; 70_000]).unwrap();
+        let stat = fs.put_from_file("maps/big.parquet", &src).unwrap();
+        assert_eq!(stat.size, 70_000);
+        assert_eq!(objects.lock().unwrap()["projects/demo/maps/big.parquet"].len(), 70_000);
+        let dest = dir.path().join("out.parquet");
+        assert_eq!(fs.get_to_file("maps/big.parquet", &dest).unwrap().size, 70_000);
+        assert_eq!(std::fs::read(&dest).unwrap(), vec![7u8; 70_000]);
+        assert_eq!(fs.get_to_file("maps/none", &dest).unwrap_err().code, "ZEBFS_NOT_FOUND");
+        assert_eq!(fs.put_from_file(".zebfs/acl.json", &src).unwrap_err().code, "ZEBFS_RESERVED_PATH");
     }
 
     #[test]

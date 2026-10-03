@@ -44,34 +44,14 @@ pub fn open_store(
     project: &str,
     store_id: Option<&str>,
 ) -> Result<NodeStore, PipelineError> {
-    let layout = platform
-        .file
-        .ensure_project_layout(owner, project)
-        .map_err(|err| PipelineError::new("FW_NODE_STORE", err.to_string()))?;
-    let wanted = store_id.map(str::trim).filter(|id| !id.is_empty());
-    match wanted {
-        None => Ok(NodeStore {
-            id: layout.store_id().to_string(),
-            backend: layout.file_backend(),
-            fs: layout.open_files(),
-        }),
-        Some(id) if id == layout.store_id() => Ok(NodeStore {
-            id: id.to_string(),
-            backend: layout.file_backend(),
-            fs: layout.open_files(),
-        }),
-        Some(id) => {
-            let store = platform
-                .file
-                .open_project_store(owner, project, id)
-                .map_err(|err| PipelineError::new("FW_NODE_STORE", format!("store '{id}': {}", err.message)))?;
-            Ok(NodeStore {
-                id: id.to_string(),
-                backend: store.backend(),
-                fs: crate::zebfs::backend::open(&store),
-            })
-        }
-    }
+    let store = platform.file.open_store(owner, project, store_id).map_err(|err| {
+        let message = match store_id {
+            Some(id) if !id.trim().is_empty() => format!("store '{}': {}", id.trim(), err.message),
+            _ => err.message,
+        };
+        PipelineError::new("FW_NODE_STORE", message)
+    })?;
+    Ok(NodeStore { id: store.id, backend: store.backend, fs: store.fs })
 }
 
 /// The store and key a source value names: a FileRef's own `store` and `ref`,
@@ -249,6 +229,7 @@ pub const FILE_WRITING_NODE_KINDS: &[&str] = &[
     "n.geo.convert",
     "n.web.static.generate",
     "n.web.docs.generate",
+    "n.ms.publish",
 ];
 
 #[cfg(test)]

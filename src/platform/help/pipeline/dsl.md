@@ -477,7 +477,8 @@ node's business.
 **Every file is private** until the owner exposes its folder in Studio →
 Files (`PUT /api/projects/{owner}/{project}/files/access`); no folder name and
 no node can do it. `public_read` makes a folder readable on the project's file
-host (`<project>.<owner>.fs.localhost/<path>` on a dev machine), always inert:
+host (`<project>.<owner>.fs.localhost/<path>` on a dev machine; in production
+a host given one `files` route at `/` in Settings → Addressing), always inert:
 scripts in it never run as a page there. `public_execute` serves a folder as a
 site — a generated static site, say — with scripts running, only on the
 addresses listed in its `serve`. The Studio (a preview cell, an input widget,

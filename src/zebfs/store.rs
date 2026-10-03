@@ -57,6 +57,29 @@ impl ZebFs {
         }
     }
 
+    /// Copies one object into `dest` without holding it in memory.
+    pub fn get_to_file(&self, path: &str, dest: &Path) -> Result<ZebFsStat, ZebFsError> {
+        match self {
+            Self::Local(s) => {
+                let (rel, abs) = s.resolve_object_path(path)?;
+                if !abs.is_file() {
+                    return Err(ZebFsError::new("ZEBFS_NOT_FOUND", "object not found"));
+                }
+                std::fs::copy(&abs, dest)?;
+                s.head(&rel)
+            }
+            Self::S3(s) => s.get_to_file(path, dest),
+        }
+    }
+
+    /// Writes one object from a local file without holding it in memory.
+    pub fn put_from_file(&self, path: &str, src: &Path) -> Result<ZebFsStat, ZebFsError> {
+        match self {
+            Self::Local(s) => s.put_from_file(path, src),
+            Self::S3(s) => s.put_from_file(path, src),
+        }
+    }
+
     pub fn get(&self, path: &str) -> Result<ZebFsObject, ZebFsError> {
         match self {
             Self::Local(s) => s.get(path),

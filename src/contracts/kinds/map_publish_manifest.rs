@@ -10,6 +10,8 @@ use crate::contracts::{ContractError, ContractKind, ContractMetadata, PlatformCo
 pub struct MapserverLayerRecord {
     pub layer_id: String,
     pub path: String,
+    /// The project store `source_path` is a key in, pinned at publish.
+    pub store: String,
     pub source_path: String,
     #[serde(default)]
     pub source_kind: String,
@@ -56,14 +58,11 @@ impl PlatformContract for MapPublishManifestContract {
                     layer.layer_id
                 )));
             }
-            // `source_path` is joined onto the project's files directory to
-            // find the bytes a layer serves (`web/mod.rs`, the tile source
-            // resolution), and that join strips a leading slash without
-            // resolving `..`. The registry itself lives at
-            // `files/mapserver/{instance}.layers.json` — an object a project
-            // member may upload over, and a file a project bundle carries — so
-            // a record can arrive already written. Refuse it here, at the read
-            // boundary every serving path passes through.
+            // `source_path` is a key in the layer's store. The registry
+            // (`data/store/mapserver/{instance}.layers.json`) can arrive
+            // already written in a project bundle, so a key climbing out of
+            // the store is refused here, at the read boundary every serving
+            // path passes through.
             if crate::infra::io::path::rel_path_escapes_root(&layer.source_path) {
                 return Err(ContractError::invalid(format!(
                     "map layer '{}' source_path '{}' escapes the project",

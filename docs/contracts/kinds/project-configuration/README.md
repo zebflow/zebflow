@@ -219,8 +219,8 @@ request by name (`PROJECT_FILES_BACKEND`) until one is made on the Files page,
 which is also where the declaration is written from. The bucket must exist; the
 Files page opens it once before saving, so a wrong key is refused there and not
 at the next upload. The map server, GDAL, DataFusion and the other engines that
-stream from a file path refuse a bucket project (`ZEBFS_LOCAL_ONLY`) rather
-than reading the local `files/`, which on such a project is scratch.
+stream from a file path read a bucket object through a scratch copy or the
+project's bounded mirror (2026-10-03; `kinds/file-ref` §Remote streaming).
 
 Declaring it is per project, because `files/` is per project and a store is what
 a project's own objects are addressed in. An instance-wide bucket with

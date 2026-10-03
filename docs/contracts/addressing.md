@@ -37,7 +37,7 @@ A host that carries any custom route serves only its routes.
 |---|---|---|---|
 | `pages` — active `trigger.webhook` routes | on | `/` (**root**; the only surface that can be) | `/wh/{o}/{p}/…` |
 | `ws` — `trigger.ws` rooms | on | `/_ws/rooms/{room}` | `/ws/{o}/{p}/rooms/{room}` |
-| `files` — objects [`ZebFsAcl`](./kinds/zebfs-acl/README.md) exposes, through the ZebFS gateway | **off** | `/_files/…` when switched on; always on the project's file host `{p}.{o}.fs.localhost/…` | — (no platform form) |
+| `files` — objects [`ZebFsAcl`](./kinds/zebfs-acl/README.md) exposes, through the ZebFS gateway | **off** | `/_files/…` when switched on; always on the project's file hosts (§2b) | — (no platform form) |
 | `static` — project assets, `_rwe/lib`, `_rwe/scripts` | on | `/_static/…` | `/static/{o}/{p}/…` |
 | `ms` — published map layers | **off** | `/_ms/…` | `/ms/{o}/{p}/…` |
 | `mcp` | **off** | `/_mcp` | `/api/projects/{o}/{p}/mcp` — always served on the platform address |
@@ -76,6 +76,27 @@ The full detail of every failure is in the invocation record and its error
 group (`kinds/invocation-record`) whatever `errors` says; `hidden` hides, it
 never loses. Decided 2026-09-17; the dev-host exception that briefly served
 the API on `*.localhost` regardless of the switch is withdrawn by this rule.
+
+## 2b. File hosts
+
+```
+<project>.<owner>.fs.localhost      dev · automatic · every project
+<any host> + route  / → files       named · Settings → Addressing · DNS is the owner's
+```
+
+A host carrying a `files` route is a **file host**: the ZebFS gateway at its
+root, inert and cookie-less ([`ZebFsAcl`](./kinds/zebfs-acl/README.md)), and
+nothing else — no page, no platform form, GET and HEAD only. It answers
+whatever the `files` switch says; the switch governs only the `/_files/` mount
+on site hosts. The route is the host's only route, at `/`, on a named host
+(`ADDRESSING_FILE_HOST`). A file host runs nothing: a `public_execute` rule
+may not name it in `serve`, and saving a route that turns a served host into
+a file host drops it from every `serve`.
+
+Production uses a host of its own (`files.example.com`) under the project
+domain. The project's site keeps host-only cookies, so a file host shares no
+session with it; a separate registrable domain is the step after, when
+anonymous uploads arrive at scale.
 
 ## 3. Two kinds of URL, opposite rules
 

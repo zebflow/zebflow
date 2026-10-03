@@ -51,6 +51,56 @@ pub trait FileAdapter: Send + Sync {
         project: &str,
         store_id: &str,
     ) -> Result<FileStore, PlatformError>;
+
+    /// One of the project's stores, opened: by id, or the default when `None`
+    /// or empty. Answers the store's id and backend beside it, which is what a
+    /// FileRef or a pinned record names.
+    fn open_store(
+        &self,
+        owner: &str,
+        project: &str,
+        store_id: Option<&str>,
+    ) -> Result<OpenStore, PlatformError> {
+        let layout = self.ensure_project_layout(owner, project)?;
+        match store_id.map(str::trim).filter(|id| !id.is_empty()) {
+            None => Ok(OpenStore { id: layout.store_id().to_string(), backend: layout.file_backend(), fs: layout.open_files() }),
+            Some(id) if id == layout.store_id() => {
+                Ok(OpenStore { id: id.to_string(), backend: layout.file_backend(), fs: layout.open_files() })
+            }
+            Some(id) => {
+                let store = self.open_project_store(owner, project, id)?;
+                Ok(OpenStore { id: id.to_string(), backend: store.backend(), fs: crate::zebfs::backend::open(&store) })
+            }
+        }
+    }
+
+    /// A local path holding one object of one of the project's stores, for
+    /// engines that open a path: the object itself on a directory store, a
+    /// copy in the project's bounded mirror (`data/cache/zebfs-mirror/`) on a
+    /// bucket.
+    fn object_local_path(
+        &self,
+        owner: &str,
+        project: &str,
+        store_id: Option<&str>,
+        key: &str,
+    ) -> Result<PathBuf, PlatformError> {
+        let store = self.open_store(owner, project, store_id)?;
+        let layout = self.ensure_project_layout(owner, project)?;
+        crate::zebfs::mirror::Mirror::new(layout.data_cache_dir().join("zebfs-mirror"), MIRROR_CAP_BYTES)
+            .path(&store.fs, &store.id, key)
+            .map_err(|err| PlatformError::new(err.code, err.message))
+    }
+}
+
+/// How much of a project's bucket its mirror keeps on local disk.
+pub const MIRROR_CAP_BYTES: u64 = 8 * 1024 * 1024 * 1024;
+
+/// One opened store and the words that name it.
+pub struct OpenStore {
+    pub id: String,
+    pub backend: FileBackend,
+    pub fs: crate::zebfs::ZebFs,
 }
 
 /// Filesystem adapter implementation.

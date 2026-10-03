@@ -403,7 +403,6 @@ pub const ERROR_CLASS_REGISTRY: &[(&str, ErrorClass)] = &[
     ("ZEBFS_NOT_FOUND", ErrorClass::Refused),
     ("ZEBFS_INVALID_PATH", ErrorClass::Refused),
     ("ZEBFS_RESERVED_PATH", ErrorClass::Refused),
-    ("ZEBFS_LOCAL_ONLY", ErrorClass::Refused),
     ("ZEBFS_UNKNOWN_BACKEND", ErrorClass::Refused),
     ("ZEBFS_S3_CREDENTIAL", ErrorClass::Refused),
     // Disk and the bucket's own answers: a retry may well succeed.

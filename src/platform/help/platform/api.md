@@ -109,6 +109,7 @@ GET    /files/list  ·  POST /files/upload  ·  /files/mkdir  ·  /files/rm  · 
 PUT    /files/access   {path, access: private|public_read|public_execute, scope: object|prefix, serve?: [origins]}
 GET    /files/object?ref=<path>                   one object's bytes, private or exposed, with the session or the MCP bearer; inline, sandboxed, never cached
 GET    <project>.<owner>.fs.localhost/<path>      (file host) exposed objects only, inert, no session
+GET    <file-host>/<path>                     a named file host (one `files` route at `/`, Settings → Addressing): the same gateway, nothing else
 GET    <project-host>/_files/<path>           the same gateway on a project host, when its files surface is switched on (off by default)
 ```
 

@@ -11,6 +11,7 @@ pub mod acl;
 pub mod backend;
 pub mod error;
 pub mod local;
+pub mod mirror;
 pub mod model;
 pub mod s3;
 pub mod store;

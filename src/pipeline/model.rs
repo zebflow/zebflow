@@ -1639,8 +1639,8 @@ pub struct PipelineError {
 }
 
 impl From<crate::zebfs::ZebFsError> for PipelineError {
-    /// A store refusal keeps its own code — `ZEBFS_LOCAL_ONLY`,
-    /// `ZEBFS_NOT_FOUND` — so a node's diagnostic names the store's reason.
+    /// A store refusal keeps its own code (`ZEBFS_NOT_FOUND`), so a node's
+    /// diagnostic names the store's reason.
     fn from(err: crate::zebfs::ZebFsError) -> Self {
         Self::new(err.code, err.message)
     }

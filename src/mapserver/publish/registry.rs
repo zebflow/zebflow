@@ -1,8 +1,8 @@
 //! The published layer registry: where it lives, what shape it holds, and the
 //! only reader and writer of the file.
 //!
-//! One file (`files/mapserver/{instance}.layers.json`) carries one
-//! `MapPublishManifest` contract document. Both publishers — the project web UI
+//! One file (`data/store/mapserver/{instance}.layers.json`, store tier — never
+//! a user object) carries one `MapPublishManifest` contract document. Both publishers — the project web UI
 //! and `n.ms.publish` — go through here, so neither can drift from the other.
 
 use std::path::{Path, PathBuf};
@@ -14,9 +14,9 @@ use crate::mapserver::publish::manifest::{PublishedLayerManifest, SourceKind};
 /// The single MapServer instance every project starts with.
 pub const DEFAULT_INSTANCE: &str = "default-mapserver";
 
-/// Where one instance's layer registry lives inside a project's `files/` tree.
-pub fn layers_manifest_path(files_dir: &Path, instance: &str) -> PathBuf {
-    files_dir
+/// Where one instance's layer registry lives in a project's `data/store/`.
+pub fn layers_manifest_path(store_dir: &Path, instance: &str) -> PathBuf {
+    store_dir
         .join("mapserver")
         .join(format!("{instance}.layers.json"))
 }
@@ -30,52 +30,16 @@ pub fn normalize_layer_path(path: &str) -> &str {
     path.trim().trim_start_matches('/').trim_end_matches('/')
 }
 
-/// Reads one instance's registry. A missing file is an empty registry.
-///
-/// Paths are normalised on the way out, so a record written before the
-/// publishers agreed reads back in the contract's shape and the next write
-/// persists it. No separate migration step exists or is needed.
+/// Reads one instance's registry. A missing file is an empty registry; paths
+/// are normalised on the way out.
 pub fn read_layers(path: &Path) -> Result<Vec<MapserverLayerRecord>, ContractError> {
-    let mut items =
-        match crate::contracts::read_optional_contract::<MapPublishManifestContract>(path) {
-            Ok(document) => document.map(|value| value.spec).unwrap_or_default(),
-            Err(err) => match read_pre_contract_array(path) {
-                Some(items) => items,
-                None => return Err(err),
-            },
-        };
+    let mut items = crate::contracts::read_optional_contract::<MapPublishManifestContract>(path)?
+        .map(|value| value.spec)
+        .unwrap_or_default();
     for item in &mut items {
         item.path = normalize_layer_path(&item.path).to_string();
-        // The legacy array below never reaches the contract's validator, so the
-        // one refusal that keeps a layer inside the project is repeated here.
-        // Both roads into this function end at a path joined onto `files/`.
-        if crate::infra::io::path::rel_path_escapes_root(&item.source_path) {
-            return Err(ContractError::invalid(format!(
-                "map layer '{}' source_path '{}' escapes the project",
-                item.layer_id, item.source_path
-            )));
-        }
     }
     Ok(items)
-}
-
-/// Reads a registry written before both publishers shared this module.
-///
-/// `n.ms.publish` used to write a bare JSON array here while the web side wrote
-/// the contract envelope, so a project could hold a file neither the serving
-/// path nor the other publisher could read. Accepting it once — and only the
-/// bare array, with the one field that had drifted out of the record dropped —
-/// turns that into a repair: the next write puts the file in the contract's
-/// shape. Anything else still refuses, as the contract says it must.
-fn read_pre_contract_array(path: &Path) -> Option<Vec<MapserverLayerRecord>> {
-    let bytes = std::fs::read(path).ok()?;
-    let mut entries: Vec<serde_json::Value> = serde_json::from_slice(&bytes).ok()?;
-    for entry in &mut entries {
-        if let Some(object) = entry.as_object_mut() {
-            object.remove("column_stats_path");
-        }
-    }
-    serde_json::from_value(serde_json::Value::Array(entries)).ok()
 }
 
 /// Durably writes one instance's registry as a canonical contract document.
@@ -134,14 +98,11 @@ pub fn manifest_from_runtime(
 mod tests {
     use super::*;
 
-    /// The registry is an object a project member can upload over and a file a
-    /// project bundle carries, so a record can arrive already written. A
-    /// `source_path` climbing out of the project is refused on read, by both
-    /// the enveloped road and the legacy array.
+    /// A record holding a `source_path` that climbs out of the store is
+    /// refused on read, whoever wrote the file.
     #[test]
     fn a_layer_reaching_outside_the_project_is_refused_on_read() {
         let dir = tempfile::tempdir().unwrap();
-
         let enveloped = dir.path().join("enveloped.layers.json");
         std::fs::write(
             &enveloped,
@@ -150,7 +111,7 @@ mod tests {
                 "kind": "MapPublishManifest",
                 "metadata": { "name": "alice/demo" },
                 "spec": [{
-                    "layer_id": "roads", "path": "roads",
+                    "layer_id": "roads", "path": "roads", "store": "local",
                     "source_path": "../../../../etc/passwd",
                     "source_kind": "geojson_file", "mode": "features",
                     "min_zoom": 0, "max_zoom": 14, "bbox_required": true,
@@ -162,28 +123,13 @@ mod tests {
         .unwrap();
         let err = read_layers(&enveloped).expect_err("an escaping source_path is refused");
         assert!(err.to_string().contains("escapes the project"), "{err}");
-
-        let legacy = dir.path().join("legacy.layers.json");
-        std::fs::write(
-            &legacy,
-            serde_json::json!([{
-                "layer_id": "roads", "path": "roads",
-                "source_path": "../../../../etc/passwd",
-                "source_kind": "geojson_file", "mode": "features",
-                "min_zoom": 0, "max_zoom": 14, "bbox_required": true,
-                "max_features": 1000, "allowed_properties": []
-            }])
-            .to_string(),
-        )
-        .unwrap();
-        let err = read_layers(&legacy).expect_err("the legacy array is refused too");
-        assert!(err.to_string().contains("escapes the project"), "{err}");
     }
 
     fn record(path: &str) -> MapserverLayerRecord {
         MapserverLayerRecord {
             layer_id: "roads".to_string(),
             path: path.to_string(),
+            store: "local".to_string(),
             source_path: "mapserver/roads.geojson".to_string(),
             source_kind: "geojson_file".to_string(),
             artifact_manifest_path: None,
@@ -236,39 +182,6 @@ mod tests {
         .expect("legacy write");
         let items = read_layers(&path).expect("read legacy");
         assert_eq!(items[0].path, "roads");
-    }
-
-    #[test]
-    fn a_registry_written_before_the_publishers_shared_this_module_is_repaired() {
-        let tmp = tempfile::tempdir().expect("tmp");
-        let path = layers_manifest_path(tmp.path(), DEFAULT_INSTANCE);
-        std::fs::create_dir_all(path.parent().expect("parent")).expect("mkdir");
-
-        // What `n.ms.publish` used to write: a bare array, carrying the
-        // `column_stats_path` field the contract's record never had, in a file
-        // the web side and the serving path could not read at all.
-        let mut legacy = serde_json::to_value(record("roads")).expect("record json");
-        legacy["column_stats_path"] =
-            serde_json::json!("mapserver/.optimized/roads.spatial.stats.json");
-        std::fs::write(
-            &path,
-            serde_json::to_string(&serde_json::json!([legacy])).expect("legacy json"),
-        )
-        .expect("legacy write");
-
-        let items = read_layers(&path).expect("legacy read");
-        assert_eq!(items.len(), 1);
-        assert_eq!(items[0].layer_id, "roads");
-
-        // Writing it back puts the file in the contract's shape.
-        write_layers(&path, DEFAULT_INSTANCE, &items).expect("rewrite");
-        let raw = std::fs::read_to_string(&path).expect("read raw");
-        assert!(raw.contains("MapPublishManifest"));
-        assert!(!raw.contains("column_stats_path"));
-
-        // A file that is neither shape still refuses.
-        std::fs::write(&path, b"{\"apiVersion\":\"zebflow.com/v1\"}").expect("bad write");
-        assert!(read_layers(&path).is_err());
     }
 
     #[test]

@@ -1,6 +1,6 @@
 # MapPublishManifest
 
-Status: **review** — spec settled 2026-08-29; code caught up 2026-09-01, when the audit found the `source_path` refusal missing.
+Status: **review** — spec settled 2026-08-29; code caught up 2026-09-01, when the audit found the `source_path` refusal missing. 2026-10-03: the registry moved to the store tier and a layer pins its `store`.
 
 What a project has published as map layers: which layers exist, where each is
 served, what it was built from, and what the public may see of it.
@@ -12,7 +12,8 @@ served, what it was built from, and what the public may see of it.
 | API version / kind | `zebflow.com/v1` `MapPublishManifest` |
 | Spec | a list of layer records, one per published layer |
 | Adapter | `src/contracts/kinds/map_publish_manifest.rs` |
-| Written by | the project MapServer service and `n.mapserver.crud` |
+| Written by | the project MapServer service and `n.ms.publish` |
+| Lives at | `data/store/mapserver/{instance}.layers.json` — store tier, never a user object |
 
 ## Shape
 
@@ -25,7 +26,8 @@ served, what it was built from, and what the public may see of it.
     {
       "layer_id": "roads",
       "path": "roads",
-      "source_path": "files/uploads/roads.geojson",
+      "store": "local",
+      "source_path": "mapserver/roads.geojson",
       "source_kind": "geojson_artifact",
       "artifact_manifest_path": "data/cache/mapserver-artifacts/roads/manifest.json",
       "mode": "features",
@@ -48,7 +50,8 @@ served, what it was built from, and what the public may see of it.
 | --- | --- |
 | `layer_id` | non-empty, unique within the manifest |
 | `path` | where the layer is served, **stored without a leading slash**; one writer adding one and another not is how a published layer fails to serve |
-| `source_path` | the project file the layer was built from |
+| `store` | the project store `source_path` is a key in — `local` or an `s3` credential id, pinned at publish like a node's `--store` |
+| `source_path` | the store key the layer serves; an engine reads it through the project's bounded mirror (`data/cache/zebfs-mirror/`), which answers a directory store's own file in place |
 | `source_kind` | how to read that source |
 | `artifact_manifest_path` | the generated artifacts, in the CACHE tier: rebuildable from `source_path`, never the only copy |
 | `mode`, `min_zoom`, `max_zoom`, `bbox_required`, `max_features` | serving limits |
@@ -79,11 +82,9 @@ fetched. This is the same closed default as
 
 ## Rejections
 
-An empty or duplicate `layer_id`. A `source_path` that escapes the project —
-the registry is an object a project member may upload over and a file a project
-bundle carries, so a record can arrive already written, and the serving path
-joins `source_path` onto the project's files directory. An unknown field at any
-level.
+An empty or duplicate `layer_id`. A `source_path` that escapes the store — a
+project bundle carries the registry, so a record can arrive already written. A
+record without `store`. An unknown field at any level.
 
 A `path` carrying a leading slash is **normalised on read**, not refused: both
 publishers strip it before writing, and stripping it on read repairs a record

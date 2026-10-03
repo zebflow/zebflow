@@ -114,7 +114,7 @@ records what is on disk today.
                 │                      a project may legitimately own `files/tmp/`
                 └── mapserver/
                     ├── *.geojson      OBJECT — uploaded sources
-                    └── *.layers.json  STORE — machine-written intent
+                    └── .optimized/    OBJECT — n.ms.publish's GeoParquet copies
 ```
 
 ### Rules
@@ -235,10 +235,13 @@ them.
             │   │   ├── sekejap/       project database (sekejap 0.17): data file and its WAL
             │   │   ├── local.db       project SQLite (n.sqlite.*)
             │   │   ├── kv.db          durable n.kv.* state
+            │   │   ├── mapserver/     {instance}.layers.json — layer registry
             │   │   └── chat_history.json  assistant conversation
             │   │
             │   ├── cache/             CACHE — regenerates from repo/
             │   │   ├── pipelines/     activated pipeline snapshots (*.zf.json)
+            │   │   ├── zebfs-mirror/  bounded copies of bucket objects for
+            │   │   │                  path-reading engines (8 GiB, least recent out)
             │   │   └── agent_docs/    AGENTS.md, SOUL.md (MEMORY.md moved to
             │   │                      store/assistant/{owner}/memory.md on first touch)
             │   │
@@ -263,7 +266,7 @@ them.
                 │   └── {request_id}/files/    writer removes them today
                 ├── mapserver/         map feature area
                 │   ├── {source}.geojson            uploaded sources
-                │   ├── {instance}.layers.json      layer registry, machine-written
+                │   ├── .optimized/                 n.ms.publish GeoParquet copies
                 │   └── .artifacts/                 generated chunks — moved to
                 │       └── {instance}/{layer}/     data/cache/mapserver-artifacts/
                 │           └── {chunk}.ndjson      on first touch
@@ -312,8 +315,9 @@ orphan rows for deleted projects keep the file alive until hand-drained.
   AGENTS.md and SOUL.md stay in `data/cache/agent_docs/` per the open item.
 - `files/mapserver/.artifacts/` → `data/cache/mapserver-artifacts/`: shipped —
   whole-directory first-touch rename at every artifact writer, reader, and
-  cleanup site; the layer registry (`{instance}.layers.json`, STORE, stays in
-  `files/`) is not rewritten — stored `mapserver/.artifacts/...` rel paths
+  cleanup site; the layer registry (`{instance}.layers.json`, STORE) moved to
+  `data/store/mapserver/` on 2026-10-03 with no first-touch move, and is not
+  rewritten — stored `mapserver/.artifacts/...` rel paths
   keep resolving into the moved tree alongside new `mapserver-artifacts/...`
   entries.
 

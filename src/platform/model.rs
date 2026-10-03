@@ -1,7 +1,7 @@
 //! Platform domain models and configuration.
 
 use std::collections::{BTreeMap, HashMap};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
@@ -2562,26 +2562,6 @@ impl ProjectFileLayout {
     /// The id of the project's default store.
     pub fn store_id(&self) -> &str {
         &self.file_store_id
-    }
-
-    /// The local directory behind this project's store, for the engines that
-    /// stream from a file path — GDAL, DataFusion, the map server — and can
-    /// only do so when there is one.
-    ///
-    /// A project whose files live in a bucket is refused by name, so no such
-    /// engine silently reads or writes `files/`, which on that project is a
-    /// scratch directory and not the store.
-    pub fn local_files_dir(&self) -> Result<&Path, ZebFsError> {
-        match &self.file_store {
-            FileStore::Local(dir) => Ok(dir),
-            FileStore::S3(config) => Err(ZebFsError::new(
-                "ZEBFS_LOCAL_ONLY",
-                format!(
-                    "this project's files live in the bucket '{}', and this operation streams from local disk; it is not available on an object store yet",
-                    config.bucket
-                ),
-            )),
-        }
     }
 
     /// `.../repo/{source}` — unified source root: *.zf.json pipelines + *.tsx

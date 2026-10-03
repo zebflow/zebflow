@@ -1401,6 +1401,15 @@ async fn addressing_gate(
     if let Some(host) = host
         && let Some(resolution) = state.platform.addressing.resolve(&host, &path)
     {
+        // A named file host is the production file host: exposed files at its
+        // root and nothing else — no platform form, no site (`addressing.md` §2b).
+        if resolution.file_host {
+            if request.method() != Method::GET && request.method() != Method::HEAD {
+                return StatusCode::METHOD_NOT_ALLOWED.into_response();
+            }
+            return file_host::file_host_response(&state, &resolution.owner, &resolution.project, &resolution.rest)
+                .await;
+        }
         // A host a `public_execute` folder names in `serve` answers only that
         // folder, at `/`, with scripts running (kinds/zebfs-acl §Resolution).
         let request_host = crate::platform::services::addressing::normalize_host(&host);
@@ -15782,13 +15791,12 @@ fn set_project_file_access(
     // Every serve origin must be a host this project already answers on: a
     // project can never claim another project's domain.
     if !req.serve.is_empty() {
-        let mut hosts = state
+        let hosts = state
             .platform
             .addressing
             .read(owner, project)
             .map_err(internal_error)?
-            .hosts;
-        hosts.push(crate::platform::services::addressing::AddressingService::dev_host(owner, project));
+            .site_hosts(crate::platform::services::addressing::AddressingService::dev_host(owner, project));
         for origin in &req.serve {
             let normalized = crate::zebfs::acl::normalize_serve_origin(origin).map_err(|err| {
                 (
@@ -15803,7 +15811,7 @@ fn set_project_file_access(
                     StatusCode::BAD_REQUEST,
                     Json(json!({
                         "ok": false,
-                        "error": format!("'{host}' is not a host of this project — add it in Settings → Addressing first"),
+                        "error": format!("'{host}' is not a site host of this project — add it in Settings → Addressing first (a file host runs nothing)"),
                     })),
                 )
                     .into_response());
@@ -16120,6 +16128,7 @@ async fn api_mapserver_layer_stats(
             .into_response();
     };
     let source_path = item.source_path.clone();
+    let source_store = item.store.clone();
     let manifest = match mapserver_record_to_manifest(&state, &owner, &project, item) {
         Ok(manifest) => manifest,
         Err(err) => return internal_error(err),
@@ -16132,21 +16141,12 @@ async fn api_mapserver_layer_stats(
     let manifest = if manifest.source_kind
         == crate::mapserver::publish::manifest::SourceKind::GeoJsonArtifact
     {
-        match state.platform.file.ensure_project_layout(&owner, &project) {
-            Ok(layout) => {
-                let files_dir = match layout.local_files_dir() {
-                    Ok(dir) => dir.to_path_buf(),
-                    Err(err) => return internal_error(PlatformError::new(err.code, err.message)),
-                };
-                crate::mapserver::publish::manifest::PublishedLayerManifest {
-                    source_kind: crate::mapserver::publish::manifest::SourceKind::GeoJsonFile,
-                    source_ref: files_dir
-                        .join(source_path.trim_start_matches('/'))
-                        .display()
-                        .to_string(),
-                    ..manifest
-                }
-            }
+        match state.platform.file.object_local_path(&owner, &project, Some(&source_store), &source_path) {
+            Ok(source) => crate::mapserver::publish::manifest::PublishedLayerManifest {
+                source_kind: crate::mapserver::publish::manifest::SourceKind::GeoJsonFile,
+                source_ref: source.display().to_string(),
+                ..manifest
+            },
             Err(err) => return internal_error(err),
         }
     } else {
@@ -16235,17 +16235,20 @@ async fn api_mapserver_layers_publish(
         Ok(layout) => layout,
         Err(err) => return internal_error(err),
     };
-    let source_abs_path = match layout.local_files_dir() {
-        Ok(dir) => dir.join(&source_path),
-        Err(err) => return internal_error(PlatformError::new(err.code, err.message)),
-    };
-    if !source_abs_path.exists() || !source_abs_path.is_file() {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(json!({"ok": false, "error": "source_path file not found"})),
-        )
-            .into_response();
-    }
+    // The layer is pinned to the store it was published from.
+    let store_id = layout.store_id().to_string();
+    let source_abs_path =
+        match state.platform.file.object_local_path(&owner, &project, Some(&store_id), &source_path) {
+            Ok(path) => path,
+            Err(err) if err.code == "ZEBFS_NOT_FOUND" => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({"ok": false, "error": "source_path file not found"})),
+                )
+                    .into_response();
+            }
+            Err(err) => return internal_error(err),
+        };
     let allowed_properties = body
         .get("allowed_properties")
         .and_then(Value::as_array)
@@ -16312,6 +16315,7 @@ async fn api_mapserver_layers_publish(
         // Contract `MapPublishManifest`: stored without a leading slash, the
         // same shape `n.ms.publish` writes.
         path: crate::mapserver::publish::registry::normalize_layer_path(path).to_string(),
+        store: store_id,
         source_path,
         source_kind: "geojson_artifact".to_string(),
         artifact_manifest_path: Some(build.manifest_rel_path.clone()),
@@ -17684,12 +17688,13 @@ async fn api_upsert_settings_section(
                             .into_response();
                     }
                 };
-            let mut hosts_after = payload.hosts.clone();
-            hosts_after.push(crate::platform::services::addressing::AddressingService::dev_host(&owner, &project));
             return match state.platform.addressing.write(&owner, &project, payload) {
-                Ok(_) => {
-                    // A host the project no longer has leaves every `serve`
-                    // (kinds/zebfs-acl §Lifetime).
+                Ok(saved) => {
+                    let hosts_after = saved.site_hosts(
+                        crate::platform::services::addressing::AddressingService::dev_host(&owner, &project),
+                    );
+                    // A host the project no longer has as a site host leaves
+                    // every `serve` (kinds/zebfs-acl §Lifetime).
                     if let Ok(layout) = state.platform.file.ensure_project_layout(&owner, &project)
                         && let Err(err) = crate::platform::services::zebfs_acl::retain_hosts(
                             &layout.data_store_dir(),
@@ -25294,11 +25299,9 @@ fn mapserver_layers_manifest_path(
     instance: &str,
 ) -> Result<std::path::PathBuf, PlatformError> {
     let layout = state.platform.file.ensure_project_layout(owner, project)?;
-    let files_dir = layout
-        .local_files_dir()
-        .map_err(|err| PlatformError::new(err.code, err.message))?;
     Ok(crate::mapserver::publish::registry::layers_manifest_path(
-        files_dir, instance,
+        &layout.data_store_dir(),
+        instance,
     ))
 }
 
@@ -25348,42 +25351,30 @@ fn list_mapserver_source_files(
     owner: &str,
     project: &str,
 ) -> Result<Vec<serde_json::Value>, PlatformError> {
-    let layout = state.platform.file.ensure_project_layout(owner, project)?;
-    let dir = layout
-        .local_files_dir()
-        .map_err(|err| PlatformError::new(err.code, err.message))?
-        .join("mapserver");
-    std::fs::create_dir_all(&dir)
-        .map_err(|err| PlatformError::new("MAPSERVER_LIST", err.to_string()))?;
+    let store = state.platform.file.open_store(owner, project, None)?;
+    let mut entries = match store.fs.list("mapserver") {
+        Ok(entries) => entries,
+        Err(err) if err.code == "ZEBFS_NOT_FOUND" => Vec::new(),
+        Err(err) => return Err(PlatformError::new(err.code, err.message)),
+    };
+    entries.sort_by(|a, b| a.path.cmp(&b.path));
     let mut out = Vec::new();
-    if let Ok(entries) = std::fs::read_dir(&dir) {
-        let mut entries: Vec<_> = entries.flatten().collect();
-        entries.sort_by_key(|e| e.file_name());
-        for entry in entries {
-            let path = entry.path();
-            if !path.is_file() {
-                continue;
-            }
-            let name = entry.file_name().to_string_lossy().into_owned();
-            if name.ends_with(".layers.json") {
-                continue;
-            }
-            let lower = name.to_ascii_lowercase();
-            if !(lower.ends_with(".geojson")
-                || lower.ends_with(".json")
-                || lower.ends_with(".parquet"))
-            {
-                continue;
-            }
-            let rel = format!("mapserver/{name}");
-            let meta = path.metadata().ok();
-            out.push(json!({
-                "name": name,
-                "path": rel,
-                "size": meta.as_ref().map(|m| m.len()).unwrap_or(0),
-                "url": studio_file_object_url(owner, project, &rel)
-            }));
+    for entry in entries {
+        if entry.kind != crate::zebfs::ZebFsEntryKind::Object {
+            continue;
         }
+        let name = entry.name;
+        let lower = name.to_ascii_lowercase();
+        if !(lower.ends_with(".geojson") || lower.ends_with(".json") || lower.ends_with(".parquet")) {
+            continue;
+        }
+        let rel = format!("mapserver/{name}");
+        out.push(json!({
+            "name": name,
+            "path": rel,
+            "size": entry.size,
+            "url": studio_file_object_url(owner, project, &rel)
+        }));
     }
     Ok(out)
 }
@@ -25440,10 +25431,10 @@ fn mapserver_record_to_manifest(
         } else if item.source_kind == "geoparquet" {
             (
                 crate::mapserver::publish::manifest::SourceKind::GeoParquet,
-                layout
-                    .local_files_dir()
-                    .map_err(|err| PlatformError::new(err.code, err.message))?
-                    .join(item.source_path.trim_start_matches('/'))
+                state
+                    .platform
+                    .file
+                    .object_local_path(owner, project, Some(&item.store), &item.source_path)?
                     .display()
                     .to_string(),
             )
@@ -25455,10 +25446,10 @@ fn mapserver_record_to_manifest(
         } else {
             (
                 crate::mapserver::publish::manifest::SourceKind::GeoJsonFile,
-                layout
-                    .local_files_dir()
-                    .map_err(|err| PlatformError::new(err.code, err.message))?
-                    .join(item.source_path.trim_start_matches('/'))
+                state
+                    .platform
+                    .file
+                    .object_local_path(owner, project, Some(&item.store), &item.source_path)?
                     .display()
                     .to_string(),
             )

@@ -128,14 +128,11 @@ backend.
   (2026-09-20) after a DSL `execute pipeline` run (see Amendments). No
   other trigger writes a temporary FileRef today; one that starts to must
   join the same removal.
-- **Remote streaming.** On `s3` every consumer holds whole bytes: `get` answers
-  the object in memory. The nodes that stream from a *file path* instead --
-  `fs.image.thumbnail`, `fs.pdf_convert`, `fs.compress` / `fs.decompress`,
-  `geo.convert` / `geo.inspect`, `ai.tts`, `ms.*`, `table.query` and the
-  streamed `table.convert` -- refuse a bucket project by name
-  (`ZEBFS_LOCAL_ONLY`) rather than reading `files/`, which on that project is
-  scratch and not the store. Pulling an object down to a temporary file for
-  them is the design not made yet.
+- **Remote streaming.** Resolved 2026-10-03. An engine that opens a path
+  pulls the object into a run scratch folder and pushes its output back
+  (`StoreScratch`); the map server reads a layer's source from the project's
+  bounded mirror (`data/cache/zebfs-mirror/`, `zebfs::mirror`), which answers a
+  directory store's own file in place. `ZEBFS_LOCAL_ONLY` is gone.
 - **How a URL is obtained.** The format carries none, deliberately. What does
   not exist yet is the operation that answers for one — local returning a
   path, S3 a presigned link — nor the choice between proxying bytes through

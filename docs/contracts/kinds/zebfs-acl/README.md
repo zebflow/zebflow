@@ -79,7 +79,8 @@ bucket policy or an anonymous identity.
   `index.html` for a folder path — the same rule as a host carrying a custom
   route ([Addressing](../../addressing.md) §2). It never also answers `pages`.
 - The file host is a cookie-less origin of its own, never the Studio's or the
-  API's, and never a path on a project host.
+  API's, and never a path on a project host: `{p}.{o}.fs.localhost`, and in
+  production a named host with a `files` route ([Addressing](../../addressing.md) §2b).
 - Matching is on whole path segments (`site` never covers `site-old`), after
   one normalisation, after every rewrite. The origin compared with `serve` is
   the host the request was routed by, never the `Origin` header.

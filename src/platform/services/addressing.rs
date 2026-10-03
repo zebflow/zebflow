@@ -184,6 +184,30 @@ impl ProjectAddressing {
     pub fn is_enabled(&self, surface: Surface) -> bool {
         !self.disabled.contains(&surface)
     }
+
+    /// Hosts carrying a `files` route: the project's named file hosts, which
+    /// answer exposed files and nothing else (`addressing.md` §2b).
+    pub fn file_hosts(&self) -> Vec<&str> {
+        self.routes
+            .iter()
+            .filter(|r| r.surface == Surface::Files)
+            .map(|r| r.host.as_str())
+            .collect()
+    }
+
+    /// The hosts a `public_execute` folder may name in `serve`: the dev host
+    /// and every named host except a file host, where nothing runs.
+    pub fn site_hosts(&self, dev_host: String) -> Vec<String> {
+        let file_hosts = self.file_hosts();
+        let mut hosts: Vec<String> = self
+            .hosts
+            .iter()
+            .filter(|h| !file_hosts.contains(&h.as_str()))
+            .cloned()
+            .collect();
+        hosts.push(dev_host);
+        hosts
+    }
 }
 
 /// Where one request goes.
@@ -198,6 +222,8 @@ pub struct Resolution {
     pub host: String,
     /// Whether this is the automatic dev host.
     pub dev_host: bool,
+    /// Whether this host is a named file host (`addressing.md` §2b).
+    pub file_host: bool,
 }
 
 impl Resolution {
@@ -410,6 +436,16 @@ impl AddressingService {
             }
             routes.push(AddressRoute { host, path, surface: route.surface });
         }
+        // A file host answers exposed files at its root and nothing else: no
+        // second route beside it, and never the dev host (`addressing.md` §2b).
+        for route in routes.iter().filter(|r| r.surface == Surface::Files) {
+            if route.host == dev_host || route.path != "/" || routes.iter().any(|r| r.host == route.host && r.surface != Surface::Files) {
+                return Err(PlatformError::new(
+                    "ADDRESSING_FILE_HOST",
+                    format!("a files route makes `{}` a file host: it mounts at `/` on a named host of its own, with no other route", route.host),
+                ));
+            }
+        }
         addressing.routes = routes;
         addressing.disabled.sort_by_key(|s| s.key());
         addressing.disabled.dedup();
@@ -483,6 +519,12 @@ impl AddressingService {
             }
         };
         let (surface, rest) = hit?;
+        // A file host answers whatever the `files` switch says: the switch
+        // governs the `/_files/` mount on site hosts only.
+        let file_host = !dev_host && addressing.file_hosts().contains(&host.as_str());
+        if file_host {
+            return Some(Resolution { owner, project, surface, rest, host, dev_host, file_host });
+        }
         if !addressing.is_enabled(surface) {
             return Some(Resolution {
                 owner,
@@ -491,9 +533,10 @@ impl AddressingService {
                 rest: String::new(), // the empty rest marks "disabled" for the gate
                 host,
                 dev_host,
+                file_host,
             });
         }
-        Some(Resolution { owner, project, surface, rest, host, dev_host })
+        Some(Resolution { owner, project, surface, rest, host, dev_host, file_host })
     }
 
     /// Whether a platform-form request (`/files/{o}/{p}/…`) is for a surface
@@ -669,6 +712,7 @@ mod tests {
             rest: "/a.jpg".into(),
             host: "p.o.localhost".into(),
             dev_host: true,
+            file_host: false,
         };
         assert_eq!(r.platform_path(), "/files/o/p/a.jpg", "a folder name never decides exposure");
         let r = Resolution { surface: Surface::Pages, rest: "/".into(), ..r };

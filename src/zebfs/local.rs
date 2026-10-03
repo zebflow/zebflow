@@ -50,6 +50,19 @@ impl LocalZebFs {
         self.head(&rel)
     }
 
+    /// Writes one object from a local file, through a temporary sibling and a
+    /// rename, so a reader never sees half of it.
+    pub fn put_from_file(&self, path: &str, src: &Path) -> Result<ZebFsStat, ZebFsError> {
+        let (rel, abs) = self.resolve_object_path(path)?;
+        if let Some(parent) = abs.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        let partial = abs.with_extension(format!("partial-{}", uuid::Uuid::new_v4()));
+        fs::copy(src, &partial)?;
+        fs::rename(&partial, &abs)?;
+        self.head(&rel)
+    }
+
     /// Reads one object into memory.
     pub fn get(&self, path: &str) -> Result<ZebFsObject, ZebFsError> {
         let rel = normalize_object_path(path)?;

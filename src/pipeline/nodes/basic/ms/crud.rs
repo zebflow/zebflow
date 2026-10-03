@@ -1,6 +1,6 @@
 //! Mapserver CRUD nodes — dynamic layer management.
 //!
-//! Manages the layer registry (`files_dir/mapserver/{instance}.layers.json`).
+//! Manages the layer registry (`data/store/mapserver/{instance}.layers.json`).
 //! Layers published via these nodes are immediately queryable on `/ms/{owner}/{project}/{path}`.
 //!
 //! | Node              | Purpose                               |
@@ -17,6 +17,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::pipeline::nodes::shared::file_ref::zebfs_rel_path_or_string;
+use crate::pipeline::nodes::shared::project_store::{self, NodeStore};
+use crate::pipeline::nodes::shared::store_scratch::StoreScratch;
 use crate::pipeline::nodes::shared::util::metadata_scope;
 use crate::contracts::kinds::MapserverLayerRecord as LayerRecord;
 use crate::mapserver::publish::registry;
@@ -52,10 +54,7 @@ fn layers_path(
         .file
         .ensure_project_layout(owner, project)
         .map_err(|e| PipelineError::new("FW_NODE_MS", e.to_string()))?;
-    Ok(registry::layers_manifest_path(
-        layout.local_files_dir()?,
-        DEFAULT_INSTANCE,
-    ))
+    Ok(registry::layers_manifest_path(&layout.data_store_dir(), DEFAULT_INSTANCE))
 }
 
 fn read_layers(
@@ -80,6 +79,27 @@ fn write_layers(
     }
     registry::write_layers(&path, DEFAULT_INSTANCE, items)
         .map_err(|e| PipelineError::new("FW_NODE_MS_WRITE", e.to_string()))
+}
+
+/// Streams an optimized GeoParquet and its column stats into the store.
+fn store_optimized(
+    store: &NodeStore,
+    optimized_abs: &std::path::Path,
+    optimized_rel: &str,
+    stats: &crate::mapserver::resolve::geoparquet_optimize::ColumnStatsReport,
+    stats_rel: &str,
+) -> Result<(), PipelineError> {
+    store
+        .fs
+        .put_from_file(optimized_rel, optimized_abs)
+        .map_err(|e| PipelineError::new("FW_NODE_MS_PUBLISH", format!("write '{optimized_rel}': {e}")))?;
+    let stats_json = serde_json::to_vec_pretty(stats)
+        .map_err(|e| PipelineError::new("FW_NODE_MS_PUBLISH", e.to_string()))?;
+    store
+        .fs
+        .put(stats_rel, &stats_json)
+        .map_err(|e| PipelineError::new("FW_NODE_MS_PUBLISH", format!("write '{stats_rel}': {e}")))?;
+    Ok(())
 }
 
 fn layer_to_json(owner: &str, project: &str, record: &LayerRecord) -> Value {
@@ -185,6 +205,10 @@ pub struct Config {
     /// Feature cache TTL in seconds for GeoJsonFunction layers.
     #[serde(default)]
     pub cache_ttl: Option<u64>,
+    /// The store the source is read from and the optimized copy written to;
+    /// saved explicitly at registration (`node-conventions.md` §3).
+    #[serde(default)]
+    pub store: Option<String>,
 }
 
 // ── Node definitions ─────────────────────────────────────────────────────────
@@ -321,6 +345,7 @@ pub fn publish_definition() -> NodeDefinition {
                 "cache_ttl",
                 "Feature cache TTL in seconds for function layers. Default: 60.",
             ),
+            project_store::store_flag(),
         ],
         fields: vec![
             text_field("name", "Layer ID", "Unique layer identifier."),
@@ -708,16 +733,17 @@ impl Node {
             .ensure_project_layout(owner, project)
             .map_err(|e| PipelineError::new("FW_NODE_MS_PUBLISH", e.to_string()))?;
 
+        let store = project_store::open_store(&self.platform, owner, project, self.config.store.as_deref())?;
         if !is_function_mode {
-            // Validate source file exists in ZebFS
-            let zebfs = layout.open_files();
-            zebfs.head(&source_path).map_err(|e| {
+            store.fs.head(&source_path).map_err(|e| {
                 PipelineError::new(
                     "FW_NODE_MS_PUBLISH",
-                    format!("source file not found in ZebFS: {e}"),
+                    format!("source file not found in store '{}': {e}", store.id),
                 )
             })?;
         }
+        // Optimized copies are built here and streamed into the store.
+        let scratch = StoreScratch::new("FW_NODE_MS_PUBLISH")?;
 
         let bbox_required = if self.config.no_bbox_required.unwrap_or(false) {
             false
@@ -741,7 +767,14 @@ impl Node {
         let mut optimization_info: Option<Value> = None;
 
         // ── Auto-detect format and optimize ──────────────────────────────
-        let source_abs = layout.local_files_dir()?.join(source_path.trim_start_matches('/'));
+        let source_abs = if is_function_mode {
+            std::path::PathBuf::new()
+        } else {
+            self.platform
+                .file
+                .object_local_path(owner, project, Some(&store.id), &source_path)
+                .map_err(|e| PipelineError::new("FW_NODE_MS_PUBLISH", e.message))?
+        };
         let source_lower = source_path.to_ascii_lowercase();
 
         // Determine if we should optimize (default=yes, opt-out with --no-optimize)
@@ -767,10 +800,7 @@ impl Node {
                     "geoparquet".to_string()
                 } else {
                     // Optimize: add bbox columns, Hilbert sort, small row groups
-                    let optimized_dir = layout.local_files_dir()?.join("mapserver/.optimized");
-                    std::fs::create_dir_all(&optimized_dir).map_err(|e| {
-                        PipelineError::new("FW_NODE_MS_PUBLISH", format!("mkdir failed: {e}"))
-                    })?;
+                    let optimized_dir = scratch.path().to_path_buf();
                     let optimized_filename = format!("{name}.spatial.parquet");
                     let optimized_abs = optimized_dir.join(&optimized_filename);
                     let optimized_rel = format!("mapserver/.optimized/{optimized_filename}");
@@ -789,16 +819,13 @@ impl Node {
 
                     // Write column stats sidecar JSON
                     let stats_filename = format!("{name}.spatial.stats.json");
-                    let stats_abs = optimized_dir.join(&stats_filename);
                     let stats_rel = format!("mapserver/.optimized/{stats_filename}");
                     let stats_report =
                         crate::mapserver::resolve::geoparquet_optimize::ColumnStatsReport {
                             row_count: report.rows,
                             columns: report.column_stats.clone(),
                         };
-                    if let Ok(stats_json) = serde_json::to_string_pretty(&stats_report) {
-                        let _ = std::fs::write(&stats_abs, stats_json);
-                    }
+                    store_optimized(&store, &optimized_abs, &optimized_rel, &stats_report, &stats_rel)?;
 
                     eprintln!(
                         "geoparquet optimized: {} rows, {} row groups, {:.1}MB → {:.1}MB, {} column stats",
@@ -823,10 +850,7 @@ impl Node {
                 }
             } else if is_geojson {
                 // Convert GeoJSON → raw Parquet → optimize
-                let optimized_dir = layout.local_files_dir()?.join("mapserver/.optimized");
-                std::fs::create_dir_all(&optimized_dir).map_err(|e| {
-                    PipelineError::new("FW_NODE_MS_PUBLISH", format!("mkdir failed: {e}"))
-                })?;
+                let optimized_dir = scratch.path().to_path_buf();
 
                 let temp_raw = optimized_dir.join(format!("{name}.raw.parquet"));
                 let optimized_filename = format!("{name}.spatial.parquet");
@@ -868,16 +892,13 @@ impl Node {
 
                 // Write column stats sidecar JSON
                 let stats_filename = format!("{name}.spatial.stats.json");
-                let stats_abs = optimized_dir.join(&stats_filename);
                 let stats_rel = format!("mapserver/.optimized/{stats_filename}");
                 let stats_report =
                     crate::mapserver::resolve::geoparquet_optimize::ColumnStatsReport {
                         row_count: opt_report.rows,
                         columns: opt_report.column_stats.clone(),
                     };
-                if let Ok(stats_json) = serde_json::to_string_pretty(&stats_report) {
-                    let _ = std::fs::write(&stats_abs, stats_json);
-                }
+                store_optimized(&store, &optimized_abs, &optimized_rel, &stats_report, &stats_rel)?;
 
                 eprintln!(
                     "geoparquet optimized: {} rows, {} row groups, {:.1}MB, {} column stats",
@@ -1018,6 +1039,7 @@ impl Node {
         // Upsert into registry
         let record = LayerRecord {
             layer_id: name.to_string(),
+            store: store.id.clone(),
             path: registry::normalize_layer_path(path).to_string(),
             source_path: source_path.clone(),
             source_kind: effective_kind,
@@ -1097,22 +1119,17 @@ impl Node {
                     }
                 }
 
-                let optimized_file = layout
-                    .local_files_dir()?
-                    .join("mapserver")
-                    .join(".optimized")
-                    .join(format!("{}.spatial.parquet", name));
-                if optimized_file.exists() {
-                    let _ = std::fs::remove_file(&optimized_file);
-                }
-
-                let stats_file = layout
-                    .local_files_dir()?
-                    .join("mapserver")
-                    .join(".optimized")
-                    .join(format!("{}.spatial.stats.json", name));
-                if stats_file.exists() {
-                    let _ = std::fs::remove_file(&stats_file);
+                // The optimized copy is the node's own object in the store the
+                // layer was published from; the source is left where it is.
+                if let Some(record) = removed_record.as_ref()
+                    && let Ok(store) = project_store::open_store(&self.platform, owner, project, Some(&record.store))
+                {
+                    for key in [
+                        format!("mapserver/.optimized/{name}.spatial.parquet"),
+                        format!("mapserver/.optimized/{name}.spatial.stats.json"),
+                    ] {
+                        let _ = store.fs.delete(&key);
+                    }
                 }
             }
         }

@@ -3334,6 +3334,84 @@ async fn stored_files_are_exposed_only_by_a_rule_never_by_a_name_or_a_cookie() {
     assert_eq!(studio.status(), StatusCode::OK);
     assert_eq!(response_text(studio).await, "secret");
 
+    // A named file host — the production file host — is a host with one
+    // `files` route at `/`. It answers exposed files whatever the `files`
+    // switch says, and nothing else: no page, no platform form, no site.
+    let save_addressing = |data: Value| {
+        let app = app.clone();
+        let cookie = superadmin_cookie.clone();
+        async move {
+            app.oneshot(
+                Request::builder()
+                    .uri("/api/projects/superadmin/default/settings/addressing")
+                    .method("PUT")
+                    .header(header::COOKIE, cookie)
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(json!({ "data": data }).to_string()))
+                    .expect("request"),
+            )
+            .await
+            .expect("addressing write")
+            .status()
+        }
+    };
+    assert_eq!(
+        save_addressing(json!({
+            "hosts": ["site.research.example", "files.research.example"],
+            "routes": [{ "host": "files.research.example", "path": "/", "surface": "files" }]
+        }))
+        .await,
+        StatusCode::OK
+    );
+    let on_host = |host: &'static str, uri: &'static str| {
+        let app = app.clone();
+        async move {
+            app.oneshot(Request::builder().uri(uri).header(header::HOST, host).body(Body::empty()).expect("request"))
+                .await
+                .expect("response")
+        }
+    };
+    let named = on_host("files.research.example", "/public/hello.txt").await;
+    assert_eq!(named.status(), StatusCode::OK);
+    assert_eq!(named.headers()["content-security-policy"], "sandbox");
+    assert_eq!(on_host("files.research.example", "/private/secret.txt").await.status(), StatusCode::NOT_FOUND);
+    assert_eq!(on_host("files.research.example", "/wh/superadmin/default").await.status(), StatusCode::NOT_FOUND);
+    assert_eq!(on_host("files.research.example", "/static/superadmin/default/x.js").await.status(), StatusCode::NOT_FOUND);
+    // The switch is still off, so the site host does not mount `/_files/`.
+    assert_eq!(on_host("site.research.example", "/_files/public/hello.txt").await.status(), StatusCode::NOT_FOUND);
+    // A file host carries one route at its root, on a named host.
+    for routes in [
+        json!([{ "host": "files.research.example", "path": "/docs/", "surface": "files" }]),
+        json!([{ "host": "files.research.example", "path": "/", "surface": "files" },
+               { "host": "files.research.example", "path": "/tiles/", "surface": "ms" }]),
+        json!([{ "host": "default.superadmin.localhost", "path": "/", "surface": "files" }]),
+    ] {
+        assert_eq!(
+            save_addressing(json!({ "hosts": ["site.research.example", "files.research.example"], "routes": routes })).await,
+            StatusCode::BAD_REQUEST,
+            "{routes}"
+        );
+    }
+    // Nothing runs on a file host: a site may not name it in `serve`.
+    let serve_on_file_host = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/projects/superadmin/default/files/access")
+                .method("PUT")
+                .header(header::COOKIE, &superadmin_cookie)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({ "path": "public", "access": "public_execute", "scope": "prefix",
+                            "serve": ["https://files.research.example"] })
+                    .to_string(),
+                ))
+                .expect("request"),
+        )
+        .await
+        .expect("serve response");
+    assert_eq!(serve_on_file_host.status(), StatusCode::BAD_REQUEST);
+
     #[cfg(unix)]
     {
         std::os::unix::fs::symlink("/etc/passwd", project_files.join("public").join("escape"))
@@ -6353,8 +6431,15 @@ async fn a_web_published_layer_serves_and_shows_only_the_chosen_properties() {
         json!("/ms/superadmin/default/roads")
     );
 
+    // The registry is store-tier, never a user object, and the layer names
+    // the store its source is a key in.
+    assert!(!files_dir.join("mapserver").join("default-mapserver.layers.json").exists());
     let registry_raw = fs::read_to_string(
         files_dir
+            .parent()
+            .expect("project dir")
+            .join("data")
+            .join("store")
             .join("mapserver")
             .join("default-mapserver.layers.json"),
     )
@@ -6363,6 +6448,7 @@ async fn a_web_published_layer_serves_and_shows_only_the_chosen_properties() {
         !registry_raw.contains("\"/roads\""),
         "the stored path must not carry a leading slash: {registry_raw}"
     );
+    assert!(registry_raw.contains("\"store\": \"local\""), "{registry_raw}");
 
     // Addressing (docs/contracts/addressing.md §2): the `ms` surface is off
     // until the operator switches it on, and a disabled surface answers 404
