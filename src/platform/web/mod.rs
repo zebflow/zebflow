@@ -15355,15 +15355,16 @@ async fn api_files_mkdir(
     uri: Uri,
     Json(body): Json<serde_json::Value>,
 ) -> Response {
-    if let Err(r) = require_project_api_capability(
+    let subject = match require_project_api_capability(
         &state,
         &headers,
         &owner,
         &project,
         ProjectCapability::FilesWrite,
     ) {
-        return r;
-    }
+        Ok(subject) => subject,
+        Err(r) => return r,
+    };
     if let Ok(Some(worker_id)) = remote_project_worker_id(&state, &owner, &project) {
         return match forward_project_json_request_to_worker(
             &state,
@@ -15409,6 +15410,17 @@ async fn api_files_mkdir(
             .into_response();
     }
 
+    if let Err(r) = require_publish_where_a_site_runs(
+        &state,
+        &subject,
+        &owner,
+        &project,
+        &layout.data_store_dir(),
+        &path_str,
+        false,
+    ) {
+        return r;
+    }
     let zebfs = layout.open_files();
     match zebfs.create_prefix(&path_str) {
         Ok(_) => Json(json!({ "ok": true, "path": path_str })).into_response(),
@@ -15430,15 +15442,16 @@ async fn api_files_upload(
     Query(params): Query<std::collections::HashMap<String, String>>,
     mut multipart: Multipart,
 ) -> Response {
-    if let Err(r) = require_project_api_capability(
+    let subject = match require_project_api_capability(
         &state,
         &headers,
         &owner,
         &project,
         ProjectCapability::FilesWrite,
     ) {
-        return r;
-    }
+        Ok(subject) => subject,
+        Err(r) => return r,
+    };
     if let Ok(Some(worker_id)) = remote_project_worker_id(&state, &owner, &project) {
         let field = match multipart.next_field().await {
             Ok(Some(field)) => field,
@@ -15542,6 +15555,17 @@ async fn api_files_upload(
             .into_response();
     }
 
+    if let Err(r) = require_publish_where_a_site_runs(
+        &state,
+        &subject,
+        &owner,
+        &project,
+        &layout.data_store_dir(),
+        &rel,
+        false,
+    ) {
+        return r;
+    }
     let field = match multipart.next_field().await {
         Ok(Some(field)) => field,
         Ok(None) => {
@@ -15627,15 +15651,16 @@ async fn api_files_rm(
     uri: Uri,
     Json(body): Json<serde_json::Value>,
 ) -> Response {
-    if let Err(r) = require_project_api_capability(
+    let subject = match require_project_api_capability(
         &state,
         &headers,
         &owner,
         &project,
         ProjectCapability::FilesWrite,
     ) {
-        return r;
-    }
+        Ok(subject) => subject,
+        Err(r) => return r,
+    };
     if let Ok(Some(worker_id)) = remote_project_worker_id(&state, &owner, &project) {
         return match forward_project_json_request_to_worker(
             &state,
@@ -15681,6 +15706,17 @@ async fn api_files_rm(
             .into_response();
     }
 
+    if let Err(r) = require_publish_where_a_site_runs(
+        &state,
+        &subject,
+        &owner,
+        &project,
+        &layout.data_store_dir(),
+        &path_str,
+        true,
+    ) {
+        return r;
+    }
     let zebfs = layout.open_files();
     match zebfs.delete(&path_str) {
         Ok(_) => {
@@ -15743,6 +15779,7 @@ fn safe_files_return_to(owner: &str, project: &str, return_to: Option<&str>) -> 
 
 fn set_project_file_access(
     state: &PlatformAppState,
+    subject: &ProjectAccessSubject,
     owner: &str,
     project: &str,
     req: &FileAccessRequest,
@@ -15769,6 +15806,34 @@ fn set_project_file_access(
         .file
         .ensure_project_layout(owner, project)
         .map_err(internal_error)?;
+    // Authority (kinds/zebfs-acl §Authority): a site needs `files.publish`
+    // (maintainer and up), and a rule is changed only by the role that set it
+    // or a higher one.
+    let store_dir = layout.data_store_dir();
+    let existing = crate::platform::services::zebfs_acl::own_rule(&store_dir, &req.path)
+        .map_err(|err| internal_error(PlatformError::new(err.code, err.message)))?;
+    let touches_site = access == crate::zebfs::ZebFsAccess::PublicExecute
+        || existing
+            .as_ref()
+            .is_some_and(|rule| rule.access == crate::zebfs::ZebFsAccess::PublicExecute);
+    if touches_site
+        && state
+            .platform
+            .authz
+            .ensure_project_capability(subject, owner, project, ProjectCapability::FilesPublish)
+            .is_err()
+    {
+        return Err(forbidden_json("serving a folder as a site needs the maintainer role or higher"));
+    }
+    let role = project_role_of(state, subject, owner, project);
+    if let Some(set_by) = existing.as_ref().and_then(|rule| rule.updated_by_role.as_deref())
+        && role != crate::platform::model::ProjectAccessRolePreset::Owner
+        && role_rank(role.key()) < role_rank(set_by)
+    {
+        return Err(forbidden_json(&format!(
+            "this rule was set by a {set_by}; it can be changed by that role or higher"
+        )));
+    }
     // Every serve origin must be a host this project already answers on: a
     // project can never claim another project's domain.
     if !req.serve.is_empty() {
@@ -15800,12 +15865,13 @@ fn set_project_file_access(
             }
         }
     }
-    let path = crate::platform::services::zebfs_acl::set_access(
-        &layout.data_store_dir(),
+    let path = crate::platform::services::zebfs_acl::set_access_as(
+        &store_dir,
         &req.path,
         access,
         scope,
         &req.serve,
+        Some(role.key()),
     )
     .map_err(|err| {
         if err.code == "ZEBFS_INVALID_PATH" || err.code == "ZEBFS_RESERVED_PATH" {
@@ -15834,6 +15900,65 @@ fn set_project_file_access(
     })
 }
 
+fn forbidden_json(message: &str) -> Response {
+    (
+        StatusCode::FORBIDDEN,
+        Json(json!({"ok": false, "error": message})),
+    )
+        .into_response()
+}
+
+/// The project role a subject holds; a controller call acts as the owner.
+fn project_role_of(
+    state: &PlatformAppState,
+    subject: &ProjectAccessSubject,
+    owner: &str,
+    project: &str,
+) -> crate::platform::model::ProjectAccessRolePreset {
+    state
+        .platform
+        .project_members
+        .role_of_public(owner, project, &subject.id)
+        .unwrap_or(crate::platform::model::ProjectAccessRolePreset::Guest)
+}
+
+/// A role's place on the ladder. An unknown word ranks above every role, so
+/// it is refused rather than guessed at; the owner overrides it anyway.
+fn role_rank(key: &str) -> usize {
+    crate::platform::services::access::roles::ROLE_LADDER
+        .iter()
+        .position(|role| role.key() == key)
+        .unwrap_or(usize::MAX)
+}
+
+/// Writing into, or deleting, a folder that runs as a site changes a live
+/// site: `files.publish` (maintainer and up) on top of the route's own
+/// capability. `deleting` also counts a site beneath `path`.
+fn require_publish_where_a_site_runs(
+    state: &PlatformAppState,
+    subject: &ProjectAccessSubject,
+    owner: &str,
+    project: &str,
+    store_dir: &FsPath,
+    path: &str,
+    deleting: bool,
+) -> Result<(), Response> {
+    let relation = if deleting {
+        crate::platform::services::zebfs_acl::touches_execute(store_dir, path)
+    } else {
+        crate::platform::services::zebfs_acl::inside_execute(store_dir, path)
+    };
+    match relation {
+        Ok(false) => Ok(()),
+        Ok(true) => state
+            .platform
+            .authz
+            .ensure_project_capability(subject, owner, project, ProjectCapability::FilesPublish)
+            .map_err(|_| forbidden_json("this folder runs as a site; changing it needs the maintainer role or higher")),
+        Err(err) => Err(internal_error(PlatformError::new(err.code, err.message))),
+    }
+}
+
 /// PUT /api/projects/{owner}/{project}/files/access
 /// Body: { "path": "uploads/image.png", "access": "public_read", "scope": "object|prefix" }
 async fn api_files_access(
@@ -15843,15 +15968,16 @@ async fn api_files_access(
     uri: Uri,
     Json(req): Json<FileAccessRequest>,
 ) -> Response {
-    if let Err(r) = require_project_api_capability(
+    let subject = match require_project_api_capability(
         &state,
         &headers,
         &owner,
         &project,
         ProjectCapability::FilesWrite,
     ) {
-        return r;
-    }
+        Ok(subject) => subject,
+        Err(r) => return r,
+    };
     if let Ok(Some(worker_id)) = remote_project_worker_id(&state, &owner, &project) {
         return match forward_project_json_request_to_worker(
             &state,
@@ -15868,7 +15994,7 @@ async fn api_files_access(
         };
     }
 
-    match set_project_file_access(&state, &owner, &project, &req) {
+    match set_project_file_access(&state, &subject, &owner, &project, &req) {
         Ok(response) => Json(response).into_response(),
         Err(response) => response,
     }
@@ -15884,15 +16010,16 @@ async fn api_files_access_form(
     Form(form): Form<FileAccessFormRequest>,
 ) -> Response {
     let return_to = safe_files_return_to(&owner, &project, form.return_to.as_deref());
-    if let Err(r) = require_project_api_capability(
+    let subject = match require_project_api_capability(
         &state,
         &headers,
         &owner,
         &project,
         ProjectCapability::FilesWrite,
     ) {
-        return r;
-    }
+        Ok(subject) => subject,
+        Err(r) => return r,
+    };
 
     let req = FileAccessRequest {
         path: form.path,
@@ -15922,7 +16049,7 @@ async fn api_files_access_form(
         return response;
     }
 
-    match set_project_file_access(&state, &owner, &project, &req) {
+    match set_project_file_access(&state, &subject, &owner, &project, &req) {
         Ok(_) => Redirect::to(&return_to).into_response(),
         Err(response) => response,
     }

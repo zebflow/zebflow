@@ -3332,6 +3332,70 @@ async fn stored_files_are_exposed_only_by_a_rule_never_by_a_name_or_a_cookie() {
 }
 
 #[tokio::test]
+async fn a_site_needs_a_maintainer_and_a_rule_answers_to_the_role_that_set_it() {
+    let mut config = PlatformConfig::default();
+    config.data_root = temp_test_dir("exposure-authority");
+    config.default_password = "test-pass".to_string();
+    let app = build_router(config).await.expect("platform router");
+
+    async fn send(app: &axum::Router, method: &str, uri: &str, cookie: &str, body: Value) -> StatusCode {
+        let request = Request::builder()
+            .uri(uri)
+            .method(method)
+            .header(header::COOKIE, cookie)
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(body.to_string()))
+            .expect("request");
+        app.clone().oneshot(request).await.expect("response").status()
+    }
+
+    let admin = login_cookie(app.clone(), "superadmin", "test-pass").await;
+    let mut cookies = std::collections::HashMap::new();
+    for (user, role) in [("devi", "developer"), ("mara", "maintainer")] {
+        assert_eq!(
+            send(&app, "POST", "/api/platform/users", &admin,
+                json!({"owner": user, "password": format!("{user}-pass"), "role": "member"})).await,
+            StatusCode::OK
+        );
+        let request = Request::builder()
+            .uri("/api/projects/superadmin/default/invites")
+            .method("POST")
+            .header(header::COOKIE, &admin)
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(json!({"target_user": user, "role_preset": role}).to_string()))
+            .expect("request");
+        let response = app.clone().oneshot(request).await.expect("invite");
+        let invite: Value = serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap();
+        let invite_id = invite["invite"]["invite_id"].as_str().expect("invite id").to_string();
+        let cookie = login_cookie(app.clone(), user, &format!("{user}-pass")).await;
+        assert_eq!(
+            send(&app, "POST", &format!("/api/invites/superadmin/default/{invite_id}/accept"), &cookie, json!({})).await,
+            StatusCode::OK
+        );
+        cookies.insert(user, cookie);
+    }
+    let access = "/api/projects/superadmin/default/files/access";
+    let site = json!({"path": "site", "access": "public_execute", "scope": "prefix",
+        "serve": ["http://default.superadmin.localhost"]});
+
+    // A developer may share a folder, not serve a site.
+    assert_eq!(send(&app, "PUT", access, &cookies["devi"], json!({"path": "covers", "access": "public_read", "scope": "prefix"})).await, StatusCode::OK);
+    assert_eq!(send(&app, "PUT", access, &cookies["devi"], site.clone()).await, StatusCode::FORBIDDEN);
+    assert_eq!(send(&app, "PUT", access, &cookies["mara"], site).await, StatusCode::OK);
+
+    // Writing into the site, or deleting it, is the maintainer's too.
+    assert_eq!(send(&app, "POST", "/api/projects/superadmin/default/files/mkdir", &cookies["devi"], json!({"path": "site/blog"})).await, StatusCode::FORBIDDEN);
+    assert_eq!(send(&app, "POST", "/api/projects/superadmin/default/files/mkdir", &cookies["mara"], json!({"path": "site/blog"})).await, StatusCode::OK);
+    assert_eq!(send(&app, "POST", "/api/projects/superadmin/default/files/rm", &cookies["devi"], json!({"path": "site/blog"})).await, StatusCode::FORBIDDEN);
+    assert_eq!(send(&app, "PUT", access, &cookies["devi"], json!({"path": "site", "access": "private", "scope": "prefix"})).await, StatusCode::FORBIDDEN);
+
+    // A rule a maintainer set answers to a maintainer or higher; the owner always.
+    assert_eq!(send(&app, "PUT", access, &cookies["mara"], json!({"path": "photos", "access": "public_read", "scope": "prefix"})).await, StatusCode::OK);
+    assert_eq!(send(&app, "PUT", access, &cookies["devi"], json!({"path": "photos", "access": "private", "scope": "prefix"})).await, StatusCode::FORBIDDEN);
+    assert_eq!(send(&app, "PUT", access, &admin, json!({"path": "photos", "access": "private", "scope": "prefix"})).await, StatusCode::OK);
+}
+
+#[tokio::test]
 #[ignore = "manual local TTS smoke using Piper voice assets"]
 async fn platform_tts_upload_credential_and_execute_smoke() {
     // The Piper voice is read from ZEBFLOW_TEST_PIPER_MODEL, its `.onnx.json`

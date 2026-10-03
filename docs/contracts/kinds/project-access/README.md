@@ -38,8 +38,8 @@ is written once and inherited upward.
 | `guest` | read the project, templates, pipelines, files, libraries, members | 6 |
 | `reporter` | read data and settings | 8 |
 | `developer` | write templates, pipelines and files; **run pipelines** | 20 |
-| `maintainer` | members, credentials, **write data**, libraries, settings, MCP sessions | 29 |
-| `owner` | delete the project | 30 |
+| `maintainer` | members, credentials, **write data**, libraries, settings, MCP sessions, **serve a folder as a site** (`files.publish`) | 30 |
+| `owner` | delete the project | 31 |
 
 Two lines are deliberate:
 

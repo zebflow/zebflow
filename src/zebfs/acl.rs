@@ -89,6 +89,10 @@ pub struct ZebFsAclRule {
     /// `public_execute` only: the full origins the path runs on.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub serve: Vec<String>,
+    /// The setter's project role when the rule was set (`guest` … `owner`).
+    /// A rule may be changed only by that role or a higher one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub updated_by_role: Option<String>,
 }
 
 impl ZebFsAclRule {
@@ -98,10 +102,19 @@ impl ZebFsAclRule {
             scope,
             updated_at: now_secs(),
             serve,
+            updated_by_role: None,
         }
     }
 
     fn validate(&self) -> Result<(), ZebFsError> {
+        if let Some(role) = &self.updated_by_role
+            && !["guest", "reporter", "developer", "maintainer", "owner"].contains(&role.as_str())
+        {
+            return Err(ZebFsError::new(
+                "ZEBFS_ACL_ROLE",
+                format!("updated_by_role '{role}' is not a project role"),
+            ));
+        }
         match (self.access, self.serve.is_empty()) {
             (ZebFsAccess::PublicExecute, true) => Err(ZebFsError::new(
                 "ZEBFS_ACL_SERVE_REQUIRED",

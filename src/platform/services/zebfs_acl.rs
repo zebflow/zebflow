@@ -86,10 +86,60 @@ pub fn set_access(
     scope: ZebFsAclScope,
     serve: &[String],
 ) -> Result<String, ZebFsError> {
+    set_access_as(store_dir, path, access, scope, serve, None)
+}
+
+/// [`set_access`] recording the setter's project role on the rule.
+pub fn set_access_as(
+    store_dir: &Path,
+    path: &str,
+    access: ZebFsAccess,
+    scope: ZebFsAclScope,
+    serve: &[String],
+    role: Option<&str>,
+) -> Result<String, ZebFsError> {
     let mut manifest = read(store_dir)?;
     let normalized = manifest.set_rule(path, access, scope, serve)?;
+    if let Some(rule) = manifest.rules.get_mut(&normalized) {
+        rule.updated_by_role = role.map(str::to_string);
+    }
     write(store_dir, &manifest)?;
     Ok(normalized)
+}
+
+/// The rule set on exactly `path`, if any.
+pub fn own_rule(store_dir: &Path, path: &str) -> Result<Option<ZebFsAclRule>, ZebFsError> {
+    let normalized = crate::zebfs::normalize_object_path(path)?;
+    Ok(read(store_dir)?.rules.get(&normalized).cloned())
+}
+
+/// Whether `path` is inside a folder that runs as a site (or is one): writing
+/// there changes a live site.
+pub fn inside_execute(store_dir: &Path, path: &str) -> Result<bool, ZebFsError> {
+    execute_relation(store_dir, path, false)
+}
+
+/// Whether `path`, anything beneath it, or anything above it runs as a site:
+/// deleting or moving it changes a live site.
+pub fn touches_execute(store_dir: &Path, path: &str) -> Result<bool, ZebFsError> {
+    execute_relation(store_dir, path, true)
+}
+
+fn execute_relation(store_dir: &Path, path: &str, beneath_too: bool) -> Result<bool, ZebFsError> {
+    let Ok(normalized) = crate::zebfs::normalize_object_path(path) else {
+        return Ok(false);
+    };
+    let manifest = match read(store_dir) {
+        Ok(manifest) => manifest,
+        Err(err) if err.code == "ZEBFS_ACL_READ" => return Ok(false),
+        Err(err) => return Err(err),
+    };
+    Ok(manifest.rules.iter().any(|(key, rule)| {
+        rule.access == ZebFsAccess::PublicExecute
+            && (key == &normalized
+                || normalized.starts_with(&format!("{key}/"))
+                || (beneath_too && key.starts_with(&format!("{normalized}/"))))
+    }))
 }
 
 /// A path was deleted: its rules, and the rules beneath it, go with it.

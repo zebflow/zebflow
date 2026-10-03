@@ -61,6 +61,8 @@ const fn role_additions(role: ProjectAccessRolePreset) -> &'static [ProjectCapab
         // Runs the project: who is in it, what it connects to, what it installs.
         ProjectAccessRolePreset::Maintainer => &[
             C::MembersWrite,
+            // A site on a live domain: serving a folder, or writing into one.
+            C::FilesPublish,
             C::CredentialsRead,
             C::CredentialsWrite,
             C::TablesWrite,
@@ -287,7 +289,7 @@ mod contract_tests {
             .collect();
         assert_eq!(
             sizes,
-            vec![6, 8, 20, 29, 30],
+            vec![6, 8, 20, 30, 31],
             "guest/reporter/developer/maintainer/owner sizes changed — update \
              docs/contracts/kinds/project-access/README.md to match"
         );
