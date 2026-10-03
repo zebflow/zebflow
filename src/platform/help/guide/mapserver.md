@@ -19,10 +19,29 @@ Its job is not only storing geodata. Its job is:
 ## Publishing and serving
 
 Layers are managed with the `ms.layer.publish` / `ms.layer.unpublish` / `ms.layer.get` /
-`ms.layer.list` pipeline nodes (see `help("pipeline/dsl")` for flags) and through
+`ms.layer.list` pipeline nodes and through
 `/api/projects/{owner}/{project}/mapserver/{instance}/sources` and
-`.../layers`. A published layer is immediately queryable at
-`/ms/{owner}/{project}/{path}`.
+`.../layers`. A published layer answers at `/ms/{owner}/{project}/{route}`
+while the project's `ms` surface is on (Settings → Addressing).
+
+```
+| geo.dataset.convert --from uploads/suburbs.shp --folder datasets --filename suburbs.parquet --crs EPSG:4326
+| ms.layer.publish --name suburbs --route suburbs --from "{{ input.dataset }}" --field name --field postcode --min-zoom 8 --max-zoom 14
+```
+
+- `--from` is a GeoJSON or GeoParquet store key or FileRef; `--parse
+  geojson|geoparquet` says which when the name does not. It is served from an
+  optimized GeoParquet copy under `mapserver/.optimized/` unless
+  `--skip-optimize`; `--skip-optimize --build-artifact` serves a GeoJSON as
+  chunks instead.
+- `--function <pipeline>` publishes what a function pipeline returns (a
+  GeoJSON FeatureCollection) instead of a file, cached for `--ttl` (`30s`,
+  `5m`; default 60s).
+- Each `--field` is a property the public may see; none serves geometry only.
+  `--max-items` caps the features one query answers (default 1000).
+- Every node answers `layer`: publish `{ name, route, store, source,
+  source_kind, …, serving }`, get `{ found, … }`, unpublish `{ name, removed
+  }`, list `{ items, count }`.
 
 ## Why it matters
 

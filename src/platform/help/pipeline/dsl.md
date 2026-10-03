@@ -330,11 +330,11 @@ A declared preview records that payload in the run's trace even at the
 default `on-error` capture level, so it has something to draw; a pipeline at
 level `none` records nothing and the cell says "capture off".
 
-Every node kind takes both flags. The table nodes sample rows into the
-payload with `--preview-rows <n>` and can preview that sample:
+Every node kind takes both flags, and no node keeps a sample of its own for
+them: a table node previews the rows it answers.
 
 ```
-| table.query.run --from "datasets/orders.csv as o" --preview-rows 5 --preview table:table.preview -- "SELECT * FROM o"
+| table.query.run --from "datasets/orders.csv as o" --limit 20 --preview table:query.rows -- "SELECT * FROM o"
 ```
 
 ## Inputs

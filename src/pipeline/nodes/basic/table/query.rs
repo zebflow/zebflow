@@ -1,4 +1,17 @@
-//! Table query node — SQL over one or more table sources.
+//! `table.query.run` — SQL over files in a project store, as if they were
+//! tables (GeoDataFusion: DataFusion with the `ST_*` functions).
+//!
+//! The query shape is the db nodes' (`shared/query.rs`): `--query` or the body
+//! after `--`, `--param 1=…` binding `$1`, `--limit` capping the rows
+//! answered. Each `--from "<source> as <name>"` binds one table: a store key,
+//! `$expr` giving a FileRef or rows. Only SELECT and WITH run.
+//!
+//! Without a destination the answer is the db nodes' `query: { rows, columns,
+//! row_count, truncated }`. With one (`--folder`, `--filename` or `--path`)
+//! the whole result — at most [`MAX_FILE_ROWS`] rows — is written as
+//! `--format`, and `query` holds the file's FileRef fields with `row_count`
+//! (rows written), `columns` and `format`; `--rows` adds the first `--limit`
+//! rows and `truncated`.
 
 use std::fs;
 use std::io::Write;
@@ -13,10 +26,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
 use crate::language::LanguageEngine;
-use crate::pipeline::model::NodeCapability;
-use crate::pipeline::model::{
-    DslFlag, DslFlagKind, LayoutItem, NodeFieldDef, NodeFieldType, SelectOptionDef,
-};
+use crate::pipeline::model::{DslFlag, DslFlagKind, LayoutItem, NodeCapability, NodeExample, NodeFieldDef, NodeFieldType};
+use crate::pipeline::nodes::shared::file_ref::zebfs_rel_path;
+use crate::pipeline::nodes::shared::limits::choice;
+use crate::pipeline::nodes::shared::query::{self, Params};
+use crate::pipeline::nodes::shared::util::{eval_deno_expr, metadata_scope, with_answer};
 use crate::pipeline::{
     NodeDefinition, PipelineError,
     nodes::{NodeExecutionInput, NodeExecutionOutput, NodeHandler},
@@ -24,47 +38,68 @@ use crate::pipeline::{
 use crate::platform::services::PlatformService;
 use crate::zebfs::normalize_object_path;
 
-use crate::pipeline::nodes::shared::file_ref::zebfs_rel_path;
-use super::convert::{
-    TableFormat, collect_columns, encode_rows, parse_format,
-    record_batch_to_rows,
-};
-use crate::pipeline::nodes::shared::util::{eval_deno_expr, metadata_scope};
+use super::FORMAT_WORDS;
+use super::convert::{TableFormat, collect_columns, encode_rows, parse_format, record_batch_to_rows};
 
 pub const NODE_KIND: &str = "table.query.run";
 pub const INPUT_PIN_IN: &str = "in";
 pub const OUTPUT_PIN_OUT: &str = "out";
-const MAX_INLINE_ROWS: usize = 10_000;
+
+/// Reading a source or writing the result failed.
+pub const CODE: &str = "FW_NODE_TABLE_QUERY_RUN";
+/// A flag the author set wrong.
+pub const CONFIG_CODE: &str = "FW_NODE_TABLE_QUERY_RUN_CONFIG";
+/// The engine has no platform to read stores through.
+pub const UNAVAILABLE_CODE: &str = "FW_NODE_TABLE_QUERY_RUN_UNAVAILABLE";
+/// `--param` keys that are not `1..n`.
+const PARAM_CODE: &str = "FW_NODE_TABLE_QUERY_RUN_PARAM";
+/// `--limit` out of range, or a result too large to write.
+const LIMIT_CODE: &str = "FW_NODE_TABLE_QUERY_RUN_LIMIT";
+/// A `--from` binding that names no readable table.
+const SOURCE_CODE: &str = "FW_NODE_TABLE_QUERY_RUN_SOURCE";
+/// A source DataFusion could not register.
+const REGISTER_CODE: &str = "FW_NODE_TABLE_QUERY_RUN_REGISTER";
+/// The SQL was refused or failed.
+const SQL_CODE: &str = "FW_NODE_TABLE_QUERY_RUN_SQL";
+const PREPARE_CODE: &str = "FW_NODE_TABLE_QUERY_RUN_PREPARE";
+const EXECUTE_CODE: &str = "FW_NODE_TABLE_QUERY_RUN_EXECUTE";
+
+/// The most rows one run writes to a file; a larger result is refused.
+pub const MAX_FILE_ROWS: usize = 10_000;
+/// The most `--from` tables one query binds.
+const MAX_SOURCES: u32 = 32;
 
 pub fn definition() -> NodeDefinition {
     NodeDefinition {
         kind: NODE_KIND.to_string(),
         capabilities: vec![NodeCapability::Network, NodeCapability::Filesystem, NodeCapability::Database, NodeCapability::Process],
         title: "Table Query".to_string(),
-        description: "Run SQL across files — CSV, JSON, NDJSON, Parquet objects in the project's file store — as if they were tables. \
-            Each `--from \"<path> as <alias>\"` binds one file; the SQL in the body queries the aliases; `--params` binds `$1, $2`. \
-            Adds `table: { engine, rows, columns, preview, data?, to?, file? }` to the payload — rows are in `input.table.data` only with \
-            `--to-json`, otherwise they are written to the store (`--folder`/`--filename` or `--path`, `--store`) and only `preview` rows travel in the payload. For database \
-            tables use `sekejap.query.run` / `pg.query.run`; this node is for files and analytics over them."
+        description: "Run SQL across files — CSV, JSON, NDJSON, Parquet objects in a project store — as if they were tables, with the \
+            GeoDataFusion `ST_*` functions. Each `--from \"<source> as <name>\"` binds one table: a store key, or `$expr` giving a FileRef or rows. \
+            The SQL is the body after `--` (or `--query`), SELECT or WITH only; `--param 1=…` binds `$1` (a whole `{{ expr }}` keeps its type). \
+            Without a destination it adds `query: { rows, columns, row_count, truncated }`, as the db nodes do — `--limit` caps the rows (default 200, \
+            at most 5000). With `--folder` / `--filename` / `--path` the whole result (at most 10000 rows) is written as `--format` and `query` holds \
+            the file's FileRef fields with `row_count` (rows written), `columns` and `format`; `--rows` adds the first `--limit` rows and `truncated`. \
+            For database tables use `pg.query.run`, `sqlite.query.run` or `sekejap.query.run`."
             .to_string(),
         input_pins: vec![INPUT_PIN_IN.to_string()],
         output_pins: vec![OUTPUT_PIN_OUT.to_string()],
         input_schema: json!({
             "type": "object",
-            "description": "Input context for source expressions and $1/$2 bind parameter expressions."
+            "description": "Input context for `$expr` sources; values reach the SQL only through --param."
         }),
         output_schema: json!({
             "type": "object",
             "properties": {
-                "table": {
+                "query": {
                     "type": "object",
                     "properties": {
-                        "engine": { "type": "string" },
-                        "rows": { "type": "integer" },
+                        "rows": { "type": "array", "description": "One object per row; without a destination, or with --rows" },
                         "columns": { "type": "array", "items": { "type": "string" } },
-                        "preview": { "type": "array" },
-                        "data": { "type": "array" },
-                        "to": { "type": ["string", "null"] },
+                        "row_count": { "type": "integer", "description": "Rows answered, or rows written when a file is written" },
+                        "truncated": { "type": "boolean", "description": "More rows than --limit answered" },
+                        "ref": { "type": "string", "description": "The written file's store key; with a destination" },
+                        "format": { "type": "string", "description": "What the written file is; with a destination" }
                     }
                 }
             }
@@ -74,92 +109,31 @@ pub fn definition() -> NodeDefinition {
         config_schema: Default::default(),
         dsl_flags: vec![
             DslFlag {
-                flag: "--engine".to_string(),
-                config_key: "engine".to_string(),
-                description: "Table query engine. Only geodatafusion is supported.".to_string(),
-                kind: DslFlagKind::Scalar,
-                required: false,
-                ..Default::default()
-            },
-            DslFlag {
                 flag: "--from".to_string(),
-                config_key: "sources".to_string(),
-                description: "Table source binding. Repeat for each source: --from \"datasets/posts.parquet as posts\".".to_string(),
+                config_key: "from".to_string(),
+                description: "One table, repeated: \"<source> as <name>\" — a store key, or $expr giving a FileRef or rows.".to_string(),
                 kind: DslFlagKind::RepeatedList,
                 required: true,
+                value: "text".to_string(),
+                max_repeat: Some(MAX_SOURCES),
                 ..Default::default()
             },
-            DslFlag {
-                flag: "--query".to_string(),
-                config_key: "query".to_string(),
-                description: "SQL query. Body SQL after -- also writes this field.".to_string(),
-                kind: DslFlagKind::Scalar,
-                required: false,
-                ..Default::default()
-            },
-            DslFlag {
-                flag: "--params".to_string(),
-                config_key: "params".to_string(),
-                description: "Bind values for $1, $2, … — a literal or {{ expr }}. A whole {{ }} carries its typed value, so \"{{ [$trigger.params.slug] }}\" is a real array.".to_string(),
-                kind: DslFlagKind::Scalar,
-                required: false,
-                ..Default::default()
-            },
-
-            DslFlag {
-                flag: "--format".to_string(),
-                config_key: "to_format".to_string(),
-                description: "Format of the written file: csv, json, ndjson, parquet. Default: from the destination extension.".to_string(),
-                kind: DslFlagKind::Scalar,
-                required: false,
-                ..Default::default()
-            },
-            DslFlag {
-                flag: "--to-json".to_string(),
-                config_key: "to_json".to_string(),
-                description: "Emit query rows downstream as table.data.".to_string(),
-                kind: DslFlagKind::Bool,
-                required: false,
-                ..Default::default()
-            },
-            DslFlag {
-                flag: "--preview-rows".to_string(),
-                config_key: "preview_rows".to_string(),
-                description: "Number of sample rows to include in table.preview. (The canvas preview is --preview <as>.)".to_string(),
-                kind: DslFlagKind::Scalar,
-                required: false,
-                ..Default::default()
-            },
-            DslFlag {
-                flag: "--limit".to_string(),
-                config_key: "limit".to_string(),
-                description: "Maximum rows to keep after query execution. Prefer SQL LIMIT for large data.".to_string(),
-                kind: DslFlagKind::Scalar,
-                required: false,
-                ..Default::default()
-            },
-        ].into_iter().chain(super::destination_flags()).collect(),
+            query::query_flag("SQL (SELECT or WITH)"),
+            query::param_flag("`1=…` binds $1, `2=…` binds $2"),
+            query::limit_flag(),
+            super::format_flag(),
+            super::rows_flag(),
+        ]
+        .into_iter()
+        .chain(super::destination_flags())
+        .collect(),
         fields: vec![
             NodeFieldDef {
-                name: "engine".to_string(),
-                label: "Engine".to_string(),
-                field_type: NodeFieldType::Select,
-                options: vec![
-                    SelectOptionDef {
-                        value: "geodatafusion".to_string(),
-                        label: "GeoDataFusion".to_string(),
-                    },
-                ],
-                default_value: Some(json!("geodatafusion")),
-                help: Some("GeoDataFusion SQL over table sources, including supported ST_* functions.".to_string()),
-                ..Default::default()
-            },
-            NodeFieldDef {
-                name: "sources".to_string(),
-                label: "Sources".to_string(),
+                name: "from".to_string(),
+                label: "From".to_string(),
                 field_type: NodeFieldType::SourceBindings,
                 span: Some("full".to_string()),
-                help: Some("Bind each ZebFS path or row expression to a SQL table alias.".to_string()),
+                help: Some("Bind each store key or $expr to a SQL table name.".to_string()),
                 ..Default::default()
             },
             NodeFieldDef {
@@ -168,82 +142,47 @@ pub fn definition() -> NodeDefinition {
                 field_type: NodeFieldType::CodeEditor,
                 language: Some("sql".to_string()),
                 span: Some("full".to_string()),
-                help: Some("SQL over the source aliases. Use $1, $2 with params.".to_string()),
+                help: Some("SELECT or WITH over the table names; $1, $2 bind from Params.".to_string()),
                 default_value: Some(json!("SELECT *\nFROM posts\nLIMIT 20")),
                 ..Default::default()
             },
-            NodeFieldDef {
-                name: "params".to_string(),
-                label: "Params".to_string(),
-                field_type: NodeFieldType::Text,
-                help: Some("Bind values for $1, $2, … — a literal or {{ expr }}.".to_string()),
-                ..Default::default()
-            },
-            NodeFieldDef {
-                name: "to_json".to_string(),
-                label: "Emit JSON Rows".to_string(),
-                field_type: NodeFieldType::Checkbox,
-                help: Some("Emit rows under table.data for downstream nodes.".to_string()),
-                ..Default::default()
-            },
-
-            NodeFieldDef {
-                name: "to_format".to_string(),
-                label: "Output Format".to_string(),
-                field_type: NodeFieldType::Select,
-                options: vec![
-                    SelectOptionDef { value: "".to_string(), label: "Infer from path".to_string() },
-                    SelectOptionDef { value: "csv".to_string(), label: "CSV".to_string() },
-                    SelectOptionDef { value: "json".to_string(), label: "JSON".to_string() },
-                    SelectOptionDef { value: "ndjson".to_string(), label: "NDJSON".to_string() },
-                    SelectOptionDef { value: "parquet".to_string(), label: "Parquet".to_string() },
-                ],
-                help: Some("Optional output format override for Write To FS.".to_string()),
-                ..Default::default()
-            },
-            NodeFieldDef {
-                name: "preview_rows".to_string(),
-                label: "Preview rows".to_string(),
-                field_type: NodeFieldType::Number,
-                default_value: Some(json!(20)),
-                help: Some("Number of sample rows included in table.preview.".to_string()),
-                ..Default::default()
-            },
-            NodeFieldDef {
-                name: "limit".to_string(),
-                label: "Limit Rows".to_string(),
-                field_type: NodeFieldType::Number,
-                help: Some("Maximum rows materialized after query execution. Prefer SQL LIMIT for large data.".to_string()),
-                ..Default::default()
-            },
-        ].into_iter().chain(super::destination_fields()).collect(),
+        ]
+        .into_iter()
+        .chain(query::fields("1 binds $1, 2 binds $2").into_iter().filter(|field| field.name != "write"))
+        .chain([
+            super::format_field("format", "Format", "What the written file is. Auto: from the destination's extension, else csv."),
+            super::rows_field(),
+        ])
+        .chain(super::destination_fields())
+        .collect(),
         layout: vec![
-            LayoutItem::Row { row: vec![
-                LayoutItem::Field("engine".to_string()),
-                LayoutItem::Field("to_json".to_string()),
-            ] },
-            LayoutItem::Field("sources".to_string()),
+            LayoutItem::Field("from".to_string()),
             LayoutItem::Field("query".to_string()),
-            LayoutItem::Field("params".to_string()),
-            LayoutItem::Row { row: vec![
-                LayoutItem::Field("folder".to_string()),
-                LayoutItem::Field("filename".to_string()),
-                LayoutItem::Field("path".to_string()),
-                LayoutItem::Field("store".to_string()),
-                LayoutItem::Field("on_conflict".to_string()),
-                LayoutItem::Field("to_format".to_string()),
-            ] },
-            LayoutItem::Row { row: vec![
-                LayoutItem::Field("preview_rows".to_string()),
-                LayoutItem::Field("limit".to_string()),
-            ] },
+            LayoutItem::Field("param".to_string()),
+            LayoutItem::Row { row: vec![LayoutItem::Field("limit".to_string()), LayoutItem::Field("rows".to_string())] },
+            LayoutItem::Row {
+                row: vec![
+                    LayoutItem::Field("folder".to_string()),
+                    LayoutItem::Field("filename".to_string()),
+                    LayoutItem::Field("path".to_string()),
+                ],
+            },
+            LayoutItem::Row {
+                row: vec![
+                    LayoutItem::Field("store".to_string()),
+                    LayoutItem::Field("on_conflict".to_string()),
+                    LayoutItem::Field("format".to_string()),
+                ],
+            },
         ],
         ai_tool: Default::default(),
         examples: vec![
-            crate::pipeline::model::NodeExample::dsl("Aggregate a CSV", r#"table.query.run --from "uploads/sales.csv as sales" --to-json -- "SELECT region, SUM(amount) AS total FROM sales GROUP BY region ORDER BY total DESC""#)
-                .output(serde_json::json!({ "table": { "engine": "geodatafusion", "rows": 2, "columns": ["region", "total"], "preview": [{ "region": "AU", "total": 1200 }], "data": [{ "region": "AU", "total": 1200 }, { "region": "NZ", "total": 300 }], "to": null, "file": null } })),
-            crate::pipeline::model::NodeExample::dsl("Join two files into Parquet", r#"table.query.run --from "datasets/orders.ndjson as o" --from "datasets/customers.csv as c" --path datasets/report.parquet --preview-rows 5 -- "SELECT c.name, COUNT(*) AS orders FROM o JOIN c ON o.customer_id = c.id GROUP BY c.name""#)
-                .note("The full result is the file at `datasets/report.parquet`; the payload carries `table.preview` (5 sample rows, from `--preview-rows`) and `table.file` (a FileRef)."),
+            NodeExample::dsl("Aggregate a CSV", r#"table.query.run --from "uploads/sales.csv as sales" -- "SELECT region, SUM(amount) AS total FROM sales GROUP BY region ORDER BY total DESC""#)
+                .output(json!({ "query": { "rows": [{ "region": "AU", "total": 1200 }, { "region": "NZ", "total": 300 }], "columns": ["region", "total"], "row_count": 2, "truncated": false } })),
+            NodeExample::dsl("Join two files into Parquet", r#"table.query.run --from "datasets/orders.ndjson as o" --from "datasets/customers.csv as c" --path datasets/report.parquet -- "SELECT c.name, COUNT(*) AS orders FROM o JOIN c ON o.customer_id = c.id GROUP BY c.name""#)
+                .output(json!({ "query": { "__zf_type": "file_ref", "backend": "zebfs", "store": "local", "ref": "datasets/report.parquet", "filename": "report.parquet", "mime": "application/vnd.apache.parquet", "kind": "parquet", "size": 2048, "sha256": "sha256:…", "lifecycle": "durable", "origin": NODE_KIND, "trust": "generated", "row_count": 42, "columns": ["name", "orders"], "format": "parquet" } }))
+                .note("The whole result is the file; `input.query` is its FileRef. Add `--rows` to answer the first --limit rows as well."),
+            NodeExample::dsl("Filter by a bound value", r#"table.query.run --from "datasets/posts.parquet as posts" --param "1={{ $trigger.params.slug }}" -- "SELECT id, title FROM posts WHERE slug = $1""#),
         ],
         ..Default::default()
     }
@@ -267,24 +206,31 @@ impl SourceBindingConfig {
     fn is_empty(&self) -> bool {
         match self {
             SourceBindingConfig::Dsl(spec) => spec.trim().is_empty(),
-            SourceBindingConfig::Ui { source, alias } => {
-                source.trim().is_empty() && alias.trim().is_empty()
-            }
+            SourceBindingConfig::Ui { source, alias } => source.trim().is_empty() && alias.trim().is_empty(),
         }
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Config {
-    #[serde(default = "default_engine")]
-    pub engine: String,
+    /// The tables, each `"<source> as <name>"` (or the editor's `{ source, alias }`).
     #[serde(default)]
-    pub sources: Vec<SourceBindingConfig>,
+    pub from: Vec<SourceBindingConfig>,
+    /// The statement: SELECT or WITH.
     #[serde(default)]
     pub query: String,
-    /// Bind values for `$1`, `$2`, … A whole `{{ }}` carries its typed value.
+    /// `{ "1": value }` binds `$1`.
     #[serde(default)]
-    pub params: Value,
+    pub param: Value,
+    /// Rows answered.
+    #[serde(default)]
+    pub limit: Value,
+    /// What a written file is: csv, json, ndjson or parquet.
+    #[serde(default)]
+    pub format: String,
+    /// With a destination, answer the rows as well as the file.
+    #[serde(default)]
+    pub rows: bool,
     /// Store folder for the written file (default: `tables`).
     #[serde(default)]
     pub folder: String,
@@ -294,87 +240,39 @@ pub struct Config {
     /// Exact store key; overrides `folder` and `filename`.
     #[serde(default)]
     pub path: Option<String>,
-    /// The store to read sources from and write to; saved explicitly at registration.
+    /// The store keys are read from and a file is written to; saved explicitly at registration.
     #[serde(default)]
     pub store: Option<String>,
     /// `overwrite`, `skip` or `error` (default: error).
     #[serde(default)]
     pub on_conflict: Option<String>,
-    #[serde(default)]
-    pub to_format: Option<String>,
-    #[serde(default)]
-    pub to_json: bool,
-    /// Number of sample rows carried under `table.preview` (`--preview-rows`).
-    #[serde(default)]
-    pub preview_rows: Option<usize>,
-    #[serde(default)]
-    pub limit: Option<usize>,
 }
 
 impl Config {
-    /// `--preview-rows`; nothing else names it.
-    pub fn preview_row_count(&self) -> usize {
-        self.preview_rows.unwrap_or(0)
+    fn destination(&self) -> super::TableDestination<'_> {
+        super::TableDestination { folder: &self.folder, filename: self.filename.as_deref(), path: self.path.as_deref() }
     }
-}
-
-impl Default for Config {
-    fn default() -> Self {
-        Self {
-            engine: default_engine(),
-            sources: Vec::new(),
-            query: String::new(),
-            params: Value::Null,
-            folder: String::new(),
-            filename: None,
-            path: None,
-            store: None,
-            on_conflict: None,
-            to_format: None,
-            to_json: false,
-            preview_rows: None,
-            limit: None,
-        }
-    }
-}
-
-fn default_engine() -> String {
-    "geodatafusion".to_string()
 }
 
 pub struct Node {
     config: Config,
     platform: Arc<PlatformService>,
-    /// Still needed: `--from "$expr as alias"` evaluates a source expression,
-    /// which is a different mechanism from the retired --params-expr twin.
+    /// `--from "$expr as name"` evaluates a source expression.
     language: Arc<dyn LanguageEngine>,
 }
 
 impl Node {
-    pub fn new(
-        config: Config,
-        platform: Arc<PlatformService>,
-        language: Arc<dyn LanguageEngine>,
-    ) -> Result<Self, PipelineError> {
-        if config.sources.iter().all(SourceBindingConfig::is_empty) {
-            return Err(PipelineError::new(
-                "FW_NODE_TABLE_QUERY_CONFIG",
-                "config.sources must include at least one --from binding",
-            ));
+    pub fn new(config: Config, platform: Arc<PlatformService>, language: Arc<dyn LanguageEngine>) -> Result<Self, PipelineError> {
+        if config.from.iter().all(SourceBindingConfig::is_empty) {
+            return Err(PipelineError::new(CONFIG_CODE, "--from is required: one \"<source> as <name>\" per table"));
         }
-        // One flag per thing now, so "set one or the other" has nothing left
-        // to adjudicate.
+        if config.from.len() > MAX_SOURCES as usize {
+            return Err(PipelineError::new(CONFIG_CODE, format!("--from binds at most {MAX_SOURCES} tables")));
+        }
         if config.query.trim().is_empty() {
-            return Err(PipelineError::new(
-                "FW_NODE_TABLE_QUERY_CONFIG",
-                "config.query must not be empty",
-            ));
+            return Err(PipelineError::new(CONFIG_CODE, "--query (or the body after --) must not be empty"));
         }
-        Ok(Self {
-            config,
-            platform,
-            language,
-        })
+        Ok(Self { config, platform, language })
     }
 }
 
@@ -392,123 +290,80 @@ impl NodeHandler for Node {
         &[OUTPUT_PIN_OUT]
     }
 
-    async fn execute_async(
-        &self,
-        input: NodeExecutionInput,
-    ) -> Result<NodeExecutionOutput, PipelineError> {
-        normalize_engine(&self.config.engine)?;
+    async fn execute_async(&self, input: NodeExecutionInput) -> Result<NodeExecutionOutput, PipelineError> {
         // Arrives final — `{{ }}` resolved engine-side before this ran.
-        let raw_sql = self.config.query.trim().to_string();
-        let sql = normalize_select_sql(&raw_sql)?;
-        let params = resolve_params(&self.config);
-        let destination = super::TableDestination {
-            folder: &self.config.folder,
-            filename: self.config.filename.as_deref(),
-            path: self.config.path.as_deref(),
+        let sql = normalize_select_sql(&self.config.query)?;
+        let params = match query::params(&self.config.param, false, PARAM_CODE)? {
+            Params::Positional(values) => values,
+            Params::Named(_) => unreachable!("named keys are refused for this engine"),
         };
-        if !destination.requested() && !self.config.to_json {
-            return Err(PipelineError::new(
-                "FW_NODE_TABLE_QUERY",
-                "set --folder, --filename or --path to write a file, or --to-json to emit rows downstream",
-            ));
-        }
+        let limit = query::limit(&self.config.limit, LIMIT_CODE)?;
+        let format_word = choice(&self.config.format, FORMAT_WORDS, "", "--format", CONFIG_CODE)?;
+        let destination = self.config.destination();
         let (owner, project, ..) = metadata_scope(&input.metadata)?;
-        let store = crate::pipeline::nodes::shared::project_store::open_store(
-            &self.platform,
-            owner,
-            project,
-            self.config.store.as_deref(),
-        )?;
+        let store = crate::pipeline::nodes::shared::project_store::open_store(&self.platform, owner, project, self.config.store.as_deref())?;
         let source_stores = SourceStores { platform: &self.platform, owner, project, store_id: &store.id };
-        let QueryRows {
-            rows,
-            source_labels,
-        } = execute_geodatafusion_engine(
-            &self.config.sources,
-            &sql,
-            &params,
-            &source_stores,
-            &input,
-            self.language.as_ref(),
-            self.config.limit.unwrap_or(MAX_INLINE_ROWS).min(MAX_INLINE_ROWS),
-        )
-        .await?;
-        let mut rows = rows;
-        if let Some(limit) = self.config.limit {
-            rows.truncate(limit);
-        }
 
+        // Without a file, one row past --limit says whether more matched; a
+        // file takes the whole result, one row past its ceiling refused.
+        let fetch = if destination.requested() { MAX_FILE_ROWS } else { limit };
+        let mut rows =
+            execute_geodatafusion_engine(&self.config.from, &sql, &params, &source_stores, &input, self.language.as_ref(), fetch).await?;
         let columns = collect_columns(&rows);
-        let mut to_path = None;
-        let mut file = Value::Null;
-        let mut to_format_value = None;
 
+        let mut answer = Map::new();
         if destination.requested() {
-            let default_format = self.config.to_format.as_deref().map(str::trim).filter(|f| !f.is_empty()).unwrap_or("csv");
-            let rel_path = destination.key(default_format, "FW_NODE_TABLE_QUERY")?;
-            let format = output_format(self.config.to_format.as_deref(), &rel_path)?;
-            let bytes = encode_rows(&rows, &columns, format)
-                .map_err(|err| PipelineError::new("FW_NODE_TABLE_QUERY", err.to_string()))?;
-            file = super::write_table_file(
+            if rows.len() > MAX_FILE_ROWS {
+                return Err(PipelineError::new(
+                    LIMIT_CODE,
+                    format!("the result is over {MAX_FILE_ROWS} rows; aggregate or add a SQL LIMIT before writing it"),
+                ));
+            }
+            let default_word = if format_word.is_empty() { "csv" } else { format_word };
+            let key = destination.key(default_word, CONFIG_CODE)?;
+            let format = output_format(format_word, &key)?;
+            let bytes = encode_rows(&rows, &columns, format, CODE)?;
+            let file = super::write_table_file(
                 &self.platform,
                 owner,
                 project,
                 self.config.store.as_deref(),
                 self.config.on_conflict.as_deref(),
-                &rel_path,
+                &key,
                 bytes,
                 super::table_mime(format.as_str()),
-                "table.query.run",
-                "FW_NODE_TABLE_QUERY",
+                NODE_KIND,
+                CODE,
             )?;
-            to_path = Some(rel_path);
-            to_format_value = Some(format.as_str().to_string());
+            if let Value::Object(file) = file {
+                answer.extend(file);
+            }
+            answer.insert("row_count".to_string(), json!(rows.len()));
+            answer.insert("columns".to_string(), json!(columns));
+            answer.insert("format".to_string(), json!(format.as_str()));
+            if self.config.rows {
+                answer.insert("truncated".to_string(), json!(rows.len() > limit));
+                rows.truncate(limit);
+                answer.insert("rows".to_string(), Value::Array(rows));
+            }
+        } else {
+            let truncated = rows.len() > limit;
+            rows.truncate(limit);
+            if let Value::Object(query) = query::answer(columns, rows, truncated, None)["query"].take() {
+                answer = query;
+            }
         }
-
-        let preview_len = self.config.preview_row_count().min(rows.len());
-        let engine_label = "geodatafusion";
-        let mut table = Map::new();
-        table.insert("engine".to_string(), json!(engine_label));
-        table.insert("sources".to_string(), Value::Array(source_labels));
-        table.insert("rows".to_string(), json!(rows.len()));
-        table.insert("columns".to_string(), json!(columns));
-        table.insert("to".to_string(), option_string(to_path));
-        table.insert("file".to_string(), file);
-        table.insert("to_format".to_string(), option_string(to_format_value));
-        table.insert(
-            "preview".to_string(),
-            Value::Array(rows.iter().take(preview_len).cloned().collect()),
-        );
-        if self.config.to_json {
-            table.insert("data".to_string(), Value::Array(rows.clone()));
-        }
-
+        let row_count = answer.get("row_count").cloned().unwrap_or(Value::Null);
         Ok(NodeExecutionOutput {
             output_pins: vec![OUTPUT_PIN_OUT.to_string()],
-            payload: crate::pipeline::nodes::shared::util::with_answer(&input.payload, json!({ "table": table })),
-            trace: vec![
-                format!("node_kind={NODE_KIND}"),
-                format!("engine={engine_label} rows={}", rows.len()),
-            ],
+            payload: with_answer(&input.payload, json!({ "query": answer })),
+            trace: vec![format!("node_kind={NODE_KIND} rows={row_count}")],
         })
     }
 }
 
-fn normalize_engine(value: &str) -> Result<(), PipelineError> {
-    match value.trim().to_ascii_lowercase().as_str() {
-        "" | "geodatafusion" => Ok(()),
-        other => Err(PipelineError::new(
-            "FW_NODE_TABLE_QUERY_ENGINE",
-            format!("unsupported table query engine '{other}'"),
-        )),
-    }
-}
-
-struct QueryRows {
-    rows: Vec<Value>,
-    source_labels: Vec<Value>,
-}
-
+/// Binds every source and runs the statement, answering at most `fetch + 1`
+/// rows: one past `fetch` tells the caller more matched.
 async fn execute_geodatafusion_engine(
     sources: &[SourceBindingConfig],
     sql: &str,
@@ -516,55 +371,27 @@ async fn execute_geodatafusion_engine(
     stores: &SourceStores<'_>,
     input: &NodeExecutionInput,
     language: &dyn LanguageEngine,
-    max_inline_rows: usize,
-) -> Result<QueryRows, PipelineError> {
+    fetch: usize,
+) -> Result<Vec<Value>, PipelineError> {
     let ctx = SessionContext::new();
     geodatafusion::register(&ctx);
     let mut temps = Vec::new();
-    let mut source_labels = Vec::new();
-
-    for source_config in sources {
-        if source_config.is_empty() {
-            continue;
-        }
+    for source_config in sources.iter().filter(|source| !source.is_empty()) {
         let binding = source_config.to_binding()?;
         register_source(&ctx, stores, &binding, input, language, &mut temps).await?;
-        source_labels.push(json!({
-            "alias": binding.alias,
-            "source": binding.source,
-        }));
     }
 
-    let bounded_sql = bounded_select_sql(sql, max_inline_rows);
+    let bounded_sql = bounded_select_sql(sql, fetch);
     let batches = execute_geodatafusion_query(&ctx, &bounded_sql, params).await?;
     let mut rows = Vec::new();
     for batch in batches {
-        if rows.len().saturating_add(batch.num_rows()) > max_inline_rows {
-            return Err(PipelineError::new(
-                "FW_NODE_TABLE_QUERY_LIMIT",
-                format!(
-                    "query would materialize more than {max_inline_rows} rows in node JSON; add SQL LIMIT, set --limit, or write a smaller result"
-                ),
-            ));
-        }
-        rows.extend(
-            record_batch_to_rows(&batch)
-                .map_err(|err| PipelineError::new("FW_NODE_TABLE_QUERY", err.to_string()))?,
-        );
+        rows.extend(record_batch_to_rows(&batch, CODE)?);
     }
-
-    Ok(QueryRows {
-        rows,
-        source_labels,
-    })
+    Ok(rows)
 }
 
-fn bounded_select_sql(sql: &str, max_inline_rows: usize) -> String {
-    let fetch = if max_inline_rows == 0 {
-        0
-    } else {
-        max_inline_rows.saturating_add(1)
-    };
+fn bounded_select_sql(sql: &str, fetch: usize) -> String {
+    let fetch = fetch.saturating_add(1);
     format!("SELECT * FROM ({sql}) AS zf_table_query_limited LIMIT {fetch}")
 }
 
@@ -580,13 +407,13 @@ impl SourceBinding {
         let alias = alias.trim();
         if source.is_empty() || alias.is_empty() {
             return Err(PipelineError::new(
-                "FW_NODE_TABLE_QUERY_SOURCE",
+                SOURCE_CODE,
                 "source binding must include both source and alias",
             ));
         }
         if !valid_alias(alias) {
             return Err(PipelineError::new(
-                "FW_NODE_TABLE_QUERY_SOURCE",
+                SOURCE_CODE,
                 format!("source alias must be an identifier: {alias}"),
             ));
         }
@@ -602,7 +429,7 @@ fn parse_source_binding(spec: &str) -> Result<SourceBinding, PipelineError> {
     let lower = spec.to_ascii_lowercase();
     let Some(pos) = lower.rfind(" as ") else {
         return Err(PipelineError::new(
-            "FW_NODE_TABLE_QUERY_SOURCE",
+            SOURCE_CODE,
             format!("source binding must use '<source> as <alias>': {spec}"),
         ));
     };
@@ -636,7 +463,7 @@ impl SourceStores<'_> {
         self.platform
             .file
             .object_local_path(self.owner, self.project, Some(store.unwrap_or(self.store_id)), key)
-            .map_err(|err| PipelineError::new("FW_NODE_TABLE_QUERY_SOURCE", format!("'{key}': {}", err.message)))
+            .map_err(|err| PipelineError::new(SOURCE_CODE, format!("'{key}': {}", err.message)))
     }
 }
 
@@ -660,15 +487,15 @@ async fn register_source(
         let mut temp = tempfile::Builder::new()
             .suffix(".json")
             .tempfile()
-            .map_err(|err| PipelineError::new("FW_NODE_TABLE_QUERY", err.to_string()))?;
+            .map_err(|err| PipelineError::new(CODE, err.to_string()))?;
         for row in rows {
             writeln!(
                 temp,
                 "{}",
                 serde_json::to_string(&row)
-                    .map_err(|err| PipelineError::new("FW_NODE_TABLE_QUERY", err.to_string()))?
+                    .map_err(|err| PipelineError::new(CODE, err.to_string()))?
             )
-            .map_err(|err| PipelineError::new("FW_NODE_TABLE_QUERY", err.to_string()))?;
+            .map_err(|err| PipelineError::new(CODE, err.to_string()))?;
         }
         ctx.register_json(
             binding.alias.as_str(),
@@ -676,7 +503,7 @@ async fn register_source(
             JsonReadOptions::default(),
         )
         .await
-        .map_err(|err| PipelineError::new("FW_NODE_TABLE_QUERY_REGISTER", err.to_string()))?;
+        .map_err(|err| PipelineError::new(REGISTER_CODE, err.to_string()))?;
         temps.push(temp);
         return Ok(());
     }
@@ -696,13 +523,13 @@ async fn register_table_path(
     // past the egress guard and the store's own credentials.
     if is_external_table_uri(source) {
         return Err(PipelineError::new(
-            "FW_NODE_TABLE_QUERY_SOURCE",
+            SOURCE_CODE,
             format!("'{source}' is a URL; register the bucket as a store and pass a key or FileRef, or fetch it with http.response.fetch first"),
         ));
     }
     let (format_label, table_path) = {
         let rel = normalize_object_path(source)
-            .map_err(|err| PipelineError::new("FW_NODE_TABLE_QUERY", err.to_string()))?;
+            .map_err(|err| PipelineError::new(CODE, err.to_string()))?;
         // DataFusion streams from a file path: a directory store's own file,
         // or a bucket object's copy in the project's mirror.
         let abs = stores.local_path(store, &rel)?;
@@ -723,18 +550,18 @@ async fn register_table_path(
                 .await
         }
     }
-    .map_err(|err| PipelineError::new("FW_NODE_TABLE_QUERY_REGISTER", err.to_string()))
+    .map_err(|err| PipelineError::new(REGISTER_CODE, err.to_string()))
 }
 
 fn ensure_local_table_file(path: &Path) -> Result<(), PipelineError> {
     match fs::metadata(path) {
         Ok(metadata) if metadata.is_file() => Ok(()),
         Ok(_) => Err(PipelineError::new(
-            "FW_NODE_TABLE_QUERY",
+            CODE,
             "table source path is not a file",
         )),
         Err(_) => Err(PipelineError::new(
-            "FW_NODE_TABLE_QUERY",
+            CODE,
             "table source object not found",
         )),
     }
@@ -757,19 +584,19 @@ async fn execute_geodatafusion_query(
         return ctx
             .sql(sql)
             .await
-            .map_err(|err| PipelineError::new("FW_NODE_TABLE_QUERY_SQL", err.to_string()))?
+            .map_err(|err| PipelineError::new(SQL_CODE, err.to_string()))?
             .collect()
             .await
-            .map_err(|err| PipelineError::new("FW_NODE_TABLE_QUERY_SQL", err.to_string()));
+            .map_err(|err| PipelineError::new(SQL_CODE, err.to_string()));
     }
 
     let prepare_sql = format!("PREPARE zf_table_query AS {sql}");
     ctx.sql(&prepare_sql)
         .await
-        .map_err(|err| PipelineError::new("FW_NODE_TABLE_QUERY_PREPARE", err.to_string()))?
+        .map_err(|err| PipelineError::new(PREPARE_CODE, err.to_string()))?
         .collect()
         .await
-        .map_err(|err| PipelineError::new("FW_NODE_TABLE_QUERY_PREPARE", err.to_string()))?;
+        .map_err(|err| PipelineError::new(PREPARE_CODE, err.to_string()))?;
 
     let param_sql = params
         .iter()
@@ -779,20 +606,10 @@ async fn execute_geodatafusion_query(
     let execute_sql = format!("EXECUTE zf_table_query({param_sql})");
     ctx.sql(&execute_sql)
         .await
-        .map_err(|err| PipelineError::new("FW_NODE_TABLE_QUERY_EXECUTE", err.to_string()))?
+        .map_err(|err| PipelineError::new(EXECUTE_CODE, err.to_string()))?
         .collect()
         .await
-        .map_err(|err| PipelineError::new("FW_NODE_TABLE_QUERY_EXECUTE", err.to_string()))
-}
-
-/// Bind values arrive final: a whole `{{ }}` is a real array; anything else
-/// binds as one parameter.
-fn resolve_params(config: &Config) -> Vec<Value> {
-    match config.params.clone() {
-        Value::Null => Vec::new(),
-        Value::Array(items) => items,
-        other => vec![other],
-    }
+        .map_err(|err| PipelineError::new(EXECUTE_CODE, err.to_string()))
 }
 
 fn normalize_select_sql(sql: &str) -> Result<String, PipelineError> {
@@ -800,7 +617,7 @@ fn normalize_select_sql(sql: &str) -> Result<String, PipelineError> {
     let lower = sql.trim_start().to_ascii_lowercase();
     if !(lower.starts_with("select") || lower.starts_with("with")) {
         return Err(PipelineError::new(
-            "FW_NODE_TABLE_QUERY_SQL",
+            SQL_CODE,
             "table.query.run only accepts SELECT or WITH queries",
         ));
     }
@@ -851,28 +668,21 @@ fn row_object(value: Value) -> Value {
     }
 }
 
+/// A source's format, from its key's extension.
 fn source_format(path: &str) -> Result<TableFormat, PipelineError> {
-    let ext = Path::new(path)
-        .extension()
-        .and_then(|value| value.to_str())
-        .unwrap_or_default();
-    parse_format(ext).map_err(|err| PipelineError::new("FW_NODE_TABLE_QUERY", err.to_string()))
+    let ext = Path::new(path).extension().and_then(|value| value.to_str()).unwrap_or_default();
+    parse_format(ext, SOURCE_CODE)
+        .map_err(|_| PipelineError::new(SOURCE_CODE, format!("'{path}' is not a table file: name it .csv, .json, .ndjson or .parquet")))
 }
 
-fn output_format(explicit: Option<&str>, path: &str) -> Result<TableFormat, PipelineError> {
-    if let Some(value) = non_empty(explicit) {
-        return parse_format(value)
-            .map_err(|err| PipelineError::new("FW_NODE_TABLE_QUERY", err.to_string()));
+/// What a written file is: `--format`, else the destination's extension.
+fn output_format(word: &str, key: &str) -> Result<TableFormat, PipelineError> {
+    if !word.is_empty() {
+        return parse_format(word, CONFIG_CODE);
     }
-    source_format(path)
-}
-
-fn option_string(value: Option<String>) -> Value {
-    value.map(Value::String).unwrap_or(Value::Null)
-}
-
-fn non_empty(value: Option<&str>) -> Option<&str> {
-    value.map(str::trim).filter(|value| !value.is_empty())
+    let ext = Path::new(key).extension().and_then(|value| value.to_str()).unwrap_or_default();
+    parse_format(ext, CONFIG_CODE)
+        .map_err(|_| PipelineError::new(CONFIG_CODE, format!("'{key}' names no table format; set --format csv|json|ndjson|parquet")))
 }
 
 #[cfg(test)]
@@ -887,24 +697,35 @@ mod tests {
     }
 
     #[test]
-    fn preview_rows_flag_parses_and_a_canvas_preview_is_not_a_row_count() {
+    fn the_query_shape_is_the_db_nodes() {
         let graph = crate::platform::shell::parser::build_pipeline_graph(
             "t",
-            "[a] trigger.manual\n[b] table.query.run --from \"datasets/orders.csv as o\" --preview-rows 5 --to-json -- \"SELECT * FROM o\"\n[a] -> [b]\n",
+            "[a] trigger.manual\n[b] table.query.run --from \"datasets/orders.csv as o\" --param \"1=7\" --limit 5 --rows --format parquet -- \"SELECT * FROM o WHERE id = $1\"\n[a] -> [b]\n",
         )
         .expect("graph");
         let config: Config = serde_json::from_value(graph.nodes[1].config.clone()).expect("config");
-        assert_eq!(config.preview_rows, Some(5));
-        assert_eq!(config.preview_row_count(), 5);
+        assert_eq!(config.from.len(), 1);
+        assert_eq!(config.query, "SELECT * FROM o WHERE id = $1");
+        assert_eq!(query::params(&config.param, false, PARAM_CODE).unwrap(), Params::Positional(vec![json!("7")]), "a literal is text");
+        assert_eq!(query::limit(&config.limit, LIMIT_CODE).unwrap(), 5);
+        assert!(config.rows);
+        assert_eq!(config.format, "parquet");
 
-        // A canvas preview under the same key is not a row count.
-        let canvas: Config = serde_json::from_value(json!({
-            "sources": ["datasets/orders.csv as o"],
-            "query": "SELECT * FROM o",
-            "preview": { "out": { "as": "table" } }
-        }))
-        .expect("canvas preview is not an error");
-        assert_eq!(canvas.preview_row_count(), 0);
+        let flags: Vec<String> = definition().dsl_flags.into_iter().map(|f| f.flag).collect();
+        for gone in ["--engine", "--params", "--to-json", "--preview-rows", "--write"] {
+            assert!(!flags.iter().any(|f| f == gone), "{gone} is gone: {flags:?}");
+        }
+        assert!(query::params(&json!({ "slug": "a" }), false, PARAM_CODE).is_err(), "DataFusion binds positions only");
+    }
+
+    #[test]
+    fn only_a_read_runs_and_a_written_format_is_named() {
+        assert_eq!(normalize_select_sql("  WITH t AS (SELECT 1) SELECT * FROM t; ").unwrap(), "WITH t AS (SELECT 1) SELECT * FROM t");
+        assert_eq!(normalize_select_sql("DELETE FROM t").unwrap_err().code, SQL_CODE);
+        assert_eq!(output_format("", "out/a.ndjson").unwrap(), TableFormat::Ndjson);
+        assert_eq!(output_format("csv", "out/a.parquet").unwrap(), TableFormat::Csv);
+        assert_eq!(output_format("", "out/a.xlsx").unwrap_err().code, CONFIG_CODE);
+        assert_eq!(source_format("uploads/a.txt").unwrap_err().code, SOURCE_CODE);
     }
 
     #[test]
@@ -916,7 +737,7 @@ mod tests {
         );
         assert_eq!(
             bounded_select_sql("SELECT * FROM roads", 0),
-            "SELECT * FROM (SELECT * FROM roads) AS zf_table_query_limited LIMIT 0"
+            "SELECT * FROM (SELECT * FROM roads) AS zf_table_query_limited LIMIT 1"
         );
     }
 }

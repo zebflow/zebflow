@@ -1859,12 +1859,12 @@ mod tests {
             id: "b".to_string(),
             kind: "table.query.run".to_string(),
             config: json!({
-                "sources": [
+                "from": [
                     { "source": "datasets/posts.csv", "alias": "posts" },
                     { "source": "$input.rows", "alias": "rows" }
                 ],
                 "query": "select * from posts",
-                "to_json": true
+                "rows": true
             }),
             input_pins: vec!["in".to_string()],
             output_pins: vec!["out".to_string()],
@@ -1873,7 +1873,7 @@ mod tests {
         let segment = node_to_segment_no_body(&node);
         assert!(segment.contains("--from \"datasets/posts.csv as posts\""));
         assert!(segment.contains("--from \"$input.rows as rows\""));
-        assert!(segment.contains("--to-json"));
+        assert!(segment.contains("--rows"));
     }
 
     #[test]

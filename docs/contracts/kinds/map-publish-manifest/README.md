@@ -59,6 +59,11 @@ served, what it was built from, and what the public may see of it.
 | `feature_count`, `chunk_count` | counts of the built artifact |
 | `style`, `filter`, `function_slug`, `cache_ttl_secs` | optional presentation and caching |
 
+`ms.layer.publish` writes a record from its flags and its answer reads it back
+in the flags' words: `--name` → `layer_id`, `--route` → `path`, `--max-items` →
+`max_features`, each `--field` → one of `allowed_properties`, `--function` →
+`function_slug`, `--ttl 60s` → `cache_ttl_secs: 60`.
+
 ## What the public may see
 
 `allowed_properties` decides which columns of the source data leave the server.

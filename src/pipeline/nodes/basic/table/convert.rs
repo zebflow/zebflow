@@ -1,4 +1,17 @@
-//! table.data.convert — convert table-like data between ZebFS objects and JSON payloads.
+//! `table.data.convert` — rows between formats, and between the payload and a
+//! project store.
+//!
+//! `--from` is the table: a store key, a FileRef (read from the store it
+//! names), or the rows themselves through `{{ }}`. `--parse` says how it is
+//! read (else from the key's extension, or JSON for rows); `--format` says
+//! what a written file is (else from the destination's extension, else csv).
+//! A destination (`--folder`, `--filename` or `--path`) writes a file; without
+//! one the rows are the answer. CSV to Parquet streams without holding the
+//! rows when they are not asked for.
+//!
+//! The answer is one key, `data`: the written file's FileRef fields (when a
+//! file is written) with `row_count`, `columns`, `parse`, `format`, and `rows`
+//! when there is no destination or `--rows` is set.
 
 use std::collections::HashSet;
 use std::fs;
@@ -27,33 +40,57 @@ use parquet::{
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
-use crate::pipeline::nodes::shared::file_ref::zebfs_rel_path;
-use crate::pipeline::nodes::shared::util::metadata_scope;
 use crate::pipeline::model::NodeCapability;
+use crate::pipeline::nodes::shared::file_ref::is_file_ref;
+use crate::pipeline::nodes::shared::limits::{choice, whole};
+use crate::pipeline::nodes::shared::project_store::{NodeStore, OnConflict, open_from, open_store, read_capped};
+use crate::pipeline::nodes::shared::util::{metadata_scope, with_answer};
 use crate::pipeline::{
     NodeDefinition, PipelineError,
-    model::{DslFlag, DslFlagKind, LayoutItem, NodeFieldDef, NodeFieldType, SelectOptionDef},
+    model::{DslFlag, DslFlagKind, LayoutItem, NodeExample, NodeFieldDef, NodeFieldType},
     nodes::{NodeExecutionInput, NodeExecutionOutput, NodeHandler},
 };
 use crate::platform::services::PlatformService;
-use crate::zebfs::{ZebFs, normalize_object_path};
+use crate::zebfs::ZebFs;
+
+use super::FORMAT_WORDS;
 
 pub const NODE_KIND: &str = "table.data.convert";
 const INPUT_PIN_IN: &str = "in";
 const OUTPUT_PIN_OUT: &str = "out";
+
+/// Reading, converting or writing failed.
+pub const CODE: &str = "FW_NODE_TABLE_DATA_CONVERT";
+/// A flag the author set wrong.
+pub const CONFIG_CODE: &str = "FW_NODE_TABLE_DATA_CONVERT_CONFIG";
+/// The streamed CSV could not be read.
+const CSV_CODE: &str = "FW_NODE_TABLE_DATA_CONVERT_CSV";
+/// A source too large to hold as rows.
+const LIMIT_CODE: &str = "FW_NODE_TABLE_DATA_CONVERT_LIMIT";
+/// The streamed Parquet could not be written.
+const PARQUET_CODE: &str = "FW_NODE_TABLE_DATA_CONVERT_PARQUET";
+
 const MAX_MATERIALIZED_OBJECT_BYTES: u64 = 128 * 1024 * 1024;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Config {
-    /// Where the table comes from — a literal or `{{ expr }}`, arriving final.
-    /// Typed, because three shapes are all legal answers: a ZebFS path string,
-    /// a FileRef (`{{ input.file }}`), or the rows themselves
-    /// (`{{ input.rows }}`).
+    /// The table: a store key, a FileRef, or the rows themselves — typed,
+    /// because all three arrive through `{{ }}`.
     #[serde(default)]
     pub from: Value,
-    /// Source format: csv, json, ndjson, parquet. Inferred from path when omitted.
+    /// How `from` is read: csv, json, ndjson or parquet (else sniffed).
     #[serde(default)]
-    pub from_format: Option<String>,
+    pub parse: String,
+    /// What a written file is: csv, json, ndjson or parquet (else from the
+    /// destination's extension, else csv).
+    #[serde(default)]
+    pub format: String,
+    /// With a destination, answer the rows as well as the file.
+    #[serde(default)]
+    pub rows: bool,
+    /// The most rows converted (default: all).
+    #[serde(default)]
+    pub limit: Value,
     /// Store folder for the written file (default: `tables`).
     #[serde(default)]
     pub folder: String,
@@ -63,67 +100,53 @@ pub struct Config {
     /// Exact store key; overrides `folder` and `filename`.
     #[serde(default)]
     pub path: Option<String>,
-    /// The store to read a path source from and write to; saved explicitly at registration.
+    /// The store a key is read from and a file written to; saved explicitly at registration.
     #[serde(default)]
     pub store: Option<String>,
     /// `overwrite`, `skip` or `error` (default: error).
     #[serde(default)]
     pub on_conflict: Option<String>,
-    /// Target format: csv, json, ndjson, parquet. Inferred from path when omitted.
-    #[serde(default)]
-    pub to_format: Option<String>,
-    /// Also emit rows as JSON for downstream nodes.
-    #[serde(default)]
-    pub to_json: bool,
-    /// Number of sample rows to include under `table.preview` (`--preview-rows`).
-    #[serde(default)]
-    pub preview_rows: Option<usize>,
-    /// Maximum number of rows to convert.
-    #[serde(default)]
-    pub limit: Option<usize>,
-}
-
-impl Config {
-    /// `--preview-rows`; nothing else names it.
-    pub fn preview_row_count(&self) -> usize {
-        self.preview_rows.unwrap_or(0)
-    }
 }
 
 pub fn definition() -> NodeDefinition {
+    let file = json!({ "__zf_type": "file_ref", "backend": "zebfs", "store": "local", "ref": "exports/orders.csv", "filename": "orders.csv", "mime": "text/csv", "kind": "csv", "size": 4120, "sha256": "sha256:…", "lifecycle": "durable", "origin": NODE_KIND, "trust": "generated" });
+    let mut written = file.clone();
+    written["row_count"] = json!(120);
+    written["columns"] = json!(["id", "total"]);
+    written["parse"] = json!("json");
+    written["format"] = json!("csv");
     NodeDefinition {
         kind: NODE_KIND.to_string(),
         capabilities: vec![NodeCapability::Filesystem, NodeCapability::Database, NodeCapability::Process],
         title: "Table Convert".to_string(),
-        description: "Convert table-shaped data between formats and between the payload and the project's file store. `--from` is a file path \
-            or `{{ expr }}` giving a FileRef or the rows themselves (`{{ input.rows }}`); `--folder` / `--filename` / `--path` write CSV/JSON/NDJSON/Parquet \
-            (format from the extension or `--to-format`); `--to-json` puts the rows in the payload instead. Adds \
-            `table: { from, to, file, from_format, to_format, rows, columns, preview, data? }` to the payload — rows are `input.table.data`, the written file is the FileRef `input.table.file`. \
-            This is how a query result becomes a downloadable CSV, and how an uploaded CSV becomes rows a script can read."
+        description: "Convert table-shaped data between formats, and between the payload and a project store. `--from` is a store key, \
+            a FileRef (read from the store it names) or the rows themselves (`{{ input.query.rows }}`); `--parse csv|json|ndjson|parquet` says how \
+            it is read (default: from the key's extension, or JSON for rows). `--folder` / `--filename` / `--path` write a file, as `--format` \
+            (default: from the destination's extension, else csv); without a destination the rows are the answer. Adds \
+            `data: { …FileRef…, row_count, columns, parse, format, rows? }` — the FileRef fields only when a file is written, `rows` when there \
+            is no destination or `--rows` is set — and keeps the rest of the payload. `--limit N` converts the first N rows. This is how a query \
+            result becomes a downloadable CSV, and an uploaded CSV becomes rows a script can read."
             .to_string(),
         input_pins: vec![INPUT_PIN_IN.to_string()],
         output_pins: vec![OUTPUT_PIN_OUT.to_string()],
         input_schema: json!({
             "type": "object",
-            "description": "Any payload. Use --from \"{{ $input.rows }}\" to take rows from upstream output."
+            "description": "Any payload; --from \"{{ input.query.rows }}\" takes rows from upstream."
         }),
         output_schema: json!({
             "type": "object",
             "properties": {
-                "table": {
+                "data": {
                     "type": "object",
+                    "description": "The written file's FileRef fields (when a file is written), with what was converted.",
                     "properties": {
-                        "from": { "type": "string" },
-                        "to": { "type": ["string", "null"] },
-                        "from_format": { "type": "string" },
-                        "to_format": { "type": ["string", "null"] },
-                        "rows": { "type": "integer" },
+                        "ref": { "type": "string", "description": "The written file's store key; present with a destination" },
+                        "store": { "type": "string" },
+                        "row_count": { "type": "integer", "description": "Rows converted" },
                         "columns": { "type": "array", "items": { "type": "string" } },
-                        "preview": { "type": "array" },
-                        "data": {
-                            "type": "array",
-                            "description": "Rows are present only when --to-json is enabled."
-                        }
+                        "parse": { "type": "string", "description": "How --from was read" },
+                        "format": { "type": "string", "description": "What the written file is; present with a destination" },
+                        "rows": { "type": "array", "description": "The rows; present without a destination or with --rows" }
                     }
                 }
             }
@@ -133,127 +156,60 @@ pub fn definition() -> NodeDefinition {
             DslFlag {
                 flag: "--from".to_string(),
                 config_key: "from".to_string(),
-                description: "Where the table comes from — a ZebFS path, or {{ expr }} giving a FileRef or the rows themselves."
-                    .to_string(),
+                description: "The table: a store key, a FileRef, or the rows themselves through {{ }}.".to_string(),
                 kind: DslFlagKind::Scalar,
-                required: false,
-                ..Default::default()
-            },
-
-            DslFlag {
-                flag: "--from-format".to_string(),
-                config_key: "from_format".to_string(),
-                description:
-                    "Source format: csv, json, ndjson, or parquet. Required for string expression input."
-                        .to_string(),
-                kind: DslFlagKind::Scalar,
-                required: false,
-                ..Default::default()
-            },
-
-            DslFlag {
-                flag: "--to-format".to_string(),
-                config_key: "to_format".to_string(),
-                description:
-                    "Target format: csv, json, ndjson, or parquet. Default: from the destination extension."
-                        .to_string(),
-                kind: DslFlagKind::Scalar,
-                required: false,
+                required: true,
+                value: "file".to_string(),
                 ..Default::default()
             },
             DslFlag {
-                flag: "--to-json".to_string(),
-                config_key: "to_json".to_string(),
-                description: "Emit converted rows as JSON for downstream nodes.".to_string(),
-                kind: DslFlagKind::Bool,
-                required: false,
-                ..Default::default()
-            },
-            DslFlag {
-                flag: "--preview-rows".to_string(),
-                config_key: "preview_rows".to_string(),
-                description: "Number of sample rows to include under table.preview. (The canvas preview is --preview <as>.)".to_string(),
+                flag: "--parse".to_string(),
+                config_key: "parse".to_string(),
+                description: "How --from is read: csv, json, ndjson or parquet (default: from the key's extension, or JSON for rows).".to_string(),
                 kind: DslFlagKind::Scalar,
-                required: false,
+                choices: FORMAT_WORDS.iter().map(|w| w.to_string()).collect(),
                 ..Default::default()
             },
+            super::format_flag(),
+            super::rows_flag(),
             DslFlag {
                 flag: "--limit".to_string(),
                 config_key: "limit".to_string(),
-                description: "Maximum number of rows to convert.".to_string(),
+                description: "The most rows converted, from the first (default: all).".to_string(),
                 kind: DslFlagKind::Scalar,
-                required: false,
+                value: "number".to_string(),
                 ..Default::default()
             },
-        ].into_iter().chain(super::destination_flags()).collect(),
+        ]
+        .into_iter()
+        .chain(super::destination_flags())
+        .collect(),
         fields: vec![
             NodeFieldDef {
                 name: "from".to_string(),
-                label: "From path".to_string(),
+                label: "From".to_string(),
                 field_type: NodeFieldType::Text,
                 placeholder: Some("uploads/data.csv".to_string()),
-                help: Some(
-                    "ZebFS object path. Leave empty when using From expression.".to_string(),
-                ),
-                span: Some("half".to_string()),
+                help: Some("A store key, a FileRef or rows, e.g. {{ input.query.rows }}.".to_string()),
                 ..Default::default()
             },
-            NodeFieldDef {
-                name: "from_format".to_string(),
-                label: "From format".to_string(),
-                field_type: NodeFieldType::Select,
-                options: format_options(true),
-                help: Some("Auto infers from path extension when possible.".to_string()),
-                span: Some("half".to_string()),
-                ..Default::default()
-            },
-
-            NodeFieldDef {
-                name: "to_format".to_string(),
-                label: "To format".to_string(),
-                field_type: NodeFieldType::Select,
-                options: format_options(true),
-                help: Some("Auto infers from target path extension when possible.".to_string()),
-                span: Some("half".to_string()),
-                ..Default::default()
-            },
-            NodeFieldDef {
-                name: "to_json".to_string(),
-                label: "Emit JSON rows".to_string(),
-                field_type: NodeFieldType::Checkbox,
-                help: Some("Useful when the next node needs row data directly.".to_string()),
-                span: Some("half".to_string()),
-                ..Default::default()
-            },
-            NodeFieldDef {
-                name: "preview_rows".to_string(),
-                label: "Preview rows".to_string(),
-                field_type: NodeFieldType::Number,
-                placeholder: Some("20".to_string()),
-                help: Some("Number of converted sample rows to include under table.preview.".to_string()),
-                span: Some("half".to_string()),
-                ..Default::default()
-            },
+            super::format_field("parse", "Parse", "How From is read. Auto: from the key's extension, or JSON for rows."),
+            super::format_field("format", "Format", "What the written file is. Auto: from the destination's extension, else csv."),
+            super::rows_field(),
             NodeFieldDef {
                 name: "limit".to_string(),
-                label: "Limit rows".to_string(),
+                label: "Limit".to_string(),
                 field_type: NodeFieldType::Number,
-                help: Some("Maximum number of source rows to convert. Leave empty to convert all rows.".to_string()),
-                span: Some("half".to_string()),
+                help: Some("The most rows converted. Empty: all.".to_string()),
                 ..Default::default()
             },
-        ].into_iter().chain(super::destination_fields()).collect(),
+        ]
+        .into_iter()
+        .chain(super::destination_fields())
+        .collect(),
         layout: vec![
-            LayoutItem::Row {
-                row: vec![
-                    LayoutItem::Field("from".to_string()),
-                ],
-            },
-            LayoutItem::Row {
-                row: vec![
-                    LayoutItem::Field("from_format".to_string()),
-                ],
-            },
+            LayoutItem::Field("from".to_string()),
+            LayoutItem::Row { row: vec![LayoutItem::Field("parse".to_string()), LayoutItem::Field("limit".to_string())] },
             LayoutItem::Row {
                 row: vec![
                     LayoutItem::Field("folder".to_string()),
@@ -261,65 +217,21 @@ pub fn definition() -> NodeDefinition {
                     LayoutItem::Field("path".to_string()),
                 ],
             },
-            LayoutItem::Row {
-                row: vec![
-                    LayoutItem::Field("store".to_string()),
-                    LayoutItem::Field("on_conflict".to_string()),
-                ],
-            },
-            LayoutItem::Row {
-                row: vec![
-                    LayoutItem::Field("to_format".to_string()),
-                    LayoutItem::Field("to_json".to_string()),
-                ],
-            },
-            LayoutItem::Row {
-                row: vec![
-                    LayoutItem::Field("preview_rows".to_string()),
-                    LayoutItem::Field("limit".to_string()),
-                ],
-            },
+            LayoutItem::Row { row: vec![LayoutItem::Field("store".to_string()), LayoutItem::Field("on_conflict".to_string())] },
+            LayoutItem::Row { row: vec![LayoutItem::Field("format".to_string()), LayoutItem::Field("rows".to_string())] },
         ],
         script_available: false,
         script_bridge: None,
         ai_tool: Default::default(),
         examples: vec![
-            crate::pipeline::model::NodeExample::dsl("Query result to CSV download", r#"table.data.convert --from "{{ input.rows }}" --folder exports --filename orders.csv"#)
-                .output(serde_json::json!({ "table": { "from": "$expr", "to": "exports/orders.csv", "file": { "__zf_type": "file_ref", "backend": "zebfs", "store": "local", "ref": "exports/orders.csv", "filename": "orders.csv", "mime": "text/csv", "kind": "csv", "size": 4120, "sha256": "sha256:…", "lifecycle": "durable", "origin": "table.data.convert", "trust": "generated" }, "from_format": "json", "to_format": "csv", "rows": 120, "columns": ["id", "total"], "preview": [] } })),
-            crate::pipeline::model::NodeExample::dsl("Uploaded CSV to rows", r#"table.data.convert --from "{{ $trigger.files.sheet }}" --from-format csv --to-json --limit 500"#)
-                .note("After `trigger.webhook` with a multipart field `sheet`; the next node reads `input.table.data`."),
+            NodeExample::dsl("Query result to a CSV download", r#"table.data.convert --from "{{ input.query.rows }}" --folder exports --filename orders.csv"#)
+                .output(json!({ "data": written })),
+            NodeExample::dsl("Uploaded CSV to rows", r#"table.data.convert --from "{{ $trigger.files.sheet }}" --parse csv --limit 500"#)
+                .output(json!({ "data": { "row_count": 2, "columns": ["name", "email"], "parse": "csv", "rows": [{ "name": "Ana", "email": "ana@example.com" }, { "name": "Ben", "email": "ben@example.com" }] } }))
+                .note("After `trigger.webhook` with a multipart field `sheet`; the next node reads `input.data.rows`. A CSV cell is text."),
         ],
         ..Default::default()
     }
-}
-
-fn format_options(include_auto: bool) -> Vec<SelectOptionDef> {
-    let mut out = Vec::new();
-    if include_auto {
-        out.push(SelectOptionDef {
-            value: String::new(),
-            label: "Auto".to_string(),
-        });
-    }
-    out.extend([
-        SelectOptionDef {
-            value: "csv".to_string(),
-            label: "CSV".to_string(),
-        },
-        SelectOptionDef {
-            value: "json".to_string(),
-            label: "JSON".to_string(),
-        },
-        SelectOptionDef {
-            value: "ndjson".to_string(),
-            label: "NDJSON".to_string(),
-        },
-        SelectOptionDef {
-            value: "parquet".to_string(),
-            label: "Parquet".to_string(),
-        },
-    ]);
-    out
 }
 
 pub struct Node {
@@ -328,13 +240,46 @@ pub struct Node {
 }
 
 impl Node {
-    pub fn new(
-        config: Config,
-        platform: Arc<PlatformService>,
-    ) -> Result<Self, PipelineError> {
-        Ok(Self {
-            config,
-            platform,
+    pub fn new(config: Config, platform: Arc<PlatformService>) -> Result<Self, PipelineError> {
+        Ok(Self { config, platform })
+    }
+
+    fn destination(&self) -> super::TableDestination<'_> {
+        self.config.destination()
+    }
+}
+
+/// The flags read and checked once, before anything is opened.
+struct Settings {
+    /// `--parse`, `None` to sniff.
+    parse: Option<TableFormat>,
+    /// `--format`, `None` to take it from the destination.
+    format: Option<TableFormat>,
+    limit: Option<usize>,
+    /// The answer carries the rows.
+    answer_rows: bool,
+}
+
+impl Config {
+    fn destination(&self) -> super::TableDestination<'_> {
+        super::TableDestination { folder: &self.folder, filename: self.filename.as_deref(), path: self.path.as_deref() }
+    }
+
+    fn settings(&self) -> Result<Settings, PipelineError> {
+        let word = |value: &str, flag: &str| -> Result<Option<TableFormat>, PipelineError> {
+            let word = choice(value, FORMAT_WORDS, "", flag, CONFIG_CODE)?;
+            if word.is_empty() { Ok(None) } else { parse_format(word, CONFIG_CODE).map(Some) }
+        };
+        let limit = match whole(&self.limit, "--limit", CONFIG_CODE)? {
+            Some(0) => return Err(PipelineError::new(CONFIG_CODE, "--limit 0 converts nothing; leave it out to convert every row")),
+            other => other.map(|n| n as usize),
+        };
+        let requested = self.destination().requested();
+        Ok(Settings {
+            parse: word(&self.parse, "--parse")?,
+            format: word(&self.format, "--format")?,
+            limit,
+            answer_rows: self.rows || !requested,
         })
     }
 }
@@ -358,100 +303,68 @@ impl NodeHandler for Node {
         input: NodeExecutionInput,
     ) -> Result<NodeExecutionOutput, PipelineError> {
         let (owner, project, ..) = metadata_scope(&input.metadata)?;
-        let zebfs = crate::pipeline::nodes::shared::project_store::open_store(
-            &self.platform,
-            owner,
-            project,
-            self.config.store.as_deref(),
-        )?
-        .fs;
-        let destination = super::TableDestination {
-            folder: &self.config.folder,
-            filename: self.config.filename.as_deref(),
-            path: self.config.path.as_deref(),
-        };
-        if !destination.requested() && !self.config.to_json {
-            return Err(PipelineError::new(
-                "FW_NODE_TABLE_CONVERT",
-                "set --folder, --filename or --path to write a file, or --to-json to emit rows downstream",
-            ));
+        let settings = self.config.settings()?;
+        let destination = self.destination();
+
+        if let Some(data) = self.try_streaming_file_conversion(owner, project, &settings).await? {
+            return Ok(answer(&input.payload, data, "streamed=true".to_string()));
         }
 
-        if let Some(output) = self
-            .try_streaming_file_conversion(owner, project, &input.payload)
-            .await?
-        {
-            return Ok(output);
-        }
-
-        let source = self.read_source(&zebfs, owner, project)?;
-        let from_format = source.format;
-        let mut rows = rows_from_source(source.value, from_format)?;
-        if let Some(limit) = self.config.limit {
+        let source = self.read_source(owner, project, settings.parse)?;
+        let parse = source.format;
+        let mut rows = rows_from_source(source.value, parse)?;
+        if let Some(limit) = settings.limit {
             rows.truncate(limit);
         }
-
         let columns = collect_columns(&rows);
-        let mut to_path = None;
-        let mut file = Value::Null;
-        let mut to_format_value = None;
 
+        let mut data = Map::new();
         if destination.requested() {
-            let default_format = self.config.to_format.as_deref().map(str::trim).filter(|f| !f.is_empty()).unwrap_or("csv");
-            let rel_path = destination.key(default_format, "FW_NODE_TABLE_CONVERT")?;
-            let to_format =
-                normalize_format(self.config.to_format.as_deref(), Some(&rel_path), "target")?;
-            let bytes = encode_rows(&rows, &columns, to_format)?;
-            file = super::write_table_file(
+            let default_word = settings.format.map(TableFormat::as_str).unwrap_or("csv");
+            let key = destination.key(default_word, CONFIG_CODE)?;
+            let format = match settings.format {
+                Some(format) => format,
+                None => normalize_format(&key, "the written file")?,
+            };
+            let bytes = encode_rows(&rows, &columns, format, CODE)?;
+            let file = super::write_table_file(
                 &self.platform,
                 owner,
                 project,
                 self.config.store.as_deref(),
                 self.config.on_conflict.as_deref(),
-                &rel_path,
+                &key,
                 bytes,
-                super::table_mime(to_format.as_str()),
-                "table.data.convert",
-                "FW_NODE_TABLE_CONVERT",
+                super::table_mime(format.as_str()),
+                NODE_KIND,
+                CODE,
             )?;
-            to_path = Some(rel_path);
-            to_format_value = Some(to_format.as_str().to_string());
+            if let Value::Object(file) = file {
+                data.extend(file);
+            }
+            data.insert("format".to_string(), json!(format.as_str()));
         }
-
-        let preview_len = self.config.preview_row_count().min(rows.len());
-        let mut table = Map::new();
-        table.insert("from".to_string(), Value::String(source.label));
-        table.insert("to".to_string(), option_string(to_path));
-        table.insert("file".to_string(), file);
-        table.insert(
-            "from_format".to_string(),
-            Value::String(from_format.as_str().to_string()),
-        );
-        table.insert("to_format".to_string(), option_string(to_format_value));
-        table.insert("rows".to_string(), json!(rows.len()));
-        table.insert("columns".to_string(), json!(columns));
-        table.insert(
-            "preview".to_string(),
-            Value::Array(rows.iter().take(preview_len).cloned().collect()),
-        );
-        if self.config.to_json {
-            table.insert("data".to_string(), Value::Array(rows.clone()));
+        data.insert("row_count".to_string(), json!(rows.len()));
+        data.insert("columns".to_string(), json!(columns));
+        data.insert("parse".to_string(), json!(parse.as_str()));
+        let row_count = rows.len();
+        if settings.answer_rows {
+            data.insert("rows".to_string(), Value::Array(rows));
         }
+        Ok(answer(&input.payload, data, format!("parse={} rows={row_count}", parse.as_str())))
+    }
+}
 
-        Ok(NodeExecutionOutput {
-            output_pins: vec![OUTPUT_PIN_OUT.to_string()],
-            payload: crate::pipeline::nodes::shared::util::with_answer(&input.payload, json!({ "table": table })),
-            trace: vec![format!(
-                "node_kind={NODE_KIND} from_format={} rows={}",
-                from_format.as_str(),
-                rows.len()
-            )],
-        })
+/// `data` added to the payload, the rest kept.
+fn answer(payload: &Value, data: Map<String, Value>, trace: String) -> NodeExecutionOutput {
+    NodeExecutionOutput {
+        output_pins: vec![OUTPUT_PIN_OUT.to_string()],
+        payload: with_answer(payload, json!({ "data": data })),
+        trace: vec![format!("node_kind={NODE_KIND} {trace}")],
     }
 }
 
 struct SourceData {
-    label: String,
     value: SourceValue,
     format: TableFormat,
 }
@@ -462,222 +375,123 @@ enum SourceValue {
 }
 
 impl Node {
-    fn read_source(
-        &self,
-        zebfs: &ZebFs,
-        owner: &str,
-        project: &str,
-    ) -> Result<SourceData, PipelineError> {
-        // `--from` arrives final and is typed, so its shape says what it is:
-        // a string is a ZebFS path, a FileRef names one, and anything else is
-        // the rows themselves. Two flags used to encode that distinction and
-        // needed a rule refusing both at once.
-        if self.config.from.is_null() {
-            return Err(PipelineError::new(
-                "FW_NODE_TABLE_CONVERT",
-                "set --from to a ZebFS path, a FileRef, or rows",
-            ));
+    /// `--from` arrives final and typed, so its shape says what it is: a
+    /// string is a store key, a FileRef names one in its own store, anything
+    /// else is the rows themselves.
+    fn read_source(&self, owner: &str, project: &str, parse: Option<TableFormat>) -> Result<SourceData, PipelineError> {
+        let from = &self.config.from;
+        if from.is_null() || from.as_str().is_some_and(|s| s.trim().is_empty()) {
+            return Err(PipelineError::new(CONFIG_CODE, "--from is required: a store key, a FileRef, or rows"));
         }
-        if let Some(path) = self.config.from.as_str() {
-            let rel_path = normalize_object_path(path)
-                .map_err(|err| PipelineError::new("FW_NODE_TABLE_CONVERT", err.to_string()))?;
-            let format =
-                normalize_format(self.config.from_format.as_deref(), Some(&rel_path), "source")?;
-            ensure_materialization_safe(zebfs, &rel_path)?;
-            let object = crate::zebfs::ZebFsObject {
-                path: rel_path.clone(),
-                bytes: crate::pipeline::nodes::shared::project_store::read_capped(zebfs, &rel_path, "FW_NODE_TABLE_CONVERT")?,
-                stat: zebfs.head(&rel_path).map_err(|err| PipelineError::new("FW_NODE_TABLE_CONVERT", err.to_string()))?,
+        if from.is_string() || is_file_ref(from) {
+            let (store, key) = self.open_source(owner, project)?;
+            let format = match parse {
+                Some(format) => format,
+                None => normalize_format(&key, "--from")?,
             };
-            return Ok(SourceData {
-                label: rel_path,
-                value: SourceValue::Bytes(object.bytes),
-                format,
-            });
+            ensure_materialization_safe(&store.fs, &key)?;
+            let bytes = read_capped(&store.fs, &key, CODE)?;
+            return Ok(SourceData { value: SourceValue::Bytes(bytes), format });
         }
-        let value = self.config.from.clone();
-        if let Some(path) = zebfs_rel_path(&value)? {
-            // A FileRef is read from the store that holds it.
-            let source_store = crate::pipeline::nodes::shared::project_store::open_store(
-                &self.platform,
-                owner,
-                project,
-                value.get("store").and_then(Value::as_str),
-            )?;
-            let zebfs = &source_store.fs;
-            let rel_path = normalize_object_path(&path)
-                .map_err(|err| PipelineError::new("FW_NODE_TABLE_CONVERT", err.to_string()))?;
-            let format =
-                normalize_format(self.config.from_format.as_deref(), Some(&rel_path), "source")?;
-            ensure_materialization_safe(zebfs, &rel_path)?;
-            let object = crate::zebfs::ZebFsObject {
-                path: rel_path.clone(),
-                bytes: crate::pipeline::nodes::shared::project_store::read_capped(zebfs, &rel_path, "FW_NODE_TABLE_CONVERT")?,
-                stat: zebfs.head(&rel_path).map_err(|err| PipelineError::new("FW_NODE_TABLE_CONVERT", err.to_string()))?,
-            };
-            return Ok(SourceData {
-                label: rel_path,
-                value: SourceValue::Bytes(object.bytes),
-                format,
-            });
-        }
-        let format = normalize_format(self.config.from_format.as_deref(), None, "source")
-            .or_else(|_| infer_json_source_format(&value))?;
-        Ok(SourceData {
-            label: "from".to_string(),
-            value: SourceValue::Json(value),
-            format,
-        })
+        // Rows: JSON unless --parse names a text format the value holds.
+        let format = parse.unwrap_or(TableFormat::Json);
+        Ok(SourceData { value: SourceValue::Json(from.clone()), format })
     }
 
+    fn open_source(&self, owner: &str, project: &str) -> Result<(NodeStore, String), PipelineError> {
+        open_from(&self.platform, owner, project, &self.config.from, self.config.store.as_deref(), "--from", CONFIG_CODE)
+    }
+
+    /// CSV in a store to a Parquet file, streamed by DataFusion without
+    /// holding the rows — taken only when nothing asks for them.
     async fn try_streaming_file_conversion(
         &self,
         owner: &str,
         project: &str,
-        payload: &Value,
-    ) -> Result<Option<NodeExecutionOutput>, PipelineError> {
-        if self.config.to_json {
+        settings: &Settings,
+    ) -> Result<Option<Map<String, Value>>, PipelineError> {
+        let destination = self.destination();
+        if settings.answer_rows || !destination.requested() {
             return Ok(None);
         }
-        let destination = super::TableDestination {
-            folder: &self.config.folder,
-            filename: self.config.filename.as_deref(),
-            path: self.config.path.as_deref(),
-        };
-        if !destination.requested() {
+        let from = &self.config.from;
+        if !(from.as_str().is_some_and(|s| !s.trim().is_empty()) || is_file_ref(from)) {
             return Ok(None);
         }
-        let to_path = destination.key("parquet", "FW_NODE_TABLE_CONVERT")?;
-        let store = crate::pipeline::nodes::shared::project_store::open_store(
-            &self.platform,
-            owner,
-            project,
-            self.config.store.as_deref(),
-        )?;
-        // A FileRef is read from the store that holds it; a bare key from the
-        // node's own store. Either is streamed from a local path: the store's
-        // own file, or a bucket object's copy in the project's mirror.
-        let source_store = if crate::pipeline::nodes::shared::file_ref::is_file_ref(&self.config.from) {
-            self.config.from.get("store").and_then(Value::as_str).unwrap_or(&store.id).to_string()
-        } else {
-            store.id.clone()
+        let to_key = destination.key("parquet", CONFIG_CODE)?;
+        let to_format = match settings.format {
+            Some(format) => format,
+            None => normalize_format(&to_key, "the written file")?,
         };
-        let on_conflict = crate::pipeline::nodes::shared::project_store::OnConflict::parse(
-            self.config.on_conflict.as_deref(),
-            crate::pipeline::nodes::shared::project_store::OnConflict::Error,
-            "FW_NODE_TABLE_CONVERT",
-        )?;
-        if store.fs.head(&to_path).is_ok() && on_conflict != crate::pipeline::nodes::shared::project_store::OnConflict::Overwrite {
+        let (source_store, source_key) = self.open_source(owner, project)?;
+        let from_format = match settings.parse {
+            Some(format) => format,
+            None => normalize_format(&source_key, "--from")?,
+        };
+        if from_format != TableFormat::Csv || to_format != TableFormat::Parquet {
+            return Ok(None);
+        }
+        let store = open_store(&self.platform, owner, project, self.config.store.as_deref())?;
+        let on_conflict = OnConflict::parse(self.config.on_conflict.as_deref(), OnConflict::Error, CONFIG_CODE)?;
+        if store.fs.head(&to_key).is_ok() && on_conflict != OnConflict::Overwrite {
             // skip and error both leave the streamed write; the materialised
             // path answers them with the same rule.
             return Ok(None);
         }
-        let Some(source_path) = self.resolve_streaming_source_path()? else {
-            return Ok(None);
-        };
 
-        let from_format = normalize_format(
-            self.config.from_format.as_deref(),
-            Some(&source_path),
-            "source",
-        )?;
-        let rel_to = normalize_object_path(&to_path)
-            .map_err(|err| PipelineError::new("FW_NODE_TABLE_CONVERT", err.to_string()))?;
-        let to_format =
-            normalize_format(self.config.to_format.as_deref(), Some(&rel_to), "target")?;
-        if from_format != TableFormat::Csv || to_format != TableFormat::Parquet {
-            return Ok(None);
-        }
-
-        let rel_from = normalize_object_path(&source_path)
-            .map_err(|err| PipelineError::new("FW_NODE_TABLE_CONVERT", err.to_string()))?;
+        // DataFusion streams from a local path: a directory store's own
+        // file, or a bucket object's copy in the project's mirror.
         let abs_from = self
             .platform
             .file
-            .object_local_path(owner, project, Some(&source_store), &rel_from)
-            .map_err(|err| PipelineError::new("FW_NODE_TABLE_CONVERT", format!("'{rel_from}': {}", err.message)))?;
+            .object_local_path(owner, project, Some(&source_store.id), &source_key)
+            .map_err(|err| PipelineError::new(CODE, format!("'{source_key}': {}", err.message)))?;
         ensure_local_table_file(&abs_from)?;
 
         // A directory store is written in place; a bucket gets the file built
         // in scratch and streamed up.
-        let scratch = crate::pipeline::nodes::shared::store_scratch::StoreScratch::new("FW_NODE_TABLE_CONVERT")?;
-        let (abs_to, staged) = match store
-            .fs
-            .local_path(&rel_to)
-            .map_err(|err| PipelineError::new("FW_NODE_TABLE_CONVERT", err.to_string()))?
-        {
+        let scratch = crate::pipeline::nodes::shared::store_scratch::StoreScratch::new(CODE)?;
+        let (abs_to, staged) = match store.fs.local_path(&to_key).map_err(|err| PipelineError::new(CODE, err.to_string()))? {
             Some(path) => (path, false),
             None => (scratch.local("out.parquet"), true),
         };
-        let columns = stream_csv_to_parquet(&abs_from, &abs_to, self.config.limit).await?;
-        let size = fs::metadata(&abs_to)
-            .map(|metadata| metadata.len())
-            .unwrap_or(0);
-        let leaf = rel_to.rsplit('/').next().unwrap_or(&rel_to).to_string();
-        let file = store.file_ref_from_file(
-            &rel_to,
-            &leaf,
-            super::table_mime("parquet"),
-            &abs_to,
-            "table.data.convert",
-            "generated",
-            "FW_NODE_TABLE_CONVERT",
-        )?;
+        let columns = stream_csv_to_parquet(&abs_from, &abs_to, settings.limit).await?;
+        let row_count = parquet_row_count(&abs_to)?;
+        let leaf = to_key.rsplit('/').next().unwrap_or(&to_key).to_string();
+        let file = store.file_ref_from_file(&to_key, &leaf, super::table_mime("parquet"), &abs_to, NODE_KIND, "generated", CODE)?;
         if staged {
             store
                 .fs
-                .put_from_file(&rel_to, &abs_to)
-                .map_err(|err| PipelineError::new("FW_NODE_TABLE_CONVERT", format!("write '{rel_to}': {err}")))?;
+                .put_from_file(&to_key, &abs_to)
+                .map_err(|err| PipelineError::new(CODE, format!("write '{to_key}': {err}")))?;
         }
 
-        let mut table = Map::new();
-        table.insert("from".to_string(), Value::String(rel_from));
-        table.insert("to".to_string(), Value::String(rel_to.clone()));
-        table.insert("file".to_string(), file);
-        table.insert("from_format".to_string(), Value::String("csv".to_string()));
-        table.insert(
-            "to_format".to_string(),
-            Value::String("parquet".to_string()),
-        );
-        table.insert("rows".to_string(), Value::Null);
-        table.insert("columns".to_string(), json!(columns));
-        table.insert("preview".to_string(), Value::Array(Vec::new()));
-        table.insert("streamed".to_string(), Value::Bool(true));
-        table.insert("size".to_string(), json!(size));
-
-        Ok(Some(NodeExecutionOutput {
-            output_pins: vec![OUTPUT_PIN_OUT.to_string()],
-            payload: crate::pipeline::nodes::shared::util::with_answer(payload, json!({ "table": table })),
-            trace: vec![
-                format!("node_kind={NODE_KIND} from_format=csv to_format=parquet streamed=true"),
-                format!("to={rel_to} bytes={size}"),
-            ],
-        }))
+        let mut data = match file {
+            Value::Object(file) => file,
+            _ => Map::new(),
+        };
+        data.insert("format".to_string(), json!("parquet"));
+        data.insert("row_count".to_string(), json!(row_count));
+        data.insert("columns".to_string(), json!(columns));
+        data.insert("parse".to_string(), json!("csv"));
+        Ok(Some(data))
     }
+}
 
-    fn resolve_streaming_source_path(&self) -> Result<Option<String>, PipelineError> {
-        // Same shape dispatch as read_source: a string is already the path,
-        // a FileRef names one, rows have none.
-        if self.config.from.is_null() {
-            return Err(PipelineError::new(
-                "FW_NODE_TABLE_CONVERT",
-                "set --from to a ZebFS path, a FileRef, or rows",
-            ));
-        }
-        if let Some(path) = self.config.from.as_str() {
-            return Ok(Some(path.to_string()));
-        }
-        zebfs_rel_path(&self.config.from)
-    }
+/// The rows a Parquet file holds, read from its footer.
+fn parquet_row_count(path: &Path) -> Result<u64, PipelineError> {
+    let file = fs::File::open(path).map_err(|err| PipelineError::new(CODE, err.to_string()))?;
+    let builder = ParquetRecordBatchReaderBuilder::try_new(file).map_err(|err| PipelineError::new(CODE, err.to_string()))?;
+    Ok(builder.metadata().file_metadata().num_rows().max(0) as u64)
 }
 
 fn ensure_materialization_safe(zebfs: &ZebFs, rel_path: &str) -> Result<(), PipelineError> {
     let stat = zebfs
         .head(rel_path)
-        .map_err(|err| PipelineError::new("FW_NODE_TABLE_CONVERT", err.to_string()))?;
+        .map_err(|err| PipelineError::new(CODE, err.to_string()))?;
     if stat.size > MAX_MATERIALIZED_OBJECT_BYTES {
         return Err(PipelineError::new(
-            "FW_NODE_TABLE_CONVERT_LIMIT",
+            LIMIT_CODE,
             format!(
                 "source object is {}; table.data.convert would materialize it in node JSON. Use the streamed CSV-to-Parquet path or reduce the input before converting",
                 format_bytes(stat.size)
@@ -691,11 +505,11 @@ fn ensure_local_table_file(path: &Path) -> Result<(), PipelineError> {
     match fs::metadata(path) {
         Ok(metadata) if metadata.is_file() => Ok(()),
         Ok(_) => Err(PipelineError::new(
-            "FW_NODE_TABLE_CONVERT",
+            CODE,
             "table source path is not a file",
         )),
         Err(_) => Err(PipelineError::new(
-            "FW_NODE_TABLE_CONVERT",
+            CODE,
             "table source object not found",
         )),
     }
@@ -708,7 +522,7 @@ async fn stream_csv_to_parquet(
 ) -> Result<Vec<String>, PipelineError> {
     if let Some(parent) = to_abs.parent() {
         fs::create_dir_all(parent)
-            .map_err(|err| PipelineError::new("FW_NODE_TABLE_CONVERT", err.to_string()))?;
+            .map_err(|err| PipelineError::new(CODE, err.to_string()))?;
     }
 
     let ctx = SessionContext::new();
@@ -716,11 +530,11 @@ async fn stream_csv_to_parquet(
     let mut df = ctx
         .read_csv(from_path.as_str(), CsvReadOptions::new().has_header(true))
         .await
-        .map_err(|err| PipelineError::new("FW_NODE_TABLE_CONVERT_CSV", err.to_string()))?;
+        .map_err(|err| PipelineError::new(CSV_CODE, err.to_string()))?;
     if let Some(limit) = limit {
         df = df
             .limit(0, Some(limit))
-            .map_err(|err| PipelineError::new("FW_NODE_TABLE_CONVERT_LIMIT", err.to_string()))?;
+            .map_err(|err| PipelineError::new(LIMIT_CODE, err.to_string()))?;
     }
     let columns = df
         .schema()
@@ -741,12 +555,12 @@ async fn stream_csv_to_parquet(
     if let Err(err) = write_result {
         let _ = fs::remove_file(&tmp_abs);
         return Err(PipelineError::new(
-            "FW_NODE_TABLE_CONVERT_PARQUET",
+            PARQUET_CODE,
             err.to_string(),
         ));
     }
     fs::rename(&tmp_abs, to_abs)
-        .map_err(|err| PipelineError::new("FW_NODE_TABLE_CONVERT", err.to_string()))?;
+        .map_err(|err| PipelineError::new(CODE, err.to_string()))?;
     Ok(columns)
 }
 
@@ -789,50 +603,29 @@ impl TableFormat {
     }
 }
 
-fn normalize_format(
-    explicit: Option<&str>,
-    path: Option<&str>,
-    role: &str,
-) -> Result<TableFormat, PipelineError> {
-    if let Some(value) = non_empty(explicit) {
-        return parse_format(value);
+/// The format a key's extension names (`.csv`, `.json`, `.ndjson` or
+/// `.jsonl`, `.parquet`); refused when it names none, asking for the flag.
+fn normalize_format(path: &str, role: &str) -> Result<TableFormat, PipelineError> {
+    let ext = Path::new(path)
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default();
+    let flag = if role == "--from" { "--parse" } else { "--format" };
+    if ext.is_empty() {
+        return Err(PipelineError::new(CONFIG_CODE, format!("the format of {role} is not known from its name; set {flag}")));
     }
-    if let Some(path) = path {
-        let ext = std::path::Path::new(path)
-            .extension()
-            .and_then(|value| value.to_str())
-            .unwrap_or_default();
-        if !ext.is_empty() {
-            return parse_format(ext);
-        }
-    }
-    Err(PipelineError::new(
-        "FW_NODE_TABLE_CONVERT",
-        format!("{role} format is not known; set the matching format flag"),
-    ))
+    parse_format(ext, CONFIG_CODE)
+        .map_err(|_| PipelineError::new(CONFIG_CODE, format!("'.{ext}' on {role} is not a table format; set {flag} csv|json|ndjson|parquet")))
 }
 
-fn infer_json_source_format(value: &Value) -> Result<TableFormat, PipelineError> {
-    match value {
-        Value::Array(_) | Value::Object(_) => Ok(TableFormat::Json),
-        Value::String(_) => Err(PipelineError::new(
-            "FW_NODE_TABLE_CONVERT",
-            "string expression input needs --from-format csv, json, or ndjson",
-        )),
-        _ => Ok(TableFormat::Json),
-    }
-}
-
-pub(crate) fn parse_format(value: &str) -> Result<TableFormat, PipelineError> {
+/// A format word, raised under the calling node's `code`.
+pub(crate) fn parse_format(value: &str, code: &'static str) -> Result<TableFormat, PipelineError> {
     match value.trim().to_ascii_lowercase().as_str() {
         "csv" => Ok(TableFormat::Csv),
         "json" => Ok(TableFormat::Json),
         "ndjson" | "jsonl" => Ok(TableFormat::Ndjson),
         "parquet" => Ok(TableFormat::Parquet),
-        other => Err(PipelineError::new(
-            "FW_NODE_TABLE_CONVERT",
-            format!("unsupported table format '{other}'"),
-        )),
+        other => Err(PipelineError::new(code, format!("unsupported table format '{other}'"))),
     }
 }
 
@@ -847,20 +640,20 @@ fn rows_from_source(source: SourceValue, format: TableFormat) -> Result<Vec<Valu
         (SourceValue::Json(value), TableFormat::Ndjson) => rows_from_json_value(value),
         (SourceValue::Bytes(bytes), TableFormat::Csv) => {
             let text = String::from_utf8(bytes).map_err(|err| {
-                PipelineError::new("FW_NODE_TABLE_CONVERT", format!("CSV is not UTF-8: {err}"))
+                PipelineError::new(CODE, format!("CSV is not UTF-8: {err}"))
             })?;
             rows_from_csv_text(&text)
         }
         (SourceValue::Bytes(bytes), TableFormat::Json) => {
             let value: Value = serde_json::from_slice(&bytes).map_err(|err| {
-                PipelineError::new("FW_NODE_TABLE_CONVERT", format!("JSON parse error: {err}"))
+                PipelineError::new(CODE, format!("JSON parse error: {err}"))
             })?;
             rows_from_json_value(value)
         }
         (SourceValue::Bytes(bytes), TableFormat::Ndjson) => {
             let text = String::from_utf8(bytes).map_err(|err| {
                 PipelineError::new(
-                    "FW_NODE_TABLE_CONVERT",
+                    CODE,
                     format!("NDJSON is not UTF-8: {err}"),
                 )
             })?;
@@ -935,7 +728,7 @@ fn rows_from_ndjson_text(text: &str) -> Result<Vec<Value>, PipelineError> {
         }
         let value: Value = serde_json::from_str(line).map_err(|err| {
             PipelineError::new(
-                "FW_NODE_TABLE_CONVERT",
+                CODE,
                 format!("NDJSON parse error on line {}: {err}", index + 1),
             )
         })?;
@@ -944,49 +737,47 @@ fn rows_from_ndjson_text(text: &str) -> Result<Vec<Value>, PipelineError> {
     Ok(rows)
 }
 
+/// Rows encoded as `format`, failures raised under the calling node's `code`.
 pub(crate) fn encode_rows(
     rows: &[Value],
     columns: &[String],
     format: TableFormat,
+    code: &'static str,
 ) -> Result<Vec<u8>, PipelineError> {
-    match format {
+    let encoded = match format {
         TableFormat::Csv => Ok(encode_csv(rows, columns).into_bytes()),
-        TableFormat::Json => serde_json::to_vec_pretty(rows)
-            .map_err(|err| PipelineError::new("FW_NODE_TABLE_CONVERT", err.to_string())),
+        TableFormat::Json => serde_json::to_vec_pretty(rows).map_err(|err| PipelineError::new(CODE, err.to_string())),
         TableFormat::Ndjson => {
             let mut out = String::new();
             for row in rows {
-                out.push_str(
-                    &serde_json::to_string(row).map_err(|err| {
-                        PipelineError::new("FW_NODE_TABLE_CONVERT", err.to_string())
-                    })?,
-                );
+                out.push_str(&serde_json::to_string(row).map_err(|err| PipelineError::new(CODE, err.to_string()))?);
                 out.push('\n');
             }
             Ok(out.into_bytes())
         }
         TableFormat::Parquet => encode_parquet(rows, columns),
-    }
+    };
+    encoded.map_err(|err| PipelineError::new(code, err.message))
 }
 
 fn rows_from_parquet_bytes(bytes: Vec<u8>) -> Result<Vec<Value>, PipelineError> {
     let mut temp = tempfile::NamedTempFile::new()
-        .map_err(|err| PipelineError::new("FW_NODE_TABLE_CONVERT", err.to_string()))?;
+        .map_err(|err| PipelineError::new(CODE, err.to_string()))?;
     temp.write_all(&bytes)
-        .map_err(|err| PipelineError::new("FW_NODE_TABLE_CONVERT", err.to_string()))?;
+        .map_err(|err| PipelineError::new(CODE, err.to_string()))?;
     let file = temp
         .reopen()
-        .map_err(|err| PipelineError::new("FW_NODE_TABLE_CONVERT", err.to_string()))?;
+        .map_err(|err| PipelineError::new(CODE, err.to_string()))?;
     let reader = ParquetRecordBatchReaderBuilder::try_new(file)
-        .map_err(|err| PipelineError::new("FW_NODE_TABLE_CONVERT", err.to_string()))?
+        .map_err(|err| PipelineError::new(CODE, err.to_string()))?
         .build()
-        .map_err(|err| PipelineError::new("FW_NODE_TABLE_CONVERT", err.to_string()))?;
+        .map_err(|err| PipelineError::new(CODE, err.to_string()))?;
 
     let mut rows = Vec::new();
     for batch in reader {
         let batch =
-            batch.map_err(|err| PipelineError::new("FW_NODE_TABLE_CONVERT", err.to_string()))?;
-        rows.extend(record_batch_to_rows(&batch)?);
+            batch.map_err(|err| PipelineError::new(CODE, err.to_string()))?;
+        rows.extend(batch_rows(&batch)?);
     }
     Ok(rows)
 }
@@ -994,7 +785,7 @@ fn rows_from_parquet_bytes(bytes: Vec<u8>) -> Result<Vec<Value>, PipelineError> 
 fn encode_parquet(rows: &[Value], columns: &[String]) -> Result<Vec<u8>, PipelineError> {
     if columns.is_empty() {
         return Err(PipelineError::new(
-            "FW_NODE_TABLE_CONVERT",
+            CODE,
             "parquet output needs at least one column",
         ));
     }
@@ -1005,13 +796,13 @@ fn encode_parquet(rows: &[Value], columns: &[String]) -> Result<Vec<u8>, Pipelin
     let mut buffer = Vec::new();
     {
         let mut writer = ArrowWriter::try_new(&mut buffer, batch.schema(), Some(props))
-            .map_err(|err| PipelineError::new("FW_NODE_TABLE_CONVERT", err.to_string()))?;
+            .map_err(|err| PipelineError::new(CODE, err.to_string()))?;
         writer
             .write(&batch)
-            .map_err(|err| PipelineError::new("FW_NODE_TABLE_CONVERT", err.to_string()))?;
+            .map_err(|err| PipelineError::new(CODE, err.to_string()))?;
         writer
             .close()
-            .map_err(|err| PipelineError::new("FW_NODE_TABLE_CONVERT", err.to_string()))?;
+            .map_err(|err| PipelineError::new(CODE, err.to_string()))?;
     }
     Ok(buffer)
 }
@@ -1041,7 +832,7 @@ fn rows_to_record_batch(rows: &[Value], columns: &[String]) -> Result<RecordBatc
         .map(|(column, kind)| build_arrow_array(rows, column, *kind))
         .collect::<Result<Vec<_>, _>>()?;
     RecordBatch::try_new(schema, arrays)
-        .map_err(|err| PipelineError::new("FW_NODE_TABLE_CONVERT", err.to_string()))
+        .map_err(|err| PipelineError::new(CODE, err.to_string()))
 }
 
 fn column_data_type(kind: ColumnKind) -> DataType {
@@ -1164,7 +955,12 @@ fn build_arrow_array(
     }
 }
 
-pub(crate) fn record_batch_to_rows(batch: &RecordBatch) -> Result<Vec<Value>, PipelineError> {
+/// One batch as JSON rows, failures raised under the calling node's `code`.
+pub(crate) fn record_batch_to_rows(batch: &RecordBatch, code: &'static str) -> Result<Vec<Value>, PipelineError> {
+    batch_rows(batch).map_err(|err| PipelineError::new(code, err.message))
+}
+
+fn batch_rows(batch: &RecordBatch) -> Result<Vec<Value>, PipelineError> {
     let schema = batch.schema();
     let mut rows = Vec::with_capacity(batch.num_rows());
     for row_index in 0..batch.num_rows() {
@@ -1287,7 +1083,7 @@ fn arrow_value_to_json(array: &dyn Array, row: usize) -> Result<Value, PipelineE
         )),
         _ => array_value_to_string(array, row)
             .map(Value::String)
-            .map_err(|err| PipelineError::new("FW_NODE_TABLE_CONVERT", err.to_string())),
+            .map_err(|err| PipelineError::new(CODE, err.to_string())),
     }
 }
 
@@ -1394,7 +1190,7 @@ fn parse_csv_records(text: &str) -> Result<Vec<Vec<String>>, PipelineError> {
 
     if in_quotes {
         return Err(PipelineError::new(
-            "FW_NODE_TABLE_CONVERT",
+            CODE,
             "CSV has an unterminated quoted cell",
         ));
     }
@@ -1407,36 +1203,56 @@ fn parse_csv_records(text: &str) -> Result<Vec<Vec<String>>, PipelineError> {
     Ok(records)
 }
 
-fn non_empty(value: Option<&str>) -> Option<&str> {
-    value.map(str::trim).filter(|value| !value.is_empty())
-}
-
-fn option_string(value: Option<String>) -> Value {
-    value.map(Value::String).unwrap_or(Value::Null)
-}
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn preview_rows_flag_parses_and_a_canvas_preview_is_not_a_row_count() {
-        let graph = crate::platform::shell::parser::build_pipeline_graph(
-            "t",
-            "[a] trigger.manual\n[b] table.data.convert --from uploads/data.csv --to-json --preview-rows 5\n[a] -> [b]\n",
-        )
-        .expect("graph");
-        let config: Config = serde_json::from_value(graph.nodes[1].config.clone()).expect("config");
-        assert_eq!(config.preview_rows, Some(5));
-        assert_eq!(config.preview_row_count(), 5);
+    fn config(dsl: &str) -> Config {
+        let graph = crate::platform::shell::parser::build_pipeline_graph("t", &format!("[a] trigger.manual\n[b] {dsl}\n[a] -> [b]\n"))
+            .expect("graph");
+        serde_json::from_value(graph.nodes[1].config.clone()).expect("config")
+    }
 
-        // `config.preview` is the engine-common canvas preview; it means
-        // nothing to this node and is not an error.
-        let canvas: Config = serde_json::from_value(
-            json!({ "from": "uploads/data.csv", "preview": { "out": { "as": "table" } } }),
-        )
-        .expect("canvas preview is not an error");
-        assert_eq!(canvas.preview_row_count(), 0);
+    #[test]
+    fn the_flags_are_parse_format_rows_and_limit() {
+        let config = config("table.data.convert --from uploads/data.csv --parse csv --format parquet --rows --limit 5 --path out/data.parquet");
+        assert_eq!(config.parse, "csv");
+        assert_eq!(config.format, "parquet");
+        assert!(config.rows);
+        assert_eq!(config.limit, json!(5));
+        let settings = config.settings().expect("settings");
+        assert_eq!(settings.parse, Some(TableFormat::Csv));
+        assert_eq!(settings.format, Some(TableFormat::Parquet));
+        assert_eq!(settings.limit, Some(5));
+        assert!(settings.answer_rows, "--rows with a destination answers the rows too");
+
+        let flags: Vec<String> = definition().dsl_flags.into_iter().map(|f| f.flag).collect();
+        for gone in ["--from-format", "--to-format", "--to-json", "--preview-rows"] {
+            assert!(!flags.iter().any(|f| f == gone), "{gone} is gone: {flags:?}");
+        }
+    }
+
+    #[test]
+    fn a_choice_is_closed_and_rows_are_the_answer_without_a_destination() {
+        let bad = (Config { parse: "xlsx".into(), ..Default::default() }).settings().err().expect("refused");
+        assert_eq!(bad.code, CONFIG_CODE);
+        assert!(bad.message.contains("--parse"), "{}", bad.message);
+        assert!((Config { format: "tsv".into(), ..Default::default() }).settings().is_err());
+        assert!((Config { limit: json!(0), ..Default::default() }).settings().is_err());
+        let rows_only = (Config { from: json!([{ "a": 1 }]), ..Default::default() }).settings().expect("settings");
+        assert!(rows_only.answer_rows);
+        let file_only = (Config { from: json!("a.csv"), path: Some("b.parquet".into()), ..Default::default() }).settings().expect("settings");
+        assert!(!file_only.answer_rows);
+    }
+
+    #[test]
+    fn an_extension_that_is_no_format_asks_for_the_flag() {
+        let err = normalize_format("uploads/sheet.xlsx", "--from").unwrap_err();
+        assert_eq!(err.code, CONFIG_CODE);
+        assert!(err.message.contains("--parse"), "{}", err.message);
+        assert_eq!(normalize_format("a/b.jsonl", "--from").unwrap(), TableFormat::Ndjson);
+        assert!(normalize_format("noext", "the written file").unwrap_err().message.contains("--format"));
     }
 
     #[test]

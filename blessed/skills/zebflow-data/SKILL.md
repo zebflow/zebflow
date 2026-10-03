@@ -80,6 +80,8 @@ query nodes in `pipeline/nodes`.
 ## Large data
 
 Rows do not travel through MCP tool windows well. Aggregate
-(`string_agg(...)`), paginate, or write a file with `table.data.convert` /
-`table.query.run` and pass its FileRef; never paste thousands of rows into a
-script node or a page payload.
+(`string_agg(...)`), paginate, or write a file and pass its FileRef —
+`table.data.convert --from "{{ input.query.rows }}" --path exports/rows.csv`
+answers `data` (the file's FileRef), `table.query.run … --path exports/r.parquet`
+answers `query` (the same); never paste thousands of rows into a script node or
+a page payload.

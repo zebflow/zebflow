@@ -1350,14 +1350,13 @@ impl BasicPipelineEngine {
             table::query::NODE_KIND => {
                 let Some(platform) = &self.platform else {
                     return Err(PipelineError::new(
-                        "FW_NODE_TABLE_QUERY_UNAVAILABLE",
+                        table::query::UNAVAILABLE_CODE,
                         "platform service is not configured on this pipeline engine",
                     ));
                 };
                 Ok(NodeDispatch::TableQuery(table::query::Node::new(
-                    serde_json::from_value(node.config.clone()).map_err(|err| {
-                        PipelineError::new("FW_NODE_TABLE_QUERY_CONFIG", err.to_string())
-                    })?,
+                    serde_json::from_value(node.config.clone())
+                        .map_err(|err| PipelineError::new(table::query::CONFIG_CODE, err.to_string()))?,
                     platform.clone(),
                     self.language.clone(),
                 )?))
@@ -1573,20 +1572,14 @@ impl BasicPipelineEngine {
             | ms::crud::UNPUBLISH_KIND
             | ms::crud::GET_KIND
             | ms::crud::LIST_KIND => {
-                let config: ms::crud::Config =
-                    serde_json::from_value(node.config.clone()).unwrap_or_default();
+                let operation = ms::crud::Operation::from_kind(node.kind.as_str()).expect("an ms.layer kind");
+                let config: ms::crud::Config = serde_json::from_value(node.config.clone())
+                    .map_err(|err| PipelineError::new(operation.config_code(), err.to_string()))?;
                 let Some(platform) = &self.platform else {
                     return Err(PipelineError::new(
-                        "FW_NODE_MS",
+                        operation.code(),
                         "platform service not available in this engine context",
                     ));
-                };
-                let operation = match node.kind.as_str() {
-                    ms::crud::PUBLISH_KIND => ms::crud::Operation::Publish,
-                    ms::crud::UNPUBLISH_KIND => ms::crud::Operation::Unpublish,
-                    ms::crud::GET_KIND => ms::crud::Operation::Get,
-                    ms::crud::LIST_KIND => ms::crud::Operation::List,
-                    _ => unreachable!(),
                 };
                 Ok(NodeDispatch::MapserverCrud(ms::crud::Node::new(
                     config,
@@ -1595,11 +1588,11 @@ impl BasicPipelineEngine {
                 )?))
             }
             table::convert::NODE_KIND => {
-                let config: table::convert::Config =
-                    serde_json::from_value(node.config.clone()).unwrap_or_default();
+                let config: table::convert::Config = serde_json::from_value(node.config.clone())
+                    .map_err(|err| PipelineError::new(table::convert::CONFIG_CODE, err.to_string()))?;
                 let Some(platform) = &self.platform else {
                     return Err(PipelineError::new(
-                        "FW_NODE_TABLE_CONVERT",
+                        table::convert::CODE,
                         "platform service not available in this engine context",
                     ));
                 };
@@ -1637,11 +1630,11 @@ impl BasicPipelineEngine {
                 )?))
             }
             geo::inspect::NODE_KIND => {
-                let config: geo::inspect::Config =
-                    serde_json::from_value(node.config.clone()).unwrap_or_default();
+                let config: geo::inspect::Config = serde_json::from_value(node.config.clone())
+                    .map_err(|err| PipelineError::new(geo::inspect::CONFIG_CODE, err.to_string()))?;
                 let Some(platform) = &self.platform else {
                     return Err(PipelineError::new(
-                        "FW_NODE_GEO_INSPECT",
+                        geo::inspect::CODE,
                         "platform service not available in this engine context",
                     ));
                 };
@@ -1651,11 +1644,11 @@ impl BasicPipelineEngine {
                 )?))
             }
             geo::convert::NODE_KIND => {
-                let config: geo::convert::Config =
-                    serde_json::from_value(node.config.clone()).unwrap_or_default();
+                let config: geo::convert::Config = serde_json::from_value(node.config.clone())
+                    .map_err(|err| PipelineError::new(geo::convert::CONFIG_CODE, err.to_string()))?;
                 let Some(platform) = &self.platform else {
                     return Err(PipelineError::new(
-                        "FW_NODE_GEO_CONVERT",
+                        geo::convert::CODE,
                         "platform service not available in this engine context",
                     ));
                 };
@@ -4320,7 +4313,7 @@ mod tests {
         let platform = Arc::new(
             PlatformService::from_config(PlatformConfig {
                 data_root: data_root.path().to_path_buf(),
-                default_password: "secret".to_string(),
+                default_password: uuid::Uuid::new_v4().to_string(),
                 default_project: project.to_string(),
                 ..Default::default()
             })
@@ -4330,7 +4323,7 @@ mod tests {
         let dsl = r#"
 [a] trigger.manual
 [b] table.data.convert --from "{{ input.manual.rows }}" --path datasets/posts.parquet
-[c] table.data.convert --from datasets/posts.parquet --to-json --preview-rows 2
+[c] table.data.convert --from datasets/posts.parquet
 
 [a] -> [b]
 [b] -> [c]
@@ -4360,12 +4353,15 @@ mod tests {
             .await
             .expect("execute");
 
-        assert_eq!(out.value["table"]["from_format"], "parquet");
-        assert_eq!(out.value["table"]["data"][0]["id"], 1);
-        assert_eq!(out.value["table"]["data"][0]["title"], "First");
-        assert_eq!(out.value["table"]["data"][0]["score"], 1.5);
-        assert_eq!(out.value["table"]["data"][0]["active"], true);
-        assert_eq!(out.value["table"]["rows"], 2);
+        // [c] read the file [b] wrote; without a destination its rows are the answer.
+        assert_eq!(out.value["data"]["parse"], "parquet");
+        assert_eq!(out.value["data"]["rows"][0]["id"], 1);
+        assert_eq!(out.value["data"]["rows"][0]["title"], "First");
+        assert_eq!(out.value["data"]["rows"][0]["score"], 1.5);
+        assert_eq!(out.value["data"]["rows"][0]["active"], true);
+        assert_eq!(out.value["data"]["row_count"], 2);
+        assert!(out.value["data"].get("ref").is_none(), "[c] wrote no file");
+        assert_eq!(out.value["manual"]["rows"][1]["id"], 2, "the payload is kept");
 
         let layout = platform
             .file
@@ -4386,7 +4382,7 @@ mod tests {
         let platform = Arc::new(
             PlatformService::from_config(PlatformConfig {
                 data_root: data_root.path().to_path_buf(),
-                default_password: "secret".to_string(),
+                default_password: uuid::Uuid::new_v4().to_string(),
                 default_project: project.to_string(),
                 ..Default::default()
             })
@@ -4409,7 +4405,7 @@ mod tests {
 
         let dsl = r#"
 [a] trigger.manual
-[b] table.query.run --from "datasets/posts.csv as posts" --from "datasets/authors.csv as authors" --params "{{ [input.manual.post_id] }}" --to-json --preview-rows 1 --query "select p.id, p.title, a.name from posts p join authors a on p.author_id = a.id where p.id = $1"
+[b] table.query.run --from "datasets/posts.csv as posts" --from "datasets/authors.csv as authors" --param "1={{ input.manual.post_id }}" --query "select p.id, p.title, a.name from posts p join authors a on p.author_id = a.id where p.id = $1"
 
 [a] -> [b]
 "#;
@@ -4433,12 +4429,11 @@ mod tests {
             .await
             .expect("execute");
 
-        assert_eq!(out.value["table"]["engine"], "geodatafusion");
-        assert_eq!(out.value["table"]["rows"], 1);
-        assert_eq!(out.value["table"]["data"][0]["id"], 1);
-        assert_eq!(out.value["table"]["data"][0]["title"], "First");
-        assert_eq!(out.value["table"]["data"][0]["name"], "Ada");
-        assert_eq!(out.value["table"]["preview"][0]["title"], "First");
+        assert_eq!(out.value["query"]["row_count"], 1);
+        assert_eq!(out.value["query"]["truncated"], false);
+        assert_eq!(out.value["query"]["rows"][0]["id"], 1);
+        assert_eq!(out.value["query"]["rows"][0]["title"], "First");
+        assert_eq!(out.value["query"]["rows"][0]["name"], "Ada");
     }
 
     #[tokio::test]
@@ -4449,7 +4444,7 @@ mod tests {
         let platform = Arc::new(
             PlatformService::from_config(PlatformConfig {
                 data_root: data_root.path().to_path_buf(),
-                default_password: "secret".to_string(),
+                default_password: uuid::Uuid::new_v4().to_string(),
                 default_project: project.to_string(),
                 ..Default::default()
             })
@@ -4466,7 +4461,7 @@ mod tests {
             json!({ "id": 2, "author_id": 20, "title": "Second", "score": 3.0 }),
             json!({ "id": 3, "author_id": 30, "title": "Third", "score": 9.0 }),
         ];
-        let posts_bytes = encode_rows(&posts, &collect_columns(&posts), TableFormat::Parquet)
+        let posts_bytes = encode_rows(&posts, &collect_columns(&posts), TableFormat::Parquet, crate::pipeline::nodes::basic::table::convert::CODE)
             .expect("posts parquet");
         zebfs
             .put("datasets/posts.parquet", &posts_bytes)
@@ -4477,7 +4472,7 @@ mod tests {
             json!({ "id": 20, "name": "Bob", "active": false }),
             json!({ "id": 30, "name": "Cora", "active": true }),
         ];
-        let authors_bytes = encode_rows(&authors, &collect_columns(&authors), TableFormat::Parquet)
+        let authors_bytes = encode_rows(&authors, &collect_columns(&authors), TableFormat::Parquet, crate::pipeline::nodes::basic::table::convert::CODE)
             .expect("authors parquet");
         zebfs
             .put("datasets/authors.parquet", &authors_bytes)
@@ -4485,7 +4480,7 @@ mod tests {
 
         let dsl = r#"
 [a] trigger.manual
-[b] table.query.run --from "datasets/posts.parquet as posts" --from "datasets/authors.parquet as authors" --to-json --preview-rows 2 --query "select p.id, p.title, a.name from posts p join authors a on p.author_id = a.id where a.active = true order by p.id"
+[b] table.query.run --from "datasets/posts.parquet as posts" --from "datasets/authors.parquet as authors" --query "select p.id, p.title, a.name from posts p join authors a on p.author_id = a.id where a.active = true order by p.id"
 
 [a] -> [b]
 "#;
@@ -4509,14 +4504,14 @@ mod tests {
             .await
             .expect("execute");
 
-        assert_eq!(out.value["table"]["engine"], "geodatafusion");
-        assert_eq!(out.value["table"]["rows"], 2);
-        assert_eq!(out.value["table"]["data"][0]["id"], 1);
-        assert_eq!(out.value["table"]["data"][0]["title"], "First");
-        assert_eq!(out.value["table"]["data"][0]["name"], "Ada");
-        assert_eq!(out.value["table"]["data"][1]["id"], 3);
-        assert_eq!(out.value["table"]["data"][1]["title"], "Third");
-        assert_eq!(out.value["table"]["data"][1]["name"], "Cora");
+        assert_eq!(out.value["query"]["row_count"], 2);
+        assert_eq!(out.value["query"]["columns"], json!(["id", "title", "name"]));
+        assert_eq!(out.value["query"]["rows"][0]["id"], 1);
+        assert_eq!(out.value["query"]["rows"][0]["title"], "First");
+        assert_eq!(out.value["query"]["rows"][0]["name"], "Ada");
+        assert_eq!(out.value["query"]["rows"][1]["id"], 3);
+        assert_eq!(out.value["query"]["rows"][1]["title"], "Third");
+        assert_eq!(out.value["query"]["rows"][1]["name"], "Cora");
     }
 
     #[tokio::test]
@@ -4527,7 +4522,7 @@ mod tests {
         let platform = Arc::new(
             PlatformService::from_config(PlatformConfig {
                 data_root: data_root.path().to_path_buf(),
-                default_password: "secret".to_string(),
+                default_password: uuid::Uuid::new_v4().to_string(),
                 default_project: project.to_string(),
                 ..Default::default()
             })
@@ -4562,13 +4557,11 @@ mod tests {
                     input_pins: vec!["in".to_string()],
                     output_pins: vec!["out".to_string()],
                     config: json!({
-                        "sources": [
+                        "from": [
                             { "source": "datasets/posts.csv", "alias": "posts" }
                         ],
                         "query": "select * from posts where id = $1",
-                        "params": "{{ [input.manual.post_id] }}",
-                        "to_json": true,
-                        "preview_rows": 1
+                        "param": { "1": "{{ input.manual.post_id }}" }
                     }),
                 },
             ],
@@ -4598,15 +4591,8 @@ mod tests {
             .await
             .expect("execute");
 
-        assert_eq!(out.value["table"]["rows"], 1);
-        assert_eq!(out.value["table"]["data"][0]["title"], "Second");
-        assert_eq!(out.value["table"]["sources"][0]["alias"], "posts");
-        assert_eq!(
-            out.value["table"]["preview"].as_array().map(Vec::len),
-            Some(1),
-            "preview_rows samples rows: {}",
-            out.value["table"]
-        );
+        assert_eq!(out.value["query"]["row_count"], 1);
+        assert_eq!(out.value["query"]["rows"][0]["title"], "Second");
     }
 
     #[tokio::test]
@@ -4617,7 +4603,7 @@ mod tests {
         let platform = Arc::new(
             PlatformService::from_config(PlatformConfig {
                 data_root: data_root.path().to_path_buf(),
-                default_password: "secret".to_string(),
+                default_password: uuid::Uuid::new_v4().to_string(),
                 default_project: project.to_string(),
                 ..Default::default()
             })
@@ -4626,7 +4612,7 @@ mod tests {
 
         let dsl = r#"
 [a] trigger.manual
-[b] table.query.run --engine geodatafusion --from "$input.manual.rows as points" --to-json --preview-rows 1 --query "select id, ST_AsText(ST_Point(x, y)) as geom from points where id = 1"
+[b] table.query.run --from "$input.manual.rows as points" --query "select id, ST_AsText(ST_Point(x, y)) as geom from points where id = 1"
 
 [a] -> [b]
 "#;
@@ -4655,10 +4641,73 @@ mod tests {
             .await
             .expect("execute");
 
-        assert_eq!(out.value["table"]["engine"], "geodatafusion");
-        assert_eq!(out.value["table"]["rows"], 1);
-        assert_eq!(out.value["table"]["data"][0]["id"], 1);
-        assert_eq!(out.value["table"]["data"][0]["geom"], "POINT(30 10)");
+        assert_eq!(out.value["query"]["row_count"], 1);
+        assert_eq!(out.value["query"]["rows"][0]["id"], 1);
+        assert_eq!(out.value["query"]["rows"][0]["geom"], "POINT(30 10)");
+    }
+
+    #[tokio::test]
+    async fn table_query_writes_the_whole_result_and_answers_its_file() {
+        let data_root = tempfile::tempdir().expect("temp data root");
+        let owner = "superadmin";
+        let project = "table_query_file";
+        let platform = Arc::new(
+            PlatformService::from_config(PlatformConfig {
+                data_root: data_root.path().to_path_buf(),
+                default_password: uuid::Uuid::new_v4().to_string(),
+                default_project: project.to_string(),
+                ..Default::default()
+            })
+            .expect("platform"),
+        );
+        let layout = platform.file.ensure_project_layout(owner, project).expect("project layout");
+        layout
+            .open_files()
+            .put("datasets/posts.csv", b"id,title\n1,First\n2,Second\n3,Third\n")
+            .expect("posts csv");
+
+        let run = |dsl: &'static str| {
+            let platform = platform.clone();
+            async move {
+                let graph = build_pipeline_graph("table-query-file", dsl).expect("graph");
+                BasicPipelineEngine::default()
+                    .with_platform(platform)
+                    .execute_async(
+                        &graph,
+                        &PipelineContext {
+                            owner: owner.to_string(),
+                            project: project.to_string(),
+                            pipeline: "table-query-file".to_string(),
+                            request_id: "req-table-query-file".to_string(),
+                            route: String::new(),
+                            input: json!({}),
+                            trigger: None,
+                            placeholder: None,
+                        },
+                    )
+                    .await
+                    .expect("execute")
+            }
+        };
+
+        let out = run("[a] trigger.manual\n[b] table.query.run --from \"datasets/posts.csv as posts\" --path exports/posts.ndjson --rows --limit 1 -- \"SELECT id, title FROM posts ORDER BY id\"\n[a] -> [b]\n").await;
+        let query = &out.value["query"];
+        assert_eq!(query["__zf_type"], "file_ref");
+        assert_eq!(query["ref"], "exports/posts.ndjson");
+        assert_eq!(query["format"], "ndjson");
+        assert_eq!(query["row_count"], 3, "the file holds the whole result");
+        assert_eq!(query["rows"].as_array().map(Vec::len), Some(1), "--rows answers the first --limit rows");
+        assert_eq!(query["truncated"], true);
+        let written = layout.open_files().get("exports/posts.ndjson").expect("written");
+        assert_eq!(String::from_utf8_lossy(&written.bytes).lines().count(), 3);
+
+        let only_file = run("[a] trigger.manual\n[b] table.query.run --from \"datasets/posts.csv as posts\" --folder exports --filename all.csv -- \"SELECT * FROM posts\"\n[a] -> [b]\n").await;
+        assert_eq!(only_file.value["query"]["ref"], "exports/all.csv");
+        assert!(only_file.value["query"].get("rows").is_none(), "no --rows: the file is the answer");
+
+        let truncated = run("[a] trigger.manual\n[b] table.query.run --from \"datasets/posts.csv as posts\" --limit 2 -- \"SELECT * FROM posts\"\n[a] -> [b]\n").await;
+        assert_eq!(truncated.value["query"]["row_count"], 2);
+        assert_eq!(truncated.value["query"]["truncated"], true);
     }
 
     #[tokio::test]

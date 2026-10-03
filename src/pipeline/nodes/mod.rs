@@ -836,8 +836,8 @@ mod tests {
     }
 
     /// The canvas-preview flags are injected into every node, the two table
-    /// nodes included: their row sample moved to `--preview-rows` /
-    /// `preview_rows`, so `--preview` means one thing everywhere.
+    /// nodes included: they keep no row sample of their own, so `--preview`
+    /// means one thing everywhere.
     #[test]
     fn every_node_takes_the_canvas_preview_flags() {
         let defs = super::builtin_node_definitions();
@@ -869,8 +869,8 @@ mod tests {
         for kind in ["table.query.run", "table.data.convert"] {
             let flags = flags_of(kind);
             assert!(
-                flags.iter().any(|(flag, key)| flag == "--preview-rows" && key == "preview_rows"),
-                "{kind} samples rows with --preview-rows: {flags:?}"
+                !flags.iter().any(|(flag, _)| flag == "--preview-rows"),
+                "{kind} has no row sample of its own: {flags:?}"
             );
         }
     }

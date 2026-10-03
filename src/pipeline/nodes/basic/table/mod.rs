@@ -14,7 +14,7 @@ use std::sync::Arc;
 use serde_json::Value;
 
 use crate::pipeline::PipelineError;
-use crate::pipeline::model::{DslFlag, DslFlagKind, NodeFieldDef, NodeFieldType};
+use crate::pipeline::model::{DslFlag, DslFlagKind, NodeFieldDef, NodeFieldType, SelectOptionDef};
 use crate::pipeline::nodes::shared::project_store::{
     OnConflict, on_conflict_flag, open_store, store_fields, store_flag, target_key,
 };
@@ -83,6 +83,36 @@ pub(crate) fn table_mime(format: &str) -> &'static str {
     }
 }
 
+/// The table formats a node reads and writes, as `--parse` and `--format` list them.
+pub(crate) const FORMAT_WORDS: &[&str] = &["csv", "json", "ndjson", "parquet"];
+
+fn words(list: &[&str]) -> Vec<String> {
+    list.iter().map(|word| word.to_string()).collect()
+}
+
+/// `--format`: what a written file is.
+pub(crate) fn format_flag() -> DslFlag {
+    DslFlag {
+        flag: "--format".to_string(),
+        config_key: "format".to_string(),
+        description: "What the written file is: csv, json, ndjson or parquet (default: from the destination's extension, else csv).".to_string(),
+        kind: DslFlagKind::Scalar,
+        choices: words(FORMAT_WORDS),
+        ..Default::default()
+    }
+}
+
+/// `--rows`: the answer carries the rows as well as the file.
+pub(crate) fn rows_flag() -> DslFlag {
+    DslFlag {
+        flag: "--rows".to_string(),
+        config_key: "rows".to_string(),
+        description: "With a destination, the answer carries the rows as JSON as well as the file (without one it always does).".to_string(),
+        kind: DslFlagKind::Bool,
+        ..Default::default()
+    }
+}
+
 /// `--folder`, `--filename`, `--path`, `--store`, `--on-conflict`.
 pub(crate) fn destination_flags() -> Vec<DslFlag> {
     let flag = |flag: &str, key: &str, description: &str| DslFlag {
@@ -91,15 +121,42 @@ pub(crate) fn destination_flags() -> Vec<DslFlag> {
         description: description.to_string(),
         kind: DslFlagKind::Scalar,
         required: false,
+        value: "text".to_string(),
         ..Default::default()
     };
     vec![
         flag("--folder", "folder", "Store folder for the written file (default: tables)."),
         flag("--filename", "filename", "Name of the written file (default: a UUID with the format's extension)."),
         flag("--path", "path", "Exact store key for the written file; overrides --folder and --filename."),
-        store_flag(),
-        on_conflict_flag(OnConflict::Error),
+        DslFlag { value: "text".to_string(), ..store_flag() },
+        DslFlag { choices: words(&["error", "skip", "overwrite"]), ..on_conflict_flag(OnConflict::Error) },
     ]
+}
+
+/// A format select: Auto (empty) and the four format words.
+pub(crate) fn format_field(name: &str, label: &str, help: &str) -> NodeFieldDef {
+    let mut options = vec![SelectOptionDef { value: String::new(), label: "Auto".to_string() }];
+    options.extend(FORMAT_WORDS.iter().map(|word| SelectOptionDef { value: word.to_string(), label: word.to_string() }));
+    NodeFieldDef {
+        name: name.to_string(),
+        label: label.to_string(),
+        field_type: NodeFieldType::Select,
+        options,
+        help: Some(help.to_string()),
+        ..Default::default()
+    }
+}
+
+/// The `rows` checkbox.
+pub(crate) fn rows_field() -> NodeFieldDef {
+    NodeFieldDef {
+        name: "rows".to_string(),
+        label: "Answer rows".to_string(),
+        field_type: NodeFieldType::Checkbox,
+        help: Some("With a destination, answer the rows as JSON as well as the file. Without one the rows are always answered.".to_string()),
+        default_value: Some(serde_json::json!(false)),
+        ..Default::default()
+    }
 }
 
 pub(crate) fn destination_fields() -> Vec<NodeFieldDef> {

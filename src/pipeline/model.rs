@@ -251,7 +251,7 @@ pub enum DslFlagKind {
     /// Parser behavior is identical to [`DslFlagKind::CommaSeparatedList`].
     /// Use this for long atomic values where commas may appear inside the value.
     /// `--from "posts.parquet as posts" --from "authors.csv as authors"`
-    /// → `config["sources"] = ["posts.parquet as posts","authors.csv as authors"]`
+    /// → `config["from"] = ["posts.parquet as posts","authors.csv as authors"]`
     RepeatedList,
     /// Presence flag — no value consumed; sets config key to `true`.
     ///

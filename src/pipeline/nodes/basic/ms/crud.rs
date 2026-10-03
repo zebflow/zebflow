@@ -1,29 +1,38 @@
-//! Mapserver CRUD nodes — dynamic layer management.
+//! `ms.layer.*` — the project's map layers.
 //!
-//! Manages the layer registry (`data/store/mapserver/{instance}.layers.json`).
-//! Layers published via these nodes are immediately queryable on `/ms/{owner}/{project}/{path}`.
+//! The layer registry (`data/store/mapserver/{instance}.layers.json`) holds
+//! one record per layer; a published layer answers on
+//! `/ms/{owner}/{project}/{route}` while the project's `ms` surface is on.
 //!
-//! | Node              | Purpose                               |
-//! |-------------------|---------------------------------------|
-//! | `ms.layer.publish`    | Upsert a layer in the registry        |
-//! | `ms.layer.unpublish`  | Remove a layer from the registry      |
-//! | `ms.layer.get`        | Get layer metadata                    |
-//! | `ms.layer.list`       | List all published layers             |
+//! | Node                 | Does                                   | Answers                       |
+//! |----------------------|----------------------------------------|-------------------------------|
+//! | `ms.layer.publish`   | upserts a layer by `--name`            | `layer: { …record, serving }` |
+//! | `ms.layer.get`       | reads one layer by `--name`            | `layer: { found, …record }`   |
+//! | `ms.layer.list`      | every layer                            | `layer: { items, count }`     |
+//! | `ms.layer.unpublish` | removes a layer by `--name`            | `layer: { name, removed }`    |
+//!
+//! Publishing a GeoJSON or GeoParquet source builds an optimized GeoParquet
+//! copy (bbox columns, Hilbert order, small row groups) under
+//! `mapserver/.optimized/` in this node's store and serves that; with
+//! `--skip-optimize` the source is served as it is, and `--build-artifact`
+//! then serves a GeoJSON as a chunked artifact in the cache tier instead.
 
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::{Map, Value, json};
 
-use crate::pipeline::nodes::shared::file_ref::zebfs_rel_path_or_string;
-use crate::pipeline::nodes::shared::project_store::{self, NodeStore};
-use crate::pipeline::nodes::shared::store_scratch::StoreScratch;
-use crate::pipeline::nodes::shared::util::metadata_scope;
 use crate::contracts::kinds::MapserverLayerRecord as LayerRecord;
 use crate::mapserver::publish::registry;
 use crate::mapserver::publish::registry::DEFAULT_INSTANCE;
-use crate::pipeline::model::NodeCapability;
+use crate::pipeline::model::{NodeCapability, NodeExample};
+use crate::pipeline::nodes::shared::file_ref::zebfs_rel_path_or_string;
+use crate::pipeline::nodes::shared::limits::{choice, whole, within};
+use crate::pipeline::nodes::shared::project_store::{self, NodeStore};
+use crate::pipeline::nodes::shared::store_scratch::StoreScratch;
+use crate::pipeline::nodes::shared::units;
+use crate::pipeline::nodes::shared::util::{metadata_scope, with_answer};
 use crate::pipeline::{
     NodeDefinition, NodeFieldDataSource, PipelineError,
     model::{DslFlag, DslFlagKind, LayoutItem, NodeFieldDef, NodeFieldType, SelectOptionDef},
@@ -36,49 +45,57 @@ pub const UNPUBLISH_KIND: &str = "ms.layer.unpublish";
 pub const GET_KIND: &str = "ms.layer.get";
 pub const LIST_KIND: &str = "ms.layer.list";
 
+/// Publishing failed: the source, the optimized copy or the registry.
+pub const PUBLISH_CODE: &str = "FW_NODE_MS_LAYER_PUBLISH";
+/// A publish flag the author set wrong.
+pub const PUBLISH_CONFIG_CODE: &str = "FW_NODE_MS_LAYER_PUBLISH_CONFIG";
+/// `--style` that does not parse.
+const PUBLISH_STYLE_CODE: &str = "FW_NODE_MS_LAYER_PUBLISH_STYLE";
+/// `--filter` that does not parse.
+const PUBLISH_FILTER_CODE: &str = "FW_NODE_MS_LAYER_PUBLISH_FILTER";
+pub const UNPUBLISH_CODE: &str = "FW_NODE_MS_LAYER_UNPUBLISH";
+pub const UNPUBLISH_CONFIG_CODE: &str = "FW_NODE_MS_LAYER_UNPUBLISH_CONFIG";
+pub const GET_CODE: &str = "FW_NODE_MS_LAYER_GET";
+pub const GET_CONFIG_CODE: &str = "FW_NODE_MS_LAYER_GET_CONFIG";
+pub const LIST_CODE: &str = "FW_NODE_MS_LAYER_LIST";
+
 const INPUT_PIN_IN: &str = "in";
 const OUTPUT_PIN_OUT: &str = "out";
 
-// ── Layer record ────────────────────────────────────────────────────────────
-//
-// There is one definition, the contract's. A hand-mirrored copy lived here and
-// had already drifted, which is how two writers ended up disagreeing about the
-// same file.
+/// How a source is read: `--parse`.
+const PARSE_WORDS: &[&str] = &["geojson", "geoparquet"];
+/// Features one query answers when `--max-items` is not set, and the most it may say.
+const DEFAULT_MAX_ITEMS: u32 = 1_000;
+const MAX_MAX_ITEMS: u32 = 50_000;
+/// The most `--field` properties a layer serves.
+const MAX_FIELDS: u32 = 256;
+/// Web map zoom levels.
+const MAX_ZOOM: u32 = 24;
+/// The longest a function layer's features are cached.
+const MAX_TTL_SECS: u64 = 7 * 86_400;
 
-fn layers_path(
-    platform: &PlatformService,
-    owner: &str,
-    project: &str,
-) -> Result<std::path::PathBuf, PipelineError> {
-    let layout = platform
-        .file
-        .ensure_project_layout(owner, project)
-        .map_err(|e| PipelineError::new("FW_NODE_MS", e.to_string()))?;
+// ── Registry ─────────────────────────────────────────────────────────────────
+//
+// There is one record definition, the contract's. A hand-mirrored copy lived
+// here and had already drifted, which is how two writers ended up disagreeing
+// about the same file.
+
+fn layers_path(platform: &PlatformService, owner: &str, project: &str, code: &'static str) -> Result<std::path::PathBuf, PipelineError> {
+    let layout = platform.file.ensure_project_layout(owner, project).map_err(|e| PipelineError::new(code, e.to_string()))?;
     Ok(registry::layers_manifest_path(&layout.data_store_dir(), DEFAULT_INSTANCE))
 }
 
-fn read_layers(
-    platform: &PlatformService,
-    owner: &str,
-    project: &str,
-) -> Result<Vec<LayerRecord>, PipelineError> {
-    let path = layers_path(platform, owner, project)?;
-    registry::read_layers(&path).map_err(|e| PipelineError::new("FW_NODE_MS_PARSE", e.to_string()))
+fn read_layers(platform: &PlatformService, owner: &str, project: &str, code: &'static str) -> Result<Vec<LayerRecord>, PipelineError> {
+    let path = layers_path(platform, owner, project, code)?;
+    registry::read_layers(&path).map_err(|e| PipelineError::new(code, format!("layer registry: {e}")))
 }
 
-fn write_layers(
-    platform: &PlatformService,
-    owner: &str,
-    project: &str,
-    items: &[LayerRecord],
-) -> Result<(), PipelineError> {
-    let path = layers_path(platform, owner, project)?;
+fn write_layers(platform: &PlatformService, owner: &str, project: &str, items: &[LayerRecord], code: &'static str) -> Result<(), PipelineError> {
+    let path = layers_path(platform, owner, project, code)?;
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|e| PipelineError::new("FW_NODE_MS_WRITE", e.to_string()))?;
+        std::fs::create_dir_all(parent).map_err(|e| PipelineError::new(code, e.to_string()))?;
     }
-    registry::write_layers(&path, DEFAULT_INSTANCE, items)
-        .map_err(|e| PipelineError::new("FW_NODE_MS_WRITE", e.to_string()))
+    registry::write_layers(&path, DEFAULT_INSTANCE, items).map_err(|e| PipelineError::new(code, format!("layer registry: {e}")))
 }
 
 /// Streams an optimized GeoParquet and its column stats into the store.
@@ -92,43 +109,44 @@ fn store_optimized(
     store
         .fs
         .put_from_file(optimized_rel, optimized_abs)
-        .map_err(|e| PipelineError::new("FW_NODE_MS_PUBLISH", format!("write '{optimized_rel}': {e}")))?;
-    let stats_json = serde_json::to_vec_pretty(stats)
-        .map_err(|e| PipelineError::new("FW_NODE_MS_PUBLISH", e.to_string()))?;
-    store
-        .fs
-        .put(stats_rel, &stats_json)
-        .map_err(|e| PipelineError::new("FW_NODE_MS_PUBLISH", format!("write '{stats_rel}': {e}")))?;
+        .map_err(|e| PipelineError::new(PUBLISH_CODE, format!("write '{optimized_rel}': {e}")))?;
+    let stats_json = serde_json::to_vec_pretty(stats).map_err(|e| PipelineError::new(PUBLISH_CODE, e.to_string()))?;
+    store.fs.put(stats_rel, &stats_json).map_err(|e| PipelineError::new(PUBLISH_CODE, format!("write '{stats_rel}': {e}")))?;
     Ok(())
 }
 
-fn layer_to_json(record: &LayerRecord) -> Value {
-    json!({
-        "layer_id": record.layer_id,
-        "path": record.path,
+/// A registry record as the nodes answer it, in the flags' words.
+fn layer_to_json(record: &LayerRecord) -> Map<String, Value> {
+    let source_kind = if record.source_kind.is_empty() {
+        if record.artifact_manifest_path.is_some() { "geojson_artifact" } else { "geojson_file" }
+    } else {
+        record.source_kind.as_str()
+    };
+    let layer = json!({
+        "name": record.layer_id,
+        "route": record.path,
         "store": record.store,
-        "source_path": record.source_path,
-        "source_kind": if record.source_kind.is_empty() {
-            if record.artifact_manifest_path.is_some() { "geojson_artifact" } else { "geojson_file" }
-        } else {
-            &record.source_kind
-        },
-        "mode": record.mode,
+        "source": record.source_path,
+        "source_kind": source_kind,
         "min_zoom": record.min_zoom,
         "max_zoom": record.max_zoom,
         "bbox_required": record.bbox_required,
-        "max_features": record.max_features,
-        "allowed_properties": record.allowed_properties,
+        "max_items": record.max_features,
+        "fields": record.allowed_properties,
         "feature_count": record.feature_count,
         "chunk_count": record.chunk_count,
         "style": record.style,
         "filter": record.filter,
-        "function_slug": record.function_slug,
-        "cache_ttl_secs": record.cache_ttl_secs,
-    })
+        "function": record.function_slug,
+        "ttl": record.cache_ttl_secs.map(|secs| format!("{secs}s")),
+    });
+    match layer {
+        Value::Object(map) => map,
+        _ => Map::new(),
+    }
 }
 
-// ── Operation enum ───────────────────────────────────────────────────────────
+// ── Operation ────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Copy)]
 pub enum Operation {
@@ -139,6 +157,16 @@ pub enum Operation {
 }
 
 impl Operation {
+    pub fn from_kind(kind: &str) -> Option<Self> {
+        match kind {
+            PUBLISH_KIND => Some(Self::Publish),
+            UNPUBLISH_KIND => Some(Self::Unpublish),
+            GET_KIND => Some(Self::Get),
+            LIST_KIND => Some(Self::List),
+            _ => None,
+        }
+    }
+
     fn kind(self) -> &'static str {
         match self {
             Self::Publish => PUBLISH_KIND,
@@ -147,12 +175,33 @@ impl Operation {
             Self::List => LIST_KIND,
         }
     }
+
+    /// The operation's own failure code.
+    pub fn code(self) -> &'static str {
+        match self {
+            Self::Publish => PUBLISH_CODE,
+            Self::Unpublish => UNPUBLISH_CODE,
+            Self::Get => GET_CODE,
+            Self::List => LIST_CODE,
+        }
+    }
+
+    /// The code a config the author set wrong is refused under.
+    pub fn config_code(self) -> &'static str {
+        match self {
+            Self::Publish => PUBLISH_CONFIG_CODE,
+            Self::Unpublish => UNPUBLISH_CONFIG_CODE,
+            Self::Get => GET_CONFIG_CODE,
+            Self::List => LIST_CODE,
+        }
+    }
 }
 
 // ── Config ───────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Config {
+    /// The layer's name: 1–64 letters, digits, `-` or `_`.
     #[serde(default)]
     pub name: String,
     /// Where the layer answers, under `/ms/{owner}/{project}/`.
@@ -161,324 +210,343 @@ pub struct Config {
     /// The source: a store key, or a FileRef through `{{ }}`.
     #[serde(default)]
     pub from: Value,
+    /// How the source is read: `geojson` or `geoparquet` (else from its extension).
     #[serde(default)]
-    pub source_kind: String,
+    pub parse: String,
     /// Serve queries without a bbox (default: a bbox is required).
     #[serde(default)]
     pub bbox_optional: bool,
+    /// Features one query answers at most (default 1000).
     #[serde(default)]
-    pub max_features: Option<usize>,
+    pub max_items: Value,
+    /// The source properties the public may see, one per `--field`.
     #[serde(default)]
-    pub allowed_properties: Option<String>,
+    pub field: Value,
     #[serde(default)]
-    pub min_zoom: Option<u8>,
+    pub min_zoom: Value,
     #[serde(default)]
-    pub max_zoom: Option<u8>,
+    pub max_zoom: Value,
+    /// With `--skip-optimize`, serve a GeoJSON as a chunked artifact.
     #[serde(default)]
     pub build_artifact: bool,
-    // Style fields for tile rendering
     #[serde(default)]
     pub fill: Option<String>,
     #[serde(default)]
     pub stroke: Option<String>,
     #[serde(default)]
-    pub stroke_width: Option<String>,
+    pub stroke_width: Value,
     #[serde(default)]
-    pub point_radius: Option<String>,
+    pub point_radius: Value,
     #[serde(default)]
     pub point_color: Option<String>,
-    /// Style DSL expression (e.g. "cb(population,5,YlOrRd)").
-    /// When set, overrides individual fill/stroke/etc flags.
+    /// A style expression (`cb(population,5,YlOrRd)`); overrides the colour flags.
     #[serde(default)]
-    pub style_dsl: Option<String>,
-    /// Default filter expression (e.g. "category:residential;value>100").
+    pub style: Option<String>,
+    /// The default filter (`category:residential;value>100`).
     #[serde(default)]
     pub filter: Option<String>,
     /// Serve the source as it is, without the optimized GeoParquet copy.
     #[serde(default)]
     pub skip_optimize: bool,
-    /// Function pipeline slug for GeoJsonFunction source kind.
+    /// A function pipeline whose GeoJSON FeatureCollection is the layer.
     #[serde(default)]
     pub function: Option<String>,
-    /// Feature cache TTL in seconds for GeoJsonFunction layers.
+    /// How long a function layer's features are cached (default 60s).
     #[serde(default)]
-    pub cache_ttl: Option<u64>,
+    pub ttl: String,
     /// The store the source is read from and the optimized copy written to;
-    /// saved explicitly at registration (`node-conventions.md` §3).
+    /// saved explicitly at registration (`node-conventions.md` §5).
     #[serde(default)]
     pub store: Option<String>,
 }
 
+/// The publish flags read and checked before anything is touched.
+#[derive(Debug, PartialEq)]
+struct PublishSettings {
+    /// `--parse`, `None` to sniff from the extension.
+    parse: Option<&'static str>,
+    max_items: usize,
+    fields: Vec<String>,
+    min_zoom: Option<u8>,
+    max_zoom: Option<u8>,
+    stroke_width: Option<f64>,
+    point_radius: Option<f64>,
+    function: Option<String>,
+    ttl_secs: Option<u64>,
+}
+
+impl Config {
+    fn publish_settings(&self) -> Result<PublishSettings, PipelineError> {
+        const CODE: &str = PUBLISH_CONFIG_CODE;
+        let parse = Some(choice(&self.parse, PARSE_WORDS, "", "--parse", CODE)?).filter(|word| !word.is_empty());
+        let max_items = match whole(&self.max_items, "--max-items", CODE)? {
+            None => DEFAULT_MAX_ITEMS,
+            Some(n) => within(n, 1, MAX_MAX_ITEMS, "--max-items", CODE)?,
+        } as usize;
+        let zoom = |value: &Value, flag: &str| -> Result<Option<u8>, PipelineError> {
+            whole(value, flag, CODE)?.map(|n| within(n, 0, MAX_ZOOM, flag, CODE).map(|n| n as u8)).transpose()
+        };
+        let (min_zoom, max_zoom) = (zoom(&self.min_zoom, "--min-zoom")?, zoom(&self.max_zoom, "--max-zoom")?);
+        if let (Some(min), Some(max)) = (min_zoom, max_zoom)
+            && min > max
+        {
+            return Err(PipelineError::new(CODE, format!("--min-zoom {min} is above --max-zoom {max}")));
+        }
+        let function = self.function.as_deref().map(str::trim).filter(|f| !f.is_empty()).map(str::to_string);
+        let has_from = !(self.from.is_null() || self.from.as_str().is_some_and(|s| s.trim().is_empty()));
+        if function.is_some() && has_from {
+            return Err(PipelineError::new(CODE, "--from and --function are two sources; give one"));
+        }
+        if function.is_none() && !has_from {
+            return Err(PipelineError::new(CODE, "--from is required (a store key or a FileRef), or --function for a function layer"));
+        }
+        let ttl_secs = match self.ttl.trim() {
+            "" => None,
+            text => {
+                if function.is_none() {
+                    return Err(PipelineError::new(CODE, "--ttl caches a function layer's features; it needs --function"));
+                }
+                let secs = units::duration(text, "--ttl", CODE)?.as_secs();
+                Some(within(secs, 1, MAX_TTL_SECS, "--ttl (seconds)", CODE)?)
+            }
+        };
+        if self.build_artifact && (!self.skip_optimize || parse == Some("geoparquet")) {
+            return Err(PipelineError::new(CODE, "--build-artifact serves a GeoJSON as it is: it needs --skip-optimize and a GeoJSON source"));
+        }
+        Ok(PublishSettings {
+            parse,
+            max_items,
+            fields: fields(&self.field)?,
+            min_zoom,
+            max_zoom,
+            stroke_width: number(&self.stroke_width, "--stroke-width", 0.0, 100.0)?,
+            point_radius: number(&self.point_radius, "--point-radius", 0.0, 100.0)?,
+            function,
+            ttl_secs,
+        })
+    }
+}
+
+/// `--field`, repeated or one `{{ [list] }}`: property names, never a comma list.
+fn fields(value: &Value) -> Result<Vec<String>, PipelineError> {
+    let items: Vec<&Value> = match value {
+        Value::Null => Vec::new(),
+        Value::Array(items) => items.iter().collect(),
+        other => vec![other],
+    };
+    let mut out = Vec::new();
+    for item in items {
+        let Some(name) = item.as_str().map(str::trim) else {
+            return Err(PipelineError::new(PUBLISH_CONFIG_CODE, format!("--field {item} is not a property name")));
+        };
+        if name.is_empty() {
+            continue;
+        }
+        if name.contains(',') {
+            return Err(PipelineError::new(PUBLISH_CONFIG_CODE, format!("--field '{name}' is one property name; repeat --field for each")));
+        }
+        if !out.iter().any(|seen| seen == name) {
+            out.push(name.to_string());
+        }
+    }
+    if out.len() > MAX_FIELDS as usize {
+        return Err(PipelineError::new(PUBLISH_CONFIG_CODE, format!("--field names at most {MAX_FIELDS} properties")));
+    }
+    Ok(out)
+}
+
+/// A number flag — a number, or the number as text — inside `min..=max`.
+fn number(value: &Value, flag: &str, min: f64, max: f64) -> Result<Option<f64>, PipelineError> {
+    let n = match value {
+        Value::Null => return Ok(None),
+        Value::String(text) if text.trim().is_empty() => return Ok(None),
+        Value::Number(n) => n.as_f64(),
+        Value::String(text) => text.trim().parse::<f64>().ok(),
+        _ => None,
+    };
+    match n {
+        Some(n) if n.is_finite() => within(n, min, max, flag, PUBLISH_CONFIG_CODE).map(Some),
+        _ => Err(PipelineError::new(PUBLISH_CONFIG_CODE, format!("{flag} '{value}' is not a number"))),
+    }
+}
+
 // ── Node definitions ─────────────────────────────────────────────────────────
 
-fn scalar_flag(flag: &str, config_key: &str, description: &str) -> DslFlag {
+fn flag(name: &str, config_key: &str, description: &str, value: &str) -> DslFlag {
     DslFlag {
-        flag: flag.to_string(),
+        flag: name.to_string(),
         config_key: config_key.to_string(),
         description: description.to_string(),
         kind: DslFlagKind::Scalar,
-        required: false,
+        value: value.to_string(),
         ..Default::default()
     }
 }
 
-fn bool_flag(flag: &str, config_key: &str, description: &str) -> DslFlag {
-    DslFlag {
-        flag: flag.to_string(),
-        config_key: config_key.to_string(),
-        description: description.to_string(),
-        kind: DslFlagKind::Bool,
-        required: false,
-        ..Default::default()
-    }
+fn switch(name: &str, config_key: &str, description: &str) -> DslFlag {
+    DslFlag { kind: DslFlagKind::Bool, ..flag(name, config_key, description, "") }
+}
+
+fn name_flag(description: &str) -> DslFlag {
+    DslFlag { required: true, ..flag("--name", "name", description, "text") }
+}
+
+fn field(name: &str, label: &str, field_type: NodeFieldType, help: &str) -> NodeFieldDef {
+    NodeFieldDef { name: name.to_string(), label: label.to_string(), field_type, help: Some(help.to_string()), ..Default::default() }
 }
 
 fn text_field(name: &str, label: &str, help: &str) -> NodeFieldDef {
-    NodeFieldDef {
-        name: name.to_string(),
-        label: label.to_string(),
-        field_type: NodeFieldType::Text,
-        help: Some(help.to_string()),
-        ..Default::default()
-    }
+    field(name, label, NodeFieldType::Text, help)
+}
+
+/// The record fields every answer carrying a layer has.
+fn layer_schema() -> Value {
+    json!({
+        "name": { "type": "string" },
+        "route": { "type": "string", "description": "Where it answers, under /ms/{owner}/{project}/" },
+        "store": { "type": "string" },
+        "source": { "type": "string", "description": "The store key served (the optimized copy unless --skip-optimize)" },
+        "source_kind": { "type": "string", "description": "geoparquet, geojson_file, geojson_artifact or geojson_function" },
+        "min_zoom": { "type": ["integer", "null"] },
+        "max_zoom": { "type": ["integer", "null"] },
+        "bbox_required": { "type": "boolean" },
+        "max_items": { "type": "integer" },
+        "fields": { "type": "array", "items": { "type": "string" } },
+        "feature_count": { "type": ["integer", "null"] },
+        "chunk_count": { "type": ["integer", "null"] },
+        "style": {},
+        "filter": { "type": ["string", "null"] },
+        "function": { "type": ["string", "null"] },
+        "ttl": { "type": ["string", "null"], "description": "A function layer's cache lifetime, e.g. 60s" }
+    })
+}
+
+fn answer_schema(properties: Value) -> Value {
+    json!({ "type": "object", "properties": { "layer": { "type": "object", "properties": properties } } })
 }
 
 pub fn publish_definition() -> NodeDefinition {
+    let mut publish_props = layer_schema();
+    publish_props["serving"] = json!({ "type": "boolean", "description": "The project's ms surface is on, so the route answers" });
+    publish_props["note"] = json!({ "type": "string", "description": "Present when serving is false" });
+    publish_props["optimization"] = json!({ "type": "object", "description": "What the optimized copy holds; absent with --skip-optimize or --function" });
     NodeDefinition {
         kind: PUBLISH_KIND.to_string(),
         capabilities: vec![NodeCapability::Filesystem],
         title: "MS Publish".to_string(),
-        description: "Publish or update a map layer in the project layer registry. \
-            The layer answers on `/ms/{owner}/{project}/{route}` while the project's `ms` surface is on (off by default); \
-            the answer's `ms.serving` says which. Adds `ms` to the payload and keeps the rest. \
-            Supports geojson_file, geojson_artifact, geoparquet, and geojson_function source kinds. \
-            Use --function for dynamic layers backed by a function pipeline."
+        description: "Publish or update a map layer, by `--name`, in the project's layer registry. It answers on `/ms/{owner}/{project}/{route}` \
+            while the project's `ms` surface is on (off by default; `layer.serving` says which). `--from` is a GeoJSON or GeoParquet store key \
+            or FileRef (`--parse geojson|geoparquet`, else from its extension); it is served from an optimized GeoParquet copy unless \
+            `--skip-optimize`, and `--skip-optimize --build-artifact` serves a GeoJSON as chunks. `--function` instead names a function \
+            pipeline whose GeoJSON FeatureCollection is the layer, its features cached for `--ttl` (default 60s). Each `--field` is a property \
+            the public may see (none: geometry only); `--max-items` caps the features one query answers (default 1000); `--min-zoom` / \
+            `--max-zoom` bound visibility; `--style` or the colour flags style tiles; `--filter` is the default filter. \
+            Adds `layer: { name, route, store, source, source_kind, …, serving }` and keeps the rest of the payload."
             .to_string(),
-        input_schema: json!({"type": "object"}),
-        output_schema: json!({
-            "type": "object",
-            "properties": {
-                "ms": {
-                    "type": "object",
-                    "properties": {
-                        "operation": { "type": "string" },
-                        "layer": { "type": "object" }
-                    }
-                }
-            }
-        }),
+        input_schema: json!({ "type": "object" }),
+        output_schema: answer_schema(publish_props),
         input_pins: vec![INPUT_PIN_IN.to_string()],
         output_pins: vec![OUTPUT_PIN_OUT.to_string()],
         script_available: false,
         script_bridge: None,
         config_schema: Default::default(),
         dsl_flags: vec![
-            scalar_flag("--name", "name", "Unique layer identifier (required)."),
-            scalar_flag(
-                "--route",
-                "route",
-                "Where the layer answers, under /ms/{owner}/{project}/ (required).",
-            ),
-            scalar_flag(
-                "--from",
-                "from",
-                "The source: a store key, or a FileRef through {{ }} (read from the store it names). Required unless --function.",
-            ),
+            name_flag("The layer's name: 1–64 letters, digits, - or _. Publishing a name again updates it."),
+            DslFlag { required: true, ..flag("--route", "route", "Where the layer answers, under /ms/{owner}/{project}/.", "text") },
+            flag("--from", "from", "The source: a GeoJSON or GeoParquet store key, or a FileRef through {{ }}. Required unless --function.", "file"),
             DslFlag {
-                flag: "--source-kind".to_string(),
-                config_key: "source_kind".to_string(),
-                description: "Source type: geojson_file (default), geojson_artifact, geoparquet."
-                    .to_string(),
-                kind: DslFlagKind::Scalar,
-                required: false,
-                ..Default::default()
+                choices: PARSE_WORDS.iter().map(|w| w.to_string()).collect(),
+                ..flag("--parse", "parse", "How --from is read: geojson or geoparquet (default: from its extension).", "")
             },
-            bool_flag(
-                "--bbox-optional",
-                "bbox_optional",
-                "Serve queries without a bbox. Default: a bbox is required.",
-            ),
-            scalar_flag(
-                "--max-features",
-                "max_features",
-                "Hard feature cap per query. Default: 1000.",
-            ),
-            scalar_flag(
-                "--allowed-properties",
-                "allowed_properties",
-                "Comma-separated list of source properties the public may see. Empty means geometry only.",
-            ),
-            scalar_flag("--min-zoom", "min_zoom", "Minimum zoom visibility."),
-            scalar_flag("--max-zoom", "max_zoom", "Maximum zoom visibility."),
-            bool_flag(
+            switch("--bbox-optional", "bbox_optional", "Serve queries without a bbox. Default: a bbox is required."),
+            flag("--max-items", "max_items", "The most features one query answers (default 1000, at most 50000).", "number"),
+            DslFlag {
+                kind: DslFlagKind::RepeatedList,
+                max_repeat: Some(MAX_FIELDS),
+                ..flag("--field", "field", "A source property the public may see (repeat, or one {{ [list] }}). None: geometry only.", "text")
+            },
+            flag("--min-zoom", "min_zoom", "The lowest zoom the layer shows at (0–24).", "number"),
+            flag("--max-zoom", "max_zoom", "The highest zoom the layer shows at (0–24).", "number"),
+            switch("--skip-optimize", "skip_optimize", "Serve the source as it is, without the optimized GeoParquet copy."),
+            switch(
                 "--build-artifact",
                 "build_artifact",
-                "For geojson: auto-build chunked artifact for large files.",
+                "With --skip-optimize and a GeoJSON source: build a chunked artifact in the cache tier and serve that instead of the file.",
             ),
-            scalar_flag("--fill", "fill", "Polygon fill CSS color (default: rgba(65,105,225,128))."),
-            scalar_flag("--stroke", "stroke", "Stroke CSS color (default: #1E3CA0DC)."),
-            scalar_flag("--stroke-width", "stroke_width", "Stroke width in pixels (default: 1.0)."),
-            scalar_flag("--point-radius", "point_radius", "Point radius in pixels (default: 4.0)."),
-            scalar_flag("--point-color", "point_color", "Point fill CSS color (default: #DC3232C8)."),
-            scalar_flag("--style", "style_dsl", "Style DSL expression (e.g. 'cb(population,5,YlOrRd)'). Overrides individual fill/stroke flags."),
-            scalar_flag("--filter", "filter", "Default filter expression (e.g. 'category:residential;value>100')"),
-            bool_flag(
-                "--skip-optimize",
-                "skip_optimize",
-                "Serve the source as it is, without the optimized GeoParquet copy.",
-            ),
-            scalar_flag(
-                "--function",
-                "function",
-                "Function pipeline slug for dynamic GeoJSON source. Mutually exclusive with --from.",
-            ),
-            scalar_flag(
-                "--cache-ttl",
-                "cache_ttl",
-                "Feature cache TTL in seconds for function layers. Default: 60.",
-            ),
-            project_store::store_flag(),
+            flag("--fill", "fill", "Polygon fill colour (default: rgba(65,105,225,128)).", "text"),
+            flag("--stroke", "stroke", "Stroke colour (default: #1E3CA0DC).", "text"),
+            flag("--stroke-width", "stroke_width", "Stroke width in pixels, 0–100 (default: 1).", "number"),
+            flag("--point-radius", "point_radius", "Point radius in pixels, 0–100 (default: 4).", "number"),
+            flag("--point-color", "point_color", "Point fill colour (default: #DC3232C8).", "text"),
+            flag("--style", "style", "A style expression, e.g. cb(population,5,YlOrRd); overrides the colour flags.", "text"),
+            flag("--filter", "filter", "The default filter, e.g. category:residential;value>100.", "text"),
+            flag("--function", "function", "A function pipeline whose GeoJSON FeatureCollection is the layer; instead of --from.", "text"),
+            flag("--ttl", "ttl", "How long a function layer's features are cached, e.g. 60s or 5m (default 60s).", "duration"),
+            DslFlag { value: "text".to_string(), ..project_store::store_flag() },
         ],
         fields: vec![
-            text_field("name", "Layer ID", "Unique layer identifier."),
+            text_field("name", "Name", "The layer's name: letters, digits, - or _."),
             text_field("route", "Route", "Where the layer answers, under /ms/{owner}/{project}/."),
-            text_field("from", "From", "A store key, or a FileRef through {{ }}."),
+            text_field("from", "From", "A GeoJSON or GeoParquet store key, or a FileRef through {{ }}."),
             NodeFieldDef {
-                name: "source_kind".to_string(),
-                label: "Source Kind".to_string(),
-                field_type: NodeFieldType::Select,
-                default_value: Some(json!("geojson_file")),
-                options: vec![
-                    SelectOptionDef {
-                        value: "geojson_file".to_string(),
-                        label: "GeoJSON File".to_string(),
-                    },
-                    SelectOptionDef {
-                        value: "geojson_artifact".to_string(),
-                        label: "GeoJSON Artifact".to_string(),
-                    },
-                    SelectOptionDef {
-                        value: "geoparquet".to_string(),
-                        label: "GeoParquet".to_string(),
-                    },
-                    SelectOptionDef {
-                        value: "geojson_function".to_string(),
-                        label: "GeoJSON Function".to_string(),
-                    },
-                ],
-                help: Some("Type of geospatial source. Use 'GeoJSON Function' for dynamic data from a function pipeline.".to_string()),
-                ..Default::default()
+                options: [("", "Auto"), ("geojson", "GeoJSON"), ("geoparquet", "GeoParquet")]
+                    .iter()
+                    .map(|(value, label)| SelectOptionDef { value: value.to_string(), label: label.to_string() })
+                    .collect(),
+                ..field("parse", "Parse", NodeFieldType::Select, "How From is read. Auto: from its extension.")
             },
             NodeFieldDef {
-                name: "bbox_optional".to_string(),
-                label: "BBox optional".to_string(),
-                field_type: NodeFieldType::Checkbox,
                 default_value: Some(json!(false)),
-                help: Some("Serve queries without a bbox. Off: a bbox is required.".to_string()),
-                ..Default::default()
+                ..field("bbox_optional", "BBox optional", NodeFieldType::Checkbox, "Serve queries without a bbox. Off: a bbox is required.")
             },
             NodeFieldDef {
-                name: "max_features".to_string(),
-                label: "Max Features".to_string(),
-                field_type: NodeFieldType::Number,
-                default_value: Some(json!(1000)),
-                help: Some("Hard feature cap per query.".to_string()),
-                ..Default::default()
+                default_value: Some(json!(DEFAULT_MAX_ITEMS)),
+                ..field("max_items", "Max items", NodeFieldType::Number, "The most features one query answers (at most 50000).")
             },
-            text_field(
-                "allowed_properties",
-                "Allowed Properties",
-                "Comma-separated list of source properties the public may see. Empty means geometry only — no properties are served.",
+            text_field("field", "Fields", "A property the public may see, e.g. {{ ['name', 'postcode'] }}. Empty: geometry only."),
+            field("min_zoom", "Min zoom", NodeFieldType::Number, "The lowest zoom the layer shows at (0–24)."),
+            field("max_zoom", "Max zoom", NodeFieldType::Number, "The highest zoom the layer shows at (0–24)."),
+            NodeFieldDef {
+                default_value: Some(json!(false)),
+                ..field("skip_optimize", "Skip optimization", NodeFieldType::Checkbox, "Serve the source as it is, without the GeoParquet copy.")
+            },
+            field(
+                "build_artifact",
+                "Build artifact",
+                NodeFieldType::Checkbox,
+                "With Skip optimization and a GeoJSON source: serve it as a chunked artifact.",
             ),
+            text_field("style", "Style", "A style expression, e.g. cb(population,5,YlOrRd); overrides the colours."),
+            text_field("filter", "Filter", "The default filter, e.g. category:residential;value>100."),
             NodeFieldDef {
-                name: "min_zoom".to_string(),
-                label: "Min Zoom".to_string(),
-                field_type: NodeFieldType::Number,
-                help: Some("Minimum zoom level for visibility.".to_string()),
-                ..Default::default()
-            },
-            NodeFieldDef {
-                name: "max_zoom".to_string(),
-                label: "Max Zoom".to_string(),
-                field_type: NodeFieldType::Number,
-                help: Some("Maximum zoom level for visibility.".to_string()),
-                ..Default::default()
-            },
-            NodeFieldDef {
-                name: "build_artifact".to_string(),
-                label: "Build Artifact".to_string(),
-                field_type: NodeFieldType::Checkbox,
-                help: Some(
-                    "Deprecated: use default optimize behavior instead.".to_string(),
-                ),
-                ..Default::default()
-            },
-            NodeFieldDef {
-                name: "skip_optimize".to_string(),
-                label: "Skip Optimization".to_string(),
-                field_type: NodeFieldType::Checkbox,
-                default_value: Some(json!(false)),
-                help: Some(
-                    "Skip GeoParquet conversion. Keep the original source format as-is.".to_string(),
-                ),
-                ..Default::default()
-            },
-            NodeFieldDef {
-                name: "function".to_string(),
-                label: "Function".to_string(),
-                field_type: NodeFieldType::Datalist,
                 data_source: Some(NodeFieldDataSource::FunctionPipelines),
-                placeholder: Some("select or type a function pipeline slug".to_string()),
-                help: Some(
-                    "Function pipeline slug for dynamic GeoJSON source. The function must return a GeoJSON FeatureCollection.".to_string(),
-                ),
-                ..Default::default()
+                placeholder: Some("select or type a function pipeline".to_string()),
+                ..field("function", "Function", NodeFieldType::Datalist, "A function pipeline returning a GeoJSON FeatureCollection; instead of From.")
             },
-            NodeFieldDef {
-                name: "cache_ttl".to_string(),
-                label: "Cache TTL (s)".to_string(),
-                field_type: NodeFieldType::Number,
-                default_value: Some(json!(60)),
-                help: Some(
-                    "Feature cache duration in seconds for function layers. Default: 60.".to_string(),
-                ),
-                ..Default::default()
-            },
+            text_field("ttl", "TTL", "How long a function layer's features are cached, e.g. 60s (default)."),
         ],
         layout: vec![
-            LayoutItem::Row {
-                row: vec![
-                    LayoutItem::Field("name".to_string()),
-                    LayoutItem::Field("route".to_string()),
-                ],
-            },
-            LayoutItem::Field("from".to_string()),
-            LayoutItem::Row {
-                row: vec![
-                    LayoutItem::Field("bbox_optional".to_string()),
-                    LayoutItem::Field("max_features".to_string()),
-                ],
-            },
-            LayoutItem::Field("allowed_properties".to_string()),
-            LayoutItem::Row {
-                row: vec![
-                    LayoutItem::Field("min_zoom".to_string()),
-                    LayoutItem::Field("max_zoom".to_string()),
-                ],
-            },
-            LayoutItem::Field("skip_optimize".to_string()),
-            LayoutItem::Row {
-                row: vec![
-                    LayoutItem::Field("function".to_string()),
-                    LayoutItem::Field("cache_ttl".to_string()),
-                ],
-            },
+            LayoutItem::Row { row: vec![LayoutItem::Field("name".to_string()), LayoutItem::Field("route".to_string())] },
+            LayoutItem::Row { row: vec![LayoutItem::Field("from".to_string()), LayoutItem::Field("parse".to_string())] },
+            LayoutItem::Row { row: vec![LayoutItem::Field("bbox_optional".to_string()), LayoutItem::Field("max_items".to_string())] },
+            LayoutItem::Field("field".to_string()),
+            LayoutItem::Row { row: vec![LayoutItem::Field("min_zoom".to_string()), LayoutItem::Field("max_zoom".to_string())] },
+            LayoutItem::Row { row: vec![LayoutItem::Field("skip_optimize".to_string()), LayoutItem::Field("build_artifact".to_string())] },
+            LayoutItem::Row { row: vec![LayoutItem::Field("style".to_string()), LayoutItem::Field("filter".to_string())] },
+            LayoutItem::Row { row: vec![LayoutItem::Field("function".to_string()), LayoutItem::Field("ttl".to_string())] },
         ],
         ai_tool: Default::default(),
         examples: vec![
-            crate::pipeline::model::NodeExample::dsl("Publish a GeoParquet layer", "ms.layer.publish --name suburbs --route suburbs --from datasets/suburbs.parquet --source-kind geoparquet --min-zoom 8 --max-zoom 14")
-                .output(serde_json::json!({ "ms": { "operation": "publish", "layer": { "name": "suburbs", "path": "suburbs", "source_kind": "geoparquet" } } }))
+            NodeExample::dsl("Publish a GeoParquet layer", "ms.layer.publish --name suburbs --route suburbs --from datasets/suburbs.parquet --field name --field postcode --min-zoom 8 --max-zoom 14")
+                .output(json!({ "layer": {
+                    "name": "suburbs", "route": "suburbs", "store": "local", "source": "mapserver/.optimized/suburbs.spatial.parquet",
+                    "source_kind": "geoparquet", "min_zoom": 8, "max_zoom": 14, "bbox_required": true, "max_items": 1000,
+                    "fields": ["name", "postcode"], "feature_count": 312, "chunk_count": null, "style": null, "filter": null,
+                    "function": null, "ttl": null, "serving": true,
+                    "optimization": { "applied": true, "source_format": "parquet", "rows": 312 }
+                } }))
                 .note("A page loads it with `zeb/deckgl` from `/ms/{owner}/{project}/suburbs` (help topic `guide/mapserver`)."),
+            NodeExample::dsl("A layer a function pipeline draws", "ms.layer.publish --name live --route live --function sensors/positions --ttl 30s --bbox-optional"),
         ],
         ..Default::default()
     }
@@ -489,91 +557,53 @@ pub fn unpublish_definition() -> NodeDefinition {
         kind: UNPUBLISH_KIND.to_string(),
         capabilities: vec![NodeCapability::Filesystem],
         title: "MS Unpublish".to_string(),
-        description: "Take a published map layer offline: removes `--name` from the project's layer registry so `/ms/{owner}/{project}/{path}` \
-            stops answering. The source file in the file store is left where it is. Adds to the payload \
-            `{ ms: { operation: \"unpublish\", removed, layer_id } }`; an unknown name answers `removed: false` rather than failing."
+        description: "Take a published map layer offline: removes `--name` from the project's layer registry so its route stops answering, \
+            and deletes its optimized copy and artifact; the source file is left where it is. Adds `layer: { name, removed }`; a name that \
+            is not published answers `removed: false` rather than failing."
             .to_string(),
-        input_schema: json!({"type": "object"}),
-        output_schema: json!({
-            "type": "object",
-            "properties": {
-                "ms": {
-                    "type": "object",
-                    "properties": {
-                        "operation": { "type": "string" },
-                        "removed": { "type": "boolean" },
-                        "layer_id": { "type": "string" }
-                    }
-                }
-            }
-        }),
+        input_schema: json!({ "type": "object" }),
+        output_schema: answer_schema(json!({ "name": { "type": "string" }, "removed": { "type": "boolean" } })),
         input_pins: vec![INPUT_PIN_IN.to_string()],
         output_pins: vec![OUTPUT_PIN_OUT.to_string()],
         script_available: false,
         script_bridge: None,
         config_schema: Default::default(),
-        dsl_flags: vec![scalar_flag(
-            "--name",
-            "name",
-            "Layer identifier to remove (required).",
-        )],
-        fields: vec![text_field(
-            "name",
-            "Layer ID",
-            "Layer identifier to remove.",
-        )],
+        dsl_flags: vec![name_flag("The layer to remove.")],
+        fields: vec![text_field("name", "Name", "The layer to remove.")],
         layout: vec![LayoutItem::Field("name".to_string())],
         ai_tool: Default::default(),
         examples: vec![
-            crate::pipeline::model::NodeExample::dsl("Retire a layer", "ms.layer.unpublish --name suburbs")
-                .output(serde_json::json!({ "ms": { "operation": "unpublish", "removed": true, "layer_id": "suburbs" } })),
+            NodeExample::dsl("Retire a layer", "ms.layer.unpublish --name suburbs").output(json!({ "layer": { "name": "suburbs", "removed": true } })),
         ],
         ..Default::default()
     }
 }
 
 pub fn get_definition() -> NodeDefinition {
+    let mut props = layer_schema();
+    props["found"] = json!({ "type": "boolean", "description": "false: the name is not published, and the rest is absent" });
     NodeDefinition {
         kind: GET_KIND.to_string(),
         capabilities: vec![NodeCapability::Filesystem],
         title: "MS Get".to_string(),
-        description: "Read one published map layer's registry entry by `--name`: its path, url, source, zoom range, style and cache \
-            settings. Adds `ms: { operation: \"get\", layer }` to the payload. Use it in an admin page's pipeline to show \
-            what is live, or before `ms.layer.publish` to decide between create and update; a name that is not published fails the node."
+        description: "Read one published map layer's registry record by `--name`: its route, source, zoom range, fields, style and cache. Adds \
+            `layer: { found: true, name, route, store, source, source_kind, … }`, or `layer: { found: false, name }` when the name is not \
+            published — branch on `input.layer.found` before `ms.layer.publish` to tell a create from an update."
             .to_string(),
-        input_schema: json!({"type": "object"}),
-        output_schema: json!({
-            "type": "object",
-            "properties": {
-                "ms": {
-                    "type": "object",
-                    "properties": {
-                        "operation": { "type": "string" },
-                        "layer": { "type": "object" }
-                    }
-                }
-            }
-        }),
+        input_schema: json!({ "type": "object" }),
+        output_schema: answer_schema(props),
         input_pins: vec![INPUT_PIN_IN.to_string()],
         output_pins: vec![OUTPUT_PIN_OUT.to_string()],
         script_available: false,
         script_bridge: None,
         config_schema: Default::default(),
-        dsl_flags: vec![scalar_flag(
-            "--name",
-            "name",
-            "Layer identifier to look up (required).",
-        )],
-        fields: vec![text_field(
-            "name",
-            "Layer ID",
-            "Layer identifier to look up.",
-        )],
+        dsl_flags: vec![name_flag("The layer to read.")],
+        fields: vec![text_field("name", "Name", "The layer to read.")],
         layout: vec![LayoutItem::Field("name".to_string())],
         ai_tool: Default::default(),
         examples: vec![
-            crate::pipeline::model::NodeExample::dsl("Show a layer's settings", "ms.layer.get --name suburbs")
-                .output(serde_json::json!({ "ms": { "operation": "get", "layer": { "name": "suburbs", "path": "suburbs", "source_kind": "geoparquet", "min_zoom": 8, "max_zoom": 14 } } })),
+            NodeExample::dsl("Show a layer's settings", "ms.layer.get --name suburbs")
+                .output(json!({ "layer": { "found": true, "name": "suburbs", "route": "suburbs", "source_kind": "geoparquet", "min_zoom": 8, "max_zoom": 14 } })),
         ],
         ..Default::default()
     }
@@ -584,24 +614,12 @@ pub fn list_definition() -> NodeDefinition {
         kind: LIST_KIND.to_string(),
         capabilities: vec![NodeCapability::Filesystem],
         title: "MS List".to_string(),
-        description: "List every map layer this project has published, with the same registry fields `ms.layer.get` returns for one. \
-            No flags. Adds `ms: { operation: \"list\", count, layers }` to the payload — a page reads `input.ms.layers`. \
-            This is the registry, not the file store: a GeoParquet file nobody published is not in it."
+        description: "List every map layer this project has published, each with the record `ms.layer.get` answers for one. No flags. Adds \
+            `layer: { items, count }` — a page reads `input.layer.items`. This is the registry, not the file store: a GeoParquet file \
+            nobody published is not in it."
             .to_string(),
-        input_schema: json!({"type": "object"}),
-        output_schema: json!({
-            "type": "object",
-            "properties": {
-                "ms": {
-                    "type": "object",
-                    "properties": {
-                        "operation": { "type": "string" },
-                        "count": { "type": "integer" },
-                        "layers": { "type": "array" }
-                    }
-                }
-            }
-        }),
+        input_schema: json!({ "type": "object" }),
+        output_schema: answer_schema(json!({ "items": { "type": "array" }, "count": { "type": "integer" } })),
         input_pins: vec![INPUT_PIN_IN.to_string()],
         output_pins: vec![OUTPUT_PIN_OUT.to_string()],
         script_available: false,
@@ -612,8 +630,8 @@ pub fn list_definition() -> NodeDefinition {
         layout: vec![],
         ai_tool: Default::default(),
         examples: vec![
-            crate::pipeline::model::NodeExample::dsl("Layers for a map picker", "ms.layer.list")
-                .output(serde_json::json!({ "ms": { "operation": "list", "count": 1, "layers": [{ "name": "suburbs", "path": "suburbs" }] } })),
+            NodeExample::dsl("Layers for a map picker", "ms.layer.list")
+                .output(json!({ "layer": { "items": [{ "name": "suburbs", "route": "suburbs" }], "count": 1 } })),
         ],
         ..Default::default()
     }
@@ -628,16 +646,8 @@ pub struct Node {
 }
 
 impl Node {
-    pub fn new(
-        config: Config,
-        platform: Arc<PlatformService>,
-        operation: Operation,
-    ) -> Result<Self, PipelineError> {
-        Ok(Self {
-            config,
-            platform,
-            operation,
-        })
+    pub fn new(config: Config, platform: Arc<PlatformService>, operation: Operation) -> Result<Self, PipelineError> {
+        Ok(Self { config, platform, operation })
     }
 }
 
@@ -655,73 +665,47 @@ impl NodeHandler for Node {
         &[OUTPUT_PIN_OUT]
     }
 
-    async fn execute_async(
-        &self,
-        input: NodeExecutionInput,
-    ) -> Result<NodeExecutionOutput, PipelineError> {
+    async fn execute_async(&self, input: NodeExecutionInput) -> Result<NodeExecutionOutput, PipelineError> {
         let (owner, project, ..) = metadata_scope(&input.metadata)?;
-
-        let payload = match self.operation {
+        let layer = match self.operation {
             Operation::Publish => self.exec_publish(owner, project)?,
             Operation::Unpublish => self.exec_unpublish(owner, project)?,
             Operation::Get => self.exec_get(owner, project)?,
             Operation::List => self.exec_list(owner, project)?,
         };
-
         Ok(NodeExecutionOutput {
             output_pins: vec![OUTPUT_PIN_OUT.to_string()],
-            payload: crate::pipeline::nodes::shared::util::with_answer(&input.payload, payload),
-            trace: vec![format!(
-                "node_kind={} operation={}",
-                self.operation.kind(),
-                match self.operation {
-                    Operation::Publish => "publish",
-                    Operation::Unpublish => "unpublish",
-                    Operation::Get => "get",
-                    Operation::List => "list",
-                }
-            )],
+            payload: with_answer(&input.payload, json!({ "layer": layer })),
+            trace: vec![format!("node_kind={}", self.operation.kind())],
         })
     }
 }
 
 impl Node {
-    fn exec_publish(
-        &self,
-        owner: &str,
-        project: &str,
-    ) -> Result<Value, PipelineError> {
-        let name = require_layer_id(&self.config.name, "FW_NODE_MS_PUBLISH")?;
-        let path = require_non_empty(&self.config.route, "--route", "FW_NODE_MS_PUBLISH")?;
-
-        // ── GeoJsonFunction mode: --function set → skip --from / optimization
-        let is_function_mode = self
-            .config
-            .function
-            .as_ref()
-            .is_some_and(|s| !s.trim().is_empty());
+    fn exec_publish(&self, owner: &str, project: &str) -> Result<Map<String, Value>, PipelineError> {
+        let settings = self.config.publish_settings()?;
+        let name = require_layer_id(&self.config.name, PUBLISH_CONFIG_CODE)?;
+        let path = require_non_empty(&self.config.route, "--route", PUBLISH_CONFIG_CODE)?;
+        let is_function_mode = settings.function.is_some();
 
         // `--from` is a store key, or a FileRef that names its own store.
         let (mut source_path, from_store) = if is_function_mode {
             (String::new(), None)
         } else {
+            if crate::pipeline::nodes::shared::file_ref::is_file_ref(&self.config.from) {
+                crate::pipeline::nodes::shared::file_ref::validate_file_ref(&self.config.from)?;
+            }
             let key = zebfs_rel_path_or_string(&self.config.from)?
                 .map(|s| s.trim().to_string())
                 .filter(|s| !s.is_empty())
-                .ok_or_else(|| {
-                    PipelineError::new("FW_NODE_MS_PUBLISH", "--from is required, or use --function for dynamic sources")
-                })?;
+                .ok_or_else(|| PipelineError::new(PUBLISH_CONFIG_CODE, "--from is not a store key or a FileRef"))?;
             let store = crate::pipeline::nodes::shared::file_ref::is_file_ref(&self.config.from)
                 .then(|| self.config.from.get("store").and_then(Value::as_str).map(str::to_string))
                 .flatten();
             (key, store)
         };
 
-        let layout = self
-            .platform
-            .file
-            .ensure_project_layout(owner, project)
-            .map_err(|e| PipelineError::new("FW_NODE_MS_PUBLISH", e.to_string()))?;
+        let layout = self.platform.file.ensure_project_layout(owner, project).map_err(|e| PipelineError::new(PUBLISH_CODE, e.to_string()))?;
 
         // The source is read from its own store (a FileRef's, or this
         // node's); the optimized copy is this node's own object in this
@@ -735,31 +719,17 @@ impl Node {
         if !is_function_mode {
             if source_path.trim_start_matches('/').starts_with("mapserver/.optimized/") {
                 return Err(PipelineError::new(
-                    "FW_NODE_MS_PUBLISH",
+                    PUBLISH_CONFIG_CODE,
                     "--from may not name mapserver/.optimized/ — that folder holds the optimized copies this node writes",
                 ));
             }
-            source_store.fs.head(&source_path).map_err(|e| {
-                PipelineError::new(
-                    "FW_NODE_MS_PUBLISH",
-                    format!("source file not found in store '{}': {e}", source_store.id),
-                )
-            })?;
+            source_store
+                .fs
+                .head(&source_path)
+                .map_err(|e| PipelineError::new(PUBLISH_CODE, format!("source file not found in store '{}': {e}", source_store.id)))?;
         }
         // Optimized copies are built here and streamed into the store.
-        let scratch = StoreScratch::new("FW_NODE_MS_PUBLISH")?;
-
-        let bbox_required = !self.config.bbox_optional;
-        let max_features = self.config.max_features.unwrap_or(1000);
-        let allowed_properties: Vec<String> = self
-            .config
-            .allowed_properties
-            .as_deref()
-            .unwrap_or("")
-            .split(',')
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
-            .collect();
+        let scratch = StoreScratch::new(PUBLISH_CODE)?;
 
         let mut artifact_manifest_path: Option<String> = None;
         let mut feature_count: Option<usize> = None;
@@ -773,7 +743,7 @@ impl Node {
             self.platform
                 .file
                 .object_local_path(owner, project, Some(&source_store.id), &source_path)
-                .map_err(|e| PipelineError::new("FW_NODE_MS_PUBLISH", e.message))?
+                .map_err(|e| PipelineError::new(PUBLISH_CODE, e.message))?
         };
         let source_lower = source_path.to_ascii_lowercase();
 
@@ -782,9 +752,11 @@ impl Node {
         let effective_kind = if is_function_mode {
             "geojson_function".to_string()
         } else if should_optimize {
-            // Auto-detect format from file extension
-            let is_geojson = source_lower.ends_with(".geojson") || source_lower.ends_with(".json");
-            let is_parquet = source_lower.ends_with(".parquet") || source_lower.ends_with(".pq");
+            // `--parse`, else the file's extension.
+            let is_geojson = settings.parse == Some("geojson")
+                || (settings.parse.is_none() && (source_lower.ends_with(".geojson") || source_lower.ends_with(".json")));
+            let is_parquet = settings.parse == Some("geoparquet")
+                || (settings.parse.is_none() && (source_lower.ends_with(".parquet") || source_lower.ends_with(".pq")));
 
             if is_parquet {
                 // Check if already optimized
@@ -811,7 +783,7 @@ impl Node {
                         )
                         .map_err(|e| {
                             PipelineError::new(
-                                "FW_NODE_MS_PUBLISH",
+                                PUBLISH_CODE,
                                 format!("optimize failed: {e}"),
                             )
                         })?;
@@ -865,7 +837,7 @@ impl Node {
                     )
                     .map_err(|e| {
                         PipelineError::new(
-                            "FW_NODE_MS_PUBLISH",
+                            PUBLISH_CODE,
                             format!("GeoJSON conversion failed: {e}"),
                         )
                     })?;
@@ -884,7 +856,7 @@ impl Node {
                     .map_err(|e| {
                         // Clean up temp file on error
                         let _ = std::fs::remove_file(&temp_raw);
-                        PipelineError::new("FW_NODE_MS_PUBLISH", format!("optimize failed: {e}"))
+                        PipelineError::new(PUBLISH_CODE, format!("optimize failed: {e}"))
                     })?;
 
                 // Clean up intermediate raw parquet
@@ -925,51 +897,34 @@ impl Node {
             } else {
                 // Unknown format — cannot auto-optimize
                 return Err(PipelineError::new(
-                    "FW_NODE_MS_PUBLISH",
+                    PUBLISH_CONFIG_CODE,
                     format!(
-                        "cannot auto-detect format for '{}'; \
-                         use --skip-optimize to publish without conversion, \
-                         or rename the file with a .geojson or .parquet extension",
+                        "cannot tell the format of '{}' from its name; \
+                         set --parse geojson|geoparquet, or --skip-optimize to serve it as it is",
                         source_path
                     ),
                 ));
             }
         } else {
-            // --skip-optimize: the source is served as it is
-            let source_kind = if self.config.source_kind.trim().is_empty() {
-                // Auto-detect source_kind for --skip-optimize
-                if source_lower.ends_with(".parquet") || source_lower.ends_with(".pq") {
-                    "geoparquet".to_string()
-                } else {
-                    "geojson_file".to_string()
-                }
-            } else {
-                self.config.source_kind.trim().to_ascii_lowercase()
+            // --skip-optimize: the source is served as it is — `--parse`,
+            // else its extension, says which reader serves it.
+            let parquet = match settings.parse {
+                Some(word) => word == "geoparquet",
+                None => source_lower.ends_with(".parquet") || source_lower.ends_with(".pq"),
             };
-
-            // Validate source_kind
-            if !matches!(
-                source_kind.as_str(),
-                "geojson_file" | "geojson_artifact" | "geoparquet" | "geojson_function"
-            ) {
-                return Err(PipelineError::new(
-                    "FW_NODE_MS_PUBLISH",
-                    format!(
-                        "unsupported --source-kind '{source_kind}'; \
-                         expected geojson_file, geojson_artifact, geoparquet, or geojson_function"
-                    ),
-                ));
+            if parquet && self.config.build_artifact {
+                return Err(PipelineError::new(PUBLISH_CONFIG_CODE, "--build-artifact chunks a GeoJSON source; this one is GeoParquet"));
             }
+            let source_kind = if parquet { "geoparquet" } else { "geojson_file" }.to_string();
 
-            // Legacy: build artifact for geojson if requested
-            if (source_kind == "geojson_file" && self.config.build_artifact)
-                || source_kind == "geojson_artifact"
-            {
+            // --build-artifact: the GeoJSON is served as chunks built in
+            // the cache tier.
+            if source_kind == "geojson_file" && self.config.build_artifact {
                 // Artifacts live in the cache tier; a pre-tier
                 // `files/mapserver/.artifacts` tree migrates on first touch.
                 let artifact_home = layout.ensure_mapserver_artifacts_home().map_err(|e| {
                     PipelineError::new(
-                        "FW_NODE_MS_PUBLISH",
+                        PUBLISH_CODE,
                         format!("artifact tier migration refused: {e}"),
                     )
                 })?;
@@ -981,7 +936,7 @@ impl Node {
                     &artifact_abs,
                     &artifact_rel,
                 )
-                .map_err(|e| PipelineError::new("FW_NODE_MS_PUBLISH", e))?;
+                .map_err(|e| PipelineError::new(PUBLISH_CODE, e))?;
 
                 artifact_manifest_path = Some(build_out.manifest_rel_path);
                 feature_count = Some(build_out.feature_count);
@@ -992,52 +947,40 @@ impl Node {
             }
         };
 
-        // Build style: prefer --style DSL over individual fill/stroke flags
-        let style = if let Some(ref dsl) = self.config.style_dsl {
-            // Validate DSL syntax at publish time
-            crate::mapserver::resolve::style_dsl::parse_style_dsl(dsl).map_err(|e| {
-                PipelineError::new("FW_NODE_MS_PUBLISH_STYLE", format!("invalid style DSL: {e}"))
-            })?;
-            Some(json!(dsl)) // Store as JSON string value
+        // --style wins over the colour flags.
+        let style = if let Some(dsl) = self.config.style.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+            crate::mapserver::resolve::style_dsl::parse_style_dsl(dsl)
+                .map_err(|e| PipelineError::new(PUBLISH_STYLE_CODE, format!("invalid --style: {e}")))?;
+            Some(json!(dsl))
         } else {
-            let mut obj = serde_json::Map::new();
-            if let Some(ref v) = self.config.fill {
+            let mut obj = Map::new();
+            if let Some(v) = self.config.fill.as_deref().filter(|v| !v.trim().is_empty()) {
                 obj.insert("fill".into(), json!(v));
             }
-            if let Some(ref v) = self.config.stroke {
+            if let Some(v) = self.config.stroke.as_deref().filter(|v| !v.trim().is_empty()) {
                 obj.insert("stroke".into(), json!(v));
             }
-            if let Some(ref v) = self.config.stroke_width {
-                if let Ok(f) = v.parse::<f32>() {
-                    obj.insert("stroke_width".into(), json!(f));
-                }
+            if let Some(v) = settings.stroke_width {
+                obj.insert("stroke_width".into(), json!(v as f32));
             }
-            if let Some(ref v) = self.config.point_radius {
-                if let Ok(f) = v.parse::<f32>() {
-                    obj.insert("point_radius".into(), json!(f));
-                }
+            if let Some(v) = settings.point_radius {
+                obj.insert("point_radius".into(), json!(v as f32));
             }
-            if let Some(ref v) = self.config.point_color {
+            if let Some(v) = self.config.point_color.as_deref().filter(|v| !v.trim().is_empty()) {
                 obj.insert("point_color".into(), json!(v));
             }
-            if obj.is_empty() {
-                None
-            } else {
-                Some(Value::Object(obj))
+            if obj.is_empty() { None } else { Some(Value::Object(obj)) }
+        };
+
+        let filter = match self.config.filter.as_deref().map(str::trim).filter(|f| !f.is_empty()) {
+            Some(f) => {
+                crate::mapserver::resolve::filter_dsl::parse_filter(f)
+                    .map_err(|e| PipelineError::new(PUBLISH_FILTER_CODE, format!("invalid --filter: {e}")))?;
+                Some(f.to_string())
             }
+            None => None,
         };
 
-        // Validate filter syntax at publish time
-        let filter = if let Some(ref f) = self.config.filter {
-            crate::mapserver::resolve::filter_dsl::parse_filter(f).map_err(|e| {
-                PipelineError::new("FW_NODE_MS_PUBLISH_FILTER", format!("invalid filter: {e}"))
-            })?;
-            Some(f.clone())
-        } else {
-            None
-        };
-
-        // Upsert into registry
         let record = LayerRecord {
             layer_id: name.to_string(),
             store: served_store,
@@ -1046,34 +989,25 @@ impl Node {
             source_kind: effective_kind,
             artifact_manifest_path,
             mode: "features".to_string(),
-            min_zoom: self.config.min_zoom,
-            max_zoom: self.config.max_zoom,
-            bbox_required,
-            max_features,
-            allowed_properties,
+            min_zoom: settings.min_zoom,
+            max_zoom: settings.max_zoom,
+            bbox_required: !self.config.bbox_optional,
+            max_features: settings.max_items,
+            allowed_properties: settings.fields.clone(),
             feature_count,
             chunk_count,
             style,
             filter,
-            function_slug: if is_function_mode {
-                self.config.function.clone()
-            } else {
-                None
-            },
-            cache_ttl_secs: if is_function_mode {
-                self.config.cache_ttl
-            } else {
-                None
-            },
+            function_slug: settings.function.clone(),
+            cache_ttl_secs: settings.ttl_secs,
         };
 
-        let mut layers = read_layers(&self.platform, owner, project)?;
-        if let Some(pos) = layers.iter().position(|l| l.layer_id == name) {
-            layers[pos] = record.clone();
-        } else {
-            layers.push(record.clone());
+        let mut layers = read_layers(&self.platform, owner, project, PUBLISH_CODE)?;
+        match layers.iter().position(|l| l.layer_id == name) {
+            Some(pos) => layers[pos] = record.clone(),
+            None => layers.push(record.clone()),
         }
-        write_layers(&self.platform, owner, project, &layers)?;
+        write_layers(&self.platform, owner, project, &layers, PUBLISH_CODE)?;
 
         // A layer answers only while the project's `ms` surface is on; say
         // so rather than imply it is already reachable.
@@ -1083,120 +1017,93 @@ impl Node {
             .read(owner, project)
             .map(|a| a.is_enabled(crate::platform::services::addressing::Surface::Ms))
             .unwrap_or(false);
-        let mut result = json!({
-            "ms": {
-                "operation": "publish",
-                "layer": layer_to_json(&record),
-                "serving": serving
-            }
-        });
+        let mut layer = layer_to_json(&record);
+        layer.insert("serving".to_string(), json!(serving));
         if !serving {
-            result["ms"]["note"] = json!("the ms surface is off for this project; switch it on in Settings → Addressing to serve this layer");
+            layer.insert(
+                "note".to_string(),
+                json!("the ms surface is off for this project; switch it on in Settings → Addressing to serve this layer"),
+            );
         }
         if let Some(opt) = optimization_info {
-            result["ms"]["optimization"] = opt;
+            layer.insert("optimization".to_string(), opt);
         }
-        Ok(result)
+        Ok(layer)
     }
 
-    fn exec_unpublish(&self, owner: &str, project: &str) -> Result<Value, PipelineError> {
-        let name = require_layer_id(&self.config.name, "FW_NODE_MS_UNPUBLISH")?;
-        let mut layers = read_layers(&self.platform, owner, project)?;
+    fn exec_unpublish(&self, owner: &str, project: &str) -> Result<Map<String, Value>, PipelineError> {
+        let name = require_layer_id(&self.config.name, UNPUBLISH_CONFIG_CODE)?;
+        let mut layers = read_layers(&self.platform, owner, project, UNPUBLISH_CODE)?;
         let removed_record = layers.iter().find(|l| l.layer_id == name).cloned();
-        let before = layers.len();
         layers.retain(|l| l.layer_id != name);
-        let removed = layers.len() < before;
-        write_layers(&self.platform, owner, project, &layers)?;
+        let removed = removed_record.is_some();
+        write_layers(&self.platform, owner, project, &layers, UNPUBLISH_CODE)?;
 
-        // Clean up artifact directory and optimized file if they exist
-        if removed {
-            if let Ok(layout) = self.platform.file.ensure_project_layout(owner, project) {
-                // Move a pre-tier artifact tree to its cache home first so
-                // the cleanup hits the tree wherever it actually lives.
-                let artifact_home = layout.ensure_mapserver_artifacts_home().ok();
-                if let Some(rel) = removed_record
-                    .as_ref()
-                    .and_then(|record| record.artifact_manifest_path.as_deref())
-                {
-                    if let Some(dir) = layout
-                        .resolve_mapserver_artifact_path(rel)
-                        .as_deref()
-                        .and_then(std::path::Path::parent)
-                    {
-                        let _ = std::fs::remove_dir_all(dir);
-                    }
-                }
-                if let Some(artifact_dir) =
-                    artifact_home.map(|home| home.join(DEFAULT_INSTANCE).join(name))
-                {
-                    if artifact_dir.exists() {
-                        let _ = std::fs::remove_dir_all(&artifact_dir);
-                    }
-                }
+        // Clean up the artifact directory and the optimized copy.
+        if let Some(record) = removed_record.as_ref()
+            && let Ok(layout) = self.platform.file.ensure_project_layout(owner, project)
+        {
+            // Move a pre-tier artifact tree to its cache home first so the
+            // cleanup hits the tree wherever it actually lives.
+            let artifact_home = layout.ensure_mapserver_artifacts_home().ok();
+            if let Some(dir) = record
+                .artifact_manifest_path
+                .as_deref()
+                .and_then(|rel| layout.resolve_mapserver_artifact_path(rel))
+                .as_deref()
+                .and_then(std::path::Path::parent)
+            {
+                let _ = std::fs::remove_dir_all(dir);
+            }
+            if let Some(artifact_dir) = artifact_home.map(|home| home.join(DEFAULT_INSTANCE).join(name))
+                && artifact_dir.exists()
+            {
+                let _ = std::fs::remove_dir_all(&artifact_dir);
+            }
 
-                // The optimized copy is the node's own object in the store the
-                // layer was published from; the source is left where it is.
-                if let Some(record) = removed_record.as_ref()
-                    && let Ok(store) = project_store::open_store(&self.platform, owner, project, Some(&record.store))
-                {
-                    for key in [
-                        format!("mapserver/.optimized/{name}.spatial.parquet"),
-                        format!("mapserver/.optimized/{name}.spatial.stats.json"),
-                    ] {
-                        if store.fs.head(&key).is_ok() {
-                            store.delete_named(&self.platform, owner, project, &key, "FW_NODE_MS_UNPUBLISH")?;
-                        }
+            // The optimized copy is the node's own object in the store the
+            // layer was published from; the source is left where it is.
+            if let Ok(store) = project_store::open_store(&self.platform, owner, project, Some(&record.store)) {
+                for key in [format!("mapserver/.optimized/{name}.spatial.parquet"), format!("mapserver/.optimized/{name}.spatial.stats.json")] {
+                    if store.fs.head(&key).is_ok() {
+                        store.delete_named(&self.platform, owner, project, &key, UNPUBLISH_CODE)?;
                     }
                 }
             }
         }
 
-        Ok(json!({
-            "ms": {
-                "operation": "unpublish",
-                "layer_id": name,
-                "removed": removed
+        let mut layer = Map::new();
+        layer.insert("name".to_string(), json!(name));
+        layer.insert("removed".to_string(), json!(removed));
+        Ok(layer)
+    }
+
+    fn exec_get(&self, owner: &str, project: &str) -> Result<Map<String, Value>, PipelineError> {
+        let name = require_layer_id(&self.config.name, GET_CONFIG_CODE)?;
+        let layers = read_layers(&self.platform, owner, project, GET_CODE)?;
+        let mut layer = Map::new();
+        match layers.iter().find(|l| l.layer_id == name) {
+            Some(record) => {
+                layer.insert("found".to_string(), json!(true));
+                layer.extend(layer_to_json(record));
             }
-        }))
-    }
-
-    fn exec_get(&self, owner: &str, project: &str) -> Result<Value, PipelineError> {
-        let name = require_layer_id(&self.config.name, "FW_NODE_MS_GET")?;
-        let layers = read_layers(&self.platform, owner, project)?;
-        let layer = layers.iter().find(|l| l.layer_id == name);
-
-        match layer {
-            Some(record) => Ok(json!({
-                "ms": {
-                    "operation": "get",
-                    "found": true,
-                    "layer": layer_to_json(record)
-                }
-            })),
-            None => Ok(json!({
-                "ms": {
-                    "operation": "get",
-                    "found": false,
-                    "layer_id": name
-                }
-            })),
+            None => {
+                layer.insert("found".to_string(), json!(false));
+                layer.insert("name".to_string(), json!(name));
+            }
         }
+        Ok(layer)
     }
 
-    fn exec_list(&self, owner: &str, project: &str) -> Result<Value, PipelineError> {
-        let layers = read_layers(&self.platform, owner, project)?;
-        let items: Vec<Value> = layers
+    fn exec_list(&self, owner: &str, project: &str) -> Result<Map<String, Value>, PipelineError> {
+        let items: Vec<Value> = read_layers(&self.platform, owner, project, LIST_CODE)?
             .iter()
-            .map(|r| layer_to_json(r))
+            .map(|record| Value::Object(layer_to_json(record)))
             .collect();
-
-        Ok(json!({
-            "ms": {
-                "operation": "list",
-                "count": items.len(),
-                "layers": items
-            }
-        }))
+        let mut layer = Map::new();
+        layer.insert("count".to_string(), json!(items.len()));
+        layer.insert("items".to_string(), Value::Array(items));
+        Ok(layer)
     }
 }
 
@@ -1209,11 +1116,7 @@ fn require_layer_id<'a>(value: &'a str, code: &'static str) -> Result<&'a str, P
     Ok(name)
 }
 
-fn require_non_empty<'a>(
-    value: &'a str,
-    flag: &str,
-    code: &'static str,
-) -> Result<&'a str, PipelineError> {
+fn require_non_empty<'a>(value: &'a str, flag: &str, code: &'static str) -> Result<&'a str, PipelineError> {
     let trimmed = value.trim();
     if trimmed.is_empty() {
         return Err(PipelineError::new(code, format!("{flag} is required")));
@@ -1222,22 +1125,4 @@ fn require_non_empty<'a>(
 }
 
 #[cfg(test)]
-mod tests {
-    use serde_json::json;
-
-
-    /// `ref` is opaque to every node but its own backend
-    /// (`kinds/file-ref/README.md`): a remote handle is never joined to a
-    /// local path.
-    #[test]
-    fn from_refuses_a_foreign_backend_ref() {
-        let from = json!({
-            "__zf_type": "file_ref", "backend": "gdrive", "store": "x",
-            "ref": "1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgvE2upms", "filename": "roads.geojson",
-            "mime": "application/geo+json", "kind": "geojson", "size": 1,
-            "sha256": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-            "lifecycle": "durable", "origin": "webhook", "trust": "untrusted"
-        });
-        assert_eq!(super::zebfs_rel_path_or_string(&from).unwrap_err().code, "FW_FILE_REF_BACKEND");
-    }
-}
+mod tests;
