@@ -274,7 +274,10 @@ fn every_loop_form_is_metered() {
     for (name, src) in [
         ("for_of", "const a=new Array(2000000).fill(1); let s=0; \
                     for (const x of a){ s+=x; } return { done: true, s };"),
-        ("for_in", "const o={}; for(let i=0;i<200000;i++){o['k'+i]=i;} let s=0; \
+        // Building the object and walking it are both metered loops; 200 000
+        // keys is 400 000 ticks, inside the 1 000 000 budget, so the probe
+        // needs enough keys that only an unmetered `for…in` could finish.
+        ("for_in", "const o={}; for(let i=0;i<600000;i++){o['k'+i]=i;} let s=0; \
                     for (const k in o){ s+=o[k]; } return { done: true, s };"),
         ("for_ever", "let i=0,s=0; for(;;){ s+=i; i++; if(i>2000000) break; } \
                       return { done: true, s };"),
