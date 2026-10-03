@@ -543,7 +543,7 @@ Four limits, stated rather than implied:
   confined by a host list today, and that is true whether it declared hosts or
   not: an empty list weakens the host allowlist and nothing else, so an author
   gains nothing by staying silent.
-- `script.result.run` is refused inside a bundle only where the Deno sandbox has been
+- `javascript.script.run` is refused inside a bundle only where the Deno sandbox has been
   granted network access — `dangerZone.allowNet`, or any
   `allowList.externalFetchHosts` entry. As shipped the sandbox denies `fetch`,
   so a script reaches nothing a host guard would need to read.
@@ -646,7 +646,7 @@ Declared-host enforcement, in `src/pipeline/engines/composite_host.rs`,
 38. every embedded bundle runs under its own declaration: no inner node is
     refused as uncheckable, and every host its functions name outright is one it
     declared
-39. `script.result.run` runs inside a bundle under the shipped sandbox, and is refused
+39. `javascript.script.run` runs inside a bundle under the shipped sandbox, and is refused
     once that sandbox is granted network access
 
 ### Live and browser evidence, 2026-08-18

@@ -79,7 +79,7 @@ export function peEmptyPipelineDocument(name, triggerKind) {
       nodes: [{ id: "trigger_schedule", kind: "trigger.schedule", input_pins: [], output_pins: ["out"], config: { cron: "*/5 * * * *", timezone: "UTC" } }], edges: [] };
   } else if (triggerKind === "function") {
     graph = { id, entry_nodes: ["script_entry"],
-      nodes: [{ id: "script_entry", kind: "script.result.run", input_pins: ["in"], output_pins: ["out"], config: { source: "return input;" } }], edges: [] };
+      nodes: [{ id: "script_entry", kind: "javascript.script.run", input_pins: ["in"], output_pins: ["out"], config: { source: "return input;" } }], edges: [] };
   } else if (triggerKind === "manual") {
     graph = { id, entry_nodes: ["trigger_manual"],
       nodes: [{ id: "trigger_manual", kind: "trigger.manual", input_pins: [], output_pins: ["out"], config: {} }], edges: [] };

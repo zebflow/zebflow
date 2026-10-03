@@ -178,11 +178,11 @@
 //!
 //! Write `script_available: false` and `script_bridge: None`.  Every node does.
 //!
-//! A script cannot reach a node handler.  The `n` object handed to an `script.result.run` body
+//! A script cannot reach a node handler.  The `n` object handed to a `javascript.script.run` body
 //! is assembled by `build_capabilities_expr` in `language/engines/deno_sandbox/pool.rs`
 //! from pure `time` and `math` helpers; the sandbox exposes two host ops, neither of
 //! which dispatches a node, and hides `Deno.core` from user code.  Declaring `true`
-//! would grant nothing and would put a false "script.result.run access" claim in the node
+//! would grant nothing and would put a false "script access" claim in the node
 //! catalog, which is why no definition does.
 //!
 //! The two fields survive because `NodeDefinition` is a frozen `zebflow.com/v1`
@@ -529,7 +529,7 @@ pub fn validate_node_definition_contract(def: &NodeDefinition) -> Result<(), Vec
         .and_then(|value| value.as_object())
     {
         for key in properties.keys() {
-            if key == "title" || key == "timeout_secs" {
+            if key == "title" || key == crate::pipeline::model::NODE_TIMEOUT_KEY {
                 continue;
             }
             if !field_names.contains(key) && !flag_keys.contains(key) {
@@ -719,7 +719,7 @@ pub fn builtin_nodes_markdown_reference() -> String {
         "## Node kinds (live — from `builtin_node_definitions()`)\n\n\
          This block matches the pipeline editor / node API: titles, descriptions, pins, DSL flags, and input/output schemas.\n\n\
          - **Full catalog:** `help_nodes` with no `kind` (same as this section).\n\
-         - **One kind:** `help_nodes` with `kind=\"script.result.run\"` (or `script`, `trigger.webhook`, etc.).\n\n\
+         - **One kind:** `help_nodes` with `kind=\"javascript.script.run\"` (or `trigger.webhook`, etc.).\n\n\
          ---\n\n",
     );
     for def in basic::builtin_node_definitions() {
@@ -851,7 +851,7 @@ mod tests {
                 .collect::<Vec<_>>()
         };
 
-        for kind in ["table.query.run", "table.data.convert", "script.result.run"] {
+        for kind in ["table.query.run", "table.data.convert", "javascript.script.run"] {
             let flags = flags_of(kind);
             assert!(
                 flags.iter().any(|(flag, key)| flag == "--preview" && key == "preview.out"),

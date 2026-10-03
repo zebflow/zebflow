@@ -57,7 +57,7 @@ secret belongs in the credential; the pipeline only supplies the visitor's code.
 | Part | What it is |
 |---|---|
 | `request.*` | URL, method, headers and body templates. `<NAME>` placeholders are filled from `secrets` and `variables`. |
-| `variables` | Values the **pipeline** supplies at run time. Each becomes a `--bind NAME=<expr>` on `http.response.fetch`; `required: true` fails the node if the binding is missing. |
+| `variables` | Values the **pipeline** supplies at run time. Each becomes a `--argument "NAME={{ expr }}"` on `http.response.fetch`; `required: true` fails the node if the argument is missing. |
 | `secrets` | Values the **credential** supplies. Never in a pipeline, never in a trace — every secret value is redacted wherever it would appear. |
 | `egress` | Leave blank for a public provider. Outbound HTTP already refuses private and loopback addresses; `egress.allow_private` plus `egress.allowed_hosts` is the exception list for a provider on your own network. `allowed_paths` / `allowed_methods` pin the resolved path and method when the template lets a variable vary them. |
 
@@ -104,14 +104,14 @@ proves *who* the visitor is; this table decides *whether they may enter*.
 register auth/google-start --
 | trigger.webhook --route /auth/google/start --method GET
 | crypto.random.generate --size 16B
-| kv.entry.put --key "oauth:state:{{ input.random.value }}" --ttl 600
-| script.result.run -- "const q = { client_id: 'YOUR_CLIENT_ID.apps.googleusercontent.com', redirect_uri: 'https://your.site/wh/OWNER/PROJECT/auth/google/callback', response_type: 'code', scope: 'openid email profile', state: input.random.value, access_type: 'online', prompt: 'select_account' }; const qs = Object.keys(q).map(function (k) { return encodeURIComponent(k) + '=' + encodeURIComponent(q[k]); }).join('&'); return { auth_url: 'https://accounts.google.com/o/oauth2/v2/auth?' + qs };"
-| web.response.send --status 302 --header "Location={{ input.auth_url }}"
+| kv.entry.put --key "oauth:state:{{ input.random.value }}" --value true --ttl 10m
+| javascript.script.run -- "const q = { client_id: 'YOUR_CLIENT_ID.apps.googleusercontent.com', redirect_uri: 'https://your.site/wh/OWNER/PROJECT/auth/google/callback', response_type: 'code', scope: 'openid email profile', state: input.random.value, access_type: 'online', prompt: 'select_account' }; const qs = Object.keys(q).map(function (k) { return encodeURIComponent(k) + '=' + encodeURIComponent(q[k]); }).join('&'); return { auth_url: 'https://accounts.google.com/o/oauth2/v2/auth?' + qs };"
+| web.response.send --status 302 --header "Location={{ input.script.auth_url }}"
 ```
 
 - `crypto.random.generate` adds `random: { value }` (hex); that value is the OAuth `state`.
-- `kv.entry.put` remembers the state for ten minutes. A callback whose state is not in
-  KV was not started by this server — that is the CSRF check.
+- `kv.entry.put --value true` remembers the state for ten minutes. A callback whose
+  state is not in KV was not started by this server — that is the CSRF check.
 - The client id is public by design; it may live in the pipeline. The client
   secret may not.
 - `access_type: 'online'` — login does not need a refresh token, so do not ask
@@ -124,16 +124,16 @@ Graph form, because "is this e-mail a member" is a real branch.
 ```zf
 register auth/google-callback --
 [in] trigger.webhook --route /auth/google/callback --method GET
-[state] kv.entry.get --key "oauth:state:{{ $trigger.query.state }}" --out-key state_record
-[check] script.result.run -- "if (!$trigger.query || !$trigger.query.code) throw new Error('no authorization code in the callback'); if (input.state_record === null || input.state_record === undefined) throw new Error('unknown or expired state: this callback did not come from a sign-in this server started'); return { code: $trigger.query.code, state: $trigger.query.state };"
-[burn] kv.entry.delete --key "oauth:state:{{ input.state }}"
-[exchange] http.response.fetch --credential google-token-exchange --bind CODE=input.code
-[identity] script.result.run -- "const b = (input.response && input.response.body) || {}; const idt = b.id_token; if (!idt) throw new Error('google returned no id_token'); const seg = idt.split('.')[1]; const claims = JSON.parse(atob(seg.replace(/-/g, '+').replace(/_/g, '/'))); if (!claims.email) throw new Error('id_token carried no email'); return { email: String(claims.email).toLowerCase(), name: claims.name || '' };"
-[member] sqlite.query.run --query "SELECT email, name, roles FROM members WHERE email = ?1" --param "1={{ input.email }}"
+[state] kv.entry.get --key "oauth:state:{{ $trigger.query.state }}"
+[check] javascript.script.run -- "if (!$trigger.query || !$trigger.query.code) throw new Error('no authorization code in the callback'); if (!input.entry.found) throw new Error('unknown or expired state: this callback did not come from a sign-in this server started'); return { code: $trigger.query.code, state: $trigger.query.state };"
+[burn] kv.entry.delete --key "oauth:state:{{ input.script.state }}"
+[exchange] http.response.fetch --credential google-token-exchange --argument "CODE={{ input.script.code }}"
+[identity] javascript.script.run -- "const b = (input.response && input.response.body) || {}; const idt = b.id_token; if (!idt) throw new Error('google returned no id_token'); const seg = idt.split('.')[1]; const claims = JSON.parse(atob(seg.replace(/-/g, '+').replace(/_/g, '/'))); if (!claims.email) throw new Error('id_token carried no email'); return { email: String(claims.email).toLowerCase(), name: claims.name || '' };"
+[member] sqlite.query.run --query "SELECT email, name, roles FROM members WHERE email = ?1" --param "1={{ input.script.email }}"
 [known] logic.if --expr "input.query.rows && input.query.rows.length > 0"
-[claim] script.result.run -- "const m = input.query.rows[0]; return { sub: m.email, name: m.name, roles: JSON.parse(m.roles) };"
-[token] auth.token.create --credential session-signing-key --claim "sub={{ input.sub }}" --claim "name:public={{ input.name }}" --claim "roles={{ input.roles }}" --expires-in 86400
-[welcome] web.response.send --status 302 --header "Location=/wh/OWNER/PROJECT/me" --header "Set-Cookie=session={{ input.access_token }}; Path=/; Max-Age=86400; SameSite=Lax; HttpOnly"
+[claim] javascript.script.run -- "const m = input.query.rows[0]; return { sub: m.email, name: m.name, roles: JSON.parse(m.roles) };"
+[token] auth.token.create --credential session-signing-key --claim "sub={{ input.script.sub }}" --claim "name:public={{ input.script.name }}" --claim "roles={{ input.script.roles }}" --ttl 1d
+[welcome] web.response.send --status 302 --header "Location=/wh/OWNER/PROJECT/me" --header "Set-Cookie=session={{ input.token.access_token }}; Path=/; Max-Age=86400; SameSite=Lax; HttpOnly"
 [stranger] web.response.send --status 403 --body "This Google account is not a member yet."
 [in] -> [state]
 [state] -> [check]
@@ -150,16 +150,16 @@ register auth/google-callback --
 
 Node by node:
 
-- `[state]` — `kv.entry.get` merges `{ state_record }` into the payload; `$trigger.query`
-  is still reachable for the next node.
+- `[state]` — `kv.entry.get` adds `entry: { key, value, found }` to the payload;
+  `$trigger.query` is still reachable for the next node.
 - `[check]` — a script that throws stops the pipeline with that message in the
   trace. It is the right tool for "this request is malformed, refuse it".
 - `[burn]` — a state is single-use. Delete it before the exchange so a replayed
   callback fails at `[check]`.
 - `[exchange]` — the only node that touches the secret, and it never sees it:
-  the credential owns the whole request, the node contributes `CODE`. Output is
-  `{ request: { secured: true, … }, response: { status, ok, body } }`; `body` is
-  already parsed JSON.
+  the credential owns the whole request, the node contributes `CODE` via
+  `--argument`. Output is `{ request: { secured: true, … }, response: { status,
+  ok, headers, content_type, body } }`; `body` is already parsed JSON.
 - `[identity]` — decodes the `id_token` payload. Its signature is **not**
   verified here, and that is correct for this flow: the token arrived over TLS
   directly from `oauth2.googleapis.com` in reply to a request this server made
@@ -198,9 +198,9 @@ password form and every protected route stays as it is.
 ## Nodes Used
 
 - `crypto.random.generate --size <bytes>B` — adds `random: { value }`, 32B of hex by default
-- `kv.entry.put --key <k> --ttl <secs>` / `kv.entry.get --key <k> --out-key <k>` / `kv.entry.delete --key <k>` — state store; `kv.entry.get` merges, `kv.entry.delete` passes the payload through
-- `http.response.fetch --credential <secure_request id> --bind NAME=<expr>` — the credential owns URL, method, headers and body; one `--bind` per declared variable; output `{ request, response }`
+- `kv.entry.put --key <k> --value <JSON> [--ttl <duration>]` / `kv.entry.get --key <k>` / `kv.entry.delete --key <k>` — state store; `kv.entry.get` adds `entry: { key, value, found }`, `kv.entry.delete` adds `entry: { key, deleted }` and keeps the rest of the payload
+- `http.response.fetch --credential <secure_request id> --argument "NAME={{ expr }}"` — the credential owns URL, method, headers and body; one `--argument` per declared variable; output `{ request, response }`
 - `sqlite.query.run --param "1={{ expr }}"` — `?1` placeholders
 - `logic.if --expr <js>` — `true` / `false` pins
-- `auth.token.create --credential <jwt_signing_key id> --claim "k={{ v }}" [--claim "k:public={{ v }}"]` — output `{ access_token }`; quote each claim, an unquoted `{{ }}` is cut at its first space
+- `auth.token.create --credential <jwt_signing_key id> --claim "k={{ v }}" [--claim "k:public={{ v }}"] [--ttl <duration>]` — output `token: { access_token, token_type, expires_in, profile }`; read `input.token.access_token`; quote each claim, an unquoted `{{ }}` is cut at its first space
 - `web.response.send --status 302 --header "Location=<url>" --header "Set-Cookie=<cookie>"` / `--status 403 --body <text>`

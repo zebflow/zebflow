@@ -402,14 +402,14 @@ export default function FleetPlayback(input) {
 
 Combine DeckMap with Zebflow's WebSocket pipelines for live fleet tracking.
 `owner`/`project` are not part of `input` — have the page's serving pipeline
-attach the socket path to the payload before it renders, e.g. a `script` node
-right before `web.response.send --template pages/live-fleet.tsx`:
+attach the socket path to the payload before it renders, e.g. a `javascript.script.run`
+node right before `web.response.send --template pages/live-fleet.tsx`:
 
 ```
-script.result.run -- "return { ...input, ws: '/ws/acme/blog/rooms/fleet' }"
+javascript.script.run -- "return { ws: '/ws/acme/blog/rooms/fleet' }"
 ```
 
-Then read `input.ws` in the page:
+Then read `input.script.ws` in the page:
 
 ```tsx
 import { useEffect, useState, usePageState } from "zeb/react";
@@ -420,7 +420,7 @@ export default function LiveFleet(input) {
 
   useEffect(() => {
     const ws = new WebSocket(
-      `${location.protocol === "https:" ? "wss:" : "ws:"}//${location.host}${input.ws}`
+      `${location.protocol === "https:" ? "wss:" : "ws:"}//${location.host}${input.script.ws}`
     );
     ws.onmessage = (e) => {
       const msg = JSON.parse(e.data);

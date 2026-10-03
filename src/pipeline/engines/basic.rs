@@ -7,9 +7,9 @@
 //! definition by [`builtin_node_definitions()`] so they are available in both
 //! DSL and the UI pipeline editor.
 //!
-//! | Config key      | DSL flag      | Description |
-//! |-----------------|---------------|-------------|
-//! | `timeout_secs`  | `--timeout`   | Per-node execution timeout in seconds (5–3600). Overrides project-level `pipeline_node_timeout_secs`. |
+//! | Config key | DSL flag    | Description |
+//! |------------|-------------|-------------|
+//! | `timeout`  | `--timeout` | How long the node may run: a duration from 1s to 1h (`30s`, `2m`). Omitted: the project's node timeout. A value outside that is refused, not clamped. |
 
 use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -35,8 +35,8 @@ use crate::pipeline::model::{
 };
 use crate::pipeline::nodes::shared::file_ref::{FILE_REF_TYPE, LIFECYCLE_DURABLE};
 use crate::pipeline::nodes::basic::{
-    ai, auth, browser, crypto, fs, function, geo, http, input, kv, logic, mail, ms, pg,
-    script, sekejap, sqlite, table,
+    ai, auth, browser, crypto, fs, function, geo, http, input, javascript, kv, logic, mail, ms, pg,
+    sekejap, sqlite, table, typescript,
     trigger::{
         function as trigger_function, kv_subscribe, manual, mcp_trigger, schedule, weberror,
         webhook, ws_client as trigger_ws_client,
@@ -1248,6 +1248,9 @@ impl BasicPipelineEngine {
         if let Some(handler) = crypto::build(&node.kind, &node.config, self.credentials.clone())? {
             return Ok(NodeDispatch::Crypto(handler));
         }
+        if let Some(handler) = kv::build(&node.kind, &node.config, self.state_bus.clone())? {
+            return Ok(NodeDispatch::Kv(handler));
+        }
         match node.kind.as_str() {
             webhook::NODE_KIND => Ok(NodeDispatch::Webhook(webhook::Node::new(
                 serde_json::from_value(node.config.clone())
@@ -1262,15 +1265,21 @@ impl BasicPipelineEngine {
                 serde_json::from_value(node.config.clone())
                     .map_err(|err| PipelineError::new("FW_NODE_TRIGGER_MANUAL_CONFIG", err.to_string()))?,
             ))),
-            script::NODE_KIND => Ok(NodeDispatch::Script(script::Node::new(
+            javascript::NODE_KIND => Ok(NodeDispatch::Script(crate::pipeline::nodes::shared::script::Node::build(
                 &node.id,
-                serde_json::from_value(node.config.clone())
-                    .map_err(|err| PipelineError::new("FW_NODE_SCRIPT_CONFIG", err.to_string()))?,
+                &node.config,
+                &javascript::LANGUAGE,
+                self.language.clone(),
+            )?)),
+            typescript::NODE_KIND => Ok(NodeDispatch::Script(crate::pipeline::nodes::shared::script::Node::build(
+                &node.id,
+                &node.config,
+                &typescript::LANGUAGE,
                 self.language.clone(),
             )?)),
             http::request::NODE_KIND => Ok(NodeDispatch::HttpRequest(http::request::Node::new(
                 serde_json::from_value(node.config.clone()).map_err(|err| {
-                    PipelineError::new("FW_NODE_HTTP_REQUEST_CONFIG", err.to_string())
+                    PipelineError::new("FW_NODE_HTTP_RESPONSE_FETCH_CONFIG", err.to_string())
                 })?,
                 self.language.clone(),
                 self.credentials.clone(),
@@ -1322,13 +1331,13 @@ impl BasicPipelineEngine {
             browser::run::NODE_KIND => {
                 let Some(credentials) = &self.credentials else {
                     return Err(PipelineError::new(
-                        "FW_NODE_BROWSER_RUN_UNAVAILABLE",
+                        "FW_NODE_BROWSER_PAGE_RUN_UNAVAILABLE",
                         "credential service is not configured on this framework engine",
                     ));
                 };
                 Ok(NodeDispatch::BrowserRun(browser::run::Node::new(
                     serde_json::from_value(node.config.clone()).map_err(|e| {
-                        PipelineError::new("FW_NODE_BROWSER_RUN_CONFIG", e.to_string())
+                        PipelineError::new("FW_NODE_BROWSER_PAGE_RUN_CONFIG", e.to_string())
                     })?,
                     credentials.clone(),
                     self.bundle_egress.clone(),
@@ -1448,13 +1457,13 @@ impl BasicPipelineEngine {
             auth::token_create::NODE_KIND => {
                 let Some(credentials) = &self.credentials else {
                     return Err(PipelineError::new(
-                        "FW_NODE_AUTH_TOKEN_UNAVAILABLE",
+                        "FW_NODE_AUTH_TOKEN_CREATE_UNAVAILABLE",
                         "credential service is not configured on this framework engine",
                     ));
                 };
                 Ok(NodeDispatch::AuthTokenCreate(auth::token_create::Node::new(
                     serde_json::from_value(node.config.clone()).map_err(|err| {
-                        PipelineError::new("FW_NODE_AUTH_TOKEN_CONFIG", err.to_string())
+                        PipelineError::new("FW_NODE_AUTH_TOKEN_CREATE_CONFIG", err.to_string())
                     })?,
                     credentials.clone(),
                 )?))
@@ -1462,13 +1471,13 @@ impl BasicPipelineEngine {
             auth::token_verify::NODE_KIND => {
                 let Some(credentials) = &self.credentials else {
                     return Err(PipelineError::new(
-                        "FW_NODE_AUTH_VERIFY_UNAVAILABLE",
+                        "FW_NODE_AUTH_TOKEN_VERIFY_UNAVAILABLE",
                         "credential service is not configured on this framework engine",
                     ));
                 };
                 Ok(NodeDispatch::AuthTokenVerify(auth::token_verify::Node::new(
                     serde_json::from_value(node.config.clone()).map_err(|err| {
-                        PipelineError::new("FW_NODE_AUTH_VERIFY_CONFIG", err.to_string())
+                        PipelineError::new("FW_NODE_AUTH_TOKEN_VERIFY_CONFIG", err.to_string())
                     })?,
                     credentials.clone(),
                 )?))
@@ -1481,13 +1490,13 @@ impl BasicPipelineEngine {
             mail::send::NODE_KIND => {
                 let Some(credentials) = &self.credentials else {
                     return Err(PipelineError::new(
-                        "FW_NODE_MAIL_UNAVAILABLE",
+                        "FW_NODE_MAIL_MESSAGE_SEND_UNAVAILABLE",
                         "credential service is not configured on this framework engine",
                     ));
                 };
                 Ok(NodeDispatch::MailSend(mail::send::Node::new(
                     serde_json::from_value(node.config.clone()).map_err(|err| {
-                        PipelineError::new("FW_NODE_MAIL_CONFIG", err.to_string())
+                        PipelineError::new("FW_NODE_MAIL_MESSAGE_SEND_CONFIG", err.to_string())
                     })?,
                     credentials.clone(),
                     self.platform.clone(),
@@ -1718,106 +1727,12 @@ impl BasicPipelineEngine {
                     platform.clone(),
                 )?))
             }
-            kv::set::NODE_KIND => {
-                let Some(state_bus) = &self.state_bus else {
-                    return Err(PipelineError::new(
-                        "FW_NODE_MEM_UNAVAILABLE",
-                        "state bus is not configured on this pipeline engine",
-                    ));
-                };
-                Ok(NodeDispatch::KvSet(kv::set::Node::new(
-                    serde_json::from_value(node.config.clone())
-                        .map_err(|e| PipelineError::new("FW_NODE_KV_SET_CONFIG", e.to_string()))?,
-                    state_bus.clone(),
-                )))
-            }
             // The whole `input.*` family builds through one door: the kind
             // picks the check, the config names the field.
             kind if input::is_input_kind(kind) => {
                 let node = input::Node::for_kind(kind, &node.config)
                     .expect("guard says this is an input kind")?;
                 Ok(NodeDispatch::Input(node))
-            }
-            kv::get::NODE_KIND => {
-                let Some(state_bus) = &self.state_bus else {
-                    return Err(PipelineError::new(
-                        "FW_NODE_MEM_UNAVAILABLE",
-                        "state bus is not configured on this pipeline engine",
-                    ));
-                };
-                Ok(NodeDispatch::KvGet(kv::get::Node::new(
-                    serde_json::from_value(node.config.clone())
-                        .map_err(|e| PipelineError::new("FW_NODE_KV_GET_CONFIG", e.to_string()))?,
-                    state_bus.clone(),
-                )))
-            }
-            kv::del::NODE_KIND => {
-                let Some(state_bus) = &self.state_bus else {
-                    return Err(PipelineError::new(
-                        "FW_NODE_MEM_UNAVAILABLE",
-                        "state bus is not configured on this pipeline engine",
-                    ));
-                };
-                Ok(NodeDispatch::KvDel(kv::del::Node::new(
-                    serde_json::from_value(node.config.clone())
-                        .map_err(|e| PipelineError::new("FW_NODE_KV_DEL_CONFIG", e.to_string()))?,
-                    state_bus.clone(),
-                )))
-            }
-            kv::incr::NODE_KIND => {
-                let Some(state_bus) = &self.state_bus else {
-                    return Err(PipelineError::new(
-                        "FW_NODE_MEM_UNAVAILABLE",
-                        "state bus is not configured on this pipeline engine",
-                    ));
-                };
-                Ok(NodeDispatch::KvIncr(kv::incr::Node::new(
-                    serde_json::from_value(node.config.clone())
-                        .map_err(|e| PipelineError::new("FW_NODE_KV_INCR_CONFIG", e.to_string()))?,
-                    state_bus.clone(),
-                )))
-            }
-            kv::publish::NODE_KIND => {
-                let Some(state_bus) = &self.state_bus else {
-                    return Err(PipelineError::new(
-                        "FW_NODE_MEM_UNAVAILABLE",
-                        "state bus is not configured on this pipeline engine",
-                    ));
-                };
-                Ok(NodeDispatch::KvPublish(kv::publish::Node::new(
-                    serde_json::from_value(node.config.clone()).map_err(|e| {
-                        PipelineError::new("FW_NODE_KV_PUBLISH_CONFIG", e.to_string())
-                    })?,
-                    state_bus.clone(),
-                )))
-            }
-            kv::exists::NODE_KIND => {
-                let Some(state_bus) = &self.state_bus else {
-                    return Err(PipelineError::new(
-                        "FW_NODE_MEM_UNAVAILABLE",
-                        "state bus is not configured on this pipeline engine",
-                    ));
-                };
-                Ok(NodeDispatch::KvExists(kv::exists::Node::new(
-                    serde_json::from_value(node.config.clone()).map_err(|e| {
-                        PipelineError::new("FW_NODE_KV_EXISTS_CONFIG", e.to_string())
-                    })?,
-                    state_bus.clone(),
-                )))
-            }
-            kv::expire::NODE_KIND => {
-                let Some(state_bus) = &self.state_bus else {
-                    return Err(PipelineError::new(
-                        "FW_NODE_MEM_UNAVAILABLE",
-                        "state bus is not configured on this pipeline engine",
-                    ));
-                };
-                Ok(NodeDispatch::KvExpire(kv::expire::Node::new(
-                    serde_json::from_value(node.config.clone()).map_err(|e| {
-                        PipelineError::new("FW_NODE_KV_EXPIRE_CONFIG", e.to_string())
-                    })?,
-                    state_bus.clone(),
-                )))
             }
             mcp_trigger::NODE_KIND => Ok(NodeDispatch::McpTrigger(mcp_trigger::Node::new(
                 serde_json::from_value(node.config.clone()).map_err(|err| {
@@ -2172,15 +2087,14 @@ impl BasicPipelineEngine {
             let series = input.metadata.get(crate::pipeline::expr::FOREACH_METADATA_KEY).cloned();
 
             // Per-node timeout: prevents slow HTTP/DB nodes from hanging pipelines.
-            // Priority: node config `timeout_secs` → project config → env var → default(30s).
-            let node_timeout_secs: u64 = effective_config
-                .get("timeout_secs")
-                .and_then(|v| {
-                    v.as_u64()
-                        .or_else(|| v.as_str().and_then(|s| s.parse().ok()))
-                })
-                .map(|v| v.clamp(5, 3600))
-                .unwrap_or(project_timeout_secs);
+            // Priority: the node's `--timeout` → project config → env var → default(30s).
+            // A `--timeout` that is not a duration from 1s to 1h fails the
+            // node here rather than being clamped into some other limit.
+            let per_node_timeout = crate::pipeline::model::node_timeout(&effective_config);
+            let node_timeout = match &per_node_timeout {
+                Ok(Some(duration)) => *duration,
+                _ => std::time::Duration::from_secs(project_timeout_secs),
+            };
             let mut input_for_exec = input.clone();
             if node.kind == logic::reduce::NODE_KIND
                 && let Some(acc) = reduce_pending
@@ -2342,6 +2256,7 @@ impl BasicPipelineEngine {
                     }
                     NodeDispatch::WsState(node) => node.execute_many_async(input_for_exec).await,
                     NodeDispatch::Crypto(node) => node.execute_many_async(input_for_exec).await,
+                    NodeDispatch::Kv(node) => node.execute_many_async(input_for_exec).await,
                     NodeDispatch::TriggerFunction(node) => {
                         node.execute_many_async(input_for_exec).await
                     }
@@ -2375,13 +2290,6 @@ impl BasicPipelineEngine {
                     NodeDispatch::SvgConvert(node) => node.execute_many_async(input_for_exec).await,
                     NodeDispatch::ImgChromakey(node) => node.execute_many_async(input_for_exec).await,
                     NodeDispatch::Input(node) => node.execute_many_async(input_for_exec).await,
-                    NodeDispatch::KvSet(node) => node.execute_many_async(input_for_exec).await,
-                    NodeDispatch::KvGet(node) => node.execute_many_async(input_for_exec).await,
-                    NodeDispatch::KvDel(node) => node.execute_many_async(input_for_exec).await,
-                    NodeDispatch::KvExists(node) => node.execute_many_async(input_for_exec).await,
-                    NodeDispatch::KvExpire(node) => node.execute_many_async(input_for_exec).await,
-                    NodeDispatch::KvIncr(node) => node.execute_many_async(input_for_exec).await,
-                    NodeDispatch::KvPublish(node) => node.execute_many_async(input_for_exec).await,
                     NodeDispatch::McpTrigger(node) => node.execute_many_async(input_for_exec).await,
                     NodeDispatch::KvSubscribe(node) => {
                         node.execute_many_async(input_for_exec).await
@@ -2400,24 +2308,21 @@ impl BasicPipelineEngine {
                 }
             }; // end exec_fut
             let timeout_node_id = trace_node_id.clone();
-            let timeout_is_per_node = effective_config.get("timeout_secs").is_some();
-            let exec_result: Result<Vec<NodeExecutionOutput>, PipelineError> =
-                tokio::time::timeout(std::time::Duration::from_secs(node_timeout_secs), exec_fut)
-                    .await
-                    .unwrap_or_else(|_| {
-                        let source = if timeout_is_per_node {
-                            "per-node"
-                        } else {
-                            "project-level"
-                        };
-                        Err(PipelineError::new(
-                            "FW_NODE_TIMEOUT",
-                            format!(
-                                "node '{}' timed out after {node_timeout_secs}s ({source} timeout)",
-                                timeout_node_id
-                            ),
-                        ))
-                    });
+            let timeout_is_per_node = matches!(per_node_timeout, Ok(Some(_)));
+            let exec_result: Result<Vec<NodeExecutionOutput>, PipelineError> = match per_node_timeout {
+                Err(refused) => Err(refused),
+                Ok(_) => tokio::time::timeout(node_timeout, exec_fut).await.unwrap_or_else(|_| {
+                    let source = if timeout_is_per_node { "--timeout" } else { "the project's node timeout" };
+                    Err(PipelineError::new(
+                        "FW_NODE_TIMEOUT",
+                        format!(
+                            "node '{}' timed out after {} ({source})",
+                            timeout_node_id,
+                            crate::pipeline::nodes::shared::units::describe_duration(node_timeout)
+                        ),
+                    ))
+                }),
+            };
 
             let outputs = match exec_result {
                 Ok(mut outs) => {
@@ -3020,7 +2925,7 @@ mod tests {
     use crate::pipeline::interface::PipelineEngine;
     use crate::pipeline::model::{PipelineEdge, PipelineGraph, PipelineNode};
     use crate::pipeline::nodes::basic::{
-        script,
+        javascript,
         table::convert::{TableFormat, collect_columns, encode_rows},
     };
     use crate::platform::model::PlatformConfig;
@@ -3038,7 +2943,7 @@ mod tests {
             r#"
 [a] trigger.manual
 [b] logic.if --expr "1 == 1"
-[c] script.result.run -- "return { count: input.manual.rows.length, last: input.manual.rows[input.manual.rows.length - 1] };"
+[c] javascript.script.run -- "return { count: input.manual.rows.length, last: input.manual.rows[input.manual.rows.length - 1] };"
 [a] -> [b]
 [b]:true -> [c]
 "#,
@@ -3074,7 +2979,7 @@ mod tests {
             .execute_async(&graph, &ctx)
             .await
             .expect("sampled execution");
-        assert_eq!(sampled.value, json!({"count":100,"last":99}));
+        assert_eq!(sampled.value["script"], json!({"count":100,"last":99}));
         for trace in &sampled.node_trace {
             // The trigger records the envelope it was given; every node
             // after it reads that envelope under `manual`.
@@ -3113,7 +3018,7 @@ mod tests {
         async fn run_at(level: CaptureLevel, body: &str) -> crate::pipeline::model::PipelineOutput {
             let mut graph = build_pipeline_graph(
                 "levels",
-                &format!("[a] trigger.manual\n[b] script.result.run -- \"{body}\"\n[a] -> [b]\n"),
+                &format!("[a] trigger.manual\n[b] javascript.script.run -- \"{body}\"\n[a] -> [b]\n"),
             )
             .expect("graph");
             graph.metadata = Some(PipelineGraphMetadata {
@@ -3157,7 +3062,7 @@ mod tests {
             !text.contains("CANARY-IN-INPUT"),
             "on-error must not record a successful node's payload: {text}"
         );
-        assert_eq!(out.value, json!({ "seen": "CANARY-IN-INPUT" }));
+        assert_eq!(out.value["script"], json!({ "seen": "CANARY-IN-INPUT" }));
         assert!(
             out.node_trace.iter().all(|t| t.status == "ok"),
             "status must survive at on-error"
@@ -3181,7 +3086,7 @@ mod tests {
 
         let mut graph = build_pipeline_graph(
             "levels-fail",
-            "[a] trigger.manual\n[b] script.result.run -- \"throw new Error('boom');\"\n[a] -> [b]\n",
+            "[a] trigger.manual\n[b] javascript.script.run -- \"throw new Error('boom');\"\n[a] -> [b]\n",
         )
         .expect("graph");
         graph.metadata = Some(PipelineGraphMetadata {
@@ -3227,7 +3132,7 @@ mod tests {
         async fn run_at(level: CaptureLevel) -> crate::pipeline::model::PipelineOutput {
             let mut graph = build_pipeline_graph(
                 "preview-levels",
-                "[a] trigger.manual\n[b] script.result.run --preview json -- \"return { seen: input.manual.canary };\"\n[a] -> [b]\n",
+                "[a] trigger.manual\n[b] javascript.script.run --preview json -- \"return { seen: input.manual.canary };\"\n[a] -> [b]\n",
             )
             .expect("graph");
             assert_eq!(graph.nodes[1].config["preview"]["out"], json!({ "as": "json" }));
@@ -3264,7 +3169,7 @@ mod tests {
         assert_eq!(a.input, serde_json::Value::Null);
         assert_eq!(b.input, serde_json::Value::Null, "b previews its output, not its input");
         assert_eq!(
-            b.output,
+            b.output["script"],
             json!({ "seen": "CANARY-IN-INPUT" }),
             "b previews its output, so on-error records it"
         );
@@ -3312,7 +3217,7 @@ mod tests {
         }
 
         let (result, signals) = signals_of(
-            "[a] trigger.manual\n[b] script.result.run -- \"return { n: input.n + 1 };\"\n[a] -> [b]\n",
+            "[a] trigger.manual\n[b] javascript.script.run -- \"return { n: input.n + 1 };\"\n[a] -> [b]\n",
         )
         .await;
         result.expect("the run succeeds");
@@ -3333,9 +3238,9 @@ mod tests {
             .map(|(k, n)| (k.to_string(), n.to_string()))
         );
         let node_ok = &signals[4];
-        assert_eq!(node_ok.node_kind, "script.result.run");
+        assert_eq!(node_ok.node_kind, "javascript.script.run");
         assert!(node_ok.data.as_ref().unwrap()["duration_ms"].is_u64());
-        assert!(node_ok.message.starts_with("b script.result.run "), "{}", node_ok.message);
+        assert!(node_ok.message.starts_with("b javascript.script.run "), "{}", node_ok.message);
         let run_done = signals.last().unwrap();
         let data = run_done.data.as_ref().unwrap();
         assert_eq!(data["run_id"], "lifecycle-run-1");
@@ -3343,7 +3248,7 @@ mod tests {
         assert!(data["duration_ms"].is_u64());
 
         let (result, signals) = signals_of(
-            "[a] trigger.manual\n[b] script.result.run -- \"throw new Error('boom');\"\n[a] -> [b]\n",
+            "[a] trigger.manual\n[b] javascript.script.run -- \"throw new Error('boom');\"\n[a] -> [b]\n",
         )
         .await;
         assert!(result.is_err());
@@ -3378,7 +3283,7 @@ mod tests {
         );
         let mut graph = build_pipeline_graph(
             "preview-rule3",
-            "[a] trigger.manual\n[b] script.result.run --preview json -- \"return { token: input.manual.secret, note: 'ok' };\"\n[a] -> [b]\n",
+            "[a] trigger.manual\n[b] javascript.script.run --preview json -- \"return { token: input.manual.secret, note: 'ok' };\"\n[a] -> [b]\n",
         )
         .expect("graph");
         graph.metadata = Some(PipelineGraphMetadata {
@@ -3405,9 +3310,9 @@ mod tests {
             .execute_async(&graph, &ctx)
             .await
             .expect("execution");
-        assert_eq!(out.value["token"], json!(SECRET), "the run itself is never masked");
+        assert_eq!(out.value["script"]["token"], json!(SECRET), "the run itself is never masked");
         let b = out.node_trace.iter().find(|t| t.node_id == "b").expect("node b");
-        assert_eq!(b.output["note"], json!("ok"), "the preview recorded the payload");
+        assert_eq!(b.output["script"]["note"], json!("ok"), "the preview recorded the payload");
         let text = serde_json::to_string(&out.node_trace).unwrap();
         assert!(!text.contains(SECRET), "the record shows no credential value: {text}");
     }
@@ -3578,7 +3483,7 @@ mod tests {
             .expect("a room send is not an egress path");
     }
 
-    /// `script.result.run` is a network node only when an operator has made it one, so
+    /// `javascript.script.run` is a network node only when an operator has made it one, so
     /// the guard reads the sandbox in force rather than the sandbox as shipped.
     #[test]
     fn a_script_is_refused_inside_a_bundle_only_when_its_sandbox_reaches_the_network() {
@@ -3589,14 +3494,14 @@ mod tests {
 
         let egress = BundleEgress::extend(None, "telegram", &["api.telegram.org".to_string()]);
 
-        super::refuse_uncheckable_egress_node(&egress, super::script::NODE_KIND, &json!({}), false)
+        super::refuse_uncheckable_egress_node(&egress, super::javascript::NODE_KIND, &json!({}), false)
             .expect("a sandbox that denies fetch reaches nothing to check");
 
-        let error = super::refuse_uncheckable_egress_node(&egress, super::script::NODE_KIND, &json!({}), true)
+        let error = super::refuse_uncheckable_egress_node(&egress, super::javascript::NODE_KIND, &json!({}), true)
             .expect_err("a sandbox that may fetch is an egress path the guard cannot read");
         assert_eq!(error.code, "FW_EGRESS_UNCHECKED_NODE");
         assert!(
-            error.message.contains("script.result.run") && error.message.contains("'telegram'"),
+            error.message.contains("javascript.script.run") && error.message.contains("'telegram'"),
             "{}",
             error.message
         );
@@ -3944,7 +3849,7 @@ mod tests {
         scan_text_nodes_access(
             &PipelineNode {
                 id: "reader".to_string(),
-                kind: script::NODE_KIND.to_string(),
+                kind: javascript::NODE_KIND.to_string(),
                 input_pins: vec!["in".to_string()],
                 output_pins: vec!["out".to_string()],
                 config: json!({}),
@@ -3968,7 +3873,7 @@ mod tests {
         let err = scan_text_nodes_access(
             &PipelineNode {
                 id: "reader".to_string(),
-                kind: script::NODE_KIND.to_string(),
+                kind: javascript::NODE_KIND.to_string(),
                 input_pins: vec!["in".to_string()],
                 output_pins: vec!["out".to_string()],
                 config: json!({}),
@@ -3984,9 +3889,9 @@ mod tests {
     async fn nodes_scope_only_carries_referenced_upstream_outputs() {
         let dsl = r#"
 [a] trigger.manual
-[b] script.result.run -- "return { big: 'huge-marker-that-should-not-leak' };"
-[c] script.result.run -- "return { small: 7 };"
-[d] script.result.run -- "return { small: ctx.nodes.c.small, leaked: JSON.stringify(ctx).includes('huge-marker-that-should-not-leak') };"
+[b] javascript.script.run -- "return { big: 'huge-marker-that-should-not-leak' };"
+[c] javascript.script.run -- "return { small: 7 };"
+[d] javascript.script.run -- "return { small: ctx.nodes.c.script.small, leaked: JSON.stringify(ctx).includes('huge-marker-that-should-not-leak') };"
 
 [a] -> [b]
 [b] -> [c]
@@ -4012,17 +3917,19 @@ mod tests {
             .await
             .expect("execute");
 
-        assert_eq!(out.value["small"], 7);
-        assert_eq!(out.value["leaked"], false);
+        assert_eq!(out.value["script"]["small"], 7);
+        // `b`'s answer was replaced by `c`'s under the same key, and `d`
+        // references only `c`: the big marker reaches no node's scope.
+        assert_eq!(out.value["script"]["leaked"], false);
     }
 
     #[tokio::test]
     async fn nodes_scope_rejects_dynamic_script_access() {
         let dsl = r#"
 [a] trigger.manual
-[b] script.result.run -- "return { big: 'dynamic-access-should-not-work' };"
-[c] script.result.run -- "return { small: 7 };"
-[d] script.result.run -- "const key = 'b'; return { big: ctx.nodes[key].big, small: ctx.nodes.c.small };"
+[b] javascript.script.run -- "return { big: 'dynamic-access-should-not-work' };"
+[c] javascript.script.run -- "return { small: 7 };"
+[d] javascript.script.run -- "const key = 'b'; return { big: ctx.nodes[key].big, small: ctx.nodes.c.small };"
 
 [a] -> [b]
 [b] -> [c]
@@ -4060,9 +3967,9 @@ mod tests {
     async fn every_root_of_a_multi_root_graph_runs() {
         let dsl = r#"
 [a] trigger.manual
-[b] script.result.run -- "return { left: true };"
+[b] javascript.script.run -- "return { left: true };"
 [c] trigger.manual
-[d] script.result.run -- "return { right: true };"
+[d] javascript.script.run -- "return { right: true };"
 
 [a] -> [b]
 [c] -> [d]
@@ -4112,8 +4019,8 @@ mod tests {
     #[test]
     fn a_fully_cyclic_graph_still_has_a_starting_node() {
         let dsl = r#"
-[a] script.result.run -- "return input;"
-[b] script.result.run -- "return input;"
+[a] javascript.script.run -- "return input;"
+[b] javascript.script.run -- "return input;"
 
 [a] -> [b]
 [b] -> [a]
@@ -4126,10 +4033,10 @@ mod tests {
     async fn logic_collect_groups_multiple_upstreams_before_continuing() {
         let dsl = r#"
 [a] trigger.manual
-[b] script.result.run -- "return { user: { id: 'u_42' } };"
-[c] script.result.run -- "return { orders: [{ id: 'o_1' }] };"
+[b] javascript.script.run -- "return { user: { id: 'u_42' } };"
+[c] javascript.script.run -- "return { orders: [{ id: 'o_1' }] };"
 [d] logic.collect
-[e] script.result.run -- "return input;"
+[e] javascript.script.run -- "return input;"
 
 [a] -> [b]
 [a] -> [c]
@@ -4157,8 +4064,8 @@ mod tests {
             .await
             .expect("execute");
 
-        assert_eq!(out.value["b"]["user"]["id"], "u_42");
-        assert_eq!(out.value["c"]["orders"][0]["id"], "o_1");
+        assert_eq!(out.value["script"]["b"]["script"]["user"]["id"], "u_42");
+        assert_eq!(out.value["script"]["c"]["script"]["orders"][0]["id"], "o_1");
     }
 
     #[tokio::test]
@@ -4248,8 +4155,8 @@ mod tests {
 
         let dsl = r#"
 [a] trigger.manual
-[b] script.result.run -- "return { ok: true, state_sequence: '{{file:state-sequence.json}}', __zf_files: [{ name: 'state-sequence.json', content_type: 'application/json', encoding: 'json', data: { frames: [1, 2, 3] } }] };"
-[c] script.result.run -- "return input;"
+[b] javascript.script.run -- "return { ok: true, state_sequence: '{{file:state-sequence.json}}', __zf_files: [{ name: 'state-sequence.json', content_type: 'application/json', encoding: 'json', data: { frames: [1, 2, 3] } }] };"
+[c] javascript.script.run -- "return input;"
 
 [a] -> [b]
 [b] -> [c]
@@ -4274,7 +4181,7 @@ mod tests {
             .await
             .expect("execute");
 
-        let file_ref = &out.value["state_sequence"];
+        let file_ref = &out.value["script"]["script"]["state_sequence"];
         assert_eq!(file_ref["__zf_type"], "file_ref");
         // The eleven contract fields, and nothing that was dropped
         // (`kinds/file-ref/README.md`).
@@ -4714,10 +4621,10 @@ mod tests {
     async fn logic_if_supports_dsl_input_scope() {
         let dsl = r#"
 [a] trigger.manual
-[b] script.result.run -- "return { type: 'billing' };"
-[c] logic.if --expr "$input.type == 'billing'"
-[d] script.result.run -- "return { branch: 'true' };"
-[e] script.result.run -- "return { branch: 'false' };"
+[b] javascript.script.run -- "return { type: 'billing' };"
+[c] logic.if --expr "$input.script.type == 'billing'"
+[d] javascript.script.run -- "return { branch: 'true' };"
+[e] javascript.script.run -- "return { branch: 'false' };"
 
 [a] -> [b]
 [b] -> [c]
@@ -4744,18 +4651,18 @@ mod tests {
             .await
             .expect("execute");
 
-        assert_eq!(out.value["branch"], "true");
+        assert_eq!(out.value["script"]["branch"], "true");
     }
 
     #[tokio::test]
     async fn logic_match_supports_dsl_nodes_scope() {
         let dsl = r#"
 [a] trigger.manual
-[b] script.result.run -- "return { kind: 'billing' };"
-[c] logic.match --expr "$nodes.b.kind" --cases billing,technical --default default
-[d] script.result.run -- "return { lane: 'billing' };"
-[e] script.result.run -- "return { lane: 'technical' };"
-[f] script.result.run -- "return { lane: 'default' };"
+[b] javascript.script.run -- "return { kind: 'billing' };"
+[c] logic.match --expr "$nodes.b.script.kind" --cases billing,technical --default default
+[d] javascript.script.run -- "return { lane: 'billing' };"
+[e] javascript.script.run -- "return { lane: 'technical' };"
+[f] javascript.script.run -- "return { lane: 'default' };"
 
 [a] -> [b]
 [b] -> [c]
@@ -4783,7 +4690,7 @@ mod tests {
             .await
             .expect("execute");
 
-        assert_eq!(out.value["lane"], "billing");
+        assert_eq!(out.value["script"]["lane"], "billing");
     }
 
     /// An input node reads the envelope (`$trigger`) and answers the value
@@ -4795,7 +4702,7 @@ mod tests {
 [a] trigger.manual
 [b] input.text prompt --label "Caption"
 [c] input.number count --default 3
-[d] script.result.run -- "return { echoed: input.manual.body.prompt, prompt: $nodes.b.prompt, count: input.count, keys: Object.keys(input).sort() };"
+[d] javascript.script.run -- "return { echoed: input.manual.body.prompt, prompt: $nodes.b.prompt, count: input.count, keys: Object.keys(input).sort() };"
 
 [a] -> [b]
 [b] -> [c]
@@ -4817,10 +4724,10 @@ mod tests {
             .execute_async(&graph, &ctx(json!({ "body": { "prompt": "hello", "extra": true } })))
             .await
             .expect("execute");
-        assert_eq!(out.value["echoed"], "hello");
-        assert_eq!(out.value["prompt"], "hello");
-        assert_eq!(out.value["count"], 3.0);
-        assert_eq!(out.value["keys"], json!(["count", "manual", "prompt"]));
+        assert_eq!(out.value["script"]["echoed"], "hello");
+        assert_eq!(out.value["script"]["prompt"], "hello");
+        assert_eq!(out.value["script"]["count"], 3.0);
+        assert_eq!(out.value["script"]["keys"], json!(["count", "manual", "prompt"]));
 
         let err = engine
             .execute_async(&graph, &ctx(json!({ "body": {} })))
@@ -4931,14 +4838,14 @@ mod tests {
 
     #[tokio::test]
     async fn item_still_names_the_loop_element_after_a_node_replaced_the_payload() {
-        // [c] replaces the payload; [d]'s {{ $item }} must still be the element
-        // this run started from, not null and not another run's.
+        // [c] answers over the payload; [d]'s {{ $item }} must still be the
+        // element this run started from, not null and not another run's.
         let dsl = r#"
 [a] trigger.manual
 [b] logic.foreach --items-expr "$input.manual.rows"
-[c] script.result.run -- "return { unrelated: true };"
-[d] script.result.run --source-expr "'return { key: ' + JSON.stringify($item.key) + ' };'"
-[e] logic.reduce --init-expr "{ keys: [] }" --step-expr "{ keys: $acc.keys.concat([$input.key]) }"
+[c] javascript.script.run -- "return { unrelated: true };"
+[d] crypto.base64.encode --text "{{ $item.key }}"
+[e] logic.reduce --init-expr "{ keys: [] }" --step-expr "{ keys: $acc.keys.concat([$input.base64.value]) }"
 
 [a] -> [b]
 [b]:item -> [c]
@@ -4963,18 +4870,19 @@ mod tests {
             .await
             .expect("execute");
 
-        assert_eq!(out.value["keys"], json!(["a", "b", "c"]));
+        // base64 of "a", "b", "c".
+        assert_eq!(out.value["keys"], json!(["YQ==", "Yg==", "Yw=="]), "{}", out.value);
     }
 
     #[tokio::test]
     async fn logic_reduce_waits_for_the_whole_series_when_a_node_sits_between() {
-        // The script replaces the payload, so `count` is gone from it; the
-        // reduce must still fold all three runs, not fire after each one.
+        // A node sits between the loop and the reduce; the reduce must still
+        // fold all three runs, not fire after each one.
         let dsl = r#"
 [a] trigger.manual
 [b] logic.foreach --items-expr "$input.manual.rows"
-[c] script.result.run -- "return { v: input.item.amount * 10 };"
-[d] logic.reduce --init-expr "{ vs: [] }" --step-expr "{ vs: $acc.vs.concat([$input.v]) }"
+[c] javascript.script.run -- "return { v: input.item.amount * 10 };"
+[d] logic.reduce --init-expr "{ vs: [] }" --step-expr "{ vs: $acc.vs.concat([$input.script.v]) }"
 
 [a] -> [b]
 [b]:item -> [c]
@@ -5047,8 +4955,8 @@ mod tests {
     async fn a_web_response_config_is_resolved_like_any_other_node() {
         let dsl = r#"
 [a] trigger.manual
-[b] script.result.run -- "return { u: 'hello-from-expr' };"
-[c] web.response.send --body "{{ input.u }}"
+[b] javascript.script.run -- "return { u: 'hello-from-expr' };"
+[c] web.response.send --body "{{ input.script.u }}"
 
 [a] -> [b]
 [b] -> [c]
@@ -5077,7 +4985,7 @@ mod tests {
             "resolved body did not reach the envelope: {response}"
         );
         // It answers the caller and passes its payload on unchanged.
-        assert_eq!(out.value["u"], "hello-from-expr", "{}", out.value);
+        assert_eq!(out.value["script"]["u"], "hello-from-expr", "{}", out.value);
         assert!(out.value.get("__zf_response").is_none(), "{}", out.value);
     }
 
@@ -5088,8 +4996,8 @@ mod tests {
     async fn a_repeated_header_reaches_the_answer_twice() {
         let dsl = r#"
 [a] trigger.manual
-[b] script.result.run -- "return { sid: 'demo-session' };"
-[c] web.response.send --status 303 --header "Location=/home" --header "Set-Cookie=session={{ input.sid }}; Path=/; Max-Age=86400; SameSite=Lax; HttpOnly" --header "Set-Cookie=theme=dark"
+[b] javascript.script.run -- "return { sid: 'demo-session' };"
+[c] web.response.send --status 303 --header "Location=/home" --header "Set-Cookie=session={{ input.script.sid }}; Path=/; Max-Age=86400; SameSite=Lax; HttpOnly" --header "Set-Cookie=theme=dark"
 
 [a] -> [b]
 [b] -> [c]
@@ -5098,7 +5006,7 @@ mod tests {
         let node = graph.nodes.iter().find(|n| n.id == "c").expect("node c");
         assert_eq!(
             node.config["headers"]["Set-Cookie"],
-            json!(["session={{ input.sid }}; Path=/; Max-Age=86400; SameSite=Lax; HttpOnly", "theme=dark"]),
+            json!(["session={{ input.script.sid }}; Path=/; Max-Age=86400; SameSite=Lax; HttpOnly", "theme=dark"]),
             "the stored config keeps both"
         );
         let out = BasicPipelineEngine::default()
@@ -5133,10 +5041,10 @@ mod tests {
     async fn logic_retry_retries_until_success() {
         let dsl = r#"
 [a] trigger.manual
-[b] script.result.run -- "const attempt = input.__zf_retry?.attempt ?? 0; if (attempt < 2) { throw new Error('retry me'); } return { ok: true, attempt };"
+[b] javascript.script.run -- "const attempt = input.__zf_retry?.attempt ?? 0; if (attempt < 2) { throw new Error('retry me'); } return { ok: true, attempt };"
 [r] logic.retry --max-attempts 3
-[c] script.result.run -- "return input;"
-[d] script.result.run -- "return input;"
+[c] javascript.script.run -- "return input;"
+[d] javascript.script.run -- "return input;"
 
 [a] -> [b]
 [b]:error -> [r]
@@ -5164,8 +5072,9 @@ mod tests {
             .await
             .expect("execute");
 
-        assert_eq!(out.value["ok"], true);
-        assert_eq!(out.value["attempt"], 2);
+        // `c` answers its input (which holds `b`'s answer) as its own result.
+        assert_eq!(out.value["script"]["script"]["ok"], true, "{}", out.value);
+        assert_eq!(out.value["script"]["script"]["attempt"], 2);
     }
 
     /// `$trigger` is the envelope the trigger answers under its source key:
@@ -5175,9 +5084,9 @@ mod tests {
     async fn trigger_still_resolves_to_the_envelope() {
         let dsl = r#"
 [t] trigger.webhook --route /hello --method POST
-[a] script.result.run -- "return { replaced: true };"
+[a] javascript.script.run -- "return { replaced: true };"
 [b] logic.if --expr "$trigger.body.name === 'Ana'"
-[c] script.result.run -- "return { name: $trigger.body.name, sub: $trigger.auth ? $trigger.auth.sub : null, kept: input.replaced, answer: ctx.nodes.t.webhook.body.name };"
+[c] javascript.script.run -- "return { name: $trigger.body.name, sub: $trigger.auth ? $trigger.auth.sub : null, kept: input.script.replaced, answer: ctx.nodes.t.webhook.body.name };"
 [t] -> [a]
 [a] -> [b]
 [b]:true -> [c]
@@ -5200,7 +5109,7 @@ mod tests {
                 .await
                 .expect("execute");
             assert_eq!(
-                out.value,
+                out.value["script"],
                 json!({ "name": "Ana", "sub": "u_1", "kept": true, "answer": "Ana" }),
                 "snapshot set: {}",
                 trigger.is_some()
@@ -5216,7 +5125,7 @@ mod tests {
         let dsl = r#"
 [t] trigger.manual
 [who] input.text who --optional --default world
-[s] script.result.run -- "return { hi: input.who, own: ctx.nodes.who.who, sent: input.manual.body ? input.manual.body.who : null };"
+[s] javascript.script.run -- "return { hi: input.who, own: ctx.nodes.who.who, sent: input.manual.body ? input.manual.body.who : null };"
 [t] -> [who]
 [who] -> [s]
 "#;
@@ -5245,23 +5154,23 @@ mod tests {
             }
         };
         let omitted = run(json!({})).await;
-        assert_eq!(omitted.value["hi"], "world");
-        assert_eq!(omitted.value["own"], "world");
+        assert_eq!(omitted.value["script"]["hi"], "world");
+        assert_eq!(omitted.value["script"]["own"], "world");
         let empty_body = run(json!({ "body": {} })).await;
-        assert_eq!(empty_body.value["hi"], "world");
-        assert_eq!(empty_body.value["sent"], serde_json::Value::Null, "the envelope is not written");
+        assert_eq!(empty_body.value["script"]["hi"], "world");
+        assert_eq!(empty_body.value["script"]["sent"], serde_json::Value::Null, "the envelope is not written");
         let sent = run(json!({ "body": { "who": "x" } })).await;
-        assert_eq!(sent.value["hi"], "x");
-        assert_eq!(sent.value["own"], "x");
+        assert_eq!(sent.value["script"]["hi"], "x");
+        assert_eq!(sent.value["script"]["own"], "x");
     }
 
     #[tokio::test]
     async fn logic_retry_routes_to_failed_after_budget() {
         let dsl = r#"
 [a] trigger.manual
-[b] script.result.run -- "throw new Error('always fail');"
+[b] javascript.script.run -- "throw new Error('always fail');"
 [r] logic.retry --max-attempts 2
-[c] script.result.run -- "return input;"
+[c] javascript.script.run -- "return input;"
 
 [a] -> [b]
 [b]:error -> [r]
@@ -5337,10 +5246,10 @@ mod tests {
     async fn a_routed_failure_is_a_retry_in_the_record_and_on_the_bus() {
         let dsl = r#"
 [a] trigger.manual
-[b] script.result.run -- "const attempt = input.__zf_retry?.attempt ?? 0; if (attempt < 2) { throw new Error('not yet'); } return { ok: true, attempt };"
+[b] javascript.script.run -- "const attempt = input.__zf_retry?.attempt ?? 0; if (attempt < 2) { throw new Error('not yet'); } return { ok: true, attempt };"
 [r] logic.retry --max-attempts 5
-[c] script.result.run -- "return input;"
-[d] script.result.run -- "return { gaveup: true };"
+[c] javascript.script.run -- "return input;"
+[d] javascript.script.run -- "return { gaveup: true };"
 [a] -> [b]
 [b]:error -> [r]
 [r]:retry -> [b]
@@ -5349,7 +5258,7 @@ mod tests {
 "#;
         let (result, signals) = run_with_bus("routed-retry", dsl).await;
         let out = result.expect("the run succeeds");
-        assert_eq!(out.value["ok"], true);
+        assert_eq!(out.value["script"]["script"]["ok"], true, "{}", out.value);
 
         let b_entries: Vec<&crate::pipeline::model::NodeTraceEntry> =
             out.node_trace.iter().filter(|t| t.node_id == "b").collect();
@@ -5397,14 +5306,14 @@ mod tests {
     async fn a_failure_routed_elsewhere_is_error_routed_and_an_unrouted_one_still_fails() {
         let dsl = r#"
 [a] trigger.manual
-[b] script.result.run -- "throw new Error('handled here');"
-[h] script.result.run -- "return { handled: input.error.message };"
+[b] javascript.script.run -- "throw new Error('handled here');"
+[h] javascript.script.run -- "return { handled: input.error.message };"
 [a] -> [b]
 [b]:error -> [h]
 "#;
         let (result, signals) = run_with_bus("routed-elsewhere", dsl).await;
         let out = result.expect("the run succeeds");
-        assert!(out.value["handled"].as_str().unwrap().contains("handled here"), "{}", out.value);
+        assert!(out.value["script"]["handled"].as_str().unwrap().contains("handled here"), "{}", out.value);
         let b = out.node_trace.iter().find(|t| t.node_id == "b").unwrap();
         assert_eq!(b.status, "error_routed");
         let routed = signals.iter().find(|s| s.kind == "node_error_routed").expect("node_error_routed");
@@ -5414,7 +5323,7 @@ mod tests {
 
         let (result, signals) = run_with_bus(
             "unrouted",
-            "[a] trigger.manual\n[b] script.result.run -- \"throw new Error('boom');\"\n[a] -> [b]\n",
+            "[a] trigger.manual\n[b] javascript.script.run -- \"throw new Error('boom');\"\n[a] -> [b]\n",
         )
         .await;
         let err = result.expect_err("the run fails");
@@ -5434,11 +5343,11 @@ mod tests {
     async fn logic_retry_takes_a_verdict_and_counts_for_itself() {
         let dsl = r#"
 [a] trigger.manual
-[poll] script.result.run -- "return { polled: true };"
-[check] script.result.run -- "const seen = (ctx.nodes.wait && ctx.nodes.wait.__zf_retry && ctx.nodes.wait.__zf_retry.attempt) || 0; return { retry: seen < 2, seen };"
-[wait] logic.retry --max-attempts 5
-[done] script.result.run -- "return { done: true, attempts: input.__zf_retry.attempt, seen: input.seen };"
-[gaveup] script.result.run -- "return { gaveup: true };"
+[poll] javascript.script.run -- "return { polled: true };"
+[check] javascript.script.run -- "const seen = (ctx.nodes.wait && ctx.nodes.wait.__zf_retry && ctx.nodes.wait.__zf_retry.attempt) || 0; return { retry: seen < 2, seen };"
+[wait] logic.retry --max-attempts 5 --when "input.script.retry"
+[done] javascript.script.run -- "return { done: true, attempts: input.__zf_retry.attempt, seen: input.script.seen };"
+[gaveup] javascript.script.run -- "return { gaveup: true };"
 [a] -> [poll]
 [poll] -> [check]
 [check] -> [wait]
@@ -5448,9 +5357,9 @@ mod tests {
 "#;
         let (result, signals) = run_with_bus("verdict-done", dsl).await;
         let out = result.expect("the run succeeds");
-        assert_eq!(out.value["done"], true);
-        assert_eq!(out.value["attempts"], 2, "{}", out.value);
-        assert_eq!(out.value["seen"], 2);
+        assert_eq!(out.value["script"]["done"], true);
+        assert_eq!(out.value["script"]["attempts"], 2, "{}", out.value);
+        assert_eq!(out.value["script"]["seen"], 2);
         assert_eq!(out.node_trace.iter().filter(|t| t.node_id == "poll").count(), 3);
         // The wait is told on the retry node — `retry` twice, then `ok` when
         // `done` fires — and nowhere else: every other entry is `ok`.
@@ -5478,11 +5387,11 @@ mod tests {
         // The budget spent on a verdict that never turns false is `failed`.
         let dsl = r#"
 [a] trigger.manual
-[poll] script.result.run -- "return { polled: true };"
-[check] script.result.run -- "return { retry: true };"
-[wait] logic.retry --max-attempts 2
-[done] script.result.run -- "return { done: true };"
-[gaveup] script.result.run -- "return { gaveup: true, attempts: input.__zf_retry.attempt };"
+[poll] javascript.script.run -- "return { polled: true };"
+[check] javascript.script.run -- "return { retry: true };"
+[wait] logic.retry --max-attempts 2 --when "input.script.retry"
+[done] javascript.script.run -- "return { done: true };"
+[gaveup] javascript.script.run -- "return { gaveup: true, attempts: input.__zf_retry.attempt };"
 [a] -> [poll]
 [poll] -> [check]
 [check] -> [wait]
@@ -5492,8 +5401,8 @@ mod tests {
 "#;
         let (result, _) = run_with_bus("verdict-failed", dsl).await;
         let out = result.expect("the run succeeds through the failed pin");
-        assert_eq!(out.value["gaveup"], true);
-        assert_eq!(out.value["attempts"], 2);
+        assert_eq!(out.value["script"]["gaveup"], true);
+        assert_eq!(out.value["script"]["attempts"], 2);
     }
 }
 
@@ -5501,7 +5410,7 @@ enum NodeDispatch {
     Webhook(webhook::Node),
     Schedule(schedule::Node),
     Manual(manual::Node),
-    Script(script::Node),
+    Script(crate::pipeline::nodes::shared::script::Node),
     HttpRequest(http::request::Node),
     BrowserRun(browser::run::Node),
     SqliteQuery(sqlite::query::Node),
@@ -5535,6 +5444,7 @@ enum NodeDispatch {
     WsState(ws::state::Node),
     /// Any `crypto.*` kind.
     Crypto(Box<dyn crate::pipeline::nodes::NodeHandler>),
+    Kv(Box<dyn crate::pipeline::nodes::NodeHandler>),
     TriggerFunction(trigger_function::Node),
     FunctionCall(function::call::Node),
     FilePut(fs::put::Node),
@@ -5553,13 +5463,6 @@ enum NodeDispatch {
     ImgChromakey(fs::image::chromakey::Node),
     /// Any `input.*` kind — a pass-through validator of one envelope field.
     Input(input::Node),
-    KvSet(kv::set::Node),
-    KvGet(kv::get::Node),
-    KvDel(kv::del::Node),
-    KvExists(kv::exists::Node),
-    KvExpire(kv::expire::Node),
-    KvIncr(kv::incr::Node),
-    KvPublish(kv::publish::Node),
     KvSubscribe(kv_subscribe::Node),
     WsClientTrigger(trigger_ws_client::Node),
     McpTrigger(mcp_trigger::Node),
@@ -5594,7 +5497,7 @@ const HOST_CHECKED_NETWORK_NODES: &[&str] = &[http::request::NODE_KIND, browser:
 /// cheapest way to reach an unreadable destination, so an author who declared
 /// truthfully would be the only one constrained.
 ///
-/// `script.result.run` is not a network node in the capability table, and with the
+/// A script kind (`javascript.script.run`, `typescript.script.run`) is not a network node in the capability table, and with the
 /// sandbox denying `fetch` it is not one in fact either. When an operator has
 /// granted the sandbox network access, it becomes an egress path this guard
 /// cannot read, and is refused on the same grounds as the rest.
@@ -5610,7 +5513,7 @@ fn refuse_uncheckable_egress_node(
     {
         return Ok(());
     }
-    if kind == script::NODE_KIND {
+    if kind == javascript::NODE_KIND || kind == typescript::NODE_KIND {
         if sandbox_reaches_network {
             return Err(egress.refuse_uncheckable(kind));
         }

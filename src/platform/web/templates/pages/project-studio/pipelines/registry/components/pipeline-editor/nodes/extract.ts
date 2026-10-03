@@ -2,10 +2,8 @@ import { canonicalNodeKind } from "@/pages/project-studio/pipelines/registry/com
 
 const NUMERIC_FIELDS = new Set([
   "limit",
-  "timeout_ms",
   "budget",
   "max_repairs",
-  "expires_in",
   "cost",
   "length",
 ]);

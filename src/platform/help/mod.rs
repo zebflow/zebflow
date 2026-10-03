@@ -98,7 +98,7 @@ fn official_nodes_markdown_reference_for_help() -> String {
         "## Node kinds (live — native + embedded official composites)\n\n\
          This block matches the pipeline editor / project node API for platform-bundled nodes: titles, descriptions, pins, DSL flags, and input/output schemas.\n\n\
          - **Full catalog:** `help_nodes` with no `kind` (same as this section).\n\
-         - **One kind:** `help_nodes` with `kind=\"script.result.run\"` (or `script`, `trigger.webhook`, composite kinds, etc.).\n\n\
+         - **One kind:** `help_nodes` with `kind=\"javascript.script.run\"` (or `trigger.webhook`, composite kinds, etc.).\n\n\
          ---\n\n",
     );
     for def in official_node_definitions_for_help() {

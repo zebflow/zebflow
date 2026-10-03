@@ -34,7 +34,7 @@ CREATE TABLE forum_messages (_key TEXT PRIMARY KEY, room TEXT, user TEXT, text T
 ```
 | trigger.webhook --route /forum --method GET
 | sekejap.query.run -- "SELECT * FROM forum_rooms ORDER BY last_activity DESC"
-| script.result.run -- "return { rooms: input.query.rows }"
+| javascript.script.run -- "return { rooms: input.query.rows }"
 | web.response.send --template pages/forum-home.tsx
 ```
 
@@ -48,7 +48,7 @@ register forum/room --
 [a] trigger.webhook --route /forum/:room --method GET
 [room] sekejap.query.run --param "1={{ input.webhook.params.room }}" -- "SELECT * FROM forum_rooms WHERE _key = $1"
 [msgs] sekejap.query.run --param "1={{ $trigger.params.room }}" -- "SELECT * FROM forum_messages WHERE room = $1 ORDER BY ts DESC LIMIT 50"
-[merge] script.result.run -- "return { room: $nodes.room.query.rows[0] || null, messages: input.query.rows.slice().reverse() };"
+[merge] javascript.script.run -- "return { room: $nodes.room.query.rows[0] || null, messages: input.query.rows.slice().reverse() };"
 [b] web.response.send --template pages/forum-room.tsx
 
 [a] -> [room]
@@ -64,15 +64,17 @@ register forum/api-room-create --
 [trig] trigger.webhook --route /api/forum/rooms --method POST
 [has_name] logic.if --expr "!!(input.webhook.body && input.webhook.body.name)"
 [bad] web.response.send --status 400 --body "{{ { ok: false, error: 'name required' } }}"
-[draft] script.result.run -- "const id = String($trigger.body.name).toLowerCase().replace(/[^a-z0-9]+/g,'-'); return { id, name: $trigger.body.name };"
-[ins] sekejap.query.run --write --param "1={{ $nodes.draft.id }}" --param "2={{ $nodes.draft.name }}" --param "3={{ Date.now() }}" --param "4={{ Date.now() }}" -- "INSERT INTO forum_rooms (_key, name, created_at, last_activity) VALUES ($1, $2, $3, $4)"
-[ok] script.result.run -- "return { ok: true, id: $nodes.draft.id };"
+[draft] javascript.script.run -- "const id = String($trigger.body.name).toLowerCase().replace(/[^a-z0-9]+/g,'-'); return { id, name: $trigger.body.name };"
+[ins] sekejap.query.run --write --param "1={{ $nodes.draft.script.id }}" --param "2={{ $nodes.draft.script.name }}" --param "3={{ Date.now() }}" --param "4={{ Date.now() }}" -- "INSERT INTO forum_rooms (_key, name, created_at, last_activity) VALUES ($1, $2, $3, $4)"
+[ok] javascript.script.run -- "return { ok: true, id: $nodes.draft.script.id };"
+[resp] web.response.send --body "{{ input.script }}"
 
 [trig] -> [has_name]
 [has_name]:false -> [bad]
 [has_name]:true -> [draft]
 [draft] -> [ins]
 [ins] -> [ok]
+[ok] -> [resp]
 ```
 
 ### ws-chat-message — WebSocket chat handler
@@ -86,9 +88,9 @@ answers under `room` — `input.room.room_id` right after the trigger, or
 register forum/ws-chat-message --
 [a] trigger.room --event chat.message
 [guard] logic.if --expr "!!(input.room.payload && input.room.payload.user && input.room.payload.text)"
-[save] script.result.run -- "return { id: Date.now().toString(), room: $trigger.room_id, user: $trigger.payload.user, text: $trigger.payload.text, ts: Date.now() };"
-[ins] sekejap.query.run --write --param "1={{ $nodes.save.id }}" --param "2={{ $nodes.save.room }}" --param "3={{ $nodes.save.user }}" --param "4={{ $nodes.save.text }}" --param "5={{ $nodes.save.ts }}" -- "INSERT INTO forum_messages (_key, room, user, text, ts) VALUES ($1, $2, $3, $4, $5)"
-[emit] ws.message.send --room "{{ $nodes.save.room }}" --event chat.message --body "{{ $nodes.save }}"
+[save] javascript.script.run -- "return { id: Date.now().toString(), room: $trigger.room_id, user: $trigger.payload.user, text: $trigger.payload.text, ts: Date.now() };"
+[ins] sekejap.query.run --write --param "1={{ $nodes.save.script.id }}" --param "2={{ $nodes.save.script.room }}" --param "3={{ $nodes.save.script.user }}" --param "4={{ $nodes.save.script.text }}" --param "5={{ $nodes.save.script.ts }}" -- "INSERT INTO forum_messages (_key, room, user, text, ts) VALUES ($1, $2, $3, $4, $5)"
+[emit] ws.message.send --room "{{ $nodes.save.script.room }}" --event chat.message --body "{{ $nodes.save.script }}"
 
 [a] -> [guard]
 [guard]:true -> [save]
@@ -108,9 +110,9 @@ to it, and returning `null` from a script would not have stopped anything
 - `trigger.room --event chat.message` — WebSocket event handler; `--room` omitted (it is a literal filter, not per-connection routing)
 - `sekejap.query.run` — rooms and messages storage; plain `SELECT`/`INSERT`, no `--table`/`--op`
 - `logic.if` — validate before saving
-- `script` — shape rows, carry the room lookup forward via `$nodes`
+- `javascript.script.run` — shape rows, carry the room lookup forward via `$nodes`; its answer sits under `script` (`$nodes.<id>.script.<field>`), the rest of the payload is kept
 - `web.response.send` — TSX templates
-- `ws.message.send --room "{{ expr }}" --body "{{ expr }}"` — broadcast message to all room participants (the script replaced the payload, so the room is named)
+- `ws.message.send --room "{{ expr }}" --body "{{ expr }}"` — broadcast message to all room participants (the room and body are read at `$nodes.save.script`, since the script no longer replaces the payload)
 
 ---
 

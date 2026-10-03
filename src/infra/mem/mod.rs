@@ -12,18 +12,18 @@
 //!
 //! ```text
 //! | trigger.webhook --route /counter --method POST
-//! | kv.entry.increment --key visits --out-key count
-//! | script.result.run -- "return { count: input.count };"
+//! | kv.entry.increment --key visits
+//! | javascript.script.run -- "return { count: input.entry.value };"
 //! ```
 //!
 //! ```text
 //! | trigger.webhook --route /notify --method POST
-//! | kv.message.publish --channel alerts
+//! | kv.message.publish --topic alerts --body "{{ input.webhook.body }}"
 //! ```
 //!
 //! ```text
 //! | trigger.topic --topic alerts
-//! | script.result.run -- "return { received: input.topic.message };"
+//! | javascript.script.run -- "return { received: input.topic.message };"
 //! ```
 
 pub mod subscriber;

@@ -46,10 +46,12 @@ Facts live in `help(topic="pipeline")`, `pipeline/dsl`, `pipeline/authoring`,
 - **SQL in the body, values in `--param`:**
   `sekejap.query.run --param "1={{ $trigger.body.email }}" -- "SELECT * FROM users WHERE email = $1"`.
   Never interpolate a value into SQL text.
-- **A script returns the next payload and nothing else.** It cannot set a
-  status or a header, `return null` does not stop the pipeline, and
-  `setTimeout` / `fetch` are blocked in it. Branch with `logic.if --expr`,
-  answer with `web.response.send`, call out with `http.response.fetch`.
+- **A script's return is added as `script`; the rest of the payload is kept.**
+  Read it downstream at `input.script` (`$nodes.<id>.script` from elsewhere).
+  A script cannot set a status or a header, `return null` does not stop the
+  pipeline, and `setTimeout` / `fetch` are blocked in it. Branch with
+  `logic.if --expr`, answer with `web.response.send`, call out with
+  `http.response.fetch`.
 - **`web.response.send`** decides the response: nothing → JSON of the payload;
   `--template pages/x.tsx` → the page; `--body VALUE` → text (a string) or JSON;
   `--status 303 --header "Location=/path"` → redirect (always root-relative —

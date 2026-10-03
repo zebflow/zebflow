@@ -11,8 +11,8 @@ transforms it, the last node answers.
 
 Every node receives the previous node's output as **`input`** and returns the
 next payload. `sekejap.query.run` replaces it with `{ query: { columns, rows, … } }`; a
-`script` shapes it; `web.response.send` turns it into an HTTP response or a page.
-Nothing flows unless a node passes it on.
+`javascript.script.run`/`typescript.script.run` node adds `script` and keeps the rest; `web.response.send`
+turns it into an HTTP response or a page. Nothing flows unless a node passes it on.
 
 ## The two envelopes
 
@@ -70,7 +70,7 @@ Full recipe: `help(topic="pipeline/examples/cookie-jwt-auth")`.
 ```
 | trigger.webhook --route /api/notes --method GET
 | sekejap.query.run -- "SELECT id, title FROM notes ORDER BY created_at DESC LIMIT 50"
-| script.result.run -- "return { notes: input.query.rows }"
+| javascript.script.run -- "return { notes: input.query.rows }"
 ```
 
 **Graph mode** — label nodes `[id]`, wire edges with `->`, name pins with `:pin`.
@@ -96,7 +96,7 @@ edge is a second entry and runs on every request.
 ## Nodes
 
 - **Triggers** start a run: `trigger.webhook`, `trigger.schedule`, `trigger.function`, `trigger.manual`, `trigger.room`, `trigger.socket`, `trigger.topic`, `trigger.mcp`, `trigger.error`.
-- **Middle nodes** read, transform or decide: `sekejap.query.run`, `sekejap.record.create`, `pg.query.run`, `sqlite.query.run`, `script`, `http.response.fetch`, `kv.entry.get`, `kv.entry.put`, `kv.entry.increment`, `logic.if`, `logic.match`, `logic.foreach`, `logic.collect`, `logic.reduce`, `logic.retry`, `crypto.*`, `auth.token.create`, `auth.token.verify`, `fs.file.put`, `fs.image.thumbnail`, `fs.*`, `table.query.run`, `table.data.convert`, `geo.*`, `mail.message.send`, `ai.text.generate`, `ai.embedding.generate`, `ai.audio.generate`, `browser.page.run`, …
+- **Middle nodes** read, transform or decide: `sekejap.query.run`, `sekejap.record.create`, `pg.query.run`, `sqlite.query.run`, `javascript.script.run`, `typescript.script.run`, `http.response.fetch`, `kv.entry.get`, `kv.entry.put`, `kv.entry.increment`, `logic.if`, `logic.match`, `logic.foreach`, `logic.collect`, `logic.reduce`, `logic.retry`, `crypto.*`, `auth.token.create`, `auth.token.verify`, `fs.file.put`, `fs.image.thumbnail`, `fs.*`, `table.query.run`, `table.data.convert`, `geo.*`, `mail.message.send`, `ai.text.generate`, `ai.embedding.generate`, `ai.audio.generate`, `browser.page.run`, …
 - **Last nodes** answer: `web.response.send` (JSON, page, redirect, cookie — `help(topic="pipeline/web")`), or push: `ws.message.send`, `ws.state.update`, `kv.message.publish`, `telegram.send`, `ms.layer.publish`.
 
 Flags are declared per node and an undeclared flag is a parse error, so read
@@ -149,7 +149,7 @@ pipeline_patch     file_rel_path="api/posts"  node_id="n1"  flags="--limit 100"
 pipeline_activate  file_rel_path="api/posts"
 ```
 
-To try a body without saving anything: `pipeline_run body="| trigger.function | script.result.run -- \"return 1\""`
+To try a body without saving anything: `pipeline_run body="| trigger.function | javascript.script.run -- \"return 1\""`
 (`input` gives it a payload).
 
 ---
@@ -170,7 +170,7 @@ To try a body without saving anything: `pipeline_run body="| trigger.function | 
 [a] trigger.webhook --route /api/posts --method POST
 [b] logic.if --expr "typeof input.webhook.body?.title === 'string' && input.webhook.body.title.length > 0"
 [c] sekejap.query.run --param "1={{ $trigger.body.title }}" --param "2={{ $trigger.body.title.toLowerCase().replace(/\s+/g, '-') }}" --write -- "INSERT INTO posts (title, slug) VALUES ($1, $2)"
-[d] script.result.run -- "return { ok: true }"
+[d] javascript.script.run -- "return { ok: true }"
 [e] web.response.send --status 400 --body "{{ { error: 'title is required' } }}"
 [a] -> [b]
 [b]:true -> [c]
@@ -198,14 +198,15 @@ To try a body without saving anything: `pipeline_run body="| trigger.function | 
 ```
 | trigger.schedule --cron "0 * * * *" --timezone UTC
 | http.response.fetch --url https://api.example.com/feed --method GET
-| script.result.run -- "return { items: (input.response.body?.items || []).slice(0, 10) }"
-| kv.entry.put --key feed:latest --ttl 3600
+| javascript.script.run -- "return { items: (input.response.body?.items || []).slice(0, 10) }"
+| kv.entry.put --key feed:latest --value "{{ input.script.items }}" --ttl 1h
 ```
 
-A script cannot set the HTTP status or headers; it returns the next payload.
-Branch with `logic.if` and let `web.response.send` answer with `--status`,
-`--header` or `--body`. Returning `null` from a script does not stop
-the pipeline either — `null` simply becomes the next `input`.
+A script cannot set the HTTP status or headers. Branch with `logic.if` and
+let `web.response.send` answer with `--status`, `--header` or `--body`. A
+script's return is added as `script`; the rest of the payload is kept —
+returning `null` just sets `input.script` to `null` without touching anything
+else.
 
 ---
 

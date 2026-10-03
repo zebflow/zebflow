@@ -1,198 +1,95 @@
-//! `kv.entry.get` — retrieve a value from the project-scoped KV store.
+//! `kv.entry.get` — read one entry: `entry: { key, value, found }`.
 //!
-//! Merges `{ [out_key]: value }` into the flowing payload.
-//! Use `$trigger` or `$nodes` references for upstream data.
-//!
-//! # Config flags
-//!
-//! | Flag | Type | Default | Description |
-//! |---|---|---|---|
-//! | `--key` | string | required | Storage key to retrieve |
-//! | `--out-key` | string | `""` | Payload key to write into (default = same as `--key`) |
-//! | `--default` | string | `null` | JSON value to inject if key is missing |
-//! | `--durable` | bool | `false` | Read from durable storage (survives restart) |
-//!
-//! # Example
-//!
-//! ```text
-//! | kv.entry.get --key "user:{{ input.user_id }}" --out-key profile
-//! | script.result.run -- "return { name: input.profile?.name ?? 'Guest' };"
-//! ```
+//! A missing or expired key is an answer, not an error: `found: false` and
+//! `value` is `--default` (or `null`).
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
+use super::{INPUT_PIN_IN, OUTPUT_PIN_OUT, answer, bus_error, durable_field, durable_flag, field, flag, key_flag, required_key, scope};
 use crate::infra::io::state::DynStateBus;
-use crate::pipeline::model::NodeCapability;
-use crate::pipeline::model::{DslFlag, DslFlagKind, NodeFieldDef, NodeFieldType};
+use crate::pipeline::model::{LayoutItem, NodeCapability, NodeExample};
 use crate::pipeline::{
     NodeDefinition, PipelineError,
     nodes::{NodeExecutionInput, NodeExecutionOutput, NodeHandler},
 };
 
 pub const NODE_KIND: &str = "kv.entry.get";
-const INPUT_PIN_IN: &str = "in";
-const OUTPUT_PIN_OUT: &str = "out";
+/// The store could not be read: the world's side.
+pub const CODE: &str = "FW_NODE_KV_ENTRY_GET";
+/// A flag set wrong.
+pub const CONFIG_CODE: &str = "FW_NODE_KV_ENTRY_GET_CONFIG";
+/// `--key` is empty.
+pub const KEY_CODE: &str = "FW_NODE_KV_ENTRY_GET_KEY";
+/// The engine has no state bus.
+pub const UNAVAILABLE_CODE: &str = "FW_NODE_KV_ENTRY_GET_UNAVAILABLE";
 
 pub fn definition() -> NodeDefinition {
     NodeDefinition {
         kind: NODE_KIND.to_string(),
         capabilities: vec![NodeCapability::Database],
         title: "KV Get".to_string(),
-        description: "Read a value from the project-scoped KV store. \
-            Ephemeral by default, use --durable for persistence across restarts. \
-            Merges { [out_key]: value } into the flowing payload. \
-            Use --out-key to control the output key name (defaults to the storage key). \
-            Use --default to supply a fallback JSON value when the key is missing or expired. \
-            Use $trigger or $nodes references for upstream data."
+        description: "Read the entry `--key` from the project's key-value store (`--durable` for the disk-backed one). Adds \
+            `entry: { key, value, found }` and keeps the rest of the payload; a missing or expired key answers `found: false` with \
+            `value` set to `--default` (or null)."
             .to_string(),
-        input_schema: json!({ "type": "object" }),
-        output_schema: json!({ "type": "object", "description": "The incoming payload with the retrieved value merged in under out_key." }),
+        input_schema: json!({ "type": "object", "description": "Any payload; it is kept and `entry` is added." }),
+        output_schema: json!({ "type": "object", "properties": { "entry": { "type": "object", "properties": {
+            "key": { "type": "string" },
+            "value": { "description": "The stored value, or --default when not found." },
+            "found": { "type": "boolean" }
+        } } } }),
         input_pins: vec![INPUT_PIN_IN.to_string()],
         output_pins: vec![OUTPUT_PIN_OUT.to_string()],
-        script_available: false,
-        script_bridge: None,
-        config_schema: json!({
-            "type": "object",
-            "required": ["key"],
-            "properties": {
-                "key": { "type": "string", "description": "Storage key to retrieve." },
-                "out_key": { "type": "string", "description": "Payload key to write the value into. Defaults to --key value." },
-                "default": { "description": "Value to inject if key is missing. Accepts any JSON." },
-            }
-        }),
         dsl_flags: vec![
-            DslFlag {
-                flag: "--key".to_string(),
-                config_key: "key".to_string(),
-                description: "Storage key to retrieve.".to_string(),
-                kind: DslFlagKind::Scalar,
-                required: true,
-                ..Default::default()
-            },
-            DslFlag {
-                flag: "--out-key".to_string(),
-                config_key: "out_key".to_string(),
-                description: "Payload key to write the value into (default = same as --key)."
-                    .to_string(),
-                kind: DslFlagKind::Scalar,
-                required: false,
-                ..Default::default()
-            },
-            DslFlag {
-                flag: "--default".to_string(),
-                config_key: "default".to_string(),
-                description: "Fallback value when the key is missing or expired — a literal or {{ expr }}.".to_string(),
-                kind: DslFlagKind::Scalar,
-                required: false,
-                ..Default::default()
-            },
-            DslFlag {
-                flag: "--durable".to_string(),
-                config_key: "durable".to_string(),
-                description: "Persist to durable storage (survives restart). Default: ephemeral."
-                    .to_string(),
-                kind: DslFlagKind::Bool,
-                required: false,
-                ..Default::default()
-            },
+            key_flag("The entry to read. Usually a {{ }} expression."),
+            flag("--default", "default", "The value answered when the key is missing or expired — a literal or {{ expr }}.", "json"),
+            durable_flag(),
         ],
         fields: vec![
-            NodeFieldDef {
-                name: "key".to_string(),
-                label: "Key".to_string(),
-                field_type: NodeFieldType::Text,
-                help: Some("Storage key to retrieve. Supports {{ expr }}.".to_string()),
-                ..Default::default()
-            },
-            NodeFieldDef {
-                name: "out_key".to_string(),
-                label: "Output Key".to_string(),
-                field_type: NodeFieldType::Text,
-                help: Some("Payload key to inject the value under. Defaults to --key.".to_string()),
-                ..Default::default()
-            },
-            NodeFieldDef {
-                name: "default".to_string(),
-                label: "Default".to_string(),
-                field_type: NodeFieldType::Text,
-                help: Some(
-                    "Fallback value (any JSON) to inject when the key is missing or expired."
-                        .to_string(),
-                ),
-                ..Default::default()
-            },
-            NodeFieldDef {
-                name: "durable".to_string(),
-                label: "Durable".to_string(),
-                field_type: NodeFieldType::Checkbox,
-                help: Some(
-                    "Persist to durable storage (survives restart). Default: ephemeral."
-                        .to_string(),
-                ),
-                ..Default::default()
-            },
+            field("key", "Key", "The entry to read: a literal or {{ expr }}."),
+            field("default", "Default", "Answered as the value when the key is missing or expired (any JSON)."),
+            durable_field(),
         ],
-        layout: vec![],
-        ai_tool: Default::default(),
+        layout: vec![
+            LayoutItem::Field("key".to_string()),
+            LayoutItem::Row { row: vec![LayoutItem::Field("default".to_string()), LayoutItem::Field("durable".to_string())] },
+        ],
         examples: vec![
-            crate::pipeline::model::NodeExample::dsl("Read a cached value with a fallback", r#"kv.entry.get --key "settings:{{ $trigger.params.site }}" --out-key settings --default "{{ { theme: 'light' } }}""#)
-                .input(serde_json::json!({ "rows": [] }))
-                .output(serde_json::json!({ "rows": [], "settings": { "theme": "dark" } }))
-                .note("Merged in under `--out-key`; the rest of the payload stays."),
+            NodeExample::dsl("Read a cached value with a fallback", r#"kv.entry.get --key "settings:{{ $trigger.params.site }}" --default "{{ { theme: 'light' } }}""#)
+                .input(json!({ "rows": [] }))
+                .output(json!({ "rows": [], "entry": { "key": "settings:site-a", "value": { "theme": "dark" }, "found": true } }))
+                .note("Read it downstream as `input.entry.value`; the rest of the payload stays."),
         ],
         ..Default::default()
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Config {
+    /// The entry to read.
     #[serde(default)]
-    pub key: String,
+    pub key: Value,
+    /// Answered when the key is missing; `null` when unset.
     #[serde(default)]
-    pub out_key: String,
-    #[serde(default)]
-    pub default: Option<Value>,
+    pub default: Value,
+    /// The disk-backed store.
     #[serde(default)]
     pub durable: bool,
 }
 
 pub struct Node {
-    config: Config,
-    state_bus: DynStateBus,
+    key: String,
+    default: Value,
+    durable: bool,
+    bus: DynStateBus,
 }
 
 impl Node {
-    pub fn new(config: Config, state_bus: DynStateBus) -> Self {
-        Self { config, state_bus }
-    }
-}
-
-
-/// The read result joins the flowing payload instead of erasing it.
-///
-/// `kv.entry.put` keeps the payload it was handed; a `get` that threw everything
-/// away made the pair asymmetric, and the Google-login callback had to reach
-/// backwards with `ctx.nodes` to recover a value one read had destroyed. A
-/// reader now behaves like a reader: everything that arrived is still there,
-/// plus the value under `out_key` (which wins any name collision — asking for
-/// a key called `code` means you want the stored one).
-///
-/// A non-object payload (a bare string or array flowing through) has nothing
-/// to merge into, so it is replaced by `{ [out_key]: value }` exactly as
-/// before.
-fn merge_into_payload(
-    payload: serde_json::Value,
-    out_key: &str,
-    value: serde_json::Value,
-) -> serde_json::Value {
-    match payload {
-        serde_json::Value::Object(mut map) => {
-            map.insert(out_key.to_string(), value);
-            serde_json::Value::Object(map)
-        }
-        _ => serde_json::json!({ out_key: value }),
+    pub fn new(config: Config, bus: DynStateBus) -> Result<Self, PipelineError> {
+        let key = required_key(&config.key, CONFIG_CODE, KEY_CODE)?;
+        Ok(Self { key, default: config.default, durable: config.durable, bus })
     }
 }
 
@@ -208,98 +105,20 @@ impl NodeHandler for Node {
         &[OUTPUT_PIN_OUT]
     }
 
-    async fn execute_async(
-        &self,
-        input: NodeExecutionInput,
-    ) -> Result<NodeExecutionOutput, PipelineError> {
-        let owner = input
-            .metadata
-            .get("owner")
-            .and_then(Value::as_str)
-            .unwrap_or_default();
-        let project = input
-            .metadata
-            .get("project")
-            .and_then(Value::as_str)
-            .unwrap_or_default();
-        let key = self.config.key.trim();
-
-        if key.is_empty() {
-            return Err(PipelineError::new(
-                "FW_NODE_KV_GET_KEY",
-                "kv.entry.get: --key is required",
-            ));
+    async fn execute_async(&self, input: NodeExecutionInput) -> Result<NodeExecutionOutput, PipelineError> {
+        let (owner, project) = scope(&input);
+        let stored = if self.durable {
+            self.bus.durable_get(&owner, &project, &self.key)
+        } else {
+            self.bus.get(&owner, &project, &self.key)
         }
-
-        let value = if self.config.durable {
-            self.state_bus
-                .durable_get(owner, project, key)
-                .map_err(|err| PipelineError::new("FW_NODE_KV_GET_STATE_BUS", err.to_string()))?
-                .or_else(|| self.config.default.clone())
-                .unwrap_or(Value::Null)
-        } else {
-            self.state_bus
-                .get(owner, project, key)
-                .map_err(|err| PipelineError::new("FW_NODE_KV_GET_STATE_BUS", err.to_string()))?
-                .or_else(|| self.config.default.clone())
-                .unwrap_or(Value::Null)
-        };
-
-        let out_key = if self.config.out_key.trim().is_empty() {
-            key.to_string()
-        } else {
-            self.config.out_key.trim().to_string()
-        };
-
-        let trace = format!(
-            "kv.entry.get: key={} out_key={} durable={}",
-            key, out_key, self.config.durable
-        );
-        Ok(NodeExecutionOutput {
-            output_pins: vec![OUTPUT_PIN_OUT.to_string()],
-            payload: merge_into_payload(input.payload, &out_key, value),
-            trace: vec![trace],
-        })
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::merge_into_payload;
-    use serde_json::json;
-
-    /// The read joins the payload; it does not erase what was flowing.
-    ///
-    /// This is the manner fix the Google-login callback demanded: before it,
-    /// `kv.entry.get` destroyed the authorization code that arrived two nodes
-    /// earlier, and the pipeline had to reach backwards with `ctx.nodes` to
-    /// recover its own data.
-    #[test]
-    fn a_read_keeps_the_payload_it_was_handed() {
-        let out = merge_into_payload(
-            json!({ "code": "4/0AY", "state": "f381" }),
-            "state_record",
-            json!("stored"),
-        );
-        assert_eq!(
-            out,
-            json!({ "code": "4/0AY", "state": "f381", "state_record": "stored" })
-        );
-    }
-
-    /// Asking for a key that already exists in the payload means you want the
-    /// stored one — the read wins the collision.
-    #[test]
-    fn the_stored_value_wins_a_name_collision() {
-        let out = merge_into_payload(json!({ "code": "from-upstream" }), "code", json!("stored"));
-        assert_eq!(out, json!({ "code": "stored" }));
-    }
-
-    /// A bare string or array has nothing to merge into, so the old behaviour
-    /// holds for it.
-    #[test]
-    fn a_non_object_payload_is_replaced_as_before() {
-        let out = merge_into_payload(json!("just a string"), "value", json!(42));
-        assert_eq!(out, json!({ "value": 42 }));
+        .map_err(bus_error(CODE))?;
+        let found = stored.is_some();
+        let value = stored.unwrap_or_else(|| self.default.clone());
+        Ok(answer(
+            &input.payload,
+            json!({ "entry": { "key": self.key, "value": value, "found": found } }),
+            format!("{NODE_KIND}: key={} found={found} durable={}", self.key, self.durable),
+        ))
     }
 }

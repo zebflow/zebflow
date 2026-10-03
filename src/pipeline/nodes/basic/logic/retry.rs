@@ -208,9 +208,9 @@ pub fn definition() -> NodeDefinition {
                 .note("Graph: `[b] http.response.fetch …`, `[b]:error -> [r]`, `[r]:retry -> [b]`, `[r]:failed -> [e] web.response.send --status 502`."),
             crate::pipeline::model::NodeExample::dsl("A rate-limited API", "logic.retry --max-attempts 6 --delay-ms 500 --backoff 2 --max-delay-ms 8000")
                 .note("The waits grow 500, 1000, 2000, 4000, 8000 ms — the cap holds the last one. Add `--max-elapsed-ms 30000` to give up on wall time instead of on the count; `__zf_retry.reason` on the `failed` payload says which budget ran out."),
-            crate::pipeline::model::NodeExample::dsl("Poll until a job is ready", "logic.retry --max-attempts 40 --delay-ms 5000")
-                .input(serde_json::json!({ "retry": true, "state": "processing" }))
-                .note("Graph: `[poll] http.response.fetch …`, `[check] script.result.run -- return { ...input, retry: d.status !== 'success', url: d.videoURL }`, `[poll] -> [check]`, `[check] -> [wait]`, `[wait]:retry -> [poll]`, `[wait]:done -> [download]`, `[wait]:failed -> [gaveup]`. The check never throws; `retry: true` is the wait, `retry: false` goes on through `done`."),
+            crate::pipeline::model::NodeExample::dsl("Poll until a job is ready", r#"logic.retry --max-attempts 40 --delay-ms 5000 --when "input.script.retry""#)
+                .input(serde_json::json!({ "script": { "retry": true, "url": null } }))
+                .note("Graph: `[poll] http.response.fetch …`, `[check] javascript.script.run -- return { retry: input.response.body.status !== 'success', url: input.response.body.videoURL }`, `[poll] -> [check]`, `[check] -> [wait]`, `[wait]:retry -> [poll]`, `[wait]:done -> [download]`, `[wait]:failed -> [gaveup]`. The check never throws; `--when` reads its answer: true is the wait, false goes on through `done`."),
         ],
         ..Default::default()
     }
@@ -823,7 +823,7 @@ mod tests {
     fn a_failed_class_error_is_retried() {
         let out = run(&node(3, None), json!({
             "input": { "email": "sari@example.test" },
-            "error": { "code": "FW_NODE_MAIL_SEND", "message": "relay unreachable" },
+            "error": { "code": "FW_NODE_MAIL_MESSAGE_SEND", "message": "relay unreachable" },
             "__zf_retry": { "attempt": 1, "failing_node_id": "m" }
         }));
         assert_eq!(out.output_pins, vec![OUTPUT_PIN_RETRY.to_string()]);
@@ -837,7 +837,7 @@ mod tests {
     fn a_refused_class_error_goes_straight_to_failed() {
         let out = run(&node(3, None), json!({
             "input": { "email": "not an address" },
-            "error": { "code": "FW_NODE_MAIL_ADDRESS", "message": "not a mailbox" },
+            "error": { "code": "FW_NODE_MAIL_MESSAGE_SEND_ADDRESS", "message": "not a mailbox" },
             "__zf_retry": { "attempt": 1, "failing_node_id": "m" }
         }));
         assert_eq!(out.output_pins, vec![OUTPUT_PIN_FAILED.to_string()]);
@@ -957,7 +957,7 @@ mod tests {
         let node = node_with(budgets(5, 0, 1.0, None, None));
         let out = run(&node, json!({
             "input": { "email": "x@example.test", "__zf_retry": { "attempt": 1, "first_at": 1000 } },
-            "error": { "code": "FW_NODE_MAIL_SEND", "message": "relay unreachable" },
+            "error": { "code": "FW_NODE_MAIL_MESSAGE_SEND", "message": "relay unreachable" },
             "__zf_retry": { "attempt": 2, "failing_node_id": "m", "failing_node_kind": "mail.message.send" }
         }));
         assert_eq!(out.output_pins, vec![OUTPUT_PIN_RETRY.to_string()]);

@@ -66,7 +66,7 @@
 //! **Classroom action (any room, specific event):**
 //! ```text
 //! | trigger.room --event classroom_action
-//! | script.result.run -- "/* validate role, build response */"
+//! | javascript.script.run -- "/* validate role, build response */"
 //! | ws.state.update --key /classroom --value "{{ $trigger.payload }}"
 //! | ws.message.send --event classroom_updated --body "{{ $trigger.payload }}"
 //! ```

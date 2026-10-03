@@ -27,7 +27,7 @@ export default function NodeFieldSecureRequestBindings({ field, value, onChange 
       <div className="flex flex-col gap-3">
         {!credential ? (
           <div className="rounded-md border border-dashed border-border px-3 py-3 text-sm text-muted-foreground">
-            Select a secure request profile first. Its required variables will appear here.
+            Select a secure request profile first. Its variables will appear here.
           </div>
         ) : variables.length === 0 ? (
           <div className="rounded-md border border-border bg-popover px-3 py-3 text-sm text-muted-foreground">
@@ -60,11 +60,11 @@ export default function NodeFieldSecureRequestBindings({ field, value, onChange 
                 <Input
                   type="text"
                   value={bindings[name] || ""}
-                  placeholder={String(item?.default_expr || "").trim() || "input.player_id"}
+                  placeholder={String(item?.default_expr || "").trim() ? `default: ${String(item.default_expr).trim()}` : "{{ input.player_id }}"}
                   onInput={(e) => updateBinding(name, e.currentTarget.value)}
                 />
                 <p className="mt-1 text-[11px] text-muted-foreground">
-                  Enter a JS expression, for example <code>input.player_id</code> or <code>ctx.nodes.n3.unit.code</code>.
+                  A literal or an expression, for example <code>{"{{ input.player_id }}"}</code>. Empty: the profile's default.
                 </p>
               </div>
             );

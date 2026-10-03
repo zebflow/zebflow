@@ -38,7 +38,7 @@ which rooms exist and whether they're joinable.
 ```
 | trigger.webhook --route /game --method GET
 | sekejap.query.run -- "SELECT * FROM game_rooms WHERE status = 'waiting'"
-| script.result.run -- "return { rooms: input.query.rows }"
+| javascript.script.run -- "return { rooms: input.query.rows }"
 | web.response.send --template pages/game-lobby.tsx
 ```
 
@@ -49,7 +49,7 @@ register game/room --
 [a] trigger.webhook --route /game/:room --method GET
 [b] sekejap.query.run --param "1={{ input.webhook.params.room }}" -- "SELECT * FROM game_rooms WHERE _key = $1"
 [c] logic.if --expr "input.query.rows.length > 0"
-[d] script.result.run -- "return { room: input.query.rows[0] };"
+[d] javascript.script.run -- "return { room: input.query.rows[0] };"
 [e] web.response.send --template pages/game-room.tsx
 [f] web.response.send --status 302 --header "Location=/game"
 
@@ -65,13 +65,15 @@ register game/room --
 ```zf
 register game/api-room-create --
 [trig] trigger.webhook --route /api/game/rooms --method POST
-[draft] script.result.run -- "const id = 'room-' + Math.random().toString(36).slice(2,8); return { id, name: (input.webhook.body && input.webhook.body.name) || id };"
-[ins] sekejap.query.run --write --param "1={{ $nodes.draft.id }}" --param "2={{ $nodes.draft.name }}" --param "3={{ Date.now() }}" -- "INSERT INTO game_rooms (_key, name, status, created_at) VALUES ($1, $2, 'waiting', $3)"
-[ok] script.result.run -- "return { ok: true, room_id: $nodes.draft.id };"
+[draft] javascript.script.run -- "const id = 'room-' + Math.random().toString(36).slice(2,8); return { id, name: (input.webhook.body && input.webhook.body.name) || id };"
+[ins] sekejap.query.run --write --param "1={{ $nodes.draft.script.id }}" --param "2={{ $nodes.draft.script.name }}" --param "3={{ Date.now() }}" -- "INSERT INTO game_rooms (_key, name, status, created_at) VALUES ($1, $2, 'waiting', $3)"
+[ok] javascript.script.run -- "return { ok: true, room_id: $nodes.draft.script.id };"
+[resp] web.response.send --body "{{ input.script }}"
 
 [trig] -> [draft]
 [draft] -> [ins]
 [ins] -> [ok]
+[ok] -> [resp]
 ```
 
 ### ws-player-join — player joins room
@@ -123,7 +125,7 @@ An invalid move just stops at `[guard]` — there is no `false` edge, and a
 - `trigger.webhook` — HTTP lobby and room pages
 - `trigger.room --event <name>` — WebSocket event handlers (join, move, leave); `--room` omitted, it is a literal filter, not per-connection routing
 - `sekejap.query.run` — track which rooms exist; plain `SELECT`/`INSERT`, no `--table`/`--op`
-- `script` — shape the lobby rows and new room ids
+- `javascript.script.run` — shape the lobby rows and new room ids; its answer sits under `script` (`$nodes.<id>.script.<field>`), the rest of the payload is kept
 - `logic.if` — move validation
 - `ws.state.update` / `ws.state.put` / `ws.state.delete --key "/players/{{ expr }}"` — change the server-side room state
 - `ws.message.send --body "{{ expr }}"` — broadcast events to all players in the room

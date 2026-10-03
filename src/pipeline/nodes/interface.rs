@@ -2,7 +2,7 @@
 //!
 //! Every node receives a [`NodeExecutionInput`] and returns a [`NodeExecutionOutput`].
 //! The engine wraps each execution with a timeout (default 30s, overridable per-node
-//! via `--timeout <seconds>` in DSL or `timeout_secs` in the node's config JSON).
+//! via `--timeout <duration>` in DSL, e.g. `--timeout 30s`, or `timeout` in the node's config JSON).
 
 use async_trait::async_trait;
 use serde_json::Value;

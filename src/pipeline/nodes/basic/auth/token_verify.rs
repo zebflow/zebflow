@@ -3,7 +3,7 @@
 //! # Why this is a node and not three lines of script
 //!
 //! The platform could sign a token and not check one, which left every auth
-//! pipeline to verify in `script.result.run`: split the JWT, HMAC the halves, compare
+//! pipeline to verify in `javascript.script.run`: split the JWT, HMAC the halves, compare
 //! the result. That is where `alg: none` acceptance, algorithm confusion, and
 //! non-constant-time comparison come from — each an ordinary mistake to make
 //! and an invisible one to review. The sandbox has no constant-time compare to
@@ -43,73 +43,36 @@ pub fn definition() -> NodeDefinition {
         kind: NODE_KIND.to_string(),
         capabilities: vec![NodeCapability::Process],
         title: "Verify Token".to_string(),
-        description: "Checks a JWT that arrived as data — a password-reset or e-mail-confirmation link (`$trigger.query.token`), a token \
-            posted by another system (`$trigger.body.token`) — against a `jwt_signing_key` credential. `valid` carries the payload plus \
-            `token: { valid: true, claims, sub }`; `invalid` carries the payload plus `token: { valid: false, reason }`. The algorithm comes from the credential, never from the token's header, \
-            so `alg: none` is refused. To protect a route with the session cookie or a bearer header do not use this: put \
-            `--auth jwt --credential <id>` on the trigger and read `$trigger.auth`."
+        description: "Checks the JWT in `--from` — a password-reset or e-mail-confirmation link (`$trigger.query.token`), a token \
+            posted by another system (`$trigger.body.token`) — against a `jwt_signing_key` credential. Adds `token: { valid, claims }` \
+            on the `valid` pin, or `token: { valid: false, reason }` on `invalid`, and keeps the rest of the payload. The algorithm \
+            comes from the credential, never from the token's header, so `alg: none` is refused; a token without `exp` is invalid. \
+            To protect a route with the session cookie or a bearer header do not use this: put `--auth jwt --credential <id>` on \
+            the trigger and read `$trigger.auth`."
             .to_string(),
-        input_schema: json!({
-            "type": "object",
-            "description": "Input carrying the token to check."
-        }),
-        output_schema: json!({
-            "type": "object",
-            "properties": {
-                "token": {
-                    "type": "object",
-                    "properties": {
-                        "valid": { "type": "boolean" },
-                        "claims": { "type": "object", "description": "Verified claims (valid pin)." },
-                        "sub": { "type": "string", "description": "Subject claim, lifted for convenience." },
-                        "reason": { "type": "string", "description": "Why it failed (invalid pin)." }
-                    }
-                }
-            }
-        }),
+        input_schema: json!({ "type": "object", "description": "Any payload; it is kept and `token` is added." }),
+        output_schema: json!({ "type": "object", "properties": { "token": { "type": "object", "properties": {
+            "valid": { "type": "boolean" },
+            "claims": { "type": "object", "description": "The verified claims (valid pin)." },
+            "reason": { "type": "string", "description": "Which check failed (invalid pin)." }
+        } } } }),
         input_pins: vec![INPUT_PIN_IN.to_string()],
         output_pins: vec![
             OUTPUT_PIN_VALID.to_string(),
             OUTPUT_PIN_INVALID.to_string(),
         ],
-        // The token is a bearer credential: whoever holds it is the user. It
-        // must not be recorded, and it did not come from the credential store,
-        // so rule 3 by value cannot see it.
-        secret_paths: vec!["/token".to_string()],
         dsl_flags: vec![
+            DslFlag { required: true, ..flag("--credential", "credential_id", "The jwt_signing_key credential that signed it.", "text") },
+            // The token is a bearer credential — holding it is being the user
+            // — and it never came from the credential store, so rule 3 by
+            // value cannot see it: the run record masks the flag instead.
             DslFlag {
-                flag: "--credential".to_string(),
-                config_key: "credential_id".to_string(),
-                description: "Id of the `jwt_signing_key` credential that signed it".to_string(),
-                kind: DslFlagKind::Scalar,
                 required: true,
-                ..Default::default()
+                secret: true,
+                ..flag("--from", "from", "The token to check — usually {{ $trigger.query.token }} or {{ $trigger.body.token }}.", "text")
             },
-            DslFlag {
-                flag: "--token".to_string(),
-                config_key: "token".to_string(),
-                description: "The token — a literal or {{ expr }}, e.g. \"{{ $trigger.query.token }}\" or \"{{ $trigger.body.token }}\""
-                    .to_string(),
-                kind: DslFlagKind::Scalar,
-                required: true,
-                ..Default::default()
-            },
-            DslFlag {
-                flag: "--issuer".to_string(),
-                config_key: "issuer".to_string(),
-                description: "Require this `iss` claim".to_string(),
-                kind: DslFlagKind::Scalar,
-                required: false,
-                ..Default::default()
-            },
-            DslFlag {
-                flag: "--audience".to_string(),
-                config_key: "audience".to_string(),
-                description: "Require this `aud` claim".to_string(),
-                kind: DslFlagKind::Scalar,
-                required: false,
-                ..Default::default()
-            },
+            flag("--issuer", "issuer", "Require this iss claim.", "text"),
+            flag("--audience", "audience", "Require this aud claim.", "text"),
         ],
         fields: vec![
             NodeFieldDef {
@@ -121,10 +84,10 @@ pub fn definition() -> NodeDefinition {
                 ..Default::default()
             },
             NodeFieldDef {
-                name: "token".to_string(),
+                name: "from".to_string(),
                 label: "Token".to_string(),
                 field_type: NodeFieldType::Text,
-                help: Some("Usually a cookie: {{ input.cookies.session }}".to_string()),
+                help: Some("The token to check, e.g. {{ $trigger.query.token }}.".to_string()),
                 span: Some("full".to_string()),
                 ..Default::default()
             },
@@ -145,15 +108,26 @@ pub fn definition() -> NodeDefinition {
         ],
         layout: vec![
             LayoutItem::Field("credential_id".to_string()),
-            LayoutItem::Field("token".to_string()),
-            LayoutItem::Field("issuer".to_string()),
-            LayoutItem::Field("audience".to_string()),
+            LayoutItem::Field("from".to_string()),
+            LayoutItem::Row { row: vec![LayoutItem::Field("issuer".to_string()), LayoutItem::Field("audience".to_string())] },
         ],
         examples: vec![
-            crate::pipeline::model::NodeExample::dsl("Confirm an e-mail link", r#"auth.token.verify --credential jwt_main --token "{{ $trigger.query.token }}" --audience email-confirm"#)
-                .output(serde_json::json!({ "claims": { "sub": "u_1", "aud": "email-confirm", "exp": 1789000000 }, "sub": "u_1" }))
-                .note("`valid` → mark the user confirmed by `input.sub`; `invalid` → a page saying the link expired."),
+            crate::pipeline::model::NodeExample::dsl("Confirm an e-mail link", r#"auth.token.verify --credential jwt_main --from "{{ $trigger.query.token }}" --audience email-confirm"#)
+                .output(serde_json::json!({ "token": { "valid": true, "claims": { "sub": "u_1", "aud": "email-confirm", "exp": 1789000000 } } }))
+                .note("`valid` → mark the user confirmed by `input.token.claims.sub`; `invalid` → a page saying the link expired."),
         ],
+        ..Default::default()
+    }
+}
+
+/// A scalar flag with its 0.11 metadata.
+fn flag(name: &str, key: &str, description: &str, value: &str) -> DslFlag {
+    DslFlag {
+        flag: name.to_string(),
+        config_key: key.to_string(),
+        description: description.to_string(),
+        kind: DslFlagKind::Scalar,
+        value: value.to_string(),
         ..Default::default()
     }
 }
@@ -162,8 +136,9 @@ pub fn definition() -> NodeDefinition {
 pub struct Config {
     #[serde(default)]
     pub credential_id: String,
+    /// The token to check.
     #[serde(default)]
-    pub token: String,
+    pub from: String,
     #[serde(default)]
     pub issuer: String,
     #[serde(default)]
@@ -179,8 +154,8 @@ impl Node {
     pub fn new(config: Config, credentials: Arc<CredentialService>) -> Result<Self, PipelineError> {
         if config.credential_id.trim().is_empty() {
             return Err(PipelineError::new(
-                "FW_NODE_AUTH_VERIFY_CONFIG",
-                "config.credential_id must not be empty",
+                "FW_NODE_AUTH_TOKEN_VERIFY_CONFIG",
+                "--credential is empty; it needs the jwt_signing_key credential's id",
             ));
         }
         Ok(Self {
@@ -222,16 +197,16 @@ impl NodeHandler for Node {
         let credential = self
             .credentials
             .get_project_credential(owner, project, &self.config.credential_id)
-            .map_err(|err| PipelineError::new("FW_NODE_AUTH_VERIFY_CREDENTIAL", err.to_string()))?
+            .map_err(|err| PipelineError::new("FW_NODE_AUTH_TOKEN_VERIFY_CREDENTIAL", err.to_string()))?
             .ok_or_else(|| {
                 PipelineError::new(
-                    "FW_NODE_AUTH_VERIFY_CREDENTIAL_MISSING",
+                    "FW_NODE_AUTH_TOKEN_VERIFY_CREDENTIAL_MISSING",
                     format!("credential '{}' not found", self.config.credential_id),
                 )
             })?;
         if credential.kind != "jwt_signing_key" {
             return Err(PipelineError::new(
-                "FW_NODE_AUTH_VERIFY_CREDENTIAL_KIND",
+                "FW_NODE_AUTH_TOKEN_VERIFY_CREDENTIAL_KIND",
                 format!(
                     "credential '{}' is kind '{}', expected 'jwt_signing_key'",
                     credential.credential_id, credential.kind
@@ -240,7 +215,7 @@ impl NodeHandler for Node {
         }
 
         // An empty token is a logged-out visitor, not a broken pipeline.
-        let token = self.config.token.trim();
+        let token = self.config.from.trim();
         if token.is_empty() {
             return Ok(invalid(&input.payload, "no token presented"));
         }
@@ -262,7 +237,7 @@ impl NodeHandler for Node {
             "RS512" | "rs512" => Algorithm::RS512,
             other => {
                 return Err(PipelineError::new(
-                    "FW_NODE_AUTH_VERIFY_ALGORITHM",
+                    "FW_NODE_AUTH_TOKEN_VERIFY_ALGORITHM",
                     format!("unsupported JWT algorithm '{other}'"),
                 ));
             }
@@ -276,7 +251,7 @@ impl NodeHandler for Node {
                     .and_then(Value::as_str)
                     .ok_or_else(|| {
                         PipelineError::new(
-                            "FW_NODE_AUTH_VERIFY_SECRET_MISSING",
+                            "FW_NODE_AUTH_TOKEN_VERIFY_SECRET_MISSING",
                             "jwt_signing_key credential missing 'secret' field",
                         )
                     })?;
@@ -292,12 +267,12 @@ impl NodeHandler for Node {
                     .and_then(Value::as_str)
                     .ok_or_else(|| {
                         PipelineError::new(
-                            "FW_NODE_AUTH_VERIFY_SECRET_MISSING",
+                            "FW_NODE_AUTH_TOKEN_VERIFY_SECRET_MISSING",
                             "jwt_signing_key credential missing 'public_key' for an RSA algorithm",
                         )
                     })?;
                 DecodingKey::from_rsa_pem(pem.as_bytes()).map_err(|err| {
-                    PipelineError::new("FW_NODE_AUTH_VERIFY_KEY", err.to_string())
+                    PipelineError::new("FW_NODE_AUTH_TOKEN_VERIFY_KEY", err.to_string())
                 })?
             }
         };
@@ -314,17 +289,11 @@ impl NodeHandler for Node {
 
         match jsonwebtoken::decode::<Value>(token, &key, &validation) {
             Ok(data) => {
-                let sub = data
-                    .claims
-                    .get("sub")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default()
-                    .to_string();
                 Ok(NodeExecutionOutput {
                     output_pins: vec![OUTPUT_PIN_VALID.to_string()],
                     payload: crate::pipeline::nodes::shared::util::with_answer(
                         &input.payload,
-                        json!({ "token": { "valid": true, "claims": data.claims, "sub": sub } }),
+                        json!({ "token": { "valid": true, "claims": data.claims } }),
                     ),
                     trace: vec![format!("node_kind={NODE_KIND}"), "valid=true".to_string()],
                 })
@@ -339,22 +308,13 @@ impl NodeHandler for Node {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::platform::model::{PlatformConfig, UpsertProjectCredentialRequest};
-    use crate::platform::services::PlatformService;
+    use crate::platform::model::UpsertProjectCredentialRequest;
     use crate::pipeline::nodes::NodeExecutionInput;
 
     const KEY: &str = "test-signing-key-not-a-real-one-0123456789";
 
-    fn platform(tag: &str) -> Arc<PlatformService> {
-        let mut cfg = PlatformConfig::default();
-        cfg.data_root = std::env::temp_dir().join(format!(
-            "zf_verify_{tag}_{}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        let p = Arc::new(PlatformService::from_config(cfg).expect("platform"));
+    fn platform(_tag: &str) -> crate::pipeline::nodes::shared::test_platform::TestPlatform {
+        let p = crate::pipeline::nodes::shared::test_platform::test_platform();
         p.credentials
             .upsert_project_credential(
                 "superadmin",
@@ -375,11 +335,11 @@ mod tests {
         json!({ "owner": "superadmin", "project": "default", "pipeline": "t", "request_id": "r" })
     }
 
-    async fn verify(p: &Arc<PlatformService>, token: &str) -> NodeExecutionOutput {
+    async fn verify(p: &crate::pipeline::nodes::shared::test_platform::TestPlatform, token: &str) -> NodeExecutionOutput {
         Node::new(
             Config {
                 credential_id: "sign".to_string(),
-                token: token.to_string(),
+                from: token.to_string(),
                 ..Default::default()
             },
             p.credentials.clone(),
@@ -388,7 +348,7 @@ mod tests {
         .execute_async(NodeExecutionInput {
             node_id: "verify".to_string(),
             input_pin: INPUT_PIN_IN.to_string(),
-            payload: json!({}),
+            payload: json!({ "kept": 1 }),
             metadata: meta(),
             bus: None,
         })
@@ -418,7 +378,9 @@ mod tests {
         let p = platform("ok");
         let out = verify(&p, &sign(json!({ "sub": "a@b.c", "exp": later() }))).await;
         assert_eq!(out.output_pins, vec![OUTPUT_PIN_VALID.to_string()]);
-        assert_eq!(out.payload["token"]["sub"], "a@b.c");
+        assert_eq!(out.payload["token"]["valid"], true);
+        assert_eq!(out.payload["token"]["claims"]["sub"], "a@b.c");
+        assert_eq!(out.payload["kept"], 1, "the payload is kept");
     }
 
     /// The attack this node exists to stop. A forged token is `alg: none` with
@@ -486,10 +448,14 @@ mod tests {
     }
 
     /// The token is a bearer credential — holding it is being the user — and it
-    /// never came from the credential store, so rule 3 by value cannot see it.
+    /// never came from the credential store, so rule 3 by value cannot see it:
+    /// `--from` is declared secret, and the run record masks it.
     #[test]
-    fn the_definition_declares_the_token_as_secret() {
-        assert!(definition().secret_paths.iter().any(|p| p == "/token"));
+    fn the_token_flag_is_declared_secret() {
+        let def = definition();
+        let from = def.dsl_flags.iter().find(|f| f.flag == "--from").expect("--from");
+        assert!(from.secret && from.required);
+        assert!(!def.dsl_flags.iter().any(|f| f.flag == "--token"), "--token is retired");
     }
 
     pub(super) fn b64(bytes: &[u8]) -> String {

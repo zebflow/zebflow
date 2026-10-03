@@ -254,7 +254,7 @@ mod tests {
     fn node(id: &str) -> PipelineNode {
         PipelineNode {
             id: id.to_string(),
-            kind: "script.result.run".to_string(),
+            kind: "javascript.script.run".to_string(),
             input_pins: vec!["in".to_string()],
             output_pins: vec!["out".to_string()],
             config: json!({}),

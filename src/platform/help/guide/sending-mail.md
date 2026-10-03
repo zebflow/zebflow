@@ -47,7 +47,7 @@ register account/activate --title "Activate account"
   | trigger.webhook --route /account/activate --method POST
   | sekejap.query.run --param "1={{ input.webhook.body.email }}" -- "SELECT * FROM users WHERE email = $1"
   | mail.message.send --credential relay
-              --to "{{ input.query.rows[0].email }}"
+              --recipient "{{ input.query.rows[0].email }}"
               --subject "Activate your Researchsite account"
               --text "Follow the link we sent to activate your account."
   | web.response.send
@@ -58,16 +58,16 @@ onto the root (`guide/pipeline` payload conventions). `sekejap.query.run` answer
 `query: { columns, rows, row_count, … }`, so the row is `input.query.rows[0]`,
 never a bare `input.email`.
 
-`--to`, `--subject`, `--text`, `--html`, `--from` and `--reply-to` each take
-either a literal or a whole `{{ expr }}` into the flowing payload — the same
-convention `auth.token.create` uses for claims. An undefined path throws
-rather than silently posting empty text, so a typo fails loudly instead of
-mailing a blank field.
+`--recipient`, `--subject`, `--text`, `--html`, `--sender` and `--reply-to`
+each take either a literal or a whole `{{ expr }}` into the flowing payload —
+the same convention `auth.token.create` uses for claims. An undefined path
+throws rather than silently posting empty text, so a typo fails loudly
+instead of mailing a blank field.
 
 Give both `--text` and `--html` and the message goes out as
 `multipart/alternative`: the reader's client picks. One of the two is required.
 
-The node adds `mail: { "sent": true, "attached": […], "to": …, "subject": … }`
+The node adds `message: { "sent": true, "id": …, "recipient": […], "subject": …, "attached": […] }`
 to the payload and keeps the rest — what was sent and to whom, never the
 credential.
 
@@ -75,14 +75,14 @@ credential.
 
 | Code | Meaning |
 |---|---|
-| `FW_NODE_MAIL_CREDENTIAL_MISSING` | no credential with that id in this project |
-| `FW_NODE_MAIL_CREDENTIAL_KIND` | the credential exists but is not kind `smtp` |
-| `FW_NODE_MAIL_CREDENTIAL` | the credential could not be read or decoded |
-| `FW_NODE_MAIL_ADDRESS` | the recipient, from, or reply-to is not a valid mailbox — refused before any connection is opened |
-| `FW_NODE_MAIL_CONFIG` | neither `--text` nor `--html` was given |
-| `FW_NODE_MAIL_BUILD` | the message could not be assembled (e.g. a bad header value) |
-| `FW_NODE_MAIL_TRANSPORT` | the relay connection could not be established (TLS/network) |
-| `FW_NODE_MAIL_SEND` | the relay refused or was unreachable; the message carries the relay's own reason |
+| `FW_NODE_MAIL_MESSAGE_SEND_CREDENTIAL_MISSING` | no credential with that id in this project |
+| `FW_NODE_MAIL_MESSAGE_SEND_CREDENTIAL_KIND` | the credential exists but is not kind `smtp` |
+| `FW_NODE_MAIL_MESSAGE_SEND_CREDENTIAL` | the credential could not be read or decoded |
+| `FW_NODE_MAIL_MESSAGE_SEND_ADDRESS` | a recipient, the sender, or reply-to is not a valid mailbox — refused before any connection is opened |
+| `FW_NODE_MAIL_MESSAGE_SEND_CONFIG` | no `--recipient`, more than 50, more than 20 `--file`s, or neither `--text` nor `--html` |
+| `FW_NODE_MAIL_MESSAGE_SEND_FILE` | a `--file` or `--inline` source could not be read from its store |
+| `FW_NODE_MAIL_MESSAGE_SEND_TRANSPORT` | the relay connection could not be established (TLS/network) |
+| `FW_NODE_MAIL_MESSAGE_SEND` | the relay refused or was unreachable; the message carries the relay's own reason |
 
 ## Testing without a relay
 

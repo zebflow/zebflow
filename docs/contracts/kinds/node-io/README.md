@@ -57,7 +57,7 @@ already respects this line; the contract makes it law.
 
 ## The error-code registry
 
-Codes (`FW_NODE_MAIL_ADDRESS`, …) are a registry with IANA manners: each code
+Codes (`FW_NODE_MAIL_MESSAGE_SEND_ADDRESS`, …) are a registry with IANA manners: each code
 is declared once with its class, **append-only, never renamed, never reused**.
 A code's class never changes — if a refusal turns out to be a system fault,
 that is a new code, not an edit. `logic.retry` retries only `failed`;
@@ -99,9 +99,13 @@ that is a new code, not an edit. `logic.retry` retries only `failed`;
   sent, `null` for an unsent `--optional` field.
 - **Manners are per family.** A producer (query, convert, generate) replaces
   the payload with its product; a reader (`kv.entry.get`, `kv.entry.head`, `kv.entry.increment`)
-  merges into it; a doer (`kv.entry.put`, `ws.message.send`) passes it through or returns a
-  receipt. Sibling nodes never differ in manner, and every node's
-  `output_schema` states which it is.
+  merges into it; a doer (`ws.message.send`) passes it through or returns a
+  receipt. Every `kv.*` node merges: it adds its one key — `entry`
+  (`kv.entry.get`, `kv.entry.put`, `kv.entry.delete`, `kv.entry.head`,
+  `kv.entry.increment`, `kv.entry.expire`) or `message` (`kv.message.publish`)
+  — and keeps the rest of the payload; the family never passes through
+  unchanged or returns a bare receipt. Sibling nodes never differ in manner,
+  and every node's `output_schema` states which it is.
 
 ## Value resolution — one mechanism
 

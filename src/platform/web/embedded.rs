@@ -362,8 +362,8 @@ pub const PLATFORM_NODE_ICON_ASSETS: &[EmbeddedAsset] = &[
         bytes: include_bytes!("assets/node-icons/zebflow/table.query.run.svg"),
     },
     EmbeddedAsset {
-        path: "zebflow/script.result.run.svg",
-        bytes: include_bytes!("assets/node-icons/zebflow/script.result.run.svg"),
+        path: "zebflow/javascript.script.run.svg",
+        bytes: include_bytes!("assets/node-icons/zebflow/javascript.script.run.svg"),
     },
     EmbeddedAsset {
         path: "zebflow/sqlite.query.run.svg",

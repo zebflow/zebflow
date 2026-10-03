@@ -7120,7 +7120,7 @@ fn settings_policy_cards() -> Vec<Value> {
 fn node_group_rank(kind: &str) -> u8 {
     if kind.starts_with("trigger.") {
         0
-    } else if kind.starts_with("script.") {
+    } else if kind.starts_with("javascript.") || kind.starts_with("typescript.") {
         1
     } else if kind.starts_with("logic.") {
         2
@@ -7134,8 +7134,10 @@ fn node_group_rank(kind: &str) -> u8 {
 fn node_group_prefix(kind: &str) -> &'static str {
     if kind.starts_with("trigger.") {
         "trigger"
-    } else if kind.starts_with("script.") {
-        "script"
+    } else if kind.starts_with("javascript.") {
+        "javascript"
+    } else if kind.starts_with("typescript.") {
+        "typescript"
     } else if kind.starts_with("logic.") {
         "logic"
     } else if kind.starts_with("ai.") {
@@ -29096,7 +29098,7 @@ mod webhook_sse_tests {
             "id": "t",
             "nodes": [
                 { "id": "n0", "kind": first_kind, "config": config },
-                { "id": "n1", "kind": "script.result.run", "config": { "source": "return input" } }
+                { "id": "n1", "kind": "javascript.script.run", "config": { "source": "return input" } }
             ],
             "edges": [ { "from_node": "n0", "from_pin": "out", "to_node": "n1", "to_pin": "in" } ]
         }))

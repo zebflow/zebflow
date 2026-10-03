@@ -8,7 +8,8 @@ const NODE_KIND_COLORS: Record<string, string> = {
   "trigger.error": "#7f1d1d",
   "trigger.room": "#064e3b",
   "trigger.socket": "#064e3b",
-  "script.result.run": "#1e3a8a",
+  "javascript.script.run": "#1e3a8a",
+  "typescript.script.run": "#1e3a8a",
   "http.response.fetch": "#7c2d12",
   "sekejap.query.run": "#0f766e",
   "table.data.convert": "#0f766e",
@@ -101,7 +102,7 @@ export function categoryForNodeKind(kind: string): string {
   // Installed nodes carry their own ui_category. This fallback only runs when a
   // bundle left it empty, and the kind never encodes the implementation.
   if (canonical.startsWith("x.")) return "installed";
-  if (canonical === "script.result.run" || canonical === "logic.concept") return "logic";
+  if (canonical.startsWith("javascript.") || canonical.startsWith("typescript.") || canonical === "logic.concept") return "logic";
   return "other";
 }
 

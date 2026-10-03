@@ -36,6 +36,18 @@ pub fn duration(value: &str, flag: &str, code: &'static str) -> Result<Duration,
     Ok(Duration::from_millis(millis))
 }
 
+/// A duration as a flag would write it: the largest unit that divides it
+/// (`30s`, `2m`, `1h`, `1500ms`).
+pub fn describe_duration(duration: Duration) -> String {
+    let millis = duration.as_millis() as u64;
+    DURATION_UNITS
+        .iter()
+        .rev()
+        .find(|(_, factor)| millis >= *factor && millis % factor == 0)
+        .map(|(suffix, factor)| format!("{}{suffix}", millis / factor))
+        .unwrap_or_else(|| format!("{millis}ms"))
+}
+
 /// `512B`, `10KB`, `10MB`, `1GB` (×1000) or `64KiB`, `10MiB`, `1GiB` (×1024).
 pub fn size(value: &str, flag: &str, code: &'static str) -> Result<u64, PipelineError> {
     amount(value, SIZE_UNITS, flag, code, "a size such as 512B, 10MB or 10MiB")
@@ -81,6 +93,15 @@ mod tests {
         assert_eq!(duration("1h", "--timeout", CODE).unwrap(), Duration::from_secs(3600));
         assert_eq!(duration("7d", "--ttl", CODE).unwrap(), Duration::from_secs(7 * 86_400));
         assert_eq!(duration("1.5s", "--timeout", CODE).unwrap(), Duration::from_millis(1500));
+    }
+
+    #[test]
+    fn a_duration_is_described_in_its_largest_whole_unit() {
+        assert_eq!(describe_duration(Duration::from_secs(30)), "30s");
+        assert_eq!(describe_duration(Duration::from_secs(120)), "2m");
+        assert_eq!(describe_duration(Duration::from_secs(3600)), "1h");
+        assert_eq!(describe_duration(Duration::from_millis(1500)), "1500ms");
+        assert_eq!(describe_duration(Duration::from_secs(90)), "90s");
     }
 
     #[test]

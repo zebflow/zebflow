@@ -111,7 +111,7 @@ into. Four rules, in order of authority:
 
 **A secret typed into a free-text config field is not defended, and cannot be.**
 Writing `http://user:hunter2@host/` into a `url`, or a password into an
-`script.result.run` body, puts it in the run history in full. This is the same act as
+`javascript.script.run` body, puts it in the run history in full. This is the same act as
 pasting a password into a chat message: the mechanism that keeps it out —
 credentials — was available and was bypassed. No redaction rule can tell a
 secret from ordinary text inside a field whose whole purpose is free text, and

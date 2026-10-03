@@ -258,11 +258,11 @@ pipeline_register
   body="""
   | trigger.webhook --route /admin/post --method PUT \
       --auth jwt --credential session-key --role admin
-  | script.result.run -- "
+  | javascript.script.run -- "
       const { slug, title, body, status } = input.webhook.body
       return { slug, title, body, status: status || 'draft' }
     "
-  | pg.query.run --credential main-db --write --param "1={{ input.slug }}" --param "2={{ input.title }}" --param "3={{ input.body }}" --param "4={{ input.status }}" -- "
+  | pg.query.run --credential main-db --write --param "1={{ input.script.slug }}" --param "2={{ input.script.title }}" --param "3={{ input.script.body }}" --param "4={{ input.script.status }}" -- "
       INSERT INTO posts (slug, title, body, status)
       VALUES ($1, $2, $3, $4)
       ON CONFLICT (slug) DO UPDATE

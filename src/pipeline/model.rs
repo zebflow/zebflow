@@ -351,13 +351,13 @@ pub fn engine_common_dsl_flags() -> Vec<DslFlag> {
         },
         DslFlag {
             flag: "--timeout".to_string(),
-            config_key: "timeout_secs".to_string(),
-            description: "Engine-level execution timeout for this node in seconds. \
-                Overrides the project-level pipeline_node_timeout_secs. \
-                Clamped to 5–3600s."
+            config_key: NODE_TIMEOUT_KEY.to_string(),
+            description: "How long this node may run, e.g. 30s, 2m or 1h (1s to 1h). \
+                Omitted: the project's node timeout."
                 .to_string(),
             kind: DslFlagKind::Scalar,
             required: false,
+            value: "duration".to_string(),
             ..Default::default()
         },
         DslFlag {
@@ -386,17 +386,51 @@ pub fn engine_common_dsl_flags() -> Vec<DslFlag> {
     ]
 }
 
+/// The config key `--timeout` writes: how long one node may run.
+pub const NODE_TIMEOUT_KEY: &str = "timeout";
+/// The shortest `--timeout` a node takes.
+pub const MIN_NODE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1);
+/// The longest `--timeout` a node takes (`node-conventions.md` §7).
+pub const MAX_NODE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3600);
+/// A `--timeout` that is not a duration, or is outside 1s–1h.
+pub const NODE_TIMEOUT_CONFIG_CODE: &str = "FW_NODE_TIMEOUT_CONFIG";
+
+/// A node's `--timeout`, read from its resolved config: `None` when it is not
+/// given (the project's node timeout applies). A value that is not a
+/// duration, or is under 1s or over 1h, is refused — never clamped into
+/// range, so a typo cannot quietly become a different limit.
+pub fn node_timeout(config: &serde_json::Value) -> Result<Option<std::time::Duration>, PipelineError> {
+    let refuse = |shown: &str| {
+        PipelineError::new(
+            NODE_TIMEOUT_CONFIG_CODE,
+            format!("--timeout '{shown}' must be a duration from 1s to 1h, such as 30s, 2m or 1h"),
+        )
+    };
+    let text = match config.get(NODE_TIMEOUT_KEY) {
+        None | Some(serde_json::Value::Null) => return Ok(None),
+        Some(serde_json::Value::String(text)) if text.trim().is_empty() => return Ok(None),
+        Some(serde_json::Value::String(text)) => text.trim().to_string(),
+        Some(other) => return Err(refuse(&other.to_string())),
+    };
+    let duration = crate::pipeline::nodes::shared::units::duration(&text, "--timeout", NODE_TIMEOUT_CONFIG_CODE)
+        .map_err(|_| refuse(&text))?;
+    if duration < MIN_NODE_TIMEOUT || duration > MAX_NODE_TIMEOUT {
+        return Err(refuse(&text));
+    }
+    Ok(Some(duration))
+}
+
 /// UI fields for engine-level common config, injected into every node definition.
 pub fn engine_common_fields() -> Vec<NodeFieldDef> {
     vec![NodeFieldDef {
-        name: "timeout_secs".to_string(),
-        label: "Timeout (s)".to_string(),
+        name: NODE_TIMEOUT_KEY.to_string(),
+        label: "Timeout".to_string(),
         field_type: NodeFieldType::Text,
         help: Some(
-            "Engine-level execution timeout in seconds. Overrides project default. Range: 5–3600."
+            "How long this node may run, e.g. 30s, 2m or 1h (1s to 1h). Empty: the project's node timeout."
                 .to_string(),
         ),
-        placeholder: Some("30".to_string()),
+        placeholder: Some("30s".to_string()),
         ..Default::default()
     }]
 }
@@ -1711,3 +1745,28 @@ impl Display for PipelineError {
 }
 
 impl std::error::Error for PipelineError {}
+
+#[cfg(test)]
+mod node_timeout_tests {
+    use std::time::Duration;
+
+    use serde_json::json;
+
+    use super::{NODE_TIMEOUT_CONFIG_CODE, engine_common_dsl_flags, node_timeout};
+
+    /// `--timeout` is a duration from 1s to 1h; anything else is refused,
+    /// never clamped into range.
+    #[test]
+    fn the_engine_timeout_is_a_duration_from_one_second_to_one_hour() {
+        assert_eq!(node_timeout(&json!({})).unwrap(), None);
+        assert_eq!(node_timeout(&json!({ "timeout": "" })).unwrap(), None);
+        assert_eq!(node_timeout(&json!({ "timeout": "30s" })).unwrap(), Some(Duration::from_secs(30)));
+        assert_eq!(node_timeout(&json!({ "timeout": "1h" })).unwrap(), Some(Duration::from_secs(3600)));
+        for bad in [json!("30"), json!(30), json!("500ms"), json!("2h"), json!("soon")] {
+            let err = node_timeout(&json!({ "timeout": bad })).expect_err("refused");
+            assert_eq!(err.code, NODE_TIMEOUT_CONFIG_CODE, "{bad}");
+        }
+        let flag = engine_common_dsl_flags().into_iter().find(|f| f.flag == "--timeout").expect("--timeout");
+        assert_eq!((flag.config_key.as_str(), flag.value.as_str()), ("timeout", "duration"));
+    }
+}

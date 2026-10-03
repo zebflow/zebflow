@@ -25,8 +25,7 @@
           "headers": {
             "Content-Type": "application/json"
           },
-          "body": "{}",
-          "response_type": "json"
+          "body": "{}"
         },
         "input_pins": [
           "in"

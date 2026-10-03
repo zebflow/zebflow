@@ -229,22 +229,13 @@ fn parse_and_validate_pipeline_source_for_save(
 /// line number back instead of a node that saves cleanly and fails in
 /// production.
 ///
-/// Two things are deliberately NOT checked here, because they are not
-/// decidable at save time:
-///   * `source_expr`, whose script is produced by a `{{ }}` at run time;
-///   * anything about termination, allocation, or backtracking, which is the
-///     host watchdog's job.
+/// Termination, allocation and backtracking are deliberately NOT checked
+/// here: they are not decidable at save time, and are the host watchdog's job.
 fn validate_script_bodies(graph: &PipelineGraph) -> Result<(), PlatformError> {
     for node in &graph.nodes {
-        if node.kind != "script.result.run" {
-            continue;
-        }
-        let language = node
-            .config
-            .get("language")
-            .and_then(Value::as_str)
-            .unwrap_or("");
-        if !matches!(language, "" | "js" | "javascript") {
+        // `typescript.script.run` is checked by its own compiler at build, not here:
+        // this check parses JavaScript.
+        if node.kind != "javascript.script.run" {
             continue;
         }
         let Some(body) = node.config.get("source").and_then(Value::as_str) else {
@@ -4805,14 +4796,14 @@ mod script_save_validation_tests {
     fn graph_with_config(config: serde_json::Value) -> PipelineGraph {
         serde_json::from_value(serde_json::json!({
             "id": "test",
-            "nodes": [{ "id": "s1", "kind": "script.result.run", "config": config }],
+            "nodes": [{ "id": "s1", "kind": "javascript.script.run", "config": config }],
             "edges": []
         }))
         .expect("test graph must deserialize")
     }
 
     fn graph_with_script(source: &str) -> PipelineGraph {
-        graph_with_config(serde_json::json!({ "language": "js", "source": source }))
+        graph_with_config(serde_json::json!({ "source": source }))
     }
 
     #[test]
@@ -4852,16 +4843,6 @@ mod script_save_validation_tests {
             "return { help: 'import the CSV, and never call eval() yourself' };",
         ))
         .expect("prose mentioning import/eval is data, not code");
-    }
-
-    /// Source produced by `{{ }}` at run time cannot be parsed at save. It must
-    /// not be rejected for being absent, and it stays the run-time path's job.
-    #[test]
-    fn a_run_time_generated_source_is_not_refused_for_being_absent() {
-        let graph = graph_with_config(
-            serde_json::json!({ "language": "js", "source_expr": "{{ input.code }}" }),
-        );
-        validate_script_bodies(&graph).expect("a source_expr node has nothing to check at save");
     }
 
     #[test]

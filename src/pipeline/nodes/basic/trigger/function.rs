@@ -23,7 +23,7 @@
 //! ```text
 //! | trigger.function --title "Lookup user" --description "Looks up one user." \
 //!     --argument user_id:string! "User id." --result ok:boolean! "Whether lookup succeeded."
-//! | script.result.run -- return { greeting: "hello " + input.function.user_id }
+//! | javascript.script.run -- return { greeting: "hello " + input.function.user_id }
 //! ```
 
 use async_trait::async_trait;

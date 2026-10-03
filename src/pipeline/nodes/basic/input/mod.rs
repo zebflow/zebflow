@@ -998,7 +998,7 @@ mod tests {
         assert_eq!(err.code, "FW_NODE_INPUT_UNREACHABLE");
         // An input only the manual trigger reaches is that trigger's business.
         ensure_inputs_reachable_from_empty_triggers(&graph(
-            "[a] trigger.schedule --cron \"0 * * * *\"\n[m] trigger.manual\n[b] input.text prompt\n[s] script.result.run -- \"return input;\"\n[a] -> [s]\n[m] -> [b]\n",
+            "[a] trigger.schedule --cron \"0 * * * *\"\n[m] trigger.manual\n[b] input.text prompt\n[s] javascript.script.run -- \"return input;\"\n[a] -> [s]\n[m] -> [b]\n",
         ))
         .expect("the schedule reaches no input");
         // Webhook, function and manual triggers deliver a caller's envelope.

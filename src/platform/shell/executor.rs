@@ -1289,7 +1289,7 @@ impl DslExecutor {
     ) -> DslOutput {
         if body.is_empty() {
             return DslOutput::err(
-                "run: pipeline body is required. Example: run | trigger.manual | script.result.run -- return { ok: true };",
+                "run: pipeline body is required. Example: run | trigger.manual | javascript.script.run -- return { ok: true };",
             );
         }
 
@@ -2035,7 +2035,7 @@ mod note_tests {
         let (_tmp, ex) = executor();
         let out = ex
             .execute_dsl(
-                r#"register pipelines/test/dsl-exec -- | trigger.manual | script.result.run -- "return { p: 'tmp/runs/' + ctx.request_id + '/files/x.txt' }" | fs.file.put --path "{{ $input.p }}" --text hi"#,
+                r#"register pipelines/test/dsl-exec -- | trigger.manual | javascript.script.run -- "return { p: 'tmp/runs/' + ctx.request_id + '/files/x.txt' }" | fs.file.put --path "{{ $input.script.p }}" --text hi"#,
             )
             .await;
         assert!(out.ok, "{:?}", texts(&out));
@@ -2421,12 +2421,12 @@ mod patch_body_tests {
         let owner = platform.config.default_owner.clone();
         let executor = super::DslExecutor::new(platform.clone(), &owner, "patchpreview");
         let out = executor
-            .execute_dsl(r#"register api/preview -- | trigger.manual | script.result.run -- return input"#)
+            .execute_dsl(r#"register api/preview -- | trigger.manual | javascript.script.run -- return input"#)
             .await;
         assert!(out.lines.iter().any(|l| l.text.contains("registered")), "{:?}", out.lines.iter().map(|l| l.text.clone()).collect::<Vec<_>>());
 
         let out = executor
-            .execute_dsl("patch pipeline api/preview node script.result.run --preview table:rows")
+            .execute_dsl("patch pipeline api/preview node javascript.script.run --preview table:rows")
             .await;
         assert!(!out.lines.iter().any(|l| l.text.starts_with("Error")), "{:?}", out.lines.iter().map(|l| l.text.clone()).collect::<Vec<_>>());
 
@@ -2437,7 +2437,7 @@ mod patch_body_tests {
         // A size rides on the same value; the value is the whole cell, so
         // patching without the suffix puts the panel back at its default.
         let out = executor
-            .execute_dsl("patch pipeline api/preview node script.result.run --preview image@420x300")
+            .execute_dsl("patch pipeline api/preview node javascript.script.run --preview image@420x300")
             .await;
         assert!(!out.lines.iter().any(|l| l.text.starts_with("Error")), "{:?}", out.lines.iter().map(|l| l.text.clone()).collect::<Vec<_>>());
         let described = ops.pipeline_describe("api/preview", false).await;
@@ -2445,12 +2445,12 @@ mod patch_body_tests {
         assert!(!described.text.contains("table:rows"), "the old cell is replaced whole:\n{}", described.text);
 
         let out = executor
-            .execute_dsl("patch pipeline api/preview node script.result.run --preview image@huge")
+            .execute_dsl("patch pipeline api/preview node javascript.script.run --preview image@huge")
             .await;
         assert!(out.lines.iter().any(|l| l.text.contains("bad size")), "{:?}", out.lines.iter().map(|l| l.text.clone()).collect::<Vec<_>>());
 
         let out = executor
-            .execute_dsl("patch pipeline api/preview node script.result.run --preview image")
+            .execute_dsl("patch pipeline api/preview node javascript.script.run --preview image")
             .await;
         assert!(!out.lines.iter().any(|l| l.text.starts_with("Error")), "{:?}", out.lines.iter().map(|l| l.text.clone()).collect::<Vec<_>>());
         let described = ops.pipeline_describe("api/preview", false).await;
@@ -2458,7 +2458,7 @@ mod patch_body_tests {
         assert!(!described.text.contains('@'), "no size is stored any more:\n{}", described.text);
 
         let out = executor
-            .execute_dsl("patch pipeline api/preview node script.result.run --preview off")
+            .execute_dsl("patch pipeline api/preview node javascript.script.run --preview off")
             .await;
         assert!(!out.lines.iter().any(|l| l.text.starts_with("Error")), "{:?}", out.lines.iter().map(|l| l.text.clone()).collect::<Vec<_>>());
 

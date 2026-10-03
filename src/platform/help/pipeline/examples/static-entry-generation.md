@@ -43,6 +43,12 @@ The template receives a single input payload like:
 }
 ```
 
+When a `javascript.script.run` node builds this shape (as in the pipelines below), it
+is the script's own answer, so anything downstream reads it one level deeper —
+`input.script.collection`, `input.script.entry`, `input.script.related_labels`,
+`input.script.generated_at` — since the script node now keeps the rest of the
+payload and adds its own answer under `script` instead of replacing it.
+
 ---
 
 ## Pipeline
@@ -51,7 +57,7 @@ Minimal version as a callable function pipeline:
 
 ```zf
 | trigger.function --description "Generate the static page for one entry" --argument "entry_slug:string!" "Slug of the entry to generate"
-| script.result.run -- "
+| javascript.script.run -- "
 const collection = {
   name: 'Field Notes',
   slug: 'field-notes'
@@ -76,8 +82,8 @@ return {
 "
 | web.site.generate \
     --template pages/static-entry-page.tsx \
-    --path "collections/{{ input.collection.slug }}/{{ input.entry.slug }}/index.html" \
-    --route "/collections/{{ input.collection.slug }}/{{ input.entry.slug }}" \
+    --path "collections/{{ input.script.collection.slug }}/{{ input.script.entry.slug }}/index.html" \
+    --route "/collections/{{ input.script.collection.slug }}/{{ input.script.entry.slug }}" \
     --on-conflict overwrite
 ```
 
@@ -111,7 +117,7 @@ FROM content.entry e
 JOIN content.collection c ON c.collection_id = e.collection_id
 WHERE e.entry_id = $1::uuid
 "
-| script.result.run -- "
+| javascript.script.run -- "
 const row = input.query.rows?.[0];
 if (!row) throw new Error('entry not found');
 return {
@@ -133,7 +139,7 @@ return {
 "
 | web.site.generate \
     --template pages/static-entry-page.tsx \
-    --path "collections/{{ input.collection.slug }}/{{ input.entry.slug }}/index.html"
+    --path "collections/{{ input.script.collection.slug }}/{{ input.script.entry.slug }}/index.html"
 ```
 
 ---

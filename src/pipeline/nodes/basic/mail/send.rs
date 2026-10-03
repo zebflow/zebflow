@@ -12,15 +12,16 @@
 //!
 //! | Use | DSL |
 //! |---|---|
-//! | Activation email | `\| mail.message.send --credential relay --to "{{ input.email }}" --subject "Activate your account" --text "{{ input.body }}"` |
-//! | Fixed recipient | `\| mail.message.send --credential relay --to ops@example.com --subject "Backup done" --text "ok"` |
+//! | Activation email | `\| mail.message.send --credential relay --recipient "{{ input.email }}" --subject "Activate your account" --text "{{ input.body }}"` |
+//! | Fixed recipients | `\| mail.message.send --credential relay --recipient ops@example.com --recipient oncall@example.com --subject "Backup done" --text "ok"` |
 //!
-//! `--to`, `--subject`, `--text`, `--html`, `--from` and `--reply-to` each
-//! take a literal or `{{ expr }}` — the one resolution mechanism
-//! (`docs/contracts/kinds/node-io`): `--to "{{ input.email }}"`. The engine
-//! resolves before this node runs, so the config that arrives here is final.
+//! `--recipient`, `--subject`, `--text`, `--html`, `--sender` and
+//! `--reply-to` each take a literal or `{{ expr }}` — the one resolution
+//! mechanism (`docs/contracts/kinds/node-io`). The engine resolves before
+//! this node runs, so the config that arrives here is final.
 //!
-//! The output carries what was sent and to whom — never the credential.
+//! The answer, `message`, carries what was sent and to whom — never the
+//! credential.
 
 use std::sync::Arc;
 
@@ -40,199 +41,156 @@ use crate::pipeline::{
 use crate::platform::services::CredentialService;
 
 use crate::pipeline::nodes::shared::util::metadata_scope;
-use crate::pipeline::model::LayoutItem;
+use crate::pipeline::model::{DslFlag, DslFlagKind, LayoutItem};
 
 pub const NODE_KIND: &str = "mail.message.send";
 const INPUT_PIN_IN: &str = "in";
 const OUTPUT_PIN_OUT: &str = "out";
+
+/// The most recipients one message takes.
+pub const MAX_RECIPIENTS: u32 = 50;
+/// The most files one message attaches.
+pub const MAX_FILES: u32 = 20;
 
 pub fn definition() -> NodeDefinition {
     NodeDefinition {
         kind: NODE_KIND.to_string(),
         capabilities: vec![NodeCapability::Credential],
         title: "Send Mail".to_string(),
-        description: "Sends one email through a stored smtp credential's relay. \
-                      to/subject/text/html take a literal or {{ expr }}. Submission only — deliverability (SPF, DKIM, \
-                      reputation) is the relay's job."
+        description: "Sends one email through a stored smtp credential's relay to every `--recipient` (repeat, up to 50), with \
+            `--subject` and `--text` and/or `--html`; `--file` attaches a stored file (repeat; it arrives under the FileRef's filename, \
+            or the key's last segment) and `--inline id=FILE` places a picture the HTML draws as `<img src=\"cid:id\">`. Every value \
+            takes a literal or {{ expr }}. Adds `message: { sent, id, recipient, subject, attached }` and keeps the rest of the payload. \
+            Submission only — deliverability (SPF, DKIM, reputation) is the relay's job."
             .to_string(),
-        input_schema: json!({
-            "type": "object",
-            "description": "Payload the address and body paths resolve against."
-        }),
-        output_schema: json!({
-            "type": "object",
-            "properties": {
-                "mail": {
-                    "type": "object",
-                    "properties": {
-                        "sent": { "type": "boolean" },
-                        "attached": { "type": "array" },
-                        "to": { "type": "string" },
-                        "subject": { "type": "string" }
-                    }
-                }
-            }
-        }),
+        input_schema: json!({ "type": "object", "description": "Any payload; it is kept and `message` is added." }),
+        output_schema: json!({ "type": "object", "properties": { "message": { "type": "object", "properties": {
+            "sent": { "type": "boolean" },
+            "id": { "type": "string", "description": "The Message-ID header it was sent with." },
+            "recipient": { "type": "array", "items": { "type": "string" } },
+            "subject": { "type": "string" },
+            "attached": { "type": "array", "items": { "type": "string" }, "description": "Attachment filenames." }
+        } } } }),
         input_pins: vec![INPUT_PIN_IN.to_string()],
         output_pins: vec![OUTPUT_PIN_OUT.to_string()],
         script_available: false,
         script_bridge: None,
-        config_schema: json!({
-            "type": "object",
-            "properties": {
-                "credential_id": { "type": "string", "description": "ID of the smtp credential." },
-                "to":       { "type": "string", "description": "Recipient — literal address or {{ expr }}." },
-                "subject":  { "type": "string", "description": "Subject — literal or {{ expr }}." },
-                "text":     { "type": "string", "description": "Plain-text body — literal or {{ expr }}." },
-                "html":     { "type": "string", "description": "HTML body — literal or {{ expr }}. With text, sent as multipart/alternative." },
-                "from":     { "type": "string", "description": "Override the credential's From." },
-                "reply_to": { "type": "string", "description": "Reply-To address." },
-                "attach":   { "type": "object", "description": "Displayed filename → store path or FileRef, one entry per attachment." },
-                "embed":    { "type": "object", "description": "cid id → store path or FileRef, one entry per inline picture the HTML references as <img src=\"cid:id\">." }
-            }
-        }),
+        config_schema: Default::default(),
         dsl_flags: vec![
-            crate::pipeline::model::DslFlag {
-                flag: "--credential".to_string(),
-                config_key: "credential_id".to_string(),
-                description: "ID of the smtp credential naming the relay.".to_string(),
-                kind: crate::pipeline::model::DslFlagKind::Scalar,
+            DslFlag { required: true, ..flag("--credential", "credential_id", "The smtp credential naming the relay.", "text") },
+            DslFlag {
+                kind: DslFlagKind::RepeatedList,
                 required: true,
-                ..Default::default()
+                max_repeat: Some(MAX_RECIPIENTS),
+                ..flag("--recipient", "recipient", "An address to send to — repeat for several, or one {{ [list] }}.", "text")
             },
-            crate::pipeline::model::DslFlag {
-                flag: "--to".to_string(),
-                config_key: "to".to_string(),
-                description: "Recipient address — literal or {{ expr }}.".to_string(),
-                kind: crate::pipeline::model::DslFlagKind::Scalar,
-                required: true,
-                ..Default::default()
+            DslFlag { required: true, ..flag("--subject", "subject", "The subject line.", "text") },
+            flag("--text", "text", "The plain-text body.", "text"),
+            flag("--html", "html", "The HTML body. Given both, the mail is multipart/alternative.", "text"),
+            flag("--sender", "sender", "The From address, instead of the credential's.", "text"),
+            flag("--reply-to", "reply_to", "Where replies go, when that is not the sender.", "text"),
+            DslFlag {
+                kind: DslFlagKind::RepeatedList,
+                max_repeat: Some(MAX_FILES),
+                ..flag("--file", "file", "A file to attach: a FileRef or a store key, repeated. It arrives under the FileRef's filename, or the key's last segment.", "file")
             },
-            crate::pipeline::model::DslFlag {
-                flag: "--subject".to_string(),
-                config_key: "subject".to_string(),
-                description: "Subject line — literal or {{ expr }}.".to_string(),
-                kind: crate::pipeline::model::DslFlagKind::Scalar,
-                required: true,
-                ..Default::default()
-            },
-            crate::pipeline::model::DslFlag {
-                flag: "--text".to_string(),
-                config_key: "text".to_string(),
-                description: "Plain-text body — literal or {{ expr }}.".to_string(),
-                kind: crate::pipeline::model::DslFlagKind::Scalar,
-                required: false,
-                ..Default::default()
-            },
-            crate::pipeline::model::DslFlag {
-                flag: "--html".to_string(),
-                config_key: "html".to_string(),
-                description: "HTML body — literal or {{ expr }}. Given both, the mail is multipart/alternative.".to_string(),
-                kind: crate::pipeline::model::DslFlagKind::Scalar,
-                required: false,
-                ..Default::default()
-            },
-            crate::pipeline::model::DslFlag {
-                flag: "--from".to_string(),
-                config_key: "from".to_string(),
-                description: "Override the credential's default From address.".to_string(),
-                kind: crate::pipeline::model::DslFlagKind::Scalar,
-                required: false,
-                ..Default::default()
-            },
-            crate::pipeline::model::DslFlag {
-                flag: "--attach".to_string(),
-                config_key: "attach".to_string(),
-                description: "A file to attach: displayed name = store path or FileRef. Repeat for several. \
-                    e.g. --attach \"Certificate.pdf={{ input.image }}\" (a FileRef is read from its own store). Leave the name empty to keep the file's own."
-                    .to_string(),
-                kind: crate::pipeline::model::DslFlagKind::KeyValuePairs,
-                required: false,
-                ..Default::default()
-            },
-            crate::pipeline::model::DslFlag {
-                flag: "--embed".to_string(),
-                config_key: "embed".to_string(),
-                description: "A picture the HTML body draws inline: id = store path or FileRef. Reference it in --html \
-                    as <img src=\"cid:id\">. Repeat for several. Ignored (sent as a plain attachment) with no --html."
-                    .to_string(),
-                kind: crate::pipeline::model::DslFlagKind::KeyValuePairs,
-                required: false,
-                ..Default::default()
+            DslFlag {
+                kind: DslFlagKind::KeyValuePairs,
+                ..flag("--inline", "inline", "A picture the HTML draws inline: id=FILE (FileRef or store key), placed with <img src=\"cid:id\">. Repeat for several; sent as a plain attachment when there is no --html.", "file")
             },
             crate::pipeline::nodes::shared::project_store::store_flag(),
-            crate::pipeline::model::DslFlag {
-                flag: "--reply-to".to_string(),
-                config_key: "reply_to".to_string(),
-                description: "Reply-To address.".to_string(),
-                kind: crate::pipeline::model::DslFlagKind::Scalar,
-                required: false,
-                ..Default::default()
-            },
         ],
         fields: {
             use crate::pipeline::model::{NodeFieldDef, NodeFieldType};
             vec![
                 NodeFieldDef { name: "credential_id".to_string(), label: "SMTP Credential".to_string(), field_type: NodeFieldType::Text, help: Some("Credential of kind smtp naming the relay.".to_string()), ..Default::default() },
-                NodeFieldDef { name: "to".to_string(), label: "To".to_string(), field_type: NodeFieldType::Text, help: Some("Literal address or {{ expr }}.".to_string()), ..Default::default() },
+                NodeFieldDef { name: "recipient".to_string(), label: "Recipients".to_string(), field_type: NodeFieldType::Text, help: Some("An address, or {{ expr }} giving one or a list.".to_string()), ..Default::default() },
                 NodeFieldDef { name: "subject".to_string(), label: "Subject".to_string(), field_type: NodeFieldType::Text, help: Some("Literal or {{ expr }}.".to_string()), ..Default::default() },
                 NodeFieldDef { name: "text".to_string(), label: "Text Body".to_string(), field_type: NodeFieldType::Textarea, help: Some("Plain-text body — literal or {{ expr }}.".to_string()), ..Default::default() },
                 NodeFieldDef { name: "html_section".to_string(), label: "HTML version (optional)".to_string(), field_type: NodeFieldType::Section, help: Some("An email carries the text above and, optionally, an HTML rendering of the same words. A reader's client shows one or the other — never both — so this is an addition, not a choice.".to_string()), ..Default::default() },
                 NodeFieldDef { name: "html".to_string(), label: "HTML Body".to_string(), field_type: NodeFieldType::CodeEditor, language: Some("html".to_string()), rows: Some(12), help: Some("Leave empty to send plain text only. Email clients are not browsers: use tables and inline styles, and expect no JavaScript, no flexbox and no external stylesheet.".to_string()), ..Default::default() },
-                NodeFieldDef { name: "attach".to_string(), label: "Attachments".to_string(), field_type: NodeFieldType::KeyValuePairs, help: Some("Each row: the name the recipient sees, and the store path or FileRef it comes from. Leave the name empty to keep the file's own — otherwise a certificate arrives called 9f2c-4d1a-….pdf.".to_string()), ..Default::default() },
-                NodeFieldDef { name: "embed".to_string(), label: "Inline pictures".to_string(), field_type: NodeFieldType::KeyValuePairs, help: Some("Each row: a short id you choose, and the store path or FileRef it comes from. Write <img src=\"cid:id\"> in the HTML body to place it — a logo, say. Ignored, and sent as a plain attachment, when there is no HTML body.".to_string()), ..Default::default() },
-                NodeFieldDef { name: "from".to_string(), label: "From".to_string(), field_type: NodeFieldType::Text, help: Some("Overrides the credential's From address.".to_string()), ..Default::default() },
-                NodeFieldDef { name: "reply_to".to_string(), label: "Reply-To".to_string(), field_type: NodeFieldType::Text, help: Some("Where replies should go when that is not the From address — literal or {{ expr }}.".to_string()), ..Default::default() },
+                NodeFieldDef { name: "file".to_string(), label: "Attachments".to_string(), field_type: NodeFieldType::Text, help: Some("A FileRef or store key, or {{ expr }} giving a list of them. Each arrives under its own filename.".to_string()), ..Default::default() },
+                NodeFieldDef { name: "inline".to_string(), label: "Inline pictures".to_string(), field_type: NodeFieldType::KeyValuePairs, help: Some("Each row: a short id you choose, and the store key or FileRef it comes from. Write <img src=\"cid:id\"> in the HTML body to place it — a logo, say. Sent as a plain attachment when there is no HTML body.".to_string()), ..Default::default() },
+                NodeFieldDef { name: "sender".to_string(), label: "Sender".to_string(), field_type: NodeFieldType::Text, help: Some("Overrides the credential's From address.".to_string()), ..Default::default() },
+                NodeFieldDef { name: "reply_to".to_string(), label: "Reply-To".to_string(), field_type: NodeFieldType::Text, help: Some("Where replies should go when that is not the sender — literal or {{ expr }}.".to_string()), ..Default::default() },
             ]
         },
         layout: vec![
             LayoutItem::Row { row: vec![LayoutItem::Field("credential_id".to_string())] },
-            LayoutItem::Row { row: vec![LayoutItem::Field("to".to_string()), LayoutItem::Field("subject".to_string())] },
-            LayoutItem::Row { row: vec![LayoutItem::Field("from".to_string()), LayoutItem::Field("reply_to".to_string())] },
+            LayoutItem::Row { row: vec![LayoutItem::Field("recipient".to_string()), LayoutItem::Field("subject".to_string())] },
+            LayoutItem::Row { row: vec![LayoutItem::Field("sender".to_string()), LayoutItem::Field("reply_to".to_string())] },
             LayoutItem::Field("text".to_string()),
             LayoutItem::Field("html_section".to_string()),
             LayoutItem::Field("html".to_string()),
-            LayoutItem::Field("attach".to_string()),
-            LayoutItem::Field("embed".to_string()),
+            LayoutItem::Field("file".to_string()),
+            LayoutItem::Field("inline".to_string()),
         ],
         examples: vec![
-            crate::pipeline::model::NodeExample::dsl("Confirmation after a form", r#"mail.message.send --credential smtp_main --to "{{ $trigger.body.email }}" --subject "We got your message" --text "Thanks {{ $trigger.body.name }}, we will reply within a day.""#)
-                .output(serde_json::json!({ "mail": { "sent": true, "attached": [], "to": "a@x.io", "subject": "We got your message" } }))
-                .note("Adds `mail` to the payload and keeps the rest. The credential is created by the owner in Studio → Credentials (kind smtp)."),
+            crate::pipeline::model::NodeExample::dsl("Confirmation after a form", r#"mail.message.send --credential smtp_main --recipient "{{ $trigger.body.email }}" --subject "We got your message" --text "Thanks {{ $trigger.body.name }}, we will reply within a day.""#)
+                .output(serde_json::json!({ "message": { "sent": true, "id": "<1759.mb@mail.example.com>", "recipient": ["a@example.com"], "subject": "We got your message", "attached": [] } }))
+                .note("Adds `message` to the payload and keeps the rest. The credential is created by the owner in Studio → Credentials (kind smtp)."),
+            crate::pipeline::model::NodeExample::dsl("A certificate as an attachment", r#"mail.message.send --credential smtp_main --recipient "{{ input.query.rows[0].email }}" --subject "Your certificate" --text "Attached." --file "{{ input.document }}""#),
         ],
+        ..Default::default()
+    }
+}
+
+/// A scalar flag with its 0.11 metadata.
+fn flag(name: &str, key: &str, description: &str, value: &str) -> DslFlag {
+    DslFlag {
+        flag: name.to_string(),
+        config_key: key.to_string(),
+        description: description.to_string(),
+        kind: DslFlagKind::Scalar,
+        value: value.to_string(),
         ..Default::default()
     }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Config {
+    #[serde(default)]
     pub credential_id: String,
-    pub to: String,
+    /// Addresses: repeated, or one `{{ [list] }}` (a list inside the list
+    /// is flattened).
+    #[serde(default)]
+    pub recipient: Value,
+    #[serde(default)]
     pub subject: String,
     #[serde(default)]
     pub text: Option<String>,
     #[serde(default)]
     pub html: Option<String>,
+    /// The From address, instead of the credential's.
     #[serde(default)]
-    pub from: Option<String>,
+    pub sender: Option<String>,
     #[serde(default)]
     pub reply_to: Option<String>,
-    /// Files to attach: displayed name → store path or FileRef. An entry
-    /// with an empty name takes the file's own.
+    /// Files to attach: FileRefs or store keys, repeated or one list.
     #[serde(default)]
-    pub attach: std::collections::BTreeMap<String, Value>,
-    /// Pictures the HTML body draws inline: your own short id → store path
-    /// or FileRef. The HTML references one as `<img src="cid:ID">`, using
-    /// the same id as the key here. Ignored when there is no HTML body —
-    /// nothing could reference it — in which case it is sent as an
-    /// ordinary attachment instead.
+    pub file: Value,
+    /// Pictures the HTML body draws inline: your own short id → store key
+    /// or FileRef. The HTML references one as `<img src="cid:ID">`. With no
+    /// HTML body nothing could reference it, so it is sent as an ordinary
+    /// attachment instead.
     #[serde(default)]
-    pub embed: std::collections::BTreeMap<String, Value>,
-    /// The store a bare attachment key is read from; a FileRef names its own.
+    pub inline: std::collections::BTreeMap<String, Value>,
+    /// The store a bare key is read from; a FileRef names its own.
     #[serde(default)]
     pub store: Option<String>,
 }
 
+/// A list flag's values, a list inside the list flattened and empty strings
+/// dropped: `--recipient a --recipient b` and `--recipient "{{ [a, b] }}"`
+/// are the same two.
+fn listed(value: &Value) -> Vec<Value> {
+    match value {
+        Value::Null => Vec::new(),
+        Value::Array(items) => items.iter().flat_map(listed).collect(),
+        Value::String(s) if s.trim().is_empty() => Vec::new(),
+        other => vec![other.clone()],
+    }
+}
 
 /// An address string onto mailbourne's, keeping any display name out of it.
 ///
@@ -243,7 +201,7 @@ fn to_mailbourne(raw: &str, what: &str) -> Result<EmailAddress, PipelineError> {
         _ => raw,
     };
     EmailAddress::parse(inner.trim()).map_err(|e| {
-        PipelineError::new("FW_NODE_MAIL_ADDRESS", format!("{what} address '{raw}' is not valid: {e:?}"))
+        PipelineError::new("FW_NODE_MAIL_MESSAGE_SEND_ADDRESS", format!("{what} address '{raw}' is not valid: {e:?}"))
     })
 }
 
@@ -269,15 +227,10 @@ pub struct Node {
 }
 
 impl Node {
-    /// Reads every attachment out of the project's store.
-    ///
-    /// Each value is a store path or a FileRef, resolved the way every other
-    /// node resolves one. The key is the name the recipient sees; an empty
-    /// key takes the file's own, so the common case stays short and nobody
-    /// receives `9f2c-4d1a-….pdf`.
-    /// Reads one store object for an attachment or an embed.
-    /// One attachment's bytes: a store key in this node's store, or a FileRef
-    /// read from the store it names — capped like every node read.
+    /// One file's bytes: a store key in this node's store, or a FileRef read
+    /// from the store it names — capped like every node read — with the
+    /// filename it arrives under: the FileRef's own, else the key's last
+    /// segment, so nobody receives `9f2c-4d1a-….pdf` named after a folder.
     fn read_source(
         platform: &std::sync::Arc<crate::platform::services::PlatformService>,
         owner: &str,
@@ -293,57 +246,60 @@ impl Node {
             return Ok(None);
         };
         let rel = crate::zebfs::normalize_object_path(rel.trim_start_matches('/'))
-            .map_err(|e| PipelineError::new("FW_NODE_MAIL_ATTACH", format!("'{rel}': {e}")))?;
-        let bytes = store.read_capped(&rel, "FW_NODE_MAIL_ATTACH")?;
-        Ok(Some((rel, bytes)))
+            .map_err(|e| PipelineError::new("FW_NODE_MAIL_MESSAGE_SEND_FILE", format!("'{rel}': {e}")))?;
+        let bytes = store.read_capped(&rel, "FW_NODE_MAIL_MESSAGE_SEND_FILE")?;
+        let filename = source
+            .get("filename")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .map(ToString::to_string)
+            .unwrap_or_else(|| rel.rsplit('/').next().unwrap_or(&rel).to_string());
+        Ok(Some((filename, bytes)))
     }
 
-    /// Reads every attachment and, when there is an HTML body to reference
-    /// them from, every inline picture out of the project's store.
-    ///
-    /// `--attach` keys are the name the recipient sees; an empty one takes
-    /// the file's own, so the common case stays short and nobody receives
-    /// `9f2c-4d1a-….pdf`. `--embed` keys are the id the HTML uses in
-    /// `cid:ID` — with no HTML body there is nothing to reference it, so it
-    /// is read the same way but sent as an ordinary attachment instead.
+    /// Reads every `--file` and every `--inline` picture out of the
+    /// project's store. An inline picture is placed by its id when there is
+    /// an HTML body to reference it, and sent as an ordinary attachment
+    /// otherwise.
     async fn resolve_attachments(
         &self,
         input: &NodeExecutionInput,
         has_html: bool,
     ) -> Result<Vec<Attachment>, PipelineError> {
-        if self.config.attach.is_empty() && self.config.embed.is_empty() {
+        let files = listed(&self.config.file);
+        if files.is_empty() && self.config.inline.is_empty() {
             return Ok(Vec::new());
+        }
+        if files.len() > MAX_FILES as usize {
+            return Err(PipelineError::new(
+                "FW_NODE_MAIL_MESSAGE_SEND_CONFIG",
+                format!("--file is given {} times; a message attaches at most {MAX_FILES}", files.len()),
+            ));
         }
         let (owner, project, ..) = metadata_scope(&input.metadata)?;
         let platform = self.platform.as_ref().ok_or_else(|| {
             PipelineError::new(
-                "FW_NODE_MAIL_ATTACH",
+                "FW_NODE_MAIL_MESSAGE_SEND_FILE",
                 "attachments need the platform's file store, which this engine context has not got",
             )
         })?;
         let store = self.config.store.as_deref();
 
-        let mut out = Vec::with_capacity(self.config.attach.len() + self.config.embed.len());
-        for (name, source) in &self.config.attach {
-            let Some((rel, bytes)) = Self::read_source(platform, owner, project, store, source)? else {
-                continue;
-            };
-            let filename = if name.trim().is_empty() {
-                rel.rsplit('/').next().unwrap_or(&rel).to_string()
-            } else {
-                name.trim().to_string()
-            };
-            out.push(Attachment::new(filename, bytes));
+        let mut out = Vec::with_capacity(files.len() + self.config.inline.len());
+        for source in &files {
+            if let Some((filename, bytes)) = Self::read_source(platform, owner, project, store, source)? {
+                out.push(Attachment::new(filename, bytes));
+            }
         }
-        for (id, source) in &self.config.embed {
+        for (id, source) in &self.config.inline {
             let id = id.trim();
             if id.is_empty() {
                 continue;
             }
-            let Some((rel, bytes)) = Self::read_source(platform, owner, project, store, source)? else {
+            let Some((filename, bytes)) = Self::read_source(platform, owner, project, store, source)? else {
                 continue;
             };
-            let filename = rel.rsplit('/').next().unwrap_or(&rel).to_string();
             out.push(if has_html {
                 Attachment::inline(filename, id, bytes)
             } else {
@@ -360,14 +316,27 @@ impl Node {
     ) -> Result<Self, PipelineError> {
         if config.credential_id.trim().is_empty() {
             return Err(PipelineError::new(
-                "FW_NODE_MAIL_CONFIG",
-                "config.credential_id must not be empty",
+                "FW_NODE_MAIL_MESSAGE_SEND_CONFIG",
+                "--credential is empty; it needs the smtp credential's id",
             ));
         }
-        if config.to.trim().is_empty() {
+        let recipients = listed(&config.recipient);
+        if recipients.is_empty() {
             return Err(PipelineError::new(
-                "FW_NODE_MAIL_CONFIG",
-                "config.to must not be empty",
+                "FW_NODE_MAIL_MESSAGE_SEND_CONFIG",
+                "--recipient is empty; it needs an address",
+            ));
+        }
+        if recipients.len() > MAX_RECIPIENTS as usize {
+            return Err(PipelineError::new(
+                "FW_NODE_MAIL_MESSAGE_SEND_CONFIG",
+                format!("--recipient names {} addresses; one message takes at most {MAX_RECIPIENTS}", recipients.len()),
+            ));
+        }
+        if recipients.iter().any(|r| !r.is_string()) {
+            return Err(PipelineError::new(
+                "FW_NODE_MAIL_MESSAGE_SEND_ADDRESS",
+                "--recipient must be addresses (text)",
             ));
         }
         Ok(Self {
@@ -378,6 +347,33 @@ impl Node {
     }
 }
 
+/// The message's headers with every recipient in `To:` and a `Reply-To:`
+/// when one is given. mailbourne writes one `To:` address; the rest are
+/// added to that header in place, so the letter names everyone the envelope
+/// delivers to.
+fn finish_headers(raw: &[u8], recipients: &[EmailAddress], reply_to: Option<&EmailAddress>) -> Vec<u8> {
+    let text = String::from_utf8_lossy(raw);
+    let head_end = text.find("\r\n\r\n").unwrap_or(text.len());
+    let (head, rest) = text.split_at(head_end);
+    let mut lines: Vec<String> = head.split("\r\n").map(ToString::to_string).collect();
+    if let Some(at) = lines.iter().position(|line| line.starts_with("To: ")) {
+        let all: Vec<String> = recipients.iter().map(|r| format!("<{r}>")).collect();
+        lines[at] = format!("To: {}", all.join(", "));
+        if let Some(reply_to) = reply_to {
+            lines.insert(at + 1, format!("Reply-To: <{reply_to}>"));
+        }
+    }
+    let mut out = lines.join("\r\n");
+    out.push_str(rest);
+    out.into_bytes()
+}
+
+/// The `Message-ID` the message carries, as written.
+fn message_id(raw: &[u8]) -> Option<String> {
+    let text = String::from_utf8_lossy(raw);
+    let head = &text[..text.find("\r\n\r\n").unwrap_or(text.len())];
+    head.split("\r\n").find_map(|line| line.strip_prefix("Message-ID: ").map(|id| id.trim().to_string()))
+}
 
 fn secret_str<'a>(secret: &'a Value, key: &str) -> &'a str {
     secret.get(key).and_then(|v| v.as_str()).unwrap_or("")
@@ -404,16 +400,16 @@ impl NodeHandler for Node {
         let credential = self
             .credentials
             .get_project_credential(owner, project, &self.config.credential_id)
-            .map_err(|err| PipelineError::new("FW_NODE_MAIL_CREDENTIAL", err.to_string()))?
+            .map_err(|err| PipelineError::new("FW_NODE_MAIL_MESSAGE_SEND_CREDENTIAL", err.to_string()))?
             .ok_or_else(|| {
                 PipelineError::new(
-                    "FW_NODE_MAIL_CREDENTIAL_MISSING",
+                    "FW_NODE_MAIL_MESSAGE_SEND_CREDENTIAL_MISSING",
                     format!("credential '{}' not found", self.config.credential_id),
                 )
             })?;
         if credential.kind != "smtp" {
             return Err(PipelineError::new(
-                "FW_NODE_MAIL_CREDENTIAL_KIND",
+                "FW_NODE_MAIL_MESSAGE_SEND_CREDENTIAL_KIND",
                 format!(
                     "credential '{}' is kind '{}', expected 'smtp'",
                     credential.credential_id, credential.kind
@@ -424,7 +420,7 @@ impl NodeHandler for Node {
         let host = secret_str(secret, "host").to_string();
         if host.is_empty() {
             return Err(PipelineError::new(
-                "FW_NODE_MAIL_CREDENTIAL",
+                "FW_NODE_MAIL_MESSAGE_SEND_CREDENTIAL",
                 "smtp credential has no host",
             ));
         }
@@ -439,10 +435,11 @@ impl NodeHandler for Node {
         };
 
         // --- Resolve the message from config + payload ---
-        let to_raw = self.config.to.clone();
+        let recipients_raw: Vec<String> =
+            listed(&self.config.recipient).iter().filter_map(|r| r.as_str().map(|s| s.trim().to_string())).collect();
         let from_raw = self
             .config
-            .from
+            .sender
             .clone()
             .filter(|s| !s.trim().is_empty())
             .unwrap_or_else(|| secret_str(secret, "from").to_string());
@@ -452,11 +449,19 @@ impl NodeHandler for Node {
 
         // ── The message, built by mailbourne ──
         let from_address = to_mailbourne(&from_raw, "sender")?;
-        let to_address = to_mailbourne(&to_raw, "recipient")?;
+        let recipients = recipients_raw
+            .iter()
+            .map(|raw| to_mailbourne(raw, "recipient"))
+            .collect::<Result<Vec<_>, _>>()?;
+        let reply_to = match self.config.reply_to.as_deref().map(str::trim).filter(|r| !r.is_empty()) {
+            Some(raw) => Some(to_mailbourne(raw, "reply-to")?),
+            None => None,
+        };
+        let to_address = recipients[0].clone();
         let text = text.unwrap_or_default();
         if text.trim().is_empty() && html.as_deref().unwrap_or("").trim().is_empty() {
             return Err(PipelineError::new(
-                "FW_NODE_MAIL_CONFIG",
+                "FW_NODE_MAIL_MESSAGE_SEND_CONFIG",
                 "one of --text or --html is required",
             ));
         }
@@ -483,6 +488,8 @@ impl NodeHandler for Node {
             &attachments,
             &format!("mail.{hostname}"),
         );
+        let message = mailbourne::shared::core::Message::from_raw(finish_headers(message.raw(), &recipients, reply_to.as_ref()));
+        let id = message_id(message.raw());
 
         // ── Over to the relay ──
         let channel = super::transport::Channel::parse(&tls_mode)?;
@@ -495,7 +502,7 @@ impl NodeHandler for Node {
             user,
             password: secret_str(secret, "password").to_string(),
         });
-        let envelope = Envelope { mail_from: from_address.clone(), rcpt_to: vec![to_address.clone()] };
+        let envelope = Envelope { mail_from: from_address.clone(), rcpt_to: recipients.clone() };
 
         let outcome = super::transport::deliver_to_relay(
             &host,
@@ -516,7 +523,7 @@ impl NodeHandler for Node {
             // rather than the letter.
             Outcome::Deferred { at, reply } => {
                 return Err(PipelineError::new(
-                    "FW_NODE_MAIL_DEFERRED",
+                    "FW_NODE_MAIL_MESSAGE_SEND_DEFERRED",
                     format!(
                         "the relay said not now at {}: {} {}",
                         step_name(at),
@@ -528,9 +535,9 @@ impl NodeHandler for Node {
             Outcome::Rejected { at, reply } => {
                 return Err(PipelineError::new(
                     if at == Step::Auth {
-                        "FW_NODE_MAIL_AUTH"
+                        "FW_NODE_MAIL_MESSAGE_SEND_AUTH"
                     } else {
-                        "FW_NODE_MAIL_SEND"
+                        "FW_NODE_MAIL_MESSAGE_SEND"
                     },
                     format!(
                         "the relay refused at {}: {} {}",
@@ -545,7 +552,7 @@ impl NodeHandler for Node {
         Ok(NodeExecutionOutput {
             output_pins: vec![OUTPUT_PIN_OUT.to_string()],
             payload: crate::pipeline::nodes::shared::util::with_answer(&input.payload, json!({
-                "mail": { "sent": true, "attached": attached, "to": to_raw, "subject": subject }
+                "message": { "sent": true, "id": id, "recipient": recipients_raw, "subject": subject, "attached": attached }
             })),
             trace: vec![format!("mail.message.send: delivered to relay {host}:{port}")],
         })
@@ -554,7 +561,6 @@ impl NodeHandler for Node {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
 
     use serde_json::json;
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -562,16 +568,7 @@ mod tests {
 
     use super::{Config, Node};
     use crate::pipeline::nodes::{NodeExecutionInput, NodeHandler};
-    use crate::platform::model::{PlatformConfig, UpsertProjectCredentialRequest};
-    use crate::platform::services::PlatformService;
-
-    fn temp_dir(name: &str) -> std::path::PathBuf {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos();
-        std::env::temp_dir().join(format!("zebflow-mail-{name}-{now}"))
-    }
+    use crate::platform::model::UpsertProjectCredentialRequest;
 
     /// A one-shot SMTP sink: speaks just enough of the protocol to accept one
     /// message, then hands back what it was given. No network, no relay, no
@@ -627,9 +624,7 @@ mod tests {
     async fn the_node_speaks_smtp_and_the_relay_receives_the_message() {
         let (port, sink) = smtp_sink().await;
 
-        let mut cfg = PlatformConfig::default();
-        cfg.data_root = temp_dir("send");
-        let platform = Arc::new(PlatformService::from_config(cfg).expect("platform"));
+        let platform = crate::pipeline::nodes::shared::test_platform::test_platform();
         platform
             .credentials
             .upsert_project_credential(
@@ -656,7 +651,8 @@ mod tests {
                 // Literals here: {{ }} resolution is the engine's job, done
                 // before a node runs, and tested at the engine layer. A node
                 // test sees what a node sees — final config.
-                to: "sari@example.test".to_string(),
+                recipient: json!(["sari@example.test", "budi@example.test"]),
+                reply_to: Some("desk@example.test".to_string()),
                 subject: "Activate your account".to_string(),
                 text: Some("Welcome to researchsite.".to_string()),
                 ..Default::default()
@@ -670,7 +666,7 @@ mod tests {
             .execute_async(NodeExecutionInput {
                 node_id: "mail".to_string(),
                 input_pin: "in".to_string(),
-                payload: json!({}),
+                payload: json!({ "kept": 1 }),
                 metadata: json!({
                     "owner": "superadmin",
                     "project": "default",
@@ -683,8 +679,10 @@ mod tests {
             .await
             .expect("send");
 
-        assert_eq!(out.payload["mail"]["sent"], json!(true));
-        assert_eq!(out.payload["mail"]["to"], json!("sari@example.test"));
+        assert_eq!(out.payload["kept"], json!(1), "the payload is kept");
+        assert_eq!(out.payload["message"]["sent"], json!(true));
+        assert_eq!(out.payload["message"]["recipient"], json!(["sari@example.test", "budi@example.test"]));
+        assert!(out.payload["message"]["id"].as_str().is_some_and(|id| id.starts_with('<')), "{}", out.payload["message"]);
 
         let transcript = sink.await.expect("sink");
         assert!(
@@ -692,9 +690,14 @@ mod tests {
             "credential's From did not reach the envelope: {transcript}"
         );
         assert!(
-            transcript.contains("RCPT TO:<sari@example.test>"),
-            "the recipient did not reach the envelope: {transcript}"
+            transcript.contains("RCPT TO:<sari@example.test>") && transcript.contains("RCPT TO:<budi@example.test>"),
+            "every recipient reaches the envelope: {transcript}"
         );
+        assert!(
+            transcript.contains("To: <sari@example.test>, <budi@example.test>"),
+            "every recipient is named in the letter: {transcript}"
+        );
+        assert!(transcript.contains("Reply-To: <desk@example.test>"), "reply-to is written: {transcript}");
         assert!(
             transcript.contains("Welcome to researchsite."),
             "the body did not reach the relay: {transcript}"
@@ -707,9 +710,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_credential_of_the_wrong_kind_is_refused_before_any_connection() {
-        let mut cfg = PlatformConfig::default();
-        cfg.data_root = temp_dir("kind");
-        let platform = Arc::new(PlatformService::from_config(cfg).expect("platform"));
+        let platform = crate::pipeline::nodes::shared::test_platform::test_platform();
         platform
             .credentials
             .upsert_project_credential(
@@ -728,7 +729,7 @@ mod tests {
         let node = Node::new(
             Config {
                 credential_id: "not-a-relay".to_string(),
-                to: "ops@example.test".to_string(),
+                recipient: json!("ops@example.test"),
                 subject: "hi".to_string(),
                 text: Some("hi".to_string()),
                 ..Default::default()
@@ -754,14 +755,12 @@ mod tests {
             })
             .await
             .expect_err("wrong kind must refuse");
-        assert_eq!(err.code, "FW_NODE_MAIL_CREDENTIAL_KIND");
+        assert_eq!(err.code, "FW_NODE_MAIL_MESSAGE_SEND_CREDENTIAL_KIND");
     }
 
     #[tokio::test]
     async fn an_unparseable_recipient_is_refused_rather_than_dialled() {
-        let mut cfg = PlatformConfig::default();
-        cfg.data_root = temp_dir("addr");
-        let platform = Arc::new(PlatformService::from_config(cfg).expect("platform"));
+        let platform = crate::pipeline::nodes::shared::test_platform::test_platform();
         platform
             .credentials
             .upsert_project_credential(
@@ -781,7 +780,7 @@ mod tests {
         let node = Node::new(
             Config {
                 credential_id: "relay".to_string(),
-                to: "not an address".to_string(),
+                recipient: json!(["not an address"]),
                 subject: "hi".to_string(),
                 text: Some("hi".to_string()),
                 ..Default::default()
@@ -807,6 +806,18 @@ mod tests {
             })
             .await
             .expect_err("bad address must refuse");
-        assert_eq!(err.code, "FW_NODE_MAIL_ADDRESS");
+        assert_eq!(err.code, "FW_NODE_MAIL_MESSAGE_SEND_ADDRESS");
+    }
+
+    /// The 0.11 words: `--recipient`, `--sender`, `--file`, `--inline`.
+    #[test]
+    fn the_flags_are_the_0_11_words() {
+        let def = super::definition();
+        let flags: Vec<&str> = def.dsl_flags.iter().map(|f| f.flag.as_str()).collect();
+        assert_eq!(
+            flags,
+            ["--credential", "--recipient", "--subject", "--text", "--html", "--sender", "--reply-to", "--file", "--inline", "--store"]
+        );
+        assert_eq!(super::listed(&json!(["a@example.test", ["b@example.test"], ""])), vec![json!("a@example.test"), json!("b@example.test")]);
     }
 }

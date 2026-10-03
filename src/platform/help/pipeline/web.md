@@ -36,7 +36,7 @@ cookies:
 
 ```
 web.response.send --status 303 --header "Location=/home" \
-  --header "Set-Cookie=session={{ input.access_token }}; Path=/; Max-Age=86400; SameSite=Lax; HttpOnly" \
+  --header "Set-Cookie=session={{ input.token.access_token }}; Path=/; Max-Age=86400; SameSite=Lax; HttpOnly" \
   --header "Set-Cookie=theme=dark; Path=/; Max-Age=31536000; SameSite=Lax"
 ```
 
@@ -118,9 +118,9 @@ The trigger answers under `error`: `input.error.error_code`,
 [b] sekejap.query.run --param "1={{ input.webhook.body.email }}" -- "SELECT id, name, password_hash, roles FROM users WHERE email = $1"
 [c] logic.if --expr "input.query.rows.length === 1"
 [d] crypto.password.verify --from "{{ $nodes.a.webhook.body.password }}" --hash "{{ input.query.rows[0]?.password_hash }}"
-[e] script.result.run -- "const u = input.query.rows[0]; return { id: u.id, name: u.name, roles: u.roles || ['member'] }"
-[f] auth.token.create --credential jwt_main --claim "sub={{ input.id }}" --claim "name:public={{ input.name }}" --claim "roles:public={{ input.roles }}"
-[g] web.response.send --status 302 --header "Location=/home" --header "Set-Cookie=zebflow_session={{ input.access_token }}; Path=/; Max-Age=86400; SameSite=Lax; HttpOnly"
+[e] javascript.script.run -- "const u = input.query.rows[0]; return { id: u.id, name: u.name, roles: u.roles || ['member'] }"
+[f] auth.token.create --credential jwt_main --claim "sub={{ input.script.id }}" --claim "name:public={{ input.script.name }}" --claim "roles:public={{ input.script.roles }}"
+[g] web.response.send --status 302 --header "Location=/home" --header "Set-Cookie=zebflow_session={{ input.token.access_token }}; Path=/; Max-Age=86400; SameSite=Lax; HttpOnly"
 [h] web.response.send --status 401 --body "{{ { error: 'invalid credentials' } }}"
 [a] -> [b]
 [b] -> [c]

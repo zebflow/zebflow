@@ -28,14 +28,16 @@ CREATE TABLE posts (_key TEXT PRIMARY KEY, title TEXT, body TEXT, published BOOL
 CREATE TABLE users (_key TEXT PRIMARY KEY, password_hash TEXT, roles JSON)
 ```
 
-Seed one admin user. `crypto.password.hash` adds `password: { hash, algorithm }`
-to the payload and keeps the rest, so the next node still sees `username` and `roles`:
+Seed one admin user. `javascript.script.run` adds its return value as `script`, keeping
+the rest of the payload; `crypto.password.hash` then adds `password: { hash,
+algorithm }` alongside it, so the next node reads `input.script.username` and
+`input.script.roles`:
 
 ```zf
 run
-| script.result.run -- "return { username: 'admin', password: 'changeme', roles: ['admin'] }"
-| crypto.password.hash --from "{{ input.password }}"
-| sekejap.query.run --write --param "1={{ input.username }}" --param "2={{ input.password.hash }}" --param "3={{ input.roles }}" -- "INSERT INTO users (_key, password_hash, roles) VALUES ($1, $2, $3)"
+| javascript.script.run -- "return { username: 'admin', password: 'changeme', roles: ['admin'] }"
+| crypto.password.hash --from "{{ input.script.password }}"
+| sekejap.query.run --write --param "1={{ input.script.username }}" --param "2={{ input.password.hash }}" --param "3={{ input.script.roles }}" -- "INSERT INTO users (_key, password_hash, roles) VALUES ($1, $2, $3)"
 ```
 
 ---
@@ -47,7 +49,7 @@ run
 ```
 | trigger.webhook --route /blog --method GET
 | sekejap.query.run -- "SELECT * FROM posts WHERE published = true ORDER BY created_at DESC LIMIT 20"
-| script.result.run -- "return { posts: input.query.rows }"
+| javascript.script.run -- "return { posts: input.query.rows }"
 | web.response.send --template pages/blog-home.tsx
 ```
 
@@ -58,7 +60,7 @@ register blog/detail --
 [a] trigger.webhook --route /blog/:slug --method GET
 [b] sekejap.query.run --param "1={{ input.webhook.params.slug }}" -- "SELECT * FROM posts WHERE _key = $1 AND published = true"
 [c] logic.if --expr "input.query.rows.length > 0"
-[d] script.result.run -- "return { post: input.query.rows[0] };"
+[d] javascript.script.run -- "return { post: input.query.rows[0] };"
 [e] web.response.send --template pages/blog-detail.tsx
 [f] web.response.send --status 302 --header "Location=/blog"
 
@@ -77,7 +79,7 @@ the pipeline only ever runs for someone already verified.
 ```
 | trigger.webhook --route /admin/posts --method GET --auth jwt --credential blog-jwt --role admin
 | sekejap.query.run -- "SELECT * FROM posts ORDER BY created_at DESC"
-| script.result.run -- "return { posts: input.query.rows }"
+| javascript.script.run -- "return { posts: input.query.rows }"
 | web.response.send --template pages/admin-posts.tsx
 ```
 
@@ -90,12 +92,12 @@ register blog/api-post-upsert --
 [trig] trigger.webhook --route /api/posts --method POST --auth jwt --credential blog-jwt --role admin
 [has_title] logic.if --expr "!!(input.webhook.body && input.webhook.body.title)"
 [bad] web.response.send --status 400 --body "{{ { ok: false, error: 'title required' } }}"
-[draft] script.result.run -- "const slug = $trigger.body.slug || String($trigger.body.title).toLowerCase().replace(/[^a-z0-9]+/g,'-'); return { slug, title: $trigger.body.title, body: $trigger.body.body || '', published: !!$trigger.body.published };"
-[find] sekejap.query.run --param "1={{ $nodes.draft.slug }}" -- "SELECT _key FROM posts WHERE _key = $1"
+[draft] javascript.script.run -- "const slug = $trigger.body.slug || String($trigger.body.title).toLowerCase().replace(/[^a-z0-9]+/g,'-'); return { slug, title: $trigger.body.title, body: $trigger.body.body || '', published: !!$trigger.body.published };"
+[find] sekejap.query.run --param "1={{ $nodes.draft.script.slug }}" -- "SELECT _key FROM posts WHERE _key = $1"
 [exists] logic.if --expr "input.query.rows.length > 0"
-[update] sekejap.query.run --write --param "1={{ $nodes.draft.title }}" --param "2={{ $nodes.draft.body }}" --param "3={{ $nodes.draft.published }}" --param "4={{ Date.now() }}" --param "5={{ $nodes.draft.slug }}" -- "UPDATE posts SET title = $1, body = $2, published = $3, updated_at = $4 WHERE _key = $5"
-[insert] sekejap.query.run --write --param "1={{ $nodes.draft.slug }}" --param "2={{ $nodes.draft.title }}" --param "3={{ $nodes.draft.body }}" --param "4={{ $nodes.draft.published }}" --param "5={{ Date.now() }}" --param "6={{ Date.now() }}" -- "INSERT INTO posts (_key, title, body, published, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6)"
-[ok] web.response.send --body "{{ { ok: true, slug: $nodes.draft.slug } }}"
+[update] sekejap.query.run --write --param "1={{ $nodes.draft.script.title }}" --param "2={{ $nodes.draft.script.body }}" --param "3={{ $nodes.draft.script.published }}" --param "4={{ Date.now() }}" --param "5={{ $nodes.draft.script.slug }}" -- "UPDATE posts SET title = $1, body = $2, published = $3, updated_at = $4 WHERE _key = $5"
+[insert] sekejap.query.run --write --param "1={{ $nodes.draft.script.slug }}" --param "2={{ $nodes.draft.script.title }}" --param "3={{ $nodes.draft.script.body }}" --param "4={{ $nodes.draft.script.published }}" --param "5={{ Date.now() }}" --param "6={{ Date.now() }}" -- "INSERT INTO posts (_key, title, body, published, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6)"
+[ok] web.response.send --body "{{ { ok: true, slug: $nodes.draft.script.slug } }}"
 
 [trig] -> [has_title]
 [has_title]:false -> [bad]
@@ -108,16 +110,17 @@ register blog/api-post-upsert --
 [insert] -> [ok]
 ```
 
-`$nodes.draft.slug` reaches back to the `[draft]` script's output by its
-graph id — it still resolves after `[find]`'s `sekejap.query.run` has replaced
-`input` with `{ query: { columns, rows, … } }`.
+`$nodes.draft.script.slug` reaches back to the `[draft]` script's output
+(added under its `script` key) by its graph id — it still resolves after
+`[find]`'s `sekejap.query.run` has replaced `input` with
+`{ query: { columns, rows, … } }`.
 
 ### api-post-delete — delete post
 
 ```
 | trigger.webhook --route /api/posts/:slug --method DELETE --auth jwt --credential blog-jwt --role admin
 | sekejap.query.run --write --param "1={{ input.webhook.params.slug }}" -- "DELETE FROM posts WHERE _key = $1"
-| script.result.run -- "return { ok: true }"
+| javascript.script.run -- "return { ok: true }"
 ```
 
 ### auth-login — issue JWT
@@ -128,8 +131,8 @@ register blog/auth-login --
 [lookup] sekejap.query.run --param "1={{ input.webhook.body.username }}" -- "SELECT _key, password_hash, roles FROM users WHERE _key = $1"
 [found] logic.if --expr "input.query.rows.length > 0"
 [verify] crypto.password.verify --from "{{ $trigger.body.password }}" --hash "{{ input.query.rows[0]?.password_hash }}"
-[token] auth.token.create --credential blog-jwt --claim "sub={{ input.query.rows[0]._key }}" --claim "roles:public={{ input.query.rows[0].roles }}" --expires-in 86400
-[welcome] web.response.send --status 302 --header "Location=/admin" --header "Set-Cookie=session={{ input.access_token }}; Path=/; Max-Age=86400; SameSite=Lax; HttpOnly"
+[token] auth.token.create --credential blog-jwt --claim "sub={{ input.query.rows[0]._key }}" --claim "roles:public={{ input.query.rows[0].roles }}" --ttl 1d
+[welcome] web.response.send --status 302 --header "Location=/admin" --header "Set-Cookie=session={{ input.token.access_token }}; Path=/; Max-Age=86400; SameSite=Lax; HttpOnly"
 [denied] web.response.send --status 401 --body "invalid credentials"
 
 [trig] -> [lookup]
@@ -154,9 +157,9 @@ constant-time.
 - `trigger.webhook` — HTTP endpoints (GET, POST, DELETE); `--auth jwt` gates admin routes
 - `sekejap.query.run` — SQL against Sekejap; no `--table`/`--op`, just `SELECT`/`INSERT`/`UPDATE`/`DELETE` with `--param`, and `--write` for a write
 - `logic.if` — branch on "does this slug/user already exist"
-- `script` — slugify, validate, shape rows
+- `javascript.script.run` — slugify, validate, shape rows; return value is added as `script`, the rest of the payload is kept
 - `crypto.password.hash` to seed the password, `crypto.password.verify` to check it
-- `auth.token.create` / `web.response.send --header "Set-Cookie=…"` — issue the session
+- `auth.token.create --ttl <duration>` / `web.response.send --header "Set-Cookie=…"` — issue the session; read `input.token.access_token`
 - `web.response.send` — TSX templates for public and admin pages
 
 ---

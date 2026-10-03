@@ -7,6 +7,8 @@
 //!   `--on-conflict`.
 //! - [`query`] — the database query nodes' `--param`, `--write`, `--limit`
 //!   and their `query` answer.
+//! - [`script`] — the sandbox engine `javascript.script.run` and `typescript.script.run`
+//!   share: definition, build, run and the `script` answer.
 //! - [`store_scratch`] — a local working folder for engines that only speak
 //!   file paths: pull from the project's store, run, push back.
 //! - [`units`] — durations and sizes in flag values (`30s`, `10MB`).
@@ -18,6 +20,7 @@ pub mod file_ref;
 pub mod limits;
 pub mod project_store;
 pub mod query;
+pub mod script;
 pub mod store_scratch;
 #[cfg(test)]
 pub mod test_platform;

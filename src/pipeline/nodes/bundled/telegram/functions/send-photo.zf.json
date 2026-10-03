@@ -18,7 +18,7 @@
       },
       {
         "id": "prepare",
-        "kind": "script.result.run",
+        "kind": "javascript.script.run",
         "config": {
           "source": "var body = { chat_id: String(input.function.chat_id), photo: String(input.function.photo) }; if (input.function.caption) body.caption = String(input.function.caption); if (input.function.parse_mode) body.parse_mode = String(input.function.parse_mode); if (input.function.disable_notification) body.disable_notification = true; return body;"
         },
@@ -38,8 +38,7 @@
           "headers": {
             "Content-Type": "application/json"
           },
-          "body": "{{ input }}",
-          "response_type": "json"
+          "body": "{{ input.script }}"
         },
         "input_pins": [
           "in"

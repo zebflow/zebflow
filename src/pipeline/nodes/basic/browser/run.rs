@@ -13,16 +13,18 @@
 //! 1. Resolves the credential by `credential_id`.
 //! 2. Reads `secret.url` (Browserless root URL) and optional `secret.token`.
 //! 3. POST `<url>/function?token=<token>` with `{ "code": "<user code>" }`.
-//! 4. Returns the JSON response as the node output payload.
+//! 4. Adds what the script returned as `page`, keeping the rest of the payload.
+//!
+//! The call has no timeout of its own: the engine's `--timeout` bounds the
+//! node, and dropping the request closes the connection.
 //!
 //! # DSL
 //! ```text
 //! | trigger.webhook --route /scrape
-//! | browser.page.run --credential browserless-local
+//! | browser.page.run --credential browserless-local --timeout 60s -- "export default async ({ page }) => …"
 //! ```
 
 use std::sync::Arc;
-use std::time::Duration;
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -53,19 +55,19 @@ pub fn definition() -> NodeDefinition {
         description: "Runs a Playwright script in a headless browser reached through a `browser_*` credential (a Browserless-compatible \
             endpoint the owner configured) — screenshots, PDF of a live page, scraping a page that needs JavaScript. The body after \
             `--` is the script, an ESM `export default async ({ page }) => { … }`; put payload values into it with `{{ expr }}`. \
-            Whatever it returns is added to the payload as `browser`, and the rest is kept. This is not for verifying your own pages during development — that \
-            is the agent's own browser (`zebflow-verify`)."
+            Whatever it returns is added to the payload as `page`, and the rest is kept. The engine's `--timeout` bounds the run \
+            (e.g. `--timeout 2m`). This is not for verifying your own pages during development — that is the agent's own browser \
+            (`zebflow-verify`)."
             .to_string(),
-        input_schema: json!({ "type": "object", "description": "Upstream payload available as context." }),
-        output_schema: json!({ "type": "object", "description": "JSON result returned by the browser script." }),
+        input_schema: json!({ "type": "object", "description": "Any payload; it is kept and `page` is added." }),
+        output_schema: json!({ "type": "object", "properties": { "page": { "description": "What the browser script returned (JSON, or text)." } } }),
         input_pins: vec![INPUT_PIN_IN.to_string()],
         output_pins: vec![OUTPUT_PIN_OUT.to_string()],
         script_available: false,
         script_bridge: None,
         config_schema: Default::default(),
         dsl_flags: vec![
-            DslFlag { flag: "--credential".to_string(), config_key: "credential_id".to_string(), description: "Credential ID of the browser connection (kind: browser_*).".to_string(), kind: DslFlagKind::Scalar, required: true, ..Default::default() },
-            DslFlag { flag: "--timeout-ms".to_string(), config_key: "timeout_ms".to_string(), description: "Browser script timeout in milliseconds (default 30000).".to_string(), kind: DslFlagKind::Scalar, required: false, ..Default::default() },
+            DslFlag { flag: "--credential".to_string(), config_key: "credential_id".to_string(), description: "The browser connection's credential (kind browser_*).".to_string(), kind: DslFlagKind::Scalar, required: true, value: "text".to_string(), ..Default::default() },
         ],
         fields: vec![
             NodeFieldDef { name: "credential_id".to_string(), label: "Credential".to_string(), field_type: NodeFieldType::Select, data_source: Some(NodeFieldDataSource::CredentialsBrowser), help: Some("Browser credential (kind: browser_browserless or similar).".to_string()), ..Default::default() },
@@ -87,24 +89,22 @@ pub fn definition() -> NodeDefinition {
                     SidebarSection {
                         title: "Return".to_string(),
                         items: vec![
-                            SidebarItem { label: "any JSON".to_string(), type_hint: Some("object | array | string | number".to_string()), description: Some("Returned value becomes `input.browser` downstream.".to_string()) },
+                            SidebarItem { label: "any JSON".to_string(), type_hint: Some("object | array | string | number".to_string()), description: Some("Returned value becomes `input.page` downstream.".to_string()) },
                         ],
                     },
                 ],
                 ..Default::default()
             },
-            NodeFieldDef { name: "timeout_ms".to_string(), label: "Timeout (ms)".to_string(), field_type: NodeFieldType::Text, help: Some("HTTP request timeout in milliseconds. Default 60000.".to_string()), ..Default::default() },
         ],
         layout: vec![
             LayoutItem::Field("credential_id".to_string()),
-            LayoutItem::Row { row: vec![LayoutItem::Field("timeout_ms".to_string())] },
             LayoutItem::Field("code".to_string()),
         ],
         ai_tool: Default::default(),
         examples: vec![
-            crate::pipeline::model::NodeExample::dsl("Title of a rendered page", r#"browser.page.run --credential browserless_main --timeout-ms 20000 -- "export default async ({ page }) => { await page.goto('{{ $trigger.body.url }}'); return { title: await page.title() }; }""#)
-                .input(serde_json::json!({ "body": { "url": "https://example.com" } }))
-                .output(serde_json::json!({ "title": "Example Domain" })),
+            crate::pipeline::model::NodeExample::dsl("Title of a rendered page", r#"browser.page.run --credential browserless_main --timeout 20s -- "export default async ({ page }) => { await page.goto('{{ $trigger.body.url }}'); return { title: await page.title() }; }""#)
+                .output(serde_json::json!({ "page": { "title": "Example Domain" } }))
+                .note("Read it downstream as `input.page.title`."),
         ],
         ..Default::default()
     }
@@ -114,8 +114,6 @@ pub fn definition() -> NodeDefinition {
 pub struct Config {
     pub credential_id: String,
     pub code: String,
-    #[serde(default)]
-    pub timeout_ms: Option<u64>,
 }
 
 pub struct Node {
@@ -133,13 +131,13 @@ impl Node {
     ) -> Result<Self, PipelineError> {
         if config.credential_id.trim().is_empty() {
             return Err(PipelineError::new(
-                "FW_NODE_BROWSER_RUN_CONFIG",
+                "FW_NODE_BROWSER_PAGE_RUN_CONFIG",
                 "config.credential_id must not be empty",
             ));
         }
         if config.code.trim().is_empty() {
             return Err(PipelineError::new(
-                "FW_NODE_BROWSER_RUN_CONFIG",
+                "FW_NODE_BROWSER_PAGE_RUN_CONFIG",
                 "config.code must not be empty",
             ));
         }
@@ -169,7 +167,7 @@ impl NodeHandler for Node {
     ) -> Result<NodeExecutionOutput, PipelineError> {
         if input.input_pin != INPUT_PIN_IN {
             return Err(PipelineError::new(
-                "FW_NODE_BROWSER_RUN_PIN",
+                "FW_NODE_BROWSER_PAGE_RUN_PIN",
                 format!("unsupported input pin '{}'", input.input_pin),
             ));
         }
@@ -188,17 +186,17 @@ impl NodeHandler for Node {
         let credential = self
             .credentials
             .get_project_credential(owner, project, &self.config.credential_id)
-            .map_err(|e| PipelineError::new("FW_NODE_BROWSER_RUN_CREDENTIAL", e.to_string()))?
+            .map_err(|e| PipelineError::new("FW_NODE_BROWSER_PAGE_RUN_CREDENTIAL", e.to_string()))?
             .ok_or_else(|| {
                 PipelineError::new(
-                    "FW_NODE_BROWSER_RUN_CREDENTIAL_MISSING",
+                    "FW_NODE_BROWSER_PAGE_RUN_CREDENTIAL_MISSING",
                     format!("credential '{}' not found", self.config.credential_id),
                 )
             })?;
 
         if !credential.kind.starts_with(BROWSER_KIND_PREFIX) {
             return Err(PipelineError::new(
-                "FW_NODE_BROWSER_RUN_CREDENTIAL_KIND",
+                "FW_NODE_BROWSER_PAGE_RUN_CREDENTIAL_KIND",
                 format!(
                     "credential '{}' has kind '{}' — expected kind starting with '{}'",
                     credential.credential_id, credential.kind, BROWSER_KIND_PREFIX
@@ -214,7 +212,7 @@ impl NodeHandler for Node {
             .trim_end_matches('/');
         if base_url.is_empty() {
             return Err(PipelineError::new(
-                "FW_NODE_BROWSER_RUN_SECRET",
+                "FW_NODE_BROWSER_PAGE_RUN_SECRET",
                 "credential secret.url is required",
             ));
         }
@@ -235,33 +233,32 @@ impl NodeHandler for Node {
             format!("{}/function?token={}", base_url, token)
         };
 
-        let timeout_ms = self
-            .config
-            .timeout_ms
-            .unwrap_or(60_000)
-            .clamp(1_000, 300_000);
-        let agent = ureq::AgentBuilder::new()
-            .timeout(Duration::from_millis(timeout_ms))
-            .build();
-
-        let body = json!({ "code": self.config.code });
-
-        let response = agent
+        // Async, with no timeout of its own: the engine's `--timeout` drops
+        // this future, which a blocking client could not be made to notice.
+        let client = reqwest::Client::builder()
+            .build()
+            .map_err(|e| PipelineError::new("FW_NODE_BROWSER_PAGE_RUN_HTTP", e.to_string()))?;
+        let response = client
             .post(&endpoint)
-            .set("Content-Type", "application/json")
-            .send_string(&body.to_string())
-            .map_err(|e| PipelineError::new("FW_NODE_BROWSER_RUN_HTTP", e.to_string()))?;
+            .json(&json!({ "code": self.config.code }))
+            .send()
+            .await
+            .map_err(|e| {
+                // The token rides in the query string; an error that quotes the URL must not repeat it.
+                let message = e.to_string();
+                let message = if token.is_empty() { message } else { message.replace(token, "••••••") };
+                PipelineError::new("FW_NODE_BROWSER_PAGE_RUN_HTTP", message)
+            })?;
 
-        let status = response.status();
-        let body_text = response
-            .into_string()
-            .map_err(|e| PipelineError::new("FW_NODE_BROWSER_RUN_READ", e.to_string()))?;
+        let status = response.status().as_u16();
+        let raw = crate::pipeline::nodes::basic::http::request::read_body_capped(response, "FW_NODE_BROWSER_PAGE_RUN_READ").await?;
+        let body_text = String::from_utf8_lossy(&raw).into_owned();
 
         let payload = serde_json::from_str::<Value>(&body_text).unwrap_or(Value::String(body_text));
 
         if !(200..400).contains(&status) {
             return Err(PipelineError::new(
-                "FW_NODE_BROWSER_RUN_STATUS",
+                "FW_NODE_BROWSER_PAGE_RUN_STATUS",
                 format!(
                     "browser endpoint returned status {}: {}",
                     status,
@@ -272,11 +269,25 @@ impl NodeHandler for Node {
 
         Ok(NodeExecutionOutput {
             output_pins: vec![OUTPUT_PIN_OUT.to_string()],
-            payload: crate::pipeline::nodes::shared::util::with_answer(&input.payload, json!({ "browser": payload })),
+            payload: crate::pipeline::nodes::shared::util::with_answer(&input.payload, json!({ "page": payload })),
             trace: vec![format!(
                 "node_kind={NODE_KIND} credential={} status={}",
                 self.config.credential_id, status
             )],
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// `--timeout-ms` is gone (the engine's `--timeout` bounds the run) and the
+    /// answer is `page`.
+    #[test]
+    fn the_flags_and_answer_are_the_0_11_ones() {
+        let def = super::definition();
+        let flags: Vec<&str> = def.dsl_flags.iter().map(|f| f.flag.as_str()).collect();
+        assert_eq!(flags, ["--credential"]);
+        assert!(def.output_schema["properties"].get("page").is_some());
+        assert!(!def.fields.iter().any(|f| f.name == "timeout_ms"));
     }
 }

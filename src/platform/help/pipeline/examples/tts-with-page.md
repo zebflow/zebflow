@@ -60,13 +60,13 @@ register tts/api --
 [a] trigger.webhook --route /api/tts --method POST
 [guard] logic.if --expr "!!(input.webhook.body && input.webhook.body.text && String(input.webhook.body.text).trim())"
 [bad]   web.response.send --status 400 --body "{{ { ok: false, error: 'text is required' } }}"
-[b] script.result.run -- "
+[b] javascript.script.run -- "
 return {
   text: String($trigger.body.text),
   slug: String($trigger.body.slug || Date.now())
 };
 "
-[c] ai.audio.generate --provider piper --credential narrator-tts --text "{{ input.text }}" --filename "{{ 'tts-' + input.slug }}" --on-conflict overwrite --return both
+[c] ai.audio.generate --provider piper --credential narrator-tts --text "{{ input.script.text }}" --filename "{{ 'tts-' + input.script.slug }}" --on-conflict overwrite --return both
 [d] web.response.send
 
 [a] -> [guard]
@@ -115,7 +115,7 @@ Graph DSL:
 
 ```zf
 [a] trigger.webhook --route /tts-demo --method GET
-[b] script.result.run -- "
+[b] javascript.script.run -- "
 return {
   title: 'Narrator TTS Demo',
   api_url: '/api/tts',
@@ -146,7 +146,7 @@ export const page = {
 export function getPage(input) {
   return {
     head: {
-      title: input?.title ?? "TTS Demo",
+      title: input?.script?.title ?? "TTS Demo",
       description: "Generate speech with ai.audio.generate and play it in the browser.",
     },
   };
@@ -160,7 +160,7 @@ function decodeBase64ToBlob(base64, mimeType) {
 }
 
 export default function Page(input) {
-  const [text, setText] = useState(input?.default_text ?? "");
+  const [text, setText] = useState(input?.script?.default_text ?? "");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [audioUrl, setAudioUrl] = useState("");
@@ -178,7 +178,7 @@ export default function Page(input) {
     }
 
     try {
-      const response = await fetch(input?.api_url || "/api/tts", {
+      const response = await fetch(input?.script?.api_url || "/api/tts", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -213,7 +213,7 @@ export default function Page(input) {
           Zebflow Demo
         </p>
         <h1 className="mt-3 text-4xl font-semibold tracking-tight">
-          {input?.title ?? "Narrator TTS Demo"}
+          {input?.script?.title ?? "Narrator TTS Demo"}
         </h1>
         <p className="mt-3 max-w-2xl text-sm leading-6 text-stone-300">
           Type text, call <code className="rounded bg-stone-900 px-1 py-0.5">/api/tts</code>,

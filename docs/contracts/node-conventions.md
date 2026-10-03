@@ -233,7 +233,7 @@ rest, through `with_answer`. Everything about the result nests inside it:
 trigger.webhook        → webhook: { body, query, params, headers, files, method, path, auth }
 fs.image.thumbnail     → image:   { …FileRef…, width, height, source_deleted }
 postgres.query.run     → query:   { rows, columns, row_count }
-kv.entry.get           → entry:   { key, value, ttl }
+kv.entry.get           → entry:   { key, value, found }
 auth.token.create      → token:   { access_token, token_type, expires_in, profile }
 fs.folder.list         → folder:  { path, items, count }
 javascript.script.run  → script:  <what the code returned>

@@ -209,18 +209,12 @@ function enrichFields(
         (item: any) => String(item?.credential_id || "") === selectedCredId
       );
       const variables = Array.isArray(cred?.secure_request_vars) ? cred.secure_request_vars : [];
-      const raw =
+      // A variable left empty takes the profile's own default at run time;
+      // the default is shown as a placeholder, never copied into the value.
+      enriched.value =
         value && typeof value === "object" && !Array.isArray(value)
           ? (value as Record<string, unknown>)
           : {};
-      const seeded: Record<string, unknown> = { ...raw };
-      for (const item of variables) {
-        const key = String(item?.name || "").trim();
-        if (!key || seeded[key] !== undefined) continue;
-        const fallback = String(item?.default_expr || "").trim();
-        if (fallback) seeded[key] = fallback;
-      }
-      enriched.value = seeded;
       enriched.secureRequestCredential = cred ?? null;
       enriched.secureRequestVariables = variables;
     }

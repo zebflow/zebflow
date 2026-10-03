@@ -4445,7 +4445,7 @@ fn webhook_pipeline(name: &str) -> Value {
                 "nodes": [
                     {"id": "t", "kind": "trigger.webhook", "output_pins": ["out"],
                      "config": {"route": format!("/{name}"), "method": "GET"}},
-                    {"id": "s", "kind": "script.result.run", "input_pins": ["in"], "output_pins": ["out"],
+                    {"id": "s", "kind": "javascript.script.run", "input_pins": ["in"], "output_pins": ["out"],
                      "config": {"source": "return { ok: true };"}}
                 ],
                 "edges": [{"from_node": "t", "from_pin": "out", "to_node": "s", "to_pin": "in"}]
@@ -7159,9 +7159,9 @@ async fn an_uncaught_failure_hides_by_default_and_is_one_error_group() {
     let cookie = login_cookie(app.clone(), "superadmin", "test-pass").await;
 
     for dsl in [
-        r#"register pipelines/tests/boom -- | trigger.webhook --route /boom --method GET | script.result.run -- "throw new Error('column \"x\" does not exist at row ' + ($trigger.query.n || 0))" | web.response.send"#,
+        r#"register pipelines/tests/boom -- | trigger.webhook --route /boom --method GET | javascript.script.run -- "throw new Error('column \"x\" does not exist at row ' + ($trigger.query.n || 0))" | web.response.send"#,
         "activate pipeline pipelines/tests/boom.zf.json",
-        r#"register pipelines/tests/boom-shown -- | trigger.webhook --route /boom-shown --method GET --errors show | script.result.run -- "throw new Error('shown on purpose')" | web.response.send"#,
+        r#"register pipelines/tests/boom-shown -- | trigger.webhook --route /boom-shown --method GET --errors show | javascript.script.run -- "throw new Error('shown on purpose')" | web.response.send"#,
         "activate pipeline pipelines/tests/boom-shown.zf.json",
     ] {
         let r = app.clone().oneshot(Request::builder().uri("/api/projects/superadmin/default/pipelines/dsl").method("POST")
@@ -7625,7 +7625,7 @@ async fn an_auth_optional_webhook_answers_guests_and_reads_a_valid_token() {
     assert_eq!(cred.status(), StatusCode::OK);
 
     for dsl in [
-        r#"register pipelines/tests/whoami -- | trigger.webhook --route /whoami --method GET --auth jwt --credential auth_member --auth-optional | script.result.run -- "return { who: input.webhook.auth ? input.webhook.auth.sub : 'guest' }" | web.response.send"#,
+        r#"register pipelines/tests/whoami -- | trigger.webhook --route /whoami --method GET --auth jwt --credential auth_member --auth-optional | javascript.script.run -- "return { who: input.webhook.auth ? input.webhook.auth.sub : 'guest' }" | web.response.send --body "{{ input.script }}""#,
         "activate pipeline pipelines/tests/whoami.zf.json",
     ] {
         let dsl_response = app

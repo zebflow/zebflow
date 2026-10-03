@@ -12,7 +12,7 @@ A server-rendered HTML page triggered by HTTP GET. The query result flows direct
 trigger.webhook → (optional query node) → web.response.send --template pages/foo.tsx
 ```
 
-The upstream node's entire output becomes `input` inside the TSX template. `input.query.rows` for pg.query.run results, `input.data` or whatever shape the script returns.
+The upstream node's entire output becomes `input` inside the TSX template. `input.query.rows` for pg.query.run results; for a `javascript.script.run` (TypeScript: `typescript.script.run`) node, the template reads `input.script` — whatever shape the script returned, nested under that key, with the rest of the payload still there too.
 
 ---
 
@@ -22,7 +22,7 @@ The upstream node's entire output becomes `input` inside the TSX template. `inpu
 
 ```
 | trigger.webhook --route /hello --method GET
-| script.result.run -- "return { message: 'Hello World', ts: Date.now() }"
+| javascript.script.run -- "return { message: 'Hello World', ts: Date.now() }"
 | web.response.send --template pages/hello.tsx
 ```
 
@@ -96,7 +96,7 @@ export default function Page(input) {
 - `trigger.webhook` — GET endpoint; path params in `input.webhook.params.<name>`, query string in `input.webhook.query.<name>` right after the trigger (`$trigger.params`, `$trigger.query` anywhere later)
 - `pg.query.run --credential <id>` — fetch data; `--param "1={{ input.webhook.params.unit_id }}"` binds `:unit_id` as `$1`
 - `logic.if --expr "input.query.rows.length > 0"` — branch on `true`/`false` pins; the only way to answer 404 conditionally, since a script cannot set the status
-- `script` — static payloads, data transform
+- `javascript.script.run` (TypeScript: `typescript.script.run`) — static payloads, data transform; its answer sits under `script` in the payload (`input.script.<field>`), the rest is kept
 - `web.response.send` — renders TSX template; upstream output = `input` in template; supports `--status` and `--header` (`Set-Cookie`, `Location`, …)
 
 ---

@@ -19,8 +19,8 @@ refuses the request before any node runs. Facts:
 | Piece | What it is |
 |---|---|
 | a `jwt_signing_key` credential | created by the owner in Studio → Credentials; holds the secret, `auth_redirect` (where a browser goes when refused), `auth_roles`. Its **id** is what the trigger's `--credential` and `auth.token.create --credential` take (`credential_list`). |
-| `auth.token.create` | mints the token from the payload: `--claim "sub={{ input.id }}" --claim "name:public={{ input.name }}" --claim "roles:public={{ input.roles }}"`; answers `{ access_token }` |
-| the cookie | `web.response.send --header "Set-Cookie=zebflow_session={{ input.access_token }}; Path=/; Max-Age=86400; SameSite=Lax; HttpOnly"` — sent exactly as written, so the attributes are yours to write; behind HTTPS add `; Secure`. The verifier reads `Authorization: Bearer` first, then this cookie. |
+| `auth.token.create` | mints the token from the payload: `--claim "sub={{ input.id }}" --claim "name:public={{ input.name }}" --claim "roles:public={{ input.roles }}"`; answers `token: { access_token, token_type, expires_in, profile }` — read `input.token.access_token` |
+| the cookie | `web.response.send --header "Set-Cookie=zebflow_session={{ input.token.access_token }}; Path=/; Max-Age=86400; SameSite=Lax; HttpOnly"` — sent exactly as written, so the attributes are yours to write; behind HTTPS add `; Secure`. The verifier reads `Authorization: Bearer` first, then this cookie. |
 | `--role` (repeated) | matches one entry of the token's **`roles` array** claim. A scalar `role` never authorises. |
 | `:public` | only claims marked `:public` reach the browser as `input.auth`; everything else stays server-side (`$trigger.auth`, `ctx.trigger.auth`). A public array claim stays an array. |
 | `crypto.password.*` | `crypto.password.hash --from "{{ $trigger.body.password }}"` → payload plus `password: { hash, algorithm }` (`webhook.body` kept); `crypto.password.verify --from "{{ … }}" --hash "{{ input.query.rows[0]?.password_hash }}"` → `password: { valid }` on the `true`/`false` pins; an empty hash (no such user) goes to `:error` |
@@ -60,7 +60,7 @@ refuses the request before any node runs. Facts:
 6. **Use identity server-side.** `$trigger.auth.sub` in `--param`,
    `ctx.trigger.auth.sub` in scripts; never trust an id from `$trigger.body`.
 7. **OAuth** (Google) is the same shape with `http.response.fetch` for the token
-   exchange and `kv.entry.put/kv.get` for the state parameter —
+   exchange and `kv.entry.put`/`kv.entry.get` for the state parameter —
    `help(topic="pipeline/examples/oauth-login-google")`.
 
 ## Files

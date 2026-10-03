@@ -64,9 +64,9 @@ Create a `jwt_signing_key` credential in the Credentials UI. Fields:
     -- "SELECT id::text, username, role FROM users WHERE username = $1 LIMIT 1"
 | logic.if --expr "input.query.rows && input.query.rows.length > 0"
 (false pin → `web.response.send --status 401 --body "invalid credentials"`)
-| script.result.run -- "const user = input.query.rows[0]; return { id: user.id, username: user.username, roles: [user.role] };"
-| auth.token.create --credential my-jwt --claim "sub={{ input.id }}" --claim "username:public={{ input.username }}" --claim "roles:public={{ input.roles }}" --expires-in 86400
-| web.response.send --status 302 --header "Location=/dashboard" --header "Set-Cookie=session={{ input.access_token }}; Path=/; Max-Age=86400; SameSite=Lax; HttpOnly"
+| javascript.script.run -- "const user = input.query.rows[0]; return { id: user.id, username: user.username, roles: [user.role] };"
+| auth.token.create --credential my-jwt --claim "sub={{ input.script.id }}" --claim "username:public={{ input.script.username }}" --claim "roles:public={{ input.script.roles }}" --ttl 1d
+| web.response.send --status 302 --header "Location=/dashboard" --header "Set-Cookie=session={{ input.token.access_token }}; Path=/; Max-Age=86400; SameSite=Lax; HttpOnly"
 ```
 
 > **Note:** `roles` must be an array in the JWT claim — wrap a single DB `role` string with `[user.role]`. If your schema already returns an array (junction table, `text[]` column), use it directly.
@@ -110,7 +110,7 @@ verify answers on `true`/`false` pins, so the branch is the check.
 | trigger.webhook --route /dashboard --method GET --auth jwt --credential my-jwt
 | pg.query.run --credential main-db --param "1={{ $trigger.auth.sub }}" \
     -- "SELECT id::text, username, email, role FROM users WHERE id = $1::uuid"
-| script.result.run -- "const u = input.query.rows?.[0]; return { user: u }"
+| javascript.script.run -- "const u = input.query.rows?.[0]; return { user: u }"
 | web.response.send --template pages/dashboard.tsx
 ```
 
@@ -120,7 +120,7 @@ JWT missing/invalid → `auth_redirect` fires as a 303 redirect (browser navigat
 
 ```
 | trigger.webhook --route /admin/:section --method GET --auth jwt --credential my-jwt --role admin
-| script.result.run -- "return { section: input.webhook.params.section, user: $trigger.auth }"
+| javascript.script.run -- "return { section: input.webhook.params.section, user: $trigger.auth }"
 | web.response.send --template pages/admin-section.tsx
 ```
 
@@ -133,7 +133,7 @@ Role mismatch → `auth_forbidden_redirect` fires as a 303 redirect (browser nav
 - `trigger.webhook --auth jwt --credential <id>` — auto-verify JWT; `$trigger.auth` = decoded claims
 - `trigger.webhook --role <role>` (repeated, one per role) — checks against JWT `roles` array claim. Empty = any authenticated user.
 - `pg.query.run` — user lookup and insert
-- `auth.token.create --claim "key={{ input.field }}"` — sign JWT; output `{{ input.access_token }}`. End the claim name with `:public` to expose that claim in the browser via `ctx.auth` (e.g. `--claim "role:public={{ input.role }}"`). Private claims like `sub` never reach the browser DOM.
+- `auth.token.create --claim "key={{ input.field }}" --ttl <duration>` — sign JWT; output `token: { access_token, token_type, expires_in, profile }`, read as `{{ input.token.access_token }}`. End the claim name with `:public` to expose that claim in the browser via `ctx.auth` (e.g. `--claim "role:public={{ input.role }}"`). Private claims like `sub` never reach the browser DOM.
 - `web.response.send --header "Set-Cookie=…"` — set the session cookie, sent as written: write `Path=/; SameSite=Lax; HttpOnly` (and `Secure` behind HTTPS)
 - `web.response.send --status 302 --header "Location=…"` — redirect after login/logout/register
 - `web.response.send --template` — render protected pages

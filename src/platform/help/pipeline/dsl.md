@@ -75,12 +75,13 @@ Flag value kinds, as each node declares them:
 | comma-list | `--accept pdf,docx` or `--cases a --cases b` | `["pdf","docx"]` — one style per flag |
 | key-value-pairs | `--claim "sub={{ input.id }}" --claim "name:public={{ input.name }}"` | `{ sub: …, name: … }` — repeat the flag, one key each |
 
-Two flags exist on every node: `--timeout <seconds>` (engine timeout for this
-node, clamped 5–3600, default the project's `pipeline_node_timeout_secs`) and
-`--title "…"` (the label shown in the editor).
+Two flags exist on every node: `--timeout <duration>` (engine timeout for this
+node, e.g. `--timeout 30s`, `2m`; 1s to 1h, default the project's node
+timeout; a bare number is refused) and `--title "…"` (the label shown in the
+editor).
 
 ```
-| pg.query.run --credential pg_main --timeout 120 -- "SELECT * FROM big_report_view"
+| pg.query.run --credential pg_main --timeout 2m -- "SELECT * FROM big_report_view"
 ```
 
 ---
@@ -122,7 +123,7 @@ a 640 px thumbnail (~120 KB as a data URI) rather than the 1200 px original.
 | web.response.send --status 302 --header "Location={{ $trigger.query.next || '/dashboard' }}"
 ```
 
-(`http.response.fetch` answers `{ request, response: { status, headers, body } }`.)
+(`http.response.fetch` adds `response: { status, ok, headers, content_type, body, request }`.)
 
 ---
 
@@ -134,7 +135,7 @@ a 640 px thumbnail (~120 KB as a data URI) rather than the 1200 px original.
 | `activate pipeline <path>` | promote the file to live traffic (validates node config, node availability, libraries) |
 | `deactivate pipeline <path>` | stop serving; the file stays |
 | `execute pipeline <path> --input '{"k":"v"}'` | run the live version once with that payload |
-| `run | trigger.function | script.result.run -- "return 1"` | run a body once, unsaved and unlogged; `run --dry-run` only parses |
+| `run | trigger.function | javascript.script.run -- "return 1"` | run a body once, unsaved and unlogged; `run --dry-run` only parses |
 | `patch pipeline <path> node <id> [--flag v]… [-- body]` | change one node's config; the pipeline becomes `stale` until activated |
 | `patch pipeline <path> note <id> [--text t] [--at x,y] [--size WxH] [--color c] [-- text]` | create or change one canvas note; `--remove` deletes it (see Notes) |
 | `get pipelines | nodes | connections | credentials | templates | docs` | list |
@@ -174,7 +175,7 @@ string.
 [b] http.response.fetch --url https://source-a.example.com/data --method GET
 [c] http.response.fetch --url https://source-b.example.com/data --method GET
 [d] logic.collect
-[e] script.result.run -- "return { a: input.b.response.body, b: input.c.response.body }"
+[e] javascript.script.run -- "return { a: input.b.response.body, b: input.c.response.body }"
 [a] -> [b]
 [a] -> [c]
 [b] -> [d]
@@ -202,8 +203,8 @@ branch — after a query or a script — and still waits for every run, and
 [a] trigger.manual
 [b] http.response.fetch --url https://api.example.com/work --method POST
 [r] logic.retry --max-attempts 3 --delay-ms 250
-[c] script.result.run -- "return input"
-[d] script.result.run -- "return { failed: true }"
+[c] javascript.script.run -- "return input"
+[d] javascript.script.run -- "return { failed: true }"
 [a] -> [b]
 [b] -> [c]
 [b]:error -> [r]
@@ -229,17 +230,17 @@ takes a **verdict** on an ordinary edge: `retry: true` on the payload (or
 `--when "<expr>"` true — JavaScript over `input`, as `logic.if --expr`) fires
 `retry` with that payload; false passes it through on `done`; the budget
 spent fires `failed`. The node counts its own attempts
-(`$nodes.<r>.__zf_retry.attempt`), so a poll that replaces the payload each
+(`$nodes.<r>.__zf_retry.attempt`), so a poll that reshapes the payload each
 round still counts 1, 2, 3; each round is a `retry` entry on the retry node
 (`node_retry` on the stream: "waiting 2/40"), and nothing is ever red:
 
 ```
 [t] trigger.manual
 [poll] http.response.fetch --url https://api.example.com/jobs/42 --method GET
-[check] script.result.run -- "const d = (input.response.body.data || [])[0] || {}; return { ...input, retry: d.status !== 'success', url: d.videoURL }"
-[wait] logic.retry --max-attempts 40 --delay-ms 5000
-[download] http.response.fetch --url "{{ input.url }}" --response-type bytes
-[gaveup] script.result.run -- "return { gaveup: true, attempts: input.__zf_retry.attempt }"
+[check] javascript.script.run -- "const d = (input.response.body.data || [])[0] || {}; return { retry: d.status !== 'success', url: d.videoURL }"
+[wait] logic.retry --max-attempts 40 --delay-ms 5000 --when "input.script.retry"
+[download] http.response.fetch --url "{{ input.script.url }}" --parse bytes
+[gaveup] javascript.script.run -- "return { gaveup: true, attempts: input.__zf_retry.attempt }"
 [t] -> [poll]
 [poll] -> [check]
 [check] -> [wait]
@@ -252,11 +253,11 @@ round still counts 1, 2, 3; each round is a `retry` entry on the retry node
 
 ```
 [a] trigger.manual
-[b] script.result.run -- "const n = (input.attempts || 0) + 1; return { ...input, attempts: n, status: n < 3 ? 'retry' : 'done' }"
-[c] logic.match --expr "input.status" --cases done --default retry
-[d] script.result.run -- "return { result: input }"
-[e] logic.if --expr "input.attempts < 5"
-[f] script.result.run -- "return { gave_up: true }"
+[b] javascript.script.run -- "const n = (input.script?.attempts || 0) + 1; return { attempts: n, status: n < 3 ? 'retry' : 'done' }"
+[c] logic.match --expr "input.script.status" --cases done --default retry
+[d] javascript.script.run -- "return input"
+[e] logic.if --expr "input.script.attempts < 5"
+[f] javascript.script.run -- "return { gave_up: true }"
 [a] -> [b]
 [b] -> [c]
 [c]:done -> [d]
@@ -276,7 +277,7 @@ is a reserved word in both modes:
 
 ```
 [t] trigger.webhook --route /signup
-[m] mail.message.send --credential smtp-main --to "{{ input.webhook.body.email }}"
+[m] mail.message.send --credential smtp-main --recipient "{{ input.webhook.body.email }}"
 [t] -> [m]
 [why] note --text "Create the `smtp-main` credential before activating." --at 120,-80 --size 320x90 --color amber
 
@@ -304,7 +305,7 @@ lives in `config.preview` beside `config.ui`, and removing it changes nothing
 about what the pipeline does.
 
 ```
-| trigger.manual | script.result.run --preview table:rows -- return { rows: await db.all() } | web.response.send --preview-in json:body
+| trigger.manual | javascript.script.run --preview table:rows -- return { rows: await db.all() } | web.response.send --preview-in json:body
 ```
 
 `--preview <as>[:<path>]` previews the node's **output**; `--preview-in
@@ -393,7 +394,7 @@ drop zone under the two nodes, and Run posts them as multipart:
 | input.text prompt --label "Caption" --max 200
 | input.image photo
 | fs.image.thumbnail --from "{{ input.photo }}" --width 200 --height 200 --preview image
-| script.result.run --preview json -- return { caption: input.prompt, thumb: input.image }
+| javascript.script.run --preview json -- return { caption: input.prompt, thumb: input.image }
 ```
 
 A webhook form that takes a CV — a browser posts the same multipart, and the
@@ -458,7 +459,7 @@ before.
 
 Bytes never travel inline. A file is a **FileRef** —
 `{ "__zf_type": "file_ref", "ref": "…", "filename", "mime", "kind", "size", "sha256", "lifecycle", "origin", "trust" }` —
-produced by an upload (`$trigger.files.<field>`), by `http.response.fetch --response-type bytes`,
+produced by an upload (`$trigger.files.<field>`), by `http.response.fetch --parse bytes`,
 or by any `fs.*` node. `fs.file.put` keeps an uploaded file:
 
 ```
@@ -506,8 +507,8 @@ behind the placeholder; the node names it with `--credential <id>` and needs
 neither `--url` nor `--method`. A profile whose Body Template is blank sends
 the node's own `--body "{{ expr }}"`, so the payload's shape stays in the
 pipeline and only the key lives in the credential. Send a FileRef to the
-provider with `--body-type form-data` and a FileRef as one field of the body;
-receive one with `--response-type bytes`, which stores the reply as a
+provider with `--format form-data` and a FileRef as one field of the body;
+receive one with `--parse bytes`, which stores the reply as a
 temporary FileRef at `response.body`; then
 `fs.file.put --from "{{ input.response.body }}"` keeps it. The key is redacted from the
 run's record at every capture level. On the canvas, the download node's
@@ -518,10 +519,10 @@ is the one that shows the picture, from the durable file it wrote.
 ```
 | trigger.manual
 | input.text prompt --label "Describe the image"
-| script.result.run -- "return { body: $trigger.body, taskUUID: crypto.randomUUID() }"
-| http.response.fetch --credential runware --body "{{ [ { taskType: 'imageInference', taskUUID: input.taskUUID, positivePrompt: input.body.prompt, model: 'runware:101@1', width: 1024, height: 1024, numberResults: 1, outputType: 'URL', outputFormat: 'JPG' } ] }}" --preview json:response.body
-| script.result.run -- "return { url: input.response.body.data[0].imageURL }"
-| http.response.fetch --url "{{ input.url }}" --response-type bytes --preview image
+| javascript.script.run -- "return { body: $trigger.body, taskUUID: crypto.randomUUID() }"
+| http.response.fetch --credential runware --body "{{ [ { taskType: 'imageInference', taskUUID: input.script.taskUUID, positivePrompt: input.script.body.prompt, model: 'runware:101@1', width: 1024, height: 1024, numberResults: 1, outputType: 'URL', outputFormat: 'JPG' } ] }}" --preview json:response.body
+| javascript.script.run -- "return { url: input.response.body.data[0].imageURL }"
+| http.response.fetch --url "{{ input.script.url }}" --parse bytes --preview image
 | fs.file.put --from "{{ input.response.body }}" --folder generated/runware --preview image
 ```
 
@@ -540,7 +541,7 @@ refused with the list. `<text inline-size="918">` (SVG 2) wraps a headline
 into lines measured by the shaper — one `<tspan>` per line. Pictures come
 from the project only: `<image href="sandbox/posters/photos/venue.jpg">`
 is a store path, `repo://static/brand/logo.svg` a repository file; a URL or
-a `data:` URI is refused — fetch with `http.response.fetch --response-type bytes`,
+a `data:` URI is refused — fetch with `http.response.fetch --parse bytes`,
 `fs.file.put` it, then name the path.
 
 ```
@@ -594,7 +595,7 @@ green `#00b140`, which is what the models paint) and answers
 and `fs.image.render` composites it over the background.
 
 **Temporary previews.** The bytes of a temporary FileRef (an
-`http.response.fetch --response-type bytes` answer, a Run-form upload) are deleted
+`http.response.fetch --parse bytes` answer, a Run-form upload) are deleted
 with the run, so a preview of one used to say only "temporary file — gone".
 Since 2026-09-21 a node whose `--preview image` (or `--preview-in image`)
 points at a temporary image gets a small JPEG snapshot (longest side 540 px,

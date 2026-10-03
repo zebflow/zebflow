@@ -522,7 +522,7 @@ mod tests {
     }
 
     fn http_get(url: &str) -> Value {
-        json!({ "method": "GET", "url": url, "response_type": "json" })
+        json!({ "method": "GET", "url": url, "parse": "json" })
     }
 
     /// Writes a one-node composite bundle whose function runs exactly one inner
@@ -810,7 +810,7 @@ mod tests {
         );
     }
 
-    /// Both curated bundles compose `script.result.run`, so a guard that refused it
+    /// Both curated bundles compose `javascript.script.run`, so a guard that refused it
     /// under the shipped sandbox would break what ships. It does not: the
     /// sandbox denies `fetch`, so there is no egress to read.
     #[tokio::test]
@@ -821,7 +821,7 @@ mod tests {
             root.path(),
             "scriptpkg",
             json!(["api.telegram.org"]),
-            "script.result.run",
+            "javascript.script.run",
             json!({ "source": "return { ok: true };" }),
         );
         platform
@@ -839,9 +839,9 @@ mod tests {
             "no egress guard has anything to say about a sandbox that cannot fetch, got: {payload}"
         );
         assert_eq!(
-            payload,
+            payload["script"],
             json!({ "ok": true }),
-            "the script ran to its own result, so this is not a refusal in disguise"
+            "the script ran to its own result, so this is not a refusal in disguise: {payload}"
         );
     }
 

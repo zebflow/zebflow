@@ -371,7 +371,7 @@ pub fn default_pins(kind: &str) -> (Vec<String>, Vec<String>) {
             (vec![], vec!["out".to_string()])
         }
         "pg.query.run" | "sekejap.query.run" | "sekejap.record.create" | "sqlite.query.run"
-        | "table.data.convert" | "table.query.run" | "script.result.run" | "http.response.fetch"
+        | "table.data.convert" | "table.query.run" | "javascript.script.run" | "typescript.script.run" | "http.response.fetch"
         | "logic.collect" | "ai.audio.generate" => (vec!["in".to_string()], vec!["out".to_string()]),
         "logic.foreach" => (vec!["in".to_string()], vec!["item".to_string()]),
         "logic.reduce" => (vec!["in".to_string()], vec!["out".to_string()]),
@@ -1387,7 +1387,7 @@ fn graph_note_statement(line: &str) -> Option<(String, Vec<String>)> {
 pub fn body_config_key(kind: &str) -> &'static str {
     match kind {
         "pg.query.run" | "sekejap.query.run" | "sqlite.query.run" | "table.query.run" => "query",
-        "script.result.run" => "source",
+        "javascript.script.run" | "typescript.script.run" => "source",
         "logic.match" | "logic.if" => "expression",
         "browser.page.run" => "code",
         "ai.text.generate" => "prompt",
@@ -1533,7 +1533,7 @@ mod tests {
 
     fn preview_graph_node(dsl_flags: &str) -> PipelineNode {
         let dsl = format!(
-            "[a] trigger.manual\n[b] script.result.run {dsl_flags} -- return input\n\n[a] -> [b]\n"
+            "[a] trigger.manual\n[b] javascript.script.run {dsl_flags} -- return input\n\n[a] -> [b]\n"
         );
         let graph = build_pipeline_graph("parser-preview-test", &dsl).expect("graph");
         graph
@@ -1590,7 +1590,7 @@ mod tests {
     fn preview_refuses_a_kind_that_is_not_on_the_list() {
         let err = build_pipeline_graph(
             "parser-preview-bad-kind",
-            "[a] trigger.manual\n[b] script.result.run --preview gif -- return input\n\n[a] -> [b]\n",
+            "[a] trigger.manual\n[b] javascript.script.run --preview gif -- return input\n\n[a] -> [b]\n",
         )
         .expect_err("unknown preview kind must fail");
         assert!(err.contains("unknown preview kind `gif`"), "{err}");
@@ -1599,7 +1599,7 @@ mod tests {
 
     #[test]
     fn preview_flags_round_trip_through_graph_to_dsl() {
-        let dsl = "[a] trigger.manual\n[b] script.result.run --preview image:response.file --preview-in json:body -- return input\n\n[a] -> [b]\n";
+        let dsl = "[a] trigger.manual\n[b] javascript.script.run --preview image:response.file --preview-in json:body -- return input\n\n[a] -> [b]\n";
         let graph = build_pipeline_graph("parser-preview-round-trip", dsl).expect("graph");
         let rendered = graph_to_dsl(&graph);
         assert!(
@@ -1614,7 +1614,7 @@ mod tests {
         let script_preview = |g: &PipelineGraph| {
             g.nodes
                 .iter()
-                .find(|n| n.kind == "script.result.run")
+                .find(|n| n.kind == "javascript.script.run")
                 .expect("script node")
                 .config
                 .get("preview")
@@ -1663,7 +1663,7 @@ mod tests {
 
     #[test]
     fn preview_size_suffix_round_trips_and_is_omitted_at_default_size() {
-        let dsl = "[a] trigger.manual\n[b] script.result.run --preview table:rows@420x180 --preview-in json@300x90 -- return input\n\n[a] -> [b]\n";
+        let dsl = "[a] trigger.manual\n[b] javascript.script.run --preview table:rows@420x180 --preview-in json@300x90 -- return input\n\n[a] -> [b]\n";
         let graph = build_pipeline_graph("parser-preview-size-round-trip", dsl).expect("graph");
         let rendered = graph_to_dsl(&graph);
         assert!(rendered.contains("--preview table:rows@420x180"), "{rendered}");
@@ -1673,7 +1673,7 @@ mod tests {
         let script_preview = |g: &PipelineGraph| {
             g.nodes
                 .iter()
-                .find(|n| n.kind == "script.result.run")
+                .find(|n| n.kind == "javascript.script.run")
                 .expect("script node")
                 .config
                 .get("preview")
@@ -1703,7 +1703,7 @@ mod tests {
         // And through the DSL the error reaches the caller.
         let err = build_pipeline_graph(
             "parser-preview-bad-size",
-            "[a] trigger.manual\n[b] script.result.run --preview image@wide -- return input\n\n[a] -> [b]\n",
+            "[a] trigger.manual\n[b] javascript.script.run --preview image@wide -- return input\n\n[a] -> [b]\n",
         )
         .expect_err("bad size must fail");
         assert!(err.contains("bad size `wide`"), "{err}");
@@ -1755,7 +1755,7 @@ mod tests {
         assert_eq!(graph.nodes[1].config["name"], json!("total"));
         assert_eq!(graph.nodes[1].config["min"], json!(1));
 
-        let graph = build_pipeline_graph("parser-positional-none", "| trigger.manual | script.result.run stray -- return input")
+        let graph = build_pipeline_graph("parser-positional-none", "| trigger.manual | javascript.script.run stray -- return input")
             .expect("graph");
         assert!(graph.nodes[1].config.get("name").is_none());
 
@@ -1881,7 +1881,7 @@ mod tests {
         let dsl = r#"
 run \
   [a] trigger.manual \
-  [b] script.result.run -- "return { ok: true };" \
+  [b] javascript.script.run -- "return { ok: true };" \
   [a] -> [b]
 "#;
 
@@ -1903,13 +1903,13 @@ run \
     #[test]
     fn split_commands_respects_quotes_around_ampersand() {
         let dsl = r#"register pipelines/test [trigger] trigger.manual
-[echo] script.result.run -- "if (a && b) { return 1; }"
+[echo] javascript.script.run -- "if (a && b) { return 1; }"
 [trigger] -> [echo]"#;
         let commands = split_commands(dsl);
         assert_eq!(commands.len(), 1, "&& inside double quotes must not split");
 
         let dsl2 = r#"register pipelines/test [t] trigger.manual
-[s] script.result.run -- `${a && b}`
+[s] javascript.script.run -- `${a && b}`
 [t] -> [s]"#;
         let commands2 = split_commands(dsl2);
         assert_eq!(commands2.len(), 1, "&& inside backticks must not split");
@@ -1922,7 +1922,7 @@ run \
     #[test]
     fn register_graph_body_prefers_graph_marker_before_js_pipe() {
         let dsl = r#"register pipelines/e1/rename [a] trigger.manual
-[b] script.result.run -- const left = input.old_name;
+[b] javascript.script.run -- const left = input.old_name;
 const ok = /old|new/.test(left) || left === "legacy|name";
 return { ok };
 [a] -> [b]"#;
@@ -1961,17 +1961,17 @@ return { ok };
     fn pipe_mode_long_script_body_keeps_downstream_nodes() {
         let dsl = r#"
 | trigger.manual
-| script.result.run -- const ok = !!(input.left || input.right);
+| javascript.script.run -- const ok = !!(input.left || input.right);
 const label = "left|right";
 return { ok, label };
-| script.result.run -- return { downstream: input.ok, label: input.label };
+| javascript.script.run -- return { downstream: input.ok, label: input.label };
 "#;
 
         let graph = build_pipeline_graph("pipe-long-script-body", dsl).expect("graph");
         assert_eq!(graph.nodes.len(), 3);
         assert_eq!(graph.edges.len(), 2);
-        assert_eq!(graph.nodes[1].kind, "script.result.run");
-        assert_eq!(graph.nodes[2].kind, "script.result.run");
+        assert_eq!(graph.nodes[1].kind, "javascript.script.run");
+        assert_eq!(graph.nodes[2].kind, "javascript.script.run");
         let first_source = graph.nodes[1]
             .config
             .get("source")
@@ -1991,7 +1991,7 @@ return { ok, label };
     fn graph_mode_multiline_script_body_keeps_edges() {
         let dsl = r#"
 [a] trigger.manual
-[b] script.result.run -- const values = [1, 2, 3];
+[b] javascript.script.run -- const values = [1, 2, 3];
 [1, 2, 3].map((value) => value + 1);
 return { values };
 [a] -> [b]
@@ -2033,7 +2033,7 @@ return { values };
             }],
             ..Default::default()
         };
-        let dsl = "[a] trigger.manual\n[b] script.result.run -- \"return { text: ['x'] }\"\n[c] ai.embedding.generate --input-expr input.text\n[a] -> [b]\n[b] -> [c]";
+        let dsl = "[a] trigger.manual\n[b] javascript.script.run -- \"return { text: ['x'] }\"\n[c] ai.embedding.generate --input-expr input.text\n[a] -> [b]\n[b] -> [c]";
         let graph = build_pipeline_graph_with_definitions("short-kind", dsl, &[embed]).expect("graph");
         let c = graph.nodes.iter().find(|n| n.id == "c").expect("[c] is a node, not glued onto [b]'s body");
         assert_eq!(c.kind, "ai.embedding.generate");
@@ -2232,7 +2232,7 @@ return { ok, label: "lat|lon", pair: `${lat || ""}|${lon || ""}` };"#;
         let dsl = r#"
 [fn] trigger.function --title "Inspect CSV" --description "Reads a CSV." --argument source:file! "CSV file reference." --argument options:any "Provider options." --result ok:boolean! "Whether it worked." --result columns:string[] "Detected columns."
 [fn] -> [done]
-[done] script.result.run -- return input;
+[done] javascript.script.run -- return input;
 "#;
 
         let graph = build_pipeline_graph("function-schema-field-test", dsl).expect("graph");
@@ -2559,7 +2559,7 @@ pub fn node_to_segment_no_body(node: &PipelineNode) -> String {
             "sekejap.query.run" => "query",
             "sqlite.query.run" => "query",
             "table.query.run" => "query",
-            "script.result.run" => "source",
+            "javascript.script.run" | "typescript.script.run" => "source",
             "logic.match" | "logic.if" => "expression",
             _ => "body",
         };
@@ -3080,10 +3080,10 @@ mod quoting_tests {
     /// pipeline anyone writes.
     const COMPLEX: &str = r#"
 [t] trigger.webhook --route /orders --method POST
-[k] kv.entry.get --key "order:{{ $trigger.query.id }}" --out-key order
-[c] logic.if --expr "input.order !== null"
-[m] mail.message.send --credential relay --to "{{ input.order.email }}" --subject "Order {{ $trigger.query.id }}" --text "Thank you."
-[f] kv.entry.put --key "seen:{{ $trigger.query.id }}" --value "{{ input.order }}" --ttl 600
+[k] kv.entry.get --key "order:{{ $trigger.query.id }}"
+[c] logic.if --expr "input.entry.found"
+[m] mail.message.send --credential relay --recipient "{{ input.entry.value.email }}" --subject "Order {{ $trigger.query.id }}" --text "Thank you."
+[f] kv.entry.put --key "seen:{{ $trigger.query.id }}" --value "{{ input.entry.value }}" --ttl 10m
 [w] web.response.send --status 200 --body "ok"
 [e] web.response.send --status 404 --body "no such order"
 
@@ -3115,7 +3115,7 @@ mod quoting_tests {
             "an interpolated key kept its expression"
         );
         assert_eq!(
-            by_id("m").config["to"], "{{ input.order.email }}",
+            by_id("m").config["recipient"], json!(["{{ input.entry.value.email }}"]),
             "a whole-field expression kept its braces"
         );
         assert_eq!(
@@ -3123,9 +3123,10 @@ mod quoting_tests {
             "text around an expression survived tokenizing"
         );
         assert_eq!(
-            by_id("f").config["value"], "{{ input.order }}",
-            "the migrated --value flag carries an expression"
+            by_id("f").config["value"], "{{ input.entry.value }}",
+            "the --value flag carries an expression"
         );
+        assert_eq!(by_id("f").config["ttl"], "10m", "a duration stays as written");
         // Bare literals still work with no quotes at all.
         assert_eq!(by_id("t").config["route"], "/orders");
         assert_eq!(by_id("w").config["status"], 200);
@@ -3137,7 +3138,7 @@ mod quoting_tests {
     fn an_unquoted_expression_is_refused_with_advice() {
         let dsl = r#"
 [t] trigger.manual
-[m] mail.message.send --credential relay --to {{ input.email }} --subject hi --text hi
+[m] mail.message.send --credential relay --recipient {{ input.email }} --subject hi --text hi
 
 [t] -> [m]
 "#;
@@ -3152,7 +3153,7 @@ mod quoting_tests {
     fn a_spaceless_expression_needs_no_quotes() {
         let dsl = r#"
 [t] trigger.manual
-[k] kv.entry.get --key {{input.id}} --out-key found
+[k] kv.entry.get --key {{input.id}}
 
 [t] -> [k]
 "#;

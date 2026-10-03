@@ -20,7 +20,7 @@ Capabilities are now *derived* exactly — `Network`, `Filesystem`, `Database`,
 `Credential`, `Process`, computed from what a package composes rather than from
 what it claims. That derivation is **disclosure only**.
 
-The review states that `script.result.run` can execute processes and that
+The review states that `javascript.script.run` can execute processes and that
 `http.response.fetch` can reach the network and read a credential. Nothing prevents
 either from doing more than was derived, because nothing enforces the ceiling.
 
@@ -89,7 +89,7 @@ be read as a 404.
 - **The scheduler's engine has no single project.** `web/mod.rs` builds one
   `BasicPipelineEngine` for the scheduler, the KV subscriber, and the WS client
   manager, all of which serve every project. Its sandbox has no fetch root, so a
-  scheduled `script.result.run` cannot local-fetch at all. That is the safe answer, not
+  scheduled `javascript.script.run` cannot local-fetch at all. That is the safe answer, not
   the right one; the right one is a per-run engine.
 
 ## 3. Declarations, and what honours them
@@ -141,7 +141,7 @@ than an omission:
   bundle declared a host or not, so declaring nothing is not a way to obtain
   `pg.query.run`. Only the host allowlist is affected by an empty list, and an
   empty allowlist is the one thing an author gains nothing by choosing.
-- **`script.result.run` answers to the sandbox actually in force.** The Deno sandbox
+- **`javascript.script.run` and `typescript.script.run` answer to the sandbox actually in force.** The Deno sandbox
   denies `fetch` as shipped, so a script reaches nothing a host guard would need
   to read, and both curated bundles compose one. Where an operator has granted
   the sandbox network access — `dangerZone.allowNet`, or any
@@ -180,9 +180,9 @@ is never read as a call.
 
 So the flag prevented nothing, and where it read `true` it asserted something
 false. `pg.query.run` and `http.response.fetch` — the two nodes with the longest reach
-— declared `true`, which rendered an "script.result.run access" badge in the node
+— declared `true`, which rendered a "javascript.script.run access" badge in the node
 catalog and listed `pg.query.run({...})` and `http.response.fetch({...})` as built-ins
-in the `script.result.run` editor's own sidebar. Every declaration is now `false` with no
+in the `javascript.script.run` editor's own sidebar. Every declaration is now `false` with no
 bridge, both false surfaces are gone, and the field's documentation says it
 grants and restricts nothing.
 
@@ -195,7 +195,7 @@ next NodeDefinition version bump rather than mint one for a dead boolean.
 
 If the bridge is ever built, it is a second egress path and the `spec.hosts`
 check above has to cover it before the first call works — otherwise a bundle
-that composes `script.result.run` reaches whatever the bridge exposes, which is exactly
+that composes `javascript.script.run` reaches whatever the bridge exposes, which is exactly
 the hole `BundleEgress` was built to close.
 
 **Derived capabilities** — reported to a user, never checked against what a node

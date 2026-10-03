@@ -29,7 +29,7 @@
 //! **Greeting tool:**
 //! ```text
 //! | trigger.mcp --name greet_user --description "Greet a user by name" --params name:string
-//! | script.result.run -- "return { greeting: 'Hello, ' + input.mcp.arguments.name + '!' };"
+//! | javascript.script.run -- "return { greeting: 'Hello, ' + input.mcp.arguments.name + '!' };"
 //! | web.response.send
 //! ```
 //!

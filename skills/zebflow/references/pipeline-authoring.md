@@ -58,7 +58,8 @@ Common trigger families:
 
 Common work nodes:
 
-- `script.result.run`
+- `javascript.script.run`
+- `typescript.script.run`
 - `pg.query.run`
 - `sqlite.query.run`
 - `sekejap.query.run`

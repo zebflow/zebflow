@@ -18,7 +18,8 @@ export const DEFAULT_LINK_OPTIONS = {
 export const DEFAULT_NODE_KIND_COLORS = {
   "trigger.webhook": "#065f46",
   "trigger.schedule": "#14532d",
-  "script.result.run": "#1e3a8a",
+  "javascript.script.run": "#1e3a8a",
+  "typescript.script.run": "#1e3a8a",
   "http.response.fetch": "#7c2d12",
   "sekejap.query.run": "#0f766e",
   "n.sekejap.mutate": "#0f766e",
@@ -4599,7 +4600,7 @@ export const PipelineGraph = (() => {
   function _pgCollect(app) {
     const used = new Set();
     const nodes = app.graph.nodes.map((node) => {
-      const kind = node.zfKind || "script.result.run";
+      const kind = node.zfKind || "javascript.script.run";
       let id = _pgSanitizeSlug(
         node.zfPipelineNodeId || kind.split(".").pop() || "node"
       );

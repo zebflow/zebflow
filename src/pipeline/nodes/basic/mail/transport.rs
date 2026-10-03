@@ -56,7 +56,7 @@ impl Channel {
             "starttls-insecure" => Ok(Self::StartTlsInsecure),
             "none" => Ok(Self::None),
             other => Err(PipelineError::new(
-                "FW_NODE_MAIL_CREDENTIAL",
+                "FW_NODE_MAIL_MESSAGE_SEND_CREDENTIAL",
                 format!("unknown tls mode '{other}': use starttls, tls, starttls-insecure, or none"),
             )),
         }
@@ -142,7 +142,7 @@ fn verifying_connector() -> Result<TlsConnector, PipelineError> {
     roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
     let config = ClientConfig::builder_with_provider(provider())
         .with_safe_default_protocol_versions()
-        .map_err(|e| PipelineError::new("FW_NODE_MAIL_TRANSPORT", e.to_string()))?
+        .map_err(|e| PipelineError::new("FW_NODE_MAIL_MESSAGE_SEND_TRANSPORT", e.to_string()))?
         .with_root_certificates(roots)
         .with_no_client_auth();
     Ok(TlsConnector::from(Arc::new(config)))
@@ -153,7 +153,7 @@ fn trusting_connector() -> Result<TlsConnector, PipelineError> {
     let provider = provider();
     let config = ClientConfig::builder_with_provider(provider.clone())
         .with_safe_default_protocol_versions()
-        .map_err(|e| PipelineError::new("FW_NODE_MAIL_TRANSPORT", e.to_string()))?
+        .map_err(|e| PipelineError::new("FW_NODE_MAIL_MESSAGE_SEND_TRANSPORT", e.to_string()))?
         .dangerous()
         .with_custom_certificate_verifier(Arc::new(AcceptAnyCertificate(provider)))
         .with_no_client_auth();
@@ -165,7 +165,7 @@ fn trusting_connector() -> Result<TlsConnector, PipelineError> {
 /// placeholder — it verifies nothing anyway.
 fn server_name(host: &str) -> Result<ServerName<'static>, PipelineError> {
     ServerName::try_from(host.to_string()).map_err(|e| {
-        PipelineError::new("FW_NODE_MAIL_TRANSPORT", format!("'{host}' is not a valid server name: {e}"))
+        PipelineError::new("FW_NODE_MAIL_MESSAGE_SEND_TRANSPORT", format!("'{host}' is not a valid server name: {e}"))
     })
 }
 
@@ -187,14 +187,14 @@ pub async fn deliver_to_relay(
     message: &Message,
 ) -> Result<Outcome, PipelineError> {
     let stream = TcpStream::connect((host, port)).await.map_err(|e| {
-        PipelineError::new("FW_NODE_MAIL_TRANSPORT", format!("cannot reach {host}:{port}: {e}"))
+        PipelineError::new("FW_NODE_MAIL_MESSAGE_SEND_TRANSPORT", format!("cannot reach {host}:{port}: {e}"))
     })?;
     // Two different failures reach this function: the TLS handshake gives an
     // io error, the SMTP dialogue gives a ReplyError. Both mean the wire
     // broke rather than the relay refusing, so both carry the same code.
-    let io = |e: std::io::Error| PipelineError::new("FW_NODE_MAIL_SEND", format!("smtp: {e}"));
+    let io = |e: std::io::Error| PipelineError::new("FW_NODE_MAIL_MESSAGE_SEND", format!("smtp: {e}"));
     let wire = |e: mailbourne::send::conversation::ReplyError| {
-        PipelineError::new("FW_NODE_MAIL_SEND", format!("smtp: {e:?}"))
+        PipelineError::new("FW_NODE_MAIL_MESSAGE_SEND", format!("smtp: {e:?}"))
     };
 
     match channel {
@@ -281,7 +281,7 @@ mod tests {
         assert_eq!(Channel::parse("starttls-insecure").unwrap(), Channel::StartTlsInsecure);
         assert_eq!(Channel::parse("none").unwrap(), Channel::None);
         let err = Channel::parse("ssl").unwrap_err();
-        assert_eq!(err.code, "FW_NODE_MAIL_CREDENTIAL");
+        assert_eq!(err.code, "FW_NODE_MAIL_MESSAGE_SEND_CREDENTIAL");
         assert!(err.message.contains("starttls, tls, starttls-insecure, or none"), "{}", err.message);
     }
 

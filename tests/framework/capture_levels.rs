@@ -285,7 +285,7 @@ fn a_node_kind_can_declare_where_its_secret_sits() {
         .find(|d| d.kind == "auth.token.create")
         .expect("auth.token.create must exist");
     assert!(
-        def.secret_paths.iter().any(|p| p == "/access_token"),
+        def.secret_paths.iter().any(|p| p == "/token/access_token"),
         "the token node must declare its token: {:?}",
         def.secret_paths
     );

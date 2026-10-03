@@ -1,4 +1,4 @@
-//! `auth.*` — signed tokens: `auth.token_create`, `auth.token_verify`.
+//! `auth.*` — signed tokens: `auth.token.create` answers `token: { access_token, … }`, `auth.token.verify` answers `token: { valid, claims }`.
 
 use crate::pipeline::NodeDefinition;
 

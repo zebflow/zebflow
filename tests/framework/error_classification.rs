@@ -26,24 +26,24 @@ fn an_engine_fault_stays_failed() {
 }
 
 /// The seam itself: a wrapper must carry the cause's class rather than impose
-/// its own. `FW_NODE_SCRIPT_COMPILE` is Failed, and every compile error used to
+/// its own. `FW_NODE_JAVASCRIPT_SCRIPT_RUN_COMPILE` is Failed, and every compile error used to
 /// arrive under it regardless of cause.
 #[test]
 fn the_wrapper_preserves_the_cause_class() {
     let refused = wrapper_for(
         "LANG_DENO_POLICY",
-        "FW_NODE_SCRIPT_REJECTED",
-        "FW_NODE_SCRIPT_COMPILE",
+        "FW_NODE_JAVASCRIPT_SCRIPT_RUN_REJECTED",
+        "FW_NODE_JAVASCRIPT_SCRIPT_RUN_COMPILE",
     );
-    assert_eq!(refused, "FW_NODE_SCRIPT_REJECTED");
+    assert_eq!(refused, "FW_NODE_JAVASCRIPT_SCRIPT_RUN_REJECTED");
     assert_eq!(class_of(refused), ErrorClass::Refused);
 
     let failed = wrapper_for(
         "LANG_DENO_ARTIFACT_DECODE",
-        "FW_NODE_SCRIPT_REJECTED",
-        "FW_NODE_SCRIPT_COMPILE",
+        "FW_NODE_JAVASCRIPT_SCRIPT_RUN_REJECTED",
+        "FW_NODE_JAVASCRIPT_SCRIPT_RUN_COMPILE",
     );
-    assert_eq!(failed, "FW_NODE_SCRIPT_COMPILE");
+    assert_eq!(failed, "FW_NODE_JAVASCRIPT_SCRIPT_RUN_COMPILE");
     assert_eq!(class_of(failed), ErrorClass::Failed);
 }
 
@@ -102,7 +102,7 @@ fn optional_chaining_still_yields_a_value() {
 }
 
 /// `input` is the payload in a logic node's expression, as it is in every
-/// `{{ }}` block and in `script.result.run`.
+/// `{{ }}` block and in `javascript.script.run`.
 ///
 /// Binding only `$input` left `input` pointing at the scope object, so
 /// `input.rows` evaluated to undefined and a guard silently took the wrong
@@ -119,8 +119,8 @@ async fn a_logic_expression_reads_input_as_the_payload() {
         "input-binding",
         "[a] trigger.manual\n\
          [b] logic.if --expr \"input.manual.rows && input.manual.rows.length > 0\"\n\
-         [yes] script.result.run -- \"return { took: 'true' };\"\n\
-         [no] script.result.run -- \"return { took: 'false' };\"\n\
+         [yes] javascript.script.run -- \"return { took: 'true' };\"\n\
+         [no] javascript.script.run -- \"return { took: 'false' };\"\n\
          [a] -> [b]\n[b]:true -> [yes]\n[b]:false -> [no]\n",
     )
     .expect("graph");
@@ -140,7 +140,7 @@ async fn a_logic_expression_reads_input_as_the_payload() {
         .await
         .expect("execution");
     assert_eq!(
-        out.value.get("took").and_then(|v| v.as_str()),
+        out.value["script"].get("took").and_then(|v| v.as_str()),
         Some("true"),
         "`input.manual.rows` must see the payload, not the scope object"
     );
@@ -150,8 +150,8 @@ async fn a_logic_expression_reads_input_as_the_payload() {
         "input-binding-dollar",
         "[a] trigger.manual\n\
          [b] logic.if --expr \"$input.manual.rows.length > 0\"\n\
-         [yes] script.result.run -- \"return { took: 'true' };\"\n\
-         [no] script.result.run -- \"return { took: 'false' };\"\n\
+         [yes] javascript.script.run -- \"return { took: 'true' };\"\n\
+         [no] javascript.script.run -- \"return { took: 'false' };\"\n\
          [a] -> [b]\n[b]:true -> [yes]\n[b]:false -> [no]\n",
     )
     .expect("graph");
@@ -159,7 +159,7 @@ async fn a_logic_expression_reads_input_as_the_payload() {
         .execute_async(&graph, &ctx)
         .await
         .expect("execution");
-    assert_eq!(out.value.get("took").and_then(|v| v.as_str()), Some("true"));
+    assert_eq!(out.value["script"].get("took").and_then(|v| v.as_str()), Some("true"));
 }
 
 /// A node declares its own pins, and the DSL reads them.

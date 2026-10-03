@@ -15,7 +15,7 @@ use crate::pipeline::{
 use crate::platform::services::CredentialService;
 
 use crate::pipeline::nodes::shared::util::metadata_scope;
-use crate::pipeline::model::LayoutItem;
+use crate::pipeline::model::{DslFlag, DslFlagKind, LayoutItem};
 
 pub const NODE_KIND: &str = "auth.token.create";
 const INPUT_PIN_IN: &str = "in";
@@ -24,116 +24,91 @@ const OUTPUT_PIN_OUT: &str = "out";
 pub fn definition() -> NodeDefinition {
     NodeDefinition {
         // The minted session token. Rule 3 by value cannot see it — it never
-        // came out of the credential store, it was just created here — and the
-        // name list only catches it because `access_token` happens to be on it.
-        // Declared so it stays masked even if that list changes.
-        secret_paths: vec!["/access_token".to_string()],
+        // came out of the credential store, it was just created here.
+        secret_paths: vec!["/token/access_token".to_string()],
         kind: NODE_KIND.to_string(),
         capabilities: vec![NodeCapability::Credential],
         title: "Create Auth Token".to_string(),
-        description: "Signs a JWT access token from input data using a stored jwt_signing_key credential. Supports HS256 and RS256 algorithms. A claim whose name ends in `:public` (e.g. `--claim \"name:public={{ input.fullname }}\"`) is the only kind exposed in the browser via `ctx.auth`; all others remain server-only. The value keeps the type its expression gives.".to_string(),
-        input_schema: json!({
-            "type": "object",
-            "description": "Input payload for claim extraction."
-        }),
-        output_schema: json!({
-            "type": "object",
-            "properties": {
-                "access_token": { "type": "string" },
-                "token_type": { "type": "string" },
-                "expires_in": { "type": "integer" },
-                "profile": { "type": "object" }
-            }
-        }),
+        description: "Signs a JWT with a stored `jwt_signing_key` credential (HS256/384/512 or RS256/384/512, as the credential says), \
+            valid for `--ttl` (a duration, default 15m). Adds `token: { access_token, token_type, expires_in, profile }` and keeps the \
+            rest of the payload; `expires_in` is in seconds, as OAuth writes it. A claim whose name ends in `:public` \
+            (`--claim \"name:public={{ input.fullname }}\"`) is the only kind exposed in the browser via `ctx.auth`; all others stay \
+            server-only. A claim's value keeps the type its expression gives."
+            .to_string(),
+        input_schema: json!({ "type": "object", "description": "Any payload; it is kept and `token` is added." }),
+        output_schema: json!({ "type": "object", "properties": { "token": { "type": "object", "properties": {
+            "access_token": { "type": "string" },
+            "token_type": { "type": "string" },
+            "expires_in": { "type": "integer", "description": "Seconds until it expires." },
+            "profile": { "type": "object", "description": "The claims signed in, without iat/exp/iss/aud." }
+        } } } }),
         input_pins: vec![INPUT_PIN_IN.to_string()],
         output_pins: vec![OUTPUT_PIN_OUT.to_string()],
         script_available: false,
         script_bridge: None,
-        config_schema: serde_json::json!({
-        "type": "object",
-        "properties": {
-            "credential_id": { "type": "string", "description": "ID of the jwt_signing_key credential." },
-            "expires_in": { "type": "integer", "description": "Token lifetime in seconds (default 900)." },
-            "claims": { "type": "object", "description": "Map of claim_name → value. A value is a literal or {{ expr }}. End the name with `:public` (`roles:public`) to expose the claim in the browser. Claims without it are signed into the JWT but never reach the browser DOM." },
-            "issuer": { "type": "string" },
-            "audience": { "type": "string" }
-        }
-    }),
+        config_schema: Default::default(),
         dsl_flags: vec![
-            crate::pipeline::model::DslFlag {
-                flag: "--credential".to_string(),
-                config_key: "credential_id".to_string(),
-                description: "ID of the jwt_signing_key credential used to sign the token.".to_string(),
-                kind: crate::pipeline::model::DslFlagKind::Scalar,
-                required: true,
-                ..Default::default()
+            DslFlag { required: true, ..flag("--credential", "credential_id", "The jwt_signing_key credential that signs the token.", "text") },
+            flag("--ttl", "ttl", "How long the token is valid, e.g. 15m, 1h or 1d (default 15m).", "duration"),
+            DslFlag {
+                kind: DslFlagKind::KeyValuePairs,
+                ..flag(
+                    "--claim",
+                    "claims",
+                    "A claim to sign, repeated: name=literal or name={{ expr }} (the value keeps its type). End the name with :public to expose it in the browser via ctx.auth, e.g. --claim \"name:public={{ input.fullname }}\"; the rest are signed but never reach the browser.",
+                    "expression",
+                )
             },
-            crate::pipeline::model::DslFlag {
-                flag: "--expires-in".to_string(),
-                config_key: "expires_in".to_string(),
-                description: "Token lifetime in seconds (default 900).".to_string(),
-                kind: crate::pipeline::model::DslFlagKind::Scalar,
-                required: false,
-                ..Default::default()
-            },
-            crate::pipeline::model::DslFlag {
-                flag: "--claim".to_string(),
-                config_key: "claims".to_string(),
-                description: "Map a JWT claim from the input payload. Repeat for each claim. Format: claim_name={{ expr }} or claim_name=literal. End the name with :public to expose the claim in the browser via ctx.auth (e.g. --claim \"name:public={{ input.fullname }}\"); the value keeps its type. Claims without :public are signed but never reach the browser DOM. e.g. --claim \"sub={{ input.id }}\" --claim \"name:public={{ input.fullname }}\"".to_string(),
-                kind: crate::pipeline::model::DslFlagKind::KeyValuePairs,
-                required: false,
-                ..Default::default()
-            },
-            crate::pipeline::model::DslFlag {
-                flag: "--issuer".to_string(),
-                config_key: "issuer".to_string(),
-                description: "JWT issuer claim (iss).".to_string(),
-                kind: crate::pipeline::model::DslFlagKind::Scalar,
-                required: false,
-                ..Default::default()
-            },
-            crate::pipeline::model::DslFlag {
-                flag: "--audience".to_string(),
-                config_key: "audience".to_string(),
-                description: "JWT audience claim (aud).".to_string(),
-                kind: crate::pipeline::model::DslFlagKind::Scalar,
-                required: false,
-                ..Default::default()
-            },
+            flag("--issuer", "issuer", "The iss claim.", "text"),
+            flag("--audience", "audience", "The aud claim.", "text"),
         ],
         fields: {
             use crate::pipeline::model::{NodeFieldDef, NodeFieldType, NodeFieldDataSource};
             vec![
                 NodeFieldDef { name: "credential_id".to_string(), label: "Signing Credential".to_string(), field_type: NodeFieldType::Select, data_source: Some(NodeFieldDataSource::CredentialsJwt), help: Some("JWT signing key credential (kind: jwt_signing_key). Algorithm is determined by the credential.".to_string()), ..Default::default() },
-                NodeFieldDef { name: "expires_in".to_string(), label: "Expires In (seconds)".to_string(), field_type: NodeFieldType::Text, placeholder: Some("900".to_string()), help: Some("Token lifetime in seconds. Defaults to 900 when omitted.".to_string()), ..Default::default() },
+                NodeFieldDef { name: "ttl".to_string(), label: "TTL".to_string(), field_type: NodeFieldType::Text, placeholder: Some("15m".to_string()), help: Some("How long the token is valid, e.g. 15m, 1h or 1d. Defaults to 15m.".to_string()), ..Default::default() },
                 NodeFieldDef { name: "issuer".to_string(), label: "Issuer (iss)".to_string(), field_type: NodeFieldType::Text, help: Some("Optional JWT issuer claim written as iss.".to_string()), ..Default::default() },
                 NodeFieldDef { name: "audience".to_string(), label: "Audience (aud)".to_string(), field_type: NodeFieldType::Text, help: Some("Optional JWT audience claim written as aud.".to_string()), ..Default::default() },
                 NodeFieldDef { name: "claims".to_string(), label: "Claims".to_string(), field_type: NodeFieldType::ClaimsPairs, help: Some("Map claim name → literal or {{ expr }}. Toggle \"Public\" to expose that claim in the browser via ctx.auth. Private claims (no toggle) are signed into the JWT but never reach the browser DOM.".to_string()), ..Default::default() },
             ]
         },
         layout: vec![
-            LayoutItem::Field("expires_in".to_string()),
-            LayoutItem::Row { row: vec![LayoutItem::Field("credential_id".to_string())] },
+            LayoutItem::Row { row: vec![LayoutItem::Field("credential_id".to_string()), LayoutItem::Field("ttl".to_string())] },
             LayoutItem::Row { row: vec![LayoutItem::Field("issuer".to_string()), LayoutItem::Field("audience".to_string())] },
             LayoutItem::Field("claims".to_string()),
         ],
         ai_tool: Default::default(),
         examples: vec![
-            crate::pipeline::model::NodeExample::dsl("Mint a session token after login", r#"auth.token.create --credential jwt_main --expires-in 86400 --claim "sub={{ input.query.rows[0]._key }}" --claim "name:public={{ input.query.rows[0].name }}" --claim "roles:public={{ input.query.rows[0].roles }}""#)
-                .output(serde_json::json!({ "access_token": "eyJhbGciOiJIUzI1NiJ9…", "token_type": "bearer", "expires_in": 86400, "profile": { "name": "Ana", "roles": ["editor"] } }))
-                .note("Then `web.response.send --status 303 --header \"Location=/home\" --header \"Set-Cookie=zebflow_session={{ input.access_token }}; Path=/; Max-Age=86400; SameSite=Lax; HttpOnly\"` (sent as written; add `; Secure` behind HTTPS). `roles` must be an array for a trigger's `--role`."),
+            crate::pipeline::model::NodeExample::dsl("Mint a session token after login", r#"auth.token.create --credential jwt_main --ttl 1d --claim "sub={{ input.query.rows[0]._key }}" --claim "name:public={{ input.query.rows[0].name }}" --claim "roles:public={{ input.query.rows[0].roles }}""#)
+                .output(serde_json::json!({ "token": { "access_token": "eyJhbGciOiJIUzI1NiJ9…", "token_type": "bearer", "expires_in": 86400, "profile": { "name": "Ana", "roles": ["editor"] } } }))
+                .note("Then `web.response.send --status 303 --header \"Location=/home\" --header \"Set-Cookie=zebflow_session={{ input.token.access_token }}; Path=/; Max-Age=86400; SameSite=Lax; HttpOnly\"` (sent as written; add `; Secure` behind HTTPS). `roles` must be an array for a trigger's `--role`."),
         ],
         ..Default::default()
     }
 }
 
+/// A scalar flag with its 0.11 metadata.
+fn flag(name: &str, key: &str, description: &str, value: &str) -> DslFlag {
+    DslFlag {
+        flag: name.to_string(),
+        config_key: key.to_string(),
+        description: description.to_string(),
+        kind: DslFlagKind::Scalar,
+        value: value.to_string(),
+        ..Default::default()
+    }
+}
+
+/// The lifetime when `--ttl` is not given.
+const DEFAULT_TTL_SECS: u64 = 15 * 60;
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Config {
     /// ID of the `jwt_signing_key` credential.
     pub credential_id: String,
-    /// Token lifetime in seconds (default 900).
+    /// How long the token is valid: a duration (default 15m).
     #[serde(default)]
-    pub expires_in: Option<i64>,
+    pub ttl: Value,
     /// Map of claim_name → literal or `{{ expr }}` (resolved engine-side).
     #[serde(default)]
     pub claims: Map<String, Value>,
@@ -147,6 +122,8 @@ pub struct Config {
 
 pub struct Node {
     config: Config,
+    /// `--ttl` in seconds.
+    ttl: u64,
     credentials: Arc<CredentialService>,
 }
 
@@ -154,12 +131,30 @@ impl Node {
     pub fn new(config: Config, credentials: Arc<CredentialService>) -> Result<Self, PipelineError> {
         if config.credential_id.trim().is_empty() {
             return Err(PipelineError::new(
-                "FW_NODE_AUTH_TOKEN_CONFIG",
-                "config.credential_id must not be empty",
+                "FW_NODE_AUTH_TOKEN_CREATE_CONFIG",
+                "--credential is empty; it needs the jwt_signing_key credential's id",
             ));
         }
+        let ttl = match &config.ttl {
+            Value::Null => DEFAULT_TTL_SECS,
+            Value::String(text) if text.trim().is_empty() => DEFAULT_TTL_SECS,
+            Value::String(text) => {
+                let duration = crate::pipeline::nodes::shared::units::duration(text, "--ttl", "FW_NODE_AUTH_TOKEN_CREATE_CONFIG")?;
+                if duration.as_secs() == 0 {
+                    return Err(PipelineError::new("FW_NODE_AUTH_TOKEN_CREATE_CONFIG", format!("--ttl '{text}' must be at least 1s")));
+                }
+                duration.as_secs()
+            }
+            other => {
+                return Err(PipelineError::new(
+                    "FW_NODE_AUTH_TOKEN_CREATE_CONFIG",
+                    format!("--ttl {other} must be a duration such as 15m, 1h or 1d"),
+                ));
+            }
+        };
         Ok(Self {
             config,
+            ttl,
             credentials,
         })
     }
@@ -180,7 +175,7 @@ fn claim_entries(claims: &Map<String, Value>) -> Result<Vec<(String, Value, bool
         if let Value::String(s) = val {
             if s.trim_end().ends_with(":public") {
                 return Err(PipelineError::new(
-                    "FW_NODE_AUTH_CLAIM_PUBLIC_ON_VALUE",
+                    "FW_NODE_AUTH_TOKEN_CREATE_CLAIM_PUBLIC_ON_VALUE",
                     format!(
                         "claim '{key}': `:public` belongs on the name, not the value — \
                          write --claim \"{key}:public=…\""
@@ -193,11 +188,11 @@ fn claim_entries(claims: &Map<String, Value>) -> Result<Vec<(String, Value, bool
             None => (key.trim().to_string(), false),
         };
         if name.is_empty() {
-            return Err(PipelineError::new("FW_NODE_AUTH_CLAIM_NAME", "a claim needs a name before `:public`"));
+            return Err(PipelineError::new("FW_NODE_AUTH_TOKEN_CREATE_CLAIM_NAME", "a claim needs a name before `:public`"));
         }
         if out.iter().any(|(n, _, _)| n == &name) {
             return Err(PipelineError::new(
-                "FW_NODE_AUTH_CLAIM_NAME",
+                "FW_NODE_AUTH_TOKEN_CREATE_CLAIM_NAME",
                 format!("claim '{name}' is given twice"),
             ));
         }
@@ -243,14 +238,65 @@ mod tests {
     #[test]
     fn the_marker_after_the_value_is_refused_with_the_fix() {
         let err = claim_entries(&claims(json!({ "roles": "[\"admin\"]:public" }))).unwrap_err();
-        assert_eq!(err.code, "FW_NODE_AUTH_CLAIM_PUBLIC_ON_VALUE");
+        assert_eq!(err.code, "FW_NODE_AUTH_TOKEN_CREATE_CLAIM_PUBLIC_ON_VALUE");
         assert!(err.message.contains("roles:public="), "the error shows where it goes: {}", err.message);
+    }
+
+    /// `--ttl` is a duration; the answer is `token`, the payload kept, and the
+    /// minted token is masked where it sits.
+    #[tokio::test]
+    async fn the_token_answers_under_token_and_lives_for_ttl() {
+        use crate::pipeline::nodes::{NodeExecutionInput, NodeHandler};
+        let platform = crate::pipeline::nodes::shared::test_platform::test_platform();
+        platform
+            .credentials
+            .upsert_project_credential(
+                "superadmin",
+                "default",
+                &crate::platform::model::UpsertProjectCredentialRequest {
+                    credential_id: "sign".to_string(),
+                    title: "Signing key".to_string(),
+                    kind: "jwt_signing_key".to_string(),
+                    secret: json!({ "algorithm": "HS256", "secret": uuid::Uuid::new_v4().to_string() }),
+                    notes: String::new(),
+                },
+            )
+            .expect("credential");
+        let config: super::Config = serde_json::from_value(json!({
+            "credential_id": "sign", "ttl": "1h", "claims": { "sub": "u_1", "name:public": "Ana" }
+        }))
+        .unwrap();
+        let node = super::Node::new(config, platform.credentials.clone()).expect("node");
+        let out = node
+            .execute_async(NodeExecutionInput {
+                node_id: "t".to_string(),
+                input_pin: "in".to_string(),
+                payload: json!({ "kept": 1 }),
+                metadata: json!({ "owner": "superadmin", "project": "default", "pipeline": "t", "request_id": "r" }),
+                bus: None,
+            })
+            .await
+            .expect("signs");
+        assert_eq!(out.payload["kept"], 1);
+        assert_eq!(out.payload["token"]["expires_in"], 3600);
+        assert_eq!(out.payload["token"]["token_type"], "bearer");
+        assert_eq!(out.payload["token"]["profile"]["name"], "Ana");
+        assert!(out.payload["token"]["access_token"].as_str().is_some_and(|t| t.split('.').count() == 3));
+        assert_eq!(super::definition().secret_paths, vec!["/token/access_token".to_string()]);
+
+        let fifteen: super::Config = serde_json::from_value(json!({ "credential_id": "sign" })).unwrap();
+        assert_eq!(super::Node::new(fifteen, platform.credentials.clone()).unwrap().ttl, 900, "default 15m");
+        for bad in [json!("900"), json!(900), json!("0s"), json!("soon")] {
+            let config: super::Config = serde_json::from_value(json!({ "credential_id": "sign", "ttl": bad })).unwrap();
+            let err = super::Node::new(config, platform.credentials.clone()).err().expect("refused");
+            assert_eq!(err.code, "FW_NODE_AUTH_TOKEN_CREATE_CONFIG", "{bad}");
+        }
     }
 
     #[test]
     fn one_claim_given_public_and_private_is_refused() {
         let err = claim_entries(&claims(json!({ "roles": [], "roles:public": [] }))).unwrap_err();
-        assert_eq!(err.code, "FW_NODE_AUTH_CLAIM_NAME");
+        assert_eq!(err.code, "FW_NODE_AUTH_TOKEN_CREATE_CLAIM_NAME");
     }
 }
 
@@ -283,17 +329,17 @@ impl NodeHandler for Node {
         let credential = self
             .credentials
             .get_project_credential(owner, project, &self.config.credential_id)
-            .map_err(|err| PipelineError::new("FW_NODE_AUTH_TOKEN_CREDENTIAL", err.to_string()))?
+            .map_err(|err| PipelineError::new("FW_NODE_AUTH_TOKEN_CREATE_CREDENTIAL", err.to_string()))?
             .ok_or_else(|| {
                 PipelineError::new(
-                    "FW_NODE_AUTH_TOKEN_CREDENTIAL_MISSING",
+                    "FW_NODE_AUTH_TOKEN_CREATE_CREDENTIAL_MISSING",
                     format!("credential '{}' not found", self.config.credential_id),
                 )
             })?;
 
         if credential.kind != "jwt_signing_key" {
             return Err(PipelineError::new(
-                "FW_NODE_AUTH_TOKEN_CREDENTIAL_KIND",
+                "FW_NODE_AUTH_TOKEN_CREATE_CREDENTIAL_KIND",
                 format!(
                     "credential '{}' is kind '{}', expected 'jwt_signing_key'",
                     credential.credential_id, credential.kind
@@ -316,7 +362,7 @@ impl NodeHandler for Node {
             "RS512" | "rs512" => Algorithm::RS512,
             other => {
                 return Err(PipelineError::new(
-                    "FW_NODE_AUTH_TOKEN_ALGORITHM",
+                    "FW_NODE_AUTH_TOKEN_CREATE_ALGORITHM",
                     format!("unsupported JWT algorithm '{}'", other),
                 ));
             }
@@ -349,7 +395,7 @@ impl NodeHandler for Node {
 
         // Add standard JWT claims
         let now = now_unix();
-        let expires_in = self.config.expires_in.unwrap_or(900);
+        let expires_in = self.ttl as i64;
         claims_map.insert("iat".to_string(), json!(now));
         claims_map.insert("exp".to_string(), json!(now + expires_in));
         if let Some(iss) = &self.config.issuer {
@@ -371,7 +417,7 @@ impl NodeHandler for Node {
                     .and_then(|v| v.as_str())
                     .ok_or_else(|| {
                         PipelineError::new(
-                            "FW_NODE_AUTH_TOKEN_SECRET_MISSING",
+                            "FW_NODE_AUTH_TOKEN_CREATE_SECRET_MISSING",
                             "jwt_signing_key credential missing 'secret' field",
                         )
                     })?;
@@ -380,7 +426,7 @@ impl NodeHandler for Node {
                     &claims_val,
                     &EncodingKey::from_secret(secret.as_bytes()),
                 )
-                .map_err(|err| PipelineError::new("FW_NODE_AUTH_TOKEN_SIGN", err.to_string()))?
+                .map_err(|err| PipelineError::new("FW_NODE_AUTH_TOKEN_CREATE_SIGN", err.to_string()))?
             }
             Algorithm::RS256 | Algorithm::RS384 | Algorithm::RS512 => {
                 let pem = credential
@@ -389,30 +435,30 @@ impl NodeHandler for Node {
                     .and_then(|v| v.as_str())
                     .ok_or_else(|| {
                         PipelineError::new(
-                            "FW_NODE_AUTH_TOKEN_KEY_MISSING",
+                            "FW_NODE_AUTH_TOKEN_CREATE_KEY_MISSING",
                             "jwt_signing_key credential missing 'private_key' field",
                         )
                     })?;
                 let key = EncodingKey::from_rsa_pem(pem.as_bytes()).map_err(|err| {
-                    PipelineError::new("FW_NODE_AUTH_TOKEN_KEY_INVALID", err.to_string())
+                    PipelineError::new("FW_NODE_AUTH_TOKEN_CREATE_KEY_INVALID", err.to_string())
                 })?;
                 jsonwebtoken::encode(&header, &claims_val, &key)
-                    .map_err(|err| PipelineError::new("FW_NODE_AUTH_TOKEN_SIGN", err.to_string()))?
+                    .map_err(|err| PipelineError::new("FW_NODE_AUTH_TOKEN_CREATE_SIGN", err.to_string()))?
             }
             _ => {
                 return Err(PipelineError::new(
-                    "FW_NODE_AUTH_TOKEN_ALGORITHM",
+                    "FW_NODE_AUTH_TOKEN_CREATE_ALGORITHM",
                     "unsupported JWT algorithm variant",
                 ));
             }
         };
 
-        let output = json!({
+        let output = json!({ "token": {
             "access_token": token,
             "token_type": "bearer",
             "expires_in": expires_in,
             "profile": profile,
-        });
+        } });
 
         Ok(NodeExecutionOutput {
             output_pins: vec![OUTPUT_PIN_OUT.to_string()],

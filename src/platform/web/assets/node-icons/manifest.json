@@ -493,13 +493,14 @@
         "pg.query.run"
       ]
     },
-    "script.result.run": {
+    "javascript.script.run": {
       "label": "JS",
       "method": "direct-svg",
-      "path": "/assets/node-icons/zebflow/script.result.run.svg",
+      "path": "/assets/node-icons/zebflow/javascript.script.run.svg",
       "source_url": "",
       "supports": [
-        "script.result.run"
+        "javascript.script.run",
+        "typescript.script.run"
       ]
     },
     "sekejap.record.create": {

@@ -659,7 +659,7 @@ mod tests {
             description: None,
             metadata: None,
             entry_nodes: vec!["a".to_string()],
-            nodes: vec![node("a", "trigger.webhook"), node("b", "script.result.run"), node("f", "web.response.send")],
+            nodes: vec![node("a", "trigger.webhook"), node("b", "javascript.script.run"), node("f", "web.response.send")],
             edges: vec![edge("a", "b")],
             notes: Vec::new(),
         };

@@ -21,7 +21,7 @@
 //! file-like bytes between nodes without embedding bytes in JSON. File-like
 //! content should move as FileRef metadata, not inline base64, unless a node is
 //! explicitly preserving a legacy shape. Multipart webhook files and
-//! `http.response.fetch --response-type bytes` produce temporary FileRefs; FS nodes read those
+//! `http.response.fetch --parse bytes` produce temporary FileRefs; FS nodes read those
 //! bytes, and `fs.file.put --from` checks and keeps them. Durable
 //! dataset nodes such as table, geo, and mapserver nodes operate on ZebFS paths,
 //! but payload path keys should accept either a plain path string or a FileRef and
@@ -31,7 +31,7 @@ use crate::pipeline::NodeDefinition;
 
 // One folder per DSL family, one file per node, the path mirroring the kind:
 // `fs.file.put` is `fs/put.rs`, `kv.entry.get` is `kv/get.rs`. A family with one
-// node and no submodules keeps that node in its `mod.rs` (`script`); one
+// node and no submodules keeps that node in its `mod.rs` (`javascript`); one
 // file may carry the verbs of one noun (`crypto/password.rs`). Every family exposes `definitions()`; nothing else is registered
 // here. A test in `crate::pipeline::nodes` refuses a `.rs` file beside this
 // one and a folder that is not a family of the catalogue.
@@ -44,16 +44,17 @@ pub mod function;
 pub mod geo;
 pub mod http;
 pub mod input;
+pub mod javascript;
 pub mod kv;
 pub mod logic;
 pub mod mail;
 pub mod ms;
 pub mod pg;
-pub mod script;
 pub mod sekejap;
 pub mod sqlite;
 pub mod table;
 pub mod trigger;
+pub mod typescript;
 pub mod web;
 pub mod ws;
 
@@ -69,16 +70,17 @@ fn family_definitions() -> Vec<NodeDefinition> {
     items.extend(geo::definitions());
     items.extend(http::definitions());
     items.extend(input::definitions());
+    items.extend(javascript::definitions());
     items.extend(kv::definitions());
     items.extend(logic::definitions());
     items.extend(mail::definitions());
     items.extend(ms::definitions());
     items.extend(pg::definitions());
-    items.extend(script::definitions());
     items.extend(sekejap::definitions());
     items.extend(sqlite::definitions());
     items.extend(table::definitions());
     items.extend(trigger::definitions());
+    items.extend(typescript::definitions());
     items.extend(web::definitions());
     items.extend(ws::definitions());
     items
@@ -157,7 +159,7 @@ fn ui_category_for_kind(kind: &str) -> (&'static str, &'static str) {
     }
     // `logic.concept` is a step described but not built: a logic placeholder, not
     // an "other" of its own.
-    if kind.starts_with("logic.") || kind.starts_with("function.") || kind.starts_with("script.") {
+    if kind.starts_with("logic.") || kind.starts_with("function.") || kind.starts_with("javascript.") || kind.starts_with("typescript.") {
         return ("logic", "");
     }
     if kind.starts_with("browser.") {

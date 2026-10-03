@@ -58,27 +58,29 @@ parsed JSON when `--schema` was given and passed. With `--schema` there is no
 
 ```
 | trigger.schedule --cron "0 * * * *"
-| script.result.run -- "return { cutoff: Date.now() - 3600000 }"
-| sekejap.query.run --param "1={{ input.cutoff }}" -- "SELECT * FROM events WHERE ts > $1"
+| javascript.script.run -- "return { cutoff: Date.now() - 3600000 }"
+| sekejap.query.run --param "1={{ input.script.cutoff }}" -- "SELECT * FROM events WHERE ts > $1"
 | ai.text.generate --credential my-llm --output-mode final_only --system-prompt "You are an operations analyst." --schema '{"type":"object","required":["summary","patterns","anomalies"],"properties":{"summary":{"type":"string"},"patterns":{"type":"array"},"anomalies":{"type":"array"}}}' -- Summarize these events, count patterns, and flag anything unusual. Events: {{ input.query.rows }}
-| script.result.run -- "const r = input.data; return { key: 'summary-' + Date.now(), summary: r.summary, patterns: r.patterns, anomalies: r.anomalies, period: 'hourly', generated_at: Date.now() }"
-| sekejap.query.run --write --param "1={{ input.key }}" --param "2={{ input.summary }}" --param "3={{ input.patterns }}" --param "4={{ input.anomalies }}" --param "5={{ input.period }}" --param "6={{ input.generated_at }}" -- "INSERT INTO ai_summaries (_key, summary, patterns, anomalies, period, generated_at) VALUES ($1, $2, $3, $4, $5, $6)"
+| javascript.script.run -- "const r = input.data; return { key: 'summary-' + Date.now(), summary: r.summary, patterns: r.patterns, anomalies: r.anomalies, period: 'hourly', generated_at: Date.now() }"
+| sekejap.query.run --write --param "1={{ input.script.key }}" --param "2={{ input.script.summary }}" --param "3={{ input.script.patterns }}" --param "4={{ input.script.anomalies }}" --param "5={{ input.script.period }}" --param "6={{ input.script.generated_at }}" -- "INSERT INTO ai_summaries (_key, summary, patterns, anomalies, period, generated_at) VALUES ($1, $2, $3, $4, $5, $6)"
 ```
 
 ### daily-metrics-report — aggregate + report + send
 
 ```
 | trigger.schedule --cron "0 8 * * *"
-| script.result.run -- "return { cutoff: Date.now() - 86400000 }"
-| sekejap.query.run --param "1={{ input.cutoff }}" -- "SELECT * FROM ai_summaries WHERE generated_at > $1"
+| javascript.script.run -- "return { cutoff: Date.now() - 86400000 }"
+| sekejap.query.run --param "1={{ input.script.cutoff }}" -- "SELECT * FROM ai_summaries WHERE generated_at > $1"
 | ai.text.generate --credential my-llm --output-mode final_only --system-prompt "Reply with the markdown report only, no commentary." -- Write a daily operations report in markdown from these hourly summaries — executive summary, key metrics, trends, recommendations. Summaries: {{ input.query.rows }}
-| kv.entry.get --key report_webhook_url --out-key webhook_url --durable
-| http.response.fetch --url "{{ input.webhook_url }}" --method POST --body "{{ { report: input.response } }}"
+| kv.entry.get --key report_webhook_url --durable
+| http.response.fetch --url "{{ input.entry.value }}" --method POST --body "{{ { report: input.response } }}"
 ```
 
-`kv.entry.get` merges `{ webhook_url }` into the payload alongside `input.response`
-— nothing is lost. Set `report_webhook_url` once via `kv.entry.put` (or a Settings
-page) before this pipeline runs; there is no `env` scope to read a URL from.
+`kv.entry.get` adds `entry: { key, value, found }` to the payload alongside
+`input.response` — nothing is lost. Set `report_webhook_url` once via
+`kv.entry.put --key report_webhook_url --value "https://hooks.example.com/reports"`
+(or a Settings page) before this pipeline runs; there is no `env` scope to read a
+URL from.
 
 ### queue-classifier — AI classify and route
 
@@ -99,7 +101,7 @@ for every downstream node in that run even after `sekejap.query.run` replaces
 ```
 | trigger.webhook --route /admin/reports --method GET
 | sekejap.query.run -- "SELECT * FROM ai_summaries ORDER BY generated_at DESC LIMIT 30"
-| script.result.run -- "return { reports: input.query.rows }"
+| javascript.script.run -- "return { reports: input.query.rows }"
 | web.response.send --template pages/admin-reports.tsx
 ```
 
@@ -109,10 +111,10 @@ for every downstream node in that run even after `sekejap.query.run` replaces
 
 - `trigger.schedule` — cron-based scheduling (`0 * * * *` = hourly, `0 8 * * *` = daily 8am)
 - `sekejap.query.run` — SQL against Sekejap; output is `query: { columns, rows, row_count, truncated }`, plus `rows_affected` with `--write`
-- `script` — shape rows for insert
+- `javascript.script.run` — shape rows for insert; return value is added as `script`, the rest of the payload is kept
 - `ai.text.generate` — analysis, classification, report generation; `--schema` returns checked JSON as `data`
 - `logic.foreach` — one downstream run per classified item
-- `kv.entry.get` / `kv.entry.put` — hold the webhook URL (there is no `env` scope)
+- `kv.entry.get --key <k>` / `kv.entry.put --key <k> --value <JSON>` — hold the webhook URL (there is no `env` scope); `kv.entry.get` answers `entry: { key, value, found }`
 - `http.response.fetch` — send the report to an external webhook
 - `web.response.send` — admin reporting page
 

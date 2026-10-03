@@ -196,7 +196,7 @@ fn compile_items_expr(
     }
     let source = format!(
         // `input` is the payload here, as it is in every `{{ }}` block, in
-            // script.result.run, and in every document that teaches either. Binding only
+            // javascript.script.run, and in every document that teaches either. Binding only
             // `$input` left `input` pointing at the scope object, so
             // `input.rows` silently evaluated to undefined and a guard took the
             // wrong branch with no error anywhere. Same defect, same fix as

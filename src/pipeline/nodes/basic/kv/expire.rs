@@ -1,143 +1,96 @@
-//! `kv.entry.expire` — update the TTL of an existing key without changing its value.
+//! `kv.entry.expire` — set or clear an entry's lifetime without touching its
+//! value: `entry: { key, ttl?, updated }`.
 //!
-//! Pass `--ttl 0` to remove the expiry (persist the key forever).
-//! Payload passes through unchanged.
-//!
-//! # Config flags
-//!
-//! | Flag | Type | Default | Description |
-//! |---|---|---|---|
-//! | `--key` | string | required | Key to update (supports `{{ expr }}`) |
-//! | `--ttl` | number | required | New TTL in seconds; 0 = remove expiry (persist) |
-//! | `--durable` | bool | `false` | Expire in durable storage (survives restart). Default: ephemeral. |
-//!
-//! # Example
-//!
-//! ```text
-//! | trigger.webhook --route /refresh --method POST
-//! | kv.entry.expire --key "session:{{ input.token }}" --ttl 1800
-//! ```
+//! `--ttl 30m` gives the entry thirty minutes from now; without `--ttl` the
+//! expiry is removed and the entry lives until deleted. A key that is not
+//! there answers `updated: false`.
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
+use super::{INPUT_PIN_IN, OUTPUT_PIN_OUT, answer, bus_error, durable_field, durable_flag, field, flag, key_flag, required_key, scope, ttl_seconds, ttl_text};
 use crate::infra::io::state::DynStateBus;
-use crate::pipeline::model::NodeCapability;
-use crate::pipeline::model::{DslFlag, DslFlagKind, NodeFieldDef, NodeFieldType};
+use crate::pipeline::model::{LayoutItem, NodeCapability, NodeExample};
 use crate::pipeline::{
     NodeDefinition, PipelineError,
     nodes::{NodeExecutionInput, NodeExecutionOutput, NodeHandler},
 };
 
 pub const NODE_KIND: &str = "kv.entry.expire";
-const INPUT_PIN_IN: &str = "in";
-const OUTPUT_PIN_OUT: &str = "out";
+/// The store could not be written: the world's side.
+pub const CODE: &str = "FW_NODE_KV_ENTRY_EXPIRE";
+/// A flag set wrong: a `--ttl` that is not a duration.
+pub const CONFIG_CODE: &str = "FW_NODE_KV_ENTRY_EXPIRE_CONFIG";
+/// `--key` is empty.
+pub const KEY_CODE: &str = "FW_NODE_KV_ENTRY_EXPIRE_KEY";
+/// The engine has no state bus.
+pub const UNAVAILABLE_CODE: &str = "FW_NODE_KV_ENTRY_EXPIRE_UNAVAILABLE";
 
 pub fn definition() -> NodeDefinition {
     NodeDefinition {
         kind: NODE_KIND.to_string(),
         capabilities: vec![NodeCapability::Database],
         title: "KV Expire".to_string(),
-        description: "Update the TTL of an existing key in the per-project KV store \
-            without changing its value. Pass --ttl 0 to remove the expiry (persist forever). \
-            No-ops silently if the key is missing or already expired. \
-            Use --durable to target durable (disk-backed) storage instead of ephemeral. \
-            Payload passes through unchanged."
+        description: "Give the entry `--key` a new lifetime `--ttl` (a duration such as 30m, counted from now) without changing its \
+            value; without `--ttl` the expiry is removed and it lives until deleted. `--durable` for the disk-backed store. Adds \
+            `entry: { key, ttl?, updated }` and keeps the rest of the payload; a key that is not there answers `updated: false`."
             .to_string(),
-        input_schema: json!({ "type": "object" }),
-        output_schema: json!({ "type": "object", "description": "Payload passed through unchanged." }),
+        input_schema: json!({ "type": "object", "description": "Any payload; it is kept and `entry` is added." }),
+        output_schema: json!({ "type": "object", "properties": { "entry": { "type": "object", "properties": {
+            "key": { "type": "string" },
+            "ttl": { "type": "string", "description": "The new lifetime, e.g. 1800s; absent when the expiry was removed." },
+            "updated": { "type": "boolean", "description": "Whether the key was there." }
+        } } } }),
         input_pins: vec![INPUT_PIN_IN.to_string()],
         output_pins: vec![OUTPUT_PIN_OUT.to_string()],
-        script_available: false,
-        script_bridge: None,
-        config_schema: json!({
-            "type": "object",
-            "required": ["key"],
-            "properties": {
-                "key": { "type": "string", "description": "Key to update. Supports {{ expr }}." },
-                "ttl": { "type": "number", "description": "New TTL in seconds. 0 = remove expiry (persist)." },
-            }
-        }),
         dsl_flags: vec![
-            DslFlag {
-                flag: "--key".to_string(),
-                config_key: "key".to_string(),
-                description: "Key to update. Supports {{ expr }}.".to_string(),
-                kind: DslFlagKind::Scalar,
-                required: true,
-                ..Default::default()
-            },
-            DslFlag {
-                flag: "--ttl".to_string(),
-                config_key: "ttl".to_string(),
-                description: "New TTL in seconds. 0 = remove expiry (persist forever).".to_string(),
-                kind: DslFlagKind::Scalar,
-                required: false,
-                ..Default::default()
-            },
-            DslFlag {
-                flag: "--durable".to_string(),
-                config_key: "durable".to_string(),
-                description: "Expire in durable storage (survives restart). Default: ephemeral."
-                    .to_string(),
-                kind: DslFlagKind::Bool,
-                required: false,
-                ..Default::default()
-            },
+            key_flag("The entry whose lifetime changes. Usually a {{ }} expression."),
+            flag("--ttl", "ttl", "The new lifetime from now, e.g. 30m or 1d. Omitted: the expiry is removed.", "duration"),
+            durable_flag(),
         ],
         fields: vec![
-            NodeFieldDef {
-                name: "key".to_string(),
-                label: "Key".to_string(),
-                field_type: NodeFieldType::Text,
-                help: Some("Key to update. Supports {{ expr }}.".to_string()),
-                ..Default::default()
-            },
-            NodeFieldDef {
-                name: "ttl".to_string(),
-                label: "TTL (seconds)".to_string(),
-                field_type: NodeFieldType::Number,
-                help: Some(
-                    "New TTL in seconds. 0 = remove expiry and persist forever.".to_string(),
-                ),
-                ..Default::default()
-            },
-            NodeFieldDef {
-                name: "durable".to_string(),
-                label: "Durable".to_string(),
-                field_type: NodeFieldType::Checkbox,
-                help: Some("Check durable storage. Default: ephemeral.".to_string()),
-                ..Default::default()
-            },
+            field("key", "Key", "The entry: a literal or {{ expr }}."),
+            field("ttl", "TTL", "The new lifetime, e.g. 30m. Empty: never expires."),
+            durable_field(),
         ],
-        layout: vec![],
-        ai_tool: Default::default(),
+        layout: vec![
+            LayoutItem::Field("key".to_string()),
+            LayoutItem::Row { row: vec![LayoutItem::Field("ttl".to_string()), LayoutItem::Field("durable".to_string())] },
+        ],
         examples: vec![
-            crate::pipeline::model::NodeExample::dsl("Extend a session on activity", r#"kv.entry.expire --key "session:{{ $trigger.auth.sub }}" --ttl 1800"#),
+            NodeExample::dsl("Keep an active session alive", r#"kv.entry.expire --key "session:{{ $trigger.auth.sub }}" --ttl 30m"#)
+                .output(json!({ "entry": { "key": "session:u_1", "ttl": "1800s", "updated": true } })),
         ],
         ..Default::default()
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Config {
+    /// The entry.
     #[serde(default)]
-    pub key: String,
+    pub key: Value,
+    /// A duration; unset removes the expiry.
     #[serde(default)]
-    pub ttl: Option<u64>,
+    pub ttl: Value,
+    /// The disk-backed store.
     #[serde(default)]
     pub durable: bool,
 }
 
 pub struct Node {
-    config: Config,
-    state_bus: DynStateBus,
+    key: String,
+    ttl: Option<u64>,
+    durable: bool,
+    bus: DynStateBus,
 }
 
 impl Node {
-    pub fn new(config: Config, state_bus: DynStateBus) -> Self {
-        Self { config, state_bus }
+    pub fn new(config: Config, bus: DynStateBus) -> Result<Self, PipelineError> {
+        let key = required_key(&config.key, CONFIG_CODE, KEY_CODE)?;
+        let ttl = ttl_seconds(&config.ttl, CONFIG_CODE)?;
+        Ok(Self { key, ttl, durable: config.durable, bus })
     }
 }
 
@@ -153,46 +106,22 @@ impl NodeHandler for Node {
         &[OUTPUT_PIN_OUT]
     }
 
-    async fn execute_async(
-        &self,
-        input: NodeExecutionInput,
-    ) -> Result<NodeExecutionOutput, PipelineError> {
-        let owner = input
-            .metadata
-            .get("owner")
-            .and_then(Value::as_str)
-            .unwrap_or_default();
-        let project = input
-            .metadata
-            .get("project")
-            .and_then(Value::as_str)
-            .unwrap_or_default();
-        let key = self.config.key.trim();
-
-        if key.is_empty() {
-            return Err(PipelineError::new(
-                "FW_NODE_KV_EXPIRE_KEY",
-                "kv.entry.expire: --key is required",
-            ));
-        }
-
-        let updated = if self.config.durable {
-            self.state_bus
-                .durable_expire(owner, project, key, self.config.ttl)
-                .map_err(|err| PipelineError::new("FW_NODE_KV_EXPIRE_STATE_BUS", err.to_string()))?
+    async fn execute_async(&self, input: NodeExecutionInput) -> Result<NodeExecutionOutput, PipelineError> {
+        let (owner, project) = scope(&input);
+        let updated = if self.durable {
+            self.bus.durable_expire(&owner, &project, &self.key, self.ttl)
         } else {
-            self.state_bus
-                .expire(owner, project, key, self.config.ttl)
-                .map_err(|err| PipelineError::new("FW_NODE_KV_EXPIRE_STATE_BUS", err.to_string()))?
-        };
-
-        Ok(NodeExecutionOutput {
-            output_pins: vec![OUTPUT_PIN_OUT.to_string()],
-            payload: input.payload,
-            trace: vec![format!(
-                "kv.entry.expire: key={} ttl={:?} updated={} durable={}",
-                key, self.config.ttl, updated, self.config.durable
-            )],
-        })
+            self.bus.expire(&owner, &project, &self.key, self.ttl)
+        }
+        .map_err(bus_error(CODE))?;
+        let mut entry = json!({ "key": self.key, "updated": updated });
+        if let Some(seconds) = self.ttl {
+            entry["ttl"] = json!(ttl_text(seconds));
+        }
+        Ok(answer(
+            &input.payload,
+            json!({ "entry": entry }),
+            format!("{NODE_KIND}: key={} ttl={:?} updated={updated} durable={}", self.key, self.ttl, self.durable),
+        ))
     }
 }
