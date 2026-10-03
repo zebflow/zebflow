@@ -49,15 +49,17 @@ Facts live in `help(topic="pipeline")`, `pipeline/dsl`, `pipeline/authoring`,
   `setTimeout` / `fetch` are blocked in it. Branch with `logic.if --expr`,
   answer with `web.response.send`, call out with `http.response.fetch`.
 - **`web.response.send`** decides the response: nothing → JSON of the payload;
-  `--template pages/x.tsx` → the page; `--location /path` → redirect (always
-  root-relative — `/admin`, never `/wh/…/admin`; the project's host makes it right);
-  `--status`, `--set-cookie "…"`, `--header K=V`. A 404 is a `logic.if` with
+  `--template pages/x.tsx` → the page; `--body VALUE` → text (a string) or JSON;
+  `--status 303 --header "Location=/path"` → redirect (always root-relative —
+  `/admin`, never `/wh/…/admin`; the project's host makes it right);
+  `--header "Set-Cookie=name=value; Path=/; Max-Age=86400; SameSite=Lax; HttpOnly"` → a cookie, sent as
+  written (repeat `--header` for several). A 404 is a `logic.if` with
   two `web.response.send` nodes on its pins.
 - **A site-wide 404 is `trigger.error --code 404 | web.response.send --status 404 --template pages/not-found.tsx`.**
   A webhook with `--path /*` or `/:path` does not catch unknown routes — four
   of five models tried; none of them worked.
 - **Forms are two pipelines.** `GET` renders the page; `POST` validates
-  `input.body`, writes, then `--location` back (browser) or answers JSON
+  `input.body`, writes, then redirects back with `--status 303 --header "Location=…"` (browser) or answers JSON
   (fetch). Both carry the same `--auth-*` flags.
 
 ```
@@ -65,7 +67,7 @@ register api/posts/create --title "Create post"
 [a] trigger.webhook --path /api/posts --method POST --auth-type jwt --auth-credential jwt_main --auth-required-role editor
 [b] logic.if --expr "typeof input.body?.title === 'string' && input.body.title.length > 0"
 [c] sekejap.query.run --param "1={{ input.body.title }}" --param "2={{ input.body.slug }}" --write -- "INSERT INTO posts (title, slug) VALUES ($1, $2)"
-[d] web.response.send --location /admin/posts
+[d] web.response.send --status 302 --header "Location=/admin/posts"
 [e] web.response.send --status 400 --body "{{ { error: 'title is required' } }}"
 [a] -> [b]
 [b]:true -> [c]

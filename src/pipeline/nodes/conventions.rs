@@ -156,6 +156,8 @@ mod tests {
         );
         assert_eq!(crate::pipeline::nodes::answer_key("trigger.webhook").as_deref(), Some("webhook"));
         assert_eq!(crate::pipeline::nodes::answer_key("logic.if"), None);
+        assert_eq!(crate::pipeline::nodes::answer_key("web.response.send"), None);
+        assert_eq!(crate::pipeline::nodes::answer_key("web.site.generate").as_deref(), Some("site"));
     }
 
     /// §3 one door: bytes are reached through `shared/project_store.rs` (and

@@ -272,7 +272,7 @@ pipeline_register
             updated_at = now()
       RETURNING id, slug
     "
-  | web.response.send --location /admin/posts
+  | web.response.send --status 302 --header "Location=/admin/posts"
   """
 ```
 
@@ -605,5 +605,5 @@ docs_agent_write
 
 > A script cannot set the response. It returns a value; the graph decides what
 > happens next. Branch with `logic.if` and let `web.response.send` answer —
-> `--status`, `--location`, `--set-cookie`. See
+> `--status`, `--header` (`Location`, `Set-Cookie`), `--body`. See
 > `help("pipeline/examples/webhook-restapi-postgres")` § Answering with a status.

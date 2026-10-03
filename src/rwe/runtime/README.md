@@ -199,8 +199,7 @@ Run from the repository root:
 node --test tests/rwe/runtime/ssr.test.mjs
 cargo test --test rwe
 cargo test --lib rwe::
-cargo test --lib web_static
-cargo test --lib web_docs_generate
+cargo test --lib web::site
 cargo check
 ```
 

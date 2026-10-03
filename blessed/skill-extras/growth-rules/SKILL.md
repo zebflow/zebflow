@@ -58,8 +58,8 @@ article `<Title> — <Brand>`; pricing `Plans and pricing — <Brand>`; auth `Si
 
 ## 3. Every form: follow through
 
-1. `POST` validates, writes, then **redirects** (`web.response.send --location
-   /thank-you --status 303`) — never renders the success on the POST URL
+1. `POST` validates, writes, then **redirects** (`web.response.send --status 303
+   --header "Location=/thank-you"`) — never renders the success on the POST URL
    (refresh would resubmit).
 2. The thank-you page says what happens next and when ("We reply within one
    working day"), offers the next step, and is `robots: noindex`.
@@ -92,7 +92,7 @@ article `<Title> — <Brand>`; pricing `Plans and pricing — <Brand>`; auth `Si
 
 ```
 | trigger.webhook --path /robots.txt --method GET
-| web.response.send --message "User-agent: *\nDisallow: /admin\nDisallow: /login\nSitemap: /sitemap.xml" --header Content-Type=text/plain
+| web.response.send --body "User-agent: *\nDisallow: /admin\nDisallow: /login\nSitemap: /sitemap.xml" --header Content-Type=text/plain
 ```
 
 ```

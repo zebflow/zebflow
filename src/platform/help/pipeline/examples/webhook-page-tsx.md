@@ -97,7 +97,7 @@ export default function Page(input) {
 - `pg.query.run --credential <id>` — fetch data; `--param "1={{ input.params.unit_id }}"` binds `:unit_id` as `$1`
 - `logic.if --expr "input.query.rows.length > 0"` — branch on `true`/`false` pins; the only way to answer 404 conditionally, since a script cannot set the status
 - `script` — static payloads, data transform
-- `web.response.send` — renders TSX template; upstream output = `input` in template; supports `--status`, `--set-cookie`, `--header`
+- `web.response.send` — renders TSX template; upstream output = `input` in template; supports `--status` and `--header` (`Set-Cookie`, `Location`, …)
 
 ---
 

@@ -99,7 +99,7 @@ bucket policy or an anonymous identity.
 - A rule set through the Files access API records the setter's role at that
   moment (`updated_by_role`) beside `updated_at`.
 - **No pipeline node writes this document.** Generators
-  (`web.site.generate`, `web.docs.generate`) write files into a folder,
+  (`web.site.generate`, both modes) write files into a folder,
   private like any upload; exposing that folder is a separate human decision.
 - **Exposing a folder trusts every writer of that folder.** The Files page
   says so where the rule is set.

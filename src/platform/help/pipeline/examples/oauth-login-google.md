@@ -106,7 +106,7 @@ register auth/google-start --
 | crypto.random.generate --size 16B
 | kv.entry.put --key "oauth:state:{{ input.random.value }}" --ttl 600
 | script.result.run -- "const q = { client_id: 'YOUR_CLIENT_ID.apps.googleusercontent.com', redirect_uri: 'https://your.site/wh/OWNER/PROJECT/auth/google/callback', response_type: 'code', scope: 'openid email profile', state: input.random.value, access_type: 'online', prompt: 'select_account' }; const qs = Object.keys(q).map(function (k) { return encodeURIComponent(k) + '=' + encodeURIComponent(q[k]); }).join('&'); return { auth_url: 'https://accounts.google.com/o/oauth2/v2/auth?' + qs };"
-| web.response.send --location "{{ input.auth_url }}"
+| web.response.send --status 302 --header "Location={{ input.auth_url }}"
 ```
 
 - `crypto.random.generate` adds `random: { value }` (hex); that value is the OAuth `state`.
@@ -133,8 +133,8 @@ register auth/google-callback --
 [known] logic.if --expr "input.query.rows && input.query.rows.length > 0"
 [claim] script.result.run -- "const m = input.query.rows[0]; return { sub: m.email, name: m.name, roles: JSON.parse(m.roles) };"
 [token] auth.token.create --credential session-signing-key --claim "sub={{ input.sub }}" --claim "name:public={{ input.name }}" --claim "roles={{ input.roles }}" --expires-in 86400
-[welcome] web.response.send --location /wh/OWNER/PROJECT/me --set-cookie "name=session,value={{ input.access_token }},http-only,same-site=Lax,max-age=86400,path=/"
-[stranger] web.response.send --status 403 --message "This Google account is not a member yet."
+[welcome] web.response.send --status 302 --header "Location=/wh/OWNER/PROJECT/me" --header "Set-Cookie=session={{ input.access_token }}; Path=/; Max-Age=86400; SameSite=Lax; HttpOnly"
+[stranger] web.response.send --status 403 --body "This Google account is not a member yet."
 [in] -> [state]
 [state] -> [check]
 [check] -> [burn]
@@ -203,4 +203,4 @@ password form and every protected route stays as it is.
 - `sqlite.query.run --param "1={{ expr }}"` — `?1` placeholders
 - `logic.if --expr <js>` — `true` / `false` pins
 - `auth.token.create --credential <jwt_signing_key id> --claim "k={{ v }}" [--claim "k:public={{ v }}"]` — output `{ access_token }`; quote each claim, an unquoted `{{ }}` is cut at its first space
-- `web.response.send --location <url> --set-cookie <spec>` / `--status 403 --message <text>`
+- `web.response.send --status 302 --header "Location=<url>" --header "Set-Cookie=<cookie>"` / `--status 403 --body <text>`

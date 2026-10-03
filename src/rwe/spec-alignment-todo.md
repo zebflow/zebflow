@@ -18,8 +18,7 @@ Open decisions to resolve before normalizing the spec/docs:
 
 4. Static generation in spec
 - Should the RWE spec now officially acknowledge:
-  - `web.site.generate`
-  - `n.web.docs.generate`
+  - `web.site.generate` (one page with `--path`, a docs site with `--from`)
   - shared static artifact/site layer
 - Or should node-level static generation remain outside the core RWE spec?
 

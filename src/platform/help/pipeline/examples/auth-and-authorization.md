@@ -63,10 +63,10 @@ Create a `jwt_signing_key` credential in the Credentials UI. Fields:
 | pg.query.run --credential main-db --param "1={{ input.body.username }}" \
     -- "SELECT id::text, username, role FROM users WHERE username = $1 LIMIT 1"
 | logic.if --expr "input.query.rows && input.query.rows.length > 0"
-(false pin → `web.response.send --status 401 --message "invalid credentials"`)
+(false pin → `web.response.send --status 401 --body "invalid credentials"`)
 | script.result.run -- "const user = input.query.rows[0]; return { id: user.id, username: user.username, roles: [user.role] };"
 | auth.token.create --credential my-jwt --claim "sub={{ input.id }}" --claim "username:public={{ input.username }}" --claim "roles:public={{ input.roles }}" --expires-in 86400
-| web.response.send --location /dashboard --set-cookie "name=session,value={{ input.access_token }},http-only,max-age=86400,path=/"
+| web.response.send --status 302 --header "Location=/dashboard" --header "Set-Cookie=session={{ input.access_token }}; Path=/; Max-Age=86400; SameSite=Lax; HttpOnly"
 ```
 
 > **Note:** `roles` must be an array in the JWT claim — wrap a single DB `role` string with `[user.role]`. If your schema already returns an array (junction table, `text[]` column), use it directly.
@@ -83,13 +83,13 @@ Create a `jwt_signing_key` credential in the Credentials UI. Fields:
 ```
 | trigger.webhook --path /auth/register --method POST
 | logic.if --expr "input.body.username && input.body.email && input.body.password && input.body.password.length >= 12"
-(false pin → `web.response.send --status 400 --message "username, email and a password of at least 12 characters are required"`)
+(false pin → `web.response.send --status 400 --body "username, email and a password of at least 12 characters are required"`)
 | crypto.password.hash --from "{{ input.body.password }}"
 (`crypto.password.hash` adds `password: { hash, algorithm }` to the payload and
 keeps everything else, so `input.body.username` is still there for the insert.)
 | pg.query.run --credential main-db --write --param "1={{ input.body.username }}" --param "2={{ input.body.email }}" --param "3={{ input.password.hash }}" --param "4=user" \
     -- "INSERT INTO users (username, email, password_hash, role, created_at) VALUES ($1, $2, $3, $4, NOW()) RETURNING id::text"
-| web.response.send --location /auth/login?registered=1
+| web.response.send --status 302 --header "Location=/auth/login?registered=1"
 ```
 
 **Never hash a password yourself.** An earlier version of this example wrote
@@ -101,7 +101,7 @@ verify answers on `true`/`false` pins, so the branch is the check.
 
 ```
 | trigger.webhook --path /auth/logout --method GET
-| web.response.send --location /auth/login --set-cookie "name=session,value=,http-only,max-age=0,path=/"
+| web.response.send --status 302 --header "Location=/auth/login" --header "Set-Cookie=session=; Path=/; Max-Age=0"
 ```
 
 ### dashboard-protected — JWT-protected page
@@ -134,8 +134,8 @@ Role mismatch → `auth_forbidden_redirect` fires as a 303 redirect (browser nav
 - `trigger.webhook --auth-required-role <roles>` — comma-separated roles; checks against JWT `roles` array claim. Empty = any authenticated user.
 - `pg.query.run` — user lookup and insert
 - `auth.token.create --claim "key={{ input.field }}"` — sign JWT; output `{{ input.access_token }}`. End the claim name with `:public` to expose that claim in the browser via `ctx.auth` (e.g. `--claim "role:public={{ input.role }}"`). Private claims like `sub` never reach the browser DOM.
-- `web.response.send --set-cookie` — set HttpOnly session cookie
-- `web.response.send --location` — redirect after login/logout/register
+- `web.response.send --header "Set-Cookie=…"` — set the session cookie, sent as written: write `Path=/; SameSite=Lax; HttpOnly` (and `Secure` behind HTTPS)
+- `web.response.send --status 302 --header "Location=…"` — redirect after login/logout/register
 - `web.response.send --template` — render protected pages
 
 ---
@@ -149,5 +149,5 @@ Role mismatch → `auth_forbidden_redirect` fires as a 303 redirect (browser nav
 
 > A script cannot set the response. It returns a value; the graph decides what
 > happens next. Branch with `logic.if` and let `web.response.send` answer —
-> `--status`, `--location`, `--set-cookie`. See
+> `--status`, `--header` (`Location`, `Set-Cookie`), `--body`. See
 > `help("pipeline/examples/webhook-restapi-postgres")` § Answering with a status.

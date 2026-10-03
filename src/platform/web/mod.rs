@@ -24,7 +24,7 @@ use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Form, Multipart, Path, Query, State};
 use axum::http::{
     HeaderMap, HeaderName, HeaderValue, Method, StatusCode, Uri, header::CACHE_CONTROL,
-    header::CONTENT_DISPOSITION, header::CONTENT_TYPE, header::HOST, header::LOCATION,
+    header::CONTENT_DISPOSITION, header::CONTENT_TYPE, header::HOST,
     header::SET_COOKIE,
 };
 use axum::response::sse::{Event, KeepAlive, Sse};
@@ -18413,8 +18413,8 @@ fn rwe_library_git_commit(
 /// Merges project-level RWE settings (`zebflow.yaml -> rwe`) into each `web.response.send`
 /// node's `config.options` before pipeline execution.
 ///
-/// Also parses the node-level `--load-scripts` comma-separated string and injects it
-/// as a proper `Vec<String>` into `options.load_scripts`.  Called immediately after
+/// Also copies the node-level `--script` URLs into `options.load_scripts`.
+/// Called immediately after
 /// `hydrate_template_markup` in the webhook and manual-execute paths.
 fn apply_rwe_project_options(
     state: &PlatformAppState,
@@ -18438,17 +18438,21 @@ fn apply_rwe_project_options(
             continue;
         }
 
-        // Parse node-level load_scripts (comma-separated string from DSL flag).
+        // Node-level `--script` URLs (a repeated flag, stored as a list).
         let node_load_scripts: Vec<String> = node
             .config
-            .get("load_scripts")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .split(',')
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .map(String::from)
-            .collect();
+            .get("scripts")
+            .and_then(Value::as_array)
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(String::from)
+                    .collect()
+            })
+            .unwrap_or_default();
 
         let options = json!({
             "minify_html": rwe.minify_html,
@@ -23471,13 +23475,9 @@ async fn dispatch_weberror(
 
     let status = StatusCode::from_u16(error_code).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
 
-    // `web.response.send` wraps what it built under `__zf_response`, the way the
-    // webhook ingress reads it; a bare value is an older graph's shape.
-    let value = output
-        .value
-        .get("__zf_response")
-        .cloned()
-        .unwrap_or_else(|| output.value.clone());
+    // What `web.response.send` answered, the way the webhook ingress reads it;
+    // without one, the run's own value.
+    let value = output.response.clone().unwrap_or_else(|| output.value.clone());
 
     // Prefer rendered HTML output.
     if let Some(html) = value.get("html").and_then(Value::as_str) {
@@ -24079,104 +24079,10 @@ async fn public_webhook_ingress_run(
     );
 
     // ── web.response.send — explicit response envelope ───────────────────────────
-    // When the pipeline ends with web.response.send, its output carries a __zf_response
-    // envelope that fully controls the HTTP response. Handle it before legacy magic keys.
-    if let Some(resp_cfg) = output.value.get("__zf_response").cloned() {
-        let status = resp_cfg
-            .get("status")
-            .and_then(Value::as_u64)
-            .and_then(|c| StatusCode::from_u16(c as u16).ok())
-            .unwrap_or(StatusCode::OK);
-
-        // Build helpers for cookie + extra headers
-        let zf_cookie = build_zf_cookie(&resp_cfg);
-        let zf_headers = build_zf_headers(&resp_cfg);
-
-        // HTML (template mode)
-        if let Some(html) = resp_cfg.get("html").and_then(Value::as_str) {
-            let mut html = html.to_string();
-            // Inject project styles/main.css as inline <style> so CSS vars are available.
-            if let Ok(tmpl_root) = state
-                .platform
-                .projects
-                .get_project_template_root(&owner, &project)
-            {
-                let main_css_path = tmpl_root.join("styles").join("main.css");
-                if let Ok(project_css) = std::fs::read_to_string(&main_css_path) {
-                    if !project_css.trim().is_empty() {
-                        let style_block =
-                            format!("<style data-project-theme>{project_css}</style>");
-                        html = insert_project_theme_block(html, &style_block);
-                    }
-                }
-            }
-            if let Some(css) = resp_cfg
-                .get("hydration_payload")
-                .and_then(|hp| hp.get("css"))
-                .and_then(Value::as_str)
-            {
-                html = crate::rwe::core::render::insert_engine_styles(&html, css);
-            }
-            let scripts = resp_cfg
-                .get("compiled_scripts")
-                .cloned()
-                .and_then(|v| serde_json::from_value::<Vec<CompiledScript>>(v).ok())
-                .unwrap_or_default();
-            let externalized =
-                match externalize_rwe_scripts(&state, &html, &scripts, Some((&owner, &project))) {
-                    Ok(html) => html,
-                    Err(err) => return internal_error(err),
-                };
-            let mut resp = Html(externalized).into_response();
-            *resp.status_mut() = status;
-            apply_zf_extras(&mut resp, &zf_cookie, &zf_headers);
-            return resp;
-        }
-
-        // Redirect
-        if let Some(loc) = resp_cfg.get("location").and_then(Value::as_str) {
-            let mut resp = (status, "").into_response();
-            if let Ok(v) = HeaderValue::from_str(loc) {
-                resp.headers_mut().insert(LOCATION, v);
-            }
-            apply_zf_extras(&mut resp, &zf_cookie, &zf_headers);
-            return resp;
-        }
-
-        // Bytes (`web.response.send --file` on an image, font, pdf): base64 in the
-        // envelope because it travels as JSON; the declared header sets the type.
-        if let Some(b64) = resp_cfg.get("body_base64").and_then(Value::as_str) {
-            use base64::Engine as _;
-            let bytes = base64::engine::general_purpose::STANDARD.decode(b64).unwrap_or_default();
-            let mut resp = (status, bytes).into_response();
-            apply_zf_extras(&mut resp, &zf_cookie, &zf_headers);
-            return resp;
-        }
-
-        // Plain text message
-        if let Some(msg) = resp_cfg.get("message").and_then(Value::as_str) {
-            let mut resp = (status, msg.to_string()).into_response();
-            apply_zf_extras(&mut resp, &zf_cookie, &zf_headers);
-            return resp;
-        }
-
-        // Explicit body path
-        if let Some(body) = resp_cfg.get("body") {
-            if !body.is_null() {
-                let mut resp = (status, Json(body.clone())).into_response();
-                apply_zf_extras(&mut resp, &zf_cookie, &zf_headers);
-                return resp;
-            }
-        }
-
-        // Default: JSON response — pipeline output minus __zf_response
-        let mut out = output.value.clone();
-        if let Value::Object(ref mut map) = out {
-            map.remove("__zf_response");
-        }
-        let mut resp = (status, Json(out)).into_response();
-        apply_zf_extras(&mut resp, &zf_cookie, &zf_headers);
-        return resp;
+    // When web.response.send ran, the run carries what it answered beside the
+    // payload; the envelope fully controls the HTTP response.
+    if let Some(resp_cfg) = output.response.clone() {
+        return zf_envelope_response(&state, &owner, &project, &resp_cfg);
     }
 
     // ── _set_cookie convention (legacy) ──────────────────────────────────────
@@ -26920,72 +26826,108 @@ fn hydrate_template_markup(
     Ok(())
 }
 
-/// Build a Set-Cookie string from a `__zf_response` envelope's `set_cookie` field.
-fn build_zf_cookie(resp_cfg: &Value) -> Option<String> {
-    let sc = resp_cfg.get("set_cookie")?;
-    let name = sc.get("name")?.as_str()?;
-    let value = sc.get("value")?.as_str()?;
-    let max_age = sc.get("max_age").and_then(Value::as_i64).unwrap_or(900);
-    let path = sc.get("path").and_then(Value::as_str).unwrap_or("/");
-    let same_site = sc.get("same_site").and_then(Value::as_str).unwrap_or("Lax");
-    let http_only = sc.get("http_only").and_then(Value::as_bool).unwrap_or(true);
-    let secure = sc.get("secure").and_then(Value::as_bool).unwrap_or(false);
+/// The HTTP response a `web.response.send` envelope describes
+/// (`pipeline/nodes/basic/web/response/answer.rs`): status, every header in
+/// order, and one body — a rendered page, bytes, text, JSON, or none.
+fn zf_envelope_response(
+    state: &PlatformAppState,
+    owner: &str,
+    project: &str,
+    resp_cfg: &Value,
+) -> axum::response::Response {
+    let status = resp_cfg
+        .get("status")
+        .and_then(Value::as_u64)
+        .and_then(|c| StatusCode::from_u16(c as u16).ok())
+        .unwrap_or(StatusCode::OK);
+    let zf_headers = build_zf_headers(resp_cfg);
 
-    let mut parts = vec![
-        format!("{name}={value}"),
-        format!("Path={path}"),
-        format!("Max-Age={max_age}"),
-        format!("SameSite={same_site}"),
-    ];
-    if http_only {
-        parts.push("HttpOnly".to_string());
-    }
-    if secure {
-        parts.push("Secure".to_string());
-    }
-    Some(parts.join("; "))
+    let mut resp = if let Some(html) = resp_cfg.get("html").and_then(Value::as_str) {
+        // HTML (template mode)
+        let mut html = html.to_string();
+        // Inject project styles/main.css as inline <style> so CSS vars are available.
+        if let Ok(tmpl_root) = state.platform.projects.get_project_template_root(owner, project) {
+            let main_css_path = tmpl_root.join("styles").join("main.css");
+            if let Ok(project_css) = std::fs::read_to_string(&main_css_path) {
+                if !project_css.trim().is_empty() {
+                    let style_block = format!("<style data-project-theme>{project_css}</style>");
+                    html = insert_project_theme_block(html, &style_block);
+                }
+            }
+        }
+        if let Some(css) = resp_cfg
+            .get("hydration_payload")
+            .and_then(|hp| hp.get("css"))
+            .and_then(Value::as_str)
+        {
+            html = crate::rwe::core::render::insert_engine_styles(&html, css);
+        }
+        let scripts = resp_cfg
+            .get("compiled_scripts")
+            .cloned()
+            .and_then(|v| serde_json::from_value::<Vec<CompiledScript>>(v).ok())
+            .unwrap_or_default();
+        let externalized = match externalize_rwe_scripts(state, &html, &scripts, Some((owner, project))) {
+            Ok(html) => html,
+            Err(err) => return internal_error(err),
+        };
+        Html(externalized).into_response()
+    } else if let Some(b64) = resp_cfg.get("body_base64").and_then(Value::as_str) {
+        // Bytes (`web.response.send --file` on an image, font, pdf): base64 in the
+        // envelope because it travels as JSON; the declared header sets the type.
+        use base64::Engine as _;
+        let bytes = base64::engine::general_purpose::STANDARD.decode(b64).unwrap_or_default();
+        bytes.into_response()
+    } else if let Some(text) = resp_cfg.get("text").and_then(Value::as_str) {
+        text.to_string().into_response()
+    } else if let Some(json) = resp_cfg.get("json") {
+        Json(json.clone()).into_response()
+    } else {
+        // A redirect, or a status with nothing to say.
+        "".into_response()
+    };
+    *resp.status_mut() = status;
+    apply_zf_extras(&mut resp, &zf_headers);
+    resp
 }
 
-/// Build extra headers list from a `__zf_response` envelope's `headers` field.
+/// Every header of a `__zf_response` envelope, in order; a name may repeat.
 fn build_zf_headers(resp_cfg: &Value) -> Vec<(String, String)> {
     resp_cfg
         .get("headers")
-        .and_then(Value::as_object)
-        .map(|m| {
-            m.iter()
-                .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
+        .and_then(Value::as_array)
+        .map(|pairs| {
+            pairs
+                .iter()
+                .filter_map(|pair| {
+                    let pair = pair.as_array()?;
+                    Some((pair.first()?.as_str()?.to_string(), pair.get(1)?.as_str()?.to_string()))
+                })
                 .collect()
         })
         .unwrap_or_default()
 }
 
-/// Apply cookie and extra headers from a `__zf_response` envelope to an axum Response.
-fn apply_zf_extras(
-    resp: &mut axum::response::Response,
-    cookie: &Option<String>,
-    headers: &[(String, String)],
-) {
-    if let Some(c) = cookie {
-        if let Ok(v) = HeaderValue::from_str(c) {
-            resp.headers_mut().insert(SET_COOKIE, v);
-        }
-    }
+/// Apply the headers of a `__zf_response` envelope to an axum Response.
+fn apply_zf_extras(resp: &mut axum::response::Response, headers: &[(String, String)]) {
+    let mut declared: Vec<HeaderName> = Vec::new();
     for (k, v) in headers {
         if let (Ok(name), Ok(val)) = (
             HeaderName::from_bytes(k.as_bytes()),
             HeaderValue::from_str(v),
         ) {
-            // A header the pipeline declared replaces the one the response type
-            // picked for itself. Appending instead left an SVG served through
-            // `--message` carrying both `text/plain; charset=utf-8` and
-            // `image/svg+xml`, and the browser reads the first one it sees.
+            // The first header the pipeline declared under a name replaces the
+            // one the response type picked for itself. Appending instead left
+            // an SVG served as text carrying both `text/plain; charset=utf-8`
+            // and `image/svg+xml`, and the browser reads the first one it sees.
             //
-            // `set-cookie` is the exception the HTTP spec makes: repetition is
-            // how you send more than one cookie, so those still stack.
-            if name == SET_COOKIE {
+            // A name the pipeline repeats is sent once per value: repetition
+            // is how HTTP sends more than one cookie.
+            if declared.contains(&name) {
                 resp.headers_mut().append(name, val);
             } else {
-                resp.headers_mut().insert(name, val);
+                resp.headers_mut().insert(name.clone(), val);
+                declared.push(name);
             }
         }
     }
@@ -29241,25 +29183,24 @@ mod response_header_tests {
         // What axum picks for a String body.
         assert_eq!(resp.headers().get("content-type").unwrap(), "text/plain; charset=utf-8");
 
-        apply_zf_extras(
-            &mut resp,
-            &None,
-            &[("content-type".to_string(), "image/svg+xml".to_string())],
-        );
+        apply_zf_extras(&mut resp, &[("content-type".to_string(), "image/svg+xml".to_string())]);
 
         let seen: Vec<_> = resp.headers().get_all("content-type").iter().collect();
         assert_eq!(seen.len(), 1, "one content-type, not two: {seen:?}");
         assert_eq!(seen[0], "image/svg+xml");
     }
 
-    /// Repetition is how HTTP sends more than one cookie, so these still stack.
+    /// Repetition is how HTTP sends more than one cookie, so a repeated
+    /// header reaches the browser once per value.
     #[test]
     fn every_declared_cookie_survives() {
         let mut resp = (axum::http::StatusCode::OK, "ok".to_string()).into_response();
         apply_zf_extras(
             &mut resp,
-            &Some("session=abc; Path=/".to_string()),
-            &[("set-cookie".to_string(), "theme=dark; Path=/".to_string())],
+            &[
+                ("set-cookie".to_string(), "session=abc; Path=/".to_string()),
+                ("Set-Cookie".to_string(), "theme=dark; Path=/".to_string()),
+            ],
         );
 
         let seen: Vec<_> = resp
@@ -29271,6 +29212,22 @@ mod response_header_tests {
         assert_eq!(seen.len(), 2, "both cookies reach the browser: {seen:?}");
         assert!(seen.iter().any(|c| c.starts_with("session=")));
         assert!(seen.iter().any(|c| c.starts_with("theme=")));
+    }
+
+    /// The envelope's headers are a list, so a repeat survives the trip.
+    #[test]
+    fn an_envelope_keeps_its_headers_in_order_with_repeats() {
+        let headers = super::build_zf_headers(&serde_json::json!({
+            "headers": [["Location", "/home"], ["Set-Cookie", "a=1"], ["Set-Cookie", "b=2"]]
+        }));
+        assert_eq!(
+            headers,
+            vec![
+                ("Location".to_string(), "/home".to_string()),
+                ("Set-Cookie".to_string(), "a=1".to_string()),
+                ("Set-Cookie".to_string(), "b=2".to_string()),
+            ]
+        );
     }
 }
 

@@ -3647,7 +3647,7 @@ pub struct ZebflowJsonGitRemote {
 ///
 /// Controls project-level compile/render behaviour for all `web.response.send` template nodes.
 /// Values are merged into [`crate::rwe::ReactiveWebOptions`] at execution time,
-/// before each pipeline run. Node-level `--load-scripts` is appended on top.
+/// before each pipeline run. Node-level `--script` URLs are appended on top.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ZebflowJsonRwe {
@@ -3655,7 +3655,7 @@ pub struct ZebflowJsonRwe {
     ///
     /// Each entry is a glob-style prefix, e.g. `https://cdnjs.cloudflare.com/*`.
     /// Blessed libraries (imported via `zeb/*`) are always allowed and do not
-    /// appear here. Node-level `--load-scripts` is blocked at save time if any
+    /// appear here. Node-level `--script` URLs are blocked at save time if any
     /// URL does not match an entry in this list.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub allow_list: Vec<String>,

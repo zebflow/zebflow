@@ -7631,7 +7631,7 @@ async fn an_auth_optional_webhook_answers_guests_and_reads_a_valid_token() {
     // browser navigation is sent to the credential's auth_redirect carrying
     // the page it wanted, so the sign-in can bring the visitor back.
     for dsl in [
-        r#"register pipelines/tests/mine -- | trigger.webhook --path /mine/:slug --method GET --auth-type jwt --auth-credential auth_member | web.response.send --message ok"#,
+        r#"register pipelines/tests/mine -- | trigger.webhook --path /mine/:slug --method GET --auth-type jwt --auth-credential auth_member | web.response.send --body ok"#,
         "activate pipeline pipelines/tests/mine.zf.json",
     ] {
         let response = app

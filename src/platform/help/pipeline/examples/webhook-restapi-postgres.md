@@ -133,8 +133,8 @@ happens next. To answer 404, branch and let `web.response.send` answer:
 [found]:false -> [gone]
 ```
 
-`web.response.send` owns the response: `--status`, `--location`, `--set-cookie`,
-`--body`, `--template`. The branch is visible in the editor, which a key hidden
+`web.response.send` owns the response: `--status`, `--header` (`Location`,
+`Set-Cookie`), `--body`, `--template`. The branch is visible in the editor, which a key hidden
 in a payload would not be.
 
 ---
@@ -147,5 +147,5 @@ in a payload would not be.
 
 > A script cannot set the response. It returns a value; the graph decides what
 > happens next. Branch with `logic.if` and let `web.response.send` answer —
-> `--status`, `--location`, `--set-cookie`. See
+> `--status`, `--header` (`Location`, `Set-Cookie`), `--body`. See
 > `help("pipeline/examples/webhook-restapi-postgres")` § Answering with a status.

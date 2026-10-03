@@ -646,15 +646,6 @@
         "trigger.socket"
       ]
     },
-    "n.web.docs.generate": {
-      "label": "DOCS",
-      "method": "direct-svg",
-      "path": "/assets/node-icons/zebflow/n.web.docs.generate.svg",
-      "source_url": "",
-      "supports": [
-        "n.web.docs.generate"
-      ]
-    },
     "web.response.send": {
       "label": "RESP",
       "method": "direct-svg",

@@ -110,7 +110,7 @@ export default function RwePanel({ api, initialConfig, owner, project }) {
           />
           <small className="pipeline-editor-field-help">
             One URL pattern per line (or comma-separated). Controls which external scripts and
-            stylesheets <code>--load-scripts</code> may reference. Blessed <code>zeb/*</code>{" "}
+            stylesheets <code>--script</code> may reference. Blessed <code>zeb/*</code>{" "}
             libraries are always allowed and do not appear here.
           </small>
         </label>

@@ -79,9 +79,9 @@
 //! pub struct Config {
 //!     /// Required: path to the TSX page file relative to templates/.
 //!     pub template_path: String,
-//!     /// Optional: comma-separated external script URLs.
+//!     /// Optional: external script URLs (`--script`, repeated).
 //!     #[serde(default)]
-//!     pub load_scripts: String,
+//!     pub scripts: Vec<String>,
 //! }
 //! ```
 //!
@@ -108,9 +108,9 @@
 //!             "type": "string",
 //!             "description": "TSX file relative to templates/. Example: pages/blog-home."
 //!         },
-//!         "load_scripts": {
-//!             "type": "string",
-//!             "description": "Comma-separated external script URLs. Each must match allow_list."
+//!         "scripts": {
+//!             "type": "array",
+//!             "description": "External script URLs. Each must match allow_list."
 //!         }
 //!     }
 //! }),
@@ -140,10 +140,10 @@
 //!         required: true,
 //!, ..Default::default()     },
 //!     DslFlag {
-//!         flag: "--load-scripts".to_string(),
-//!         config_key: "load_scripts".to_string(),
-//!         description: "Comma-separated external script URLs. Each must match allow_list.".to_string(),
-//!         kind: DslFlagKind::CommaSeparatedList,
+//!         flag: "--script".to_string(),
+//!         config_key: "scripts".to_string(),
+//!         description: "An external script URL; repeat for several. Each must match allow_list.".to_string(),
+//!         kind: DslFlagKind::RepeatedList,
 //!         required: false,
 //!, ..Default::default()     },
 //! ],
@@ -596,6 +596,8 @@ pub fn answer_key(short_kind: &str) -> Option<String> {
     match parts.as_slice() {
         ["trigger", source, ..] => Some((*source).to_string()),
         ["logic", ..] | ["input", ..] => None,
+        // It answers the caller and passes its payload on (§4, §6).
+        ["web", "response", "send"] => None,
         [_, noun, _] => Some((*noun).to_string()),
         _ => None,
     }

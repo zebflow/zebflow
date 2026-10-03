@@ -138,6 +138,25 @@ return {
 
 ---
 
+## A whole docs site — `--from`
+
+The same node builds a documentation site from a Markdown folder under
+`docs/`: one page per `.md`, a sidebar from the tree (each folder's
+`_meta.yaml` gives its `title`, `order`, `collapsed` and `nav`), a search
+index, and a sitemap once the folder is served.
+
+```zf
+| trigger.schedule --cron "0 3 * * *"
+| web.site.generate --from handbook --folder handbook-site --name "Example Handbook"
+```
+
+`--template` is the page template under the source root (default
+`docs.template.tsx`); when the file does not exist it is written from a
+scaffold, and edited from then on. `--path` and `--from` choose the mode —
+give one, never both.
+
+---
+
 ## Why this is the correct first step
 
 This node should stay single-target first.

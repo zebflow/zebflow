@@ -1621,6 +1621,10 @@ fn default_trace_status() -> String {
 pub struct PipelineOutput {
     /// Final output payload from the terminal node.
     pub value: Value,
+    /// What `web.response.send` answered the caller, when one ran: the
+    /// envelope the HTTP layer turns into a response. Never part of `value`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub response: Option<Value>,
     /// Ordered trace entries from all nodes that executed during this run.
     pub trace: Vec<String>,
     /// Structured per-node trace (populated by BasicPipelineEngine).

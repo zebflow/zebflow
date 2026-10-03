@@ -109,7 +109,7 @@ register scraping/scraped-item-detail --
 [c] logic.if --expr "input.query.rows.length > 0"
 [d] script.result.run -- "return { item: input.query.rows[0] };"
 [e] web.response.send --template pages/scraped-item-detail.tsx
-[f] web.response.send --location /data/items
+[f] web.response.send --status 302 --header "Location=/data/items"
 
 [a] -> [b]
 [b] -> [c]
@@ -159,5 +159,5 @@ filter them out of the array before `logic.foreach` runs.
 
 > A script cannot set the response. It returns a value; the graph decides what
 > happens next. Branch with `logic.if` and let `web.response.send` answer —
-> `--status`, `--location`, `--set-cookie`. See
+> `--status`, `--header` (`Location`, `Set-Cookie`), `--body`. See
 > `help("pipeline/examples/webhook-restapi-postgres")` § Answering with a status.

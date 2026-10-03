@@ -18,25 +18,37 @@ same rows with their schemas and examples.
 <!-- node-flags:web.response.send -->
 
 Quote any value that contains `{{ }}` or a space as one argument;
-`--location {{ input.url }}` unquoted is cut at the first space and refused.
+`--header Location={{ input.url }}` unquoted is cut at the first space and refused.
 
-## Cookie spec
+## Redirects, cookies, bodies
+
+A redirect is a 3xx `--status` with a `Location` header; a `Location` without
+a 3xx, or a 3xx (other than 304) without a `Location`, is refused at run.
 
 ```
-name=session,value={{ input.token }},http-only,max-age=86400,secure,same-site=Lax,path=/
+web.response.send --status 303 --header "Location=/home"
 ```
 
-| Part | Default |
-|---|---|
-| `name=` | required |
-| `value=` | literal or `{{ expr }}`; an empty value clears the cookie |
-| `http-only` / `no-http-only` | HttpOnly on |
-| `secure` | off — turn it on behind HTTPS |
-| `max-age=SECS` | 900 |
-| `same-site=Lax|Strict|None` | Lax |
-| `path=` | `/` |
+A cookie is a `Set-Cookie` header, sent exactly as written — nothing is added,
+so a session cookie writes its own attributes. Repeat `--header` for several;
+a repeated name is sent once per value, so two `Set-Cookie` headers are two
+cookies:
 
-Logout is `--set-cookie "name=session,value=,max-age=0"`.
+```
+web.response.send --status 303 --header "Location=/home" \
+  --header "Set-Cookie=session={{ input.access_token }}; Path=/; Max-Age=86400; SameSite=Lax; HttpOnly" \
+  --header "Set-Cookie=theme=dark; Path=/; Max-Age=31536000; SameSite=Lax"
+```
+
+A session cookie carries `Path=/; SameSite=Lax; HttpOnly`, and `Secure`
+behind HTTPS. A cookie without `Max-Age` or `Expires` lasts until the browser
+closes. Logout is `--header "Set-Cookie=session=; Path=/; Max-Age=0"` — the
+same `Path` as the cookie it clears.
+
+`--body` answers a value: a string as `text/plain`, anything else as JSON,
+unless a `Content-Type` header says otherwise. At most one of `--body`,
+`--template` and `--file`; with none, the payload answers as JSON.
+`web.response.send` passes its payload on unchanged — it adds no key.
 
 ## Patterns
 
@@ -86,7 +98,7 @@ The payload is `{ error_code, error_message, original_path, method }`.
 
 ```
 | trigger.webhook --path /go/signup --method GET
-| web.response.send --location "/auth/register?source=landing"
+| web.response.send --status 302 --header "Location=/auth/register?source=landing"
 ```
 
 **Redirect to a computed URL**
@@ -94,7 +106,7 @@ The payload is `{ error_code, error_message, original_path, method }`.
 ```
 | trigger.webhook --path /after-login --method GET --auth-type jwt --auth-credential jwt_main
 | sekejap.query.run --param "1={{ $trigger.auth.sub }}" -- "SELECT home FROM users WHERE id = $1"
-| web.response.send --location "{{ input.query.rows[0]?.home || '/home' }}"
+| web.response.send --status 302 --header "Location={{ input.query.rows[0]?.home || '/home' }}"
 ```
 
 **Login — mint a token, set the cookie**
@@ -106,7 +118,7 @@ The payload is `{ error_code, error_message, original_path, method }`.
 [d] crypto.password.verify --from "{{ $nodes.a.body.password }}" --hash "{{ input.query.rows[0]?.password_hash }}"
 [e] script.result.run -- "const u = input.query.rows[0]; return { id: u.id, name: u.name, roles: u.roles || ['member'] }"
 [f] auth.token.create --credential jwt_main --claim "sub={{ input.id }}" --claim "name:public={{ input.name }}" --claim "roles:public={{ input.roles }}"
-[g] web.response.send --location /home --set-cookie "name=zebflow_session,value={{ input.access_token }},http-only,max-age=86400,same-site=Lax"
+[g] web.response.send --status 302 --header "Location=/home" --header "Set-Cookie=zebflow_session={{ input.access_token }}; Path=/; Max-Age=86400; SameSite=Lax; HttpOnly"
 [h] web.response.send --status 401 --body "{{ { error: 'invalid credentials' } }}"
 [a] -> [b]
 [b] -> [c]
@@ -163,7 +175,7 @@ export default function Dashboard(input) {
 `{{ }}` works in every flag value and is resolved just before the response:
 
 ```
-| web.response.send --location "/users/{{ $trigger.params.id }}/{{ $nodes.lookup.query.rows[0].slug }}"
+| web.response.send --status 302 --header "Location=/users/{{ $trigger.params.id }}/{{ $nodes.lookup.query.rows[0].slug }}"
 | web.response.send --header "X-User-Id={{ $trigger.auth.sub }}"
 ```
 
@@ -181,7 +193,7 @@ worker can key its cache on them.
 ```text
 register pipelines/pwa/manifest -- | trigger.webhook --path /manifest.webmanifest --method GET | web.response.send --file pwa/manifest.webmanifest
 register pipelines/pwa/worker   -- | trigger.webhook --path /sw.js --method GET               | web.response.send --file pwa/site.sw.ts
-register pipelines/pwa/icons    -- | trigger.webhook --path /pwa/{file} --method GET          | web.response.send --folder pwa/icons --file "{{ input.params.file }}"
+register pipelines/pwa/icons    -- | trigger.webhook --path /pwa/{file} --method GET          | web.response.send --root pwa/icons --file "{{ input.params.file }}"
 ```
 
 - The manifest is a JSON file you write (`name`, `id`, `start_url`, `scope`
@@ -191,7 +203,7 @@ register pipelines/pwa/icons    -- | trigger.webhook --path /pwa/{file} --method
   site's worker answers at `/sw.js`; from deeper, add
   `--header Service-Worker-Allowed=/`. A stored object on the file host
   would control nothing — that host never runs scripts.
-- With `--folder`, `--file` is a bare filename, usually from the route, and can
+- With `--root`, `--file` is a bare filename, usually from the route, and can
   never leave that folder — safe to expose.
 - Every page carries the manifest and the Apple icon in `page.head.links` and
   its colour in `page.head.themeColor`. A component in the shell registers the

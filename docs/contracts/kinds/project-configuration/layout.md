@@ -239,7 +239,7 @@ compared against the result it predicts.
 
 ### The two blockers section 5 recorded
 
-`web_docs_generate::load_site` takes the docs directory instead of reaching it
+`web::site::docs::load_site` takes the docs directory instead of reaching it
 by one `parent()` hop off the template root, which was only the repository root
 for a source exactly one segment deep. The pipeline engine carries the project's
 `ProjectFileLayout` rather than a bare template root, and derives the template

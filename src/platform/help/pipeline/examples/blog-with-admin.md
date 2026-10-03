@@ -60,7 +60,7 @@ register blog/detail --
 [c] logic.if --expr "input.query.rows.length > 0"
 [d] script.result.run -- "return { post: input.query.rows[0] };"
 [e] web.response.send --template pages/blog-detail.tsx
-[f] web.response.send --location /blog
+[f] web.response.send --status 302 --header "Location=/blog"
 
 [a] -> [b]
 [b] -> [c]
@@ -129,8 +129,8 @@ register blog/auth-login --
 [found] logic.if --expr "input.query.rows.length > 0"
 [verify] crypto.password.verify --from "{{ input.body.password }}" --hash "{{ input.query.rows[0]?.password_hash }}"
 [token] auth.token.create --credential blog-jwt --claim "sub={{ input.query.rows[0]._key }}" --claim "roles:public={{ input.query.rows[0].roles }}" --expires-in 86400
-[welcome] web.response.send --location /admin --set-cookie "name=session,value={{ input.access_token }},http-only,max-age=86400,same-site=Lax,path=/"
-[denied] web.response.send --status 401 --message "invalid credentials"
+[welcome] web.response.send --status 302 --header "Location=/admin" --header "Set-Cookie=session={{ input.access_token }}; Path=/; Max-Age=86400; SameSite=Lax; HttpOnly"
+[denied] web.response.send --status 401 --body "invalid credentials"
 
 [trig] -> [lookup]
 [lookup] -> [found]
@@ -156,7 +156,7 @@ constant-time.
 - `logic.if` — branch on "does this slug/user already exist"
 - `script` — slugify, validate, shape rows
 - `crypto.password.hash` to seed the password, `crypto.password.verify` to check it
-- `auth.token.create` / `web.response.send --set-cookie` — issue the session
+- `auth.token.create` / `web.response.send --header "Set-Cookie=…"` — issue the session
 - `web.response.send` — TSX templates for public and admin pages
 
 ---
@@ -169,5 +169,5 @@ constant-time.
 
 > A script cannot set the response. It returns a value; the graph decides what
 > happens next. Branch with `logic.if` and let `web.response.send` answer —
-> `--status`, `--location`, `--set-cookie`. See
+> `--status`, `--header` (`Location`, `Set-Cookie`), `--body`. See
 > `help("pipeline/examples/webhook-restapi-postgres")` § Answering with a status.

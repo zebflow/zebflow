@@ -16,7 +16,6 @@ const NODE_KIND_COLORS: Record<string, string> = {
   "pg.query.run": "#7c3aed",
   "n.web.render": "#be185d",
   "web.site.generate": "#c2410c",
-  "n.web.docs.generate": "#c2410c",
   "ai.text.generate": "#4338ca",
   "ai.audio.generate": "#4338ca",
   "logic.if": "#0e7490",

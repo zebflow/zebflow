@@ -777,7 +777,7 @@ pub fn parse_node_config_with_positional(
                         .entry(dsl_flag.config_key.clone())
                         .or_insert_with(|| Value::Object(serde_json::Map::new()));
                     if let Value::Object(m) = entry {
-                        m.insert(k, json!(v));
+                        insert_pair(m, k, v);
                     }
                     i += 2;
                 }
@@ -1460,6 +1460,35 @@ fn is_dotted_kind(raw_kind: &str) -> bool {
             part.starts_with(|c: char| c.is_ascii_lowercase())
                 && part.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-')
         })
+}
+
+/// Adds one `--flag key=value` occurrence to a map flag's object. A key
+/// given again keeps every value, in order, as a list: a map is repeated
+/// `key=value` (`node-conventions.md` §2), and a repeat is meant — two
+/// `Set-Cookie` headers are two cookies.
+pub fn insert_pair(map: &mut serde_json::Map<String, Value>, key: String, value: String) {
+    match map.get_mut(&key) {
+        Some(Value::Array(items)) => items.push(Value::String(value)),
+        Some(existing) => {
+            let first = existing.take();
+            *existing = Value::Array(vec![first, Value::String(value)]);
+        }
+        None => {
+            map.insert(key, Value::String(value));
+        }
+    }
+}
+
+/// The values one key of a map flag renders as, one `--flag key=value` each.
+fn pair_values(value: &Value) -> Vec<String> {
+    let one = |v: &Value| match v {
+        Value::String(s) => s.clone(),
+        other => other.to_string(),
+    };
+    match value {
+        Value::Array(items) => items.iter().map(one).collect(),
+        other => vec![one(other)],
+    }
 }
 
 #[cfg(test)]
@@ -2436,12 +2465,10 @@ fn node_to_segment(node: &PipelineNode) -> String {
             DslFlagKind::KeyValuePairs => {
                 if let Some(map) = val.as_object() {
                     for (k, v) in map {
-                        let v_str = match v {
-                            Value::String(s) => s.clone(),
-                            other => other.to_string(),
-                        };
-                        parts.push(flag.flag.clone());
-                        parts.push(format!("{}={}", k, v_str));
+                        for v_str in pair_values(v) {
+                            parts.push(flag.flag.clone());
+                            parts.push(quote_dsl_arg(&format!("{}={}", k, v_str)));
+                        }
                     }
                 }
             }
@@ -2562,12 +2589,10 @@ pub fn node_to_segment_no_body(node: &PipelineNode) -> String {
             DslFlagKind::KeyValuePairs => {
                 if let Some(map) = val.as_object() {
                     for (k, v) in map {
-                        let v_str = match v {
-                            Value::String(s) => s.clone(),
-                            other => other.to_string(),
-                        };
-                        parts.push(flag.flag.clone());
-                        parts.push(format!("{}={}", k, v_str));
+                        for v_str in pair_values(v) {
+                            parts.push(flag.flag.clone());
+                            parts.push(quote_dsl_arg(&format!("{}={}", k, v_str)));
+                        }
                     }
                 }
             }
@@ -2891,6 +2916,22 @@ mod register_shape_tests {
         assert_eq!(again.nodes[1].config.get("expression"), g.nodes[1].config.get("expression"));
         assert_eq!(again.nodes[2].config.get("prompt"), g.nodes[2].config.get("prompt"));
     }
+
+    #[test]
+    fn a_repeated_map_key_keeps_every_value_and_round_trips() {
+        let g = build_pipeline_graph(
+            "p",
+            "trigger.webhook --path /x | web.response.send --status 303 --header \"Location=/home\" --header \"Set-Cookie=a=1; Max-Age=60\" --header \"Set-Cookie=b=2\"",
+        )
+        .expect("parse");
+        let headers = &g.nodes[1].config["headers"];
+        assert_eq!(headers["Location"], "/home");
+        assert_eq!(headers["Set-Cookie"], serde_json::json!(["a=1; Max-Age=60", "b=2"]));
+        let dsl = graph_to_dsl(&g);
+        assert_eq!(dsl.matches("--header").count(), 3, "{dsl}");
+        let again = build_pipeline_graph("p", &dsl).expect("re-parse");
+        assert_eq!(&again.nodes[1].config["headers"], headers);
+    }
 }
 
 #[cfg(test)]
@@ -3003,8 +3044,8 @@ mod quoting_tests {
 [c] logic.if --expr "input.order !== null"
 [m] mail.message.send --credential relay --to "{{ input.order.email }}" --subject "Order {{ input.query.id }}" --text "Thank you."
 [f] kv.entry.put --key "seen:{{ input.query.id }}" --value "{{ input.order }}" --ttl 600
-[w] web.response.send --status 200 --message "ok"
-[e] web.response.send --status 404 --message "no such order"
+[w] web.response.send --status 200 --body "ok"
+[e] web.response.send --status 404 --body "no such order"
 
 [t] -> [k]
 [k] -> [c]

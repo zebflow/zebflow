@@ -593,7 +593,7 @@ mod help_lint {
         assert!(web.contains("| `--template`"));
         let dsl = get_help("pipeline/dsl").expect("pipeline/dsl");
         assert!(!dsl.contains("<!-- node-families -->"));
-        assert!(dsl.contains("- **web** `web.docs.generate · web.response.send · web.site.generate`"), "{dsl}");
+        assert!(dsl.contains("- **web** `web.response.send · web.site.generate`"), "{dsl}");
         assert!(dsl.contains("- **trigger** `"));
     }
 

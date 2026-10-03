@@ -20,7 +20,7 @@ refuses the request before any node runs. Facts:
 |---|---|
 | a `jwt_signing_key` credential | created by the owner in Studio → Credentials; holds the secret, `auth_redirect` (where a browser goes when refused), `auth_roles`. Its **id** is what `--auth-credential` and `auth.token.create --credential` take (`credential_list`). |
 | `auth.token.create` | mints the token from the payload: `--claim "sub={{ input.id }}" --claim "name:public={{ input.name }}" --claim "roles:public={{ input.roles }}"`; answers `{ access_token }` |
-| the cookie | `web.response.send --set-cookie "name=zebflow_session,value={{ input.access_token }},http-only,max-age=86400,same-site=Lax"` — the verifier reads `Authorization: Bearer` first, then this cookie. Behind HTTPS add `secure`. |
+| the cookie | `web.response.send --header "Set-Cookie=zebflow_session={{ input.access_token }}; Path=/; Max-Age=86400; SameSite=Lax; HttpOnly"` — sent exactly as written, so the attributes are yours to write; behind HTTPS add `; Secure`. The verifier reads `Authorization: Bearer` first, then this cookie. |
 | `--auth-required-role` | matches one entry of the token's **`roles` array** claim. A scalar `role` never authorises. |
 | `:public` | only claims marked `:public` reach the browser as `input.auth`; everything else stays server-side (`$trigger.auth`, `ctx.trigger.auth`). A public array claim stays an array. |
 | `crypto.password.*` | `crypto.password.hash --from "{{ input.body.password }}"` → payload plus `password: { hash, algorithm }` (`input.body` kept); `crypto.password.verify --from "{{ … }}" --hash "{{ input.query.rows[0]?.password_hash }}"` → `password: { valid }` on the `true`/`false` pins; an empty hash (no such user) goes to `:error` |
@@ -39,7 +39,7 @@ refuses the request before any node runs. Facts:
    | logic.if --expr "typeof input.body?.email === 'string' && typeof input.body?.password === 'string' && input.body.password.length >= 12"
    | crypto.password.hash --from "{{ input.body.password }}"
    | sekejap.query.run --write --param "1={{ input.body.email }}" --param "2={{ input.password.hash }}" --param "3={{ ['user'] }}" --param "4={{ new Date().toISOString() }}" -- "INSERT INTO users (email, password_hash, roles, created_at) VALUES ($1, $2, $3, $4)"
-   | web.response.send --location /login?registered=1
+   | web.response.send --status 302 --header "Location=/login?registered=1"
    ```
 
    The `users` table gets its id from `_key TEXT PRIMARY KEY DEFAULT UUIDV4()`;
@@ -48,10 +48,10 @@ refuses the request before any node runs. Facts:
 3. **Login.** `POST /auth/login`: look the user up by `input.body.email`,
    `logic.if` one row, `crypto.password.verify` with `--from "{{ $nodes.<trigger id>.body.password }}"`
    and `--hash "{{ input.query.rows[0]?.password_hash }}"`, mint the token with
-   `roles` as an array, set the cookie, `--location /home`. The `false` pins
+   `roles` as an array, set the cookie, `--status 303 --header "Location=/home"`. The `false` pins
    answer `401` — never a different message for "no such user" and "wrong
    password".
-4. **Logout.** `web.response.send --location /login --set-cookie "name=zebflow_session,value=,max-age=0"`
+4. **Logout.** `web.response.send --status 302 --header "Location=/login" --header "Set-Cookie=zebflow_session=; Path=/; Max-Age=0"`
    (an empty value clears the cookie).
 5. **Protect.** Put `--auth-type jwt --auth-credential <id>` on every route
    that needs a user and `--auth-required-role` on every route that needs a

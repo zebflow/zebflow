@@ -188,7 +188,7 @@ To try a body without saving anything: `pipeline_run body="| trigger.function | 
 
 ```
 | trigger.webhook --path /go/signup --method GET
-| web.response.send --location "/auth/register?source=landing"
+| web.response.send --status 302 --header "Location=/auth/register?source=landing"
 ```
 
 **Scheduled job**
@@ -202,7 +202,7 @@ To try a body without saving anything: `pipeline_run body="| trigger.function | 
 
 A script cannot set the HTTP status or headers; it returns the next payload.
 Branch with `logic.if` and let `web.response.send` answer with `--status`,
-`--location` or `--set-cookie`. Returning `null` from a script does not stop
+`--header` or `--body`. Returning `null` from a script does not stop
 the pipeline either — `null` simply becomes the next `input`.
 
 ---

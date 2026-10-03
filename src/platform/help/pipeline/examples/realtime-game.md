@@ -51,7 +51,7 @@ register game/room --
 [c] logic.if --expr "input.query.rows.length > 0"
 [d] script.result.run -- "return { room: input.query.rows[0] };"
 [e] web.response.send --template pages/game-room.tsx
-[f] web.response.send --location /game
+[f] web.response.send --status 302 --header "Location=/game"
 
 [a] -> [b]
 [b] -> [c]
@@ -188,5 +188,5 @@ is closed with code 4401 before any state is sent.
 
 > A script cannot set the response. It returns a value; the graph decides what
 > happens next. Branch with `logic.if` and let `web.response.send` answer —
-> `--status`, `--location`, `--set-cookie`. See
+> `--status`, `--header` (`Location`, `Set-Cookie`), `--body`. See
 > `help("pipeline/examples/webhook-restapi-postgres")` § Answering with a status.

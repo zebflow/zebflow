@@ -116,6 +116,8 @@ struct NodesRetentionPlan {
     retained_nodes: HashSet<String>,
 }
 
+mod web_site;
+
 const RETRY_STATE_KEY: &str = "__zf_retry";
 const MAX_NODE_OUTPUT_FILE_BYTES: usize = 256 * 1024 * 1024;
 
@@ -780,7 +782,7 @@ fn blanked_like(value: &Value) -> Value {
 ///
 /// The markers used to be read at the top level only. That is where a node
 /// puts one, but not where it stays: `web.response.send` nests the whole upstream
-/// payload under `__zf_response.body`, so by the time that node's *output* was
+/// payload under `__zf_response.json`, so by the time that node's *output* was
 /// traced the marker was one level down -- unread, unremoved, and printed
 /// verbatim into the run history with the secrets inside it.
 #[cfg(test)]
@@ -1354,9 +1356,8 @@ impl BasicPipelineEngine {
             }
             web::response::NODE_KIND => {
                 let config: web::response::Config = serde_json::from_value(node.config.clone())
-                    .map_err(|err| {
-                        PipelineError::new("FW_NODE_WEB_RESPONSE_CONFIG", err.to_string())
-                    })?;
+                    .map_err(|err| PipelineError::new(web::response::CODE_CONFIG, err.to_string()))?;
+                config.check()?;
                 if config.template.is_some() {
                     Ok(NodeDispatch::InlineWebResponse {
                         node_id: node.id.clone(),
@@ -1366,34 +1367,17 @@ impl BasicPipelineEngine {
                     Ok(NodeDispatch::WebResponse(web::response::Node::new(config, self.template_root.clone())))
                 }
             }
-            web::static_generate::NODE_KIND => {
+            web::site::NODE_KIND => {
                 if self.data_root.is_none() {
                     return Err(PipelineError::new(
-                        "FW_NODE_WEB_STATIC_UNAVAILABLE",
+                        "FW_NODE_WEB_SITE_GENERATE_UNAVAILABLE",
                         "data_root is not configured on this pipeline engine",
                     ));
                 }
-                let config: web::static_generate::Config =
-                    serde_json::from_value(node.config.clone()).map_err(|err| {
-                        PipelineError::new("FW_NODE_WEB_STATIC_CONFIG", err.to_string())
-                    })?;
-                Ok(NodeDispatch::InlineWebStaticGenerate {
-                    node_id: node.id.clone(),
-                    config,
-                })
-            }
-            web::docs_generate::NODE_KIND => {
-                if self.data_root.is_none() {
-                    return Err(PipelineError::new(
-                        "FW_NODE_WEB_DOCS_UNAVAILABLE",
-                        "data_root is not configured on this pipeline engine",
-                    ));
-                }
-                let config: web::docs_generate::Config = serde_json::from_value(node.config.clone())
-                    .map_err(|err| {
-                        PipelineError::new("FW_NODE_WEB_DOCS_CONFIG", err.to_string())
-                    })?;
-                Ok(NodeDispatch::InlineWebDocsGenerate {
+                let config: web::site::Config = serde_json::from_value(node.config.clone())
+                    .map_err(|err| PipelineError::new(web::site::CODE_CONFIG, err.to_string()))?;
+                config.check()?;
+                Ok(NodeDispatch::InlineWebSiteGenerate {
                     node_id: node.id.clone(),
                     config,
                 })
@@ -2113,6 +2097,7 @@ impl BasicPipelineEngine {
 
         let mut trace = vec![format!("engine={}", self.id())];
         let mut last_value = Value::Null;
+        let mut response: Option<Value> = None;
         let mut node_trace: Vec<NodeTraceEntry> = Vec::new();
         // merge_pending: node_id -> { pin_name -> payload }
         let mut collect_pending: HashMap<String, HashMap<String, Value>> = HashMap::new();
@@ -2237,20 +2222,12 @@ impl BasicPipelineEngine {
                         let markup = config.markup.as_deref().unwrap_or("").trim();
                         if markup.is_empty() {
                             Err(PipelineError::new(
-                                "FW_NODE_WEB_RESPONSE_CONFIG",
+                                web::response::CODE_CONFIG,
                                 format!("node '{node_id}' --template set but markup not loaded"),
                             ))
                         } else {
-                            // Location arrives final — {{ }} resolved above.
-                            let location = config.location.clone();
-                            let status = config
-                                .status
-                                .or_else(|| if location.is_some() { Some(302) } else { None });
-                            let cookie = config
-                                .set_cookie
-                                .as_deref()
-                                .and_then(web::response::parse_cookie_spec);
-                            let headers = config.headers.clone();
+                            // Every value arrives final — {{ }} resolved above.
+                            let head = config.check()?;
 
                             let template_id = config.template.clone().unwrap_or_default();
                             let source_path = self
@@ -2316,25 +2293,23 @@ impl BasicPipelineEngine {
 
                             let render_out = web::response::render_compiled_page(
                                 &compiled,
-                                input.payload,
+                                input.payload.clone(),
                                 input.metadata,
                                 self.rwe.as_ref(),
                                 self.language.as_ref(),
                                 &ctx.request_id,
                                 enabled_libraries,
                             )?;
-                            let envelope = serde_json::json!({
-                                "status": status,
-                                "location": location,
-                                "set_cookie": cookie,
-                                "headers": headers,
-                                "html": render_out.payload.get("html"),
-                                "compiled_scripts": render_out.payload.get("compiled_scripts"),
-                                "hydration_payload": render_out.payload.get("hydration_payload"),
-                            });
+                            let mut envelope = head.envelope();
+                            for key in ["html", "compiled_scripts", "hydration_payload"] {
+                                envelope.insert(
+                                    key.to_string(),
+                                    render_out.payload.get(key).cloned().unwrap_or(Value::Null),
+                                );
+                            }
                             Ok(vec![NodeExecutionOutput {
                                 output_pins: render_out.output_pins,
-                                payload: serde_json::json!({ "__zf_response": envelope }),
+                                payload: web::response::with_envelope(&input.payload, Value::Object(envelope)),
                                 trace: render_out.trace,
                             }])
                         })
@@ -2343,568 +2318,8 @@ impl BasicPipelineEngine {
                     NodeDispatch::WebResponse(node) => {
                         node.execute_many_async(input_for_exec).await
                     }
-                    NodeDispatch::InlineWebDocsGenerate { node_id, config } => {
-                        let node_store = match self.platform.as_ref() {
-                            Some(platform) => Some(crate::pipeline::nodes::shared::project_store::open_store(
-                                platform,
-                                &ctx.owner,
-                                &ctx.project,
-                                config.store.as_deref(),
-                            )?),
-                            None => None,
-                        };
-                        let Some(zebfs) = node_store
-                            .as_ref()
-                            .map(|store| store.fs.clone())
-                            .or_else(|| self.repo_layout.as_ref().map(|layout| layout.open_files()))
-                        else {
-                            return Err(PipelineError::new(
-                                "FW_NODE_WEB_DOCS_UNAVAILABLE",
-                                "the project's file store is not configured on this pipeline engine",
-                            ));
-                        };
-                        let Some(template_root) = &self.template_root else {
-                            return Err(PipelineError::new(
-                                "FW_NODE_WEB_DOCS_TEMPLATE_ROOT",
-                                "template_root is not configured on this pipeline engine",
-                            ));
-                        };
-
-                        let Some(docs_root) = self
-                            .repo_layout
-                            .as_ref()
-                            .map(|layout| layout.repo_docs_dir())
-                        else {
-                            return Err(PipelineError::new(
-                                "FW_NODE_WEB_DOCS_TEMPLATE_ROOT",
-                                "project layout is not configured on this pipeline engine",
-                            ));
-                        };
-                        let mut site =
-                            web::docs_generate::load_site(&config, template_root, &docs_root)?;
-                        site.set_origin(web::static_site::site_origin(
-                            self.platform.as_ref(),
-                            &ctx.owner,
-                            &ctx.project,
-                            &site.site_root_rel,
-                        ));
-                        let options = crate::rwe::ReactiveWebOptions {
-                            templates: crate::rwe::TemplateOptions {
-                                template_root: self.template_root.clone(),
-                                library_roots: self.library_roots(),
-                                style_entries: Vec::new(),
-                            },
-                            processors: vec!["tailwind".to_string(), "markdown".to_string()],
-                            ..Default::default()
-                        };
-                        let key = hash_markup(&site.template_source.markup);
-                        let cached = self.template_cache.as_ref().and_then(|c| {
-                            c.read()
-                                .unwrap_or_else(|e| e.into_inner())
-                                .get(&key)
-                                .map(|e| e.page.clone())
-                        });
-                        let compiled_result: Result<Arc<_>, PipelineError> =
-                            if let Some(hit) = cached {
-                                Ok(hit)
-                            } else {
-                                let fresh = web::response::compile_page(
-                                    &node_id,
-                                    &site.template_source,
-                                    &options,
-                                    self.rwe.as_ref(),
-                                    self.language.as_ref(),
-                                )
-                                .map(Arc::new);
-                                if let Ok(ref fresh_arc) = fresh
-                                    && let Some(cache) = &self.template_cache
-                                {
-                                    let deps = fresh_arc.template.dependency_paths.clone();
-                                    cache.write().unwrap_or_else(|e| e.into_inner()).insert(
-                                        key,
-                                        CacheEntry {
-                                            page: fresh_arc.clone(),
-                                            dependencies: deps,
-                                        },
-                                    );
-                                }
-                                fresh
-                            };
-
-                        compiled_result.and_then(|compiled| {
-                            let mut generated_files = 0usize;
-                            let mut skipped_files = 0usize;
-                            let mut urls = Vec::new();
-                            let asset_group = web::static_site::asset_group_id(
-                                &site.template_rel_path,
-                                &site.template_source.markup,
-                            );
-                            let mut page_records = Vec::new();
-                            let mut asset_records = Vec::new();
-                            let site_store = web::static_site::SiteStore {
-                                store: &zebfs,
-                                root_rel: site.site_root_rel.clone(),
-                            };
-                            let project_asset_root = self
-                                .repo_layout
-                                .as_ref()
-                                .map(|layout| layout.repo_static_dir());
-
-                            let enabled_libraries: Vec<String> = self
-                                .platform
-                                .as_ref()
-                                .and_then(|p| {
-                                    p.zebflow_cfg
-                                        .get_rwe_libraries(&ctx.owner, &ctx.project)
-                                        .ok()
-                                })
-                                .map(|libs| libs.into_keys().collect())
-                                .unwrap_or_default();
-
-                            for (page_index, page) in site.pages.iter().enumerate() {
-                                let mut metadata = input.metadata.clone();
-                                if let Some(map) = metadata.as_object_mut() {
-                                    map.insert(
-                                        "route".to_string(),
-                                        Value::String(web::docs_generate::default_route(page)),
-                                    );
-                                }
-                                let payload = web::docs_generate::page_payload(
-                                    &site,
-                                    page_index,
-                                    input.payload.clone(),
-                                )?;
-                                let render_out = web::response::render_compiled_page(
-                                    &compiled,
-                                    payload,
-                                    metadata,
-                                    self.rwe.as_ref(),
-                                    self.language.as_ref(),
-                                    &ctx.request_id,
-                                    enabled_libraries.clone(),
-                                )?;
-                                let html = render_out
-                                    .payload
-                                    .get("html")
-                                    .and_then(Value::as_str)
-                                    .ok_or_else(|| {
-                                        PipelineError::new(
-                                            "FW_NODE_WEB_DOCS_RENDER",
-                                            format!("node '{node_id}' did not return rendered html"),
-                                        )
-                                    })?
-                                    .to_string();
-                                let hydration_payload = render_out
-                                    .payload
-                                    .get("hydration_payload")
-                                    .cloned()
-                                    .unwrap_or(Value::Null);
-                                let compiled_scripts = render_out
-                                    .payload
-                                    .get("compiled_scripts")
-                                    .cloned()
-                                    .and_then(|value| serde_json::from_value::<Vec<crate::rwe::CompiledScript>>(value).ok())
-                                    .unwrap_or_default();
-                                let final_html = web::static_generate::build_static_html(
-                                    html,
-                                    &hydration_payload,
-                                    &compiled_scripts,
-                                    self.template_root.as_deref(),
-                                );
-                                let localized = web::static_site::localize_static_html_assets(
-                                    &site_store,
-                                    &page.output_rel_path,
-                                    &final_html,
-                                    web::static_site::StaticAssetSources {
-                                        owner: Some(&ctx.owner),
-                                        project: Some(&ctx.project),
-                                        project_asset_root_abs: project_asset_root.as_deref(),
-                                    },
-                                    &asset_group,
-                                )?;
-                                asset_records.extend(localized.assets.iter().cloned());
-                                let final_html = web::docs_generate::apply_page_seo(
-                                    localized.html,
-                                    &site,
-                                    page_index,
-                                );
-                                let rel_path =
-                                    web::docs_generate::output_rel_path(page, &site.site_root_rel)?;
-                                let status = web::static_generate::write_generated_object(
-                                    &zebfs,
-                                    &rel_path,
-                                    &final_html,
-                                    "overwrite",
-                                )?;
-                                if status == "skipped" || status == "unchanged" {
-                                    skipped_files += 1;
-                                } else {
-                                    generated_files += 1;
-                                }
-                                urls.push(page.route_path.clone());
-                                page_records.push(web::static_site::StaticPageRecord {
-                                    path: page.output_rel_path.clone(),
-                                    route: page.route_path.clone(),
-                                    template: site.template_rel_path.clone(),
-                                    asset_group: asset_group.clone(),
-                                    generator: web::docs_generate::NODE_KIND.to_string(),
-                                });
-                            }
-
-                            if !site.sitemap_xml.trim().is_empty() {
-                                let sitemap_rel =
-                                    web::docs_generate::sitemap_rel_path(&site.site_root_rel);
-                                let status = web::static_generate::write_generated_object(
-                                    &zebfs,
-                                    &sitemap_rel,
-                                    &site.sitemap_xml,
-                                    "overwrite",
-                                )?;
-                                if status == "skipped" || status == "unchanged" {
-                                    skipped_files += 1;
-                                } else {
-                                    generated_files += 1;
-                                }
-                            }
-
-                            let search_index_rel =
-                                web::docs_generate::search_index_rel_path(&site.site_root_rel);
-                            let status = web::static_generate::write_generated_object(
-                                &zebfs,
-                                &search_index_rel,
-                                &site.search_index_json,
-                                "overwrite",
-                            )?;
-                            if status == "skipped" || status == "unchanged" {
-                                skipped_files += 1;
-                            } else {
-                                generated_files += 1;
-                            }
-
-                            let manifest_rel =
-                                web::static_site::site_manifest_rel_path(&site.site_root_rel);
-                            let _manifest = web::static_site::update_site_manifest(
-                                &site_store,
-                                &site.site_root_rel,
-                                site.deploy_base_url.as_deref(),
-                                &site.deploy_base_path,
-                                web::docs_generate::NODE_KIND,
-                                &site.template_rel_path,
-                                &asset_group,
-                                &page_records,
-                                &asset_records,
-                                true,
-                            )?;
-
-                            Ok(vec![NodeExecutionOutput {
-                                output_pins: vec![web::docs_generate::OUTPUT_PIN_OUT.to_string()],
-                                payload: crate::pipeline::nodes::shared::util::with_answer(&input.payload, json!({
-                                    "docs_generated": {
-                                        "status": "ok",
-                                        "site_title": site.site_title,
-                                        "template": site.template_rel_path,
-                                        "docs_root": config.docs_root,
-                                        "site_root": site.site_root_rel,
-                                        "origin": site.deploy_base_url,
-                                        "manifest_path": manifest_rel,
-                                        "asset_group": asset_group,
-                                        "page_count": site.pages.len(),
-                                        "generated_files": generated_files,
-                                        "skipped_files": skipped_files,
-                                        "sitemap_path": if site.sitemap_xml.trim().is_empty() { Value::Null } else { Value::String(web::docs_generate::sitemap_rel_path(&site.site_root_rel)) },
-                                        "search_index_path": search_index_rel,
-                                        "routes": urls,
-                                    }
-                                })),
-                                trace: vec![
-                                    format!("node={node_id}"),
-                                    format!("node_kind={}", web::docs_generate::NODE_KIND),
-                                    format!("pages={}", site.pages.len()),
-                                ],
-                            }])
-                        })
-                    }
-                    NodeDispatch::InlineWebStaticGenerate { node_id, config } => {
-                        let node_store = match self.platform.as_ref() {
-                            Some(platform) => Some(crate::pipeline::nodes::shared::project_store::open_store(
-                                platform,
-                                &ctx.owner,
-                                &ctx.project,
-                                config.store.as_deref(),
-                            )?),
-                            None => None,
-                        };
-                        let Some(zebfs) = node_store
-                            .as_ref()
-                            .map(|store| store.fs.clone())
-                            .or_else(|| self.repo_layout.as_ref().map(|layout| layout.open_files()))
-                        else {
-                            return Err(PipelineError::new(
-                                "FW_NODE_WEB_STATIC_UNAVAILABLE",
-                                "the project's file store is not configured on this pipeline engine",
-                            ));
-                        };
-
-                        let template_source = web::static_generate::resolve_template_source(
-                            &node_id,
-                            &config,
-                            self.template_root.as_deref(),
-                        )?;
-
-                        let options = crate::rwe::ReactiveWebOptions {
-                            templates: crate::rwe::TemplateOptions {
-                                template_root: self.template_root.clone(),
-                                library_roots: self.library_roots(),
-                                style_entries: Vec::new(),
-                            },
-                            ..Default::default()
-                        };
-
-                        let key = hash_markup(&template_source.markup);
-                        let cached = self.template_cache.as_ref().and_then(|c| {
-                            c.read()
-                                .unwrap_or_else(|e| e.into_inner())
-                                .get(&key)
-                                .map(|e| e.page.clone())
-                        });
-                        let compiled_result: Result<Arc<_>, PipelineError> =
-                            if let Some(hit) = cached {
-                                Ok(hit)
-                            } else {
-                                let fresh = web::response::compile_page(
-                                    &node_id,
-                                    &template_source,
-                                    &options,
-                                    self.rwe.as_ref(),
-                                    self.language.as_ref(),
-                                )
-                                .map(Arc::new);
-                                if let Ok(ref fresh_arc) = fresh
-                                    && let Some(cache) = &self.template_cache
-                                {
-                                    let deps = fresh_arc.template.dependency_paths.clone();
-                                    cache.write().unwrap_or_else(|e| e.into_inner()).insert(
-                                        key,
-                                        CacheEntry {
-                                            page: fresh_arc.clone(),
-                                            dependencies: deps,
-                                        },
-                                    );
-                                }
-                                fresh
-                            };
-
-                        compiled_result.and_then(|compiled| {
-                            let rel_path = web::static_generate::effective_output_rel_path(&config)?;
-                            let route =
-                                if let Some(explicit_route) =
-                                    config.route.clone().filter(|s| !s.trim().is_empty())
-                                {
-                                    explicit_route
-                                } else {
-                                    web::static_generate::default_route(&config)?
-                                };
-
-                            let mut metadata = input.metadata.clone();
-                            if let Some(map) = metadata.as_object_mut() {
-                                map.insert("route".to_string(), Value::String(route.clone()));
-                            }
-
-                            let enabled_libraries: Vec<String> = self
-                                .platform
-                                .as_ref()
-                                .and_then(|p| {
-                                    p.zebflow_cfg
-                                        .get_rwe_libraries(&ctx.owner, &ctx.project)
-                                        .ok()
-                                })
-                                .map(|libs| libs.into_keys().collect())
-                                .unwrap_or_default();
-
-                            let render_out = web::response::render_compiled_page(
-                                &compiled,
-                                input.payload.clone(),
-                                metadata,
-                                self.rwe.as_ref(),
-                                self.language.as_ref(),
-                                &ctx.request_id,
-                                enabled_libraries,
-                            )?;
-
-                            let html = render_out
-                                .payload
-                                .get("html")
-                                .and_then(Value::as_str)
-                                .ok_or_else(|| {
-                                    PipelineError::new(
-                                        "FW_NODE_WEB_STATIC_RENDER",
-                                        format!("node '{node_id}' did not return rendered html"),
-                                    )
-                                })?
-                                .to_string();
-
-                            let hydration_payload = render_out
-                                .payload
-                                .get("hydration_payload")
-                                .cloned()
-                                .unwrap_or(Value::Null);
-                            let compiled_scripts = render_out
-                                .payload
-                                .get("compiled_scripts")
-                                .cloned()
-                                .and_then(|value| {
-                                    serde_json::from_value::<Vec<crate::rwe::CompiledScript>>(value)
-                                        .ok()
-                                })
-                                .unwrap_or_default();
-
-                            let final_html = web::static_generate::build_static_html(
-                                html,
-                                &hydration_payload,
-                                &compiled_scripts,
-                                self.template_root.as_deref(),
-                            );
-                            let asset_group = web::static_site::asset_group_id(
-                                &template_source.id,
-                                &template_source.markup,
-                            );
-                            let project_asset_root = self
-                                .repo_layout
-                                .as_ref()
-                                .map(|layout| layout.repo_static_dir());
-                            let localized = if let Some(site_root_rel) =
-                                web::static_generate::effective_site_root_rel_path(&config)?
-                            {
-                                let site_store = web::static_site::SiteStore {
-                                    store: &zebfs,
-                                    root_rel: site_root_rel.clone(),
-                                };
-                                web::static_site::localize_static_html_assets(
-                                    &site_store,
-                                    &web::static_site::normalize_page_output_path(
-                                        &config.path,
-                                    )?,
-                                    &final_html,
-                                    web::static_site::StaticAssetSources {
-                                        owner: Some(&ctx.owner),
-                                        project: Some(&ctx.project),
-                                        project_asset_root_abs: project_asset_root.as_deref(),
-                                    },
-                                    &asset_group,
-                                )?
-                            } else {
-                                let (page_dir_rel, page_file_name) = match rel_path.rsplit_once('/') {
-                                    Some((dir, name)) => (dir.to_string(), name.to_string()),
-                                    None => (String::new(), rel_path.clone()),
-                                };
-                                if page_file_name.is_empty() {
-                                    return Err(PipelineError::new(
-                                        "FW_NODE_WEB_STATIC_OUTPUT_NAME",
-                                        format!(
-                                            "node '{node_id}' produced an invalid output path '{rel_path}'"
-                                        ),
-                                    ));
-                                }
-                                let page_dir = web::static_site::SiteStore {
-                                    store: &zebfs,
-                                    root_rel: page_dir_rel,
-                                };
-                                web::static_site::localize_static_html_assets(
-                                    &page_dir,
-                                    &page_file_name,
-                                    &final_html,
-                                    web::static_site::StaticAssetSources {
-                                        owner: Some(&ctx.owner),
-                                        project: Some(&ctx.project),
-                                        project_asset_root_abs: project_asset_root.as_deref(),
-                                    },
-                                    &asset_group,
-                                )?
-                            };
-                            let status = web::static_generate::write_generated_object(
-                                &zebfs,
-                                &rel_path,
-                                &localized.html,
-                                &config.on_conflict,
-                            )?;
-                            let bytes = localized.html.as_bytes().len() as u64;
-                            let file = match node_store.as_ref() {
-                                Some(store) => {
-                                    let written = zebfs.get(&rel_path).map_err(|err| {
-                                        PipelineError::new("FW_NODE_WEB_STATIC_GENERATE_READ", err.to_string())
-                                    })?;
-                                    let leaf = rel_path.rsplit('/').next().unwrap_or(&rel_path).to_string();
-                                    store.file_ref(&rel_path, &leaf, "text/html", &written.bytes, "web.site.generate", "generated")
-                                }
-                                None => Value::Null,
-                            };
-                            let store_id = node_store.as_ref().map(|store| store.id.clone());
-                            let site_root_rel =
-                                web::static_generate::effective_site_root_rel_path(&config)?;
-                            // The site's origin is its folder's serve origin, never a flag.
-                            let site_origin = site_root_rel.as_deref().and_then(|root| {
-                                web::static_site::site_origin(self.platform.as_ref(), &ctx.owner, &ctx.project, root)
-                            });
-                            let manifest_rel = if let Some(site_root_rel) = site_root_rel.as_deref()
-                            {
-                                let manifest_rel =
-                                    web::static_site::site_manifest_rel_path(site_root_rel);
-                                let site_store = web::static_site::SiteStore {
-                                    store: &zebfs,
-                                    root_rel: site_root_rel.to_string(),
-                                };
-                                let page_path = web::static_site::normalize_page_output_path(
-                                    &config.path,
-                                )?;
-                                let page_record = web::static_site::StaticPageRecord {
-                                    path: page_path,
-                                    route: route.clone(),
-                                    template: template_source.id.clone(),
-                                    asset_group: asset_group.clone(),
-                                    generator: web::static_generate::NODE_KIND.to_string(),
-                                };
-                                let _manifest = web::static_site::update_site_manifest(
-                                    &site_store,
-                                    site_root_rel,
-                                    site_origin.as_deref(),
-                                    "/",
-                                    web::static_generate::NODE_KIND,
-                                    &template_source.id,
-                                    &asset_group,
-                                    &[page_record],
-                                    &localized.assets,
-                                    false,
-                                )?;
-                                Some(manifest_rel)
-                            } else {
-                                None
-                            };
-
-                            let mut trace = render_out.trace;
-                            trace.push(format!("node_kind={}", web::static_generate::NODE_KIND));
-                            trace.push(format!("generated_path={rel_path}"));
-                            trace.push(format!("generated_status={status}"));
-
-                            Ok(vec![NodeExecutionOutput {
-                                output_pins: vec![web::static_generate::OUTPUT_PIN_OUT.to_string()],
-                                payload: crate::pipeline::nodes::shared::util::with_answer(&input.payload, json!({
-                                    "generated": {
-                                        "status": status,
-                                        "path": rel_path,
-                                        "route": route,
-                                        "store": store_id,
-                                        "file": file,
-                                        "origin": site_origin,
-                                        "template": template_source.id,
-                                        "site_root": site_root_rel,
-                                        "manifest_path": manifest_rel,
-                                        "asset_group": asset_group,
-                                        "bytes": bytes,
-                                    }
-                                })),
-                                trace,
-                            }])
-                        })
+                    NodeDispatch::InlineWebSiteGenerate { node_id, config } => {
+                        self.run_site_generate(&node_id, &config, &input.payload, &input.metadata, ctx)
                     }
                     NodeDispatch::Agent(node) => node.execute_many_async(input_for_exec).await,
                     NodeDispatch::AiTts(node) => node.execute_many_async(input_for_exec).await,
@@ -3415,6 +2830,18 @@ impl BasicPipelineEngine {
                         }
                     }
                 }
+                // ── the answer to the caller ─────────────────────────────────
+                // `web.response.send` hands what it answers beside its payload;
+                // it leaves the payload here, so the next node receives what
+                // the response node received. The first answer is the one sent.
+                if node.kind == web::response::NODE_KIND
+                    && let Some(envelope) = output
+                        .payload
+                        .as_object_mut()
+                        .and_then(|m| m.remove(web::response::ENVELOPE_KEY))
+                {
+                    response.get_or_insert(envelope);
+                }
                 trace.extend(output.trace.clone());
                 last_value = output.payload.clone();
 
@@ -3500,6 +2927,7 @@ impl BasicPipelineEngine {
 
         Ok(PipelineOutput {
             value: strip_private_markers(last_value),
+            response: response.map(strip_private_markers),
             trace,
             node_trace,
         })
@@ -3516,7 +2944,7 @@ impl BasicPipelineEngine {
 ///
 /// The walk is recursive because a marker does not stay at the top: an
 /// `web.response.send` in the chain nests the whole upstream payload under
-/// `__zf_response.body`, and a top-level-only sweep would leave it there.
+/// `__zf_response.json`, and a top-level-only sweep would leave it there.
 fn strip_private_markers(value: Value) -> Value {
     match value {
         Value::Object(map) => Value::Object(
@@ -4440,7 +3868,7 @@ mod tests {
         let nested = super::strip_private_markers(json!({
             "__zf_response": {
                 "status": 200,
-                "body": {
+                "json": {
                     "username": "wawan",
                     "__zf_private_trace_redact": ["toryoto"]
                 }
@@ -4450,18 +3878,18 @@ mod tests {
             !nested.to_string().contains("__zf_private"),
             "a nested marker survived: {nested}"
         );
-        assert_eq!(nested["__zf_response"]["body"]["username"], "wawan");
+        assert_eq!(nested["__zf_response"]["json"]["username"], "wawan");
     }
 
     /// A marker that has been nested by a downstream node is still read, still
     /// removed, and its contents still redacted -- the shape `web.response.send`
-    /// produces, where the whole upstream payload becomes `__zf_response.body`.
+    /// produces, where the whole upstream payload becomes `__zf_response.json`.
     #[test]
     fn a_nested_redaction_marker_is_not_printed_into_the_run_history() {
         let trace = sanitized_trace_value(&json!({
             "__zf_response": {
                 "status": 200,
-                "body": {
+                "json": {
                     "body": { "username": "wawan", "password": "toryoto" },
                     "audit": "login attempt with toryoto",
                     "__zf_private_trace_redact": ["toryoto"]
@@ -4478,7 +3906,7 @@ mod tests {
             !serialized.contains("toryoto"),
             "the secret reached the trace: {serialized}"
         );
-        assert_eq!(trace["__zf_response"]["body"]["body"]["username"], "wawan");
+        assert_eq!(trace["__zf_response"]["json"]["body"]["username"], "wawan");
     }
 
     /// The one escape hatch a pipeline already had keeps working: a field it
@@ -5570,13 +4998,13 @@ mod tests {
 
 
     /// The one resolution mechanism must reach the response node like any
-    /// other: a whole {{ }} in --message or --location is the typed value.
+    /// other: a whole {{ }} in --body or --header is the typed value.
     #[tokio::test]
     async fn a_web_response_config_is_resolved_like_any_other_node() {
         let dsl = r#"
 [a] trigger.manual
 [b] script.result.run -- "return { u: 'hello-from-expr' };"
-[c] web.response.send --message "{{ input.u }}"
+[c] web.response.send --body "{{ input.u }}"
 
 [a] -> [b]
 [b] -> [c]
@@ -5599,10 +5027,61 @@ mod tests {
             )
             .await
             .expect("execute");
+        let response = out.response.expect("the response node answered");
         assert_eq!(
-            out.value["__zf_response"]["message"], "hello-from-expr",
-            "resolved message did not reach the envelope: {}",
-            out.value
+            response["text"], "hello-from-expr",
+            "resolved body did not reach the envelope: {response}"
+        );
+        // It answers the caller and passes its payload on unchanged.
+        assert_eq!(out.value["u"], "hello-from-expr", "{}", out.value);
+        assert!(out.value.get("__zf_response").is_none(), "{}", out.value);
+    }
+
+    /// Two `Set-Cookie` headers are two cookies: the repeat survives the
+    /// DSL, the stored config and the envelope the HTTP layer sends, and each
+    /// value is sent as written — the bare `theme=dark` gains nothing.
+    #[tokio::test]
+    async fn a_repeated_header_reaches_the_answer_twice() {
+        let dsl = r#"
+[a] trigger.manual
+[b] script.result.run -- "return { sid: 'demo-session' };"
+[c] web.response.send --status 303 --header "Location=/home" --header "Set-Cookie=session={{ input.sid }}; Path=/; Max-Age=86400; SameSite=Lax; HttpOnly" --header "Set-Cookie=theme=dark"
+
+[a] -> [b]
+[b] -> [c]
+"#;
+        let graph = build_pipeline_graph("web-response-cookies", dsl).expect("graph");
+        let node = graph.nodes.iter().find(|n| n.id == "c").expect("node c");
+        assert_eq!(
+            node.config["headers"]["Set-Cookie"],
+            json!(["session={{ input.sid }}; Path=/; Max-Age=86400; SameSite=Lax; HttpOnly", "theme=dark"]),
+            "the stored config keeps both"
+        );
+        let out = BasicPipelineEngine::default()
+            .execute_async(
+                &graph,
+                &PipelineContext {
+                    owner: "test".to_string(),
+                    project: "test".to_string(),
+                    pipeline: "web-response-cookies".to_string(),
+                    request_id: "req-wc".to_string(),
+                    route: String::new(),
+                    input: json!({}),
+                    trigger: None,
+                    placeholder: None,
+                },
+            )
+            .await
+            .expect("execute");
+        let response = out.response.expect("answered");
+        assert_eq!(response["status"], 303);
+        assert_eq!(
+            response["headers"],
+            json!([
+                ["Location", "/home"],
+                ["Set-Cookie", "session=demo-session; Path=/; Max-Age=86400; SameSite=Lax; HttpOnly"],
+                ["Set-Cookie", "theme=dark"],
+            ])
         );
     }
 
@@ -5948,13 +5427,9 @@ enum NodeDispatch {
         node_id: String,
         config: web::response::Config,
     },
-    InlineWebStaticGenerate {
+    InlineWebSiteGenerate {
         node_id: String,
-        config: web::static_generate::Config,
-    },
-    InlineWebDocsGenerate {
-        node_id: String,
-        config: web::docs_generate::Config,
+        config: web::site::Config,
     },
     WebResponse(web::response::Node),
     Agent(ai::agent::Node),

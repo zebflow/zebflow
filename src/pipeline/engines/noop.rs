@@ -42,6 +42,7 @@ impl PipelineEngine for NoopPipelineEngine {
                 "edge_count": graph.edges.len(),
                 "input": ctx.input,
             }),
+            response: None,
             trace: vec![
                 format!("engine={}", self.id()),
                 format!("owner={}", ctx.owner),

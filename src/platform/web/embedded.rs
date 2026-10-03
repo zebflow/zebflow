@@ -430,10 +430,6 @@ pub const PLATFORM_NODE_ICON_ASSETS: &[EmbeddedAsset] = &[
         bytes: include_bytes!("assets/node-icons/zebflow/trigger.socket.svg"),
     },
     EmbeddedAsset {
-        path: "zebflow/n.web.docs.generate.svg",
-        bytes: include_bytes!("assets/node-icons/zebflow/n.web.docs.generate.svg"),
-    },
-    EmbeddedAsset {
         path: "zebflow/web.response.send.svg",
         bytes: include_bytes!("assets/node-icons/zebflow/web.response.send.svg"),
     },

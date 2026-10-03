@@ -59,7 +59,7 @@ the pin `:error`.
 - **Body** — `-- "…"` — is the node's main text: SQL for query nodes, code for
   `script`, JSON for `execute --input`.
 - **Quoting** — a value containing a space or `{{ }}` is one double-quoted
-  argument. `--location {{ input.url }}` unquoted is cut at the first space
+  argument. `--header Location={{ input.url }}` unquoted is cut at the first space
   and refused with a message that says so.
 - **Multiline** — end a line with `\` to continue; in a console, `&&` chains
   commands and stops at the first failure.
@@ -119,7 +119,7 @@ a 640 px thumbnail (~120 KB as a data URI) rather than the 1200 px original.
 | sekejap.query.run --param "1={{ $trigger.params.id }}" -- "SELECT * FROM users WHERE id = $1"
 | http.response.fetch --url "https://api.example.com/{{ $nodes.n1.query.rows[0].slug }}"
 | http.response.fetch --url https://notify.example.com/send --method POST --body "{{ { userId: $trigger.auth.sub, data: input } }}"
-| web.response.send --location "{{ $trigger.query.next || '/dashboard' }}"
+| web.response.send --status 302 --header "Location={{ $trigger.query.next || '/dashboard' }}"
 ```
 
 (`http.response.fetch` answers `{ request, response: { status, headers, body } }`.)

@@ -926,14 +926,18 @@ impl DslExecutor {
                         .entry(config_key.clone())
                         .or_insert_with(|| Value::Object(serde_json::Map::new()));
                     if let Value::Object(m) = entry {
+                        // A key the patch names is replaced; a key it repeats
+                        // keeps every value it gives.
+                        let mut patched = serde_json::Map::new();
                         for pair in items {
                             let (pk, pv) = if let Some(eq) = pair.find('=') {
                                 (&pair[..eq], &pair[eq + 1..])
                             } else {
                                 (pair, "")
                             };
-                            m.insert(pk.to_string(), json!(pv));
+                            crate::platform::shell::parser::insert_pair(&mut patched, pk.to_string(), pv.to_string());
                         }
+                        m.extend(patched);
                     }
                 } else if let Some(config_key) = comma_list_config_keys.get(k) {
                     // CommaSeparatedList: split "a,b,c" → ["a","b","c"].
