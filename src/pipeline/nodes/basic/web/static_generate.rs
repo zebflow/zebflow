@@ -94,7 +94,7 @@ pub fn resolve_template_source(
     } else {
         let Some(root) = template_root else {
             return Err(PipelineError::new(
-                "WEB_STATIC_TEMPLATE_ROOT",
+                "FW_NODE_WEB_STATIC_GENERATE_TEMPLATE_ROOT",
                 format!(
                     "node '{node_id}' requires template_root to load '{}'",
                     template_rel
@@ -104,13 +104,13 @@ pub fn resolve_template_source(
         let abs = root.join(&template_rel);
         if !abs.starts_with(root) || !abs.is_file() {
             return Err(PipelineError::new(
-                "WEB_STATIC_TEMPLATE_MISSING",
+                "FW_NODE_WEB_STATIC_GENERATE_TEMPLATE_MISSING",
                 format!("node '{node_id}' template '{}' not found", template_rel),
             ));
         }
         std::fs::read_to_string(&abs).map_err(|err| {
             PipelineError::new(
-                "WEB_STATIC_TEMPLATE_READ",
+                "FW_NODE_WEB_STATIC_GENERATE_TEMPLATE_READ",
                 format!("failed reading template '{}': {err}", template_rel),
             )
         })?
@@ -134,7 +134,7 @@ pub fn normalize_output_rel_path(output_path: &str) -> Result<String, PipelineEr
         }
         if part == ".." || part.contains('\0') {
             return Err(PipelineError::new(
-                "WEB_STATIC_OUTPUT_PATH",
+                "FW_NODE_WEB_STATIC_GENERATE_OUTPUT_PATH",
                 "output_path must stay inside the project files directory",
             ));
         }
@@ -142,7 +142,7 @@ pub fn normalize_output_rel_path(output_path: &str) -> Result<String, PipelineEr
     }
     if parts.is_empty() {
         return Err(PipelineError::new(
-            "WEB_STATIC_OUTPUT_PATH",
+            "FW_NODE_WEB_STATIC_GENERATE_OUTPUT_PATH",
             "output_path must not be empty",
         ));
     }
@@ -249,13 +249,13 @@ pub fn write_generated_object(
                 "skip" => return Ok("skipped"),
                 "error" => {
                     return Err(PipelineError::new(
-                        "WEB_STATIC_CONFLICT",
+                        "FW_NODE_WEB_STATIC_GENERATE_CONFLICT",
                         format!("destination '{rel_path}' already exists"),
                     ));
                 }
                 other => {
                     return Err(PipelineError::new(
-                        "WEB_STATIC_CONFLICT_MODE",
+                        "FW_NODE_WEB_STATIC_GENERATE_CONFLICT_MODE",
                         format!(
                             "unsupported on_conflict value '{other}' — expected overwrite, skip, or error"
                         ),
@@ -266,14 +266,14 @@ pub fn write_generated_object(
         Err(err) if err.code == "ZEBFS_NOT_FOUND" => {}
         Err(err) => {
             return Err(PipelineError::new(
-                "WEB_STATIC_READ",
+                "FW_NODE_WEB_STATIC_GENERATE_READ",
                 format!("failed reading '{rel_path}': {err}"),
             ));
         }
     }
     store.put(rel_path, bytes).map_err(|err| {
         PipelineError::new(
-            "WEB_STATIC_WRITE",
+            "FW_NODE_WEB_STATIC_GENERATE_WRITE",
             format!("failed writing '{rel_path}': {err}"),
         )
     })?;
@@ -481,7 +481,7 @@ fn normalize_template_rel_path(raw: &str) -> Result<String, PipelineError> {
     let trimmed = raw.trim().trim_start_matches('/').replace('\\', "/");
     if trimmed.is_empty() {
         return Err(PipelineError::new(
-            "WEB_STATIC_TEMPLATE_PATH",
+            "FW_NODE_WEB_STATIC_GENERATE_TEMPLATE_PATH",
             "template path must not be empty",
         ));
     }
@@ -494,7 +494,7 @@ fn normalize_template_rel_path(raw: &str) -> Result<String, PipelineError> {
         }
         if part == ".." || part.contains('\0') {
             return Err(PipelineError::new(
-                "WEB_STATIC_TEMPLATE_PATH",
+                "FW_NODE_WEB_STATIC_GENERATE_TEMPLATE_PATH",
                 "template path must stay inside the project template root",
             ));
         }
@@ -502,14 +502,14 @@ fn normalize_template_rel_path(raw: &str) -> Result<String, PipelineError> {
     }
     if parts.is_empty() {
         return Err(PipelineError::new(
-            "WEB_STATIC_TEMPLATE_PATH",
+            "FW_NODE_WEB_STATIC_GENERATE_TEMPLATE_PATH",
             "template path must not be empty",
         ));
     }
     let last = parts.last().expect("parts not empty");
     if !last.ends_with(".tsx") {
         return Err(PipelineError::new(
-            "WEB_STATIC_TEMPLATE_PATH",
+            "FW_NODE_WEB_STATIC_GENERATE_TEMPLATE_PATH",
             "template path must end with .tsx",
         ));
     }
@@ -605,7 +605,7 @@ mod tests {
         );
         let err =
             super::normalize_template_rel_path("pages/lyrics").expect_err("missing extension");
-        assert_eq!(err.code, "WEB_STATIC_TEMPLATE_PATH");
+        assert_eq!(err.code, "FW_NODE_WEB_STATIC_GENERATE_TEMPLATE_PATH");
         assert!(err.message.contains(".tsx"));
     }
 

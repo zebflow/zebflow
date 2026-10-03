@@ -45,7 +45,7 @@ impl SiteStore<'_> {
         let key = self.key(rel);
         self.store.put(&key, bytes).map(|_| ()).map_err(|err| {
             PipelineError::new(
-                "WEB_STATIC_SITE_WRITE",
+                "FW_NODE_WEB_STATIC_SITE_WRITE",
                 format!("failed writing '{key}': {err}"),
             )
         })
@@ -58,7 +58,7 @@ impl SiteStore<'_> {
             Ok(object) => Ok(Some(object.bytes)),
             Err(err) if err.code == "ZEBFS_NOT_FOUND" => Ok(None),
             Err(err) => Err(PipelineError::new(
-                "WEB_STATIC_SITE_READ",
+                "FW_NODE_WEB_STATIC_SITE_READ",
                 format!("failed reading '{key}': {err}"),
             )),
         }
@@ -70,7 +70,7 @@ impl SiteStore<'_> {
             Ok(()) => Ok(()),
             Err(err) if err.code == "ZEBFS_NOT_FOUND" => Ok(()),
             Err(err) => Err(PipelineError::new(
-                "WEB_STATIC_SITE_ASSET_DELETE",
+                "FW_NODE_WEB_STATIC_SITE_ASSET_DELETE",
                 format!("failed deleting stale asset '{key}': {err}"),
             )),
         }
@@ -152,7 +152,7 @@ pub fn normalize_site_root_rel_path(raw: &str) -> Result<String, PipelineError> 
         }
         if part == ".." || part.contains('\0') {
             return Err(PipelineError::new(
-                "WEB_STATIC_SITE_ROOT",
+                "FW_NODE_WEB_STATIC_SITE_ROOT",
                 "site_root must stay inside the project files directory",
             ));
         }
@@ -160,7 +160,7 @@ pub fn normalize_site_root_rel_path(raw: &str) -> Result<String, PipelineError> 
     }
     if parts.is_empty() {
         return Err(PipelineError::new(
-            "WEB_STATIC_SITE_ROOT",
+            "FW_NODE_WEB_STATIC_SITE_ROOT",
             "site_root must not be empty",
         ));
     }
@@ -176,7 +176,7 @@ pub fn normalize_page_output_path(raw: &str) -> Result<String, PipelineError> {
         }
         if part == ".." || part.contains('\0') {
             return Err(PipelineError::new(
-                "WEB_STATIC_OUTPUT_PATH",
+                "FW_NODE_WEB_STATIC_GENERATE_OUTPUT_PATH",
                 "output_path must stay inside the configured static site root",
             ));
         }
@@ -184,7 +184,7 @@ pub fn normalize_page_output_path(raw: &str) -> Result<String, PipelineError> {
     }
     if parts.is_empty() {
         return Err(PipelineError::new(
-            "WEB_STATIC_OUTPUT_PATH",
+            "FW_NODE_WEB_STATIC_GENERATE_OUTPUT_PATH",
             "output_path must not be empty",
         ));
     }
@@ -231,7 +231,7 @@ pub fn normalize_deploy_base_path(
         }
         if trimmed == ".." || trimmed.contains('\0') {
             return Err(PipelineError::new(
-                "WEB_STATIC_DEPLOY_BASE_PATH",
+                "FW_NODE_WEB_STATIC_GENERATE_DEPLOY_BASE_PATH",
                 "deploy_base_path must stay inside the generated site URL space",
             ));
         }
@@ -301,7 +301,7 @@ pub fn localize_static_html_assets(
         let origin = AssetOrigin::from_url(&asset_url, asset_sources.owner, asset_sources.project)
             .ok_or_else(|| {
                 PipelineError::new(
-                    "WEB_STATIC_SITE_ASSET_URL",
+                    "FW_NODE_WEB_STATIC_SITE_ASSET_URL",
                     format!("unsupported static asset reference '{asset_url}'"),
                 )
             })?;
@@ -453,7 +453,7 @@ pub fn update_site_manifest(
 
     let payload = serde_json::to_vec_pretty(&manifest).map_err(|err| {
         PipelineError::new(
-            "WEB_STATIC_SITE_MANIFEST_SERIALIZE",
+            "FW_NODE_WEB_STATIC_SITE_MANIFEST_SERIALIZE",
             format!("failed serializing site manifest: {err}"),
         )
     })?;
@@ -583,7 +583,7 @@ fn materialize_asset(
             .map(|bytes| bytes.to_vec())
             .ok_or_else(|| {
                 PipelineError::new(
-                    "WEB_STATIC_SITE_ASSET_MISSING",
+                    "FW_NODE_WEB_STATIC_SITE_ASSET_MISSING",
                     format!("embedded platform asset 'platform/{path}' was not found"),
                 )
             })?,
@@ -591,27 +591,27 @@ fn materialize_asset(
             .map(|bytes| bytes.to_vec())
             .ok_or_else(|| {
                 PipelineError::new(
-                    "WEB_STATIC_SITE_ASSET_MISSING",
+                    "FW_NODE_WEB_STATIC_SITE_ASSET_MISSING",
                     format!("embedded branding asset 'branding/{path}' was not found"),
                 )
             })?,
         AssetOrigin::Project(path) => {
             let root = asset_sources.project_asset_root_abs.ok_or_else(|| {
                 PipelineError::new(
-                    "WEB_STATIC_SITE_PROJECT_ASSETS",
+                    "FW_NODE_WEB_STATIC_SITE_PROJECT_ASSETS",
                     "project asset root is required to localize /static/{owner}/{project}/ references",
                 )
             })?;
             let abs = root.join(path);
             if !abs.starts_with(root) || !abs.is_file() {
                 return Err(PipelineError::new(
-                    "WEB_STATIC_SITE_PROJECT_ASSET_MISSING",
+                    "FW_NODE_WEB_STATIC_SITE_PROJECT_ASSET_MISSING",
                     format!("project asset '{}' was not found", abs.display()),
                 ));
             }
             std::fs::read(&abs).map_err(|err| {
                 PipelineError::new(
-                    "WEB_STATIC_SITE_PROJECT_ASSET_READ",
+                    "FW_NODE_WEB_STATIC_SITE_PROJECT_ASSET_READ",
                     format!("failed reading '{}': {err}", abs.display()),
                 )
             })?
@@ -622,7 +622,7 @@ fn materialize_asset(
         localize_css_asset(
             String::from_utf8(raw_bytes).map_err(|err| {
                 PipelineError::new(
-                    "WEB_STATIC_SITE_ASSET_UTF8",
+                    "FW_NODE_WEB_STATIC_SITE_ASSET_UTF8",
                     format!("failed decoding CSS asset '{}': {err}", local_rel),
                 )
             })?,
@@ -675,7 +675,7 @@ fn materialize_library_runtime_family_siblings(
         .parent()
         .ok_or_else(|| {
             PipelineError::new(
-                "WEB_STATIC_SITE_ASSET_PATH",
+                "FW_NODE_WEB_STATIC_SITE_ASSET_PATH",
                 format!("asset path '{embedded_rel}' has no parent runtime directory"),
             )
         })?
@@ -695,7 +695,7 @@ fn materialize_library_runtime_family_siblings(
             localize_css_asset(
                 String::from_utf8(asset.bytes.to_vec()).map_err(|err| {
                     PipelineError::new(
-                        "WEB_STATIC_SITE_ASSET_UTF8",
+                        "FW_NODE_WEB_STATIC_SITE_ASSET_UTF8",
                         format!("failed decoding CSS asset '{}': {err}", sibling_local_rel),
                     )
                 })?,
@@ -834,7 +834,7 @@ fn normalize_relative_asset_path(path: &Path) -> Result<String, PipelineError> {
             std::path::Component::ParentDir => {
                 if parts.pop().is_none() {
                     return Err(PipelineError::new(
-                        "WEB_STATIC_SITE_ASSET_PATH",
+                        "FW_NODE_WEB_STATIC_SITE_ASSET_PATH",
                         "relative asset path escapes the static asset root",
                     ));
                 }
@@ -844,7 +844,7 @@ fn normalize_relative_asset_path(path: &Path) -> Result<String, PipelineError> {
     }
     if parts.is_empty() {
         return Err(PipelineError::new(
-            "WEB_STATIC_SITE_ASSET_PATH",
+            "FW_NODE_WEB_STATIC_SITE_ASSET_PATH",
             "relative asset path must not be empty",
         ));
     }
@@ -910,7 +910,7 @@ fn materialize_runtime_family(embedded_rel: &str) -> Result<Vec<u8>, PipelineErr
         .parent()
         .ok_or_else(|| {
             PipelineError::new(
-                "WEB_STATIC_SITE_ASSET_PATH",
+                "FW_NODE_WEB_STATIC_SITE_ASSET_PATH",
                 format!("asset path '{embedded_rel}' has no parent runtime directory"),
             )
         })?
@@ -931,7 +931,7 @@ fn materialize_runtime_family(embedded_rel: &str) -> Result<Vec<u8>, PipelineErr
 
     target_bytes.ok_or_else(|| {
         PipelineError::new(
-            "WEB_STATIC_SITE_ASSET_MISSING",
+            "FW_NODE_WEB_STATIC_SITE_ASSET_MISSING",
             format!("embedded library asset '{embedded_rel}' was not found"),
         )
     })

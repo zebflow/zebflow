@@ -230,13 +230,13 @@ impl NodeHandler for Node {
         let value = if self.config.durable {
             self.state_bus
                 .durable_get(owner, project, key)
-                .map_err(|err| PipelineError::new("KV_GET_STATE_BUS", err.to_string()))?
+                .map_err(|err| PipelineError::new("FW_NODE_KV_GET_STATE_BUS", err.to_string()))?
                 .or_else(|| self.config.default.clone())
                 .unwrap_or(Value::Null)
         } else {
             self.state_bus
                 .get(owner, project, key)
-                .map_err(|err| PipelineError::new("KV_GET_STATE_BUS", err.to_string()))?
+                .map_err(|err| PipelineError::new("FW_NODE_KV_GET_STATE_BUS", err.to_string()))?
                 .or_else(|| self.config.default.clone())
                 .unwrap_or(Value::Null)
         };

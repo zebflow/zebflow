@@ -207,7 +207,7 @@ impl NodeHandler for Node {
                     self.config.connection
                 )],
             }),
-            Err(err) => Err(PipelineError::new("FW_WS_CLIENT_SEND", err)),
+            Err(err) => Err(PipelineError::new("FW_NODE_WS_CLIENT_SEND", err)),
         }
     }
 }

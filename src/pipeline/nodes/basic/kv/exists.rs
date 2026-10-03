@@ -188,11 +188,11 @@ impl NodeHandler for Node {
         let exists = if self.config.durable {
             self.state_bus
                 .durable_exists(owner, project, key)
-                .map_err(|err| PipelineError::new("KV_EXISTS_STATE_BUS", err.to_string()))?
+                .map_err(|err| PipelineError::new("FW_NODE_KV_EXISTS_STATE_BUS", err.to_string()))?
         } else {
             self.state_bus
                 .exists(owner, project, key)
-                .map_err(|err| PipelineError::new("KV_EXISTS_STATE_BUS", err.to_string()))?
+                .map_err(|err| PipelineError::new("FW_NODE_KV_EXISTS_STATE_BUS", err.to_string()))?
         };
 
         let out_key = if self.config.out_key.trim().is_empty() {

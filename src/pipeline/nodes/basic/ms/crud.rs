@@ -974,7 +974,7 @@ impl Node {
         let style = if let Some(ref dsl) = self.config.style_dsl {
             // Validate DSL syntax at publish time
             crate::mapserver::resolve::style_dsl::parse_style_dsl(dsl).map_err(|e| {
-                PipelineError::new("MS_PUBLISH_STYLE", format!("invalid style DSL: {e}"))
+                PipelineError::new("FW_NODE_MS_PUBLISH_STYLE", format!("invalid style DSL: {e}"))
             })?;
             Some(json!(dsl)) // Store as JSON string value
         } else {
@@ -1008,7 +1008,7 @@ impl Node {
         // Validate filter syntax at publish time
         let filter = if let Some(ref f) = self.config.filter {
             crate::mapserver::resolve::filter_dsl::parse_filter(f).map_err(|e| {
-                PipelineError::new("MS_PUBLISH_FILTER", format!("invalid filter: {e}"))
+                PipelineError::new("FW_NODE_MS_PUBLISH_FILTER", format!("invalid filter: {e}"))
             })?;
             Some(f.clone())
         } else {

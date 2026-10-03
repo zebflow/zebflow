@@ -544,25 +544,25 @@ impl NodeHandler for Node {
         let (owner, project, _, _) = metadata_scope(&input.metadata)?;
         let platform = self.platform.as_ref().ok_or_else(|| {
             PipelineError::new(
-                "AI_TTS_PLATFORM",
+                "FW_NODE_AI_TTS_PLATFORM",
                 "platform service is not configured on this framework engine",
             )
         })?;
         let credentials = self.credentials.as_ref().ok_or_else(|| {
             PipelineError::new(
-                "AI_TTS_CREDENTIALS",
+                "FW_NODE_AI_TTS_CREDENTIALS",
                 "credential service is not configured on this framework engine",
             )
         })?;
         let layout = platform
             .file
             .ensure_project_layout(owner, project)
-            .map_err(|err| PipelineError::new("AI_TTS_LAYOUT", err.to_string()))?;
+            .map_err(|err| PipelineError::new("FW_NODE_AI_TTS_LAYOUT", err.to_string()))?;
 
         let provider = self.config.provider.trim().to_lowercase();
         if provider != "piper" {
             return Err(PipelineError::new(
-                "AI_TTS_PROVIDER",
+                "FW_NODE_AI_TTS_PROVIDER",
                 format!("unsupported provider '{provider}' — expected piper"),
             ));
         }
@@ -572,7 +572,7 @@ impl NodeHandler for Node {
         let text = self.config.text.trim().to_string();
         if text.is_empty() {
             return Err(PipelineError::new(
-                "AI_TTS_TEXT",
+                "FW_NODE_AI_TTS_TEXT",
                 "config.text must not be empty",
             ));
         }
@@ -580,23 +580,23 @@ impl NodeHandler for Node {
         let credential_id = self.config.credential_id.trim();
         if credential_id.is_empty() {
             return Err(PipelineError::new(
-                "AI_TTS_CREDENTIAL",
+                "FW_NODE_AI_TTS_CREDENTIAL",
                 "credential_id must not be empty",
             ));
         }
 
         let credential = credentials
             .get_project_credential(owner, project, credential_id)
-            .map_err(|err| PipelineError::new("AI_TTS_CREDENTIAL", err.to_string()))?
+            .map_err(|err| PipelineError::new("FW_NODE_AI_TTS_CREDENTIAL", err.to_string()))?
             .ok_or_else(|| {
                 PipelineError::new(
-                    "AI_TTS_CREDENTIAL",
+                    "FW_NODE_AI_TTS_CREDENTIAL",
                     format!("credential '{credential_id}' not found"),
                 )
             })?;
         if credential.kind != "tts" {
             return Err(PipelineError::new(
-                "AI_TTS_CREDENTIAL_KIND",
+                "FW_NODE_AI_TTS_CREDENTIAL_KIND",
                 format!(
                     "credential '{credential_id}' must have kind 'tts', got '{}'",
                     credential.kind
@@ -607,7 +607,7 @@ impl NodeHandler for Node {
         let secret: PiperCredentialSecret = serde_json::from_value(credential.secret.clone())
             .map_err(|err| {
                 PipelineError::new(
-                    "AI_TTS_CREDENTIAL_SECRET",
+                    "FW_NODE_AI_TTS_CREDENTIAL_SECRET",
                     format!("invalid tts credential secret: {err}"),
                 )
             })?;
@@ -615,7 +615,7 @@ impl NodeHandler for Node {
             let secret_provider = secret_provider.trim().to_lowercase();
             if !secret_provider.is_empty() && secret_provider != provider {
                 return Err(PipelineError::new(
-                    "AI_TTS_PROVIDER_MISMATCH",
+                    "FW_NODE_AI_TTS_PROVIDER_MISMATCH",
                     format!(
                         "node provider '{provider}' does not match credential provider '{secret_provider}'"
                     ),
@@ -627,14 +627,14 @@ impl NodeHandler for Node {
         // its one active store: model, config and espeak data are pulled into
         // a scratch folder for the run.
         let zebfs = layout.open_files();
-        let scratch = StoreScratch::new("AI_TTS_FILE")?;
+        let scratch = StoreScratch::new("FW_NODE_AI_TTS_FILE")?;
         let model_rel = normalize_zebfs_asset_rel_path(required_secret_str(&secret.model_file, "model_file")?)?;
         let config_rel = normalize_zebfs_asset_rel_path(required_secret_str(&secret.config_file, "config_file")?)?;
         let model_abs = scratch.pull(&zebfs, &model_rel).map_err(|_| {
-            PipelineError::new("AI_TTS_MODEL", format!("model file '{model_rel}' does not exist"))
+            PipelineError::new("FW_NODE_AI_TTS_MODEL", format!("model file '{model_rel}' does not exist"))
         })?;
         let config_abs = scratch.pull(&zebfs, &config_rel).map_err(|_| {
-            PipelineError::new("AI_TTS_CONFIG", format!("config file '{config_rel}' does not exist"))
+            PipelineError::new("FW_NODE_AI_TTS_CONFIG", format!("config file '{config_rel}' does not exist"))
         })?;
         let espeak_abs = match secret
             .espeak_data_dir
@@ -646,7 +646,7 @@ impl NodeHandler for Node {
                 let espeak_rel = normalize_zebfs_asset_rel_path(value)?;
                 Some(scratch.pull(&zebfs, &espeak_rel).map_err(|_| {
                     PipelineError::new(
-                        "AI_TTS_ESPEAK",
+                        "FW_NODE_AI_TTS_ESPEAK",
                         format!("espeak data dir '{espeak_rel}' does not exist"),
                     )
                 })?)
@@ -676,7 +676,7 @@ impl NodeHandler for Node {
         let wav_bytes = BASE64_STANDARD
             .decode(bridge_result.audio_blob_base64.as_bytes())
             .map_err(|err| {
-                PipelineError::new("AI_TTS_BLOB", format!("failed to decode audio blob: {err}"))
+                PipelineError::new("FW_NODE_AI_TTS_BLOB", format!("failed to decode audio blob: {err}"))
             })?;
         let (word_timings, lipsync_payload) = build_lipsync_payload(
             lipsync_mode,
@@ -699,17 +699,17 @@ impl NodeHandler for Node {
                 .filter(|name| !name.is_empty())
                 .map(ToString::to_string)
                 .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-            let key = target_key(self.config.path.as_deref(), folder, &filename, "AI_TTS_OUTPUT_PATH")?;
+            let key = target_key(self.config.path.as_deref(), folder, &filename, "FW_NODE_AI_TTS_OUTPUT_PATH")?;
             let final_rel = normalize_audio_output_rel_path(&key)?;
             let store = open_store(platform, owner, project, self.config.store.as_deref())?;
-            let on_conflict = OnConflict::parse(self.config.on_conflict.as_deref(), OnConflict::Error, "AI_TTS_FILE")?;
-            let bytes = if on_conflict.allows(&store.fs, &final_rel, "AI_TTS_FILE")? {
+            let on_conflict = OnConflict::parse(self.config.on_conflict.as_deref(), OnConflict::Error, "FW_NODE_AI_TTS_FILE")?;
+            let bytes = if on_conflict.allows(&store.fs, &final_rel, "FW_NODE_AI_TTS_FILE")? {
                 store.fs.put(&final_rel, &wav_bytes).map_err(|err| {
-                    PipelineError::new("AI_TTS_FILE", format!("failed to write wav file: {err}"))
+                    PipelineError::new("FW_NODE_AI_TTS_FILE", format!("failed to write wav file: {err}"))
                 })?;
                 wav_bytes.clone()
             } else {
-                store.fs.get(&final_rel).map_err(|err| PipelineError::new("AI_TTS_FILE", err.to_string()))?.bytes
+                store.fs.get(&final_rel).map_err(|err| PipelineError::new("FW_NODE_AI_TTS_FILE", err.to_string()))?.bytes
             };
             let leaf = final_rel.rsplit('/').next().unwrap_or(&final_rel).to_string();
             store.file_ref(&final_rel, &leaf, "audio/wav", &bytes, "ai.tts", "generated")
@@ -763,32 +763,32 @@ fn run_piper_bridge(req: &PiperBridgeRequest) -> Result<PiperBridgeResult, Pipel
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|err| {
-            PipelineError::new("AI_TTS_PIPER", format!("failed to start python3: {err}"))
+            PipelineError::new("FW_NODE_AI_TTS_PIPER", format!("failed to start python3: {err}"))
         })?;
 
     {
         let Some(stdin) = child.stdin.as_mut() else {
             return Err(PipelineError::new(
-                "AI_TTS_PIPER",
+                "FW_NODE_AI_TTS_PIPER",
                 "failed to open python stdin",
             ));
         };
         let payload = serde_json::to_vec(req).map_err(|err| {
             PipelineError::new(
-                "AI_TTS_PIPER",
+                "FW_NODE_AI_TTS_PIPER",
                 format!("failed to serialize request: {err}"),
             )
         })?;
         stdin.write_all(&payload).map_err(|err| {
             PipelineError::new(
-                "AI_TTS_PIPER",
+                "FW_NODE_AI_TTS_PIPER",
                 format!("failed to write python stdin: {err}"),
             )
         })?;
     }
 
     let output = child.wait_with_output().map_err(|err| {
-        PipelineError::new("AI_TTS_PIPER", format!("failed waiting for python: {err}"))
+        PipelineError::new("FW_NODE_AI_TTS_PIPER", format!("failed waiting for python: {err}"))
     })?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
@@ -800,12 +800,12 @@ fn run_piper_bridge(req: &PiperBridgeRequest) -> Result<PiperBridgeResult, Pipel
         } else {
             format!("python exited with status {}", output.status)
         };
-        return Err(PipelineError::new("AI_TTS_PIPER", detail));
+        return Err(PipelineError::new("FW_NODE_AI_TTS_PIPER", detail));
     }
 
     serde_json::from_slice::<PiperBridgeResult>(&output.stdout).map_err(|err| {
         PipelineError::new(
-            "AI_TTS_PIPER",
+            "FW_NODE_AI_TTS_PIPER",
             format!("invalid python result payload: {err}"),
         )
     })
@@ -821,7 +821,7 @@ fn required_secret_str<'a>(
         .filter(|value| !value.is_empty())
         .ok_or_else(|| {
             PipelineError::new(
-                "AI_TTS_CREDENTIAL_SECRET",
+                "FW_NODE_AI_TTS_CREDENTIAL_SECRET",
                 format!("tts credential secret must include non-empty '{field}'"),
             )
         })
@@ -830,7 +830,7 @@ fn required_secret_str<'a>(
 fn speed_to_length_scale(speed: f32) -> Result<Option<f32>, PipelineError> {
     if !speed.is_finite() || speed <= 0.0 {
         return Err(PipelineError::new(
-            "AI_TTS_SPEED",
+            "FW_NODE_AI_TTS_SPEED",
             "speed must be a finite number greater than 0",
         ));
     }
@@ -1484,7 +1484,7 @@ fn fallback_viseme(word: &str) -> &'static str {
 fn normalize_zebfs_asset_rel_path(raw: &str) -> Result<String, PipelineError> {
     let normalized = raw.trim().replace('\\', "/");
     if normalized.is_empty() {
-        return Err(PipelineError::new("AI_TTS_PATH", "path must not be empty"));
+        return Err(PipelineError::new("FW_NODE_AI_TTS_PATH", "path must not be empty"));
     }
     let mut parts = Vec::new();
     for part in normalized.split('/') {
@@ -1494,7 +1494,7 @@ fn normalize_zebfs_asset_rel_path(raw: &str) -> Result<String, PipelineError> {
         }
         if part == ".." || part.contains('\0') {
             return Err(PipelineError::new(
-                "AI_TTS_PATH",
+                "FW_NODE_AI_TTS_PATH",
                 "path must stay inside project Zebflow FS",
             ));
         }
@@ -1502,7 +1502,7 @@ fn normalize_zebfs_asset_rel_path(raw: &str) -> Result<String, PipelineError> {
     }
     if parts.is_empty() {
         return Err(PipelineError::new(
-            "AI_TTS_PATH",
+            "FW_NODE_AI_TTS_PATH",
             "path must not resolve to the Zebflow FS root itself",
         ));
     }
@@ -1518,7 +1518,7 @@ fn normalize_audio_output_rel_path(raw: &str) -> Result<String, PipelineError> {
         .to_lowercase();
     if !ext.is_empty() && ext != "wav" {
         return Err(PipelineError::new(
-            "AI_TTS_OUTPUT_PATH",
+            "FW_NODE_AI_TTS_OUTPUT_PATH",
             "output path must use .wav extension when an extension is provided",
         ));
     }

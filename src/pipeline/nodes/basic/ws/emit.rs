@@ -31,7 +31,7 @@
 //!
 //! For `session` and `others`, `session_id` is read from `input.payload.session_id`
 //! (injected by `n.trigger.ws`); without one the node fails with
-//! `FW_WS_EMIT_NO_SESSION`. For server-initiated pipelines without a WS
+//! `FW_NODE_WS_EMIT_NO_SESSION`. For server-initiated pipelines without a WS
 //! trigger, `all` is the natural choice.
 //!
 //! # Wire format (server → client)
@@ -275,7 +275,7 @@ impl NodeHandler for Node {
 
         if room_id.is_empty() {
             return Err(PipelineError::new(
-                "FW_WS_EMIT_NO_ROOM",
+                "FW_NODE_WS_EMIT_NO_ROOM",
                 "n.ws.emit: room_id missing — set --room or ensure n.trigger.ws is upstream",
             ));
         }
@@ -291,7 +291,7 @@ impl NodeHandler for Node {
 
         if matches!(self.config.to.as_str(), "session" | "others") && session_id.is_empty() {
             return Err(PipelineError::new(
-                "FW_WS_EMIT_NO_SESSION",
+                "FW_NODE_WS_EMIT_NO_SESSION",
                 "n.ws.emit: --to session/others needs session_id in the payload (n.trigger.ws upstream)",
             ));
         }

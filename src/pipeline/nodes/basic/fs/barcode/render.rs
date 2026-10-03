@@ -87,7 +87,7 @@ impl Drawing<'_> {
         }
         let mut out = Vec::new();
         img.write_to(&mut Cursor::new(&mut out), ImageFormat::Png)
-            .map_err(|e| PipelineError::new("FS_BARCODE", format!("PNG encode: {e}")))?;
+            .map_err(|e| PipelineError::new("FW_NODE_FS_BARCODE", format!("PNG encode: {e}")))?;
         Ok(out)
     }
 }

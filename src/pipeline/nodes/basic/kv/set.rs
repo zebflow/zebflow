@@ -207,11 +207,11 @@ impl NodeHandler for Node {
         if self.config.durable {
             self.state_bus
                 .durable_set(owner, project, key, value, ttl)
-                .map_err(|err| PipelineError::new("KV_SET_STATE_BUS", err.to_string()))?;
+                .map_err(|err| PipelineError::new("FW_NODE_KV_SET_STATE_BUS", err.to_string()))?;
         } else {
             self.state_bus
                 .set(owner, project, key, value, ttl)
-                .map_err(|err| PipelineError::new("KV_SET_STATE_BUS", err.to_string()))?;
+                .map_err(|err| PipelineError::new("FW_NODE_KV_SET_STATE_BUS", err.to_string()))?;
         }
 
         Ok(NodeExecutionOutput {

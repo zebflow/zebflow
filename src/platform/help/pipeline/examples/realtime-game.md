@@ -173,7 +173,7 @@ register pipelines/presence-out --
 ```
 
 A path placeholder must resolve: `{session_id}` missing from the payload is the
-error `FW_WS_PATH_SEGMENT_EMPTY`, never a write to `/players` itself. Numbers are
+error `FW_NODE_WS_PATH_SEGMENT_EMPTY`, never a write to `/players` itself. Numbers are
 written as text. When the last connection leaves, the room and its state are
 disposed; the next visitor starts from `{}`.
 

@@ -32,7 +32,7 @@ pub mod tables;
 pub const NODE_KIND: &str = "n.fs.barcode.qr";
 const INPUT_PIN_IN: &str = "in";
 const OUTPUT_PIN_OUT: &str = "out";
-const ERR: &str = "FS_BARCODE_QR";
+const ERR: &str = "FW_NODE_FS_BARCODE_QR";
 
 fn default_ecc() -> String {
     "M".into()

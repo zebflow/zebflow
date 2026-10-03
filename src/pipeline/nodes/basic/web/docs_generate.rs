@@ -365,7 +365,7 @@ pub fn load_site(
     let docs_root_abs = docs_root.join(&docs_root_rel);
     if !docs_root_abs.is_dir() {
         return Err(PipelineError::new(
-            "WEB_DOCS_ROOT_MISSING",
+            "FW_NODE_WEB_DOCS_GENERATE_ROOT_MISSING",
             format!("docs root '{}' not found", docs_root_abs.display()),
         ));
     }
@@ -389,7 +389,7 @@ pub fn load_site(
     )?;
     if pages.is_empty() {
         return Err(PipelineError::new(
-            "WEB_DOCS_EMPTY",
+            "FW_NODE_WEB_DOCS_GENERATE_EMPTY",
             format!("docs root '{}' contains no markdown pages", docs_root_rel),
         ));
     }
@@ -441,7 +441,7 @@ pub fn page_payload(
 ) -> Result<Value, PipelineError> {
     let page = site.pages.get(page_index).ok_or_else(|| {
         PipelineError::new(
-            "WEB_DOCS_PAGE_INDEX",
+            "FW_NODE_WEB_DOCS_GENERATE_PAGE_INDEX",
             format!("page index {page_index} out of range"),
         )
     })?;
@@ -545,7 +545,7 @@ fn normalize_rel_dir_path(raw: &str, field: &str) -> Result<String, PipelineErro
         }
         if part == ".." || part.contains('\0') {
             return Err(PipelineError::new(
-                "WEB_DOCS_PATH",
+                "FW_NODE_WEB_DOCS_GENERATE_PATH",
                 format!("{field} must stay inside the project directory"),
             ));
         }
@@ -553,7 +553,7 @@ fn normalize_rel_dir_path(raw: &str, field: &str) -> Result<String, PipelineErro
     }
     if parts.is_empty() {
         return Err(PipelineError::new(
-            "WEB_DOCS_PATH",
+            "FW_NODE_WEB_DOCS_GENERATE_PATH",
             format!("{field} must not be empty"),
         ));
     }
@@ -569,7 +569,7 @@ fn normalize_meta_file_name(raw: &str) -> Result<String, PipelineError> {
         || trimmed == ".."
     {
         return Err(PipelineError::new(
-            "WEB_DOCS_META_FILE",
+            "FW_NODE_WEB_DOCS_GENERATE_META_FILE",
             "meta_file must be a simple file name like _meta.yaml",
         ));
     }
@@ -587,14 +587,14 @@ fn ensure_template_scaffold(
         if let Some(parent) = template_abs_path.parent() {
             std::fs::create_dir_all(parent).map_err(|err| {
                 PipelineError::new(
-                    "WEB_DOCS_TEMPLATE_DIR",
+                    "FW_NODE_WEB_DOCS_GENERATE_TEMPLATE_DIR",
                     format!("failed creating '{}': {err}", parent.display()),
                 )
             })?;
         }
         std::fs::write(&template_abs_path, default_template_source(config)).map_err(|err| {
             PipelineError::new(
-                "WEB_DOCS_TEMPLATE_WRITE",
+                "FW_NODE_WEB_DOCS_GENERATE_TEMPLATE_WRITE",
                 format!(
                     "failed writing docs scaffold '{}': {err}",
                     template_abs_path.display()
@@ -605,7 +605,7 @@ fn ensure_template_scaffold(
 
     let markup = std::fs::read_to_string(&template_abs_path).map_err(|err| {
         PipelineError::new(
-            "WEB_DOCS_TEMPLATE_READ",
+            "FW_NODE_WEB_DOCS_GENERATE_TEMPLATE_READ",
             format!("failed reading '{}': {err}", template_abs_path.display()),
         )
     })?;
@@ -1003,7 +1003,7 @@ fn collect_docs(
     if meta_path.is_file() {
         let content = std::fs::read_to_string(&meta_path).map_err(|err| {
             PipelineError::new(
-                "WEB_DOCS_META_READ",
+                "FW_NODE_WEB_DOCS_GENERATE_META_READ",
                 format!("failed reading '{}': {err}", meta_path.display()),
             )
         })?;
@@ -1013,14 +1013,14 @@ fn collect_docs(
     let mut entries = std::fs::read_dir(dir_abs)
         .map_err(|err| {
             PipelineError::new(
-                "WEB_DOCS_READ_DIR",
+                "FW_NODE_WEB_DOCS_GENERATE_READ_DIR",
                 format!("failed reading '{}': {err}", dir_abs.display()),
             )
         })?
         .collect::<Result<Vec<_>, _>>()
         .map_err(|err| {
             PipelineError::new(
-                "WEB_DOCS_READ_DIR",
+                "FW_NODE_WEB_DOCS_GENERATE_READ_DIR",
                 format!("failed reading '{}': {err}", dir_abs.display()),
             )
         })?;
@@ -1051,14 +1051,14 @@ fn collect_docs(
 
         let rel = path.strip_prefix(root_abs).map_err(|_| {
             PipelineError::new(
-                "WEB_DOCS_REL_PATH",
+                "FW_NODE_WEB_DOCS_GENERATE_REL_PATH",
                 format!("failed resolving relative path for '{}'", path.display()),
             )
         })?;
         let rel_str = rel.to_string_lossy().replace('\\', "/");
         let raw = std::fs::read_to_string(&path).map_err(|err| {
             PipelineError::new(
-                "WEB_DOCS_READ_PAGE",
+                "FW_NODE_WEB_DOCS_GENERATE_READ_PAGE",
                 format!("failed reading '{}': {err}", path.display()),
             )
         })?;
@@ -1490,7 +1490,7 @@ fn rel_dir_string(root_abs: &Path, dir_abs: &Path) -> Result<String, PipelineErr
         .map(|rel| rel.to_string_lossy().replace('\\', "/"))
         .map_err(|_| {
             PipelineError::new(
-                "WEB_DOCS_REL_DIR",
+                "FW_NODE_WEB_DOCS_GENERATE_REL_DIR",
                 format!(
                     "failed resolving '{}' relative to '{}'",
                     dir_abs.display(),

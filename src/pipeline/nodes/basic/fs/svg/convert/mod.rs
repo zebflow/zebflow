@@ -268,9 +268,9 @@ pub fn definition() -> NodeDefinition {
         ],
         failure_semantics: vec![
             NodeFailureSemantic { code: "FW_NODE_FS_SVG_CONVERT_CONFIG".into(), description: "A --fit that is not cover, contain or fill; a --format that is not png, jpg, webp or pdf; a --width, --height or --quality that is not a whole number in range; --width, --height or --fit given with --format pdf.".into(), ..Default::default() },
-            NodeFailureSemantic { code: "FS_SVG_CONVERT_SOURCE".into(), description: "Nothing at --source-key, or it is not SVG; the SVG does not parse or has no size; an <image href> that is a URL, a data URI or a path outside the project, or a picture over its cap. The message names the href.".into(), ..Default::default() },
-            NodeFailureSemantic { code: "FS_SVG_CONVERT_FONT".into(), description: "A font-family the SVG names is neither the bundled Inter nor a face the project has under static/fonts/; the message lists what exists.".into(), ..Default::default() },
-            NodeFailureSemantic { code: "FS_SVG_CONVERT_RASTER".into(), description: "resvg, the encoder or the store write failed.".into(), retryable: true, ..Default::default() },
+            NodeFailureSemantic { code: "FW_NODE_FS_SVG_CONVERT_SOURCE".into(), description: "Nothing at --source-key, or it is not SVG; the SVG does not parse or has no size; an <image href> that is a URL, a data URI or a path outside the project, or a picture over its cap. The message names the href.".into(), ..Default::default() },
+            NodeFailureSemantic { code: "FW_NODE_FS_SVG_CONVERT_FONT".into(), description: "A font-family the SVG names is neither the bundled Inter nor a face the project has under static/fonts/; the message lists what exists.".into(), ..Default::default() },
+            NodeFailureSemantic { code: "FW_NODE_FS_SVG_CONVERT_RASTER".into(), description: "resvg, the encoder or the store write failed.".into(), retryable: true, ..Default::default() },
         ],
         examples: vec![
             NodeExample::dsl("A poster the model wrote, kept as a PNG", "fs.svg.convert --source-key data.svg --folder sandbox/posters/out --preview image")
@@ -431,9 +431,9 @@ impl SourceStore for ProjectStore {
 
 fn convert_error(e: ConvertError) -> PipelineError {
     let code = match e.kind {
-        ConvertErrorKind::Source => "FS_SVG_CONVERT_SOURCE",
-        ConvertErrorKind::Font => "FS_SVG_CONVERT_FONT",
-        ConvertErrorKind::Raster => "FS_SVG_CONVERT_RASTER",
+        ConvertErrorKind::Source => "FW_NODE_FS_SVG_CONVERT_SOURCE",
+        ConvertErrorKind::Font => "FW_NODE_FS_SVG_CONVERT_FONT",
+        ConvertErrorKind::Raster => "FW_NODE_FS_SVG_CONVERT_RASTER",
     };
     PipelineError::new(code, e.message)
 }
@@ -457,39 +457,39 @@ impl NodeHandler for Node {
             .platform
             .file
             .ensure_project_layout(owner, project)
-            .map_err(|e| PipelineError::new("FS_SVG_CONVERT_RASTER", e.to_string()))?;
+            .map_err(|e| PipelineError::new("FW_NODE_FS_SVG_CONVERT_RASTER", e.to_string()))?;
         let store = open_store(&self.platform, owner, project, self.config.store.as_deref())?;
 
         // 1. The source: SVG text, or a stored .svg by path or FileRef.
         let key = self.source_key();
         let value = resolve_path(&input.payload, key).ok_or_else(|| {
-            PipelineError::new("FS_SVG_CONVERT_SOURCE", format!("nothing at payload key '{key}' — set --source-key to where the SVG is"))
+            PipelineError::new("FW_NODE_FS_SVG_CONVERT_SOURCE", format!("nothing at payload key '{key}' — set --source-key to where the SVG is"))
         })?;
         let (svg, stored_source) = match value.as_str().filter(|s| looks_like_svg(s.as_bytes())) {
             Some(text) => (text.to_string(), None),
             None => {
                 let (source_store, rel) = open_source(&self.platform, owner, project, value, self.config.store.as_deref())?.ok_or_else(|| {
                     PipelineError::new(
-                        "FS_SVG_CONVERT_SOURCE",
+                        "FW_NODE_FS_SVG_CONVERT_SOURCE",
                         format!("payload key '{key}' must be SVG text, a store path string, or a FileRef of a stored .svg"),
                     )
                 })?;
                 let zebfs = &source_store.fs;
                 let rel = crate::zebfs::normalize_object_path(rel.trim_start_matches('/'))
-                    .map_err(|e| PipelineError::new("FS_SVG_CONVERT_SOURCE", e.to_string()))?;
+                    .map_err(|e| PipelineError::new("FW_NODE_FS_SVG_CONVERT_SOURCE", e.to_string()))?;
                 let object = zebfs
                     .get(&rel)
-                    .map_err(|e| PipelineError::new("FS_SVG_CONVERT_SOURCE", format!("store object {rel}: {}", e.message)))?;
+                    .map_err(|e| PipelineError::new("FW_NODE_FS_SVG_CONVERT_SOURCE", format!("store object {rel}: {}", e.message)))?;
                 if object.bytes.len() > MAX_SVG_BYTES {
                     return Err(PipelineError::new(
-                        "FS_SVG_CONVERT_SOURCE",
+                        "FW_NODE_FS_SVG_CONVERT_SOURCE",
                         format!("store object {rel} is {} bytes; the limit is {MAX_SVG_BYTES}", object.bytes.len()),
                     ));
                 }
                 let text = String::from_utf8(object.bytes)
-                    .map_err(|_| PipelineError::new("FS_SVG_CONVERT_SOURCE", format!("store object {rel} is not UTF-8 text")))?;
+                    .map_err(|_| PipelineError::new("FW_NODE_FS_SVG_CONVERT_SOURCE", format!("store object {rel} is not UTF-8 text")))?;
                 if !looks_like_svg(text.as_bytes()) {
-                    return Err(PipelineError::new("FS_SVG_CONVERT_SOURCE", format!("store object {rel} is not an SVG")));
+                    return Err(PipelineError::new("FW_NODE_FS_SVG_CONVERT_SOURCE", format!("store object {rel} is not an SVG")));
                 }
                 (text, Some((source_store, rel)))
             }
@@ -505,14 +505,14 @@ impl NodeHandler for Node {
         let filename = format!("{stem}.{}", self.format.extension());
         let rel = target_key(self.config.path.as_deref(), self.folder(), &filename, "FW_NODE_FS_SVG_CONVERT_CONFIG")?;
         let on_conflict = OnConflict::parse(self.config.on_conflict.as_deref(), OnConflict::Error, "FW_NODE_FS_SVG_CONVERT_CONFIG")?;
-        let bytes = if on_conflict.allows(&store.fs, &rel, "FS_SVG_CONVERT_RASTER")? {
+        let bytes = if on_conflict.allows(&store.fs, &rel, "FW_NODE_FS_SVG_CONVERT_RASTER")? {
             store
                 .fs
                 .put(&rel, &rendered.bytes)
-                .map_err(|e| PipelineError::new("FS_SVG_CONVERT_RASTER", format!("store write {rel}: {}", e.message)))?;
+                .map_err(|e| PipelineError::new("FW_NODE_FS_SVG_CONVERT_RASTER", format!("store write {rel}: {}", e.message)))?;
             rendered.bytes.clone()
         } else {
-            store.fs.get(&rel).map_err(|e| PipelineError::new("FS_SVG_CONVERT_RASTER", e.message))?.bytes
+            store.fs.get(&rel).map_err(|e| PipelineError::new("FW_NODE_FS_SVG_CONVERT_RASTER", e.message))?.bytes
         };
         let mut image = store.file_ref(&rel, &filename, self.format.mime(), &bytes, ORIGIN, "generated");
         if let Some(obj) = image.as_object_mut() {
@@ -601,7 +601,7 @@ mod node_tests {
             vec!["--width", "--height", "--fit", "--format", "--quality", "--folder", "--source-key", "--delete-source", "--filename", "--path", "--store", "--on-conflict"]
         );
         let codes: Vec<&str> = def.failure_semantics.iter().map(|f| f.code.as_str()).collect();
-        assert_eq!(codes, vec!["FW_NODE_FS_SVG_CONVERT_CONFIG", "FS_SVG_CONVERT_SOURCE", "FS_SVG_CONVERT_FONT", "FS_SVG_CONVERT_RASTER"]);
+        assert_eq!(codes, vec!["FW_NODE_FS_SVG_CONVERT_CONFIG", "FW_NODE_FS_SVG_CONVERT_SOURCE", "FW_NODE_FS_SVG_CONVERT_FONT", "FW_NODE_FS_SVG_CONVERT_RASTER"]);
         assert!(contained(Path::new("/root"), "../x.svg").is_none());
         assert_eq!(contained(Path::new("/root"), "static/x.svg"), Some(PathBuf::from("/root/static/x.svg")));
     }

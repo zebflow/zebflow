@@ -400,7 +400,7 @@ impl NodeHandler for Node {
 
         let source_value = resolve_path(&input.payload, source_key).ok_or_else(|| {
             PipelineError::new(
-                "IMG_THUMBNAIL",
+                "FW_NODE_FS_IMAGE_THUMBNAIL",
                 format!(
                     "source path not found at payload key '{source_key}' — chain after n.fs.save or set --source-key"
                 ),
@@ -412,13 +412,13 @@ impl NodeHandler for Node {
         let (source_store, rel_path) = open_source(&self.platform, owner, project, source_value, self.config.store.as_deref())?
             .ok_or_else(|| {
                 PipelineError::new(
-                    "IMG_THUMBNAIL",
+                    "FW_NODE_FS_IMAGE_THUMBNAIL",
                     format!("payload key '{source_key}' must be a FileRef or string path"),
                 )
             })?;
         let zebfs = &source_store.fs;
         let rel_path = crate::zebfs::normalize_object_path(rel_path.trim_start_matches('/'))
-            .map_err(|e| PipelineError::new("IMG_THUMBNAIL", e.to_string()))?;
+            .map_err(|e| PipelineError::new("FW_NODE_FS_IMAGE_THUMBNAIL", e.to_string()))?;
 
         // ── Reject unsupported formats before loading ─────────────────────
         let ext = std::path::Path::new(&rel_path)
@@ -428,7 +428,7 @@ impl NodeHandler for Node {
             .to_lowercase();
         if matches!(ext.as_str(), "svg" | "heic" | "heif") {
             return Err(PipelineError::new(
-                "IMG_THUMBNAIL",
+                "FW_NODE_FS_IMAGE_THUMBNAIL",
                 format!(
                     "unsupported format for thumbnailing: .{ext} — convert to jpg/png/webp first"
                 ),
@@ -440,12 +440,12 @@ impl NodeHandler for Node {
             Ok(object) => object.bytes,
             Err(e) if e.code == "ZEBFS_NOT_FOUND" => {
                 return Err(PipelineError::new(
-                    "IMG_THUMBNAIL",
+                    "FW_NODE_FS_IMAGE_THUMBNAIL",
                     format!("source file not found: {rel_path}"),
                 ));
             }
             Err(e) => {
-                return Err(PipelineError::new("IMG_THUMBNAIL", format!("read error: {e}")));
+                return Err(PipelineError::new("FW_NODE_FS_IMAGE_THUMBNAIL", format!("read error: {e}")));
             }
         };
 
@@ -486,20 +486,20 @@ impl NodeHandler for Node {
                 None => format!("{}.{ext_out}", Uuid::new_v4()),
             }
         };
-        let thumb_rel = target_key(self.config.path.as_deref(), &folder, &storage_name, "IMG_THUMBNAIL")?;
+        let thumb_rel = target_key(self.config.path.as_deref(), &folder, &storage_name, "FW_NODE_FS_IMAGE_THUMBNAIL")?;
         let store = open_store(&self.platform, owner, project, self.config.store.as_deref())?;
-        let on_conflict = OnConflict::parse(self.config.on_conflict.as_deref(), OnConflict::Error, "IMG_THUMBNAIL")?;
-        let encoded = if on_conflict.allows(&store.fs, &thumb_rel, "IMG_THUMBNAIL")? {
+        let on_conflict = OnConflict::parse(self.config.on_conflict.as_deref(), OnConflict::Error, "FW_NODE_FS_IMAGE_THUMBNAIL")?;
+        let encoded = if on_conflict.allows(&store.fs, &thumb_rel, "FW_NODE_FS_IMAGE_THUMBNAIL")? {
             store
                 .fs
                 .put(&thumb_rel, &encoded)
-                .map_err(|e| PipelineError::new("IMG_THUMBNAIL", format!("write: {e}")))?;
+                .map_err(|e| PipelineError::new("FW_NODE_FS_IMAGE_THUMBNAIL", format!("write: {e}")))?;
             encoded
         } else {
             store
                 .fs
                 .get(&thumb_rel)
-                .map_err(|e| PipelineError::new("IMG_THUMBNAIL", format!("read: {e}")))?
+                .map_err(|e| PipelineError::new("FW_NODE_FS_IMAGE_THUMBNAIL", format!("read: {e}")))?
                 .bytes
         };
 
@@ -507,7 +507,7 @@ impl NodeHandler for Node {
         // Best-effort: non-fatal. Thumbnail is already written successfully.
         if self.config.delete_source {
             if let Err(e) = zebfs.delete(&rel_path) {
-                eprintln!("[IMG_THUMBNAIL] delete-source failed for {rel_path}: {e}");
+                eprintln!("[FW_NODE_FS_IMAGE_THUMBNAIL] delete-source failed for {rel_path}: {e}");
             }
         }
 
@@ -596,12 +596,12 @@ fn encode_image(
     match format.trim().to_lowercase().as_str() {
         "png" => {
             img.write_to(&mut Cursor::new(&mut buf), ImageFormat::Png)
-                .map_err(|e| PipelineError::new("IMG_THUMBNAIL", format!("PNG encode: {e}")))?;
+                .map_err(|e| PipelineError::new("FW_NODE_FS_IMAGE_THUMBNAIL", format!("PNG encode: {e}")))?;
             Ok((buf, "png", "png"))
         }
         "webp" => {
             img.write_to(&mut Cursor::new(&mut buf), ImageFormat::WebP)
-                .map_err(|e| PipelineError::new("IMG_THUMBNAIL", format!("WebP encode: {e}")))?;
+                .map_err(|e| PipelineError::new("FW_NODE_FS_IMAGE_THUMBNAIL", format!("WebP encode: {e}")))?;
             Ok((buf, "webp", "webp"))
         }
         _ => {
@@ -610,7 +610,7 @@ fn encode_image(
             let mut cursor = Cursor::new(&mut buf);
             JpegEncoder::new_with_quality(&mut cursor, quality)
                 .encode_image(img)
-                .map_err(|e| PipelineError::new("IMG_THUMBNAIL", format!("JPEG encode: {e}")))?;
+                .map_err(|e| PipelineError::new("FW_NODE_FS_IMAGE_THUMBNAIL", format!("JPEG encode: {e}")))?;
             Ok((buf, "jpg", "jpg"))
         }
     }

@@ -134,11 +134,11 @@ impl NodeHandler for Node {
         let existed = if self.config.durable {
             self.state_bus
                 .durable_del(owner, project, key)
-                .map_err(|err| PipelineError::new("KV_DEL_STATE_BUS", err.to_string()))?
+                .map_err(|err| PipelineError::new("FW_NODE_KV_DEL_STATE_BUS", err.to_string()))?
         } else {
             self.state_bus
                 .del(owner, project, key)
-                .map_err(|err| PipelineError::new("KV_DEL_STATE_BUS", err.to_string()))?
+                .map_err(|err| PipelineError::new("FW_NODE_KV_DEL_STATE_BUS", err.to_string()))?
         };
 
         Ok(NodeExecutionOutput {

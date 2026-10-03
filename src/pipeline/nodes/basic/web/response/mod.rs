@@ -321,12 +321,12 @@ pub fn definition() -> NodeDefinition {
         ],
         failure_semantics: vec![
             crate::pipeline::model::NodeFailureSemantic {
-                code: "WEB_RESPONSE_FILE".to_string(),
+                code: "FW_NODE_WEB_RESPONSE_FILE".to_string(),
                 description: "`--file` is missing, leaves the project or its `--folder`, or does not exist.".to_string(),
                 ..Default::default()
             },
             crate::pipeline::model::NodeFailureSemantic {
-                code: "WEB_RESPONSE_COMPILE".to_string(),
+                code: "FW_NODE_WEB_RESPONSE_COMPILE".to_string(),
                 description: "The `.ts` named by `--file` did not parse; the message names the file.".to_string(),
                 ..Default::default()
             },
@@ -394,13 +394,13 @@ impl Node {
     fn file_envelope(&self) -> Result<Value, PipelineError> {
         let rel = resolve_file_rel_path(self.config.folder.as_deref(), self.config.file.as_deref().unwrap_or_default())?;
         let Some(root) = self.template_root.as_deref() else {
-            return Err(PipelineError::new("WEB_RESPONSE_FILE", "template_root is not configured on this pipeline engine"));
+            return Err(PipelineError::new("FW_NODE_WEB_RESPONSE_FILE", "template_root is not configured on this pipeline engine"));
         };
         let abs = root.join(&rel);
         if !abs.starts_with(root) || !abs.is_file() {
-            return Err(PipelineError::new("WEB_RESPONSE_FILE", format!("file '{rel}' not found in the project")));
+            return Err(PipelineError::new("FW_NODE_WEB_RESPONSE_FILE", format!("file '{rel}' not found in the project")));
         }
-        let bytes = std::fs::read(&abs).map_err(|e| PipelineError::new("WEB_RESPONSE_FILE", format!("failed reading '{rel}': {e}")))?;
+        let bytes = std::fs::read(&abs).map_err(|e| PipelineError::new("FW_NODE_WEB_RESPONSE_FILE", format!("failed reading '{rel}': {e}")))?;
         let served = FileResponse::from_bytes(&rel, bytes)?;
         let mut headers = self.config.headers.clone();
         headers.entry("Content-Type".to_string()).or_insert_with(|| json!(served.content_type));
@@ -457,11 +457,11 @@ impl FileResponse {
             use base64::Engine as _;
             return Ok(Self { content_type, body: FileBody::Bytes(base64::engine::general_purpose::STANDARD.encode(bytes)) });
         }
-        let source = String::from_utf8(bytes).map_err(|_| PipelineError::new("WEB_RESPONSE_FILE", format!("'{rel}' is not UTF-8 text")))?;
+        let source = String::from_utf8(bytes).map_err(|_| PipelineError::new("FW_NODE_WEB_RESPONSE_FILE", format!("'{rel}' is not UTF-8 text")))?;
         let body = match ext.as_str() {
             "ts" => {
                 let compiled = crate::rwe::core::deno_worker::transpile_ts(&source)
-                    .map_err(|e| PipelineError::new("WEB_RESPONSE_COMPILE", format!("{rel}: {}", e.message)))?;
+                    .map_err(|e| PipelineError::new("FW_NODE_WEB_RESPONSE_COMPILE", format!("{rel}: {}", e.message)))?;
                 format!("{}{compiled}", script_prelude(&source))
             }
             "js" | "mjs" => format!("{}{source}", script_prelude(&source)),
@@ -489,7 +489,7 @@ pub fn resolve_file_rel_path(folder: Option<&str>, file: &str) -> Result<String,
         for part in raw.trim().replace('\\', "/").split('/') {
             match part.trim() {
                 "" | "." => continue,
-                ".." => return Err(PipelineError::new("WEB_RESPONSE_FILE", format!("{what} '{raw}' escapes the project"))),
+                ".." => return Err(PipelineError::new("FW_NODE_WEB_RESPONSE_FILE", format!("{what} '{raw}' escapes the project"))),
                 p => parts.push(p.to_string()),
             }
         }
@@ -497,16 +497,16 @@ pub fn resolve_file_rel_path(folder: Option<&str>, file: &str) -> Result<String,
     }
     let file = file.trim();
     if file.is_empty() {
-        return Err(PipelineError::new("WEB_RESPONSE_FILE", "web.response --file needs a path, e.g. pwa/manifest.webmanifest"));
+        return Err(PipelineError::new("FW_NODE_WEB_RESPONSE_FILE", "web.response --file needs a path, e.g. pwa/manifest.webmanifest"));
     }
     match folder.map(str::trim).filter(|f| !f.is_empty()) {
         Some(folder) => {
             if file.contains('/') || file.contains('\\') || file == ".." || file == "." {
-                return Err(PipelineError::new("WEB_RESPONSE_FILE", format!("with --folder, --file must be a bare filename; got '{file}'")));
+                return Err(PipelineError::new("FW_NODE_WEB_RESPONSE_FILE", format!("with --folder, --file must be a bare filename; got '{file}'")));
             }
             let mut parts = clean(folder, "folder")?;
             if parts.is_empty() {
-                return Err(PipelineError::new("WEB_RESPONSE_FILE", "--folder is empty"));
+                return Err(PipelineError::new("FW_NODE_WEB_RESPONSE_FILE", "--folder is empty"));
             }
             parts.push(file.to_string());
             Ok(parts.join("/"))
@@ -514,7 +514,7 @@ pub fn resolve_file_rel_path(folder: Option<&str>, file: &str) -> Result<String,
         None => {
             let parts = clean(file, "file")?;
             if parts.is_empty() {
-                return Err(PipelineError::new("WEB_RESPONSE_FILE", "web.response --file needs a path"));
+                return Err(PipelineError::new("FW_NODE_WEB_RESPONSE_FILE", "web.response --file needs a path"));
             }
             Ok(parts.join("/"))
         }
@@ -673,7 +673,7 @@ pub fn compile_page(
         .compile_template(template, language, options)
         .map_err(|e| {
             PipelineError::new(
-                "WEB_RESPONSE_COMPILE",
+                "FW_NODE_WEB_RESPONSE_COMPILE",
                 format!("failed compiling node '{}': {}", node_id, e),
             )
         })?;
@@ -805,7 +805,7 @@ pub fn render_compiled_page(
         )
         .map_err(|e| {
             PipelineError::new(
-                "WEB_RESPONSE_RENDER",
+                "FW_NODE_WEB_RESPONSE_RENDER",
                 format!("failed rendering node '{}': {}", compiled.node_id, e),
             )
         })?;
@@ -946,7 +946,7 @@ mod file_mode_tests {
     #[test]
     fn a_broken_typescript_names_the_file() {
         let err = FileResponse::from_bytes("pwa/bad.sw.ts", b"const = ;".to_vec()).unwrap_err();
-        assert_eq!(err.code, "WEB_RESPONSE_COMPILE");
+        assert_eq!(err.code, "FW_NODE_WEB_RESPONSE_COMPILE");
         assert!(err.message.starts_with("pwa/bad.sw.ts"));
     }
 
@@ -954,16 +954,16 @@ mod file_mode_tests {
     fn a_file_path_never_climbs_out_of_the_project() {
         assert_eq!(resolve_file_rel_path(None, "pwa/manifest.webmanifest").unwrap(), "pwa/manifest.webmanifest");
         assert_eq!(resolve_file_rel_path(None, "./pwa//site.sw.ts").unwrap(), "pwa/site.sw.ts");
-        assert_eq!(resolve_file_rel_path(None, "../secrets").unwrap_err().code, "WEB_RESPONSE_FILE");
-        assert_eq!(resolve_file_rel_path(None, "").unwrap_err().code, "WEB_RESPONSE_FILE");
+        assert_eq!(resolve_file_rel_path(None, "../secrets").unwrap_err().code, "FW_NODE_WEB_RESPONSE_FILE");
+        assert_eq!(resolve_file_rel_path(None, "").unwrap_err().code, "FW_NODE_WEB_RESPONSE_FILE");
     }
 
     #[test]
     fn with_a_folder_the_name_from_the_route_stays_inside_it() {
         assert_eq!(resolve_file_rel_path(Some("pwa/icons"), "icon-192.png").unwrap(), "pwa/icons/icon-192.png");
         for bad in ["../site.sw.ts", "sub/icon.png", "..", "", "pwa/icons/x.png"] {
-            assert_eq!(resolve_file_rel_path(Some("pwa/icons"), bad).unwrap_err().code, "WEB_RESPONSE_FILE", "{bad}");
+            assert_eq!(resolve_file_rel_path(Some("pwa/icons"), bad).unwrap_err().code, "FW_NODE_WEB_RESPONSE_FILE", "{bad}");
         }
-        assert_eq!(resolve_file_rel_path(Some("../"), "x.png").unwrap_err().code, "WEB_RESPONSE_FILE");
+        assert_eq!(resolve_file_rel_path(Some("../"), "x.png").unwrap_err().code, "FW_NODE_WEB_RESPONSE_FILE");
     }
 }

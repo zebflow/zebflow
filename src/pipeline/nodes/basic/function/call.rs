@@ -10,8 +10,7 @@
 //! | Field | Type | Required | Description |
 //! |---|---|---|---|
 //! | `function` | string | yes | Slug of the function pipeline to call |
-//! | `input_value` | any | no | What the function receives — a literal or `{{ expr }}`. Omit to pass the whole payload |
-//! | `input` | string | no | Static JSON input (overrides input_value when set) |
+//! | `input` | any | no | What the function receives — a literal (JSON is parsed) or `{{ expr }}`. Omit to pass the whole payload |
 //!
 //! # DSL
 //! ```text
@@ -46,13 +45,10 @@ pub struct Config {
     /// Slug of the function pipeline to call (matches `PipelineMeta.name`).
     pub function: Option<String>,
     /// What the called function receives — a literal or `{{ expr }}`,
-    /// arriving final. Null = the whole payload. Ignored when `input` is set.
+    /// arriving final. A literal that is JSON is parsed; null (unset) means
+    /// the whole payload.
     #[serde(default)]
-    pub input_value: serde_json::Value,
-    /// Static JSON input string passed directly to the function pipeline.
-    /// When non-empty, takes priority over `input_value`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub input: Option<String>,
+    pub input: serde_json::Value,
 }
 
 pub struct Node {
@@ -90,13 +86,8 @@ pub fn definition() -> NodeDefinition {
                     "type": "string",
                     "description": "Slug of the function pipeline to call."
                 },
-                "input_value": {
-                    "type": "string",
-                    "description": "JSON Pointer into the flowing payload to use as function input. Ignored when input is set."
-                },
                 "input": {
-                    "type": "string",
-                    "description": "Static JSON input passed directly to the function. Overrides input_path when set."
+                    "description": "What the function receives: a literal (JSON is parsed) or {{ expr }}. Omit to pass the whole payload."
                 }
             }
         }),
@@ -109,16 +100,9 @@ pub fn definition() -> NodeDefinition {
                 required: true,
             },
             DslFlag {
-                flag: "--input-value".to_string(),
-                config_key: "input_value".to_string(),
-                description: "What the function receives — a literal or {{ expr }}, e.g. \"{{ { email: input.body.email } }}\". Omit to pass the whole payload. Ignored when --input is set.".to_string(),
-                kind: DslFlagKind::Scalar,
-                required: false,
-            },
-            DslFlag {
                 flag: "--input".to_string(),
                 config_key: "input".to_string(),
-                description: "Static JSON input passed directly to the function (overrides --input-value).".to_string(),
+                description: "What the function receives — a literal (JSON is parsed) or {{ expr }}, e.g. \"{{ { email: input.body.email } }}\". Omit to pass the whole payload.".to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
             },
@@ -134,20 +118,16 @@ pub fn definition() -> NodeDefinition {
                 ..Default::default()
             },
             NodeFieldDef {
-                name: "input_value".to_string(),
-                label: "Payload Input Path".to_string(),
+                name: "input".to_string(),
+                label: "Input".to_string(),
                 field_type: NodeFieldType::Text,
-                placeholder: Some("/user  (leave empty for full payload)".to_string()),
-                help: Some(
-                    "JSON Pointer to extract from the flowing payload as function input. \
-                     Leave empty to pass the full payload. Ignored when Static Input is set."
-                        .to_string(),
-                ),
+                placeholder: Some("{{ { email: input.body.email } }}  (leave empty for the full payload)".to_string()),
+                help: Some("What the function receives: a literal (JSON is parsed) or {{ expr }}. Leave empty to pass the full payload.".to_string()),
                 ..Default::default()
             },
         ],
         examples: vec![
-            crate::pipeline::model::NodeExample::dsl("Reuse a lookup function", r#"function.call --function find-user --input-value "{{ { email: input.body.email } }}""#)
+            crate::pipeline::model::NodeExample::dsl("Reuse a lookup function", r#"function.call --function find-user --input "{{ { email: input.body.email } }}""#)
                 .output(serde_json::json!({ "user": { "_key": "u_1", "email": "a@x.io" } }))
                 .note("Whatever `jobs/find-user`'s last node produced."),
         ],
@@ -157,22 +137,25 @@ pub fn definition() -> NodeDefinition {
 
 /// What the called function receives.
 ///
-/// `input_value` arrives final — a whole `{{ }}` carries its typed value
-/// (NodeIO §Value resolution). Null means "not set", so the whole payload
-/// goes, which is the old empty-path default.
+/// `input` arrives final — a whole `{{ }}` carries its typed value (NodeIO
+/// §Value resolution), and a literal string that is JSON is parsed. Null
+/// means "not set", so the whole payload goes.
 ///
 /// The pointer this replaces had a trap worth naming: a path that matched
 /// nothing fell back to the *entire payload*, so a typo silently handed the
 /// function everything instead of the one field it asked for. An expression
 /// that matches nothing is null, and null is visible.
 fn extract_payload_input(
-    input_value: &serde_json::Value,
+    input: &serde_json::Value,
     payload: serde_json::Value,
 ) -> serde_json::Value {
-    if input_value.is_null() {
-        payload
-    } else {
-        input_value.clone()
+    match input {
+        serde_json::Value::Null => payload,
+        serde_json::Value::String(raw) if raw.trim().is_empty() => payload,
+        serde_json::Value::String(raw) => {
+            serde_json::from_str(raw.trim()).unwrap_or_else(|_| input.clone())
+        }
+        other => other.clone(),
     }
 }
 
@@ -228,18 +211,7 @@ impl NodeHandler for Node {
             .unwrap_or_default()
             .to_string();
 
-        // Resolve function input: static input > input_path > full payload.
-        let payload = input.payload;
-        let call_input = if let Some(raw) = self.config.input.as_deref() {
-            let trimmed = raw.trim();
-            if trimmed.is_empty() {
-                extract_payload_input(&self.config.input_value, payload)
-            } else {
-                serde_json::from_str(trimmed).unwrap_or(payload)
-            }
-        } else {
-            extract_payload_input(&self.config.input_value, payload)
-        };
+        let call_input = extract_payload_input(&self.config.input, input.payload);
 
         match platform
             .execute_function_pipeline(&owner, &project, &slug, call_input)

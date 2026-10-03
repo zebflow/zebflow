@@ -3,9 +3,9 @@
 Status: **review** — decided 2026-10-03 from an inventory of every official
 node under `src/pipeline/nodes/basic/`. Code caught up the same day for §1
 destinations and sources, §3 (store pinning, FileRef `store`, no `url`), §4
-and §5 on every file node (`src/pipeline/nodes/shared/project_store.rs`).
-Still owed, tracked in the project ledger: §6 error codes, §7, and the
-`-value` / `--input` cleanup outside the file nodes.
+and §5 on every file node (`src/pipeline/nodes/shared/project_store.rs`), and
+§6 (every node code under `FW_NODE_`, registered). Still owed, tracked in the
+project ledger: the `-value` / `--input` cleanup outside the file nodes.
 
 How an official node spells what it takes and what it answers.
 [`NodeDefinition`](./kinds/node-definition/README.md) is the shape of a
@@ -91,11 +91,13 @@ the NodeIO error-code registry. A credential of the wrong kind is
 
 ## 7. Registration
 
-A node is registered only when it is built. A placeholder is not a node.
+A node is registered only when it is built. `n.concept` is built: it is the
+deliberate stand-in for a step a pipeline describes but does not do yet, and it
+passes its input through untouched.
 
 ## Evidence
 
 Inventory 2026-10-03 (ledger: `zebflow › security › fs`): six names for a
 destination, `--to` and `--input` with two meanings each, `-value` pairs on
-two nodes only, `--on-conflict` on one node, error prefixes outside
-`FW_NODE_` in nine families, and a registered placeholder (`n.concept`).
+two nodes only, `--on-conflict` on one node, and error prefixes outside
+`FW_NODE_` in nine families.

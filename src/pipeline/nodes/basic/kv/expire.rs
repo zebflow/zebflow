@@ -176,11 +176,11 @@ impl NodeHandler for Node {
         let updated = if self.config.durable {
             self.state_bus
                 .durable_expire(owner, project, key, self.config.ttl)
-                .map_err(|err| PipelineError::new("KV_EXPIRE_STATE_BUS", err.to_string()))?
+                .map_err(|err| PipelineError::new("FW_NODE_KV_EXPIRE_STATE_BUS", err.to_string()))?
         } else {
             self.state_bus
                 .expire(owner, project, key, self.config.ttl)
-                .map_err(|err| PipelineError::new("KV_EXPIRE_STATE_BUS", err.to_string()))?
+                .map_err(|err| PipelineError::new("FW_NODE_KV_EXPIRE_STATE_BUS", err.to_string()))?
         };
 
         Ok(NodeExecutionOutput {

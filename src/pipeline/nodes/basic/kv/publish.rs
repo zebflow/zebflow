@@ -152,7 +152,7 @@ impl NodeHandler for Node {
         let receivers = self
             .state_bus
             .publish(owner, project, channel, message)
-            .map_err(|err| PipelineError::new("KV_PUBLISH_STATE_BUS", err.to_string()))?;
+            .map_err(|err| PipelineError::new("FW_NODE_KV_PUBLISH_STATE_BUS", err.to_string()))?;
 
         Ok(NodeExecutionOutput {
             output_pins: vec![OUTPUT_PIN_OUT.to_string()],

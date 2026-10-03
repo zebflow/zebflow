@@ -25,7 +25,7 @@ pub mod encode;
 pub const NODE_KIND: &str = "n.fs.barcode.code128";
 const INPUT_PIN_IN: &str = "in";
 const OUTPUT_PIN_OUT: &str = "out";
-const ERR: &str = "FS_BARCODE_CODE128";
+const ERR: &str = "FW_NODE_FS_BARCODE_CODE128";
 
 fn default_format() -> String {
     "svg".into()

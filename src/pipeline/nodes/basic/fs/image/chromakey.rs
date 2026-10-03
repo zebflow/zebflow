@@ -219,8 +219,8 @@ pub fn definition() -> NodeDefinition {
         ],
         failure_semantics: vec![
             NodeFailureSemantic { code: "FW_NODE_FS_IMAGE_CHROMAKEY_CONFIG".into(), description: "A --color that is not #rrggbb; a --tolerance or --soften that is not a number in range; a --format that is not png or webp.".into(), ..Default::default() },
-            NodeFailureSemantic { code: "FS_IMAGE_CHROMAKEY_SOURCE".into(), description: "Nothing at --source-key, the object is missing, or it is not a PNG/JPEG/WebP/GIF the decoder accepts within its limits.".into(), ..Default::default() },
-            NodeFailureSemantic { code: "FS_IMAGE_CHROMAKEY_RASTER".into(), description: "The encoder or the store write failed.".into(), retryable: true, ..Default::default() },
+            NodeFailureSemantic { code: "FW_NODE_FS_IMAGE_CHROMAKEY_SOURCE".into(), description: "Nothing at --source-key, the object is missing, or it is not a PNG/JPEG/WebP/GIF the decoder accepts within its limits.".into(), ..Default::default() },
+            NodeFailureSemantic { code: "FW_NODE_FS_IMAGE_CHROMAKEY_RASTER".into(), description: "The encoder or the store write failed.".into(), retryable: true, ..Default::default() },
         ],
         examples: vec![
             NodeExample::dsl("A generated character, cut out for a poster", "fs.image.chromakey --folder sandbox/posters/cutouts --preview image")
@@ -319,17 +319,17 @@ impl NodeHandler for Node {
         let key = self.config.source_key.trim();
         let key = if key.is_empty() { DEFAULT_SOURCE_KEY } else { key };
         let value = resolve_path(&input.payload, key).ok_or_else(|| {
-            PipelineError::new("FS_IMAGE_CHROMAKEY_SOURCE", format!("nothing at payload key '{key}' — chain after fs.save or set --source-key"))
+            PipelineError::new("FW_NODE_FS_IMAGE_CHROMAKEY_SOURCE", format!("nothing at payload key '{key}' — chain after fs.save or set --source-key"))
         })?;
         let (source_store, rel) = open_source(&self.platform, owner, project, value, self.config.store.as_deref())?
-            .ok_or_else(|| PipelineError::new("FS_IMAGE_CHROMAKEY_SOURCE", format!("payload key '{key}' must be a FileRef or a store path string")))?;
+            .ok_or_else(|| PipelineError::new("FW_NODE_FS_IMAGE_CHROMAKEY_SOURCE", format!("payload key '{key}' must be a FileRef or a store path string")))?;
         let zebfs = &source_store.fs;
         let rel = crate::zebfs::normalize_object_path(rel.trim_start_matches('/'))
-            .map_err(|e| PipelineError::new("FS_IMAGE_CHROMAKEY_SOURCE", e.to_string()))?;
+            .map_err(|e| PipelineError::new("FW_NODE_FS_IMAGE_CHROMAKEY_SOURCE", e.to_string()))?;
         let object = zebfs
             .get(&rel)
-            .map_err(|e| PipelineError::new("FS_IMAGE_CHROMAKEY_SOURCE", format!("store object {rel}: {}", e.message)))?;
-        let img = load_with_limits(&object.bytes).map_err(|e| PipelineError::new("FS_IMAGE_CHROMAKEY_SOURCE", e.message))?;
+            .map_err(|e| PipelineError::new("FW_NODE_FS_IMAGE_CHROMAKEY_SOURCE", format!("store object {rel}: {}", e.message)))?;
+        let img = load_with_limits(&object.bytes).map_err(|e| PipelineError::new("FW_NODE_FS_IMAGE_CHROMAKEY_SOURCE", e.message))?;
 
         let keyed = key_out(&img, self.key, self.tolerance, self.soften);
         let (width, height) = keyed.dimensions();
@@ -337,7 +337,7 @@ impl NodeHandler for Node {
         let (ext, mime) = if self.webp { ("webp", "image/webp") } else { ("png", "image/png") };
         DynamicImage::ImageRgba8(keyed)
             .write_to(&mut bytes, if self.webp { image::ImageFormat::WebP } else { image::ImageFormat::Png })
-            .map_err(|e| PipelineError::new("FS_IMAGE_CHROMAKEY_RASTER", format!("{ext} encode: {e}")))?;
+            .map_err(|e| PipelineError::new("FW_NODE_FS_IMAGE_CHROMAKEY_RASTER", format!("{ext} encode: {e}")))?;
         let bytes = bytes.into_inner();
 
         let stem = self.config.filename.as_deref().map(filename_stem).filter(|s| !s.is_empty()).unwrap_or_else(|| Uuid::new_v4().to_string());
@@ -347,14 +347,14 @@ impl NodeHandler for Node {
         let out_rel = target_key(self.config.path.as_deref(), folder, &filename, "FW_NODE_FS_IMAGE_CHROMAKEY_CONFIG")?;
         let store = open_store(&self.platform, owner, project, self.config.store.as_deref())?;
         let on_conflict = OnConflict::parse(self.config.on_conflict.as_deref(), OnConflict::Error, "FW_NODE_FS_IMAGE_CHROMAKEY_CONFIG")?;
-        let bytes = if on_conflict.allows(&store.fs, &out_rel, "FS_IMAGE_CHROMAKEY_RASTER")? {
+        let bytes = if on_conflict.allows(&store.fs, &out_rel, "FW_NODE_FS_IMAGE_CHROMAKEY_RASTER")? {
             store
                 .fs
                 .put(&out_rel, &bytes)
-                .map_err(|e| PipelineError::new("FS_IMAGE_CHROMAKEY_RASTER", format!("store write {out_rel}: {}", e.message)))?;
+                .map_err(|e| PipelineError::new("FW_NODE_FS_IMAGE_CHROMAKEY_RASTER", format!("store write {out_rel}: {}", e.message)))?;
             bytes
         } else {
-            store.fs.get(&out_rel).map_err(|e| PipelineError::new("FS_IMAGE_CHROMAKEY_RASTER", e.message))?.bytes
+            store.fs.get(&out_rel).map_err(|e| PipelineError::new("FW_NODE_FS_IMAGE_CHROMAKEY_RASTER", e.message))?.bytes
         };
         let mut image = store.file_ref(&out_rel, &filename, mime, &bytes, ORIGIN, "sanitized");
         if let Some(obj) = image.as_object_mut() {

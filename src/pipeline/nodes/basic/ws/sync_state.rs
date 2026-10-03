@@ -20,7 +20,7 @@
 //!
 //! ```text
 //! --path /players/{session_id}         → /players/abc123
-//! (a placeholder missing from the payload fails with FW_WS_PATH_SEGMENT_EMPTY;
+//! (a placeholder missing from the payload fails with FW_NODE_WS_PATH_SEGMENT_EMPTY;
 //!  numbers are written as text)
 //! --path /places/house/{user_id}       → /places/house/u42
 //! --path /rooms/{room_type}/npcs/{id}  → /rooms/arena/npcs/boss1
@@ -299,7 +299,7 @@ impl NodeHandler for Node {
 
         if room_id.is_empty() {
             return Err(PipelineError::new(
-                "FW_WS_SYNC_STATE_NO_ROOM",
+                "FW_NODE_WS_SYNC_STATE_NO_ROOM",
                 "n.ws.sync_state: room_id missing — set --room or ensure n.trigger.ws is upstream",
             ));
         }
@@ -310,7 +310,7 @@ impl NodeHandler for Node {
         // resolves to nothing is refused: it used to collapse `/players/{id}` to
         // `/players` and write into (or delete) the whole map.
         let resolved_path = interpolate_path(&self.config.path, &input.payload).map_err(|e| {
-            PipelineError::new("FW_WS_PATH_SEGMENT_EMPTY", format!("n.ws.sync_state: {e} (path {})", self.config.path))
+            PipelineError::new("FW_NODE_WS_PATH_SEGMENT_EMPTY", format!("n.ws.sync_state: {e} (path {})", self.config.path))
         })?;
 
         let op = match self.config.op.as_str() {

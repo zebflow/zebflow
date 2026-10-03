@@ -236,11 +236,11 @@ impl NodeHandler for Node {
         let new_val = if self.config.durable {
             self.state_bus
                 .durable_incr(owner, project, key, amount)
-                .map_err(|err| PipelineError::new("KV_INCR_STATE_BUS", err.to_string()))?
+                .map_err(|err| PipelineError::new("FW_NODE_KV_INCR_STATE_BUS", err.to_string()))?
         } else {
             self.state_bus
                 .incr(owner, project, key, amount)
-                .map_err(|err| PipelineError::new("KV_INCR_STATE_BUS", err.to_string()))?
+                .map_err(|err| PipelineError::new("FW_NODE_KV_INCR_STATE_BUS", err.to_string()))?
         };
 
         let out_key = if self.config.out_key.trim().is_empty() {

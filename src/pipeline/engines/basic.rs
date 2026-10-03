@@ -1747,7 +1747,7 @@ impl BasicPipelineEngine {
                     serde_json::from_value(node.config.clone()).unwrap_or_default();
                 let Some(platform) = &self.platform else {
                     return Err(PipelineError::new(
-                        "FS_BARCODE_CODE128",
+                        "FW_NODE_FS_BARCODE_CODE128",
                         "platform service not available in this engine context",
                     ));
                 };
@@ -1758,7 +1758,7 @@ impl BasicPipelineEngine {
                     serde_json::from_value(node.config.clone()).unwrap_or_default();
                 let Some(platform) = &self.platform else {
                     return Err(PipelineError::new(
-                        "FS_BARCODE_QR",
+                        "FW_NODE_FS_BARCODE_QR",
                         "platform service not available in this engine context",
                     ));
                 };
@@ -1769,7 +1769,7 @@ impl BasicPipelineEngine {
                     serde_json::from_value(node.config.clone()).unwrap_or_default();
                 let Some(platform) = &self.platform else {
                     return Err(PipelineError::new(
-                        "IMG_THUMBNAIL",
+                        "FW_NODE_FS_IMAGE_THUMBNAIL",
                         "platform service not available in this engine context",
                     ));
                 };
@@ -2893,7 +2893,7 @@ impl BasicPipelineEngine {
                             let file = match node_store.as_ref() {
                                 Some(store) => {
                                     let written = zebfs.get(&rel_path).map_err(|err| {
-                                        PipelineError::new("WEB_STATIC_READ", err.to_string())
+                                        PipelineError::new("FW_NODE_WEB_STATIC_GENERATE_READ", err.to_string())
                                     })?;
                                     let leaf = rel_path.rsplit('/').next().unwrap_or(&rel_path).to_string();
                                     store.file_ref(&rel_path, &leaf, "text/html", &written.bytes, "web.static.generate", "generated")

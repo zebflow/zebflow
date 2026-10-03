@@ -222,7 +222,7 @@ pub fn definition() -> NodeDefinition {
             crate::pipeline::model::NodeExample::dsl("A reusable lookup", r#"trigger.function --description "Find one user by email." --input email:string! "Address to look up." --output user:object "The row, or null.""#)
                 .input(serde_json::json!({ "email": "a@x.io" }))
                 .output(serde_json::json!({ "email": "a@x.io" }))
-                .note("Registered as `jobs/find-user`; called with `function.call --function find-user --input-value \"{{ { email: input.body.email } }}\"`."),
+                .note("Registered as `jobs/find-user`; called with `function.call --function find-user --input \"{{ { email: input.body.email } }}\"`."),
         ],
         ..Default::default()
     }
