@@ -1405,7 +1405,7 @@ impl BasicPipelineEngine {
             }
             ai::agent::NODE_KIND => {
                 let config: ai::agent::Config = serde_json::from_value(node.config.clone())
-                    .map_err(|err| PipelineError::new("FW_NODE_AGENT_CONFIG", err.to_string()))?;
+                    .map_err(|err| PipelineError::new("FW_NODE_AI_AGENT_CONFIG", err.to_string()))?;
                 Ok(NodeDispatch::Agent(ai::agent::Node::new(
                     config,
                     self.credentials.clone(),
@@ -1569,7 +1569,7 @@ impl BasicPipelineEngine {
                     serde_json::from_value(node.config.clone()).unwrap_or_default();
                 let Some(platform) = &self.platform else {
                     return Err(PipelineError::new(
-                        "FW_NODE_FILE_SAVE",
+                        "FW_NODE_FS_SAVE",
                         "platform service not available in this engine context",
                     ));
                 };
@@ -1655,7 +1655,7 @@ impl BasicPipelineEngine {
                     serde_json::from_value(node.config.clone()).unwrap_or_default();
                 let Some(platform) = &self.platform else {
                     return Err(PipelineError::new(
-                        "FW_NODE_FILE_COMPRESS",
+                        "FW_NODE_FS_COMPRESS",
                         "platform service not available in this engine context",
                     ));
                 };
@@ -1669,7 +1669,7 @@ impl BasicPipelineEngine {
                     serde_json::from_value(node.config.clone()).unwrap_or_default();
                 let Some(platform) = &self.platform else {
                     return Err(PipelineError::new(
-                        "FW_NODE_FILE_DECOMPRESS",
+                        "FW_NODE_FS_DECOMPRESS",
                         "platform service not available in this engine context",
                     ));
                 };
@@ -1711,7 +1711,7 @@ impl BasicPipelineEngine {
                     serde_json::from_value(node.config.clone()).unwrap_or_default();
                 let Some(platform) = &self.platform else {
                     return Err(PipelineError::new(
-                        "FW_NODE_PDF_CONVERT",
+                        "FW_NODE_FS_PDF_CONVERT",
                         "platform service not available in this engine context",
                     ));
                 };
@@ -2438,8 +2438,14 @@ impl BasicPipelineEngine {
                                 "project layout is not configured on this pipeline engine",
                             ));
                         };
-                        let site =
+                        let mut site =
                             web::docs_generate::load_site(&config, template_root, &docs_root)?;
+                        site.set_origin(web::static_site::site_origin(
+                            self.platform.as_ref(),
+                            &ctx.owner,
+                            &ctx.project,
+                            &site.site_root_rel,
+                        ));
                         let options = crate::rwe::ReactiveWebOptions {
                             templates: crate::rwe::TemplateOptions {
                                 template_root: self.template_root.clone(),
@@ -2657,8 +2663,7 @@ impl BasicPipelineEngine {
                                         "template": site.template_rel_path,
                                         "docs_root": config.docs_root,
                                         "site_root": site.site_root_rel,
-                                        "deploy_base_url": site.deploy_base_url,
-                                        "deploy_base_path": site.deploy_base_path,
+                                        "origin": site.deploy_base_url,
                                         "manifest_path": manifest_rel,
                                         "asset_group": asset_group,
                                         "page_count": site.pages.len(),
@@ -2666,7 +2671,7 @@ impl BasicPipelineEngine {
                                         "skipped_files": skipped_files,
                                         "sitemap_path": if site.sitemap_xml.trim().is_empty() { Value::Null } else { Value::String(web::docs_generate::sitemap_rel_path(&site.site_root_rel)) },
                                         "search_index_path": search_index_rel,
-                                        "urls": urls,
+                                        "routes": urls,
                                     }
                                 })),
                                 trace: vec![
@@ -2754,15 +2759,6 @@ impl BasicPipelineEngine {
                                     config.route.clone().filter(|s| !s.trim().is_empty())
                                 {
                                     explicit_route
-                                } else if let Some(deploy_base_path) =
-                                    web::static_generate::effective_deploy_base_path(&config)?
-                                {
-                                    let page_output_path =
-                                        web::static_generate::effective_page_output_path(&config)?;
-                                    web::static_site::route_path_for_output_path(
-                                        &deploy_base_path,
-                                        &page_output_path,
-                                    )?
                                 } else {
                                     web::static_generate::default_route(&config)?
                                 };
@@ -2903,6 +2899,10 @@ impl BasicPipelineEngine {
                             let store_id = node_store.as_ref().map(|store| store.id.clone());
                             let site_root_rel =
                                 web::static_generate::effective_site_root_rel_path(&config)?;
+                            // The site's origin is its folder's serve origin, never a flag.
+                            let site_origin = site_root_rel.as_deref().and_then(|root| {
+                                web::static_site::site_origin(self.platform.as_ref(), &ctx.owner, &ctx.project, root)
+                            });
                             let manifest_rel = if let Some(site_root_rel) = site_root_rel.as_deref()
                             {
                                 let manifest_rel =
@@ -2924,11 +2924,8 @@ impl BasicPipelineEngine {
                                 let _manifest = web::static_site::update_site_manifest(
                                     &site_store,
                                     site_root_rel,
-                                    web::static_generate::effective_deploy_base_url(&config)
-                                        .as_deref(),
-                                    web::static_generate::effective_deploy_base_path(&config)?
-                                        .as_deref()
-                                        .unwrap_or("/"),
+                                    site_origin.as_deref(),
+                                    "/",
                                     web::static_generate::NODE_KIND,
                                     &template_source.id,
                                     &asset_group,
@@ -2955,8 +2952,7 @@ impl BasicPipelineEngine {
                                         "route": route,
                                         "store": store_id,
                                         "file": file,
-                                        "deploy_base_url": web::static_generate::effective_deploy_base_url(&config),
-                                        "deploy_base_path": web::static_generate::effective_deploy_base_path(&config)?,
+                                        "origin": site_origin,
                                         "template": template_source.id,
                                         "site_root": site_root_rel,
                                         "manifest_path": manifest_rel,

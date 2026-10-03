@@ -462,7 +462,14 @@ impl NodeHandler for Node {
 
             // ── random_hex ────────────────────────────────────────────────────
             "random_hex" => {
-                let length = self.config.length.unwrap_or(32) as usize;
+                // 1..=1024 random bytes: an empty token is not a token.
+                let length = crate::pipeline::nodes::shared::limits::within(
+                    self.config.length.unwrap_or(32),
+                    1,
+                    1024,
+                    "--length",
+                    "FW_NODE_CRYPTO_CONFIG",
+                )? as usize;
                 let result = tokio::task::spawn_blocking(move || {
                     use rand::RngExt;
                     let mut rng = rand::rng();

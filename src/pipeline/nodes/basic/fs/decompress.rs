@@ -75,6 +75,8 @@ pub struct DecompressOutput {
     pub format: String,
     /// A durable FileRef for every extracted file.
     pub files: Vec<serde_json::Value>,
+    /// Whether `--delete-source` removed the archive.
+    pub source_deleted: bool,
 }
 
 pub fn definition() -> NodeDefinition {
@@ -243,24 +245,19 @@ impl NodeHandler for Node {
 
         let source_value = resolve_path(&input.payload, source_key).ok_or_else(|| {
             PipelineError::new(
-                "FW_NODE_FILE_DECOMPRESS",
+                "FW_NODE_FS_DECOMPRESS",
                 format!("source path not found at payload key '{source_key}' — chain after n.fs.save or set --source-key"),
             )
         })?;
         let (source_store, source_rel) = open_source(&self.platform, owner, project, source_value, self.config.store.as_deref())?
             .ok_or_else(|| {
                 PipelineError::new(
-                    "FW_NODE_FILE_DECOMPRESS",
+                    "FW_NODE_FS_DECOMPRESS",
                     format!("payload key '{source_key}' must be a FileRef or a store path string"),
                 )
             })?;
-        let source_rel = sanitize_rel_path(&source_rel);
-        if source_rel.is_empty() {
-            return Err(PipelineError::new(
-                "FW_NODE_FILE_DECOMPRESS",
-                "resolved source path is empty after sanitization",
-            ));
-        }
+        let source_rel = crate::zebfs::normalize_object_path(&source_rel)
+            .map_err(|err| PipelineError::new("FW_NODE_FS_DECOMPRESS", format!("source: {}", err.message)))?;
         // Extracted files carry the archive's trust: an uploaded archive's
         // members are as untrusted as the archive.
         let trust = if crate::pipeline::nodes::shared::file_ref::is_file_ref(source_value) {
@@ -276,22 +273,23 @@ impl NodeHandler for Node {
             Ok(stat) if stat.kind == crate::zebfs::ZebFsEntryKind::Object => {}
             _ => {
                 return Err(PipelineError::new(
-                    "FW_NODE_FILE_DECOMPRESS",
+                    "FW_NODE_FS_DECOMPRESS",
                     format!("source archive not found: {source_rel}"),
                 ));
             }
         }
         let folder = resolve_output_dir(&self.config.folder, &source_rel);
-        let folder = target_key(Some(&folder), "", "", "FW_NODE_FILE_DECOMPRESS")?;
+        let folder = target_key(Some(&folder), "", "", "FW_NODE_FS_DECOMPRESS")?;
         let store = open_store(&self.platform, owner, project, self.config.store.as_deref())?;
-        let on_conflict = OnConflict::parse(self.config.on_conflict.as_deref(), OnConflict::Error, "FW_NODE_FILE_DECOMPRESS")?;
-        if !on_conflict.allows_tree(&store.fs, &folder, "FW_NODE_FILE_DECOMPRESS")? {
+        let on_conflict = OnConflict::parse(self.config.on_conflict.as_deref(), OnConflict::Error, "FW_NODE_FS_DECOMPRESS")?;
+        if !on_conflict.allows_tree(&store.fs, &folder, "FW_NODE_FS_DECOMPRESS")? {
             let output = DecompressOutput {
                 source: source_rel.clone(),
                 folder: folder.clone(),
                 store: store.id.clone(),
                 format: "tar.gz".to_string(),
                 files: Vec::new(),
+                source_deleted: false,
             };
             return Ok(NodeExecutionOutput {
                 output_pins: vec![OUTPUT_PIN_OUT.to_string()],
@@ -299,12 +297,22 @@ impl NodeHandler for Node {
                 trace: vec![format!("node_kind={NODE_KIND} src={source_rel} out={folder} skipped=true")],
             });
         }
-        let scratch = StoreScratch::new("FW_NODE_FILE_DECOMPRESS")?;
+        // `overwrite` replaces the folder: files from an earlier extraction
+        // that this archive does not hold would otherwise stay beside it.
+        if on_conflict == OnConflict::Overwrite
+            && store.fs.list(&folder).map(|entries| !entries.is_empty()).unwrap_or(false)
+        {
+            store
+                .fs
+                .delete(&folder)
+                .map_err(|err| PipelineError::new("FW_NODE_FS_DECOMPRESS", format!("clear '{folder}': {err}")))?;
+        }
+        let scratch = StoreScratch::new("FW_NODE_FS_DECOMPRESS")?;
         let source_abs = scratch.pull(&source_store.fs, &source_rel)?;
         let output_abs = scratch.path().join(".zf-extract");
         std::fs::create_dir_all(&output_abs).map_err(|err| {
             PipelineError::new(
-                "FW_NODE_FILE_DECOMPRESS",
+                "FW_NODE_FS_DECOMPRESS",
                 format!("create extract dir: {err}"),
             )
         })?;
@@ -325,16 +333,18 @@ impl NodeHandler for Node {
         .await
         .map_err(|err| {
             PipelineError::new(
-                "FW_NODE_FILE_DECOMPRESS",
+                "FW_NODE_FS_DECOMPRESS",
                 format!("decompress task failed: {err}"),
             )
         })??;
 
         let files = scratch.push_tree_refs(&store, &output_abs, &folder, "fs.decompress", &trust)?;
 
-        // Delete source archive after successful extraction.
-        if self.config.delete_source {
-            let _ = source_store.fs.delete(&source_rel);
+        // The archive goes once every member is written, and a failed delete
+        // fails the node.
+        let source_deleted = self.config.delete_source;
+        if source_deleted {
+            source_store.delete_named(&self.platform, owner, project, &source_rel, "FW_NODE_FS_DECOMPRESS")?;
         }
 
         let count = files.len();
@@ -344,21 +354,12 @@ impl NodeHandler for Node {
             store: store.id.clone(),
             format: "tar.gz".to_string(),
             files,
+            source_deleted,
         };
-        let mut payload = match &input.payload {
-            serde_json::Value::Object(map) => map.clone(),
-            _ => serde_json::Map::new(),
-        };
-        if self.config.delete_source {
-            if let Some(top) = source_key.split('.').next() {
-                payload.remove(top);
-            }
-        }
-        payload.insert("decompressed".to_string(), json!(output));
 
         Ok(NodeExecutionOutput {
             output_pins: vec![OUTPUT_PIN_OUT.to_string()],
-            payload: serde_json::Value::Object(payload),
+            payload: crate::pipeline::nodes::shared::util::with_answer(&input.payload, json!({ "decompressed": output })),
             trace: vec![format!(
                 "node_kind={NODE_KIND} src={source_rel} out={folder} store={} files={count}",
                 store.id
@@ -376,7 +377,7 @@ fn refuse_unsafe_archive_entries(source_abs: &Path) -> Result<(), PipelineError>
     crate::platform::services::project_transfer::validate_archive_entry_names(source_abs).map_err(
         |err| {
             PipelineError::new(
-                "FW_NODE_FILE_DECOMPRESS",
+                "FW_NODE_FS_DECOMPRESS",
                 format!("unsafe archive entry: {}", err.message),
             )
         },
@@ -398,7 +399,7 @@ fn refuse_extracted_symlinks(output_abs: &Path) -> Result<(), PipelineError> {
     };
     unlink_symlinks_under(output_abs);
     Err(PipelineError::new(
-        "FW_NODE_FILE_DECOMPRESS",
+        "FW_NODE_FS_DECOMPRESS",
         format!("unsafe archive entry: {}", err.message),
     ))
 }
@@ -430,14 +431,14 @@ fn extract_tar_gz(source_abs: &Path, output_abs: &Path) -> Result<(), PipelineEr
         .output()
         .map_err(|err| {
             PipelineError::new(
-                "FW_NODE_FILE_DECOMPRESS",
+                "FW_NODE_FS_DECOMPRESS",
                 format!("failed running tar: {err}"),
             )
         })?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
         return Err(PipelineError::new(
-            "FW_NODE_FILE_DECOMPRESS",
+            "FW_NODE_FS_DECOMPRESS",
             format!("tar extract failed: {stderr}"),
         ));
     }
@@ -449,20 +450,13 @@ fn validate_format(format: &str) -> Result<(), PipelineError> {
         Ok(())
     } else {
         Err(PipelineError::new(
-            "FW_NODE_FILE_DECOMPRESS",
+            "FW_NODE_FS_DECOMPRESS",
             format!(
                 "unsupported archive format '{}'; first slice supports only tar.gz",
                 format
             ),
         ))
     }
-}
-
-fn sanitize_rel_path(path: &str) -> String {
-    path.split('/')
-        .filter(|segment| !segment.is_empty() && *segment != "." && *segment != "..")
-        .collect::<Vec<_>>()
-        .join("/")
 }
 
 fn sanitize_archive_stem(name: &str) -> String {
@@ -485,9 +479,10 @@ fn sanitize_archive_stem(name: &str) -> String {
 }
 
 fn resolve_output_dir(configured: &str, source_rel_path: &str) -> String {
-    let configured = sanitize_rel_path(configured);
+    let configured = configured.trim().trim_matches('/');
     if !configured.is_empty() {
-        return configured;
+        // Normalised (and `..` refused) by `target_key`, not quietly cleaned.
+        return configured.to_string();
     }
     let source_leaf = Path::new(source_rel_path)
         .file_name()
@@ -510,7 +505,7 @@ mod tests {
 
     use super::{
         Config, Node, NodeExecutionInput, NodeHandler, refuse_extracted_symlinks,
-        refuse_unsafe_archive_entries, resolve_output_dir, sanitize_rel_path,
+        refuse_unsafe_archive_entries, resolve_output_dir,
     };
     use crate::platform::PlatformConfig;
     use crate::platform::services::PlatformService;
@@ -570,14 +565,8 @@ mod tests {
         );
 
         let error = refuse_unsafe_archive_entries(&archive).expect_err("traversal is refused");
-        assert_eq!(error.code, "FW_NODE_FILE_DECOMPRESS");
+        assert_eq!(error.code, "FW_NODE_FS_DECOMPRESS");
         assert!(error.message.contains("unsafe archive entry"), "{error:?}");
-
-        // And the sanitizer alone would have hidden it.
-        assert_eq!(
-            sanitize_rel_path("../../../../tmp/zebflow-escape"),
-            "tmp/zebflow-escape"
-        );
     }
 
     #[test]
@@ -675,7 +664,7 @@ mod tests {
             })
             .await
             .expect_err("a hostile archive is refused");
-        assert_eq!(error.code, "FW_NODE_FILE_DECOMPRESS");
+        assert_eq!(error.code, "FW_NODE_FS_DECOMPRESS");
         assert!(
             !escape.exists(),
             "an archive member escaped to {}",
@@ -752,14 +741,6 @@ mod tests {
                 .files_dir
                 .join("extracted/ok/bundle/paper.txt")
                 .is_file()
-        );
-    }
-
-    #[test]
-    fn sanitizes_archive_paths() {
-        assert_eq!(
-            sanitize_rel_path("../archives/./bundle.tar.gz"),
-            "archives/bundle.tar.gz"
         );
     }
 

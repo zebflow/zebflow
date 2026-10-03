@@ -126,17 +126,9 @@ pub enum ReturnMode {
 #[serde(rename_all = "snake_case")]
 pub enum LipSyncMode {
     None,
-    // The short aliases used to be reachable only through the retired
-    // --lipsync-expr, which parsed them by hand. Declaring them here keeps
-    // them working and makes them available on the literal flag for the first
-    // time.
-    #[serde(alias = "word_to_vowel")]
     Basic,
-    #[serde(alias = "timed")]
     TimedWords,
-    #[serde(alias = "audio")]
     AudioGuided,
-    #[serde(alias = "segmented")]
     AudioSegmented,
 }
 
@@ -247,8 +239,8 @@ pub fn definition() -> NodeDefinition {
         title: "AI TTS".to_string(),
         description: "Turns text into speech with a local Piper model named by a credential (the owner installs the voice files; the \
             credential points at them). `--text \"{{ expr }}\"` is what to say; `--filename x` (in `--folder`, default `audio`) or `--path audio/x.wav` writes the file, `--return file|blob|both` \
-            decides whether the payload carries a FileRef, the bytes, or both. Replaces the payload with `{ audio: { … FileRef … }, provider, format, mime_type }`; \
-            the page plays `input.audio` through its `/fs/…` url."
+            decides whether `audio` carries a FileRef, the bytes, or both. Adds `audio: { file, blob_base64, word_timings, lipsync, provider, format, mime_type, … }` \
+            to the payload and keeps the rest; a page plays `audio.blob_base64` (a stored file is reachable only where the owner exposes its folder)."
             .to_string(),
         input_schema: json!({
             "type": "object",
@@ -268,12 +260,12 @@ pub fn definition() -> NodeDefinition {
                         "samples": { "type": "integer" },
                         "bytes": { "type": "integer" },
                         "duration_ms": { "type": "integer" },
-                        "credential_id": { "type": "string" }
+                        "credential_id": { "type": "string" },
+                        "blob_base64": { "type": ["string", "null"] },
+                        "word_timings": { "type": ["array", "null"] },
+                        "lipsync": { "type": ["object", "null"] }
                     }
-                },
-                "audio_blob_base64": { "type": ["string", "null"] },
-                "word_timings": { "type": ["array", "null"] },
-                "lipsync": { "type": ["object", "null"] }
+                }
             }
         }),
         input_pins: vec![INPUT_PIN_IN.to_string()],
@@ -554,11 +546,6 @@ impl NodeHandler for Node {
                 "credential service is not configured on this framework engine",
             )
         })?;
-        let layout = platform
-            .file
-            .ensure_project_layout(owner, project)
-            .map_err(|err| PipelineError::new("FW_NODE_AI_TTS_LAYOUT", err.to_string()))?;
-
         let provider = self.config.provider.trim().to_lowercase();
         if provider != "piper" {
             return Err(PipelineError::new(
@@ -623,10 +610,9 @@ impl NodeHandler for Node {
             }
         }
 
-        // Piper reads its model from paths, and the project's files live in
-        // its one active store: model, config and espeak data are pulled into
-        // a scratch folder for the run.
-        let zebfs = layout.open_files();
+        // Piper reads its model from paths: model, config and espeak data are
+        // pulled from this node's pinned store into a scratch folder for the run.
+        let zebfs = open_store(platform, owner, project, self.config.store.as_deref())?.fs;
         let scratch = StoreScratch::new("FW_NODE_AI_TTS_FILE")?;
         let model_rel = normalize_zebfs_asset_rel_path(required_secret_str(&secret.model_file, "model_file")?)?;
         let config_rel = normalize_zebfs_asset_rel_path(required_secret_str(&secret.config_file, "config_file")?)?;
@@ -703,23 +689,23 @@ impl NodeHandler for Node {
             let final_rel = normalize_audio_output_rel_path(&key)?;
             let store = open_store(platform, owner, project, self.config.store.as_deref())?;
             let on_conflict = OnConflict::parse(self.config.on_conflict.as_deref(), OnConflict::Error, "FW_NODE_AI_TTS_FILE")?;
-            let bytes = if on_conflict.allows(&store.fs, &final_rel, "FW_NODE_AI_TTS_FILE")? {
+            if on_conflict.allows(&store.fs, &final_rel, "FW_NODE_AI_TTS_FILE")? {
                 store.fs.put(&final_rel, &wav_bytes).map_err(|err| {
                     PipelineError::new("FW_NODE_AI_TTS_FILE", format!("failed to write wav file: {err}"))
                 })?;
-                wav_bytes.clone()
+                let leaf = final_rel.rsplit('/').next().unwrap_or(&final_rel).to_string();
+                store.file_ref(&final_rel, &leaf, "audio/wav", &wav_bytes, "ai.tts", "generated")
             } else {
-                store.fs.get(&final_rel).map_err(|err| PipelineError::new("FW_NODE_AI_TTS_FILE", err.to_string()))?.bytes
-            };
-            let leaf = final_rel.rsplit('/').next().unwrap_or(&final_rel).to_string();
-            store.file_ref(&final_rel, &leaf, "audio/wav", &bytes, "ai.tts", "generated")
+                // Skipped: the answer is the file already there, as it is.
+                store.stored_ref(&final_rel, "ai.tts", "generated", "FW_NODE_AI_TTS_FILE")?
+            }
         } else {
             Value::Null
         };
 
         Ok(NodeExecutionOutput {
             output_pins: vec![OUTPUT_PIN_OUT.to_string()],
-            payload: json!({
+            payload: crate::pipeline::nodes::shared::util::with_answer(&input.payload, json!({
                 "audio": {
                     "provider": provider,
                     "format": "wav",
@@ -730,11 +716,11 @@ impl NodeHandler for Node {
                     "bytes": bridge_result.bytes,
                     "duration_ms": bridge_result.duration_ms,
                     "credential_id": credential_id,
-                },
-                "audio_blob_base64": if needs_blob { Value::String(bridge_result.audio_blob_base64) } else { Value::Null },
-                "word_timings": word_timings,
-                "lipsync": lipsync_payload
-            }),
+                    "blob_base64": if needs_blob { Value::String(bridge_result.audio_blob_base64) } else { Value::Null },
+                    "word_timings": word_timings,
+                    "lipsync": lipsync_payload
+                }
+            })),
             trace: vec![format!(
                 "node_kind={NODE_KIND} provider=piper credential={credential_id} lipsync={}",
                 lipsync_mode.as_str()
@@ -1602,19 +1588,18 @@ mod tests {
         assert!(speed_to_length_scale(0.0).is_err());
     }
 
-    /// The short aliases survive the retirement of --lipsync-expr, because
-    /// they now live on the enum and reach the literal flag through serde.
+    /// One word per mode: the short aliases are gone.
     #[test]
-    fn lipsync_mode_accepts_its_aliases_through_config() {
+    fn lipsync_mode_takes_one_word_per_mode() {
         let parse = |raw: &str| {
             serde_json::from_value::<LipSyncMode>(serde_json::json!(raw)).expect("mode")
         };
         assert_eq!(parse("none"), LipSyncMode::None);
-        assert_eq!(parse("word_to_vowel"), LipSyncMode::Basic);
         assert_eq!(parse("basic"), LipSyncMode::Basic);
-        assert_eq!(parse("timed"), LipSyncMode::TimedWords);
-        assert_eq!(parse("audio"), LipSyncMode::AudioGuided);
-        assert_eq!(parse("segmented"), LipSyncMode::AudioSegmented);
+        assert_eq!(parse("timed_words"), LipSyncMode::TimedWords);
+        assert_eq!(parse("audio_guided"), LipSyncMode::AudioGuided);
+        assert_eq!(parse("audio_segmented"), LipSyncMode::AudioSegmented);
+        assert!(serde_json::from_value::<LipSyncMode>(serde_json::json!("timed")).is_err());
     }
 
     #[test]
@@ -1819,18 +1804,18 @@ mod tests {
             "expected synthesized wav file to exist"
         );
         assert!(
-            out.payload["audio_blob_base64"]
+            out.payload["audio"]["blob_base64"]
                 .as_str()
                 .map(|value| !value.is_empty())
                 .unwrap_or(false),
             "expected inline audio blob"
         );
         assert_eq!(
-            out.payload["lipsync"]["metadata"]["phoneme_method"],
+            out.payload["audio"]["lipsync"]["metadata"]["phoneme_method"],
             json!("basic")
         );
         assert!(
-            out.payload["word_timings"]
+            out.payload["audio"]["word_timings"]
                 .as_array()
                 .map(|items| !items.is_empty())
                 .unwrap_or(false)

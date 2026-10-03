@@ -40,19 +40,18 @@ pub struct Output<'a> {
 /// Write the file into the node's store and answer its FileRef.
 pub fn save(platform: &Arc<PlatformService>, out: Output<'_>) -> Result<Value, PipelineError> {
     let err = |m: String| PipelineError::new("FW_NODE_FS_BARCODE", m);
-    let folder = sanitize_folder(out.folder);
+    let folder = out.folder;
     let stem = out.filename.map(filename_stem).filter(|s| !s.is_empty()).unwrap_or_else(|| Uuid::new_v4().to_string());
     let name = format!("{stem}.{}", out.format);
-    let rel = target_key(out.path, &folder, &name, "FW_NODE_FS_BARCODE")?;
+    let rel = target_key(out.path, folder, &name, "FW_NODE_FS_BARCODE")?;
     let store = open_store(platform, out.owner, out.project, out.store)?;
-    let bytes = if OnConflict::parse(out.on_conflict, OnConflict::Error, "FW_NODE_FS_BARCODE")?.allows(&store.fs, &rel, "FW_NODE_FS_BARCODE")? {
-        store.fs.put(&rel, &out.bytes).map_err(|e| err(format!("write: {e}")))?;
-        out.bytes
-    } else {
-        store.fs.get(&rel).map_err(|e| err(format!("read: {e}")))?.bytes
-    };
+    if !OnConflict::parse(out.on_conflict, OnConflict::Error, "FW_NODE_FS_BARCODE")?.allows(&store.fs, &rel, "FW_NODE_FS_BARCODE")? {
+        // Skipped: the answer is the file already there, as it is.
+        return store.stored_ref(&rel, out.origin, "generated", "FW_NODE_FS_BARCODE");
+    }
+    store.fs.put(&rel, &out.bytes).map_err(|e| err(format!("write: {e}")))?;
     let mime = if out.format == "svg" { "image/svg+xml" } else { "image/png" };
-    Ok(store.file_ref(&rel, &name, mime, &bytes, out.origin, "generated"))
+    Ok(store.file_ref(&rel, &name, mime, &out.bytes, out.origin, "generated"))
 }
 
 /// `--path`, `--store` and `--on-conflict`, the destination flags every
@@ -70,14 +69,6 @@ pub(super) fn destination_fields() -> Vec<NodeFieldDef> {
     let mut fields = vec![field("path", "Path", "Exact store key; overrides folder and filename.", None)];
     fields.extend(store_fields(OnConflict::Error));
     fields
-}
-
-fn sanitize_folder(folder: &str) -> String {
-    folder
-        .split('/')
-        .filter(|seg| !seg.is_empty() && *seg != "." && *seg != "..")
-        .collect::<Vec<_>>()
-        .join("/")
 }
 
 // ── Definition helpers shared by the symbologies ─────────────────────────

@@ -67,8 +67,9 @@ mailing a blank field.
 Give both `--text` and `--html` and the message goes out as
 `multipart/alternative`: the reader's client picks. One of the two is required.
 
-The output is `{ "sent": true, "to": …, "subject": … }` — what was sent and to
-whom, never the credential.
+The node adds `mail: { "sent": true, "attached": […], "to": …, "subject": … }`
+to the payload and keeps the rest — what was sent and to whom, never the
+credential.
 
 ## Refusals
 

@@ -168,7 +168,7 @@ impl NodeHandler for Node {
 
         if key.is_empty() {
             return Err(PipelineError::new(
-                "KV_EXPIRE_KEY",
+                "FW_NODE_KV_EXPIRE_KEY",
                 "n.kv.expire: --key is required",
             ));
         }

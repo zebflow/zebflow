@@ -222,15 +222,20 @@ impl NodeHandler for Node {
 
         if key.is_empty() {
             return Err(PipelineError::new(
-                "KV_INCR_KEY",
+                "FW_NODE_KV_INCR_KEY",
                 "n.kv.incr: --key is required",
             ));
         }
 
+        // Absent is the default step of 1; anything else must be a whole
+        // number — a value that is not one is refused, never read as 1.
+        let refuse = |raw: &str| PipelineError::new("FW_NODE_KV_INCR_AMOUNT", format!("n.kv.incr: --amount '{raw}' is not a whole number"));
         let amount: i64 = match &self.config.amount {
-            Some(Value::Number(n)) => n.as_i64().unwrap_or(1),
-            Some(Value::String(s)) => s.trim().parse().unwrap_or(1),
-            _ => 1,
+            None | Some(Value::Null) => 1,
+            Some(Value::Number(n)) => n.as_i64().ok_or_else(|| refuse(&n.to_string()))?,
+            Some(Value::String(s)) if s.trim().is_empty() => 1,
+            Some(Value::String(s)) => s.trim().parse().map_err(|_| refuse(s))?,
+            Some(other) => return Err(refuse(&other.to_string())),
         };
 
         let new_val = if self.config.durable {

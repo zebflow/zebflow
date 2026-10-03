@@ -135,7 +135,7 @@ impl NodeHandler for Node {
 
         if channel.is_empty() {
             return Err(PipelineError::new(
-                "KV_PUBLISH_CHANNEL",
+                "FW_NODE_KV_PUBLISH_CHANNEL",
                 "n.kv.publish: --channel is required",
             ));
         }

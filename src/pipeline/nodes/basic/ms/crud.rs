@@ -106,6 +106,7 @@ fn layer_to_json(record: &LayerRecord) -> Value {
     json!({
         "layer_id": record.layer_id,
         "path": record.path,
+        "store": record.store,
         "source_path": record.source_path,
         "source_kind": if record.source_kind.is_empty() {
             if record.artifact_manifest_path.is_some() { "geojson_artifact" } else { "geojson_file" }
@@ -162,10 +163,9 @@ pub struct Config {
     pub from: Value,
     #[serde(default)]
     pub source_kind: String,
+    /// Serve queries without a bbox (default: a bbox is required).
     #[serde(default)]
-    pub bbox_required: Option<bool>,
-    #[serde(default)]
-    pub no_bbox_required: Option<bool>,
+    pub bbox_optional: bool,
     #[serde(default)]
     pub max_features: Option<usize>,
     #[serde(default)]
@@ -194,12 +194,9 @@ pub struct Config {
     /// Default filter expression (e.g. "category:residential;value>100").
     #[serde(default)]
     pub filter: Option<String>,
-    // Spatial optimization
+    /// Serve the source as it is, without the optimized GeoParquet copy.
     #[serde(default)]
-    pub optimize: bool,
-    /// Skip auto-conversion to optimized GeoParquet. Keeps original format.
-    #[serde(default)]
-    pub no_optimize: bool,
+    pub skip_optimize: bool,
     /// Function pipeline slug for GeoJsonFunction source kind.
     #[serde(default)]
     pub function: Option<String>,
@@ -294,14 +291,9 @@ pub fn publish_definition() -> NodeDefinition {
                 required: false,
             },
             bool_flag(
-                "--bbox-required",
-                "bbox_required",
-                "Enforce bbox parameter in queries. Default: true.",
-            ),
-            bool_flag(
-                "--no-bbox-required",
-                "no_bbox_required",
-                "Disable bbox requirement (allow queries without bbox).",
+                "--bbox-optional",
+                "bbox_optional",
+                "Serve queries without a bbox. Default: a bbox is required.",
             ),
             scalar_flag(
                 "--max-features",
@@ -328,14 +320,9 @@ pub fn publish_definition() -> NodeDefinition {
             scalar_flag("--style", "style_dsl", "Style DSL expression (e.g. 'cb(population,5,YlOrRd)'). Overrides individual fill/stroke flags."),
             scalar_flag("--filter", "filter", "Default filter expression (e.g. 'category:residential;value>100')"),
             bool_flag(
-                "--optimize",
-                "optimize",
-                "Deprecated: optimization is now the default. Use --no-optimize to disable.",
-            ),
-            bool_flag(
-                "--no-optimize",
-                "no_optimize",
-                "Skip auto-conversion to optimized GeoParquet; keep the original source format.",
+                "--skip-optimize",
+                "skip_optimize",
+                "Serve the source as it is, without the optimized GeoParquet copy.",
             ),
             scalar_flag(
                 "--function",
@@ -380,11 +367,11 @@ pub fn publish_definition() -> NodeDefinition {
                 ..Default::default()
             },
             NodeFieldDef {
-                name: "bbox_required".to_string(),
-                label: "Require BBox".to_string(),
+                name: "bbox_optional".to_string(),
+                label: "BBox optional".to_string(),
                 field_type: NodeFieldType::Checkbox,
-                default_value: Some(json!(true)),
-                help: Some("Enforce bbox parameter in queries.".to_string()),
+                default_value: Some(json!(false)),
+                help: Some("Serve queries without a bbox. Off: a bbox is required.".to_string()),
                 ..Default::default()
             },
             NodeFieldDef {
@@ -424,7 +411,7 @@ pub fn publish_definition() -> NodeDefinition {
                 ..Default::default()
             },
             NodeFieldDef {
-                name: "no_optimize".to_string(),
+                name: "skip_optimize".to_string(),
                 label: "Skip Optimization".to_string(),
                 field_type: NodeFieldType::Checkbox,
                 default_value: Some(json!(false)),
@@ -465,7 +452,7 @@ pub fn publish_definition() -> NodeDefinition {
             LayoutItem::Field("from".to_string()),
             LayoutItem::Row {
                 row: vec![
-                    LayoutItem::Field("bbox_required".to_string()),
+                    LayoutItem::Field("bbox_optional".to_string()),
                     LayoutItem::Field("max_features".to_string()),
                 ],
             },
@@ -476,7 +463,7 @@ pub fn publish_definition() -> NodeDefinition {
                     LayoutItem::Field("max_zoom".to_string()),
                 ],
             },
-            LayoutItem::Field("no_optimize".to_string()),
+            LayoutItem::Field("skip_optimize".to_string()),
             LayoutItem::Row {
                 row: vec![
                     LayoutItem::Field("function".to_string()),
@@ -733,28 +720,33 @@ impl Node {
             .ensure_project_layout(owner, project)
             .map_err(|e| PipelineError::new("FW_NODE_MS_PUBLISH", e.to_string()))?;
 
-        let store = project_store::open_store(
-            &self.platform,
-            owner,
-            project,
-            from_store.as_deref().or(self.config.store.as_deref()),
-        )?;
+        // The source is read from its own store (a FileRef's, or this
+        // node's); the optimized copy is this node's own object in this
+        // node's store, under `mapserver/.optimized/`, which no source may name.
+        let store = project_store::open_store(&self.platform, owner, project, self.config.store.as_deref())?;
+        let source_store = match from_store.as_deref() {
+            Some(id) if id != store.id => project_store::open_store(&self.platform, owner, project, Some(id))?,
+            _ => project_store::open_store(&self.platform, owner, project, Some(&store.id))?,
+        };
+        let mut served_store = source_store.id.clone();
         if !is_function_mode {
-            store.fs.head(&source_path).map_err(|e| {
+            if source_path.trim_start_matches('/').starts_with("mapserver/.optimized/") {
+                return Err(PipelineError::new(
+                    "FW_NODE_MS_PUBLISH",
+                    "--from may not name mapserver/.optimized/ — that folder holds the optimized copies this node writes",
+                ));
+            }
+            source_store.fs.head(&source_path).map_err(|e| {
                 PipelineError::new(
                     "FW_NODE_MS_PUBLISH",
-                    format!("source file not found in store '{}': {e}", store.id),
+                    format!("source file not found in store '{}': {e}", source_store.id),
                 )
             })?;
         }
         // Optimized copies are built here and streamed into the store.
         let scratch = StoreScratch::new("FW_NODE_MS_PUBLISH")?;
 
-        let bbox_required = if self.config.no_bbox_required.unwrap_or(false) {
-            false
-        } else {
-            self.config.bbox_required.unwrap_or(true)
-        };
+        let bbox_required = !self.config.bbox_optional;
         let max_features = self.config.max_features.unwrap_or(1000);
         let allowed_properties: Vec<String> = self
             .config
@@ -777,13 +769,12 @@ impl Node {
         } else {
             self.platform
                 .file
-                .object_local_path(owner, project, Some(&store.id), &source_path)
+                .object_local_path(owner, project, Some(&source_store.id), &source_path)
                 .map_err(|e| PipelineError::new("FW_NODE_MS_PUBLISH", e.message))?
         };
         let source_lower = source_path.to_ascii_lowercase();
 
-        // Determine if we should optimize (default=yes, opt-out with --no-optimize)
-        let should_optimize = !self.config.no_optimize && !is_function_mode;
+        let should_optimize = !self.config.skip_optimize && !is_function_mode;
 
         let effective_kind = if is_function_mode {
             "geojson_function".to_string()
@@ -842,6 +833,7 @@ impl Node {
                     );
 
                     source_path = optimized_rel;
+                served_store = store.id.clone();
                     feature_count = Some(report.rows);
                     optimization_info = Some(json!({
                         "applied": true,
@@ -915,6 +907,7 @@ impl Node {
 
                 feature_count = Some(convert_report.feature_count);
                 source_path = optimized_rel;
+                served_store = store.id.clone();
                 optimization_info = Some(json!({
                     "applied": true,
                     "source_format": "geojson",
@@ -932,16 +925,16 @@ impl Node {
                     "FW_NODE_MS_PUBLISH",
                     format!(
                         "cannot auto-detect format for '{}'; \
-                         use --no-optimize to publish without conversion, \
+                         use --skip-optimize to publish without conversion, \
                          or rename the file with a .geojson or .parquet extension",
                         source_path
                     ),
                 ));
             }
         } else {
-            // --no-optimize: legacy behavior
+            // --skip-optimize: the source is served as it is
             let source_kind = if self.config.source_kind.trim().is_empty() {
-                // Auto-detect source_kind for --no-optimize
+                // Auto-detect source_kind for --skip-optimize
                 if source_lower.ends_with(".parquet") || source_lower.ends_with(".pq") {
                     "geoparquet".to_string()
                 } else {
@@ -1044,7 +1037,7 @@ impl Node {
         // Upsert into registry
         let record = LayerRecord {
             layer_id: name.to_string(),
-            store: store.id.clone(),
+            store: served_store,
             path: registry::normalize_layer_path(path).to_string(),
             source_path: source_path.clone(),
             source_kind: effective_kind,
@@ -1147,7 +1140,9 @@ impl Node {
                         format!("mapserver/.optimized/{name}.spatial.parquet"),
                         format!("mapserver/.optimized/{name}.spatial.stats.json"),
                     ] {
-                        let _ = store.fs.delete(&key);
+                        if store.fs.head(&key).is_ok() {
+                            store.delete_named(&self.platform, owner, project, &key, "FW_NODE_MS_UNPUBLISH")?;
+                        }
                     }
                 }
             }

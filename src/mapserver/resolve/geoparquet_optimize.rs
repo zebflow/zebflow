@@ -97,25 +97,40 @@ fn compute_column_stats_from_file(
         .build()
         .map_err(|e| format!("failed to build parquet reader: {e}"))?;
 
+    // The file is read batch by batch and never held whole: the extent is
+    // folded across every batch, and the column statistics (top values,
+    // cardinality — what the publish dialog shows) come from the first
+    // STATS_SAMPLE_ROWS rows.
+    const STATS_SAMPLE_ROWS: usize = 262_144;
     let schema = reader.schema().clone();
-    let batches: Vec<RecordBatch> = reader
-        .collect::<Result<_, _>>()
-        .map_err(|e| format!("failed to read parquet batches: {e}"))?;
-
-    if batches.is_empty() {
+    let mut sample: Vec<RecordBatch> = Vec::new();
+    let mut sampled_rows = 0usize;
+    let mut extent = [f64::MAX, f64::MAX, f64::MIN, f64::MIN];
+    let mut any_rows = false;
+    for batch in reader {
+        let batch = batch.map_err(|e| format!("failed to read parquet batches: {e}"))?;
+        if batch.num_rows() == 0 {
+            continue;
+        }
+        any_rows = true;
+        let part = read_extent_from_bbox_columns(&batch);
+        extent = [extent[0].min(part[0]), extent[1].min(part[1]), extent[2].max(part[2]), extent[3].max(part[3])];
+        if sampled_rows < STATS_SAMPLE_ROWS {
+            sampled_rows += batch.num_rows();
+            sample.push(batch);
+        }
+    }
+    if !any_rows {
         return Err("optimized parquet has no data".to_string());
     }
 
-    let combined = concat_batches(&schema, &batches)
+    let combined = concat_batches(&schema, &sample)
         .map_err(|e| format!("failed to concatenate batches: {e}"))?;
 
     let geom_idx =
         detect_geom_column_index(&schema).ok_or("no geometry column found in optimized file")?;
     let geom_col = schema.field(geom_idx).name().clone();
     let column_stats = compute_column_stats(&combined, geom_idx);
-
-    // Read extent from bbox columns (always present after optimization)
-    let extent = read_extent_from_bbox_columns(&combined);
 
     Ok((column_stats, geom_col, extent))
 }

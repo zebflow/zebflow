@@ -115,7 +115,6 @@ pub fn definition() -> NodeDefinition {
                     "properties": {
                         "from": { "type": "string" },
                         "to": { "type": ["string", "null"] },
-                        "url": { "type": ["string", "null"] },
                         "from_format": { "type": "string" },
                         "to_format": { "type": ["string", "null"] },
                         "rows": { "type": "integer" },
@@ -479,9 +478,11 @@ impl Node {
             let format =
                 normalize_format(self.config.from_format.as_deref(), Some(&rel_path), "source")?;
             ensure_materialization_safe(zebfs, &rel_path)?;
-            let object = zebfs
-                .get(&rel_path)
-                .map_err(|err| PipelineError::new("FW_NODE_TABLE_CONVERT", err.to_string()))?;
+            let object = crate::zebfs::ZebFsObject {
+                path: rel_path.clone(),
+                bytes: crate::pipeline::nodes::shared::project_store::read_capped(zebfs, &rel_path, "FW_NODE_TABLE_CONVERT")?,
+                stat: zebfs.head(&rel_path).map_err(|err| PipelineError::new("FW_NODE_TABLE_CONVERT", err.to_string()))?,
+            };
             return Ok(SourceData {
                 label: rel_path,
                 value: SourceValue::Bytes(object.bytes),
@@ -503,9 +504,11 @@ impl Node {
             let format =
                 normalize_format(self.config.from_format.as_deref(), Some(&rel_path), "source")?;
             ensure_materialization_safe(zebfs, &rel_path)?;
-            let object = zebfs
-                .get(&rel_path)
-                .map_err(|err| PipelineError::new("FW_NODE_TABLE_CONVERT", err.to_string()))?;
+            let object = crate::zebfs::ZebFsObject {
+                path: rel_path.clone(),
+                bytes: crate::pipeline::nodes::shared::project_store::read_capped(zebfs, &rel_path, "FW_NODE_TABLE_CONVERT")?,
+                stat: zebfs.head(&rel_path).map_err(|err| PipelineError::new("FW_NODE_TABLE_CONVERT", err.to_string()))?,
+            };
             return Ok(SourceData {
                 label: rel_path,
                 value: SourceValue::Bytes(object.bytes),

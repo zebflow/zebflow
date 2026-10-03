@@ -69,8 +69,9 @@ pub fn open_store(
     Ok(NodeStore { id: store.id, backend: store.backend, fs: store.fs })
 }
 
-/// The store and key a source value names: a FileRef's own `store` and `ref`,
-/// or a bare store key in the node's own store.
+/// The store and key a source value names: a FileRef's own `store` and `ref`
+/// (the FileRef validated first — one without `store` is refused, never read
+/// from the default store), or a bare store key in the node's own store.
 pub fn open_source(
     platform: &Arc<PlatformService>,
     owner: &str,
@@ -78,6 +79,9 @@ pub fn open_source(
     value: &Value,
     node_store: Option<&str>,
 ) -> Result<Option<(NodeStore, String)>, PipelineError> {
+    if super::file_ref::is_file_ref(value) {
+        super::file_ref::validate_file_ref(value)?;
+    }
     let Some(rel) = super::file_ref::zebfs_rel_path_or_string(value)? else {
         return Ok(None);
     };
@@ -87,6 +91,99 @@ pub fn open_source(
         node_store
     };
     Ok(Some((open_store(platform, owner, project, store_id)?, rel)))
+}
+
+/// One repository file's bytes, for a node that serves or draws from the
+/// project's source (`web.response --file`, `svg.convert repo://`, a site's
+/// static assets). The key is normalised (`..`, absolute and empty segments
+/// refused), no segment may be a link, and the read is capped
+/// (`node-conventions.md` §3).
+pub fn read_repo_file(root: &std::path::Path, rel: &str, code: &'static str) -> Result<Vec<u8>, PipelineError> {
+    let rel = crate::zebfs::normalize_object_path(rel.trim_start_matches('/'))
+        .map_err(|err| PipelineError::new(code, format!("'{rel}': {}", err.message)))?;
+    let mut path = root.to_path_buf();
+    for segment in rel.split('/') {
+        path.push(segment);
+        let meta = std::fs::symlink_metadata(&path)
+            .map_err(|_| PipelineError::new(code, format!("'{rel}' is not in the project")))?;
+        if meta.file_type().is_symlink() {
+            return Err(PipelineError::new(code, format!("'{rel}' passes through a link; repository reads never follow one")));
+        }
+    }
+    let meta = std::fs::metadata(&path).map_err(|err| PipelineError::new(code, format!("'{rel}': {err}")))?;
+    if !meta.is_file() {
+        return Err(PipelineError::new(code, format!("'{rel}' is not a file")));
+    }
+    if meta.len() > MAX_NODE_OBJECT_BYTES {
+        return Err(PipelineError::new(code, format!("'{rel}' is {} bytes, over the {MAX_NODE_OBJECT_BYTES} a node reads at once", meta.len())));
+    }
+    std::fs::read(&path).map_err(|err| PipelineError::new(code, format!("'{rel}': {err}")))
+}
+
+/// [`NodeStore::read_capped`] for a store held without its id.
+pub fn read_capped(fs: &ZebFs, key: &str, code: &'static str) -> Result<Vec<u8>, PipelineError> {
+    let stat = fs.head(key).map_err(|err| PipelineError::new(code, format!("'{key}': {err}")))?;
+    if stat.size > MAX_NODE_OBJECT_BYTES {
+        return Err(PipelineError::new(
+            code,
+            format!("'{key}' is {} bytes, over the {MAX_NODE_OBJECT_BYTES} a node reads at once", stat.size),
+        ));
+    }
+    fs.get(key).map(|object| object.bytes).map_err(|err| PipelineError::new(code, format!("'{key}': {err}")))
+}
+
+/// The most a node reads into memory at once (`node-conventions.md` §3).
+/// Anything larger streams through a scratch file.
+pub const MAX_NODE_OBJECT_BYTES: u64 = 128 * 1024 * 1024;
+
+impl NodeStore {
+    /// One object's bytes, refused above [`MAX_NODE_OBJECT_BYTES`] before any
+    /// byte is read.
+    pub fn read_capped(&self, key: &str, code: &'static str) -> Result<Vec<u8>, PipelineError> {
+        read_capped(&self.fs, key, code)
+    }
+
+    /// A durable FileRef for an object already in this store, digested by
+    /// streaming it rather than holding it.
+    pub fn stored_ref(&self, key: &str, origin: &str, trust: &str, code: &'static str) -> Result<Value, PipelineError> {
+        let leaf = key.rsplit('/').next().unwrap_or(key).to_string();
+        let mime = super::file_ref::mime_for_filename(&leaf);
+        let local = self.fs.local_path(key).map_err(|err| PipelineError::new(code, err.to_string()))?;
+        let scratch;
+        let path = match local {
+            Some(path) => path,
+            None => {
+                scratch = super::store_scratch::StoreScratch::new(code)?;
+                let path = scratch.local("object");
+                self.fs.get_to_file(key, &path).map_err(|err| PipelineError::new(code, err.to_string()))?;
+                path
+            }
+        };
+        self.file_ref_from_file(key, &leaf, mime, &path, origin, trust, code)
+    }
+
+    /// Deletes one object the run names (`--delete-source`) and forgets its
+    /// exposure rule, so a later object at that key starts private. A failure
+    /// fails the node.
+    pub fn delete_named(
+        &self,
+        platform: &PlatformService,
+        owner: &str,
+        project: &str,
+        key: &str,
+        code: &'static str,
+    ) -> Result<(), PipelineError> {
+        self.fs.delete(key).map_err(|err| PipelineError::new(code, format!("delete '{key}': {err}")))?;
+        let layout = platform
+            .file
+            .ensure_project_layout(owner, project)
+            .map_err(|err| PipelineError::new(code, err.to_string()))?;
+        if layout.store_id() == self.id {
+            crate::platform::services::zebfs_acl::forget(&layout.data_store_dir(), key)
+                .map_err(|err| PipelineError::new(code, err.to_string()))?;
+        }
+        Ok(())
+    }
 }
 
 /// Where a single-file node writes: `--path` exactly, or `--folder` joined to
@@ -109,7 +206,11 @@ pub fn target_key(
             }
         }
     };
-    crate::zebfs::normalize_object_path(raw.trim_start_matches('/'))
+    // An absolute key is refused, not made relative (`node-conventions.md` §3).
+    if raw.starts_with('/') {
+        return Err(PipelineError::new(code, format!("invalid destination '{raw}': a store key is relative, without a leading '/'")));
+    }
+    crate::zebfs::normalize_object_path(&raw)
         .map_err(|err| PipelineError::new(code, format!("invalid destination '{raw}': {}", err.message)))
 }
 
@@ -147,7 +248,13 @@ impl OnConflict {
     /// Decides a tree write into `folder`: the target exists when the
     /// folder holds anything. `Ok(true)` writes, `Ok(false)` skips.
     pub fn allows_tree(self, store: &ZebFs, folder: &str, code: &'static str) -> Result<bool, PipelineError> {
-        let exists = store.list(folder).map(|entries| !entries.is_empty()).unwrap_or(false);
+        // Only "not there" means absent; any other store error is an error,
+        // never a licence to write.
+        let exists = match store.list(folder) {
+            Ok(entries) => !entries.is_empty(),
+            Err(err) if err.code == "ZEBFS_NOT_FOUND" || err.code == "ZEBFS_NOT_PREFIX" => false,
+            Err(err) => return Err(PipelineError::new(code, format!("'{folder}': {err}"))),
+        };
         match (exists, self) {
             (false, _) | (true, Self::Overwrite) => Ok(true),
             (true, Self::Skip) => Ok(false),
@@ -160,7 +267,11 @@ impl OnConflict {
 
     /// Decides one write. `Ok(true)` writes, `Ok(false)` skips.
     pub fn allows(self, store: &ZebFs, key: &str, code: &'static str) -> Result<bool, PipelineError> {
-        let exists = store.head(key).is_ok();
+        let exists = match store.head(key) {
+            Ok(_) => true,
+            Err(err) if err.code == "ZEBFS_NOT_FOUND" => false,
+            Err(err) => return Err(PipelineError::new(code, format!("'{key}': {err}"))),
+        };
         match (exists, self) {
             (false, _) | (true, Self::Overwrite) => Ok(true),
             (true, Self::Skip) => Ok(false),
@@ -222,40 +333,44 @@ pub fn store_fields(default: OnConflict) -> Vec<NodeFieldDef> {
     ]
 }
 
-/// The node kinds that write files, whose `store` is saved explicitly when a
-/// pipeline is registered (`node-conventions.md` §3).
-pub const FILE_WRITING_NODE_KINDS: &[&str] = &[
-    "n.fs.save",
-    "n.fs.put",
-    "n.fs.copy",
-    "n.fs.move",
-    "n.fs.mkdir",
-    "n.fs.compress",
-    "n.fs.decompress",
-    "n.fs.pdf.convert",
-    "n.fs.svg.convert",
-    "n.fs.image.thumbnail",
-    "n.fs.image.chromakey",
-    "n.fs.barcode.qr",
-    "n.fs.barcode.code128",
-    "n.table.convert",
-    "n.table.query",
-    "n.ai.tts",
-    "n.geo.convert",
-    "n.web.static.generate",
-    "n.web.docs.generate",
-    "n.ms.publish",
-];
+/// The node kinds whose `store` is saved explicitly when a pipeline is
+/// registered: every node that declares `--store` — readers and deleters as
+/// well as writers (`node-conventions.md` §3). Read off the definitions, so a
+/// new node is pinned by declaring the flag, not by joining a list.
+pub fn store_node_kinds() -> &'static std::collections::BTreeSet<String> {
+    static KINDS: std::sync::OnceLock<std::collections::BTreeSet<String>> = std::sync::OnceLock::new();
+    KINDS.get_or_init(|| {
+        crate::pipeline::nodes::builtin_node_definitions()
+            .into_iter()
+            .filter(|def| def.dsl_flags.iter().any(|flag| flag.flag == "--store"))
+            .map(|def| def.kind)
+            .collect()
+    })
+}
 
 #[cfg(test)]
 mod tests {
     use super::{OnConflict, target_key};
     use crate::zebfs::{LocalZebFs, ZebFs};
 
+    #[cfg(unix)]
+    #[test]
+    fn a_repository_read_never_follows_a_link_or_climbs_out() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("static")).unwrap();
+        std::fs::write(dir.path().join("static/a.txt"), b"a").unwrap();
+        std::os::unix::fs::symlink("/etc", dir.path().join("static/out")).unwrap();
+        assert_eq!(super::read_repo_file(dir.path(), "static/a.txt", "T").unwrap(), b"a");
+        assert!(super::read_repo_file(dir.path(), "static/out/hosts", "T").is_err());
+        assert!(super::read_repo_file(dir.path(), "../etc/hosts", "T").is_err());
+        assert!(super::read_repo_file(dir.path(), "static", "T").is_err());
+    }
+
     #[test]
     fn a_path_wins_and_every_key_is_normalised_once() {
         assert_eq!(target_key(None, "thumbnails", "a.jpg", "T").unwrap(), "thumbnails/a.jpg");
-        assert_eq!(target_key(Some("/exact/b.jpg"), "thumbnails", "a.jpg", "T").unwrap(), "exact/b.jpg");
+        assert!(target_key(Some("/exact/b.jpg"), "thumbnails", "a.jpg", "T").is_err(), "an absolute key is refused");
+        assert_eq!(target_key(Some("exact/b.jpg"), "thumbnails", "a.jpg", "T").unwrap(), "exact/b.jpg");
         assert_eq!(target_key(None, "", "a.jpg", "T").unwrap(), "a.jpg");
         assert!(target_key(Some("../escape.jpg"), "x", "y", "T").is_err());
         assert!(target_key(None, "a/../../b", "c", "T").is_err());

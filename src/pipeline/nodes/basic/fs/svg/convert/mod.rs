@@ -42,7 +42,7 @@
 //!   svg2pdf: vector shapes stay vector and text stays text with the font
 //!   subset embedded, so it can be selected and searched. Size and fit flags
 //!   do not apply and are refused with pdf.
-//! - **The layout report.** Beside `image` the answer carries `layout`: every
+//! - **The layout report.** Inside `image` the answer carries `layout`: every
 //!   text and picture with its box in canvas pixels, the pairs that overlap
 //!   with the overlap area, the boxes that leave the canvas, and `ok`. A
 //!   script turns it into a verdict for `logic.retry`, so an agent can fix
@@ -57,11 +57,10 @@
 //! The payload plus `image`: a durable FileRef (`origin: fs.svg.convert`,
 //! `trust: generated`) with `width`, `height` and `format` beside the eleven
 //! contract fields, written under `--folder` (default `images/`) as
-//! `--filename` or a UUID, plus `layout`. `--format png|jpg|webp|pdf`
-//! (default png; `--quality` is JPEG's). With `--delete-source` a stored source is removed and the
-//! source key dropped from the payload.
+//! `--filename` or a UUID, with `image.layout`. `--format png|jpg|webp|pdf`
+//! (default png; `--quality` is JPEG's). With `--delete-source` a stored source is removed once the
+//! picture is written and `image.source_deleted` says so; the payload keeps every key.
 
-use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -73,6 +72,7 @@ use crate::pipeline::model::{
     DslFlag, DslFlagKind, LayoutItem, NodeCapability, NodeExample, NodeFailureSemantic, NodeFieldDef, NodeFieldType,
     SelectOptionDef,
 };
+use crate::pipeline::nodes::shared::util::with_answer;
 use crate::pipeline::nodes::shared::project_store::{OnConflict, on_conflict_flag, open_source, open_store, store_fields, store_flag, target_key};
 use crate::pipeline::nodes::shared::util::{filename_stem, metadata_scope, resolve_path};
 use crate::pipeline::{
@@ -174,7 +174,7 @@ pub fn definition() -> NodeDefinition {
             `data-fit=\"shrink\"` beside it shrinks the size until the text fits `data-max-lines` (default 1). Effects are SVG filters. \
             With no `--width`/`--height` the canvas is the SVG's own size; one side scales the other; both use `--fit cover|contain|fill`. Writes `--format png|jpg|webp|pdf` \
             (default png, `--quality` for jpg; pdf keeps text as text and takes no size flags) into `--folder` (default `images/`) and adds `image` — a durable FileRef with \
-            `width`, `height`, `format` — plus `layout` (every text and picture box, the overlaps, what leaves the canvas, `ok`) to the payload; `--delete-source` removes a stored source. \
+            `width`, `height`, `format` and `layout` (every text and picture box, the overlaps, what leaves the canvas, `ok`) to the payload; `--delete-source` removes a stored source once the picture is written. \
             Look at it with `--preview image`."
             .to_string(),
         input_schema: json!({
@@ -186,22 +186,23 @@ pub fn definition() -> NodeDefinition {
             "properties": {
                 "image": {
                     "type": "object",
-                    "description": "A durable FileRef (kinds/file-ref/README.md) of the picture, `origin` fs.svg.convert, plus `width`, `height`, `format`. The store path is `ref`.",
+                    "description": "A durable FileRef (kinds/file-ref/README.md) of the picture, `origin` fs.svg.convert, plus `width`, `height`, `format`, `layout` and `source_deleted`. The store path is `ref`.",
                     "properties": {
                         "ref":    { "type": "string" },
                         "width":  { "type": "integer" },
                         "height": { "type": "integer" },
                         "format": { "type": "string" },
-                        "size":   { "type": "integer" }
+                        "size":   { "type": "integer" },
+                        "source_deleted": { "type": "boolean" },
+                        "layout": {
+                            "type": "object",
+                            "description": "The layout report: canvas {w,h}; texts[] and images[] with label and box {x,y,w,h} in canvas pixels (texts also lines); overlaps[] {a,b,area,w,h}; outside[] {label,by}; ok when both are empty.",
+                            "required": ["canvas", "texts", "images", "overlaps", "outside", "ok"]
+                        }
                     }
-                },
-                "layout": {
-                    "type": "object",
-                    "description": "The layout report: canvas {w,h}; texts[] and images[] with label and box {x,y,w,h} in canvas pixels (texts also lines); overlaps[] {a,b,area,w,h}; outside[] {label,by}; ok when both are empty.",
-                    "required": ["canvas", "texts", "images", "overlaps", "outside", "ok"]
                 }
             },
-            "required": ["image", "layout"]
+            "required": ["image"]
         }),
         input_pins: vec![INPUT_PIN_IN.to_string()],
         output_pins: vec![OUTPUT_PIN_OUT.to_string()],
@@ -397,15 +398,6 @@ impl Node {
     }
 }
 
-/// `root/rel`, or nothing when `rel` climbs out.
-fn contained(root: &Path, rel: &str) -> Option<PathBuf> {
-    let rel = rel.replace('\\', "/");
-    if rel.starts_with('/') || rel.split('/').any(|seg| seg == ".." || seg.is_empty()) {
-        return None;
-    }
-    Some(root.join(rel))
-}
-
 /// The project's bytes for the resolver: repo `static/` and the node's store.
 struct ProjectStore {
     layout: crate::platform::model::ProjectFileLayout,
@@ -415,16 +407,16 @@ struct ProjectStore {
 impl SourceStore for ProjectStore {
     fn read(&self, source: &Source) -> Result<Vec<u8>, ConvertError> {
         match source {
-            Source::Repo(path) => {
-                let abs = contained(&self.layout.repo_source_dir(), path)
-                    .ok_or_else(|| ConvertError::source(format!("repo file {path} must stay inside the project")))?;
-                std::fs::read(&abs).map_err(|e| ConvertError::source(format!("repo file {path}: {e}")))
+            Source::Repo(path) => crate::pipeline::nodes::shared::project_store::read_repo_file(
+                &self.layout.repo_source_dir(),
+                path,
+                "FW_NODE_FS_SVG_CONVERT_SOURCE",
+            )
+            .map_err(|e| ConvertError::source(format!("repo file {path}: {}", e.message))),
+            Source::Store(path) => {
+                crate::pipeline::nodes::shared::project_store::read_capped(&self.store, path, "FW_NODE_FS_SVG_CONVERT_SOURCE")
+                    .map_err(|e| ConvertError::source(format!("store object {path}: {}", e.message)))
             }
-            Source::Store(path) => self
-                .store
-                .get(path)
-                .map(|o| o.bytes)
-                .map_err(|e| ConvertError::source(format!("store object {path}: {}", e.message))),
         }
     }
 }
@@ -505,44 +497,42 @@ impl NodeHandler for Node {
         let filename = format!("{stem}.{}", self.format.extension());
         let rel = target_key(self.config.path.as_deref(), self.folder(), &filename, "FW_NODE_FS_SVG_CONVERT_CONFIG")?;
         let on_conflict = OnConflict::parse(self.config.on_conflict.as_deref(), OnConflict::Error, "FW_NODE_FS_SVG_CONVERT_CONFIG")?;
-        let bytes = if on_conflict.allows(&store.fs, &rel, "FW_NODE_FS_SVG_CONVERT_RASTER")? {
-            store
-                .fs
-                .put(&rel, &rendered.bytes)
-                .map_err(|e| PipelineError::new("FW_NODE_FS_SVG_CONVERT_RASTER", format!("store write {rel}: {}", e.message)))?;
-            rendered.bytes.clone()
-        } else {
-            store.fs.get(&rel).map_err(|e| PipelineError::new("FW_NODE_FS_SVG_CONVERT_RASTER", e.message))?.bytes
-        };
-        let mut image = store.file_ref(&rel, &filename, self.format.mime(), &bytes, ORIGIN, "generated");
+        // A skipped write answers the file already there, as it is.
+        if !on_conflict.allows(&store.fs, &rel, "FW_NODE_FS_SVG_CONVERT_RASTER")? {
+            let existing = store.stored_ref(&rel, ORIGIN, "generated", "FW_NODE_FS_SVG_CONVERT_RASTER")?;
+            return Ok(NodeExecutionOutput {
+                output_pins: vec![OUTPUT_PIN_OUT.to_string()],
+                payload: with_answer(&input.payload, json!({ "image": existing })),
+                trace: vec![format!("node={} node_kind={NODE_KIND} out={rel} skipped", input.node_id)],
+            });
+        }
+        store
+            .fs
+            .put(&rel, &rendered.bytes)
+            .map_err(|e| PipelineError::new("FW_NODE_FS_SVG_CONVERT_RASTER", format!("store write {rel}: {}", e.message)))?;
+        // The source goes only once the output is written and is not it.
+        let mut source_deleted = false;
+        if self.config.delete_source
+            && let Some((source_store, src)) = &stored_source
+            && !(source_store.id == store.id && *src == rel)
+        {
+            source_store.delete_named(&self.platform, owner, project, src, "FW_NODE_FS_SVG_CONVERT_SOURCE")?;
+            source_deleted = true;
+        }
+        let mut image = store.file_ref(&rel, &filename, self.format.mime(), &rendered.bytes, ORIGIN, "generated");
         if let Some(obj) = image.as_object_mut() {
             obj.insert("width".into(), json!(rendered.width));
             obj.insert("height".into(), json!(rendered.height));
             obj.insert("format".into(), json!(self.format.extension()));
+            obj.insert("layout".into(), rendered.layout.clone());
+            obj.insert("source_deleted".into(), json!(source_deleted));
         }
-
-        // 4. Merge, do not replace; a deleted source loses its key.
-        let mut out = match &input.payload {
-            Value::Object(map) => map.clone(),
-            _ => serde_json::Map::new(),
-        };
-        if self.config.delete_source {
-            if let Some((source_store, src)) = &stored_source {
-                if let Err(e) = source_store.fs.delete(src) {
-                    eprintln!("[{NODE_KIND}] delete-source failed for {src}: {e}");
-                }
-            }
-            if let Some(top) = key.split('.').next() {
-                out.remove(top);
-            }
-        }
-        out.insert("image".to_string(), image);
-        out.insert("layout".to_string(), rendered.layout);
+        let out = with_answer(&input.payload, json!({ "image": image }));
 
         let total_ms = started.elapsed().as_millis() as u64;
         Ok(NodeExecutionOutput {
             output_pins: vec![OUTPUT_PIN_OUT.to_string()],
-            payload: Value::Object(out),
+            payload: out,
             trace: vec![
                 format!("node={} node_kind={NODE_KIND}", input.node_id),
                 format!(
@@ -602,7 +592,5 @@ mod node_tests {
         );
         let codes: Vec<&str> = def.failure_semantics.iter().map(|f| f.code.as_str()).collect();
         assert_eq!(codes, vec!["FW_NODE_FS_SVG_CONVERT_CONFIG", "FW_NODE_FS_SVG_CONVERT_SOURCE", "FW_NODE_FS_SVG_CONVERT_FONT", "FW_NODE_FS_SVG_CONVERT_RASTER"]);
-        assert!(contained(Path::new("/root"), "../x.svg").is_none());
-        assert_eq!(contained(Path::new("/root"), "static/x.svg"), Some(PathBuf::from("/root/static/x.svg")));
     }
 }

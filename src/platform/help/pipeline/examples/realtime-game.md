@@ -76,14 +76,14 @@ register game/api-room-create --
 
 ### ws-player-join — player joins room
 
-`--path` on `ws.sync_state` supports `{key}` placeholders read from the
+`--state-key` on `ws.sync_state` supports `{key}` placeholders read from the
 payload, so `player_id` is lifted to the top level first:
 
 ```zf
 register game/ws-player-join --
 [a] trigger.ws --event player.join
 [lift] script -- "return { player_id: input.payload.player_id, name: input.payload.name };"
-[merge] ws.sync_state --op merge --path "/players/{player_id}" --value "{{ { id: input.player_id, name: input.name, score: 0, joined_at: Date.now() } }}"
+[merge] ws.sync_state --op merge --state-key "/players/{player_id}" --value "{{ { id: input.player_id, name: input.name, score: 0, joined_at: Date.now() } }}"
 [emit] ws.emit --to all --event state.updated
 
 [a] -> [lift]
@@ -98,7 +98,7 @@ register game/ws-player-move --
 [a] trigger.ws --event player.move
 [guard] logic.if --expr "!!(input.payload && input.payload.player_id && input.payload.move)"
 [lift] script -- "return { player_id: input.payload.player_id, move: input.payload.move, ts: Date.now() };"
-[set] ws.sync_state --op set --path "/last_move" --value "{{ input }}"
+[set] ws.sync_state --op set --state-key "/last_move" --value "{{ input }}"
 [emit] ws.emit --to all --event player.moved --payload "{{ input }}"
 
 [a] -> [guard]
@@ -126,7 +126,7 @@ An invalid move just stops at `[guard]` — there is no `false` edge, and a
 - `trigger.ws --event <name>` — WebSocket event handlers (join, move, leave); `--room` omitted, it is a literal filter, not per-connection routing
 - `sekejap.query` — track which rooms exist; plain `SELECT`/`INSERT`, no `--table`/`--op`
 - `script` — lift nested payload fields, move validation
-- `ws.sync_state --path "/…/{key}" --value "{{ expr }}"` — merge/set patches into the server-side room state
+- `ws.sync_state --state-key "/…/{key}" --value "{{ expr }}"` — merge/set patches into the server-side room state
 - `ws.emit --payload "{{ expr }}"` — broadcast events to all players in the room
 
 ---
@@ -165,11 +165,11 @@ is two small pipelines:
 ```
 register pipelines/presence-in --
 | trigger.ws --event $connect
-| ws.sync_state --op merge --path "/players/{session_id}" --value "{{ { since: Date.now() } }}"
+| ws.sync_state --op merge --state-key "/players/{session_id}" --value "{{ { since: Date.now() } }}"
 
 register pipelines/presence-out --
 | trigger.ws --event $disconnect
-| ws.sync_state --op delete --path "/players/{session_id}"
+| ws.sync_state --op delete --state-key "/players/{session_id}"
 ```
 
 A path placeholder must resolve: `{session_id}` missing from the payload is the

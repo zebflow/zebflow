@@ -56,20 +56,20 @@
 //! **Multiplayer position (batched at 30 fps):**
 //! ```text
 //! | n.trigger.ws --event move
-//! | n.ws.sync_state --op merge --path /players/{session_id} --silent
+//! | n.ws.sync_state --op merge --state-key /players/{session_id} --silent
 //! ```
 //!
 //! **Chat message (immediate):**
 //! ```text
 //! | n.trigger.ws --event chat
-//! | n.ws.sync_state --op set --path /last_message
+//! | n.ws.sync_state --op set --state-key /last_message
 //! ```
 //!
 //! **AI agent updating global state from a scheduled job:**
 //! ```text
 //! | n.trigger.schedule --cron "*/5 * * * *"
 //! | n.script -- "return { weather: 'rainy', temp: 18 }"
-//! | n.ws.sync_state --op merge --path /world --room lobby
+//! | n.ws.sync_state --op merge --state-key /world --room lobby
 //! ```
 
 use std::sync::Arc;
@@ -114,7 +114,7 @@ pub fn definition() -> NodeDefinition {
                     "enum": ["set", "merge", "delete"],
                     "description": "State mutation type. set = replace value at path. merge = shallow-merge object. delete = remove key. Default: set."
                 },
-                "path": {
+                "state_key": {
                     "type": "string",
                     "description": "JSON-pointer destination path. Supports {key} placeholders resolved from payload. Examples: /counter, /players/{session_id}. Empty = root."
                 },
@@ -141,8 +141,8 @@ pub fn definition() -> NodeDefinition {
                 required: false,
             },
             DslFlag {
-                flag: "--path".to_string(),
-                config_key: "path".to_string(),
+                flag: "--state-key".to_string(),
+                config_key: "state_key".to_string(),
                 description: "JSON-pointer destination. Supports {key} placeholders from payload. Example: /players/{session_id}.".to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
@@ -179,21 +179,21 @@ pub fn definition() -> NodeDefinition {
                     SelectOptionDef { value: "delete".to_string(), label: "Delete — remove key from state".to_string() },
                     SelectOptionDef { value: "clear".to_string(), label: "Clear — wipe entire state".to_string() },
                 ], help: Some("State mutation operation to apply before optional broadcast.".to_string()), ..Default::default() },
-                NodeFieldDef { name: "path".to_string(), label: "State Path".to_string(), field_type: NodeFieldType::Text, help: Some("Dot-separated key path in shared state.".to_string()), ..Default::default() },
+                NodeFieldDef { name: "state_key".to_string(), label: "State Key".to_string(), field_type: NodeFieldType::Text, help: Some("Dot-separated key path in shared state.".to_string()), ..Default::default() },
                 NodeFieldDef { name: "value".to_string(), label: "Value Path".to_string(), field_type: NodeFieldType::Text, help: Some("Payload path to read the value from.".to_string()), ..Default::default() },
                 NodeFieldDef { name: "silent".to_string(), label: "Silent (no broadcast)".to_string(), field_type: NodeFieldType::Checkbox, help: Some("Update server-side without broadcasting.".to_string()), ..Default::default() },
             ]
         },
         layout: vec![
             LayoutItem::Field("room".to_string()),
-            LayoutItem::Row { row: vec![LayoutItem::Field("op".to_string()), LayoutItem::Field("path".to_string())] },
+            LayoutItem::Row { row: vec![LayoutItem::Field("op".to_string()), LayoutItem::Field("state_key".to_string())] },
             LayoutItem::Row { row: vec![LayoutItem::Field("value".to_string()), LayoutItem::Field("silent".to_string())] },
         ],
         ai_tool: Default::default(),
         examples: vec![
-            crate::pipeline::model::NodeExample::dsl("Move a player", r#"ws.sync_state --op merge --path /players/{session_id} --value "{{ { x: input.payload.x, y: input.payload.y } }}" --silent"#)
+            crate::pipeline::model::NodeExample::dsl("Move a player", r#"ws.sync_state --op merge --state-key /players/{session_id} --value "{{ { x: input.payload.x, y: input.payload.y } }}" --silent"#)
                 .note("Every client in the room sees the same `state.players`; `--silent` batches at 30 Hz. `{session_id}` is filled from the payload."),
-            crate::pipeline::model::NodeExample::dsl("Remove on leave", "ws.sync_state --op delete --path /players/{session_id}"),
+            crate::pipeline::model::NodeExample::dsl("Remove on leave", "ws.sync_state --op delete --state-key /players/{session_id}"),
         ],
         ..Default::default()
     }
@@ -218,7 +218,7 @@ pub struct Config {
     /// Placeholders are resolved from top-level string fields of the incoming
     /// payload via [`interpolate_path`].
     #[serde(default)]
-    pub path: String,
+    pub state_key: String,
 
     /// JSON pointer into the **payload** to extract the value to write.
     ///
@@ -309,11 +309,17 @@ impl NodeHandler for Node {
         // Resolve dynamic path placeholders from the payload. A placeholder that
         // resolves to nothing is refused: it used to collapse `/players/{id}` to
         // `/players` and write into (or delete) the whole map.
-        let resolved_path = interpolate_path(&self.config.path, &input.payload).map_err(|e| {
-            PipelineError::new("FW_NODE_WS_PATH_SEGMENT_EMPTY", format!("n.ws.sync_state: {e} (path {})", self.config.path))
+        let resolved_path = interpolate_path(&self.config.state_key, &input.payload).map_err(|e| {
+            PipelineError::new("FW_NODE_WS_PATH_SEGMENT_EMPTY", format!("n.ws.sync_state: {e} (path {})", self.config.state_key))
         })?;
 
-        let op = match self.config.op.as_str() {
+        let op = match crate::pipeline::nodes::shared::limits::choice(
+            &self.config.op,
+            &["set", "merge", "delete"],
+            "set",
+            "--op",
+            "FW_NODE_WS_SYNC_STATE_CONFIG",
+        )? {
             "merge" => StateOp::Merge,
             "delete" => StateOp::Delete,
             _ => StateOp::Set,

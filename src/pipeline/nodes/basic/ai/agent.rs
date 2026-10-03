@@ -218,16 +218,16 @@ pub fn definition() -> NodeDefinition {
         ],
         ai_tool: NodeAiToolDefinition::default(),
         failure_semantics: vec![
-            crate::pipeline::model::NodeFailureSemantic { code: "FW_NODE_AGENT_CREDENTIAL".into(), description: "`--credential` is missing, names no credential, or names one that is not openai/openrouter.".into(), ..Default::default() },
-            crate::pipeline::model::NodeFailureSemantic { code: "FW_NODE_AGENT_QUERY".into(), description: "No `--prompt` and the payload has no message, body, text or query string.".into(), ..Default::default() },
-            crate::pipeline::model::NodeFailureSemantic { code: "FW_NODE_AGENT_BAD_SCHEMA".into(), description: "`--schema` is set but is not valid JSON (quote it with single quotes in the DSL).".into(), ..Default::default() },
-            crate::pipeline::model::NodeFailureSemantic { code: "FW_NODE_AGENT_CALL".into(), description: "The provider refused or the request failed; the message carries the provider's text.".into(), retryable: true, retry_hint: "429 and 5xx recover on retry; a 401 needs a new key.".into() },
+            crate::pipeline::model::NodeFailureSemantic { code: "FW_NODE_AI_AGENT_CREDENTIAL".into(), description: "`--credential` is missing, names no credential, or names one that is not openai/openrouter.".into(), ..Default::default() },
+            crate::pipeline::model::NodeFailureSemantic { code: "FW_NODE_AI_AGENT_QUERY".into(), description: "No `--prompt` and the payload has no message, body, text or query string.".into(), ..Default::default() },
+            crate::pipeline::model::NodeFailureSemantic { code: "FW_NODE_AI_AGENT_BAD_SCHEMA".into(), description: "`--schema` is set but is not valid JSON (quote it with single quotes in the DSL).".into(), ..Default::default() },
+            crate::pipeline::model::NodeFailureSemantic { code: "FW_NODE_AI_AGENT_CALL".into(), description: "The provider refused or the request failed; the message carries the provider's text.".into(), retryable: true, retry_hint: "429 and 5xx recover on retry; a 401 needs a new key.".into() },
         ],
         examples: vec![
             crate::pipeline::model::NodeExample::dsl("One call: summarise a submission", r#"ai.agent --credential openai_main --system-prompt "You write one plain sentence." --prompt "Summarise: {{ input.body.text }}""#)
                 .input(json!({ "body": { "text": "Our clinic moved to 12 High St and now opens Saturdays 9–1." } }))
                 .output(json!({ "response": "The clinic has moved to 12 High St and now opens on Saturday mornings.", "verified": true, "tools_called": [], "iterations": 1, "budget_exhausted": false }))
-                .note("No --tools, so one round trip. Replaces the payload; keep what later nodes need in `$nodes.<id>`. The credential is created by the owner in Studio → Credentials."),
+                .note("No --tools, so one round trip. The answer is added to the payload and the rest is kept. The credential is created by the owner in Studio → Credentials."),
             crate::pipeline::model::NodeExample::dsl("One call: classify to JSON", r#"ai.agent --credential openai_main --output-mode final_only --schema '{"type":"object","required":["sentiment"],"properties":{"sentiment":{"enum":["positive","neutral","negative"]}}}' -- Classify this review: {{ input.body.review }}"#)
                 .input(json!({ "body": { "review": "Booking was easy but the wait was long." } }))
                 .output(json!({ "response": "{\"sentiment\":\"neutral\"}", "data": { "sentiment": "neutral" }, "verified": true }))
@@ -254,9 +254,11 @@ pub enum OutputMode {
 impl<'de> serde::Deserialize<'de> for OutputMode {
     fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
         let s = String::deserialize(d)?;
-        match s.to_ascii_lowercase().as_str() {
-            "final_only" | "finalonly" => Ok(Self::FinalOnly),
-            _ => Ok(Self::Full),
+        // A closed choice: one word per mode, an unknown one refused.
+        match s.trim() {
+            "" | "full" => Ok(Self::Full),
+            "final_only" => Ok(Self::FinalOnly),
+            other => Err(serde::de::Error::custom(format!("--output-mode '{other}' must be full or final_only"))),
         }
     }
 }
@@ -332,7 +334,7 @@ impl Node {
             .filter(|c| !c.is_empty())
             .ok_or_else(|| {
                 PipelineError::new(
-                    "FW_NODE_AGENT_CREDENTIAL",
+                    "FW_NODE_AI_AGENT_CREDENTIAL",
                     format!(
                         "ai.agent needs --credential naming a credential of kind {}",
                         LLM_CREDENTIAL_KINDS.join(" or ")
@@ -341,22 +343,22 @@ impl Node {
             })?;
         let creds = self.credentials.as_ref().ok_or_else(|| {
             PipelineError::new(
-                "FW_NODE_AGENT_CREDENTIAL",
+                "FW_NODE_AI_AGENT_CREDENTIAL",
                 "credential service is not configured on this engine",
             )
         })?;
         let cred = creds
             .get_project_credential(owner, project, cred_id)
-            .map_err(|err| PipelineError::new("FW_NODE_AGENT_CREDENTIAL", err.to_string()))?
+            .map_err(|err| PipelineError::new("FW_NODE_AI_AGENT_CREDENTIAL", err.to_string()))?
             .ok_or_else(|| {
                 PipelineError::new(
-                    "FW_NODE_AGENT_CREDENTIAL",
+                    "FW_NODE_AI_AGENT_CREDENTIAL",
                     format!("credential '{cred_id}' not found"),
                 )
             })?;
         if !LLM_CREDENTIAL_KINDS.contains(&cred.kind.as_str()) {
             return Err(PipelineError::new(
-                "FW_NODE_AGENT_CREDENTIAL",
+                "FW_NODE_AI_AGENT_CREDENTIAL",
                 format!(
                     "credential '{cred_id}' is kind '{}'; ai.agent needs {}",
                     cred.kind,
@@ -366,7 +368,7 @@ impl Node {
         }
         client_from_provider_secret_with_model(&cred.kind, &cred.secret, model_override).ok_or_else(|| {
             PipelineError::new(
-                "FW_NODE_AGENT_CREDENTIAL",
+                "FW_NODE_AI_AGENT_CREDENTIAL",
                 format!("credential '{cred_id}' ({}) has no api_key", cred.kind),
             )
         })
@@ -439,7 +441,7 @@ impl Node {
         }
         goal_from_payload(payload).ok_or_else(|| {
             PipelineError::new(
-                "FW_NODE_AGENT_QUERY",
+                "FW_NODE_AI_AGENT_QUERY",
                 "no --prompt, and the payload has no message, body, text or query string",
             )
         })
@@ -452,7 +454,7 @@ impl Node {
         match self.config.schema.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
             Some(raw) => serde_json::from_str::<Value>(raw).map(Some).map_err(|err| {
                 PipelineError::new(
-                    "FW_NODE_AGENT_BAD_SCHEMA",
+                    "FW_NODE_AI_AGENT_BAD_SCHEMA",
                     format!(
                         "--schema is set but is not valid JSON: {err}. In the DSL wrap it in single quotes: --schema '{{...}}'."
                     ),
@@ -481,7 +483,7 @@ impl NodeHandler for Node {
     ) -> Result<NodeExecutionOutput, PipelineError> {
         if input.input_pin != INPUT_PIN {
             return Err(PipelineError::new(
-                "FW_NODE_AGENT_INPUT_PIN",
+                "FW_NODE_AI_AGENT_INPUT_PIN",
                 format!("unsupported input pin '{}'", input.input_pin),
             ));
         }
@@ -594,7 +596,7 @@ impl NodeHandler for Node {
         // A provider failure is a node failure, not an answer: the error groups
         // and the request id must see it.
         if result.metrics.stop_reason == "error" {
-            return Err(PipelineError::new("FW_NODE_AGENT_CALL", result.final_content));
+            return Err(PipelineError::new("FW_NODE_AI_AGENT_CALL", result.final_content));
         }
 
         let tools_called: Vec<String> = result
@@ -625,7 +627,7 @@ impl NodeHandler for Node {
 
         Ok(NodeExecutionOutput {
             output_pins: vec![OUTPUT_PIN.to_string()],
-            payload,
+            payload: crate::pipeline::nodes::shared::util::with_answer(&input.payload, payload),
             trace: result.trace,
         })
     }
@@ -680,14 +682,14 @@ mod tests {
         assert_eq!(n.goal(&json!({ "body": "from body" })).unwrap(), "from body");
         assert_eq!(n.goal(&json!("bare string")).unwrap(), "bare string");
         let err = n.goal(&json!({ "other": 1 })).unwrap_err();
-        assert_eq!(err.code, "FW_NODE_AGENT_QUERY");
+        assert_eq!(err.code, "FW_NODE_AI_AGENT_QUERY");
     }
 
     #[test]
     fn a_malformed_schema_is_refused_not_ignored() {
         let n = node(Config { schema: Some("{not json".into()), ..Default::default() });
         let err = n.schema().unwrap_err();
-        assert_eq!(err.code, "FW_NODE_AGENT_BAD_SCHEMA");
+        assert_eq!(err.code, "FW_NODE_AI_AGENT_BAD_SCHEMA");
         assert!(err.message.contains("single quotes"));
         let n = node(Config { schema: Some("   ".into()), ..Default::default() });
         assert!(n.schema().unwrap().is_none());
@@ -700,7 +702,7 @@ mod tests {
             Ok(_) => panic!("no credential must be refused"),
             Err(e) => e,
         };
-        assert_eq!(err.code, "FW_NODE_AGENT_CREDENTIAL");
+        assert_eq!(err.code, "FW_NODE_AI_AGENT_CREDENTIAL");
         assert!(err.message.contains("openai or openrouter"), "{}", err.message);
     }
 

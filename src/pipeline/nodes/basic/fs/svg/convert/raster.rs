@@ -14,10 +14,10 @@ use super::ConvertError;
 use super::fonts::FontSet;
 use super::sources::Resolver;
 
-/// A canvas side may be this long.
-pub const MAX_SIDE: u32 = 8192;
+/// A canvas side may be this long — the ceiling every raster node shares.
+pub const MAX_SIDE: u32 = crate::pipeline::nodes::shared::limits::MAX_RASTER_SIDE;
 /// A canvas may have this many pixels.
-pub const MAX_PIXELS: u64 = 40_000_000;
+pub const MAX_PIXELS: u64 = crate::pipeline::nodes::shared::limits::MAX_RASTER_PIXELS;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OutputFormat {

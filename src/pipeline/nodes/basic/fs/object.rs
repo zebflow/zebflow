@@ -92,8 +92,9 @@ impl Operation {
 pub struct Config {
     #[serde(default)]
     pub path: String,
+    /// copy/move source: a store key, or a FileRef through `{{ }}`.
     #[serde(default)]
-    pub from: String,
+    pub from: Value,
     #[serde(default)]
     pub source_key: String,
     #[serde(default)]
@@ -154,7 +155,7 @@ pub fn head_definition() -> NodeDefinition {
     let mut def = object_definition(
         HEAD_NODE_KIND,
         "FS Head",
-        "Read one file's metadata (size, kind, modified, url, content_type) without reading its bytes. Needs `--path`. \
+        "Read one file's metadata (size, kind, modified, content_type) without reading its bytes. Needs `--path`. \
          Adds `fs: { operation, path, object }` to the payload. Use it to check that a file exists before `fs.get`; \
          a missing path fails the node, it does not return null.",
         vec![scalar_flag("--path", "path", "Object or prefix path.")],
@@ -573,11 +574,18 @@ impl NodeHandler for Node {
             }
             Operation::Get => {
                 let path = required(&self.config.path, "--path", "FW_NODE_FS_GET")?;
-                let object = zebfs
-                    .get(path)
-                    .map_err(|err| PipelineError::new("FW_NODE_FS_GET", err.to_string()))?;
+                // Capped like every node read: the bytes go into the payload.
+                let stat = zebfs.head(path).map_err(|err| PipelineError::new("FW_NODE_FS_GET", err.to_string()))?;
+                let bytes = crate::pipeline::nodes::shared::project_store::read_capped(zebfs, path, "FW_NODE_FS_GET")?;
+                let object = crate::zebfs::ZebFsObject { path: stat.path.clone(), bytes, stat };
                 let mut object_out = stat_json(&object.stat);
-                let encoding = self.config.encoding.trim().to_ascii_lowercase();
+                let encoding = crate::pipeline::nodes::shared::limits::choice(
+                    &self.config.encoding,
+                    &["text", "base64"],
+                    "text",
+                    "--encoding",
+                    "FW_NODE_FS_GET",
+                )?;
                 if encoding == "base64" {
                     object_out["base64"] = Value::String(
                         base64::engine::general_purpose::STANDARD.encode(&object.bytes),
@@ -612,16 +620,16 @@ impl NodeHandler for Node {
                 let folder = if self.config.folder.trim().is_empty() { "files" } else { self.config.folder.trim() };
                 let path = target_key(Some(self.config.path.as_str()), folder, filename, "FW_NODE_FS_PUT")?;
                 let bytes = self.resolve_put_bytes(owner, project, &input.payload)?;
-                let bytes = if self.on_conflict("FW_NODE_FS_PUT")?.allows(zebfs, &path, "FW_NODE_FS_PUT")? {
+                let object = if self.on_conflict("FW_NODE_FS_PUT")?.allows(zebfs, &path, "FW_NODE_FS_PUT")? {
                     zebfs
                         .put(&path, &bytes)
                         .map_err(|err| PipelineError::new("FW_NODE_FS_PUT", err.to_string()))?;
-                    bytes
+                    let leaf = path.rsplit('/').next().unwrap_or(&path).to_string();
+                    store.file_ref(&path, &leaf, content_type_for_path(&path), &bytes, "fs.put", "generated")
                 } else {
-                    zebfs.get(&path).map_err(|err| PipelineError::new("FW_NODE_FS_PUT", err.to_string()))?.bytes
+                    // Skipped: the answer is the file already there, as it is.
+                    store.stored_ref(&path, "fs.put", "generated", "FW_NODE_FS_PUT")?
                 };
-                let leaf = path.rsplit('/').next().unwrap_or(&path).to_string();
-                let object = store.file_ref(&path, &leaf, content_type_for_path(&path), &bytes, "fs.put", "generated");
                 let stat = zebfs.head(&path).map_err(|err| PipelineError::new("FW_NODE_FS_PUT", err.to_string()))?;
                 json!({
                     "fs": {
@@ -649,8 +657,20 @@ impl NodeHandler for Node {
                 })
             }
             Operation::Copy | Operation::Move => {
-                let from = required(&self.config.from, "--from", "FW_NODE_FS_COPY")?;
-                let from_norm = normalize_output_path(from);
+                // `--from` is a key in this node's store, or a FileRef read
+                // from the store it names (`node-conventions.md` §1).
+                let code = if matches!(op, Operation::Move) { "FW_NODE_FS_MOVE" } else { "FW_NODE_FS_COPY" };
+                let Some((source, from_norm)) = crate::pipeline::nodes::shared::project_store::open_source(
+                    &self.platform,
+                    owner,
+                    project,
+                    &self.config.from,
+                    Some(store.id.as_str()),
+                )?
+                else {
+                    return Err(PipelineError::new(code, "--from is required: a store key or a FileRef"));
+                };
+                let from_norm = normalize_output_path(&from_norm);
                 let (source_folder, source_name) = match from_norm.rsplit_once('/') {
                     Some((folder, name)) => (folder.to_string(), name.to_string()),
                     None => (String::new(), from_norm.clone()),
@@ -663,39 +683,43 @@ impl NodeHandler for Node {
                     .map(str::trim)
                     .filter(|name| !name.is_empty())
                     .unwrap_or(&source_name);
-                let to = target_key(Some(self.config.path.as_str()), folder, filename, "FW_NODE_FS_COPY")?;
-                if to == from_norm {
-                    return Err(PipelineError::new("FW_NODE_FS_COPY", "the destination is the source; set --folder, --filename or --path"));
+                let to = target_key(Some(self.config.path.as_str()), folder, filename, code)?;
+                let same_store = source.id == store.id;
+                if same_store && to == from_norm {
+                    return Err(PipelineError::new(code, "the destination is the source; set --folder, --filename or --path"));
                 }
-                if !self.on_conflict("FW_NODE_FS_COPY")?.allows(zebfs, &to, "FW_NODE_FS_COPY")? {
-                    let bytes = zebfs.get(&to).map_err(|err| PipelineError::new("FW_NODE_FS_COPY", err.to_string()))?.bytes;
-                    let leaf = to.rsplit('/').next().unwrap_or(&to).to_string();
-                    let object = store.file_ref(&to, &leaf, content_type_for_path(&to), &bytes, "fs.copy", "generated");
+                let origin = if matches!(op, Operation::Move) { "fs.move" } else { "fs.copy" };
+                if !self.on_conflict(code)?.allows(zebfs, &to, code)? {
+                    let object = object_ref(&store, &to, "fs.copy", code)?;
                     return Ok(merged_output(op, &input.payload, json!({
                         "operation": op.label(), "path": to, "source_path": from_norm, "object": object, "skipped": true
                     })));
                 }
-                let stat = zebfs
-                    .copy(from, &to)
-                    .map_err(|err| PipelineError::new("FW_NODE_FS_COPY", err.to_string()))?;
+                let stat = if same_store {
+                    zebfs.copy(&from_norm, &to).map_err(|err| PipelineError::new(code, err.to_string()))?
+                } else {
+                    // Between stores the bytes stream through a scratch file.
+                    let scratch = crate::pipeline::nodes::shared::store_scratch::StoreScratch::new(code)?;
+                    let local = scratch.local("object");
+                    source
+                        .fs
+                        .get_to_file(&from_norm, &local)
+                        .map_err(|err| PipelineError::new(code, format!("read '{from_norm}' from '{}': {err}", source.id)))?;
+                    zebfs.put_from_file(&to, &local).map_err(|err| PipelineError::new(code, err.to_string()))?
+                };
                 if matches!(op, Operation::Move) {
-                    zebfs
-                        .delete(from)
-                        .map_err(|err| PipelineError::new("FW_NODE_FS_MOVE", err.to_string()))?;
-                    crate::platform::services::zebfs_acl::forget(&layout.data_store_dir(), from)
-                        .map_err(|err| PipelineError::new("FW_NODE_FS_MOVE", err.to_string()))?;
+                    source.fs.delete(&from_norm).map_err(|err| PipelineError::new(code, err.to_string()))?;
+                    if let Ok(source_layout) = self.platform.file.ensure_project_layout(owner, project)
+                        && source_layout.store_id() == source.id
+                    {
+                        crate::platform::services::zebfs_acl::forget(&source_layout.data_store_dir(), &from_norm)
+                            .map_err(|err| PipelineError::new(code, err.to_string()))?;
+                    }
                 }
-                // A copied object is a stored file this node answers for, so
-                // it answers a bare FileRef (the bytes are read once for the
-                // digest); a copied prefix stays the plain stat it was.
+                // A copied object answers a bare FileRef; a copied prefix
+                // stays the plain stat it was.
                 let object = if matches!(stat.kind, ZebFsEntryKind::Object) {
-                    let origin = if matches!(op, Operation::Move) { "fs.move" } else { "fs.copy" };
-                    let bytes = zebfs
-                        .get(&stat.path)
-                        .map_err(|err| PipelineError::new("FW_NODE_FS_COPY", err.to_string()))?
-                        .bytes;
-                    let leaf = stat.path.rsplit('/').next().unwrap_or(&stat.path).to_string();
-                    store.file_ref(&stat.path, &leaf, content_type_for_path(&stat.path), &bytes, origin, "generated")
+                    object_ref(&store, &stat.path, origin, code)?
                 } else {
                     stat_json(&stat)
                 };
@@ -703,7 +727,8 @@ impl NodeHandler for Node {
                     "fs": {
                         "operation": op.label(),
                         "path": stat.path,
-                        "source_path": normalize_output_path(from),
+                        "source_path": from_norm,
+                        "source_store": source.id,
                         "object": object
                     }
                 })
@@ -730,15 +755,33 @@ impl NodeHandler for Node {
 
 /// The operation's answer added to the payload under `fs`, the rest kept
 /// (`docs/contracts/node-conventions.md` §5).
-fn merged_output(op: Operation, input: &Value, fs: Value) -> NodeExecutionOutput {
-    let mut payload = match input {
-        Value::Object(map) => map.clone(),
-        _ => serde_json::Map::new(),
+/// A durable FileRef for an object already in `store`, digested by
+/// streaming it rather than holding it.
+fn object_ref(
+    store: &crate::pipeline::nodes::shared::project_store::NodeStore,
+    key: &str,
+    origin: &str,
+    code: &'static str,
+) -> Result<Value, PipelineError> {
+    let leaf = key.rsplit('/').next().unwrap_or(key).to_string();
+    let local = store.fs.local_path(key).map_err(|err| PipelineError::new(code, err.to_string()))?;
+    let scratch;
+    let path = match local {
+        Some(path) => path,
+        None => {
+            scratch = crate::pipeline::nodes::shared::store_scratch::StoreScratch::new(code)?;
+            let path = scratch.local("object");
+            store.fs.get_to_file(key, &path).map_err(|err| PipelineError::new(code, err.to_string()))?;
+            path
+        }
     };
-    payload.insert("fs".to_string(), fs);
+    store.file_ref_from_file(key, &leaf, content_type_for_path(key), &path, origin, "generated", code)
+}
+
+fn merged_output(op: Operation, input: &Value, fs: Value) -> NodeExecutionOutput {
     NodeExecutionOutput {
         output_pins: vec![OUTPUT_PIN_OUT.to_string()],
-        payload: Value::Object(payload),
+        payload: crate::pipeline::nodes::shared::util::with_answer(input, json!({ "fs": fs })),
         trace: vec![format!("node_kind={} operation={}", op.kind(), op.label())],
     }
 }
@@ -778,7 +821,8 @@ impl Node {
                 .decode(encoded)
                 .map_err(|err| PipelineError::new("FW_NODE_FS_PUT_BASE64", err.to_string()));
         }
-        if let Some(text) = &self.config.text {
+        // An empty --text is no source (as the editor sends a blank field).
+        if let Some(text) = self.config.text.as_deref().filter(|text| !text.is_empty()) {
             return Ok(text.as_bytes().to_vec());
         }
         Err(PipelineError::new(

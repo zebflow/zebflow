@@ -43,10 +43,6 @@ pub struct Config {
     pub template_folder: String,
     #[serde(default)]
     pub site_title: Option<String>,
-    #[serde(default, alias = "base_url")]
-    pub deploy_base_url: Option<String>,
-    #[serde(default, alias = "base_path")]
-    pub deploy_base_path: Option<String>,
     #[serde(default = "default_meta_file")]
     pub meta_file: String,
 }
@@ -167,8 +163,7 @@ pub fn definition() -> NodeDefinition {
                         "docs_root": { "type": "string" },
                         "site_root": { "type": "string" },
                         "store": { "type": "string" },
-                        "deploy_base_url": { "type": ["string", "null"] },
-                        "deploy_base_path": { "type": "string" },
+                        "origin": { "type": ["string", "null"], "description": "The site's serve origin from Studio → Files, if it has one" },
                         "manifest_path": { "type": "string" },
                         "asset_group": { "type": "string" },
                         "page_count": { "type": "integer" },
@@ -176,7 +171,7 @@ pub fn definition() -> NodeDefinition {
                         "skipped_files": { "type": "integer" },
                         "sitemap_path": { "type": "string" },
                         "search_index_path": { "type": "string" },
-                        "urls": { "type": "array", "items": { "type": "string" } }
+                        "routes": { "type": "array", "items": { "type": "string" } }
                     }
                 }
             }
@@ -194,8 +189,6 @@ pub fn definition() -> NodeDefinition {
                 "store": { "type": "string", "description": "The store to write to; saved explicitly at registration." },
                 "template_folder": { "type": "string", "description": "Folder under the source root where docs.template.tsx lives; it is created there when missing." },
                 "site_title": { "type": "string" },
-                "deploy_base_url": { "type": "string", "description": "Optional absolute deployed site origin used for canonical URLs and sitemap entries." },
-                "deploy_base_path": { "type": "string", "description": "Deployed URL base path seen by generated pages (default: /, the site at the root of its address)." },
                 "meta_file": { "type": "string", "description": "Folder metadata file name. Default: _meta.yaml" }
             }
         }),
@@ -226,20 +219,6 @@ pub fn definition() -> NodeDefinition {
                 flag: "--site-title".to_string(),
                 config_key: "site_title".to_string(),
                 description: "Site title fallback used by the scaffold and generated payload.".to_string(),
-                kind: DslFlagKind::Scalar,
-                required: false,
-            },
-            DslFlag {
-                flag: "--deploy-base-url".to_string(),
-                config_key: "deploy_base_url".to_string(),
-                description: "Optional absolute deployed site origin used for canonical URLs and sitemap.".to_string(),
-                kind: DslFlagKind::Scalar,
-                required: false,
-            },
-            DslFlag {
-                flag: "--deploy-base-path".to_string(),
-                config_key: "deploy_base_path".to_string(),
-                description: "Deployed URL base path seen by generated pages (default: /).".to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
             },
@@ -293,22 +272,6 @@ pub fn definition() -> NodeDefinition {
                 ..Default::default()
             },
             NodeFieldDef {
-                name: "deploy_base_url".to_string(),
-                label: "Deploy Base URL".to_string(),
-                field_type: NodeFieldType::Text,
-                placeholder: Some("https://db.docs.example".to_string()),
-                help: Some("Optional absolute site origin for canonical URLs and sitemap entries.".to_string()),
-                ..Default::default()
-            },
-            NodeFieldDef {
-                name: "deploy_base_path".to_string(),
-                label: "Deploy Base Path".to_string(),
-                field_type: NodeFieldType::Text,
-                placeholder: Some("/docs".to_string()),
-                help: Some("URL base path for generated pages (default: /).".to_string()),
-                ..Default::default()
-            },
-            NodeFieldDef {
                 name: "meta_file".to_string(),
                 label: "Meta File".to_string(),
                 field_type: NodeFieldType::Text,
@@ -328,12 +291,6 @@ pub fn definition() -> NodeDefinition {
             },
             LayoutItem::Field("template_folder".to_string()),
             LayoutItem::Field("site_title".to_string()),
-            LayoutItem::Row {
-                row: vec![
-                    LayoutItem::Field("deploy_base_url".to_string()),
-                    LayoutItem::Field("deploy_base_path".to_string()),
-                ],
-            },
             LayoutItem::Field("meta_file".to_string()),
         ],
         ai_tool: Default::default(),
@@ -372,10 +329,8 @@ pub fn load_site(
 
     let (template_rel_path, template_source) =
         ensure_template_scaffold(template_root, &template_folder_rel, config)?;
-    let deploy_base_path = static_site::normalize_deploy_base_path(
-        config.deploy_base_path.as_deref(),
-        "/",
-    )?;
+    // A site runs at the root of its serve address (`node-conventions.md` §7).
+    let deploy_base_path = "/".to_string();
 
     let mut folder_meta = HashMap::new();
     let mut pages = Vec::new();
@@ -412,16 +367,16 @@ pub fn load_site(
         .into_iter()
         .map(|idx| pages[idx].clone())
         .collect::<Vec<_>>();
-    let sitemap_xml = build_sitemap_xml(config.deploy_base_url.as_deref(), &ordered_pages);
+    // The sitemap needs the site's origin, which the engine supplies from the
+    // folder's serve rule (`DocsSite::set_origin`); without one there is none.
+    let sitemap_xml = String::new();
     let search_index_route =
         static_site::route_path_for_output_path(&deploy_base_path, "search-index.json")?;
     let search_index_json = build_search_index_json(&ordered_pages);
 
     Ok(DocsSite {
         site_title,
-        deploy_base_url: static_site::normalize_deploy_base_url(
-            config.deploy_base_url.as_deref(),
-        ),
+        deploy_base_url: None,
         deploy_base_path,
         site_root_rel,
         template_rel_path,
@@ -1352,6 +1307,15 @@ fn effective_canonical(
     static_site::absolute_deploy_url(base_url, route_path)
 }
 
+impl DocsSite {
+    /// The origin the site is served on — the `serve` origin of its folder —
+    /// for canonical links and the sitemap; `None` writes neither.
+    pub fn set_origin(&mut self, origin: Option<String>) {
+        self.sitemap_xml = build_sitemap_xml(origin.as_deref(), &self.pages);
+        self.deploy_base_url = origin;
+    }
+}
+
 fn build_sitemap_xml(base_url: Option<&str>, pages: &[DocPage]) -> String {
     let Some(base_url) = base_url.filter(|s| !s.trim().is_empty()) else {
         return String::new();
@@ -1873,7 +1837,6 @@ mod tests {
                     "docs_root": "sekejap-docs",
                     "site_root": "docs",
                     "template_folder": "pages/docs",
-                    "deploy_base_url": "https://db.docs.example",
                     "site_title": "Sekejap Docs"
                 }),
             }],
@@ -1911,11 +1874,9 @@ mod tests {
             result.value["docs_generated"]["manifest_path"],
             "docs/.zebflow-static-site.json"
         );
-        assert_eq!(
-            result.value["docs_generated"]["deploy_base_url"],
-            "https://db.docs.example"
-        );
-        assert_eq!(result.value["docs_generated"]["deploy_base_path"], "/");
+        // No serve rule names the folder, so the site has no origin and no
+        // sitemap; it never takes its address from a flag.
+        assert!(result.value["docs_generated"]["origin"].is_null());
         assert_eq!(
             result.value["docs_generated"]["search_index_path"],
             "docs/search-index.json"
@@ -1939,7 +1900,7 @@ mod tests {
         let search_index_path = layout.files_dir.join("docs").join("search-index.json");
         assert!(home_path.is_file());
         assert!(query_path.is_file());
-        assert!(sitemap_path.is_file());
+        assert!(!sitemap_path.exists());
         assert!(search_index_path.is_file());
         let manifest_path = layout
             .files_dir
@@ -1949,7 +1910,6 @@ mod tests {
 
         let home_html = std::fs::read_to_string(home_path).expect("home html");
         let query_html = std::fs::read_to_string(query_path).expect("query html");
-        let sitemap = std::fs::read_to_string(sitemap_path).expect("sitemap");
         let search_index = std::fs::read_to_string(search_index_path).expect("search index");
         let manifest = std::fs::read_to_string(manifest_path).expect("manifest");
 
@@ -1972,8 +1932,6 @@ mod tests {
                 .join("zeb_react.mjs")
                 .is_file()
         );
-        assert!(sitemap.contains("https://db.docs.example/"));
-        assert!(sitemap.contains("https://db.docs.example/basic/query/"));
         assert!(search_index.contains("\"href\": \"/basic/query/\""));
         assert!(search_index.contains("\"Query Basics\""));
         assert!(search_index.contains("\"Select\""));

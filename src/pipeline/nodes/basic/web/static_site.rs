@@ -54,8 +54,8 @@ impl SiteStore<'_> {
     /// The object's bytes, or `None` when there is no such object.
     pub fn get(&self, rel: &str) -> Result<Option<Vec<u8>>, PipelineError> {
         let key = self.key(rel);
-        match self.store.get(&key) {
-            Ok(object) => Ok(Some(object.bytes)),
+        match self.store.head(&key) {
+            Ok(_) => crate::pipeline::nodes::shared::project_store::read_capped(self.store, &key, "FW_NODE_WEB_STATIC_SITE_READ").map(Some),
             Err(err) if err.code == "ZEBFS_NOT_FOUND" => Ok(None),
             Err(err) => Err(PipelineError::new(
                 "FW_NODE_WEB_STATIC_SITE_READ",
@@ -205,6 +205,23 @@ pub fn page_rel_path_from_site_root(
 
 pub fn site_manifest_rel_path(site_root_rel: &str) -> String {
     format!("{}/{SITE_MANIFEST_FILE}", site_root_rel.trim_end_matches('/'))
+}
+
+/// The origin a site folder is served on: the first `serve` origin of the
+/// `public_execute` rule covering it (`node-conventions.md` §7). A site with
+/// no such rule has no origin, and writes host-relative links only.
+pub fn site_origin(
+    platform: Option<&std::sync::Arc<crate::platform::services::PlatformService>>,
+    owner: &str,
+    project: &str,
+    site_root: &str,
+) -> Option<String> {
+    let layout = platform?.file.ensure_project_layout(owner, project).ok()?;
+    let (_, rule) = crate::platform::services::zebfs_acl::effective_rule(&layout.data_store_dir(), site_root).ok()??;
+    if rule.access != crate::zebfs::acl::ZebFsAccess::PublicExecute {
+        return None;
+    }
+    rule.serve.first().cloned()
 }
 
 pub fn normalize_deploy_base_url(raw: Option<&str>) -> Option<String> {
@@ -602,19 +619,12 @@ fn materialize_asset(
                     "project asset root is required to localize /static/{owner}/{project}/ references",
                 )
             })?;
-            let abs = root.join(path);
-            if !abs.starts_with(root) || !abs.is_file() {
-                return Err(PipelineError::new(
-                    "FW_NODE_WEB_STATIC_SITE_PROJECT_ASSET_MISSING",
-                    format!("project asset '{}' was not found", abs.display()),
-                ));
-            }
-            std::fs::read(&abs).map_err(|err| {
-                PipelineError::new(
-                    "FW_NODE_WEB_STATIC_SITE_PROJECT_ASSET_READ",
-                    format!("failed reading '{}': {err}", abs.display()),
-                )
-            })?
+            // Through the repository reader: `..` and links refused, capped.
+            crate::pipeline::nodes::shared::project_store::read_repo_file(
+                root,
+                path,
+                "FW_NODE_WEB_STATIC_SITE_PROJECT_ASSET_MISSING",
+            )?
         }
     };
 

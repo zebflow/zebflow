@@ -192,9 +192,9 @@ fn parse_and_validate_pipeline_source(source: &str) -> Result<PipelineGraph, Pla
 /// moment, so changing the default later moves no existing pipeline
 /// (`docs/contracts/node-conventions.md` §3).
 fn pin_file_stores(graph: &mut PipelineGraph, default_store: &str) {
-    use crate::pipeline::nodes::shared::project_store::FILE_WRITING_NODE_KINDS;
+    let store_kinds = crate::pipeline::nodes::shared::project_store::store_node_kinds();
     for node in &mut graph.nodes {
-        if !FILE_WRITING_NODE_KINDS.contains(&node.kind.as_str()) {
+        if !store_kinds.contains(&node.kind) {
             continue;
         }
         if node.config.is_null() {

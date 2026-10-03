@@ -55,7 +55,7 @@
 //! **Echo move acknowledgment only to sender:**
 //! ```text
 //! | n.trigger.ws --event move
-//! | n.ws.sync_state --op merge --path /players/{session_id} --silent
+//! | n.ws.sync_state --op merge --state-key /players/{session_id} --silent
 //! | n.ws.emit --event move_ack --to session
 //! ```
 //!
@@ -296,21 +296,24 @@ impl NodeHandler for Node {
             ));
         }
 
-        let target = match self.config.to.as_str() {
+        // A closed choice: an unknown word is refused, never a broadcast.
+        let target = match crate::pipeline::nodes::shared::limits::choice(
+            &self.config.to,
+            &["all", "session", "others"],
+            "all",
+            "--to",
+            "FW_NODE_WS_EMIT_CONFIG",
+        )? {
             "session" => EmitTarget::Session(session_id.clone()),
             "others" => EmitTarget::Others(session_id.clone()),
             _ => EmitTarget::All,
         };
 
         // The emit body arrives final — a whole `{{ }}` carries its typed
-        // value. Null means "not set": fall back to the payload's own
-        // `payload` field, then to the whole payload, as before.
+        // value. Without `--payload` the whole payload is sent; no field of
+        // it is read by name.
         let emit_payload = if self.config.payload.is_null() {
-            input
-                .payload
-                .get("payload")
-                .cloned()
-                .unwrap_or_else(|| input.payload.clone())
+            input.payload.clone()
         } else {
             self.config.payload.clone()
         };

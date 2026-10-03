@@ -65,7 +65,6 @@ pub fn definition() -> NodeDefinition {
                         "preview": { "type": "array" },
                         "data": { "type": "array" },
                         "to": { "type": ["string", "null"] },
-                        "url": { "type": ["string", "null"] }
                     }
                 }
             }
@@ -273,7 +272,7 @@ pub struct Config {
     pub engine: String,
     #[serde(default)]
     pub sources: Vec<SourceBindingConfig>,
-    #[serde(default, alias = "sql")]
+    #[serde(default)]
     pub query: String,
     /// Bind values for `$1`, `$2`, … A whole `{{ }}` carries its typed value.
     #[serde(default)]
@@ -423,7 +422,7 @@ impl NodeHandler for Node {
             &source_stores,
             &input,
             self.language.as_ref(),
-            self.config.limit.unwrap_or(MAX_INLINE_ROWS),
+            self.config.limit.unwrap_or(MAX_INLINE_ROWS).min(MAX_INLINE_ROWS),
         )
         .await?;
         let mut rows = rows;
@@ -684,9 +683,16 @@ async fn register_table_path(
     alias: &str,
     source: &str,
 ) -> Result<(), PipelineError> {
-    let (format_label, table_path) = if is_external_table_uri(source) {
-        (source.to_string(), source.trim().to_string())
-    } else {
+    // A table is a file in a project store. A URL is refused: a bucket is
+    // read through its registered store, the web through http.request — never
+    // past the egress guard and the store's own credentials.
+    if is_external_table_uri(source) {
+        return Err(PipelineError::new(
+            "FW_NODE_TABLE_QUERY_SOURCE",
+            format!("'{source}' is a URL; register the bucket as a store and pass a key or FileRef, or fetch it with http.request first"),
+        ));
+    }
+    let (format_label, table_path) = {
         let rel = normalize_object_path(source)
             .map_err(|err| PipelineError::new("FW_NODE_TABLE_QUERY", err.to_string()))?;
         // DataFusion streams from a file path: a directory store's own file,

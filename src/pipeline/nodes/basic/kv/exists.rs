@@ -180,7 +180,7 @@ impl NodeHandler for Node {
 
         if key.is_empty() {
             return Err(PipelineError::new(
-                "KV_EXISTS_KEY",
+                "FW_NODE_KV_EXISTS_KEY",
                 "n.kv.exists: --key is required",
             ));
         }

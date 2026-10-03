@@ -634,7 +634,7 @@ inst.setViewState({
 
 ```
 | n.trigger.ws --room fleet --event telemetry
-| n.ws.sync_state --op merge --path /vehicles/{session_id} --value "{{ input.payload }}"
+| n.ws.sync_state --op merge --state-key /vehicles/{session_id} --value "{{ input.payload }}"
 ```
 
 ### Aggregated Data for Heatmap

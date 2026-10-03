@@ -10,7 +10,6 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use crate::pipeline::nodes::shared::file_ref::mime_for_filename;
 use crate::pipeline::nodes::shared::project_store::{OnConflict, on_conflict_flag, open_source, open_store, store_fields, store_flag, target_key};
 use crate::pipeline::nodes::shared::store_scratch::StoreScratch;
 use crate::pipeline::nodes::shared::util::metadata_scope;
@@ -325,8 +324,7 @@ impl NodeHandler for Node {
         let store = open_store(&self.platform, owner, project, self.config.store.as_deref())?;
         let on_conflict = OnConflict::parse(self.config.on_conflict.as_deref(), OnConflict::Error, "FW_NODE_GEO_CONVERT")?;
         if !on_conflict.allows(&store.fs, &output_rel, "FW_NODE_GEO_CONVERT")? {
-            let existing = store.fs.get(&output_rel).map_err(|err| PipelineError::new("FW_NODE_GEO_CONVERT", err.to_string()))?;
-            let file = store.file_ref(&output_rel, &filename, mime_for_filename(&filename), &existing.bytes, "geo.convert", "generated");
+            let file = store.stored_ref(&output_rel, "geo.convert", "generated", "FW_NODE_GEO_CONVERT")?;
             return Ok(answer(&input.payload, json!({
                 "source": input_rel, "store": store.id, "file": file, "files": [], "skipped": true
             }), format!("node_kind={NODE_KIND} input={input_rel} output={output_rel} skipped=true")));
@@ -391,6 +389,18 @@ impl NodeHandler for Node {
             )
         })?
         .map_err(|err| PipelineError::new("FW_NODE_GEO_CONVERT", err.to_string()))?;
+        // Every file the converter wrote obeys --on-conflict, sidecars as
+        // well as the main output: one already in the store is refused under
+        // `error` and kept (not pushed) under `skip`.
+        if let Ok(entries) = std::fs::read_dir(&output_dir_local) {
+            for entry in entries.flatten() {
+                let name = entry.file_name().to_string_lossy().into_owned();
+                let rel = if output_parent_rel.is_empty() { name.clone() } else { format!("{output_parent_rel}/{name}") };
+                if rel != output_rel && !on_conflict.allows(&store.fs, &rel, "FW_NODE_GEO_CONVERT")? {
+                    let _ = std::fs::remove_file(entry.path());
+                }
+            }
+        }
         let files = scratch.push_tree_refs(&store, &output_dir_local, &output_parent_rel, "geo.convert", "generated")?;
         let file = files
             .iter()

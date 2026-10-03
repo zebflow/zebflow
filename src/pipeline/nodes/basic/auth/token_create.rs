@@ -411,7 +411,7 @@ impl NodeHandler for Node {
 
         Ok(NodeExecutionOutput {
             output_pins: vec![OUTPUT_PIN_OUT.to_string()],
-            payload: output,
+            payload: crate::pipeline::nodes::shared::util::with_answer(&input.payload, output),
             trace: vec![format!(
                 "n.auth.token.create: signed {} token, exp +{}s",
                 algorithm_str, expires_in

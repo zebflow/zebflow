@@ -45,7 +45,7 @@ pub fn definition() -> NodeDefinition {
         title: "Verify Token".to_string(),
         description: "Checks a JWT that arrived as data — a password-reset or e-mail-confirmation link (`$trigger.query.token`), a token \
             posted by another system (`input.body.token`) — against a `jwt_signing_key` credential. `valid` carries the payload plus \
-            `{ claims, sub }`; `invalid` carries `{ reason }`. The algorithm comes from the credential, never from the token's header, \
+            `token: { valid: true, claims, sub }`; `invalid` carries the payload plus `token: { valid: false, reason }`. The algorithm comes from the credential, never from the token's header, \
             so `alg: none` is refused. To protect a route with the session cookie or a bearer header do not use this: put \
             `--auth-type jwt --auth-credential <id>` on the trigger and read `input.auth`."
             .to_string(),
@@ -56,9 +56,15 @@ pub fn definition() -> NodeDefinition {
         output_schema: json!({
             "type": "object",
             "properties": {
-                "claims": { "type": "object", "description": "Verified claims (valid pin)." },
-                "sub": { "type": "string", "description": "Subject claim, lifted for convenience." },
-                "reason": { "type": "string", "description": "Why it failed (invalid pin)." }
+                "token": {
+                    "type": "object",
+                    "properties": {
+                        "valid": { "type": "boolean" },
+                        "claims": { "type": "object", "description": "Verified claims (valid pin)." },
+                        "sub": { "type": "string", "description": "Subject claim, lifted for convenience." },
+                        "reason": { "type": "string", "description": "Why it failed (invalid pin)." }
+                    }
+                }
             }
         }),
         input_pins: vec![INPUT_PIN_IN.to_string()],
@@ -183,10 +189,10 @@ impl Node {
 /// A refusal is an answer, not a failure: an absent or expired token is the
 /// ordinary case for a logged-out visitor, and a pipeline routes on it. Only a
 /// misconfiguration — no credential, wrong kind — is an error.
-fn invalid(reason: &str) -> NodeExecutionOutput {
+fn invalid(payload: &Value, reason: &str) -> NodeExecutionOutput {
     NodeExecutionOutput {
         output_pins: vec![OUTPUT_PIN_INVALID.to_string()],
-        payload: json!({ "reason": reason }),
+        payload: crate::pipeline::nodes::shared::util::with_answer(payload, json!({ "token": { "valid": false, "reason": reason } })),
         trace: vec![format!("node_kind={NODE_KIND}"), format!("invalid={reason}")],
     }
 }
@@ -232,7 +238,7 @@ impl NodeHandler for Node {
         // An empty token is a logged-out visitor, not a broken pipeline.
         let token = self.config.token.trim();
         if token.is_empty() {
-            return Ok(invalid("no token presented"));
+            return Ok(invalid(&input.payload, "no token presented"));
         }
 
         // The algorithm is the credential's, never the token's. Reading `alg`
@@ -312,13 +318,16 @@ impl NodeHandler for Node {
                     .to_string();
                 Ok(NodeExecutionOutput {
                     output_pins: vec![OUTPUT_PIN_VALID.to_string()],
-                    payload: json!({ "claims": data.claims, "sub": sub }),
+                    payload: crate::pipeline::nodes::shared::util::with_answer(
+                        &input.payload,
+                        json!({ "token": { "valid": true, "claims": data.claims, "sub": sub } }),
+                    ),
                     trace: vec![format!("node_kind={NODE_KIND}"), "valid=true".to_string()],
                 })
             }
             // The reason is the library's, and it names the check that failed —
             // expired, bad signature, wrong issuer — without echoing the token.
-            Err(err) => Ok(invalid(&err.to_string())),
+            Err(err) => Ok(invalid(&input.payload, &err.to_string())),
         }
     }
 }
@@ -405,7 +414,7 @@ mod tests {
         let p = platform("ok");
         let out = verify(&p, &sign(json!({ "sub": "a@b.c", "exp": later() }))).await;
         assert_eq!(out.output_pins, vec![OUTPUT_PIN_VALID.to_string()]);
-        assert_eq!(out.payload["sub"], "a@b.c");
+        assert_eq!(out.payload["token"]["sub"], "a@b.c");
     }
 
     /// The attack this node exists to stop. A forged token is `alg: none` with
@@ -449,9 +458,9 @@ mod tests {
         let out = verify(&p, &sign(json!({ "sub": "a@b.c", "exp": 1_000_000_000i64 }))).await;
         assert_eq!(out.output_pins, vec![OUTPUT_PIN_INVALID.to_string()]);
         assert!(
-            out.payload["reason"].as_str().unwrap_or_default().contains("Expired"),
+            out.payload["token"]["reason"].as_str().unwrap_or_default().contains("Expired"),
             "reason should name the check that failed: {:?}",
-            out.payload["reason"]
+            out.payload["token"]["reason"]
         );
     }
 
@@ -469,7 +478,7 @@ mod tests {
         let p = platform("empty");
         let out = verify(&p, "").await;
         assert_eq!(out.output_pins, vec![OUTPUT_PIN_INVALID.to_string()]);
-        assert_eq!(out.payload["reason"], "no token presented");
+        assert_eq!(out.payload["token"]["reason"], "no token presented");
     }
 
     /// The token is a bearer credential — holding it is being the user — and it

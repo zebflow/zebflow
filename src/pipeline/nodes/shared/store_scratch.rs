@@ -46,11 +46,12 @@ impl StoreScratch {
     /// the scratch folder at the same relative path. Answers the local path.
     pub fn pull(&self, store: &ZebFs, rel: &str) -> Result<PathBuf, PipelineError> {
         let rel = rel.trim_matches('/');
-        match store.get(rel) {
-            Ok(object) => {
-                self.write_local(rel, &object.bytes)?;
+        match store.head(rel) {
+            Ok(stat) if stat.kind == ZebFsEntryKind::Object => {
+                self.fetch(store, rel)?;
                 return Ok(self.local(rel));
             }
+            Ok(_) => {}
             Err(err) if err.code == "ZEBFS_NOT_FOUND" => {}
             Err(err) => return Err(self.err(format!("read '{rel}': {err}"))),
         }
@@ -83,10 +84,7 @@ impl StoreScratch {
                 && entry.name != name
                 && entry.name.starts_with(&format!("{stem}."))
             {
-                let object = store
-                    .get(&entry.path)
-                    .map_err(|err| self.err(format!("read '{}': {err}", entry.path)))?;
-                self.write_local(&entry.path, &object.bytes)?;
+                self.fetch(store, &entry.path)?;
             }
         }
         Ok(local)
@@ -108,34 +106,31 @@ impl StoreScratch {
         for entry in entries {
             match entry.kind {
                 ZebFsEntryKind::Prefix => self.pull_prefix(store, &entry.path, found)?,
-                ZebFsEntryKind::Object => {
-                    let object = store
-                        .get(&entry.path)
-                        .map_err(|err| self.err(format!("read '{}': {err}", entry.path)))?;
-                    self.write_local(&entry.path, &object.bytes)?;
-                }
+                ZebFsEntryKind::Object => self.fetch(store, &entry.path)?,
             }
         }
         Ok(())
     }
 
-    fn write_local(&self, rel: &str, bytes: &[u8]) -> Result<(), PipelineError> {
+    /// Streams one object into the scratch folder at its own relative path.
+    fn fetch(&self, store: &ZebFs, rel: &str) -> Result<(), PipelineError> {
         let path = self.local(rel);
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)
                 .map_err(|err| self.err(format!("create '{}': {err}", parent.display())))?;
         }
-        std::fs::write(&path, bytes).map_err(|err| self.err(format!("write scratch '{rel}': {err}")))
+        store
+            .get_to_file(rel, &path)
+            .map(|_| ())
+            .map_err(|err| self.err(format!("read '{rel}': {err}")))
     }
 
-    /// Stores one file the engine wrote at `rel` in the project's store.
-    pub fn push_file(&self, store: &ZebFs, local: &Path, rel: &str) -> Result<Vec<u8>, PipelineError> {
-        let bytes = std::fs::read(local)
-            .map_err(|err| self.err(format!("read '{}': {err}", local.display())))?;
+    /// Streams one file the engine wrote into the project's store at `rel`.
+    pub fn push_file(&self, store: &ZebFs, local: &Path, rel: &str) -> Result<(), PipelineError> {
         store
-            .put(rel, &bytes)
-            .map_err(|err| self.err(format!("write '{rel}': {err}")))?;
-        Ok(bytes)
+            .put_from_file(rel, local)
+            .map(|_| ())
+            .map_err(|err| self.err(format!("write '{rel}': {err}")))
     }
 
     /// [`Self::push_tree`], answering a durable FileRef for every file.
@@ -152,11 +147,9 @@ impl StoreScratch {
         let mut refs = Vec::with_capacity(written.len());
         for rel in written {
             let inner = if prefix.is_empty() { rel.as_str() } else { rel.strip_prefix(&format!("{prefix}/")).unwrap_or(&rel) };
-            let bytes = std::fs::read(local_dir.join(inner))
-                .map_err(|err| self.err(format!("read '{inner}': {err}")))?;
             let filename = rel.rsplit('/').next().unwrap_or(&rel).to_string();
             let mime = super::file_ref::mime_for_filename(&filename);
-            refs.push(store.file_ref(&rel, &filename, mime, &bytes, origin, trust));
+            refs.push(store.file_ref_from_file(&rel, &filename, mime, &local_dir.join(inner), origin, trust, self.code)?);
         }
         Ok(refs)
     }

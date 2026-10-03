@@ -45,6 +45,14 @@ pub fn valid_layer_id(id: &str) -> bool {
     (1..=64).contains(&id.len()) && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
 }
 
+/// `{instance}/{layer}/manifest.json` with both names plain slugs: the one
+/// shape an artifact path may take below `mapserver-artifacts/`, since a
+/// delete removes its folder.
+pub fn valid_artifact_rest(rest: &str) -> bool {
+    let parts: Vec<&str> = rest.split('/').collect();
+    matches!(parts.as_slice(), [instance, layer, "manifest.json"] if valid_layer_id(instance) && valid_layer_id(layer))
+}
+
 /// Canonical published layer registry for one MapServer instance.
 pub struct MapPublishManifestContract;
 
@@ -64,8 +72,8 @@ impl PlatformContract for MapPublishManifestContract {
             // The artifact path names a folder a delete removes, so it has
             // exactly one shape and never climbs out of it.
             if let Some(artifact) = &layer.artifact_manifest_path {
-                let rest = artifact.strip_prefix("mapserver-artifacts/").unwrap_or("..");
-                if crate::infra::io::path::rel_path_escapes_root(rest) || rest.split('/').count() != 3 {
+                let rest = artifact.strip_prefix("mapserver-artifacts/").unwrap_or("");
+                if !valid_artifact_rest(rest) {
                     return Err(ContractError::invalid(format!(
                         "map layer '{}' artifact_manifest_path '{artifact}' is not mapserver-artifacts/{{instance}}/{{layer}}/manifest.json",
                         layer.layer_id

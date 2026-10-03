@@ -62,9 +62,15 @@ pub fn definition() -> NodeDefinition {
         output_schema: json!({
             "type": "object",
             "properties": {
-                "sent": { "type": "boolean" },
-                "to": { "type": "string" },
-                "subject": { "type": "string" }
+                "mail": {
+                    "type": "object",
+                    "properties": {
+                        "sent": { "type": "boolean" },
+                        "attached": { "type": "array" },
+                        "to": { "type": "string" },
+                        "subject": { "type": "string" }
+                    }
+                }
             }
         }),
         input_pins: vec![INPUT_PIN_IN.to_string()],
@@ -132,7 +138,7 @@ pub fn definition() -> NodeDefinition {
                 flag: "--attach".to_string(),
                 config_key: "attach".to_string(),
                 description: "A file to attach: displayed name = store path or FileRef. Repeat for several. \
-                    e.g. --attach \"Certificate.pdf={{ input.image.ref }}\". Leave the name empty to keep the file's own."
+                    e.g. --attach \"Certificate.pdf={{ input.image }}\" (a FileRef is read from its own store). Leave the name empty to keep the file's own."
                     .to_string(),
                 kind: crate::pipeline::model::DslFlagKind::KeyValuePairs,
                 required: false,
@@ -146,6 +152,7 @@ pub fn definition() -> NodeDefinition {
                 kind: crate::pipeline::model::DslFlagKind::KeyValuePairs,
                 required: false,
             },
+            crate::pipeline::nodes::shared::project_store::store_flag(),
             crate::pipeline::model::DslFlag {
                 flag: "--reply-to".to_string(),
                 config_key: "reply_to".to_string(),
@@ -181,8 +188,8 @@ pub fn definition() -> NodeDefinition {
         ],
         examples: vec![
             crate::pipeline::model::NodeExample::dsl("Confirmation after a form", r#"mail.send --credential smtp_main --to "{{ input.body.email }}" --subject "We got your message" --text "Thanks {{ input.body.name }}, we will reply within a day.""#)
-                .output(serde_json::json!({ "sent": true, "to": "a@x.io", "subject": "We got your message" }))
-                .note("Replaces the payload; keep what the redirect needs in `$nodes.<id>`. The credential is created by the owner in Studio → Credentials (kind smtp)."),
+                .output(serde_json::json!({ "mail": { "sent": true, "attached": [], "to": "a@x.io", "subject": "We got your message" } }))
+                .note("Adds `mail` to the payload and keeps the rest. The credential is created by the owner in Studio → Credentials (kind smtp)."),
         ],
         ..Default::default()
     }
@@ -204,14 +211,17 @@ pub struct Config {
     /// Files to attach: displayed name → store path or FileRef. An entry
     /// with an empty name takes the file's own.
     #[serde(default)]
-    pub attach: std::collections::BTreeMap<String, String>,
+    pub attach: std::collections::BTreeMap<String, Value>,
     /// Pictures the HTML body draws inline: your own short id → store path
     /// or FileRef. The HTML references one as `<img src="cid:ID">`, using
     /// the same id as the key here. Ignored when there is no HTML body —
     /// nothing could reference it — in which case it is sent as an
     /// ordinary attachment instead.
     #[serde(default)]
-    pub embed: std::collections::BTreeMap<String, String>,
+    pub embed: std::collections::BTreeMap<String, Value>,
+    /// The store a bare attachment key is read from; a FileRef names its own.
+    #[serde(default)]
+    pub store: Option<String>,
 }
 
 
@@ -257,16 +267,26 @@ impl Node {
     /// key takes the file's own, so the common case stays short and nobody
     /// receives `9f2c-4d1a-….pdf`.
     /// Reads one store object for an attachment or an embed.
-    fn read_store_object(
-        zebfs: &crate::zebfs::ZebFs,
-        source: &str,
-    ) -> Result<(String, Vec<u8>), PipelineError> {
-        let rel = crate::zebfs::normalize_object_path(source.trim_start_matches('/'))
-            .map_err(|e| PipelineError::new("FW_NODE_MAIL_ATTACH", format!("'{source}': {e}")))?;
-        let object = zebfs
-            .get(&rel)
-            .map_err(|e| PipelineError::new("FW_NODE_MAIL_ATTACH", format!("'{rel}': {}", e.message)))?;
-        Ok((rel, object.bytes))
+    /// One attachment's bytes: a store key in this node's store, or a FileRef
+    /// read from the store it names — capped like every node read.
+    fn read_source(
+        platform: &std::sync::Arc<crate::platform::services::PlatformService>,
+        owner: &str,
+        project: &str,
+        store: Option<&str>,
+        source: &Value,
+    ) -> Result<Option<(String, Vec<u8>)>, PipelineError> {
+        if source.as_str().is_some_and(|text| text.trim().is_empty()) {
+            return Ok(None);
+        }
+        let Some((store, rel)) = crate::pipeline::nodes::shared::project_store::open_source(platform, owner, project, source, store)?
+        else {
+            return Ok(None);
+        };
+        let rel = crate::zebfs::normalize_object_path(rel.trim_start_matches('/'))
+            .map_err(|e| PipelineError::new("FW_NODE_MAIL_ATTACH", format!("'{rel}': {e}")))?;
+        let bytes = store.read_capped(&rel, "FW_NODE_MAIL_ATTACH")?;
+        Ok(Some((rel, bytes)))
     }
 
     /// Reads every attachment and, when there is an HTML body to reference
@@ -292,19 +312,13 @@ impl Node {
                 "attachments need the platform's file store, which this engine context has not got",
             )
         })?;
-        let layout = platform
-            .file
-            .ensure_project_layout(owner, project)
-            .map_err(|e| PipelineError::new("FW_NODE_MAIL_ATTACH", e.to_string()))?;
-        let zebfs = layout.open_files();
+        let store = self.config.store.as_deref();
 
         let mut out = Vec::with_capacity(self.config.attach.len() + self.config.embed.len());
         for (name, source) in &self.config.attach {
-            let source = source.trim();
-            if source.is_empty() {
+            let Some((rel, bytes)) = Self::read_source(platform, owner, project, store, source)? else {
                 continue;
-            }
-            let (rel, bytes) = Self::read_store_object(&zebfs, source)?;
+            };
             let filename = if name.trim().is_empty() {
                 rel.rsplit('/').next().unwrap_or(&rel).to_string()
             } else {
@@ -313,12 +327,13 @@ impl Node {
             out.push(Attachment::new(filename, bytes));
         }
         for (id, source) in &self.config.embed {
-            let source = source.trim();
             let id = id.trim();
-            if source.is_empty() || id.is_empty() {
+            if id.is_empty() {
                 continue;
             }
-            let (rel, bytes) = Self::read_store_object(&zebfs, source)?;
+            let Some((rel, bytes)) = Self::read_source(platform, owner, project, store, source)? else {
+                continue;
+            };
             let filename = rel.rsplit('/').next().unwrap_or(&rel).to_string();
             out.push(if has_html {
                 Attachment::inline(filename, id, bytes)
@@ -520,12 +535,9 @@ impl NodeHandler for Node {
 
         Ok(NodeExecutionOutput {
             output_pins: vec![OUTPUT_PIN_OUT.to_string()],
-            payload: json!({
-                "sent": true,
-                "attached": attached,
-                "to": to_raw,
-                "subject": subject,
-            }),
+            payload: crate::pipeline::nodes::shared::util::with_answer(&input.payload, json!({
+                "mail": { "sent": true, "attached": attached, "to": to_raw, "subject": subject }
+            })),
             trace: vec![format!("n.mail.send: delivered to relay {host}:{port}")],
         })
     }
@@ -662,8 +674,8 @@ mod tests {
             .await
             .expect("send");
 
-        assert_eq!(out.payload["sent"], json!(true));
-        assert_eq!(out.payload["to"], json!("sari@example.test"));
+        assert_eq!(out.payload["mail"]["sent"], json!(true));
+        assert_eq!(out.payload["mail"]["to"], json!("sari@example.test"));
 
         let transcript = sink.await.expect("sink");
         assert!(

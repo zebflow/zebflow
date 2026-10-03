@@ -129,7 +129,7 @@ that is a new code, not an edit. `logic.retry` retries only `failed`;
 the paired `--*-expr` twins (~30), every payload-extraction flag in all four
 of its spellings (`-path` as pointer, `-path` as dot, `-from`, `-key`), the
 `$.` literal-or-path convention, and `{name}` interpolation in
-`ws.sync_state --path`. Each becomes the one mechanism:
+`ws.sync_state --state-key`. Each becomes the one mechanism:
 `--value "{{ input.user.email }}"`.
 
 ## Scope — one set of names, two worlds

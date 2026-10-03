@@ -113,7 +113,7 @@ pub fn definition() -> NodeDefinition {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Config {
-    #[serde(default, alias = "sql")]
+    #[serde(default)]
     pub query: String,
     /// Bind values for `?1`, `?2`, … A whole `{{ }}` carries its typed value.
     #[serde(default)]
@@ -216,7 +216,7 @@ impl NodeHandler for Node {
 
         Ok(NodeExecutionOutput {
             output_pins: vec![OUTPUT_PIN_OUT.to_string()],
-            payload: json!({ "ok": true, "affected_rows": affected_rows }),
+            payload: crate::pipeline::nodes::shared::util::with_answer(&input.payload, json!({ "affected_rows": affected_rows })),
             trace: vec![format!("node_kind={NODE_KIND}")],
         })
     }

@@ -36,7 +36,7 @@ pub use hub_repository_index::{
     MAX_HUB_REPOSITORY_INDEX_PACKAGES, MAX_HUB_REPOSITORY_INDEX_RELEASES,
     decode_hub_repository_index, encode_hub_repository_index,
 };
-pub use map_publish_manifest::{MapPublishManifestContract, MapserverLayerRecord, valid_layer_id};
+pub use map_publish_manifest::{MapPublishManifestContract, MapserverLayerRecord, valid_artifact_rest, valid_layer_id};
 pub use node::{
     BUNDLE_TRIGGER_TYPES, BundleScope, INSTALLED_NODE_KIND_PREFIX, MAX_NODE_BUNDLE_BYTES,
     MAX_NODE_BUNDLE_CREDENTIALS, MAX_NODE_BUNDLE_FILES, MAX_NODE_BUNDLE_FUNCTIONS,

@@ -211,11 +211,7 @@ impl NodeHandler for Node {
             }
         }
         let trace = format!("node_kind={NODE_KIND} {} symbols {}", values.len(), barcode["ref"]);
-        let mut out = match input.payload {
-            Value::Object(map) => map,
-            _ => serde_json::Map::new(),
-        };
-        out.insert("barcode".into(), barcode);
-        Ok(NodeExecutionOutput { output_pins: vec![OUTPUT_PIN_OUT.into()], payload: Value::Object(out), trace: vec![trace] })
+        let payload = crate::pipeline::nodes::shared::util::with_answer(&input.payload, json!({ "barcode": barcode }));
+        Ok(NodeExecutionOutput { output_pins: vec![OUTPUT_PIN_OUT.into()], payload, trace: vec![trace] })
     }
 }

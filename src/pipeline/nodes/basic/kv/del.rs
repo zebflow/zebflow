@@ -126,7 +126,7 @@ impl NodeHandler for Node {
 
         if key.is_empty() {
             return Err(PipelineError::new(
-                "KV_DEL_KEY",
+                "FW_NODE_KV_DEL_KEY",
                 "n.kv.del: --key is required",
             ));
         }

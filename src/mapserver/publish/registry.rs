@@ -137,6 +137,8 @@ mod tests {
             ("roads", Some("../../../../home")),
             ("roads", Some("mapserver-artifacts/../../x/manifest.json")),
             ("roads", Some("mapserver/.artifacts/roads/manifest.json")),
+            ("roads", Some("mapserver-artifacts/default-mapserver//manifest.json")),
+            ("roads", Some("mapserver-artifacts/default-mapserver/roads/other.json")),
             ("../roads", None),
             ("ro ads", None),
         ] {

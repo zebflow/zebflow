@@ -138,33 +138,14 @@ pub fn durable_file_ref_for_store_path(
 ) -> Result<Value, PipelineError> {
     let rel = crate::zebfs::normalize_object_path(store_path.trim().trim_start_matches('/'))
         .map_err(|err| PipelineError::new("FW_FILE_REF_INVALID", err.to_string()))?;
-    let layout = platform
-        .file
-        .ensure_project_layout(owner, project)
-        .map_err(|err| PipelineError::new("FW_FILE_REF", err.to_string()))?;
-    let zebfs = layout.open_files();
-    let object = zebfs.get(&rel).map_err(|_| {
-        PipelineError::new(
-            "FW_FILE_REF_READ",
-            format!("no stored file at '{rel}'"),
-        )
-    })?;
-    let filename = rel.rsplit('/').next().unwrap_or(&rel).to_string();
-    let mime = mime_for_filename(&filename);
-    Ok(json!({
-        "__zf_type": FILE_REF_TYPE,
-        "backend": layout.file_backend().as_str(),
-        "store": layout.store_id(),
-        "ref": object.stat.path,
-        "filename": filename,
-        "mime": mime,
-        "kind": infer_kind(mime, &rel),
-        "size": object.bytes.len(),
-        "sha256": format!("sha256:{:x}", Sha256::digest(&object.bytes)),
-        "lifecycle": LIFECYCLE_DURABLE,
-        "origin": origin,
-        "trust": trust,
-    }))
+    // The project's default store, the one a manual run's files live in,
+    // read through the one door and digested by streaming.
+    let store = super::project_store::open_store(platform, owner, project, None)
+        .map_err(|err| PipelineError::new("FW_FILE_REF", err.message))?;
+    if store.fs.head(&rel).is_err() {
+        return Err(PipelineError::new("FW_FILE_REF_READ", format!("no stored file at '{rel}'")));
+    }
+    store.stored_ref(&rel, origin, trust, "FW_FILE_REF_READ")
 }
 
 /// A manual run's `files` map, resolved in place.
@@ -218,14 +199,11 @@ pub fn remove_run_temporary_files(
     if request_part.is_empty() {
         return;
     }
-    let Ok(layout) = platform.file.ensure_project_layout(owner, project) else {
-        return;
-    };
-    // Through the store, whichever it is: a temporary FileRef was written
-    // with `put`, so its bytes are wherever the project's bytes are.
-    let _ = layout
-        .open_files()
-        .delete(&format!("tmp/runs/{request_part}"));
+    // Through the default store, whichever it is: a temporary FileRef was
+    // written there with `put`, so its bytes are wherever the project's are.
+    if let Ok(store) = super::project_store::open_store(platform, owner, project, None) {
+        let _ = store.fs.delete(&format!("tmp/runs/{request_part}"));
+    }
 }
 
 /// The content type a stored object's name implies, for a FileRef built from
@@ -316,11 +294,10 @@ pub fn write_tmp_file_ref(
     platform: &Arc<PlatformService>,
     input: FileRefInput<'_>,
 ) -> Result<Value, PipelineError> {
-    let layout = platform
-        .file
-        .ensure_project_layout(input.owner, input.project)
-        .map_err(|err| PipelineError::new("FW_FILE_REF", err.to_string()))?;
-    let zebfs = layout.open_files();
+    // A run's temporary files live in the project's default store.
+    let store = super::project_store::open_store(platform, input.owner, input.project, None)
+        .map_err(|err| PipelineError::new("FW_FILE_REF", err.message))?;
+    let zebfs = store.fs.clone();
     let clean_name = sanitize_filename(input.filename.unwrap_or("content.bin"));
     let extension = extension_for(&clean_name, input.mime);
     let object_name = if extension.is_empty() {
@@ -342,8 +319,8 @@ pub fn write_tmp_file_ref(
     let kind = infer_kind(mime, &clean_name);
     Ok(json!({
         "__zf_type": FILE_REF_TYPE,
-        "backend": layout.file_backend().as_str(),
-        "store": layout.store_id(),
+        "backend": store.backend.as_str(),
+        "store": store.id,
         "ref": stat.path,
         "filename": clean_name,
         "mime": mime,
@@ -383,29 +360,26 @@ pub fn read_file_ref_bytes(
             ),
         ));
     }
-    let zebfs = store.fs;
-    let object = zebfs
-        .get(path)
-        .map_err(|err| PipelineError::new("FW_FILE_REF_READ", err.to_string()))?;
+    let bytes = super::project_store::read_capped(&store.fs, path, "FW_FILE_REF_READ")?;
     let expected_size = value["size"].as_u64().unwrap_or_default();
-    if object.bytes.len() as u64 != expected_size {
+    if bytes.len() as u64 != expected_size {
         return Err(PipelineError::new(
             "FW_FILE_REF_INTEGRITY",
             format!(
                 "FileRef size mismatch: expected {expected_size}, got {}",
-                object.bytes.len()
+                bytes.len()
             ),
         ));
     }
     let expected_sha256 = value["sha256"].as_str().unwrap_or_default();
-    let actual_sha256 = format!("sha256:{:x}", Sha256::digest(&object.bytes));
+    let actual_sha256 = format!("sha256:{:x}", Sha256::digest(&bytes));
     if !actual_sha256.eq_ignore_ascii_case(expected_sha256) {
         return Err(PipelineError::new(
             "FW_FILE_REF_INTEGRITY",
             format!("FileRef digest mismatch for '{path}'"),
         ));
     }
-    Ok(object.bytes)
+    Ok(bytes)
 }
 
 /// Performs the fixed, shallow validation required at a FileRef consumer.
@@ -517,6 +491,9 @@ pub fn zebfs_rel_path(value: &Value) -> Result<Option<String>, PipelineError> {
             ),
         ));
     }
+    // A FileRef is read only when it is whole: its store, size and digest
+    // are part of what it promises (`kinds/file-ref`).
+    validate_file_ref(value)?;
     Ok(file_ref_path(value).map(ToString::to_string))
 }
 

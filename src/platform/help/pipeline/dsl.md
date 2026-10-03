@@ -400,7 +400,7 @@ same Run button tries the route from the canvas:
 | trigger.webhook --path /apply --method POST
 | input.text name --label "Full name"
 | input.file cv --accept pdf
-| fs.save --field cv --folder applications --allowed-kinds documents
+| fs.save --source-key files.cv --folder applications --allowed-kinds documents
 | web.response --status 200 --body "{{ { received: input.saved.ref } }}"
 ```
 
@@ -459,7 +459,7 @@ or by any `fs.*` node. `fs.save` keeps an uploaded file:
 
 ```
 | trigger.webhook --path /upload --method POST
-| fs.save --field photo --folder uploads --allowed-kinds images --max-size 10
+| fs.save --source-key files.photo --folder uploads --allowed-kinds images --max-size 10
 | fs.image.thumbnail --width 320 --height 320 --fit cover --format webp --folder thumbs
 ```
 
@@ -544,11 +544,11 @@ canvas is the SVG's own size; one side scales the other in proportion; both
 go through `--fit cover|contain|fill`. `--format png|jpg|webp` (default
 png), `--quality` for jpg, `--folder` (default `images/`), `--filename`,
 `--delete-source`. The answer adds `image` — a durable FileRef
-(`origin: fs.svg.convert`) with `width`, `height`, `format` — and keeps the
-rest of the payload, so `data.svg` is still there for the next node, and
-`layout`: every text and picture with its box, the pairs that overlap, what
-leaves the canvas, and `ok`. A `script` turns that into a verdict —
-`retry: !input.layout.ok` with the overlaps as notes — and `logic.retry`
+(`origin: fs.svg.convert`) with `width`, `height`, `format` and `layout` —
+and keeps the rest of the payload, so `data.svg` is still there for the next
+node. `image.layout` holds every text and picture with its box, the pairs
+that overlap, what leaves the canvas, and `ok`. A `script` turns that into a
+verdict — `retry: !input.image.layout.ok` with the overlaps as notes — and `logic.retry`
 sends the agent round again with the notes, so a composition is corrected
 without anyone looking at pixels; the picture nodes stay upstream of the
 loop and are not paid for twice.

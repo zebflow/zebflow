@@ -48,7 +48,7 @@
 //! **Multiplayer 3D position update (batched at 30 fps):**
 //! ```text
 //! | n.trigger.ws --event move
-//! | n.ws.sync_state --op merge --path /players/{session_id} --silent
+//! | n.ws.sync_state --op merge --state-key /players/{session_id} --silent
 //! ```
 //!
 //! **Chat message in a specific room:**
@@ -61,7 +61,7 @@
 //! ```text
 //! | n.trigger.ws --event classroom_action
 //! | n.script -- "/* validate role, build response */"
-//! | n.ws.sync_state --op merge --path /classroom
+//! | n.ws.sync_state --op merge --state-key /classroom
 //! | n.ws.emit --event classroom_updated --to all
 //! ```
 

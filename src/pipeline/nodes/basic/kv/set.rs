@@ -189,7 +189,7 @@ impl NodeHandler for Node {
 
         if key.is_empty() {
             return Err(PipelineError::new(
-                "KV_SET_KEY",
+                "FW_NODE_KV_SET_KEY",
                 "n.kv.set: --key is required",
             ));
         }

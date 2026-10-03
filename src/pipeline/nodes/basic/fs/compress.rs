@@ -280,46 +280,55 @@ impl NodeHandler for Node {
                 .map(|key| key.trim().to_string())
                 .filter(|key| !key.is_empty()),
         );
-        let scratch = StoreScratch::new("FW_NODE_FILE_COMPRESS")?;
+        let scratch = StoreScratch::new("FW_NODE_FS_COMPRESS")?;
         let mut source_paths: Vec<String> = Vec::new();
+        let mut source_stores: Vec<String> = Vec::new();
         for key in &keys {
             let value = resolve_path(&input.payload, key).ok_or_else(|| {
                 PipelineError::new(
-                    "FW_NODE_FILE_COMPRESS",
+                    "FW_NODE_FS_COMPRESS",
                     format!("source path not found at payload key '{key}' — chain after n.fs.save or set --source-key"),
                 )
             })?;
             let (source_store, rel) = open_source(&self.platform, owner, project, value, self.config.store.as_deref())?
                 .ok_or_else(|| {
                     PipelineError::new(
-                        "FW_NODE_FILE_COMPRESS",
+                        "FW_NODE_FS_COMPRESS",
                         format!("payload key '{key}' must be a FileRef or a store path string"),
                     )
                 })?;
-            let rel = sanitize_rel_path(&rel);
-            if rel.is_empty() {
-                return Err(PipelineError::new(
-                    "FW_NODE_FILE_COMPRESS",
-                    format!("resolved source path is empty after sanitization for key '{key}'"),
-                ));
-            }
-            if !source_paths.contains(&rel) {
-                scratch.pull(&source_store.fs, &rel)?;
-                source_paths.push(rel);
+            let rel = crate::zebfs::normalize_object_path(&rel).map_err(|err| {
+                PipelineError::new("FW_NODE_FS_COMPRESS", format!("payload key '{key}': {}", err.message))
+            })?;
+            match source_paths.iter().position(|existing| *existing == rel) {
+                // The same file named twice is archived once.
+                Some(at) if source_stores[at] == source_store.id => {}
+                // One archive path cannot hold two stores' files.
+                Some(at) => {
+                    return Err(PipelineError::new(
+                        "FW_NODE_FS_COMPRESS",
+                        format!("'{rel}' comes from both store '{}' and store '{}'; one archive path holds one file", source_stores[at], source_store.id),
+                    ));
+                }
+                None => {
+                    scratch.pull(&source_store.fs, &rel)?;
+                    source_paths.push(rel);
+                    source_stores.push(source_store.id.clone());
+                }
             }
         }
 
         let archive_name = archive_filename(self.config.filename.as_deref(), &source_paths[0]);
         let folder = if self.config.folder.trim().is_empty() { "archives" } else { self.config.folder.trim() };
-        let archive_rel = target_key(self.config.path.as_deref(), folder, &archive_name, "FW_NODE_FILE_COMPRESS")?;
+        let archive_rel = target_key(self.config.path.as_deref(), folder, &archive_name, "FW_NODE_FS_COMPRESS")?;
         let store = open_store(&self.platform, owner, project, self.config.store.as_deref())?;
-        let on_conflict = OnConflict::parse(self.config.on_conflict.as_deref(), OnConflict::Error, "FW_NODE_FILE_COMPRESS")?;
+        let on_conflict = OnConflict::parse(self.config.on_conflict.as_deref(), OnConflict::Error, "FW_NODE_FS_COMPRESS")?;
 
-        let archive_bytes = if on_conflict.allows(&store.fs, &archive_rel, "FW_NODE_FILE_COMPRESS")? {
+        let compressed = if on_conflict.allows(&store.fs, &archive_rel, "FW_NODE_FS_COMPRESS")? {
             let archive_abs = scratch.path().join(".zf-archive").join(&archive_name);
             if let Some(parent) = archive_abs.parent() {
                 std::fs::create_dir_all(parent).map_err(|err| {
-                    PipelineError::new("FW_NODE_FILE_COMPRESS", format!("create archive parent dir: {err}"))
+                    PipelineError::new("FW_NODE_FS_COMPRESS", format!("create archive parent dir: {err}"))
                 })?;
             }
             let archive_abs_for_task = archive_abs.clone();
@@ -329,21 +338,16 @@ impl NodeHandler for Node {
                 compress_tar_gz(&files_root_for_task, &source_rels_for_task, &archive_abs_for_task)
             })
             .await
-            .map_err(|err| PipelineError::new("FW_NODE_FILE_COMPRESS", format!("archive task failed: {err}")))??;
-            scratch.push_file(&store.fs, &archive_abs, &archive_rel)?
+            .map_err(|err| PipelineError::new("FW_NODE_FS_COMPRESS", format!("archive task failed: {err}")))??;
+            scratch.push_file(&store.fs, &archive_abs, &archive_rel)?;
+            // `compressed` is a bare durable FileRef for the archive, so `fs.copy
+            // --from "{{ input.compressed }}"` or a `--preview` takes it as it is.
+            let leaf = archive_rel.rsplit('/').next().unwrap_or(&archive_rel).to_string();
+            store.file_ref_from_file(&archive_rel, &leaf, "application/gzip", &archive_abs, "fs.compress", "generated", "FW_NODE_FS_COMPRESS")?
         } else {
-            store
-                .fs
-                .get(&archive_rel)
-                .map_err(|err| PipelineError::new("FW_NODE_FILE_COMPRESS", err.to_string()))?
-                .bytes
+            store.stored_ref(&archive_rel, "fs.compress", "generated", "FW_NODE_FS_COMPRESS")?
         };
-        let size = archive_bytes.len() as u64;
-
-        // `compressed` is a bare durable FileRef for the archive, so `fs.copy
-        // --from "{{ input.compressed }}"` or a `--preview` takes it as it is.
-        let leaf = archive_rel.rsplit('/').next().unwrap_or(&archive_rel).to_string();
-        let compressed = store.file_ref(&archive_rel, &leaf, "application/gzip", &archive_bytes, "fs.compress", "generated");
+        let size = compressed["size"].as_u64().unwrap_or(0);
         Ok(NodeExecutionOutput {
             output_pins: vec![OUTPUT_PIN_OUT.to_string()],
             payload: crate::pipeline::nodes::shared::util::with_answer(&input.payload, serde_json::json!({ "compressed": compressed })),
@@ -365,7 +369,7 @@ fn compress_tar_gz(
 ) -> Result<(), PipelineError> {
     if source_rels.is_empty() {
         return Err(PipelineError::new(
-            "FW_NODE_FILE_COMPRESS",
+            "FW_NODE_FS_COMPRESS",
             "no source paths provided to archive",
         ));
     }
@@ -374,20 +378,22 @@ fn compress_tar_gz(
         .arg("-czf")
         .arg(archive_abs)
         .arg("-C")
-        .arg(files_root);
+        .arg(files_root)
+        // Keys after `--` are names, never options, whatever they start with.
+        .arg("--");
     for source_rel in source_rels {
         command.arg(source_rel);
     }
     let output = command.output().map_err(|err| {
         PipelineError::new(
-            "FW_NODE_FILE_COMPRESS",
+            "FW_NODE_FS_COMPRESS",
             format!("failed running tar: {err}"),
         )
     })?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
         return Err(PipelineError::new(
-            "FW_NODE_FILE_COMPRESS",
+            "FW_NODE_FS_COMPRESS",
             format!("tar failed: {stderr}"),
         ));
     }
@@ -399,20 +405,13 @@ fn validate_format(format: &str) -> Result<(), PipelineError> {
         Ok(())
     } else {
         Err(PipelineError::new(
-            "FW_NODE_FILE_COMPRESS",
+            "FW_NODE_FS_COMPRESS",
             format!(
                 "unsupported archive format '{}'; first slice supports only tar.gz",
                 format
             ),
         ))
     }
-}
-
-fn sanitize_rel_path(path: &str) -> String {
-    path.split('/')
-        .filter(|segment| !segment.is_empty() && *segment != "." && *segment != "..")
-        .collect::<Vec<_>>()
-        .join("/")
 }
 
 fn sanitize_filename_stem(name: &str) -> String {
@@ -454,12 +453,7 @@ fn archive_filename(configured: Option<&str>, source_rel_path: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{archive_filename, sanitize_rel_path};
-
-    #[test]
-    fn sanitizes_source_relative_paths() {
-        assert_eq!(sanitize_rel_path("../pdf/./paper"), "pdf/paper");
-    }
+    use super::archive_filename;
 
     #[test]
     fn derives_default_archive_leaf() {

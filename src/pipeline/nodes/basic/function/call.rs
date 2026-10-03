@@ -68,15 +68,15 @@ pub fn definition() -> NodeDefinition {
         capabilities: vec![NodeCapability::Process],
         title: "Call Function".to_string(),
         description: "Calls another active pipeline that starts with `trigger.function`. `--function` is that pipeline's slug — the file stem, \
-            `send-welcome` for `jobs/send-welcome`, not the path. What it receives: `--input-value` (a literal or `{{ expr }}`, e.g. \
-            `\"{{ { email: input.body.email } }}\"`), else `--input` (a static JSON string), else the whole current payload. The `out` \
-            payload is the function's last node's payload — the caller's payload is replaced, so keep what you still need in \
-            `$nodes.<id>`. `error` carries `{ error }` when the function is missing, inactive or failed."
+            `send-welcome` for `jobs/send-welcome`, not the path. What it receives: `--input` (a literal — JSON is parsed — or `{{ expr }}`, e.g. \
+            `\"{{ { email: input.body.email } }}\"`), else the whole current payload. `out` adds `result` — the function's last node's payload — \
+            and keeps the caller's payload. `error` adds `error: { code, message }` when the function is missing, inactive or failed."
             .to_string(),
         input_pins: vec!["in".to_string()],
         output_pins: vec!["out".to_string(), "error".to_string()],
         output_schema: serde_json::json!({
-            "description": "On `out`: the called function's last node payload, whatever shape it declares. On `error`: { error: string }."
+            "description": "On `out`: the payload plus `result`, the called function's last node payload. On `error`: the payload plus `error: { code, message }`.",
+            "properties": { "result": {}, "error": { "type": "object" } }
         }),
         config_schema: serde_json::json!({
             "type": "object",
@@ -190,11 +190,7 @@ impl NodeHandler for Node {
         let slug = match &self.config.function {
             Some(s) if !s.is_empty() => s.clone(),
             _ => {
-                return Ok(NodeExecutionOutput {
-                    output_pins: vec!["error".to_string()],
-                    payload: serde_json::json!({"error": "no function slug configured"}),
-                    trace: vec!["function.call: no slug configured".to_string()],
-                });
+                return Err(PipelineError::new("FW_NODE_FUNCTION_CALL_CONFIG", "--function is required"));
             }
         };
 
@@ -211,7 +207,7 @@ impl NodeHandler for Node {
             .unwrap_or_default()
             .to_string();
 
-        let call_input = extract_payload_input(&self.config.input, input.payload);
+        let call_input = extract_payload_input(&self.config.input, input.payload.clone());
 
         match platform
             .execute_function_pipeline(&owner, &project, &slug, call_input)
@@ -219,12 +215,15 @@ impl NodeHandler for Node {
         {
             Ok(result) => Ok(NodeExecutionOutput {
                 output_pins: vec!["out".to_string()],
-                payload: result,
+                payload: crate::pipeline::nodes::shared::util::with_answer(&input.payload, serde_json::json!({ "result": result })),
                 trace: vec![format!("function.call: '{}' ok", slug)],
             }),
             Err(e) => Ok(NodeExecutionOutput {
                 output_pins: vec!["error".to_string()],
-                payload: serde_json::json!({"error": format!("{}: {}", e.code, e.message)}),
+                payload: crate::pipeline::nodes::shared::util::with_answer(
+                    &input.payload,
+                    serde_json::json!({ "error": { "code": e.code, "message": e.message } }),
+                ),
                 trace: vec![format!(
                     "function.call: '{}' error: {} — {}",
                     slug, e.code, e.message

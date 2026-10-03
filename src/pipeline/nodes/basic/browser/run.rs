@@ -53,7 +53,7 @@ pub fn definition() -> NodeDefinition {
         description: "Runs a Playwright script in a headless browser reached through a `browser_*` credential (a Browserless-compatible \
             endpoint the owner configured) — screenshots, PDF of a live page, scraping a page that needs JavaScript. The body after \
             `--` is the script, an ESM `export default async ({ page }) => { … }`; put payload values into it with `{{ expr }}`. \
-            Whatever it returns replaces the payload as JSON. This is not for verifying your own pages during development — that \
+            Whatever it returns is added to the payload as `browser`, and the rest is kept. This is not for verifying your own pages during development — that \
             is the agent's own browser (`zebflow-verify`)."
             .to_string(),
         input_schema: json!({ "type": "object", "description": "Upstream payload available as context." }),
@@ -87,7 +87,7 @@ pub fn definition() -> NodeDefinition {
                     SidebarSection {
                         title: "Return".to_string(),
                         items: vec![
-                            SidebarItem { label: "any JSON".to_string(), type_hint: Some("object | array | string | number".to_string()), description: Some("Returned value becomes the downstream payload.".to_string()) },
+                            SidebarItem { label: "any JSON".to_string(), type_hint: Some("object | array | string | number".to_string()), description: Some("Returned value becomes `input.browser` downstream.".to_string()) },
                         ],
                     },
                 ],
@@ -272,7 +272,7 @@ impl NodeHandler for Node {
 
         Ok(NodeExecutionOutput {
             output_pins: vec![OUTPUT_PIN_OUT.to_string()],
-            payload,
+            payload: crate::pipeline::nodes::shared::util::with_answer(&input.payload, json!({ "browser": payload })),
             trace: vec![format!(
                 "node_kind={NODE_KIND} credential={} status={}",
                 self.config.credential_id, status

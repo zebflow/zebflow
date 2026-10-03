@@ -20,11 +20,13 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use image::{DynamicImage, GenericImageView, ImageFormat, imageops::FilterType};
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::json;
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use super::load_with_limits;
+use crate::pipeline::nodes::shared::limits::{self, choice};
+use crate::pipeline::nodes::shared::util::with_answer;
 use crate::pipeline::nodes::shared::project_store::{OnConflict, on_conflict_flag, open_source, open_store, store_fields, store_flag, target_key};
 use crate::pipeline::nodes::shared::file_ref::{FILE_REF_TYPE, LIFECYCLE_DURABLE};
 use crate::pipeline::nodes::shared::util::{filename_stem, metadata_scope, resolve_path};
@@ -416,7 +418,6 @@ impl NodeHandler for Node {
                     format!("payload key '{source_key}' must be a FileRef or string path"),
                 )
             })?;
-        let zebfs = &source_store.fs;
         let rel_path = crate::zebfs::normalize_object_path(rel_path.trim_start_matches('/'))
             .map_err(|e| PipelineError::new("FW_NODE_FS_IMAGE_THUMBNAIL", e.to_string()))?;
 
@@ -436,28 +437,18 @@ impl NodeHandler for Node {
         }
 
         // ── Load with decompression-bomb limits ───────────────────────────
-        let raw_bytes = match zebfs.get(&rel_path) {
-            Ok(object) => object.bytes,
-            Err(e) if e.code == "ZEBFS_NOT_FOUND" => {
-                return Err(PipelineError::new(
-                    "FW_NODE_FS_IMAGE_THUMBNAIL",
-                    format!("source file not found: {rel_path}"),
-                ));
-            }
-            Err(e) => {
-                return Err(PipelineError::new("FW_NODE_FS_IMAGE_THUMBNAIL", format!("read error: {e}")));
-            }
-        };
-
-        let img = load_with_limits(&raw_bytes)?;
+        const CODE: &str = "FW_NODE_FS_IMAGE_THUMBNAIL";
+        let fit = choice(&self.config.fit, &["cover", "contain", "fill"], "cover", "--fit", CODE)?;
+        let format = choice(&self.config.format, &["jpg", "png", "webp"], "jpg", "--format", CODE)?;
+        let (target_w, target_h) = limits::raster(self.config.width, self.config.height, CODE)?;
+        let raw_bytes = source_store.read_capped(&rel_path, CODE)?;
+        let img = load_with_limits(&raw_bytes, CODE)?;
 
         // ── Resize ────────────────────────────────────────────────────────
-        let target_w = self.config.width.max(1);
-        let target_h = self.config.height.max(1);
-        let resized = match self.config.fit.trim() {
+        let resized = match fit {
             "contain" => resize_contain(&img, target_w, target_h),
             "fill" => resize_fill(&img, target_w, target_h),
-            _ => resize_cover(&img, target_w, target_h), // default: cover
+            _ => resize_cover(&img, target_w, target_h),
         };
 
         let (actual_w, actual_h) = resized.dimensions();
@@ -465,14 +456,10 @@ impl NodeHandler for Node {
         // ── Encode ────────────────────────────────────────────────────────
         let quality = self.config.quality.clamp(1, 100);
         let (encoded, ext_out, format_label) =
-            encode_image(&resized, &self.config.format, quality)?;
+            encode_image(&resized, format, quality)?;
 
         // ── Write to disk ─────────────────────────────────────────────────
-        let folder = sanitize_folder(if self.config.folder.trim().is_empty() {
-            "thumbnails"
-        } else {
-            self.config.folder.trim()
-        });
+        let folder = if self.config.folder.trim().is_empty() { "thumbnails" } else { self.config.folder.trim() };
 
         let storage_name = {
             let custom = self
@@ -486,29 +473,28 @@ impl NodeHandler for Node {
                 None => format!("{}.{ext_out}", Uuid::new_v4()),
             }
         };
-        let thumb_rel = target_key(self.config.path.as_deref(), &folder, &storage_name, "FW_NODE_FS_IMAGE_THUMBNAIL")?;
+        let thumb_rel = target_key(self.config.path.as_deref(), folder, &storage_name, "FW_NODE_FS_IMAGE_THUMBNAIL")?;
         let store = open_store(&self.platform, owner, project, self.config.store.as_deref())?;
         let on_conflict = OnConflict::parse(self.config.on_conflict.as_deref(), OnConflict::Error, "FW_NODE_FS_IMAGE_THUMBNAIL")?;
-        let encoded = if on_conflict.allows(&store.fs, &thumb_rel, "FW_NODE_FS_IMAGE_THUMBNAIL")? {
-            store
-                .fs
-                .put(&thumb_rel, &encoded)
-                .map_err(|e| PipelineError::new("FW_NODE_FS_IMAGE_THUMBNAIL", format!("write: {e}")))?;
-            encoded
-        } else {
-            store
-                .fs
-                .get(&thumb_rel)
-                .map_err(|e| PipelineError::new("FW_NODE_FS_IMAGE_THUMBNAIL", format!("read: {e}")))?
-                .bytes
-        };
+        // A skipped write answers the file already there, as it is.
+        if !on_conflict.allows(&store.fs, &thumb_rel, CODE)? {
+            let existing = store.stored_ref(&thumb_rel, "fs.image.thumbnail", "sanitized", CODE)?;
+            return Ok(NodeExecutionOutput {
+                output_pins: vec![OUTPUT_PIN_OUT.to_string()],
+                payload: with_answer(&input.payload, json!({ "thumbnail": existing })),
+                trace: vec![format!("node_kind={NODE_KIND} src={rel_path} out={thumb_rel} skipped")],
+            });
+        }
+        store
+            .fs
+            .put(&thumb_rel, &encoded)
+            .map_err(|e| PipelineError::new(CODE, format!("write: {e}")))?;
 
-        // ── Delete source file if requested ───────────────────────────────
-        // Best-effort: non-fatal. Thumbnail is already written successfully.
-        if self.config.delete_source {
-            if let Err(e) = zebfs.delete(&rel_path) {
-                eprintln!("[FW_NODE_FS_IMAGE_THUMBNAIL] delete-source failed for {rel_path}: {e}");
-            }
+        // The source goes only once the thumbnail is written, never when the
+        // thumbnail replaced it, and a failed delete fails the node.
+        let source_deleted = self.config.delete_source && !(source_store.id == store.id && rel_path == thumb_rel);
+        if source_deleted {
+            source_store.delete_named(&self.platform, owner, project, &rel_path, CODE)?;
         }
 
         let thumb_size = encoded.len();
@@ -533,26 +519,12 @@ impl NodeHandler for Node {
             "width": actual_w,
             "height": actual_h,
             "format": format_label,
+            "source_deleted": source_deleted,
         });
-
-        // Merge, do not replace: the form fields and `saved` are still needed by
-        // the INSERT that follows. With `--delete-source` the source's top-level
-        // key is dropped, because its path no longer points at anything.
-        let mut out = match &input.payload {
-            Value::Object(map) => map.clone(),
-            _ => serde_json::Map::new(),
-        };
-        if self.config.delete_source {
-            if let Some(top) = source_key.split('.').next() {
-                out.remove(top);
-            }
-        }
-        out.insert("thumbnail".to_string(), thumbnail);
-        let out_payload = Value::Object(out);
 
         Ok(NodeExecutionOutput {
             output_pins: vec![OUTPUT_PIN_OUT.to_string()],
-            payload: out_payload,
+            payload: with_answer(&input.payload, json!({ "thumbnail": thumbnail })),
             trace: vec![format!(
                 "node_kind={NODE_KIND} src={rel_path} out={thumb_rel} {actual_w}x{actual_h} {format_label} {thumb_size}B"
             )],
@@ -605,7 +577,7 @@ fn encode_image(
             Ok((buf, "webp", "webp"))
         }
         _ => {
-            // Default: JPEG with quality control
+            // `jpg`: --format is a closed choice, parsed before this.
             use image::codecs::jpeg::JpegEncoder;
             let mut cursor = Cursor::new(&mut buf);
             JpegEncoder::new_with_quality(&mut cursor, quality)
@@ -616,11 +588,3 @@ fn encode_image(
     }
 }
 
-/// Strip path traversal components from folder config.
-fn sanitize_folder(folder: &str) -> String {
-    folder
-        .split('/')
-        .filter(|seg| !seg.is_empty() && *seg != "." && *seg != "..")
-        .collect::<Vec<_>>()
-        .join("/")
-}

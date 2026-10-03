@@ -222,7 +222,7 @@ impl NodeHandler for Node {
 
         if key.is_empty() {
             return Err(PipelineError::new(
-                "KV_GET_KEY",
+                "FW_NODE_KV_GET_KEY",
                 "n.kv.get: --key is required",
             ));
         }

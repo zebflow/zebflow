@@ -223,12 +223,8 @@ impl NodeHandler for Node {
             }
         }
         let trace = format!("node_kind={NODE_KIND} v{} {} mask {} {}", symbol.version, symbol.ecc.letter(), symbol.mask, qr["ref"]);
-        let mut out = match input.payload {
-            Value::Object(map) => map,
-            _ => serde_json::Map::new(),
-        };
-        out.insert("qr".into(), qr);
-        Ok(NodeExecutionOutput { output_pins: vec![OUTPUT_PIN_OUT.into()], payload: Value::Object(out), trace: vec![trace] })
+        let payload = crate::pipeline::nodes::shared::util::with_answer(&input.payload, json!({ "qr": qr }));
+        Ok(NodeExecutionOutput { output_pins: vec![OUTPUT_PIN_OUT.into()], payload, trace: vec![trace] })
     }
 }
 

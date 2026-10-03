@@ -313,38 +313,34 @@ impl NodeHandler for Node {
 
         let source_value = resolve_path(&input.payload, source_key).ok_or_else(|| {
             PipelineError::new(
-                "FW_NODE_PDF_CONVERT",
+                "FW_NODE_FS_PDF_CONVERT",
                 format!("source PDF path not found at payload key '{source_key}' — chain after n.fs.save or set --source-key"),
             )
         })?;
         let (source_store, rel_path) = open_source(&self.platform, owner, project, source_value, self.config.store.as_deref())?
             .ok_or_else(|| {
                 PipelineError::new(
-                    "FW_NODE_PDF_CONVERT",
+                    "FW_NODE_FS_PDF_CONVERT",
                     format!(
                         "source PDF path not found at payload key '{source_key}' — chain after n.fs.save or set --source-key"
                     ),
                 )
             })?;
 
-        let rel_path = sanitize_rel_path(&rel_path);
-        if rel_path.is_empty() {
-            return Err(PipelineError::new(
-                "FW_NODE_PDF_CONVERT",
-                "resolved source path is empty after sanitization",
-            ));
-        }
+        let rel_path = crate::zebfs::normalize_object_path(&rel_path)
+            .map_err(|err| PipelineError::new("FW_NODE_FS_PDF_CONVERT", format!("source: {}", err.message)))?;
+        crate::pipeline::nodes::shared::limits::within(self.config.dpi, 36.0, 600.0, "--dpi", "FW_NODE_FS_PDF_CONVERT")?;
 
         // pdfium speaks paths and the project's files live in their stores:
         // the PDF is pulled into a scratch folder, exported there, and the
         // export is put into this node's store.
         let zebfs = &source_store.fs;
-        let scratch = StoreScratch::new("FW_NODE_PDF_CONVERT")?;
+        let scratch = StoreScratch::new("FW_NODE_FS_PDF_CONVERT")?;
         match zebfs.head(&rel_path) {
             Ok(stat) if stat.kind == crate::zebfs::ZebFsEntryKind::Object => {}
             _ => {
                 return Err(PipelineError::new(
-                    "FW_NODE_PDF_CONVERT",
+                    "FW_NODE_FS_PDF_CONVERT",
                     format!("source PDF not found: {rel_path}"),
                 ));
             }
@@ -353,18 +349,16 @@ impl NodeHandler for Node {
 
         validate_pdf_magic(&abs_path)?;
 
-        let output_rel_dir = target_key(Some(&resolve_output_dir(&self.config.folder, &rel_path)), "", "", "FW_NODE_PDF_CONVERT")?;
+        let output_rel_dir = target_key(Some(&resolve_output_dir(&self.config.folder, &rel_path)), "", "", "FW_NODE_FS_PDF_CONVERT")?;
         let store = open_store(&self.platform, owner, project, self.config.store.as_deref())?;
-        let on_conflict = OnConflict::parse(self.config.on_conflict.as_deref(), OnConflict::Error, "FW_NODE_PDF_CONVERT")?;
-        if !on_conflict.allows_tree(&store.fs, &output_rel_dir, "FW_NODE_PDF_CONVERT")? {
-            let mut payload = match &input.payload {
-                serde_json::Value::Object(map) => map.clone(),
-                _ => serde_json::Map::new(),
-            };
-            payload.insert("pdf_convert".to_string(), json!({ "source": rel_path, "folder": output_rel_dir, "store": store.id, "skipped": true, "files": [] }));
+        let on_conflict = OnConflict::parse(self.config.on_conflict.as_deref(), OnConflict::Error, "FW_NODE_FS_PDF_CONVERT")?;
+        if !on_conflict.allows_tree(&store.fs, &output_rel_dir, "FW_NODE_FS_PDF_CONVERT")? {
             return Ok(NodeExecutionOutput {
                 output_pins: vec![OUTPUT_PIN_OUT.to_string()],
-                payload: serde_json::Value::Object(payload),
+                payload: crate::pipeline::nodes::shared::util::with_answer(
+                    &input.payload,
+                    json!({ "pdf_convert": { "source": rel_path, "folder": output_rel_dir, "store": store.id, "skipped": true, "files": [] } }),
+                ),
                 trace: vec![format!("node_kind={NODE_KIND} src={rel_path} out={output_rel_dir} skipped=true")],
             });
         }
@@ -385,11 +379,11 @@ impl NodeHandler for Node {
         .await
         .map_err(|err| {
             PipelineError::new(
-                "FW_NODE_PDF_CONVERT",
+                "FW_NODE_FS_PDF_CONVERT",
                 format!("pdf export task failed: {err}"),
             )
         })?
-        .map_err(|err| PipelineError::new("FW_NODE_PDF_CONVERT", err.to_string()))?;
+        .map_err(|err| PipelineError::new("FW_NODE_FS_PDF_CONVERT", err.to_string()))?;
         let trust = source_value.get("trust").and_then(|value| value.as_str()).unwrap_or("untrusted").to_string();
         let files = scratch.push_tree_refs(&store, &output_root_local, &output_rel_dir, "fs.pdf.convert", &trust)?;
 
@@ -434,14 +428,7 @@ impl NodeHandler for Node {
 
         Ok(NodeExecutionOutput {
             output_pins: vec![OUTPUT_PIN_OUT.to_string()],
-            payload: {
-                let mut payload = match &input.payload {
-                    serde_json::Value::Object(map) => map.clone(),
-                    _ => serde_json::Map::new(),
-                };
-                payload.insert("pdf_convert".to_string(), json!(output));
-                serde_json::Value::Object(payload)
-            },
+            payload: crate::pipeline::nodes::shared::util::with_answer(&input.payload, json!({ "pdf_convert": output })),
             trace: vec![format!(
                 "node_kind={NODE_KIND} src={} out={} pages={}",
                 rel_path, output_rel_dir, manifest.page_count
@@ -480,9 +467,10 @@ fn sanitize_filename_stem(name: &str) -> String {
 }
 
 fn resolve_output_dir(configured: &str, source_rel_path: &str) -> String {
-    let configured = sanitize_rel_path(configured);
+    // Normalised (and `..` refused) by `target_key`, never quietly cleaned.
+    let configured = configured.trim().trim_matches('/');
     if !configured.is_empty() {
-        return configured;
+        return configured.to_string();
     }
     let source_leaf = Path::new(source_rel_path)
         .file_name()
@@ -506,12 +494,15 @@ fn prefixed_output_path(output_rel_dir: &str, leaf: &str) -> String {
 }
 
 fn validate_pdf_magic(path: &PathBuf) -> Result<(), PipelineError> {
-    let bytes = std::fs::read(path).map_err(|err| {
-        PipelineError::new("FW_NODE_PDF_CONVERT", format!("read source PDF: {err}"))
-    })?;
-    if !bytes.starts_with(b"%PDF-") {
+    use std::io::Read;
+    // Five bytes say whether it is a PDF; the file is not read whole for that.
+    let mut head = [0u8; 5];
+    std::fs::File::open(path)
+        .and_then(|mut file| file.read_exact(&mut head))
+        .map_err(|err| PipelineError::new("FW_NODE_FS_PDF_CONVERT", format!("read source PDF: {err}")))?;
+    if &head != b"%PDF-" {
         return Err(PipelineError::new(
-            "FW_NODE_PDF_CONVERT",
+            "FW_NODE_FS_PDF_CONVERT",
             "source file is not a PDF".to_string(),
         ));
     }
@@ -524,18 +515,10 @@ mod tests {
 
     use serde_json::json;
 
-    use super::{Config, Node, prefixed_output_path, resolve_output_dir, sanitize_rel_path};
+    use super::{Config, Node, prefixed_output_path, resolve_output_dir};
     use crate::pipeline::nodes::{NodeExecutionInput, NodeHandler};
     use crate::platform::model::PlatformConfig;
     use crate::platform::services::PlatformService;
-
-    #[test]
-    fn sanitizes_relative_paths() {
-        assert_eq!(
-            sanitize_rel_path("../uploads/./paper.pdf"),
-            "uploads/paper.pdf"
-        );
-    }
 
     #[test]
     fn derives_default_output_dir_from_source_stem() {

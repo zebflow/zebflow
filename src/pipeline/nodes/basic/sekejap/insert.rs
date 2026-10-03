@@ -41,7 +41,7 @@ pub fn definition() -> NodeDefinition {
             exactly n numbers, and an edge's two endpoints must exist, in this batch or before it. An edge whose `type` is an \
             edge table's label is written into that table, its `fields` as the table's columns; the target itself must be a \
             table of rows. Answers \
-            `{ inserted_records, inserted_edges, … }` — the payload is replaced. For one row from a form use `sekejap.query … INSERT`; \
+            `inserted_records`, `inserted_edges`, … added to the payload, the rest kept. For one row from a form use `sekejap.query … INSERT`; \
             this node is for imports and seeds, up to `--max-records` (default 1000) per run."
             .to_string(),
         input_schema: json!({
@@ -326,14 +326,14 @@ impl NodeHandler for Node {
 
         Ok(NodeExecutionOutput {
             output_pins: vec![OUTPUT_PIN_OUT.to_string()],
-            payload: json!({
+            payload: crate::pipeline::nodes::shared::util::with_answer(&input.payload, json!({
                 "inserted_records": record_count,
                 "inserted_edges": edge_count,
                 "affected_rows": result.affected_rows,
                 "optimized_fields": result.optimized_fields,
                 "field_dimensions": result.field_dimensions,
                 "duration_ms": result.duration_ms,
-            }),
+            })),
             trace: vec![
                 format!("node_kind={NODE_KIND}"),
                 format!("inserted_records={record_count}"),

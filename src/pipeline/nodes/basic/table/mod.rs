@@ -63,12 +63,11 @@ pub(crate) fn write_table_file(
     code: &'static str,
 ) -> Result<Value, PipelineError> {
     let store = open_store(platform, owner, project, store)?;
-    let bytes = if OnConflict::parse(on_conflict, OnConflict::Error, code)?.allows(&store.fs, key, code)? {
-        store.fs.put(key, &bytes).map_err(|err| PipelineError::new(code, err.to_string()))?;
-        bytes
-    } else {
-        store.fs.get(key).map_err(|err| PipelineError::new(code, err.to_string()))?.bytes
-    };
+    if !OnConflict::parse(on_conflict, OnConflict::Error, code)?.allows(&store.fs, key, code)? {
+        // Skipped: the answer is the file already there, as it is.
+        return store.stored_ref(key, origin, "generated", code);
+    }
+    store.fs.put(key, &bytes).map_err(|err| PipelineError::new(code, err.to_string()))?;
     let leaf = key.rsplit('/').next().unwrap_or(key).to_string();
     Ok(store.file_ref(key, &leaf, mime, &bytes, origin, "generated"))
 }

@@ -82,14 +82,14 @@ pub const ERROR_CLASS_REGISTRY: &[(&str, ErrorClass)] = &[
     ("FW_FUNCTION_INPUT_INVALID", ErrorClass::Refused),
     ("FW_FUNCTION_NOT_FOUND", ErrorClass::Refused),
     ("FW_MY_NODE_CODE", ErrorClass::Failed),
-    ("FW_NODE_AGENT_BAD_SCHEMA", ErrorClass::Refused),
+    ("FW_NODE_AI_AGENT_BAD_SCHEMA", ErrorClass::Refused),
     // A store a node or a FileRef names cannot be opened.
     ("FW_NODE_STORE", ErrorClass::Failed),
-    ("FW_NODE_AGENT_CALL", ErrorClass::Failed),
-    ("FW_NODE_AGENT_CONFIG", ErrorClass::Refused),
-    ("FW_NODE_AGENT_CREDENTIAL", ErrorClass::Refused),
-    ("FW_NODE_AGENT_INPUT_PIN", ErrorClass::Refused),
-    ("FW_NODE_AGENT_QUERY", ErrorClass::Refused),
+    ("FW_NODE_AI_AGENT_CALL", ErrorClass::Failed),
+    ("FW_NODE_AI_AGENT_CONFIG", ErrorClass::Refused),
+    ("FW_NODE_AI_AGENT_CREDENTIAL", ErrorClass::Refused),
+    ("FW_NODE_AI_AGENT_INPUT_PIN", ErrorClass::Refused),
+    ("FW_NODE_AI_AGENT_QUERY", ErrorClass::Refused),
     ("FW_NODE_AI_TTS_CONFIG", ErrorClass::Refused),
     ("FW_NODE_AUTH_TOKEN_ALGORITHM", ErrorClass::Refused),
     ("FW_NODE_AUTH_TOKEN_CONFIG", ErrorClass::Refused),
@@ -139,9 +139,9 @@ pub const ERROR_CLASS_REGISTRY: &[(&str, ErrorClass)] = &[
     ("FW_NODE_CRYPTO_HMAC_KEY", ErrorClass::Failed),
     ("FW_NODE_CRYPTO_OP", ErrorClass::Failed),
     ("FW_NODE_CRYPTO_SPAWN", ErrorClass::Failed),
-    ("FW_NODE_FILE_COMPRESS", ErrorClass::Failed),
-    ("FW_NODE_FILE_DECOMPRESS", ErrorClass::Failed),
-    ("FW_NODE_FILE_SAVE", ErrorClass::Failed),
+    ("FW_NODE_FS_COMPRESS", ErrorClass::Failed),
+    ("FW_NODE_FS_DECOMPRESS", ErrorClass::Failed),
+    ("FW_NODE_FS_SAVE", ErrorClass::Failed),
     ("FW_NODE_FS_COPY", ErrorClass::Failed),
     ("FW_NODE_FS_DELETE", ErrorClass::Failed),
     ("FW_NODE_FS_GET", ErrorClass::Failed),
@@ -156,6 +156,7 @@ pub const ERROR_CLASS_REGISTRY: &[(&str, ErrorClass)] = &[
     ("FW_NODE_FS_PUT_JSON", ErrorClass::Failed),
     ("FW_NODE_FS_PUT_SOURCE", ErrorClass::Failed),
     ("FW_NODE_FUNCTION_CALL_NO_PLATFORM", ErrorClass::Failed),
+    ("FW_NODE_FUNCTION_CALL_CONFIG", ErrorClass::Refused),
     ("FW_NODE_GEO_CONVERT", ErrorClass::Failed),
     ("FW_NODE_GEO_INSPECT", ErrorClass::Failed),
     ("FW_NODE_HTTP_REQUEST_BINDING", ErrorClass::Refused),
@@ -184,7 +185,6 @@ pub const ERROR_CLASS_REGISTRY: &[(&str, ErrorClass)] = &[
     ("FW_NODE_FS_IMAGE_CHROMAKEY_CONFIG", ErrorClass::Refused),
     ("FW_NODE_FS_IMAGE_CHROMAKEY_SOURCE", ErrorClass::Refused),
     ("FW_NODE_FS_IMAGE_CHROMAKEY_RASTER", ErrorClass::Failed),
-    ("FS_IMAGE_DECODE", ErrorClass::Refused),
     // The `input.*` family: every one of these is the caller's envelope
     // disagreeing with the pipeline's declaration, so none is retryable.
     ("FW_NODE_INPUT_CONFIG", ErrorClass::Refused),
@@ -200,6 +200,14 @@ pub const ERROR_CLASS_REGISTRY: &[(&str, ErrorClass)] = &[
     ("FW_NODE_KV_EXPIRE_CONFIG", ErrorClass::Refused),
     ("FW_NODE_KV_GET_CONFIG", ErrorClass::Refused),
     ("FW_NODE_KV_INCR_CONFIG", ErrorClass::Refused),
+    ("FW_NODE_KV_DEL_KEY", ErrorClass::Refused),
+    ("FW_NODE_KV_EXISTS_KEY", ErrorClass::Refused),
+    ("FW_NODE_KV_EXPIRE_KEY", ErrorClass::Refused),
+    ("FW_NODE_KV_GET_KEY", ErrorClass::Refused),
+    ("FW_NODE_KV_INCR_AMOUNT", ErrorClass::Refused),
+    ("FW_NODE_KV_INCR_KEY", ErrorClass::Refused),
+    ("FW_NODE_KV_PUBLISH_CHANNEL", ErrorClass::Refused),
+    ("FW_NODE_KV_SET_KEY", ErrorClass::Refused),
     ("FW_NODE_KV_PUBLISH_CONFIG", ErrorClass::Refused),
     ("FW_NODE_KV_SET_CONFIG", ErrorClass::Refused),
     ("FW_NODE_KV_SUBSCRIBE_CONFIG", ErrorClass::Refused),
@@ -262,7 +270,7 @@ pub const ERROR_CLASS_REGISTRY: &[(&str, ErrorClass)] = &[
     ("FW_NODE_OUTPUT_FILE_WRITE", ErrorClass::Failed),
     ("FW_NODE_PACKAGE_NOT_EXECUTABLE", ErrorClass::Failed),
     ("FW_NODE_PACKAGE_NOT_FOUND", ErrorClass::Refused),
-    ("FW_NODE_PDF_CONVERT", ErrorClass::Failed),
+    ("FW_NODE_FS_PDF_CONVERT", ErrorClass::Failed),
     ("FW_NODE_PG_BINDING", ErrorClass::Refused),
     ("FW_NODE_PG_CONFIG", ErrorClass::Refused),
     ("FW_NODE_PG_CONNECT", ErrorClass::Failed),
@@ -495,6 +503,11 @@ pub fn wrapper_for(language_code: &str, refused: &'static str, failed: &'static 
         ErrorClass::Refused => refused,
         ErrorClass::Failed => failed,
     }
+}
+
+/// The class a code was registered with, `None` for an unregistered code.
+pub fn registered_class(code: &str) -> Option<ErrorClass> {
+    ERROR_CLASS_REGISTRY.iter().find(|(c, _)| *c == code).map(|(_, class)| *class)
 }
 
 pub fn class_of(code: &str) -> ErrorClass {

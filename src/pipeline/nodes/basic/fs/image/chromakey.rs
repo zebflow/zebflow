@@ -41,6 +41,7 @@ use uuid::Uuid;
 
 use super::load_with_limits;
 use crate::pipeline::model::{DslFlag, DslFlagKind, LayoutItem, NodeCapability, NodeExample, NodeFailureSemantic, NodeFieldDef, NodeFieldType, SelectOptionDef};
+use crate::pipeline::nodes::shared::util::with_answer;
 use crate::pipeline::nodes::shared::project_store::{OnConflict, on_conflict_flag, open_source, open_store, store_fields, store_flag, target_key};
 use crate::pipeline::nodes::shared::util::{filename_stem, metadata_scope, resolve_path};
 use crate::pipeline::{
@@ -323,13 +324,10 @@ impl NodeHandler for Node {
         })?;
         let (source_store, rel) = open_source(&self.platform, owner, project, value, self.config.store.as_deref())?
             .ok_or_else(|| PipelineError::new("FW_NODE_FS_IMAGE_CHROMAKEY_SOURCE", format!("payload key '{key}' must be a FileRef or a store path string")))?;
-        let zebfs = &source_store.fs;
         let rel = crate::zebfs::normalize_object_path(rel.trim_start_matches('/'))
             .map_err(|e| PipelineError::new("FW_NODE_FS_IMAGE_CHROMAKEY_SOURCE", e.to_string()))?;
-        let object = zebfs
-            .get(&rel)
-            .map_err(|e| PipelineError::new("FW_NODE_FS_IMAGE_CHROMAKEY_SOURCE", format!("store object {rel}: {}", e.message)))?;
-        let img = load_with_limits(&object.bytes).map_err(|e| PipelineError::new("FW_NODE_FS_IMAGE_CHROMAKEY_SOURCE", e.message))?;
+        let source_bytes = source_store.read_capped(&rel, "FW_NODE_FS_IMAGE_CHROMAKEY_SOURCE")?;
+        let img = load_with_limits(&source_bytes, "FW_NODE_FS_IMAGE_CHROMAKEY_SOURCE")?;
 
         let keyed = key_out(&img, self.key, self.tolerance, self.soften);
         let (width, height) = keyed.dimensions();
@@ -347,38 +345,34 @@ impl NodeHandler for Node {
         let out_rel = target_key(self.config.path.as_deref(), folder, &filename, "FW_NODE_FS_IMAGE_CHROMAKEY_CONFIG")?;
         let store = open_store(&self.platform, owner, project, self.config.store.as_deref())?;
         let on_conflict = OnConflict::parse(self.config.on_conflict.as_deref(), OnConflict::Error, "FW_NODE_FS_IMAGE_CHROMAKEY_CONFIG")?;
-        let bytes = if on_conflict.allows(&store.fs, &out_rel, "FW_NODE_FS_IMAGE_CHROMAKEY_RASTER")? {
-            store
-                .fs
-                .put(&out_rel, &bytes)
-                .map_err(|e| PipelineError::new("FW_NODE_FS_IMAGE_CHROMAKEY_RASTER", format!("store write {out_rel}: {}", e.message)))?;
-            bytes
-        } else {
-            store.fs.get(&out_rel).map_err(|e| PipelineError::new("FW_NODE_FS_IMAGE_CHROMAKEY_RASTER", e.message))?.bytes
-        };
+        // A skipped write answers the file already there, as it is.
+        if !on_conflict.allows(&store.fs, &out_rel, "FW_NODE_FS_IMAGE_CHROMAKEY_RASTER")? {
+            let existing = store.stored_ref(&out_rel, ORIGIN, "sanitized", "FW_NODE_FS_IMAGE_CHROMAKEY_RASTER")?;
+            return Ok(NodeExecutionOutput {
+                output_pins: vec![OUTPUT_PIN_OUT.to_string()],
+                payload: with_answer(&input.payload, json!({ "image": existing })),
+                trace: vec![format!("node_kind={NODE_KIND} src={rel} out={out_rel} skipped")],
+            });
+        }
+        store
+            .fs
+            .put(&out_rel, &bytes)
+            .map_err(|e| PipelineError::new("FW_NODE_FS_IMAGE_CHROMAKEY_RASTER", format!("store write {out_rel}: {}", e.message)))?;
+        // The source goes only once the output is written and is not it.
+        let source_deleted = self.config.delete_source && !(source_store.id == store.id && rel == out_rel);
+        if source_deleted {
+            source_store.delete_named(&self.platform, owner, project, &rel, "FW_NODE_FS_IMAGE_CHROMAKEY_SOURCE")?;
+        }
         let mut image = store.file_ref(&out_rel, &filename, mime, &bytes, ORIGIN, "sanitized");
         if let Some(obj) = image.as_object_mut() {
             obj.insert("width".into(), json!(width));
             obj.insert("height".into(), json!(height));
             obj.insert("format".into(), json!(ext));
+            obj.insert("source_deleted".into(), json!(source_deleted));
         }
-
-        let mut out = match &input.payload {
-            Value::Object(map) => map.clone(),
-            _ => serde_json::Map::new(),
-        };
-        if self.config.delete_source {
-            if let Err(e) = zebfs.delete(&rel) {
-                eprintln!("[{NODE_KIND}] delete-source failed for {rel}: {e}");
-            }
-            if let Some(top) = key.split('.').next() {
-                out.remove(top);
-            }
-        }
-        out.insert("image".to_string(), image);
         Ok(NodeExecutionOutput {
             output_pins: vec![OUTPUT_PIN_OUT.to_string()],
-            payload: Value::Object(out),
+            payload: with_answer(&input.payload, json!({ "image": image })),
             trace: vec![format!(
                 "node_kind={NODE_KIND} src={rel} out={out_rel} {width}x{height} {ext} key=#{:02x}{:02x}{:02x} tolerance={} soften={} bytes={} total_ms={}",
                 self.key[0], self.key[1], self.key[2], self.tolerance, self.soften, bytes.len(), started.elapsed().as_millis()

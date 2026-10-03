@@ -18,7 +18,7 @@
 //!
 //! ```text
 //! n.trigger.ws   --event move
-//! n.ws.sync_state --op merge --path /players/{session_id} --silent
+//! n.ws.sync_state --op merge --state-key /players/{session_id} --silent
 //! ```
 //!
 //! This accumulates positional updates and broadcasts them at ≈30 fps via

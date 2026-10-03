@@ -396,11 +396,8 @@ impl Node {
         let Some(root) = self.template_root.as_deref() else {
             return Err(PipelineError::new("FW_NODE_WEB_RESPONSE_FILE", "template_root is not configured on this pipeline engine"));
         };
-        let abs = root.join(&rel);
-        if !abs.starts_with(root) || !abs.is_file() {
-            return Err(PipelineError::new("FW_NODE_WEB_RESPONSE_FILE", format!("file '{rel}' not found in the project")));
-        }
-        let bytes = std::fs::read(&abs).map_err(|e| PipelineError::new("FW_NODE_WEB_RESPONSE_FILE", format!("failed reading '{rel}': {e}")))?;
+        // Through the repository reader: no `..`, no link on the way, capped.
+        let bytes = crate::pipeline::nodes::shared::project_store::read_repo_file(root, &rel, "FW_NODE_WEB_RESPONSE_FILE")?;
         let served = FileResponse::from_bytes(&rel, bytes)?;
         let mut headers = self.config.headers.clone();
         headers.entry("Content-Type".to_string()).or_insert_with(|| json!(served.content_type));

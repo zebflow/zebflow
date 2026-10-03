@@ -20,7 +20,7 @@ and **rich text is a JSON document, HTML is derived from it**. Facts:
 2. The webhook delivers the file as `input.files.photo` — a FileRef
    (`ref`, `filename`, `mime`, `kind`, `size`, `sha256`, `lifecycle: temporary`).
    It is discarded after the run unless a node keeps it.
-3. Keep it: `fs.save --field photo --folder uploads --allowed-kinds images --max-size 10`
+3. Keep it: `fs.save --source-key files.photo --folder uploads --allowed-kinds images --max-size 10`
    adds `saved` — a durable FileRef and nothing else (`ref`, `filename`,
    `mime`, `kind`, `size`, `sha256`, `lifecycle: durable`, `origin: fs.save`,
    `trust`) — to the payload; `input.body.caption` from the same form is
@@ -33,7 +33,7 @@ and **rich text is a JSON document, HTML is derived from it**. Facts:
 
 ```
 | trigger.webhook --path /api/upload --method POST --auth-type jwt --auth-credential jwt_main
-| fs.save --field file --folder uploads --allowed-kinds images --max-size 10
+| fs.save --source-key files.file --folder uploads --allowed-kinds images --max-size 10
 ```
 
 The response carries `saved` (a FileRef). Store its **`ref`**; a page

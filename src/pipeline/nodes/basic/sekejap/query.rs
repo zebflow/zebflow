@@ -286,14 +286,14 @@ impl NodeHandler for Node {
         let rows = rows_as_objects(&result.columns, &result.rows);
         Ok(NodeExecutionOutput {
             output_pins: vec![OUTPUT_PIN_OUT.to_string()],
-            payload: json!({
+            payload: crate::pipeline::nodes::shared::util::with_answer(&input.payload, json!({
                 "columns": result.columns,
                 "rows": rows,
                 "row_count": result.row_count,
                 "truncated": result.truncated,
                 "affected_rows": result.affected_rows,
                 "duration_ms": result.duration_ms,
-            }),
+            })),
             trace: vec![
                 format!("node_kind={NODE_KIND}"),
                 format!("row_count={}", result.row_count),

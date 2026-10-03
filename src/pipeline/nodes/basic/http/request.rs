@@ -53,7 +53,7 @@ pub fn definition() -> NodeDefinition {
         description: "Calls another server over HTTP — the only way a pipeline reaches the outside (a script's `fetch` is blocked). \
             `--url`, `--method` (GET default), `--body \"{{ expr }}\"` (an object is sent as JSON; `--body-type form-data` for uploads, \
             with a FileRef as a part), `--header K=V` repeatable, `--credential <id>` for a secure_request / oauth2 credential \
-            so secrets never sit in the pipeline. Replaces the payload with `{ request, response: { status, ok, headers, body } }` — \
+            so secrets never sit in the pipeline. Adds `response: { status, ok, content_type, body, request }` to the payload and keeps the rest — \
             the answer is `input.response.body` (parsed JSON with `--response-type json`, the default). A non-2xx does not fail the \
             node: check `input.response.ok` with `logic.if`."
             .to_string(),
@@ -503,7 +503,13 @@ impl NodeHandler for Node {
         }
 
         // ── Send body based on body_type ─────────────────────────────────────────
-        let body_type = self.config.body_type.trim().to_lowercase();
+        let body_type = crate::pipeline::nodes::shared::limits::choice(
+            &self.config.body_type,
+            &["json", "text", "form-data"],
+            "json",
+            "--body-type",
+            "FW_NODE_HTTP_REQUEST_CONFIG",
+        )?;
         let has_body = !matches!(
             method_parsed.as_str(),
             "GET" | "HEAD" | "DELETE" | "OPTIONS"
@@ -511,7 +517,7 @@ impl NodeHandler for Node {
 
         if has_body {
             if let Some(body) = &prepared.body {
-                match body_type.as_str() {
+                match body_type {
                     "form-data" => {
                         req = build_multipart_request(
                             req,
@@ -575,12 +581,18 @@ impl NodeHandler for Node {
             .to_string();
 
         // ── Read response based on response_type ─────────────────────────────────
-        let response_type = self.config.response_type.trim().to_lowercase();
-        let body: Value = match response_type.as_str() {
+        let response_type = crate::pipeline::nodes::shared::limits::choice(
+            &self.config.response_type,
+            &["json", "text", "bytes"],
+            "json",
+            "--response-type",
+            "FW_NODE_HTTP_REQUEST_CONFIG",
+        )?;
+        // The body is capped while it arrives, not after it is all in memory.
+        let raw = read_body_capped(resp).await?;
+        let body: Value = match response_type {
             "bytes" => {
-                let bytes = resp.bytes().await.map_err(|err| {
-                    PipelineError::new("FW_NODE_HTTP_REQUEST_READ_BODY", err.to_string())
-                })?;
+                let bytes = raw;
                 let Some(platform) = &self.platform else {
                     return Err(PipelineError::new(
                         "FW_NODE_HTTP_REQUEST_FILE_REF",
@@ -602,17 +614,10 @@ impl NodeHandler for Node {
                     },
                 )?
             }
-            "text" => {
-                let text = resp.text().await.map_err(|err| {
-                    PipelineError::new("FW_NODE_HTTP_REQUEST_READ_BODY", err.to_string())
-                })?;
-                Value::String(text)
-            }
+            "text" => Value::String(String::from_utf8_lossy(&raw).into_owned()),
             _ => {
-                // "json" (default): try parse, fall back to string
-                let text = resp.text().await.map_err(|err| {
-                    PipelineError::new("FW_NODE_HTTP_REQUEST_READ_BODY", err.to_string())
-                })?;
+                // `json`: parsed, or the text when it is not JSON.
+                let text = String::from_utf8_lossy(&raw).into_owned();
                 serde_json::from_str::<Value>(&text).unwrap_or(Value::String(text))
             }
         };
@@ -637,9 +642,10 @@ impl NodeHandler for Node {
             "status": status,
             "ok": (200..400).contains(&status),
             "content_type": content_type,
-            "body": body
+            "body": body,
+            "request": request_obj
         });
-        let mut payload = json!({ "request": request_obj, "response": response_obj });
+        let mut payload = json!({ "response": response_obj });
         if !prepared.redact_tokens.is_empty() {
             if let Value::Object(map) = &mut payload {
                 map.insert(
@@ -660,10 +666,38 @@ impl NodeHandler for Node {
         }
         Ok(NodeExecutionOutput {
             output_pins: vec![OUTPUT_PIN_OUT.to_string()],
-            payload,
+            payload: crate::pipeline::nodes::shared::util::with_answer(&input.payload, payload),
             trace: vec![format!("node_kind={NODE_KIND}")],
         })
     }
+}
+
+/// The response body, refused once it passes the node read cap
+/// (`node-conventions.md` §3) — counted as it streams, so a large or
+/// endless body never sits whole in memory.
+async fn read_body_capped(mut resp: reqwest::Response) -> Result<Vec<u8>, PipelineError> {
+    let max = crate::pipeline::nodes::shared::project_store::MAX_NODE_OBJECT_BYTES;
+    if resp.content_length().is_some_and(|len| len > max) {
+        return Err(PipelineError::new(
+            "FW_NODE_HTTP_REQUEST_READ_BODY",
+            format!("the response declares {} bytes, over the {max} a node reads", resp.content_length().unwrap_or(0)),
+        ));
+    }
+    let mut out = Vec::new();
+    while let Some(chunk) = resp
+        .chunk()
+        .await
+        .map_err(|err| PipelineError::new("FW_NODE_HTTP_REQUEST_READ_BODY", err.to_string()))?
+    {
+        if out.len() as u64 + chunk.len() as u64 > max {
+            return Err(PipelineError::new(
+                "FW_NODE_HTTP_REQUEST_READ_BODY",
+                format!("the response is over the {max} bytes a node reads"),
+            ));
+        }
+        out.extend_from_slice(&chunk);
+    }
+    Ok(out)
 }
 
 /// Build a multipart/form-data request from a JSON value.

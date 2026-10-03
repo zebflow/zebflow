@@ -28,6 +28,7 @@ use uuid::Uuid;
 
 use crate::pipeline::nodes::shared::project_store::{OnConflict, on_conflict_flag, open_store, store_fields, store_flag, target_key};
 use crate::pipeline::nodes::shared::file_ref::{is_file_ref, read_file_ref_bytes};
+use crate::pipeline::nodes::shared::project_store::open_source;
 use crate::pipeline::nodes::shared::util::{metadata_scope, resolve_path};
 use crate::pipeline::model::NodeCapability;
 use crate::pipeline::{
@@ -195,8 +196,8 @@ fn default_allowed_kinds() -> Vec<AllowedKind> {
     vec![AllowedKind::Images]
 }
 
-fn default_field() -> String {
-    "file".to_string()
+fn default_source_key() -> String {
+    "files.file".to_string()
 }
 
 fn default_max_size_mb() -> f64 {
@@ -207,9 +208,10 @@ fn default_max_size_mb() -> f64 {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
-    /// Multipart field name (default: "file").
-    #[serde(default = "default_field")]
-    pub field: String,
+    /// Dot-path to the file in the payload (default `files.file`, the upload
+    /// field `file`): an upload, a FileRef, or a byte envelope.
+    #[serde(default = "default_source_key")]
+    pub source_key: String,
 
     /// Exact ZebFS object path. If empty, `folder` + generated filename is used.
     #[serde(default)]
@@ -245,7 +247,7 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
-            field: default_field(),
+            source_key: default_source_key(),
             path: None,
             folder: String::new(),
             allowed_kinds: default_allowed_kinds(),
@@ -264,9 +266,9 @@ pub fn definition() -> NodeDefinition {
         kind: NODE_KIND.to_string(),
         capabilities: vec![NodeCapability::Filesystem],
         title: "FS Save".to_string(),
-        description: "Keep a file that came through the run. Reads `input.files.<field>` (a multipart form field, set by `trigger.webhook`; \
-            `--field` names it, default `file`), else a FileRef at `input.<field>`, else `response.body` (`http.request --response-type bytes`), \
-            else the one FileRef at the top of the payload (a node's own product: `image` from `fs.svg.convert`, `thumbnail`), checks the kind by MIME and magic bytes (`--allowed-kinds images|documents|…`) and the \
+        description: "Keep a file that came through the run. Reads the file at `--source-key` (default `files.file`: the upload field `file` set by \
+            `trigger.webhook`; `files.photo` for a field named photo, `response.body` after `http.request --response-type bytes`, `image` after `fs.svg.convert`) — \
+            an upload, a FileRef or a byte envelope, and nothing else is looked at — checks the kind by MIME and magic bytes (`--allowed-kinds images|documents|…`) and the \
             size (`--max-size` MB), then writes it under `--folder` (default `uploads/`; private until the owner exposes the folder in Studio → Files) or at \
             an exact `--path`. Adds `saved` — a durable FileRef and nothing else (`ref`, `filename`, `mime`, `kind`, `size`, `sha256`, \
             `lifecycle: durable`, `origin: fs.save`, `trust`) — to the \
@@ -308,9 +310,9 @@ pub fn definition() -> NodeDefinition {
         config_schema: Default::default(),
         dsl_flags: vec![
             DslFlag {
-                flag: "--field".to_string(),
-                config_key: "field".to_string(),
-                description: "The file's name in the payload: `files.<field>` for an upload, or a FileRef at `input.<field>` (default: \"file\"; with none set, a single FileRef at the top of the payload is taken)".to_string(),
+                flag: "--source-key".to_string(),
+                config_key: "source_key".to_string(),
+                description: "Dot-path to the file in the payload (default: files.file — the upload field `file`; files.photo, response.body, image)".to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
             },
@@ -360,11 +362,11 @@ pub fn definition() -> NodeDefinition {
         ],
         fields: vec![
             NodeFieldDef {
-                name: "field".to_string(),
-                label: "Field name".to_string(),
+                name: "source_key".to_string(),
+                label: "Source key".to_string(),
                 field_type: NodeFieldType::Text,
-                help: Some("Multipart field name from the upload form (default: \"file\")".to_string()),
-                default_value: Some(json!("file")),
+                help: Some("Dot-path to the file in the payload (default: files.file — the upload field `file`)".to_string()),
+                default_value: Some(json!("files.file")),
                 ..Default::default()
             },
             NodeFieldDef {
@@ -439,7 +441,7 @@ pub fn definition() -> NodeDefinition {
             },
         ].into_iter().chain(store_fields(OnConflict::Error)).collect(),
         layout: vec![
-            LayoutItem::Field("field".to_string()),
+            LayoutItem::Field("source_key".to_string()),
             LayoutItem::Field("path".to_string()),
             LayoutItem::Field("folder".to_string()),
             LayoutItem::Field("allowed_kinds".to_string()),
@@ -449,7 +451,7 @@ pub fn definition() -> NodeDefinition {
             LayoutItem::Field("on_conflict".to_string()),
         ],
         examples: vec![
-            crate::pipeline::model::NodeExample::dsl("Photo with a caption", "fs.save --field photo --folder uploads --allowed-kinds images --max-size 10")
+            crate::pipeline::model::NodeExample::dsl("Photo with a caption", "fs.save --source-key files.photo --folder uploads --allowed-kinds images --max-size 10")
                 .input(serde_json::json!({ "body": { "caption": "Sunset" }, "files": { "photo": { "__zf_type": "file_ref", "filename": "IMG_1.jpg", "mime": "image/jpeg", "size": 182331 } } }))
                 .output(serde_json::json!({ "body": { "caption": "Sunset" }, "files": { "photo": { "__zf_type": "file_ref", "filename": "IMG_1.jpg", "mime": "image/jpeg", "size": 182331 } }, "saved": { "__zf_type": "file_ref", "backend": "zebfs", "ref": "uploads/3f9c….jpg", "filename": "3f9c….jpg", "mime": "image/jpeg", "kind": "image", "size": 182331, "sha256": "sha256:…", "lifecycle": "durable", "origin": "fs.save", "trust": "untrusted" } }))
                 .note("Then `sekejap.query --read-only false --params \"{{ [input.body.caption, input.saved.ref] }}\" -- \"INSERT INTO photos (caption, path) VALUES ($1, $2)\"`. `saved` is a FileRef, so `fs.image.thumbnail`, `fs.copy --from \"{{ input.saved }}\"` and a `--preview image` all take it as it is."),
@@ -458,52 +460,19 @@ pub fn definition() -> NodeDefinition {
     }
 }
 
-/// The file `fs.save` keeps, in the payload: `files.<field>` (a multipart
-/// upload), then `<field>` at the payload root when it is a FileRef (a node's
-/// own product — `image` from `fs.svg.convert`, `thumbnail`), then
-/// `response.body` (`http.request --response-type bytes`), and, when no
-/// `--field` was given, the one FileRef at the root if there is exactly one.
-/// Two candidates at the root with no field named is a question, not a guess.
-pub fn locate_source<'a>(payload: &'a Value, field: &str) -> Result<&'a Value, PipelineError> {
-    // The dialog and the config default both spell the default as `file`,
-    // so `file` is "nothing named", the same as an empty string.
-    let named = !field.is_empty() && field != "file";
-    let field = if named { field } else { "file" };
-    // `field` is a dot path, so array uploads can say `photos.0`.
-    if let Some(obj) = payload.get("files").and_then(|files| resolve_path(files, field)) {
-        return Ok(obj);
-    }
-    if let Some(obj) = resolve_path(payload, field).filter(|v| is_file_ref(v) || v.get("__zf_bytes").is_some()) {
-        return Ok(obj);
-    }
-    if let Some(obj) = payload
-        .get("response")
-        .and_then(|r| r.get("body"))
-        .filter(|b| is_file_ref(b) || b.get("__zf_bytes").is_some())
-    {
-        return Ok(obj);
-    }
-    if !named && let Some(map) = payload.as_object() {
-        let refs: Vec<(&String, &Value)> = map.iter().filter(|(_, v)| is_file_ref(v)).collect();
-        match refs.as_slice() {
-            [(_, one)] => return Ok(one),
-            [] => {}
-            many => {
-                let names: Vec<&str> = many.iter().map(|(k, _)| k.as_str()).collect();
-                return Err(PipelineError::new(
-                    "FW_NODE_FILE_SAVE",
-                    format!("several files in the payload ({}); say which with --field <name>", names.join(", ")),
-                ));
-            }
-        }
-    }
-    Err(PipelineError::new(
-        "FW_NODE_FILE_SAVE",
-        format!(
-            "input.files.{field} not found, no FileRef at input.{field}, none in response.body and no single FileRef at the top of the payload — \
-             is this after a multipart webhook, http.request --response-type bytes, or a node that answers a file (fs.svg.convert, fs.image.thumbnail)?"
-        ),
-    ))
+/// The file `fs.save` keeps: exactly what `--source-key` points at — an
+/// upload, a FileRef or a byte envelope. Nothing else in the payload is
+/// looked at (`node-conventions.md` §2).
+pub fn locate_source<'a>(payload: &'a Value, key: &str) -> Result<&'a Value, PipelineError> {
+    let key = if key.trim().is_empty() { "files.file" } else { key.trim() };
+    resolve_path(payload, key)
+        .filter(|value| value.is_object())
+        .ok_or_else(|| {
+            PipelineError::new(
+                "FW_NODE_FS_SAVE",
+                format!("no file at payload key '{key}' — an upload field is files.<name>; set --source-key"),
+            )
+        })
 }
 
 // ── Node ──────────────────────────────────────────────────────────────────────
@@ -540,8 +509,9 @@ impl NodeHandler for Node {
         let (owner, project, ..) = metadata_scope(&input.metadata)?;
 
         // ── Locate the file in the payload ────────────────────────────────────
-        let field = if self.config.field.trim().is_empty() { "file" } else { self.config.field.trim() };
-        let file_obj = locate_source(&input.payload, self.config.field.trim())?;
+        let field = self.config.source_key.trim();
+        let file_obj = locate_source(&input.payload, field)?;
+        let max_bytes = (self.config.max_size_mb * 1024.0 * 1024.0) as usize;
 
         // Determine if this is a FileRef, __zf_bytes object, or legacy webhook file object.
         let is_file_ref = is_file_ref(file_obj);
@@ -571,6 +541,16 @@ impl NodeHandler for Node {
                 .and_then(|v| v.as_str())
                 .unwrap_or("application/octet-stream");
             size = file_obj.get("size").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+            // The limit is checked against the stored object before a byte is read.
+            if let Some((source_store, key)) = open_source(&self.platform, owner, project, file_obj, None)?
+                && let Ok(stat) = source_store.fs.head(&key)
+                && stat.size as usize > max_bytes
+            {
+                return Err(PipelineError::new(
+                    "FW_NODE_FS_SAVE",
+                    format!("file size {} bytes exceeds limit of {} MB", stat.size, self.config.max_size_mb),
+                ));
+            }
             bytes = read_file_ref_bytes(&self.platform, owner, project, file_obj)?;
         } else if is_zf_bytes {
             original_name = "download";
@@ -586,12 +566,19 @@ impl NodeHandler for Node {
                 .get("__zf_bytes")
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| {
-                    PipelineError::new("FW_NODE_FILE_SAVE", "__zf_bytes field is not a string")
+                    PipelineError::new("FW_NODE_FS_SAVE", "__zf_bytes field is not a string")
                 })?;
+            // Decoded size is three quarters of the text: refuse before decoding.
+            if data_b64.len() / 4 * 3 > max_bytes + 3 {
+                return Err(PipelineError::new(
+                    "FW_NODE_FS_SAVE",
+                    format!("file exceeds limit of {} MB", self.config.max_size_mb),
+                ));
+            }
             bytes = base64::engine::general_purpose::STANDARD
                 .decode(data_b64)
                 .map_err(|err| {
-                    PipelineError::new("FW_NODE_FILE_SAVE", format!("base64 decode error: {err}"))
+                    PipelineError::new("FW_NODE_FS_SAVE", format!("base64 decode error: {err}"))
                 })?;
         } else {
             original_name = file_obj
@@ -607,20 +594,26 @@ impl NodeHandler for Node {
                 .get("data")
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| {
-                    PipelineError::new("FW_NODE_FILE_SAVE", "input.files.{field}.data is missing")
+                    PipelineError::new("FW_NODE_FS_SAVE", "input.files.{field}.data is missing")
                 })?;
+            // Decoded size is three quarters of the text: refuse before decoding.
+            if data_b64.len() / 4 * 3 > max_bytes + 3 {
+                return Err(PipelineError::new(
+                    "FW_NODE_FS_SAVE",
+                    format!("file exceeds limit of {} MB", self.config.max_size_mb),
+                ));
+            }
             bytes = base64::engine::general_purpose::STANDARD
                 .decode(data_b64)
                 .map_err(|err| {
-                    PipelineError::new("FW_NODE_FILE_SAVE", format!("base64 decode error: {err}"))
+                    PipelineError::new("FW_NODE_FS_SAVE", format!("base64 decode error: {err}"))
                 })?;
         }
 
         // ── Validate size (pre-decode, from reported size) ────────────────────
-        let max_bytes = (self.config.max_size_mb * 1024.0 * 1024.0) as usize;
         if size > max_bytes {
             return Err(PipelineError::new(
-                "FW_NODE_FILE_SAVE",
+                "FW_NODE_FS_SAVE",
                 format!(
                     "file size {} bytes exceeds limit of {} MB",
                     size, self.config.max_size_mb
@@ -631,7 +624,7 @@ impl NodeHandler for Node {
         // Re-check against actual decoded size
         if bytes.len() > max_bytes {
             return Err(PipelineError::new(
-                "FW_NODE_FILE_SAVE",
+                "FW_NODE_FS_SAVE",
                 format!(
                     "decoded file size {} bytes exceeds limit of {} MB",
                     bytes.len(),
@@ -646,7 +639,7 @@ impl NodeHandler for Node {
         let allowed = &self.config.allowed_kinds;
         if allowed.is_empty() {
             return Err(PipelineError::new(
-                "FW_NODE_FILE_SAVE",
+                "FW_NODE_FS_SAVE",
                 "no file types are allowed — enable at least one in allowed_kinds",
             ));
         }
@@ -670,7 +663,7 @@ impl NodeHandler for Node {
                     fallback_mime
                 } else {
                     return Err(PipelineError::new(
-                        "FW_NODE_FILE_SAVE",
+                        "FW_NODE_FS_SAVE",
                         format!(
                             "file type could not be determined from content (browser reported: '{browser_mime}'). \
                             Upload a supported file type."
@@ -683,7 +676,7 @@ impl NodeHandler for Node {
         if !kind_accepts_mime(allowed, &effective_mime) {
             let allowed_labels: Vec<&str> = allowed.iter().map(|kind| kind.label()).collect();
             return Err(PipelineError::new(
-                "FW_NODE_FILE_SAVE",
+                "FW_NODE_FS_SAVE",
                 format!(
                     "file content is '{effective_mime}', which is not in allowed types: {}",
                     allowed_labels.join(", ")
@@ -695,7 +688,7 @@ impl NodeHandler for Node {
         if let Some(inferred) = inferred_mime.as_deref() {
             if !browser_mime_matches_detected(browser_mime, inferred) {
                 return Err(PipelineError::new(
-                    "FW_NODE_FILE_SAVE",
+                    "FW_NODE_FS_SAVE",
                     format!(
                         "MIME mismatch: browser declared '{browser_mime}' but file content is '{inferred}'. \
                         Possible spoofing attempt rejected."
@@ -705,11 +698,8 @@ impl NodeHandler for Node {
         }
 
         // ── Determine ZebFS object path ───────────────────────────────────────
-        let folder = sanitize_dest_path(if self.config.folder.trim().is_empty() {
-            "uploads"
-        } else {
-            self.config.folder.trim()
-        });
+        // Normalised (and `..` refused) by `target_key`, never quietly cleaned.
+        let folder = if self.config.folder.trim().is_empty() { "uploads" } else { self.config.folder.trim() };
 
         let ext = safe_extension(original_name, &effective_mime);
         let storage_name = {
@@ -734,36 +724,31 @@ impl NodeHandler for Node {
             .as_deref()
             .map(str::trim)
             .filter(|value| !value.is_empty())
-            .map(|path| {
-                if path.ends_with('/') {
-                    format!("{path}{storage_name}")
-                } else {
-                    path.to_string()
-                }
-            });
-        let rel_path = target_key(configured_path.as_deref(), &folder, &storage_name, "FW_NODE_FILE_SAVE")?;
+            .map(str::to_string);
+        if configured_path.as_deref().is_some_and(|path| path.ends_with('/')) {
+            return Err(PipelineError::new(
+                "FW_NODE_FS_SAVE",
+                "--path is the exact key of the file; a folder is --folder",
+            ));
+        }
+        let rel_path = target_key(configured_path.as_deref(), folder, &storage_name, "FW_NODE_FS_SAVE")?;
 
         // ── Write to the node's store ─────────────────────────────────────────
         let store = open_store(&self.platform, owner, project, self.config.store.as_deref())?;
-        let on_conflict = OnConflict::parse(self.config.on_conflict.as_deref(), OnConflict::Error, "FW_NODE_FILE_SAVE")?;
-        let (bytes, written) = if on_conflict.allows(&store.fs, &rel_path, "FW_NODE_FILE_SAVE")? {
+        let on_conflict = OnConflict::parse(self.config.on_conflict.as_deref(), OnConflict::Error, "FW_NODE_FS_SAVE")?;
+        let written = on_conflict.allows(&store.fs, &rel_path, "FW_NODE_FS_SAVE")?;
+        // The form's other fields ride along: an upload form has a title and a
+        // caption beside the file, and the INSERT after this node needs them.
+        let saved = if written {
             store
                 .fs
                 .put(&rel_path, &bytes)
-                .map_err(|err| PipelineError::new("FW_NODE_FILE_SAVE", err.to_string()))?;
-            (bytes, true)
+                .map_err(|err| PipelineError::new("FW_NODE_FS_SAVE", err.to_string()))?;
+            store.file_ref(&rel_path, &storage_name, &effective_mime, &bytes, "fs.save", &trust)
         } else {
-            // Skipped: the answer names the object already there.
-            let existing = store
-                .fs
-                .get(&rel_path)
-                .map_err(|err| PipelineError::new("FW_NODE_FILE_SAVE", err.to_string()))?;
-            (existing.bytes, false)
+            // Skipped: the answer is the object already there, as it is.
+            store.stored_ref(&rel_path, "fs.save", "untrusted", "FW_NODE_FS_SAVE")?
         };
-
-        // The form's other fields ride along: an upload form has a title and a
-        // caption beside the file, and the INSERT after this node needs them.
-        let saved = store.file_ref(&rel_path, &storage_name, &effective_mime, &bytes, "fs.save", &trust);
         Ok(NodeExecutionOutput {
             output_pins: vec![OUTPUT_PIN_OUT.to_string()],
             payload: crate::pipeline::nodes::shared::util::with_answer(&input.payload, serde_json::json!({ "saved": saved })),
@@ -833,14 +818,6 @@ fn safe_extension(original_name: &str, mime: &str) -> String {
     .to_string()
 }
 
-/// Sanitize a dest path: strip leading/trailing slashes, reject `..` and `.` components.
-fn sanitize_dest_path(dest: &str) -> String {
-    dest.split('/')
-        .filter(|segment| !segment.is_empty() && *segment != "." && *segment != "..")
-        .collect::<Vec<_>>()
-        .join("/")
-}
-
 /// Sanitize a user-provided filename: keep alphanumeric, dash, underscore only.
 /// Strips any extension (the caller adds extension from content type).
 /// Returns empty string if nothing remains (caller falls back to UUID).
@@ -875,21 +852,14 @@ mod tests {
     }
 
     #[test]
-    fn the_source_is_the_upload_then_the_named_field_then_the_response_then_the_one_file_at_the_top() {
-        let upload = serde_json::json!({ "files": { "photo": file_ref("a.png") }, "photo": file_ref("b.png") });
-        assert_eq!(locate_source(&upload, "photo").unwrap()["filename"], "a.png");
-        let product = serde_json::json!({ "image": file_ref("p.png"), "width": 1080 });
-        assert_eq!(locate_source(&product, "image").unwrap()["filename"], "p.png");
-        assert_eq!(locate_source(&product, "").unwrap()["filename"], "p.png");
-        assert_eq!(locate_source(&product, "file").unwrap()["filename"], "p.png");
-        let response = serde_json::json!({ "response": { "body": file_ref("r.png") } });
-        assert_eq!(locate_source(&response, "").unwrap()["filename"], "r.png");
-        let two = serde_json::json!({ "image": file_ref("p.png"), "thumb": file_ref("t.png") });
-        let err = locate_source(&two, "").unwrap_err();
-        assert!(err.message.contains("several files") && err.message.contains("--field"), "{}", err.message);
-        assert_eq!(locate_source(&two, "thumb").unwrap()["filename"], "t.png");
-        assert!(locate_source(&serde_json::json!({ "body": {} }), "").is_err());
-        // A named field that is not a file is not taken from the root.
+    fn the_source_is_exactly_where_source_key_points() {
+        let upload = serde_json::json!({ "files": { "file": file_ref("a.png"), "photo": file_ref("b.png") }, "image": file_ref("p.png") });
+        assert_eq!(locate_source(&upload, "").unwrap()["filename"], "a.png");
+        assert_eq!(locate_source(&upload, "files.photo").unwrap()["filename"], "b.png");
+        assert_eq!(locate_source(&upload, "image").unwrap()["filename"], "p.png");
+        // Nothing is guessed: no fallback to another key or a lone FileRef.
+        let product = serde_json::json!({ "image": file_ref("p.png") });
+        assert!(locate_source(&product, "").is_err());
         assert!(locate_source(&serde_json::json!({ "image": "not a file" }), "image").is_err());
     }
 

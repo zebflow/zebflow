@@ -59,12 +59,6 @@ pub struct Config {
     /// The store to write to; saved explicitly at registration.
     #[serde(default)]
     pub store: Option<String>,
-    /// Optional absolute deployed site origin used for canonical/meta generation in templates.
-    #[serde(default, alias = "base_url")]
-    pub deploy_base_url: Option<String>,
-    /// Optional deployed URL base path used to derive ctx.route for generated pages.
-    #[serde(default, alias = "base_path")]
-    pub deploy_base_path: Option<String>,
     /// Optional route injected into the RWE render context as `ctx.route`.
     ///
     /// Defaults to the page's address on the site: `/` for `index.html`,
@@ -168,22 +162,6 @@ pub fn effective_page_output_path(config: &Config) -> Result<String, PipelineErr
     static_site::normalize_page_output_path(&config.path)
 }
 
-pub fn effective_deploy_base_url(config: &Config) -> Option<String> {
-    static_site::normalize_deploy_base_url(config.deploy_base_url.as_deref())
-}
-
-pub fn effective_deploy_base_path(config: &Config) -> Result<Option<String>, PipelineError> {
-    let Some(raw) = config
-        .deploy_base_path
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-    else {
-        return Ok(None);
-    };
-    static_site::normalize_deploy_base_path(Some(raw), "/").map(Some)
-}
-
 /// The route a page has when its site is served at the root of an address.
 pub fn default_route(config: &Config) -> Result<String, PipelineError> {
     static_site::route_path_for_output_path("/", &effective_page_output_path(config)?)
@@ -239,9 +217,9 @@ pub fn write_generated_object(
     on_conflict: &str,
 ) -> Result<&'static str, PipelineError> {
     let bytes = contents.as_bytes();
-    match store.get(rel_path) {
+    match crate::pipeline::nodes::shared::project_store::read_capped(store, rel_path, "FW_NODE_WEB_STATIC_GENERATE_READ") {
         Ok(existing) => {
-            if existing.bytes == bytes {
+            if existing == bytes {
                 return Ok("unchanged");
             }
             match on_conflict.trim() {
@@ -263,7 +241,7 @@ pub fn write_generated_object(
                 }
             }
         }
-        Err(err) if err.code == "ZEBFS_NOT_FOUND" => {}
+        Err(_) if store.head(rel_path).is_err() => {}
         Err(err) => {
             return Err(PipelineError::new(
                 "FW_NODE_WEB_STATIC_GENERATE_READ",
@@ -302,8 +280,7 @@ pub fn definition() -> NodeDefinition {
                         "route": { "type": "string" },
                         "store": { "type": ["string", "null"] },
                         "file": { "description": "A durable FileRef for the page" },
-                        "deploy_base_url": { "type": ["string", "null"] },
-                        "deploy_base_path": { "type": ["string", "null"] },
+                        "origin": { "type": ["string", "null"], "description": "The site's serve origin from Studio → Files, if it has one" },
                         "template": { "type": "string" },
                         "site_root": { "type": ["string", "null"] },
                         "manifest_path": { "type": ["string", "null"] },
@@ -325,8 +302,6 @@ pub fn definition() -> NodeDefinition {
                 "site_root": { "type": "string", "description": "The site's root folder in the store (default: site)." },
                 "path": { "type": "string", "description": "The page's path inside the site root. Supports config expressions." },
                 "store": { "type": "string", "description": "The store to write to; saved explicitly at registration." },
-                "deploy_base_url": { "type": "string", "description": "Optional absolute deployed site origin used by templates for canonical/meta generation." },
-                "deploy_base_path": { "type": "string", "description": "Optional deployed URL base path used to derive ctx.route for generated pages." },
                 "route": { "type": "string", "description": "Optional route exposed to the template as ctx.route." },
                 "on_conflict": { "type": "string", "enum": ["overwrite", "skip", "error"], "description": "What to do when the destination exists and content differs." }
             }
@@ -354,20 +329,6 @@ pub fn definition() -> NodeDefinition {
                 required: false,
             },
             crate::pipeline::nodes::shared::project_store::store_flag(),
-            DslFlag {
-                flag: "--deploy-base-url".to_string(),
-                config_key: "deploy_base_url".to_string(),
-                description: "Optional absolute deployed site origin used by templates for canonical/meta generation".to_string(),
-                kind: DslFlagKind::Scalar,
-                required: false,
-            },
-            DslFlag {
-                flag: "--deploy-base-path".to_string(),
-                config_key: "deploy_base_path".to_string(),
-                description: "Optional deployed URL base path used to derive ctx.route for generated pages".to_string(),
-                kind: DslFlagKind::Scalar,
-                required: false,
-            },
             DslFlag {
                 flag: "--route".to_string(),
                 config_key: "route".to_string(),
@@ -417,22 +378,6 @@ pub fn definition() -> NodeDefinition {
                 ..Default::default()
             },
             NodeFieldDef {
-                name: "deploy_base_url".to_string(),
-                label: "Deploy Base URL".to_string(),
-                field_type: NodeFieldType::Text,
-                placeholder: Some("https://community.example".to_string()),
-                help: Some("Optional absolute deployed site origin used by templates for canonical/meta generation.".to_string()),
-                ..Default::default()
-            },
-            NodeFieldDef {
-                name: "deploy_base_path".to_string(),
-                label: "Deploy Base Path".to_string(),
-                field_type: NodeFieldType::Text,
-                placeholder: Some("/".to_string()),
-                help: Some("Optional deployed URL base path used to derive ctx.route for generated pages.".to_string()),
-                ..Default::default()
-            },
-            NodeFieldDef {
                 name: "route".to_string(),
                 label: "Render Route".to_string(),
                 field_type: NodeFieldType::Text,
@@ -460,12 +405,6 @@ pub fn definition() -> NodeDefinition {
             LayoutItem::Field("site_root".to_string()),
             LayoutItem::Field("path".to_string()),
             LayoutItem::Field("store".to_string()),
-            LayoutItem::Row {
-                row: vec![
-                    LayoutItem::Field("deploy_base_url".to_string()),
-                    LayoutItem::Field("deploy_base_path".to_string()),
-                ],
-            },
             LayoutItem::Field("route".to_string()),
         ],
         ai_tool: Default::default(),

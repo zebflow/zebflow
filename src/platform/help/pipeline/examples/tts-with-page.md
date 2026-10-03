@@ -9,7 +9,7 @@ A minimal end-to-end text-to-speech demo:
 - user types text
 - page calls the API
 - API runs `ai.tts`
-- page plays the returned `audio_blob_base64`
+- page plays the returned `audio.blob_base64`
 - generated `.wav` is also persisted under Zebflow FS
 
 This is the fastest real shape to try `n.ai.tts` in a browser.
@@ -94,15 +94,15 @@ Response shape:
     "samples": 93440,
     "bytes": 186924,
     "duration_ms": 4238,
-    "credential_id": "narrator-tts"
-  },
-  "audio_blob_base64": "UklGRi4A...",
-  "word_timings": null,
-  "lipsync": null
+    "credential_id": "narrator-tts",
+    "blob_base64": "UklGRi4A...",
+    "word_timings": null,
+    "lipsync": null
+  }
 }
 ```
 
-`word_timings` and `lipsync` are only populated when `--lipsync` is passed to
+`audio.word_timings` and `audio.lipsync` are only populated when `--lipsync` is passed to
 `ai.tts`; otherwise both stay `null`.
 
 ---
@@ -192,7 +192,7 @@ export default function Page(input) {
       }
 
       const blob = decodeBase64ToBlob(
-        payload?.audio_blob_base64,
+        payload?.audio?.blob_base64,
         payload?.audio?.mime_type || "audio/wav"
       );
       const nextAudioUrl = URL.createObjectURL(blob);
@@ -308,7 +308,7 @@ Open:
 Type text, click **Generate Voice**, and the page should:
 
 1. `POST` to `/api/tts`
-2. receive `audio_blob_base64`
+2. receive `audio.blob_base64`
 3. create a browser `Blob`
 4. play the audio immediately
 5. show where the `.wav` was stored (its store key)
@@ -317,7 +317,7 @@ Type text, click **Generate Voice**, and the page should:
 
 ## Notes
 
-- `audio_blob_base64` is the right field for immediate browser playback or websocket delivery.
+- `audio.blob_base64` is the right field for immediate browser playback or websocket delivery.
 - `audio.file` is the stored `.wav` as a FileRef. It is private like every
   stored file; to offer it for download, expose its folder (`audio/`) in
   Studio → Files and link to it on the project's file host.

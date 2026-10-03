@@ -240,7 +240,7 @@ impl NodeHandler for Node {
 
         Ok(NodeExecutionOutput {
             output_pins: vec![OUTPUT_PIN_OUT.to_string()],
-            payload,
+            payload: crate::pipeline::nodes::shared::util::with_answer(&input.payload, payload),
             trace: vec![format!("node_kind={NODE_KIND}")],
         })
     }

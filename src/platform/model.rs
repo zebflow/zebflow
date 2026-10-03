@@ -2685,7 +2685,7 @@ impl ProjectFileLayout {
     /// delete removes.
     pub fn resolve_mapserver_artifact_path(&self, rel: &str) -> Option<PathBuf> {
         let rest = rel.strip_prefix("mapserver-artifacts/")?;
-        if crate::infra::io::path::rel_path_escapes_root(rest) || rest.split('/').count() != 3 {
+        if !crate::contracts::kinds::valid_artifact_rest(rest) {
             return None;
         }
         Some(self.data_cache_mapserver_artifacts_dir().join(rest))
