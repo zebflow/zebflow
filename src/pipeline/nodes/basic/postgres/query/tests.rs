@@ -20,7 +20,7 @@ fn server() -> Option<PgConnectOptions> {
 fn the_signature_is_the_shared_query_shape() {
     assert_eq!(
         crate::pipeline::nodes::node_signature(&definition()),
-        "pg.query.run --credential TEXT [--query TEXT] [--param KEY=EXPR…] [--write] [--limit N] → query"
+        "postgres.query.run --credential TEXT [--query TEXT] [--param KEY=EXPR…] [--write] [--limit N] → query"
     );
 }
 

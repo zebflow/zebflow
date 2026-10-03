@@ -48,7 +48,7 @@ If `auth_redirect` / `auth_forbidden_redirect` are not set, auth failure returns
 
 ```
 | trigger.webhook --route /auth/login --method POST
-| pg.query.run --credential my-pg --param "1={{ input.webhook.body.identifier }}" \
+| postgres.query.run --credential my-pg --param "1={{ input.webhook.body.identifier }}" \
     -- "SELECT player_id::text, fullname, role FROM app.player WHERE identifier = $1 AND is_active = true"
 | logic.if --expr "input.query.rows && input.query.rows.length > 0"
 (false pin → `web.response.send --status 401 --body "invalid credentials"`)
@@ -61,7 +61,7 @@ If `auth_redirect` / `auth_forbidden_redirect` are not set, auth failure returns
 
 ```
 | trigger.webhook --route /dashboard --method GET --auth jwt --credential my-jwt
-| pg.query.run --credential my-pg --param "1={{ $trigger.auth.sub }}" \
+| postgres.query.run --credential my-pg --param "1={{ $trigger.auth.sub }}" \
     -- "SELECT player_id::text, fullname, email FROM app.player WHERE player_id = $1::uuid"
 | javascript.script.run -- "const user = input.query.rows?.[0]; return { user }"
 | web.response.send --template pages/dashboard.tsx
@@ -80,7 +80,7 @@ When JWT is missing/invalid → credential `auth_redirect` fires as a 303 redire
 
 ```
 | trigger.webhook --route /admin/users --method GET --auth jwt --credential my-jwt --role admin
-| pg.query.run --credential my-pg -- "SELECT player_id::text, fullname, identifier FROM app.player ORDER BY created_at DESC"
+| postgres.query.run --credential my-pg -- "SELECT player_id::text, fullname, identifier FROM app.player ORDER BY created_at DESC"
 | web.response.send --template pages/admin-users.tsx
 ```
 
@@ -101,7 +101,7 @@ An empty `value` is allowed and clears the cookie.
 
 - `trigger.webhook --auth jwt --credential <id>` — auto-verify JWT; `$trigger.auth` = decoded claims
 - `trigger.webhook --role <role>` (repeated, one per role) — role check against the credential's `auth_roles`
-- `pg.query.run --credential <id> --param` — look up user by identifier or sub claim, e.g. `--param "1={{ input.webhook.body.identifier }}"` or `--param "1={{ $trigger.auth.sub }}"`
+- `postgres.query.run --credential <id> --param` — look up user by identifier or sub claim, e.g. `--param "1={{ input.webhook.body.identifier }}"` or `--param "1={{ $trigger.auth.sub }}"`
 - `auth.token.create --claim "key={{ input.field }}" --ttl <duration>` — sign JWT; output `token: { access_token, token_type, expires_in, profile }`, read as `{{ input.token.access_token }}`. End the claim name with `:public` (e.g. `--claim "name:public={{ input.name }}"`) to expose that claim in the browser via `ctx.auth`. `sub` and other private claims stay server-only.
 - `web.response.send --header "Set-Cookie=…"` — set the cookie in the response, sent as written
 - `web.response.send --status 302 --header "Location=…"` — redirect

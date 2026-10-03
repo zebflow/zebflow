@@ -114,7 +114,7 @@ records what is on disk today.
                 │                      a project may legitimately own `files/tmp/`
                 └── mapserver/
                     ├── *.geojson      OBJECT — uploaded sources
-                    └── .optimized/    OBJECT — ms.layer.publish's GeoParquet copies
+                    └── .optimized/    OBJECT — mapserver.layer.publish's GeoParquet copies
 ```
 
 ### Rules
@@ -266,7 +266,7 @@ them.
                 │   └── {request_id}/files/    writer removes them today
                 ├── mapserver/         map feature area
                 │   ├── {source}.geojson            uploaded sources
-                │   ├── .optimized/                 ms.layer.publish GeoParquet copies
+                │   ├── .optimized/                 mapserver.layer.publish GeoParquet copies
                 │   └── .artifacts/                 generated chunks — moved to
                 │       └── {instance}/{layer}/     data/cache/mapserver-artifacts/
                 │           └── {chunk}.ndjson      on first touch

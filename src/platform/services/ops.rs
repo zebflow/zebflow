@@ -3021,7 +3021,7 @@ fn extract_pipeline_node(source: &str, node_id: &str, file_rel_path: &str) -> Op
         None => return OpsResult::err("Pipeline has no 'nodes' array"),
     };
 
-    // Parse node_id: could be "n0", "trigger.webhook", "pg.query.run[1]"
+    // Parse node_id: could be "n0", "trigger.webhook", "postgres.query.run[1]"
     let (kind_filter, index_filter) = if node_id.contains('[') {
         // kind[index] form
         let parts: Vec<&str> = node_id.splitn(2, '[').collect();
@@ -3032,7 +3032,7 @@ fn extract_pipeline_node(source: &str, node_id: &str, file_rel_path: &str) -> Op
             .unwrap_or(0);
         (Some(kind.to_string()), Some(idx))
     } else if node_id.contains('.') || node_id.contains(':') {
-        // Looks like a kind (e.g. "trigger.webhook", "pg.query.run")
+        // Looks like a kind (e.g. "trigger.webhook", "postgres.query.run")
         (Some(node_id.to_string()), None)
     } else {
         // Opaque ID

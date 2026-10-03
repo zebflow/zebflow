@@ -60,7 +60,7 @@ Create a `jwt_signing_key` credential in the Credentials UI. Fields:
 
 ```
 | trigger.webhook --route /auth/login --method POST
-| pg.query.run --credential main-db --param "1={{ input.webhook.body.username }}" \
+| postgres.query.run --credential main-db --param "1={{ input.webhook.body.username }}" \
     -- "SELECT id::text, username, role FROM users WHERE username = $1 LIMIT 1"
 | logic.if --expr "input.query.rows && input.query.rows.length > 0"
 (false pin → `web.response.send --status 401 --body "invalid credentials"`)
@@ -87,7 +87,7 @@ Create a `jwt_signing_key` credential in the Credentials UI. Fields:
 | crypto.password.hash --from "{{ $trigger.body.password }}"
 (`crypto.password.hash` adds `password: { hash, algorithm }` to the payload and
 keeps everything else, so `$trigger.body.username` is still reachable for the insert.)
-| pg.query.run --credential main-db --write --param "1={{ $trigger.body.username }}" --param "2={{ $trigger.body.email }}" --param "3={{ input.password.hash }}" --param "4=user" \
+| postgres.query.run --credential main-db --write --param "1={{ $trigger.body.username }}" --param "2={{ $trigger.body.email }}" --param "3={{ input.password.hash }}" --param "4=user" \
     -- "INSERT INTO users (username, email, password_hash, role, created_at) VALUES ($1, $2, $3, $4, NOW()) RETURNING id::text"
 | web.response.send --status 302 --header "Location=/auth/login?registered=1"
 ```
@@ -108,7 +108,7 @@ verify answers on `true`/`false` pins, so the branch is the check.
 
 ```
 | trigger.webhook --route /dashboard --method GET --auth jwt --credential my-jwt
-| pg.query.run --credential main-db --param "1={{ $trigger.auth.sub }}" \
+| postgres.query.run --credential main-db --param "1={{ $trigger.auth.sub }}" \
     -- "SELECT id::text, username, email, role FROM users WHERE id = $1::uuid"
 | javascript.script.run -- "const u = input.query.rows?.[0]; return { user: u }"
 | web.response.send --template pages/dashboard.tsx
@@ -132,7 +132,7 @@ Role mismatch → `auth_forbidden_redirect` fires as a 303 redirect (browser nav
 
 - `trigger.webhook --auth jwt --credential <id>` — auto-verify JWT; `$trigger.auth` = decoded claims
 - `trigger.webhook --role <role>` (repeated, one per role) — checks against JWT `roles` array claim. Empty = any authenticated user.
-- `pg.query.run` — user lookup and insert
+- `postgres.query.run` — user lookup and insert
 - `auth.token.create --claim "key={{ input.field }}" --ttl <duration>` — sign JWT; output `token: { access_token, token_type, expires_in, profile }`, read as `{{ input.token.access_token }}`. End the claim name with `:public` to expose that claim in the browser via `ctx.auth` (e.g. `--claim "role:public={{ input.role }}"`). Private claims like `sub` never reach the browser DOM.
 - `web.response.send --header "Set-Cookie=…"` — set the session cookie, sent as written: write `Path=/; SameSite=Lax; HttpOnly` (and `Secure` behind HTTPS)
 - `web.response.send --status 302 --header "Location=…"` — redirect after login/logout/register

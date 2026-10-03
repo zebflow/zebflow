@@ -60,7 +60,7 @@ Common work nodes:
 
 - `javascript.script.run`
 - `typescript.script.run`
-- `pg.query.run`
+- `postgres.query.run`
 - `sqlite.query.run`
 - `sekejap.query.run`
 - `sekejap.record.create`
@@ -71,7 +71,7 @@ Common work nodes:
 - `fs.*`
 - `table.*`
 - `geo.*`
-- `ms.*`
+- `mapserver.*`
 - `web.*`
 - `ws.*`
 - `ai.*`

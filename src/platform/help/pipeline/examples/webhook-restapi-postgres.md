@@ -36,7 +36,7 @@ the whole request envelope; nothing is merged to the root — a JSON body field
 
 ```
 | trigger.webhook --route /api/programmes --method GET
-| pg.query.run --credential my-pg --param "1={{ input.webhook.query.faculty_id ?? null }}" \
+| postgres.query.run --credential my-pg --param "1={{ input.webhook.query.faculty_id ?? null }}" \
     -- "SELECT unit_id::text, code, title->>'id' as title, slug FROM academic.academic_unit WHERE unit_type = 'programme' AND is_active = true AND ($1::uuid IS NULL OR parent_unit_id = $1::uuid) ORDER BY code"
 | javascript.script.run -- "return { ok: true, data: input.query.rows }"
 | web.response.send --body "{{ input.script }}"
@@ -48,27 +48,27 @@ the whole request envelope; nothing is merged to the root — a JSON body field
 
 ```
 | trigger.webhook --route /api/programmes/:unit_id --method GET
-| pg.query.run --credential my-pg --param "1={{ input.webhook.params.unit_id }}" \
+| postgres.query.run --credential my-pg --param "1={{ input.webhook.params.unit_id }}" \
     -- "SELECT au.unit_id::text, au.code, au.title, COUNT(DISTINCT s.student_id) as total_students FROM academic.academic_unit au LEFT JOIN academic.student s ON s.unit_id = au.unit_id AND s.is_active = true WHERE au.unit_id = $1::uuid AND au.unit_type = 'programme' GROUP BY au.unit_id, au.code, au.title"
 | javascript.script.run -- "return { ok: true, data: input.query.rows[0] };"
 | web.response.send --body "{{ input.script }}"
 (see **Answering with a status** below for the 404 branch)
 ```
 
-### GET /api/items/:id — detail with related records (two pg.query.run nodes)
+### GET /api/items/:id — detail with related records (two postgres.query.run nodes)
 
 ```
 | trigger.webhook --route /api/programmes/:unit_id --method GET
-| pg.query.run --credential my-pg --param "1={{ input.webhook.params.unit_id }}" \
+| postgres.query.run --credential my-pg --param "1={{ input.webhook.params.unit_id }}" \
     -- "SELECT unit_id::text, code, title FROM academic.academic_unit WHERE unit_id = $1::uuid"
 | javascript.script.run -- "const prog = input.query.rows[0]; return prog;"
-| pg.query.run --credential my-pg --param "1={{ input.script.unit_id }}" \
+| postgres.query.run --credential my-pg --param "1={{ input.script.unit_id }}" \
     -- "SELECT p.fullname, l.academic_rank, st.position FROM academic.lecturer l JOIN academic.staff st ON st.staff_id = l.staff_id JOIN app.player p ON p.player_id = st.player_id WHERE st.unit_id = $1::uuid AND l.is_active = true ORDER BY p.fullname"
 | javascript.script.run -- "return { ok: true, data: { ...ctx.nodes['n2'].script, lecturers: input.query.rows } }"
 | web.response.send --body "{{ input.script }}"
 ```
 
-Note: each `pg.query.run` REPLACES `input` with `{ query: { rows: [...] } }` — there is no
+Note: each `postgres.query.run` REPLACES `input` with `{ query: { rows: [...] } }` — there is no
 `input._prev`. To reach an earlier node's output after later nodes have
 replaced the payload, use `ctx.nodes['<node id>']` in a script (pipe-mode node
 ids are `n0`, `n1`, … in source order — the first script above is `n2`) or
@@ -86,7 +86,7 @@ JSON body fields sit under `input.webhook.body` right after the trigger
 | trigger.webhook --route /api/posts --method POST
 | logic.if --expr "input.webhook.body.title && input.webhook.body.body"
 (false pin → `web.response.send --status 400`; see **Answering with a status**)
-| pg.query.run --credential my-pg --write --param "1={{ $trigger.body.title }}" --param "2={{ $trigger.body.body }}" --param "3={{ $trigger.body.author_id }}" \
+| postgres.query.run --credential my-pg --write --param "1={{ $trigger.body.title }}" --param "2={{ $trigger.body.body }}" --param "3={{ $trigger.body.author_id }}" \
     -- "INSERT INTO posts (title, body, author_id, created_at) VALUES ($1, $2, $3, now()) RETURNING id, title"
 | javascript.script.run -- "return { ok: true, data: input.query.rows?.[0] }"
 | web.response.send --body "{{ input.script }}"
@@ -98,7 +98,7 @@ Combine path param and body fields with `--param`:
 
 ```
 | trigger.webhook --route /api/posts/:id --method PUT
-| pg.query.run --credential my-pg --write --param "1={{ input.webhook.body.title }}" --param "2={{ input.webhook.body.body }}" --param "3={{ input.webhook.params.id }}" \
+| postgres.query.run --credential my-pg --write --param "1={{ input.webhook.body.title }}" --param "2={{ input.webhook.body.body }}" --param "3={{ input.webhook.params.id }}" \
     -- "UPDATE posts SET title = $1, body = $2, updated_at = now() WHERE id = $3 RETURNING id, title"
 | javascript.script.run -- "return { ok: true, data: input.query.rows[0] };"
 | web.response.send --body "{{ input.script }}"
@@ -109,7 +109,7 @@ Combine path param and body fields with `--param`:
 
 ```
 | trigger.webhook --route /api/posts/:id --method DELETE
-| pg.query.run --credential my-pg --write --param "1={{ input.webhook.params.id }}" \
+| postgres.query.run --credential my-pg --write --param "1={{ input.webhook.params.id }}" \
     -- "DELETE FROM posts WHERE id = $1 RETURNING id"
 | javascript.script.run -- "return { ok: true, deleted: input.query.rows?.[0]?.id ?? null }"
 | web.response.send --body "{{ input.script }}"
@@ -134,7 +134,7 @@ A script cannot set the response. It returns a value; the graph decides what
 happens next. To answer 404, branch and let `web.response.send` answer:
 
 ```
-[find]  pg.query.run --credential my-pg --param "1={{ input.webhook.params.id }}" -- "SELECT …"
+[find]  postgres.query.run --credential my-pg --param "1={{ input.webhook.params.id }}" -- "SELECT …"
 [found] logic.if --expr "input.query.rows && input.query.rows.length > 0"
 [ok]    web.response.send --body "{{ { ok: true, data: input.query.rows[0] } }}"
 [gone]  web.response.send --status 404 --body "{{ { ok: false, error: 'not found' } }}"
@@ -152,7 +152,7 @@ in a payload would not be.
 ## Nodes Used
 
 - `trigger.webhook` — HTTP endpoints; path params in `input.webhook.params.<name>`, user-submitted data (JSON, form-urlencoded, multipart text fields) under `input.webhook.body.<name>`
-- `pg.query.run --credential <id>` — parameterized SQL; `--param "1={{ input.webhook.path }}"` (one placeholder) or repeat `--param` for several, plus `--write` for INSERT/UPDATE/DELETE
+- `postgres.query.run --credential <id>` — parameterized SQL; `--param "1={{ input.webhook.path }}"` (one placeholder) or repeat `--param` for several, plus `--write` for INSERT/UPDATE/DELETE
 - `javascript.script.run` (TypeScript: `typescript.script.run`) — validation, 404 guard, response shaping, chaining multiple queries; its answer sits under `script`, the rest of the payload is kept, so a terminal script needs an explicit `web.response.send --body "{{ input.script }}"` to answer cleanly
 
 > A script cannot set the response. It returns a value; the graph decides what

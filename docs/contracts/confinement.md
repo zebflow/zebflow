@@ -125,7 +125,7 @@ than an omission:
   descends with the dispatch instead of being replaced by it, so a bundle cannot
   widen its own list by composing a more permissive one.
 - **A network node whose destination never reaches a guard as a URL is refused,
-  not allowed.** `ai.text.generate`, `pg.query.run`, `table.query.run`,
+  not allowed.** `ai.text.generate`, `postgres.query.run`, `table.query.run`,
   `ws.message.send --connection` and `trigger.socket` reach hosts that come from a
   credential or a project connection, which the egress guard never sees. Inside
   any bundle they fail with `FW_EGRESS_UNCHECKED_NODE`. The set is derived from
@@ -139,7 +139,7 @@ than an omission:
   much is deliberate and temporary. What does *not* follow from it is a weaker
   bundle: the refusal above runs for every bundle-provided node whether its
   bundle declared a host or not, so declaring nothing is not a way to obtain
-  `pg.query.run`. Only the host allowlist is affected by an empty list, and an
+  `postgres.query.run`. Only the host allowlist is affected by an empty list, and an
   empty allowlist is the one thing an author gains nothing by choosing.
 - **`javascript.script.run` and `typescript.script.run` answer to the sandbox actually in force.** The Deno sandbox
   denies `fetch` as shipped, so a script reaches nothing a host guard would need
@@ -179,9 +179,9 @@ reached through. A script's return value becomes the node's output payload and
 is never read as a call.
 
 So the flag prevented nothing, and where it read `true` it asserted something
-false. `pg.query.run` and `http.response.fetch` — the two nodes with the longest reach
+false. `postgres.query.run` and `http.response.fetch` — the two nodes with the longest reach
 — declared `true`, which rendered a "javascript.script.run access" badge in the node
-catalog and listed `pg.query.run({...})` and `http.response.fetch({...})` as built-ins
+catalog and listed `postgres.query.run({...})` and `http.response.fetch({...})` as built-ins
 in the `javascript.script.run` editor's own sidebar. Every declaration is now `false` with no
 bridge, both false surfaces are gone, and the field's documentation says it
 grants and restricts nothing.

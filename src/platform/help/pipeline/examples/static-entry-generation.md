@@ -103,7 +103,7 @@ This is a more realistic content-backed version:
 
 ```zf
 | trigger.function --description "Generate the static page for one content entry" --argument "entry_id:string!" "Entry UUID"
-| pg.query.run --credential content-db --param "1={{ input.function.entry_id }}" -- "
+| postgres.query.run --credential content-db --param "1={{ input.function.entry_id }}" -- "
 SELECT
   e.entry_id::text AS entry_id,
   e.slug AS entry_slug,

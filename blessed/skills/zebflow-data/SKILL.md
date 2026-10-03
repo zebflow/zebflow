@@ -16,7 +16,7 @@ query nodes in `pipeline/nodes`.
 ## Discover before you write
 
 1. `connection_list` — slugs and kinds. Slugs are for `connection_describe`;
-   `--credential` on `pg.query.run` takes a **credential id** from `credential_list`.
+   `--credential` on `postgres.query.run` takes a **credential id** from `credential_list`.
 2. `connection_describe slug=default-multimodel` (`scope=tables`, then
    `table=<name>` for columns). Never invent a table or a column: an unknown
    name in Sekejap fails the node at request time, not at register time.
@@ -52,7 +52,7 @@ query nodes in `pipeline/nodes`.
 | sekejap.query.run --param "1={{ $trigger.params.slug }}" -- "SELECT id, title, body_json FROM posts WHERE slug = $1"
 | sekejap.query.run --param "1={{ $trigger.body.title }}" --param "2={{ $trigger.body.slug }}" --write -- "INSERT INTO posts (title, slug) VALUES ($1, $2)"
 | sqlite.query.run --param "1={{ $trigger.body.email }}" -- "SELECT * FROM users WHERE email = ?1"
-| pg.query.run --credential pg_main --param "1={{ $trigger.auth.sub }}" -- "SELECT * FROM accounts WHERE id = $1"
+| postgres.query.run --credential pg_main --param "1={{ $trigger.auth.sub }}" -- "SELECT * FROM accounts WHERE id = $1"
 ```
 
 - SQL in the body, values in `--param` (repeated, one key each); a whole

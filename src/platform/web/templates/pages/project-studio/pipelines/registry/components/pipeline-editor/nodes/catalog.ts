@@ -14,7 +14,7 @@ const NODE_KIND_COLORS: Record<string, string> = {
   "sekejap.query.run": "#0f766e",
   "table.data.convert": "#0f766e",
   "table.query.run": "#0f766e",
-  "pg.query.run": "#7c3aed",
+  "postgres.query.run": "#7c3aed",
   "n.web.render": "#be185d",
   "web.site.generate": "#c2410c",
   "ai.text.generate": "#4338ca",
@@ -34,10 +34,10 @@ const NODE_KIND_COLORS: Record<string, string> = {
   "trigger.function": "#166534",
   "function.result.call": "#1e40af",
   "web.response.send": "#9d174d",
-  "ms.layer.publish": "#0f766e",
-  "ms.layer.unpublish": "#0f766e",
-  "ms.layer.get": "#0f766e",
-  "ms.layer.list": "#0f766e",
+  "mapserver.layer.publish": "#0f766e",
+  "mapserver.layer.unpublish": "#0f766e",
+  "mapserver.layer.get": "#0f766e",
+  "mapserver.layer.list": "#0f766e",
   "fs.folder.list": "#0c4a6e",
   "fs.file.head": "#0c4a6e",
   "fs.file.get": "#0c4a6e",
@@ -94,11 +94,11 @@ export function categoryForNodeKind(kind: string): string {
   const canonical = canonicalNodeKind(kind);
   if (canonical.startsWith("trigger.")) return "trigger";
   if (canonical.startsWith("logic.") || canonical.startsWith("function.") || canonical.startsWith("ai.")) return "logic";
-  if (canonical.startsWith("ms.")) return "data";
+  if (canonical.startsWith("mapserver.")) return "data";
   if (canonical.startsWith("fs.")) return "files";
   if (canonical.startsWith("auth.") || canonical.startsWith("crypto.")) return "security";
   if (canonical.startsWith("web.") || canonical.startsWith("ws.") || canonical.startsWith("http.") || canonical.startsWith("browser.")) return "web";
-  if (canonical.startsWith("geo.") || canonical.startsWith("kv.") || canonical.startsWith("mem.") || canonical.startsWith("pg.") || canonical.startsWith("sqlite.") || canonical.startsWith("sekejap.") || canonical.startsWith("table.")) return "data";
+  if (canonical.startsWith("geo.") || canonical.startsWith("kv.") || canonical.startsWith("mem.") || canonical.startsWith("postgres.") || canonical.startsWith("sqlite.") || canonical.startsWith("sekejap.") || canonical.startsWith("table.")) return "data";
   // Installed nodes carry their own ui_category. This fallback only runs when a
   // bundle left it empty, and the kind never encodes the implementation.
   if (canonical.startsWith("x.")) return "installed";

@@ -1,5 +1,5 @@
-//! `ms.*` — the project MapServer: `ms.layer.publish`, `ms.layer.unpublish`, `ms.layer.get`,
-//! `ms.layer.list`. One file, four operations on the same layer registry.
+//! `mapserver.*` — the project MapServer: `mapserver.layer.publish`, `mapserver.layer.unpublish`, `mapserver.layer.get`,
+//! `mapserver.layer.list`. One file, four operations on the same layer registry.
 
 use crate::pipeline::NodeDefinition;
 

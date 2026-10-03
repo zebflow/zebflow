@@ -41,7 +41,7 @@ const ROADS: &str = r#"{"type":"FeatureCollection","features":[
 fn publish_flags_read_in_their_0_11_words() {
     let graph = crate::platform::shell::parser::build_pipeline_graph(
         "t",
-        "[a] trigger.manual\n[b] ms.layer.publish --name roads --route roads --from data/roads.geojson --parse geojson --field name --field lanes --max-items 200 --min-zoom 4 --max-zoom 12 --stroke-width 2.5\n[a] -> [b]\n",
+        "[a] trigger.manual\n[b] mapserver.layer.publish --name roads --route roads --from data/roads.geojson --parse geojson --field name --field lanes --max-items 200 --min-zoom 4 --max-zoom 12 --stroke-width 2.5\n[a] -> [b]\n",
     )
     .expect("graph");
     let config: Config = serde_json::from_value(graph.nodes[1].config.clone()).expect("config");

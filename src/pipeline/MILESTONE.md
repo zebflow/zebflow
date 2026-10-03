@@ -27,7 +27,7 @@ Update for Milestone 1 - 1
     - update node structure so it can store like i said before
         - description that will automatically be used by ui
         - input output format
-        - is available for node script or not, for ex. pg.query.run, should be able from javascript.script.run 
+        - is available for node script or not, for ex. postgres.query.run, should be able from javascript.script.run 
         - is available n registered as AI tool or not, if yes, define the tool here too in node description
 - its very important as we talk this before, javascript.script.run is use sandboxed deno from language mod, and it works by injecting it with external script, so deno can access the variable, and also can access certain nodes that is javascript.script.run available
 

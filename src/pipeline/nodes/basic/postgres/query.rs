@@ -1,8 +1,8 @@
-//! `pg.query.run` — SQL on a PostgreSQL database named by a stored credential.
+//! `postgres.query.run` — SQL on a PostgreSQL database named by a stored credential.
 //!
 //! Every run is one transaction. Without `--write` it is `SET TRANSACTION
 //! READ ONLY`, so Postgres itself refuses a statement that writes (SQLSTATE
-//! 25006) and the node answers `FW_NODE_PG_QUERY_RUN_WRITE`; with `--write`
+//! 25006) and the node answers `FW_NODE_POSTGRES_QUERY_RUN_WRITE`; with `--write`
 //! it commits. Values bind as `$1, $2, …` from `--param 1=… 2=…`, typed: a
 //! whole `{{ }}` keeps its JSON type. The answer is one key, `query`
 //! (`shared/query.rs`).
@@ -24,29 +24,29 @@ use crate::pipeline::{
 };
 use crate::platform::services::CredentialService;
 
-pub const NODE_KIND: &str = "pg.query.run";
+pub const NODE_KIND: &str = "postgres.query.run";
 pub const INPUT_PIN_IN: &str = "in";
 pub const OUTPUT_PIN_OUT: &str = "out";
 
 /// The statement failed on the server, or the connection did.
-pub const CODE: &str = "FW_NODE_PG_QUERY_RUN";
+pub const CODE: &str = "FW_NODE_POSTGRES_QUERY_RUN";
 /// A flag the author set wrong.
-pub const CONFIG_CODE: &str = "FW_NODE_PG_QUERY_RUN_CONFIG";
+pub const CONFIG_CODE: &str = "FW_NODE_POSTGRES_QUERY_RUN_CONFIG";
 /// The credential is missing, not a postgres one, or incomplete.
-const CREDENTIAL_CODE: &str = "FW_NODE_PG_QUERY_RUN_CREDENTIAL";
+const CREDENTIAL_CODE: &str = "FW_NODE_POSTGRES_QUERY_RUN_CREDENTIAL";
 /// The server could not be reached.
-const CONNECT_CODE: &str = "FW_NODE_PG_QUERY_RUN_CONNECT";
+const CONNECT_CODE: &str = "FW_NODE_POSTGRES_QUERY_RUN_CONNECT";
 /// `--param` keys that are not `1..n`.
-const PARAM_CODE: &str = "FW_NODE_PG_QUERY_RUN_PARAM";
+const PARAM_CODE: &str = "FW_NODE_POSTGRES_QUERY_RUN_PARAM";
 /// `--limit` outside `1..=5000`.
-const LIMIT_CODE: &str = "FW_NODE_PG_QUERY_RUN_LIMIT";
+const LIMIT_CODE: &str = "FW_NODE_POSTGRES_QUERY_RUN_LIMIT";
 /// A write without `--write`, refused by the read-only transaction.
-pub const WRITE_CODE: &str = "FW_NODE_PG_QUERY_RUN_WRITE";
+pub const WRITE_CODE: &str = "FW_NODE_POSTGRES_QUERY_RUN_WRITE";
 
 /// SQLSTATE `read_only_sql_transaction`.
 const READ_ONLY_SQLSTATE: &str = "25006";
 
-/// Unified node-definition metadata for `pg.query.run`.
+/// Unified node-definition metadata for `postgres.query.run`.
 pub fn definition() -> NodeDefinition {
     NodeDefinition {
         kind: NODE_KIND.to_string(),
@@ -136,9 +136,9 @@ pub fn definition() -> NodeDefinition {
             }),
         },
         examples: vec![
-            NodeExample::dsl("Read with a bound value", r#"pg.query.run --credential pg_main --param "1={{ $trigger.auth.sub }}" -- "SELECT id, email FROM accounts WHERE id = $1""#)
+            NodeExample::dsl("Read with a bound value", r#"postgres.query.run --credential pg_main --param "1={{ $trigger.auth.sub }}" -- "SELECT id, email FROM accounts WHERE id = $1""#)
                 .output(json!({ "query": { "rows": [{ "id": 7, "email": "a@example.com" }], "columns": ["id", "email"], "row_count": 1, "truncated": false } })),
-            NodeExample::dsl("Insert and get the id back", r#"pg.query.run --credential pg_main --write --param "1={{ $trigger.body.email }}" -- "INSERT INTO accounts (email) VALUES ($1) RETURNING id""#)
+            NodeExample::dsl("Insert and get the id back", r#"postgres.query.run --credential pg_main --write --param "1={{ $trigger.body.email }}" -- "INSERT INTO accounts (email) VALUES ($1) RETURNING id""#)
                 .output(json!({ "query": { "rows": [{ "id": 8 }], "columns": ["id"], "row_count": 1, "truncated": false, "rows_affected": 1 } })),
         ],
         ..Default::default()
@@ -449,7 +449,7 @@ fn row_cell_to_json(row: &PgRow, idx: usize) -> Value {
     // A type none of the above decode: say so once in the log rather than
     // hand the page a Null that looks like data.
     eprintln!(
-        "[pg.query.run] column {} has a type this node does not decode ({}); cast it in SQL (::text, to_json)",
+        "[postgres.query.run] column {} has a type this node does not decode ({}); cast it in SQL (::text, to_json)",
         row.columns()[idx].name(),
         row.columns()[idx].type_info()
     );

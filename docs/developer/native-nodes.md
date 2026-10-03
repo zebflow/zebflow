@@ -7,7 +7,7 @@ in the core runtime or needs close access to a trusted platform service.
 
 One folder per DSL family under `src/pipeline/nodes/basic/`, one file per
 node, the path mirroring the kind: `fs.file.put` is `basic/fs/put.rs`,
-`kv.entry.get` is `basic/kv/get.rs`, `ms.layer.publish` is `basic/ms/crud.rs` (one
+`kv.entry.get` is `basic/kv/get.rs`, `mapserver.layer.publish` is `basic/mapserver/crud.rs` (one
 file may carry several operations of one family, `crypto.password.hash` and
 `crypto.password.verify` are `basic/crypto/password.rs`). A family with one
 node and no submodules keeps that node in its folder's `mod.rs` (`concept`,

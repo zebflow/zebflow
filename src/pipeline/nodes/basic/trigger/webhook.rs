@@ -8,7 +8,7 @@
 //!
 //! ```text
 //! | trigger.webhook --route /blog --method GET
-//! | pg.query.run --credential main-db -- "SELECT ..."
+//! | postgres.query.run --credential main-db -- "SELECT ..."
 //! | web.response.send --template pages/blog-home.tsx
 //! ```
 //!

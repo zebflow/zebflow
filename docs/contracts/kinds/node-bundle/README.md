@@ -537,7 +537,7 @@ Four limits, stated rather than implied:
   external calls" — remains what an author means by it, not what the runtime can
   prove they meant.
 - A node that reaches the network through a destination the egress guard never
-  sees as a URL — `ai.text.generate`, `pg.query.run`, `table.query.run`,
+  sees as a URL — `ai.text.generate`, `postgres.query.run`, `table.query.run`,
   `ws.message.send --connection`, `trigger.socket` — is **refused** inside any bundle,
   rather than allowed through unchecked. A bundle needing one of those cannot be
   confined by a host list today, and that is true whether it declared hosts or

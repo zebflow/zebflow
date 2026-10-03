@@ -234,7 +234,7 @@ struct PipelineRegisterParams {
     #[schemars(with = "String")]
     description: Option<String>,
     /// Pipeline body: pipe-chained nodes starting with |.
-    /// Example: "| trigger.webhook --route /blog --method GET | pg.query.run --credential main-db -- \"SELECT * FROM posts\""
+    /// Example: "| trigger.webhook --route /blog --method GET | postgres.query.run --credential main-db -- \"SELECT * FROM posts\""
     /// Use help("pipeline/dsl") for the full node catalog and syntax.
     body: String,
 }
@@ -268,7 +268,7 @@ struct PipelinePatchParams {
     /// Example: "--credential new-db --path /updated"
     #[schemars(with = "String")]
     flags: Option<String>,
-    /// Body content for the node (SQL for pg.query.run, JS source for script nodes).
+    /// Body content for the node (SQL for postgres.query.run, JS source for script nodes).
     #[schemars(with = "String")]
     body: Option<String>,
 }
@@ -310,7 +310,7 @@ struct PipelineExecuteParams {
 #[derive(serde::Deserialize, JsonSchema)]
 struct PipelineRunParams {
     /// Pipe-chained node body to execute inline — NOT saved, NOT logged.
-    /// Starts with | followed by nodes: "| pg.query.run --credential main-db -- \"SELECT count(*) FROM users\""
+    /// Starts with | followed by nodes: "| postgres.query.run --credential main-db -- \"SELECT count(*) FROM users\""
     /// Auto-prepends trigger.manual if no trigger node is specified.
     /// Use this for testing queries, one-off scripts, or data exploration.
     body: String,
@@ -729,8 +729,8 @@ impl ZebflowMcpHandler {
 
     #[tool(
         description = "Patch one node in a saved pipeline without rewriting the full graph. \
-                       node_id accepts: opaque ID (e.g. 'n0'), node kind (e.g. 'trigger.webhook', 'pg.query.run'), \
-                       or kind+index (e.g. 'pg.query.run[1]') when multiple nodes share the same kind. \
+                       node_id accepts: opaque ID (e.g. 'n0'), node kind (e.g. 'trigger.webhook', 'postgres.query.run'), \
+                       or kind+index (e.g. 'postgres.query.run[1]') when multiple nodes share the same kind. \
                        Pipeline status becomes stale after patching — call pipeline_activate to make it live again."
     )]
     async fn pipeline_patch(
@@ -848,7 +848,7 @@ impl ZebflowMcpHandler {
     #[tool(
         description = "Run a pipe-chained node body EPHEMERALLY — not saved, not logged, no hit recording. \
                        Use this to test queries, explore data, or prototype before registering. \
-                       Example body: '| pg.query.run --credential main-db -- \"SELECT count(*) FROM users\"'. \
+                       Example body: '| postgres.query.run --credential main-db -- \"SELECT count(*) FROM users\"'. \
                        Auto-prepends trigger.manual if no trigger node specified."
     )]
     async fn pipeline_run(

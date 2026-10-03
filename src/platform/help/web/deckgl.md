@@ -618,7 +618,7 @@ inst.setViewState({
 
 ```
 | trigger.webhook --route /fleet --method GET
-| pg.query.run --credential main-db -- "SELECT id, name, ST_AsGeoJSON(geom)::json as geometry FROM vehicles"
+| postgres.query.run --credential main-db -- "SELECT id, name, ST_AsGeoJSON(geom)::json as geometry FROM vehicles"
 | web.response.send --template pages/fleet-map.tsx
 ```
 
@@ -626,7 +626,7 @@ inst.setViewState({
 
 ```
 | trigger.webhook --route /api/locations --method GET
-| pg.query.run --credential main-db -- "SELECT id, name, longitude, latitude, value FROM locations"
+| postgres.query.run --credential main-db -- "SELECT id, name, longitude, latitude, value FROM locations"
 | web.response.send
 ```
 
@@ -641,7 +641,7 @@ inst.setViewState({
 
 ```
 | trigger.webhook --route /api/incidents --method GET
-| pg.query.run --credential main-db -- "SELECT longitude as lon, latitude as lat, severity FROM incidents WHERE created_at > NOW() - INTERVAL '7 days'"
+| postgres.query.run --credential main-db -- "SELECT longitude as lon, latitude as lat, severity FROM incidents WHERE created_at > NOW() - INTERVAL '7 days'"
 | web.response.send
 ```
 

@@ -10,11 +10,11 @@ Authoritative code and docs:
 - `src/mapserver/`
 - `src/pipeline/nodes/basic/sekejap/`
 - `src/pipeline/nodes/basic/sqlite/`
-- `src/pipeline/nodes/basic/pg/query.rs`
+- `src/pipeline/nodes/basic/postgres/query.rs`
 - `src/pipeline/nodes/basic/fs/`
 - `src/pipeline/nodes/basic/table/`
 - `src/pipeline/nodes/basic/geo/`
-- `src/pipeline/nodes/basic/ms/crud.rs`
+- `src/pipeline/nodes/basic/mapserver/crud.rs`
 - `src/platform/help/db/`
 - `src/platform/help/guide/mapserver.md`
 

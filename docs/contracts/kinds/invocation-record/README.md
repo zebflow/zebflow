@@ -146,7 +146,7 @@ from swallowing distinct faults that share a phrasing.
 
 ```json
 {
-  "signature": "modules/events/pages/event.zf.json · n2 · FW_NODE_PG_QUERY · column \"?\" does not exist",
+  "signature": "modules/events/pages/event.zf.json · n2 · FW_NODE_POSTGRES_QUERY · column \"?\" does not exist",
   "count": 1043,
   "first_seen": 1789430000,
   "last_seen": 1789516400,

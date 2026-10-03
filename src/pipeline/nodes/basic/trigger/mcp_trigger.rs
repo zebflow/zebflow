@@ -36,7 +36,7 @@
 //! **Database lookup tool:**
 //! ```text
 //! | trigger.mcp --name lookup_user --description "Look up user by email" --params email:string
-//! | pg.query.run --credential main-db --param "1={{ input.mcp.arguments.email }}" -- "SELECT * FROM users WHERE email = $1"
+//! | postgres.query.run --credential main-db --param "1={{ input.mcp.arguments.email }}" -- "SELECT * FROM users WHERE email = $1"
 //! | web.response.send
 //! ```
 

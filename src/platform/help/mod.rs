@@ -76,7 +76,7 @@ pub fn official_nodes_index_markdown() -> String {
         for d in kinds {
             let short = crate::platform::shell::parser::short_kind(&d.kind);
             let first = d.description.split(". ").next().unwrap_or(&d.description).trim().trim_end_matches('.');
-            s.push_str(&format!("- `{short}` — {} — {}\n", d.title.trim(), clip_words(first, 120)));
+            s.push_str(&format!("- `{short}` — {} — {}\n", d.title.trim(), clip_words(first, 110)));
         }
     }
     s

@@ -1,4 +1,4 @@
-//! `ms.layer.*` — the project's map layers.
+//! `mapserver.layer.*` — the project's map layers.
 //!
 //! The layer registry (`data/store/mapserver/{instance}.layers.json`) holds
 //! one record per layer; a published layer answers on
@@ -6,10 +6,10 @@
 //!
 //! | Node                 | Does                                   | Answers                       |
 //! |----------------------|----------------------------------------|-------------------------------|
-//! | `ms.layer.publish`   | upserts a layer by `--name`            | `layer: { …record, serving }` |
-//! | `ms.layer.get`       | reads one layer by `--name`            | `layer: { found, …record }`   |
-//! | `ms.layer.list`      | every layer                            | `layer: { items, count }`     |
-//! | `ms.layer.unpublish` | removes a layer by `--name`            | `layer: { name, removed }`    |
+//! | `mapserver.layer.publish`   | upserts a layer by `--name`            | `layer: { …record, serving }` |
+//! | `mapserver.layer.get`       | reads one layer by `--name`            | `layer: { found, …record }`   |
+//! | `mapserver.layer.list`      | every layer                            | `layer: { items, count }`     |
+//! | `mapserver.layer.unpublish` | removes a layer by `--name`            | `layer: { name, removed }`    |
 //!
 //! Publishing a GeoJSON or GeoParquet source builds an optimized GeoParquet
 //! copy (bbox columns, Hilbert order, small row groups) under
@@ -40,24 +40,24 @@ use crate::pipeline::{
 };
 use crate::platform::services::PlatformService;
 
-pub const PUBLISH_KIND: &str = "ms.layer.publish";
-pub const UNPUBLISH_KIND: &str = "ms.layer.unpublish";
-pub const GET_KIND: &str = "ms.layer.get";
-pub const LIST_KIND: &str = "ms.layer.list";
+pub const PUBLISH_KIND: &str = "mapserver.layer.publish";
+pub const UNPUBLISH_KIND: &str = "mapserver.layer.unpublish";
+pub const GET_KIND: &str = "mapserver.layer.get";
+pub const LIST_KIND: &str = "mapserver.layer.list";
 
 /// Publishing failed: the source, the optimized copy or the registry.
-pub const PUBLISH_CODE: &str = "FW_NODE_MS_LAYER_PUBLISH";
+pub const PUBLISH_CODE: &str = "FW_NODE_MAPSERVER_LAYER_PUBLISH";
 /// A publish flag the author set wrong.
-pub const PUBLISH_CONFIG_CODE: &str = "FW_NODE_MS_LAYER_PUBLISH_CONFIG";
+pub const PUBLISH_CONFIG_CODE: &str = "FW_NODE_MAPSERVER_LAYER_PUBLISH_CONFIG";
 /// `--style` that does not parse.
-const PUBLISH_STYLE_CODE: &str = "FW_NODE_MS_LAYER_PUBLISH_STYLE";
+const PUBLISH_STYLE_CODE: &str = "FW_NODE_MAPSERVER_LAYER_PUBLISH_STYLE";
 /// `--filter` that does not parse.
-const PUBLISH_FILTER_CODE: &str = "FW_NODE_MS_LAYER_PUBLISH_FILTER";
-pub const UNPUBLISH_CODE: &str = "FW_NODE_MS_LAYER_UNPUBLISH";
-pub const UNPUBLISH_CONFIG_CODE: &str = "FW_NODE_MS_LAYER_UNPUBLISH_CONFIG";
-pub const GET_CODE: &str = "FW_NODE_MS_LAYER_GET";
-pub const GET_CONFIG_CODE: &str = "FW_NODE_MS_LAYER_GET_CONFIG";
-pub const LIST_CODE: &str = "FW_NODE_MS_LAYER_LIST";
+const PUBLISH_FILTER_CODE: &str = "FW_NODE_MAPSERVER_LAYER_PUBLISH_FILTER";
+pub const UNPUBLISH_CODE: &str = "FW_NODE_MAPSERVER_LAYER_UNPUBLISH";
+pub const UNPUBLISH_CONFIG_CODE: &str = "FW_NODE_MAPSERVER_LAYER_UNPUBLISH_CONFIG";
+pub const GET_CODE: &str = "FW_NODE_MAPSERVER_LAYER_GET";
+pub const GET_CONFIG_CODE: &str = "FW_NODE_MAPSERVER_LAYER_GET_CONFIG";
+pub const LIST_CODE: &str = "FW_NODE_MAPSERVER_LAYER_LIST";
 
 const INPUT_PIN_IN: &str = "in";
 const OUTPUT_PIN_OUT: &str = "out";
@@ -537,7 +537,7 @@ pub fn publish_definition() -> NodeDefinition {
         ],
         ai_tool: Default::default(),
         examples: vec![
-            NodeExample::dsl("Publish a GeoParquet layer", "ms.layer.publish --name suburbs --route suburbs --from datasets/suburbs.parquet --field name --field postcode --min-zoom 8 --max-zoom 14")
+            NodeExample::dsl("Publish a GeoParquet layer", "mapserver.layer.publish --name suburbs --route suburbs --from datasets/suburbs.parquet --field name --field postcode --min-zoom 8 --max-zoom 14")
                 .output(json!({ "layer": {
                     "name": "suburbs", "route": "suburbs", "store": "local", "source": "mapserver/.optimized/suburbs.spatial.parquet",
                     "source_kind": "geoparquet", "min_zoom": 8, "max_zoom": 14, "bbox_required": true, "max_items": 1000,
@@ -546,7 +546,7 @@ pub fn publish_definition() -> NodeDefinition {
                     "optimization": { "applied": true, "source_format": "parquet", "rows": 312 }
                 } }))
                 .note("A page loads it with `zeb/deckgl` from `/ms/{owner}/{project}/suburbs` (help topic `guide/mapserver`)."),
-            NodeExample::dsl("A layer a function pipeline draws", "ms.layer.publish --name live --route live --function sensors/positions --ttl 30s --bbox-optional"),
+            NodeExample::dsl("A layer a function pipeline draws", "mapserver.layer.publish --name live --route live --function sensors/positions --ttl 30s --bbox-optional"),
         ],
         ..Default::default()
     }
@@ -573,7 +573,7 @@ pub fn unpublish_definition() -> NodeDefinition {
         layout: vec![LayoutItem::Field("name".to_string())],
         ai_tool: Default::default(),
         examples: vec![
-            NodeExample::dsl("Retire a layer", "ms.layer.unpublish --name suburbs").output(json!({ "layer": { "name": "suburbs", "removed": true } })),
+            NodeExample::dsl("Retire a layer", "mapserver.layer.unpublish --name suburbs").output(json!({ "layer": { "name": "suburbs", "removed": true } })),
         ],
         ..Default::default()
     }
@@ -588,7 +588,7 @@ pub fn get_definition() -> NodeDefinition {
         title: "MS Get".to_string(),
         description: "Read one published map layer's registry record by `--name`: its route, source, zoom range, fields, style and cache. Adds \
             `layer: { found: true, name, route, store, source, source_kind, … }`, or `layer: { found: false, name }` when the name is not \
-            published — branch on `input.layer.found` before `ms.layer.publish` to tell a create from an update."
+            published — branch on `input.layer.found` before `mapserver.layer.publish` to tell a create from an update."
             .to_string(),
         input_schema: json!({ "type": "object" }),
         output_schema: answer_schema(props),
@@ -602,7 +602,7 @@ pub fn get_definition() -> NodeDefinition {
         layout: vec![LayoutItem::Field("name".to_string())],
         ai_tool: Default::default(),
         examples: vec![
-            NodeExample::dsl("Show a layer's settings", "ms.layer.get --name suburbs")
+            NodeExample::dsl("Show a layer's settings", "mapserver.layer.get --name suburbs")
                 .output(json!({ "layer": { "found": true, "name": "suburbs", "route": "suburbs", "source_kind": "geoparquet", "min_zoom": 8, "max_zoom": 14 } })),
         ],
         ..Default::default()
@@ -614,7 +614,7 @@ pub fn list_definition() -> NodeDefinition {
         kind: LIST_KIND.to_string(),
         capabilities: vec![NodeCapability::Filesystem],
         title: "MS List".to_string(),
-        description: "List every map layer this project has published, each with the record `ms.layer.get` answers for one. No flags. Adds \
+        description: "List every map layer this project has published, each with the record `mapserver.layer.get` answers for one. No flags. Adds \
             `layer: { items, count }` — a page reads `input.layer.items`. This is the registry, not the file store: a GeoParquet file \
             nobody published is not in it."
             .to_string(),
@@ -630,7 +630,7 @@ pub fn list_definition() -> NodeDefinition {
         layout: vec![],
         ai_tool: Default::default(),
         examples: vec![
-            NodeExample::dsl("Layers for a map picker", "ms.layer.list")
+            NodeExample::dsl("Layers for a map picker", "mapserver.layer.list")
                 .output(json!({ "layer": { "items": [{ "name": "suburbs", "route": "suburbs" }], "count": 1 } })),
         ],
         ..Default::default()

@@ -1,4 +1,4 @@
-//! What the three database query nodes share — `pg.query.run`,
+//! What the three database query nodes share — `postgres.query.run`,
 //! `sqlite.query.run` and `sekejap.query.run` take one grammar
 //! (`node-conventions.md` §2 Selection, §6):
 //!

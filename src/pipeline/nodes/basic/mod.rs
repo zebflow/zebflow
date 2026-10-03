@@ -48,8 +48,8 @@ pub mod javascript;
 pub mod kv;
 pub mod logic;
 pub mod mail;
-pub mod ms;
-pub mod pg;
+pub mod mapserver;
+pub mod postgres;
 pub mod sekejap;
 pub mod sqlite;
 pub mod table;
@@ -74,8 +74,8 @@ fn family_definitions() -> Vec<NodeDefinition> {
     items.extend(kv::definitions());
     items.extend(logic::definitions());
     items.extend(mail::definitions());
-    items.extend(ms::definitions());
-    items.extend(pg::definitions());
+    items.extend(mapserver::definitions());
+    items.extend(postgres::definitions());
     items.extend(sekejap::definitions());
     items.extend(sqlite::definitions());
     items.extend(table::definitions());
@@ -139,7 +139,7 @@ fn ui_category_for_kind(kind: &str) -> (&'static str, &'static str) {
     if kind.starts_with("sqlite.") {
         return ("data.sqlite", "SQLite");
     }
-    if kind.starts_with("pg.") {
+    if kind.starts_with("postgres.") {
         return ("data.postgres", "Postgres");
     }
     if kind.starts_with("kv.") {
@@ -151,7 +151,7 @@ fn ui_category_for_kind(kind: &str) -> (&'static str, &'static str) {
     if kind.starts_with("geo.") {
         return ("data.geo", "Geo");
     }
-    if kind.starts_with("ms.") {
+    if kind.starts_with("mapserver.") {
         return ("data.mapserver", "MapServer");
     }
     if kind.starts_with("ai.") {

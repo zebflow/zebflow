@@ -186,7 +186,7 @@ pipeline_register
   file_rel_path=pages/blog-list.zf.json
   body="""
   | trigger.webhook --route /blog --method GET
-  | pg.query.run --credential main-db -- "
+  | postgres.query.run --credential main-db -- "
       SELECT id, slug, title, created_at
       FROM posts
       WHERE status = 'published'
@@ -204,7 +204,7 @@ pipeline_register
   file_rel_path=pages/blog-post.zf.json
   body="""
   | trigger.webhook --route /blog/post --method GET
-  | pg.query.run --credential main-db --param "1={{ input.webhook.query.slug }}" -- "
+  | postgres.query.run --credential main-db --param "1={{ input.webhook.query.slug }}" -- "
       SELECT id, slug, title, body, created_at
       FROM posts
       WHERE slug = $1
@@ -223,7 +223,7 @@ pipeline_register
   body="""
   | trigger.webhook --route /admin/posts --method GET \
       --auth jwt --credential session-key --role admin
-  | pg.query.run --credential main-db -- "
+  | postgres.query.run --credential main-db -- "
       SELECT id, slug, title, status, created_at
       FROM posts
       ORDER BY created_at DESC
@@ -240,7 +240,7 @@ pipeline_register
   body="""
   | trigger.webhook --route /admin/post --method GET \
       --auth jwt --credential session-key --role admin
-  | pg.query.run --credential main-db --param "1={{ input.webhook.query.slug }}" -- "
+  | postgres.query.run --credential main-db --param "1={{ input.webhook.query.slug }}" -- "
       SELECT id, slug, title, body, status
       FROM posts
       WHERE slug = $1
@@ -262,7 +262,7 @@ pipeline_register
       const { slug, title, body, status } = input.webhook.body
       return { slug, title, body, status: status || 'draft' }
     "
-  | pg.query.run --credential main-db --write --param "1={{ input.script.slug }}" --param "2={{ input.script.title }}" --param "3={{ input.script.body }}" --param "4={{ input.script.status }}" -- "
+  | postgres.query.run --credential main-db --write --param "1={{ input.script.slug }}" --param "2={{ input.script.title }}" --param "3={{ input.script.body }}" --param "4={{ input.script.status }}" -- "
       INSERT INTO posts (slug, title, body, status)
       VALUES ($1, $2, $3, $4)
       ON CONFLICT (slug) DO UPDATE
@@ -543,7 +543,7 @@ Pipeline 'pages/blog-list.zf.json' executed.
 }
 --- node trace (2 nodes, 8ms total) ---
   ✓  n0  (trigger.webhook)  0ms
-  ✓  n1  (pg.query.run)  8ms
+  ✓  n1  (postgres.query.run)  8ms
 ```
 
 If a node shows `✗`, inspect that node ID and fix before moving on.

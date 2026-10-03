@@ -1411,7 +1411,7 @@ TRUNCATE TABLE tags;
     }
 
     /// The findings the substring matcher got right are still produced, and now
-    /// for a reason: `pg.query.run` reads a store and `fs.file.put` writes files
+    /// for a reason: `postgres.query.run` reads a store and `fs.file.put` writes files
     /// because the catalog says so, not because their names contain `pg` and
     /// `file`.
     #[test]
@@ -1423,7 +1423,7 @@ TRUNCATE TABLE tags;
                 &[
                     "trigger.webhook",
                     "http.response.fetch",
-                    "pg.query.run",
+                    "postgres.query.run",
                     "fs.file.put",
                 ],
             )],
@@ -1431,7 +1431,7 @@ TRUNCATE TABLE tags;
             PackageReviewOptions::default(),
         );
 
-        assert!(review.database_effects.contains(&"pg.query.run".to_string()));
+        assert!(review.database_effects.contains(&"postgres.query.run".to_string()));
         assert!(review.filesystem_effects.contains(&"fs.file.put".to_string()));
         assert!(review.nodes_used.contains(&"http.response.fetch".to_string()));
         assert_eq!(review.risk_level, "high");

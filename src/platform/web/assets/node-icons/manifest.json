@@ -448,49 +448,49 @@
         "mail.message.send"
       ]
     },
-    "ms.layer.get": {
+    "mapserver.layer.get": {
       "label": "MSGET",
       "method": "direct-svg",
-      "path": "/assets/node-icons/zebflow/ms.layer.get.svg",
+      "path": "/assets/node-icons/zebflow/mapserver.layer.get.svg",
       "source_url": "",
       "supports": [
-        "ms.layer.get"
+        "mapserver.layer.get"
       ]
     },
-    "ms.layer.list": {
+    "mapserver.layer.list": {
       "label": "MSLS",
       "method": "direct-svg",
-      "path": "/assets/node-icons/zebflow/ms.layer.list.svg",
+      "path": "/assets/node-icons/zebflow/mapserver.layer.list.svg",
       "source_url": "",
       "supports": [
-        "ms.layer.list"
+        "mapserver.layer.list"
       ]
     },
-    "ms.layer.publish": {
+    "mapserver.layer.publish": {
       "label": "PUB",
       "method": "direct-svg",
-      "path": "/assets/node-icons/zebflow/ms.layer.publish.svg",
+      "path": "/assets/node-icons/zebflow/mapserver.layer.publish.svg",
       "source_url": "",
       "supports": [
-        "ms.layer.publish"
+        "mapserver.layer.publish"
       ]
     },
-    "ms.layer.unpublish": {
+    "mapserver.layer.unpublish": {
       "label": "UNPUB",
       "method": "direct-svg",
-      "path": "/assets/node-icons/zebflow/ms.layer.unpublish.svg",
+      "path": "/assets/node-icons/zebflow/mapserver.layer.unpublish.svg",
       "source_url": "",
       "supports": [
-        "ms.layer.unpublish"
+        "mapserver.layer.unpublish"
       ]
     },
-    "pg.query.run": {
+    "postgres.query.run": {
       "label": "PG",
       "method": "official-svg",
-      "path": "/assets/node-icons/zebflow/pg.query.run.svg",
+      "path": "/assets/node-icons/zebflow/postgres.query.run.svg",
       "source_url": "https://wiki.postgresql.org/wiki/File:PostgreSQL_logo.3colors.svg",
       "supports": [
-        "pg.query.run"
+        "postgres.query.run"
       ]
     },
     "javascript.script.run": {

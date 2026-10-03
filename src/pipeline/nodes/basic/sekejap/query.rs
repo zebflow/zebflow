@@ -258,7 +258,7 @@ fn with_ddl_hint(query: &str, message: String) -> String {
 }
 
 /// One object per row, keyed by column name. A duplicate column name keeps
-/// the last value, as pg.query.run does; alias in SQL when both are wanted.
+/// the last value, as postgres.query.run does; alias in SQL when both are wanted.
 fn rows_as_objects(
     columns: &[crate::platform::model::DbQueryColumn],
     rows: &[Vec<Value>],
@@ -292,7 +292,7 @@ mod row_shape_tests {
     }
 
     /// The store's positional rows become `input.query.rows[0].name`, as
-    /// pg.query.run and sqlite.query.run deliver them.
+    /// postgres.query.run and sqlite.query.run deliver them.
     #[test]
     fn rows_are_objects_keyed_by_column_name() {
         let columns = vec![

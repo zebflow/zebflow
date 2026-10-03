@@ -313,7 +313,7 @@ mod tests {
             ]
         }));
         let known = BTreeMap::from([(
-            "pg.query.run".to_string(),
+            "postgres.query.run".to_string(),
             BTreeSet::from([NodeCapability::Database, NodeCapability::Credential]),
         )]);
 
@@ -323,7 +323,7 @@ mod tests {
                 // The cycle is deliberate: outer names inner and inner names
                 // outer back.
                 "functions/outer.zf.json" => Some(graph(&["x.acme.inner"])),
-                "functions/inner.zf.json" => Some(graph(&["pg.query.run", "x.acme.outer"])),
+                "functions/inner.zf.json" => Some(graph(&["postgres.query.run", "x.acme.outer"])),
                 _ => None,
             },
             &known,

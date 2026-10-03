@@ -2870,7 +2870,7 @@ async fn hub_add_reviews_risks_and_respects_target_folders() {
   "nodes":[
     {"id":"wh","kind":"trigger.webhook","config":{"route":"/unsafe-public-hook"}},
     {"id":"http","kind":"http.response.fetch","config":{"url":"https://api.example.com/v1/items","credential":"secure-egress"}},
-    {"id":"pg","kind":"pg.query.run","config":{"credential":"pg-main"}},
+    {"id":"pg","kind":"postgres.query.run","config":{"credential":"pg-main"}},
     {"id":"fs","kind":"fs.file.put","config":{"path":"exports/out.json"}}
   ],
   "edges":[]}
@@ -2952,7 +2952,7 @@ async fn hub_add_reviews_risks_and_respects_target_folders() {
         review["review"]["database_effects"]
             .as_array()
             .expect("database effects")
-            .contains(&json!("pg.query.run"))
+            .contains(&json!("postgres.query.run"))
     );
     assert!(
         review["review"]["filesystem_effects"]

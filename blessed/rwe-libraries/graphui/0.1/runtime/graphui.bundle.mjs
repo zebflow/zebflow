@@ -23,7 +23,7 @@ export const DEFAULT_NODE_KIND_COLORS = {
   "http.response.fetch": "#7c2d12",
   "sekejap.query.run": "#0f766e",
   "n.sekejap.mutate": "#0f766e",
-  "pg.query.run": "#7c3aed",
+  "postgres.query.run": "#7c3aed",
   "n.web.render": "#be185d",
 };
 

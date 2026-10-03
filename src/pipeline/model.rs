@@ -19,7 +19,7 @@
 //! │  │  kind: n.trigger  │                                         │
 //! │  │  config: { path } │    ┌─────────────────────┐             │
 //! │  └───────────────────┘    │ PipelineNode (n1)   │             │
-//! │                           │  kind: pg.query.run   │             │
+//! │                           │  kind: postgres.query.run   │             │
 //! │                           │  config: { query }  │             │
 //! │                           └──────────┬──────────┘             │
 //! │                                      │ edge: n1/out → n2/in   │
@@ -45,7 +45,7 @@
 //! # Node Definition vs Node Instance
 //!
 //! **[`NodeDefinition`]** is the *kind-level* contract — it is the same for every instance of
-//! `pg.query.run` across all pipelines. It is declared once per node kind via a `definition()`
+//! `postgres.query.run` across all pipelines. It is declared once per node kind via a `definition()`
 //! function in each node module (e.g. `pg_query::definition()`), registered into a catalog,
 //! and served at `/docs/node` via [`NodeContractDocument`].
 //!
@@ -54,7 +54,7 @@
 //! `PipelineNode` instances can share the same `kind` string but have different configs.
 //!
 //! ```text
-//!                  NodeDefinition (kind = "pg.query.run")
+//!                  NodeDefinition (kind = "postgres.query.run")
 //!                  ├── config_schema: { credential_id: required, query: required, ... }
 //!                  ├── input_schema:  { type: object }
 //!                  ├── output_schema: { query: { rows, columns, row_count, … } }
@@ -63,8 +63,8 @@
 //!
 //!                           ↑ validates config against config_schema at register time
 //!
-//!   PipelineNode { id: "n1", kind: "pg.query.run", config: { credential_id: "pg-main", query: "SELECT ..." } }
-//!   PipelineNode { id: "n4", kind: "pg.query.run", config: { credential_id: "pg-replica", query: "SELECT ..." } }
+//!   PipelineNode { id: "n1", kind: "postgres.query.run", config: { credential_id: "pg-main", query: "SELECT ..." } }
+//!   PipelineNode { id: "n4", kind: "postgres.query.run", config: { credential_id: "pg-replica", query: "SELECT ..." } }
 //! ```
 //!
 //! # Config Schema
@@ -925,7 +925,7 @@ pub struct PipelineEdge {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(deny_unknown_fields)]
 pub struct NodeScriptBridge {
-    /// Function name a bridge would expose, were one built (e.g. `"pg.query.run"`).
+    /// Function name a bridge would expose, were one built (e.g. `"postgres.query.run"`).
     pub name: String,
     /// Reserved. No runtime reads this, because no bridge dispatches.
     #[serde(default)]
@@ -935,7 +935,7 @@ pub struct NodeScriptBridge {
 /// Registers this node kind as a callable AI tool for LLM-based agents.
 ///
 /// When `registered = true`, the assistant can invoke this node's capability by name
-/// during an agentic pipeline run (e.g. Zebtune calling `pg.query.run` to answer a question).
+/// during an agentic pipeline run (e.g. Zebtune calling `postgres.query.run` to answer a question).
 /// `tool_input_schema` is a JSON Schema object the LLM uses to form valid tool arguments.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 #[serde(deny_unknown_fields)]
@@ -999,7 +999,7 @@ pub struct NodeAiToolDefinition {
 #[serde(deny_unknown_fields)]
 pub struct NodeDefinition {
     /// Stable kind id — must be unique across all registered nodes.
-    /// Convention: `n.<category>.<action>` (e.g. `pg.query.run`, `web.response.send`).
+    /// Convention: `n.<category>.<action>` (e.g. `postgres.query.run`, `web.response.send`).
     pub kind: String,
     /// Short display title for UI catalogs and tooltips (e.g. `"Postgres Query"`).
     pub title: String,
@@ -1486,7 +1486,7 @@ pub struct Signal {
     /// from output; set by the node itself when calling `bus.emit()` directly).
     #[serde(default)]
     pub node_id: String,
-    /// Node kind (e.g. `"pg.query.run"`).
+    /// Node kind (e.g. `"postgres.query.run"`).
     #[serde(default)]
     pub node_kind: String,
     /// Optional structured data attached to the signal.
@@ -1600,7 +1600,7 @@ pub struct PipelineContext {
 pub struct NodeTraceEntry {
     /// Node's `zfPipelineNodeId` (slug), e.g. `"fetch-user"`.
     pub node_id: String,
-    /// Node kind, e.g. `"pg.query.run"`.
+    /// Node kind, e.g. `"postgres.query.run"`.
     pub node_kind: String,
     /// Effective node config snapshot after expression resolution.
     ///
@@ -1672,7 +1672,7 @@ pub struct PipelineOutput {
 /// A typed error produced at any point during pipeline execution.
 ///
 /// `code` is a stable SCREAMING_SNAKE_CASE string prefixed by the node kind
-/// (e.g. `"FW_NODE_PG_QUERY_RUN_CONFIG"`, `"FW_NODE_WEB_RENDER_COMPILE"`).  It is safe to
+/// (e.g. `"FW_NODE_POSTGRES_QUERY_RUN_CONFIG"`, `"FW_NODE_WEB_RENDER_COMPILE"`).  It is safe to
 /// match on in tests and error handlers.  `message` is the human-readable detail.
 ///
 /// `node_id` and `node_kind` are optionally populated by the engine at the BFS execution
@@ -1697,7 +1697,7 @@ pub struct PipelineError {
     /// Populated by the engine at the BFS execution boundary; `None` for config errors.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub node_id: Option<String>,
-    /// Node kind that produced this error (e.g. `"pg.query.run"`).
+    /// Node kind that produced this error (e.g. `"postgres.query.run"`).
     /// Populated by the engine at the BFS execution boundary; `None` for config errors.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub node_kind: Option<String>,

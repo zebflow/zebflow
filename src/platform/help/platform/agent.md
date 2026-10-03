@@ -108,7 +108,7 @@ Project docs are files under `docs/` (`file_write rel_path="docs/schema.md"`).
 |---|---|
 | `connection_list` | database connections: slug, label, kind. Every project has `default` (SQLite) and `default-multimodel` (Sekejap) |
 | `connection_describe` | tables and columns of a connection; `scope`, `schema`, `table` narrow it |
-| `credential_list` | credential ids, titles and kinds — values are never returned. `--credential` (trigger auth, `pg.query.run`, `mail.message.send`, …) takes an **id from here**, not a connection slug |
+| `credential_list` | credential ids, titles and kinds — values are never returned. `--credential` (trigger auth, `postgres.query.run`, `mail.message.send`, …) takes an **id from here**, not a connection slug |
 | `list_ui_catalog` / `install_ui_components` | the clone-to-own component catalog (`shared/ui/`); pages import `zeb/ui/*` without installing anything |
 | `theme_generate` | a complete contrast-checked theme from a seed colour and a mood: tokens, `globals.css` blocks, fonts, geometry, contrast table (skill `brand-system`) |
 | `route_fetch` | fetch one of the project's routes through the real ingress — status, `location`, `set_cookie`, `rwe_component_errors`, body; `method`, `form`, `body`, `cookie`, `headers`; the verification step |

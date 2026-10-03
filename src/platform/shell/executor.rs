@@ -504,7 +504,7 @@ impl DslExecutor {
         if body.is_empty() {
             return DslOutput::err(
                 "register: pipeline body is required. \
-                 Example: register api/my-pipe | trigger.webhook --route /api | pg.query.run --credential main-db",
+                 Example: register api/my-pipe | trigger.webhook --route /api | postgres.query.run --credential main-db",
             );
         }
 
@@ -1617,8 +1617,8 @@ impl DslExecutor {
 }
 
 /// Parse a node kind reference with optional index suffix.
-/// "pg.query.run" → ("pg.query.run", None)
-/// "pg.query.run[1]" → ("pg.query.run", Some(1))
+/// "postgres.query.run" → ("postgres.query.run", None)
+/// "postgres.query.run[1]" → ("postgres.query.run", Some(1))
 fn parse_node_kind_ref(s: &str) -> (String, Option<usize>) {
     if let Some(bracket_pos) = s.rfind('[') {
         if s.ends_with(']') {

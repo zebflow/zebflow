@@ -92,7 +92,7 @@ mod tests {
             // owner's exposure decision, so no file, map or site node answers
             // one. (A feed address a trigger listens to is not that.)
             let file_node = crate::pipeline::nodes::shared::project_store::store_node_kinds().contains(&def.kind)
-                || def.kind.starts_with("ms.")
+                || def.kind.starts_with("mapserver.")
                 || def.kind.starts_with("web.");
             let mut names = Vec::new();
             property_names(&def.output_schema, &mut names);
@@ -211,7 +211,7 @@ mod tests {
     fn store_nodes_declare_their_store() {
         // These share a file with a store node but take their store from the
         // layer record the registry holds, never from a flag.
-        const STORE_FROM_RECORD: &[&str] = &["ms.layer.get", "ms.layer.list", "ms.layer.unpublish"];
+        const STORE_FROM_RECORD: &[&str] = &["mapserver.layer.get", "mapserver.layer.list", "mapserver.layer.unpublish"];
         let pinned = crate::pipeline::nodes::shared::project_store::store_node_kinds();
         let mut problems = Vec::new();
         for (file, text) in node_sources() {

@@ -81,7 +81,7 @@ timeout; a bare number is refused) and `--title "…"` (the label shown in the
 editor).
 
 ```
-| pg.query.run --credential pg_main --timeout 2m -- "SELECT * FROM big_report_view"
+| postgres.query.run --credential pg_main --timeout 2m -- "SELECT * FROM big_report_view"
 ```
 
 ---
@@ -496,7 +496,7 @@ site — a generated static site, say — with scripts running, only on the
 addresses listed in its `serve`. The Studio (a preview cell, an input widget,
 the Files page) and an MCP session read any object, private or exposed, at
 `GET /api/projects/{owner}/{project}/files/object?ref=<path>` with the
-session. Table files (`table.data.convert`, `table.query.run`) and map layers (`ms.*`)
+session. Table files (`table.data.convert`, `table.query.run`) and map layers (`mapserver.*`)
 follow the same rules.
 
 **Provider APIs.** An image, video or speech provider (Runware, fal,

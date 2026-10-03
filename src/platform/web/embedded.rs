@@ -346,8 +346,8 @@ pub const PLATFORM_NODE_ICON_ASSETS: &[EmbeddedAsset] = &[
         bytes: include_bytes!("assets/node-icons/zebflow/kv.message.publish.svg"),
     },
     EmbeddedAsset {
-        path: "zebflow/pg.query.run.svg",
-        bytes: include_bytes!("assets/node-icons/zebflow/pg.query.run.svg"),
+        path: "zebflow/postgres.query.run.svg",
+        bytes: include_bytes!("assets/node-icons/zebflow/postgres.query.run.svg"),
     },
     EmbeddedAsset {
         path: "zebflow/sekejap.query.run.svg",
@@ -390,20 +390,20 @@ pub const PLATFORM_NODE_ICON_ASSETS: &[EmbeddedAsset] = &[
         bytes: include_bytes!("assets/node-icons/zebflow/n.trigger.memsubscribe.svg"),
     },
     EmbeddedAsset {
-        path: "zebflow/ms.layer.publish.svg",
-        bytes: include_bytes!("assets/node-icons/zebflow/ms.layer.publish.svg"),
+        path: "zebflow/mapserver.layer.publish.svg",
+        bytes: include_bytes!("assets/node-icons/zebflow/mapserver.layer.publish.svg"),
     },
     EmbeddedAsset {
-        path: "zebflow/ms.layer.unpublish.svg",
-        bytes: include_bytes!("assets/node-icons/zebflow/ms.layer.unpublish.svg"),
+        path: "zebflow/mapserver.layer.unpublish.svg",
+        bytes: include_bytes!("assets/node-icons/zebflow/mapserver.layer.unpublish.svg"),
     },
     EmbeddedAsset {
-        path: "zebflow/ms.layer.get.svg",
-        bytes: include_bytes!("assets/node-icons/zebflow/ms.layer.get.svg"),
+        path: "zebflow/mapserver.layer.get.svg",
+        bytes: include_bytes!("assets/node-icons/zebflow/mapserver.layer.get.svg"),
     },
     EmbeddedAsset {
-        path: "zebflow/ms.layer.list.svg",
-        bytes: include_bytes!("assets/node-icons/zebflow/ms.layer.list.svg"),
+        path: "zebflow/mapserver.layer.list.svg",
+        bytes: include_bytes!("assets/node-icons/zebflow/mapserver.layer.list.svg"),
     },
     EmbeddedAsset {
         path: "zebflow/trigger.topic.svg",

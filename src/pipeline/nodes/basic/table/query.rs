@@ -80,7 +80,7 @@ pub fn definition() -> NodeDefinition {
             Without a destination it adds `query: { rows, columns, row_count, truncated }`, as the db nodes do — `--limit` caps the rows (default 200, \
             at most 5000). With `--folder` / `--filename` / `--path` the whole result (at most 10000 rows) is written as `--format` and `query` holds \
             the file's FileRef fields with `row_count` (rows written), `columns` and `format`; `--rows` adds the first `--limit` rows and `truncated`. \
-            For database tables use `pg.query.run`, `sqlite.query.run` or `sekejap.query.run`."
+            For database tables use `postgres.query.run`, `sqlite.query.run` or `sekejap.query.run`."
             .to_string(),
         input_pins: vec![INPUT_PIN_IN.to_string()],
         output_pins: vec![OUTPUT_PIN_OUT.to_string()],

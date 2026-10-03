@@ -35,7 +35,7 @@ use crate::pipeline::model::{
 };
 use crate::pipeline::nodes::shared::file_ref::{FILE_REF_TYPE, LIFECYCLE_DURABLE};
 use crate::pipeline::nodes::basic::{
-    ai, auth, browser, crypto, fs, function, geo, http, input, javascript, kv, logic, mail, ms, pg,
+    ai, auth, browser, crypto, fs, function, geo, http, input, javascript, kv, logic, mail, mapserver, postgres,
     sekejap, sqlite, table, typescript,
     trigger::{
         function as trigger_function, kv_subscribe, manual, mcp_trigger, schedule, weberror,
@@ -1343,16 +1343,16 @@ impl BasicPipelineEngine {
                     self.bundle_egress.clone(),
                 )?))
             }
-            pg::query::NODE_KIND => {
+            postgres::query::NODE_KIND => {
                 let Some(credentials) = &self.credentials else {
                     return Err(PipelineError::new(
-                        "FW_NODE_PG_QUERY_RUN_UNAVAILABLE",
+                        "FW_NODE_POSTGRES_QUERY_RUN_UNAVAILABLE",
                         "credential service is not configured on this framework engine",
                     ));
                 };
-                Ok(NodeDispatch::Postgres(pg::query::Node::new(
+                Ok(NodeDispatch::Postgres(postgres::query::Node::new(
                     serde_json::from_value(node.config.clone())
-                        .map_err(|err| PipelineError::new(pg::query::CONFIG_CODE, err.to_string()))?,
+                        .map_err(|err| PipelineError::new(postgres::query::CONFIG_CODE, err.to_string()))?,
                     credentials.clone(),
                 )?))
             }
@@ -1577,12 +1577,12 @@ impl BasicPipelineEngine {
                     operation,
                 )?))
             }
-            ms::crud::PUBLISH_KIND
-            | ms::crud::UNPUBLISH_KIND
-            | ms::crud::GET_KIND
-            | ms::crud::LIST_KIND => {
-                let operation = ms::crud::Operation::from_kind(node.kind.as_str()).expect("an ms.layer kind");
-                let config: ms::crud::Config = serde_json::from_value(node.config.clone())
+            mapserver::crud::PUBLISH_KIND
+            | mapserver::crud::UNPUBLISH_KIND
+            | mapserver::crud::GET_KIND
+            | mapserver::crud::LIST_KIND => {
+                let operation = mapserver::crud::Operation::from_kind(node.kind.as_str()).expect("an mapserver.layer kind");
+                let config: mapserver::crud::Config = serde_json::from_value(node.config.clone())
                     .map_err(|err| PipelineError::new(operation.config_code(), err.to_string()))?;
                 let Some(platform) = &self.platform else {
                     return Err(PipelineError::new(
@@ -1590,7 +1590,7 @@ impl BasicPipelineEngine {
                         "platform service not available in this engine context",
                     ));
                 };
-                Ok(NodeDispatch::MapserverCrud(ms::crud::Node::new(
+                Ok(NodeDispatch::MapserverCrud(mapserver::crud::Node::new(
                     config,
                     platform.clone(),
                     operation,
@@ -3448,7 +3448,7 @@ mod tests {
 
     /// The incentive this guard exists to remove: if refusing an unreadable
     /// destination only happened inside a bundle that declared hosts, an author
-    /// who wanted `pg.query.run` would be better off declaring nothing, and only
+    /// who wanted `postgres.query.run` would be better off declaring nothing, and only
     /// the honest author would be constrained.
     #[test]
     fn a_bundle_that_declares_no_hosts_still_cannot_use_an_uncheckable_node() {
@@ -3459,7 +3459,7 @@ mod tests {
 
         for (kind, config) in [
             ("ai.text.generate", json!({})),
-            ("pg.query.run", json!({})),
+            ("postgres.query.run", json!({})),
             ("table.query.run", json!({})),
             ("ws.message.send", json!({ "connection": "n0" })),
             ("trigger.socket", json!({})),
@@ -5416,7 +5416,7 @@ enum NodeDispatch {
     SqliteQuery(sqlite::query::Node),
     SekejapQuery(sekejap::query::Node),
     SekejapRecord(sekejap::record::Node),
-    Postgres(pg::query::Node),
+    Postgres(postgres::query::Node),
     InlineWebResponse {
         node_id: String,
         config: web::response::Config,
@@ -5449,7 +5449,7 @@ enum NodeDispatch {
     FunctionCall(function::call::Node),
     FilePut(fs::put::Node),
     FsObject(fs::object::Node),
-    MapserverCrud(ms::crud::Node),
+    MapserverCrud(mapserver::crud::Node),
     TableConvert(table::convert::Node),
     TableQuery(table::query::Node),
     FileCompress(fs::compress::Node),

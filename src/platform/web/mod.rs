@@ -16315,7 +16315,7 @@ async fn api_mapserver_layers_publish(
     let record = MapserverLayerRecord {
         layer_id: layer_id.to_string(),
         // Contract `MapPublishManifest`: stored without a leading slash, the
-        // same shape `ms.layer.publish` writes.
+        // same shape `mapserver.layer.publish` writes.
         path: crate::mapserver::publish::registry::normalize_layer_path(path).to_string(),
         store: store_id,
         source_path,
@@ -18698,7 +18698,7 @@ async fn api_project_assistant_chat(
              - **Pipelines**: `pipeline_list`, `pipeline_get`, `pipeline_register`, `pipeline_describe`, `pipeline_patch`, `pipeline_activate`, `pipeline_deactivate`, `pipeline_execute`, `pipeline_run`\n\
              - **Files**: `file_list`, `file_read`, `file_write`, `file_edit`, `file_search` — every file in the repository, whatever its extension or folder\n\
              - **Agent docs**: `docs_agent_list`, `docs_agent_read`, `docs_agent_write`\n\
-             - **Database**: `connection_list`, `connection_describe` — then use `pipeline_run` with `pg.query.run` or `sqlite.query.run` nodes to execute queries\n\
+             - **Database**: `connection_list`, `connection_describe` — then use `pipeline_run` with `postgres.query.run` or `sqlite.query.run` nodes to execute queries\n\
              - **Credentials**: `credential_list`\n\
              - **Git**: `git_command` — subcommands: status, log, diff, add, commit\n\
              - **UI Components**: `list_ui_catalog`, `install_ui_components`\n\

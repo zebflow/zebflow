@@ -153,7 +153,7 @@ impl AssistantPlatformTools {
             ToolDef {
                 name: "pipeline_register".to_string(),
                 description: "Register (create or update) a pipeline by pipe-chained node body. \
-                    Body format: '| trigger.webhook --route /x | pg.query.run --credential db -- \"SQL\"'. \
+                    Body format: '| trigger.webhook --route /x | postgres.query.run --credential db -- \"SQL\"'. \
                     After registering, call pipeline_activate to make it live.".to_string(),
                 parameters: json!({
                     "type": "object",
@@ -182,17 +182,17 @@ impl AssistantPlatformTools {
             ToolDef {
                 name: "pipeline_patch".to_string(),
                 description: "Patch one node in a saved pipeline without rewriting the full graph. \
-                    node_id accepts: opaque ID (e.g. 'n0'), node kind (e.g. 'trigger.webhook', 'pg.query.run'), \
-                    or kind+index (e.g. 'pg.query.run[1]') when multiple nodes share the same kind. \
+                    node_id accepts: opaque ID (e.g. 'n0'), node kind (e.g. 'trigger.webhook', 'postgres.query.run'), \
+                    or kind+index (e.g. 'postgres.query.run[1]') when multiple nodes share the same kind. \
                     Pipeline status becomes stale after patching — call pipeline_activate to make it live again.".to_string(),
                 parameters: json!({
                     "type": "object",
                     "required": ["file_rel_path", "node_id"],
                     "properties": {
                         "file_rel_path": { "type": "string", "description": "File-relative path of the pipeline." },
-                        "node_id": { "type": "string", "description": "Node ID, kind, or kind+index (e.g. 'n0', 'trigger.webhook', 'pg.query.run[1]')." },
+                        "node_id": { "type": "string", "description": "Node ID, kind, or kind+index (e.g. 'n0', 'trigger.webhook', 'postgres.query.run[1]')." },
                         "flags": { "type": "string", "description": "Space-separated --flag value pairs (e.g. '--credential new-db --path /updated')." },
-                        "body": { "type": "string", "description": "Body content for the node (SQL for pg.query.run, JS for script nodes)." }
+                        "body": { "type": "string", "description": "Body content for the node (SQL for postgres.query.run, JS for script nodes)." }
                     }
                 }),
             },
@@ -240,7 +240,7 @@ impl AssistantPlatformTools {
                 name: "pipeline_run".to_string(),
                 description: "Run a pipe-chained node body EPHEMERALLY — not saved, not logged, no hit recording. \
                     Use this to test queries, explore data, or prototype before registering. \
-                    Example body: '| pg.query.run --credential main-db -- \"SELECT count(*) FROM users\"'. \
+                    Example body: '| postgres.query.run --credential main-db -- \"SELECT count(*) FROM users\"'. \
                     Auto-prepends trigger.manual if no trigger node specified.".to_string(),
                 parameters: json!({
                     "type": "object",

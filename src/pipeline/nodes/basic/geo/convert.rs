@@ -165,7 +165,7 @@ pub fn definition() -> NodeDefinition {
                     "origin": NODE_KIND, "trust": "generated",
                     "crs": { "kind": "epsg", "code": 4326 }, "layer": null, "feature_count": 312, "files": ["…a FileRef for every file written"]
                 } }))
-                .note("Then `ms.layer.publish --name suburbs --route suburbs --from \"{{ input.dataset }}\"`."),
+                .note("Then `mapserver.layer.publish --name suburbs --route suburbs --from \"{{ input.dataset }}\"`."),
         ],
         ..Default::default()
     }

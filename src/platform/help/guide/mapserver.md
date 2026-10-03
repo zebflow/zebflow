@@ -18,15 +18,15 @@ Its job is not only storing geodata. Its job is:
 
 ## Publishing and serving
 
-Layers are managed with the `ms.layer.publish` / `ms.layer.unpublish` / `ms.layer.get` /
-`ms.layer.list` pipeline nodes and through
+Layers are managed with the `mapserver.layer.publish` / `mapserver.layer.unpublish` / `mapserver.layer.get` /
+`mapserver.layer.list` pipeline nodes and through
 `/api/projects/{owner}/{project}/mapserver/{instance}/sources` and
 `.../layers`. A published layer answers at `/ms/{owner}/{project}/{route}`
 while the project's `ms` surface is on (Settings → Addressing).
 
 ```
 | geo.dataset.convert --from uploads/suburbs.shp --folder datasets --filename suburbs.parquet --crs EPSG:4326
-| ms.layer.publish --name suburbs --route suburbs --from "{{ input.dataset }}" --field name --field postcode --min-zoom 8 --max-zoom 14
+| mapserver.layer.publish --name suburbs --route suburbs --from "{{ input.dataset }}" --field name --field postcode --min-zoom 8 --max-zoom 14
 ```
 
 - `--from` is a GeoJSON or GeoParquet store key or FileRef; `--parse
@@ -49,7 +49,7 @@ It turns geospatial data into project-native application behavior.
 
 Typical flow:
 
-1. publish a layer with `ms.layer.publish` (or the mapserver API)
+1. publish a layer with `mapserver.layer.publish` (or the mapserver API)
 2. query it by viewport / filters at `/ms/{owner}/{project}/{path}`
 3. render it in a page or map experience with `zeb/deckgl`
 

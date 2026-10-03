@@ -370,7 +370,7 @@ pub fn default_pins(kind: &str) -> (Vec<String>, Vec<String>) {
         "trigger.webhook" | "trigger.schedule" | "trigger.manual" | "trigger.function" => {
             (vec![], vec!["out".to_string()])
         }
-        "pg.query.run" | "sekejap.query.run" | "sekejap.record.create" | "sqlite.query.run"
+        "postgres.query.run" | "sekejap.query.run" | "sekejap.record.create" | "sqlite.query.run"
         | "table.data.convert" | "table.query.run" | "javascript.script.run" | "typescript.script.run" | "http.response.fetch"
         | "logic.collect" | "ai.audio.generate" => (vec!["in".to_string()], vec!["out".to_string()]),
         "logic.foreach" => (vec!["in".to_string()], vec!["item".to_string()]),
@@ -1386,7 +1386,7 @@ fn graph_note_statement(line: &str) -> Option<(String, Vec<String>)> {
 /// SQL silently won.
 pub fn body_config_key(kind: &str) -> &'static str {
     match kind {
-        "pg.query.run" | "sekejap.query.run" | "sqlite.query.run" | "table.query.run" => "query",
+        "postgres.query.run" | "sekejap.query.run" | "sqlite.query.run" | "table.query.run" => "query",
         "javascript.script.run" | "typescript.script.run" => "source",
         "logic.match" | "logic.if" => "expression",
         "browser.page.run" => "code",
@@ -2555,7 +2555,7 @@ pub fn node_to_segment_no_body(node: &PipelineNode) -> String {
         }
         // Skip body-typed flags (their config_key matches the body key for this node kind)
         let body_key = match node.kind.as_str() {
-            "pg.query.run" => "query",
+            "postgres.query.run" => "query",
             "sekejap.query.run" => "query",
             "sqlite.query.run" => "query",
             "table.query.run" => "query",
@@ -2757,7 +2757,7 @@ fn graph_to_graph_mode(graph: &PipelineGraph) -> String {
 
 // ─── Pipe mode builder ───────────────────────────────────────────────────────
 
-/// Build pipeline from pipe-notation: `trigger.webhook --route /test | pg.query.run --credential main`
+/// Build pipeline from pipe-notation: `trigger.webhook --route /test | postgres.query.run --credential main`
 fn build_pipe_mode(
     id: &str,
     body: &str,

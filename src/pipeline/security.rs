@@ -359,7 +359,7 @@ mod tests {
 
         // Declaring nothing does not buy anonymity: the bundle is still the one
         // a refusal names, so the incentive to stay silent does not exist.
-        let err = silent.refuse_uncheckable("pg.query.run");
+        let err = silent.refuse_uncheckable("postgres.query.run");
         assert_eq!(err.code, "FW_EGRESS_UNCHECKED_NODE");
         assert!(err.message.contains("'ml'"), "{}", err.message);
 
