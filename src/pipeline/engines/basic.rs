@@ -1173,13 +1173,13 @@ impl BasicPipelineEngine {
         self
     }
 
-    /// Attach the WS hub so ws_sync_state and ws_emit nodes can access rooms.
+    /// Attach the WS hub so `ws.message.send` and `ws.state.*` nodes can reach rooms.
     pub fn with_ws_hub(mut self, hub: Arc<WsHub>) -> Self {
         self.ws_hub = Some(hub);
         self
     }
 
-    /// Attach the WS client manager so n.ws.client.send nodes can send through outbound connections.
+    /// Attach the WS client manager so `ws.message.send --connection` can send through outbound connections.
     pub fn with_ws_client_manager(mut self, mgr: Arc<WsClientManager>) -> Self {
         self.ws_client_manager = Some(mgr);
         self
@@ -1227,7 +1227,12 @@ impl BasicPipelineEngine {
 
     fn build_node(&self, node: &PipelineNode) -> Result<NodeDispatch, PipelineError> {
         if let Some(egress) = &self.bundle_egress {
-            refuse_uncheckable_egress_node(egress, &node.kind, self.language.grants_network())?;
+            refuse_uncheckable_egress_node(
+                egress,
+                &node.kind,
+                &node.config,
+                self.language.grants_network(),
+            )?;
         }
         // One kind per task, one builder for the family (`crypto/mod.rs`).
         if let Some(handler) = crypto::build(&node.kind, &node.config, self.credentials.clone())? {
@@ -1507,32 +1512,21 @@ impl BasicPipelineEngine {
                     PipelineError::new("FW_NODE_WS_TRIGGER_CONFIG", err.to_string())
                 })?,
             ))),
-            ws::sync_state::NODE_KIND => {
-                let Some(ws_hub) = &self.ws_hub else {
-                    return Err(PipelineError::new(
-                        "FW_NODE_WS_SYNC_STATE_UNAVAILABLE",
-                        "ws hub is not configured on this framework engine",
-                    ));
-                };
-                Ok(NodeDispatch::WsSyncState(ws::sync_state::Node::new(
+            ws::message_send::NODE_KIND => Ok(NodeDispatch::WsMessageSend(ws::message_send::Node::new(
+                serde_json::from_value(node.config.clone()).map_err(|err| {
+                    PipelineError::new(ws::message_send::CONFIG_CODE, err.to_string())
+                })?,
+                self.ws_hub.clone(),
+                self.ws_client_manager.clone(),
+            )?)),
+            kind if ws::state::Verb::of_kind(kind).is_some() => {
+                let verb = ws::state::Verb::of_kind(kind).expect("matched above");
+                Ok(NodeDispatch::WsState(ws::state::Node::new(
+                    verb,
                     serde_json::from_value(node.config.clone()).map_err(|err| {
-                        PipelineError::new("FW_NODE_WS_SYNC_STATE_CONFIG", err.to_string())
+                        PipelineError::new(verb.codes().config, err.to_string())
                     })?,
-                    ws_hub.clone(),
-                )?))
-            }
-            ws::emit::NODE_KIND => {
-                let Some(ws_hub) = &self.ws_hub else {
-                    return Err(PipelineError::new(
-                        "FW_NODE_WS_EMIT_UNAVAILABLE",
-                        "ws hub is not configured on this framework engine",
-                    ));
-                };
-                Ok(NodeDispatch::WsEmit(ws::emit::Node::new(
-                    serde_json::from_value(node.config.clone()).map_err(|err| {
-                        PipelineError::new("FW_NODE_WS_EMIT_CONFIG", err.to_string())
-                    })?,
-                    ws_hub.clone(),
+                    self.ws_hub.clone(),
                 )?))
             }
             trigger_function::NODE_KIND => {
@@ -1864,20 +1858,6 @@ impl BasicPipelineEngine {
                     |e| PipelineError::new("FW_NODE_WS_CLIENT_TRIGGER_CONFIG", e.to_string()),
                 )?),
             )),
-            ws::client_send::NODE_KIND => {
-                let Some(ws_client_manager) = &self.ws_client_manager else {
-                    return Err(PipelineError::new(
-                        "FW_NODE_WS_CLIENT_SEND_UNAVAILABLE",
-                        "ws client manager is not configured on this framework engine",
-                    ));
-                };
-                Ok(NodeDispatch::WsClientSend(ws::client_send::Node::new(
-                    serde_json::from_value(node.config.clone()).map_err(|e| {
-                        PipelineError::new("FW_NODE_WS_CLIENT_SEND_CONFIG", e.to_string())
-                    })?,
-                    ws_client_manager.clone(),
-                )?))
-            }
             // Anything the arms above did not claim is not a native node, so it
             // is provided by a bundle, curated or third-party (`x.*`); the
             // namespace cannot tell them apart. The manifest decides role and
@@ -2950,10 +2930,10 @@ impl BasicPipelineEngine {
                     NodeDispatch::Concept(node) => node.execute_many_async(input_for_exec).await,
                     NodeDispatch::WebError(node) => node.execute_many_async(input_for_exec).await,
                     NodeDispatch::WsTrigger(node) => node.execute_many_async(input_for_exec).await,
-                    NodeDispatch::WsSyncState(node) => {
+                    NodeDispatch::WsMessageSend(node) => {
                         node.execute_many_async(input_for_exec).await
                     }
-                    NodeDispatch::WsEmit(node) => node.execute_many_async(input_for_exec).await,
+                    NodeDispatch::WsState(node) => node.execute_many_async(input_for_exec).await,
                     NodeDispatch::Crypto(node) => node.execute_many_async(input_for_exec).await,
                     NodeDispatch::TriggerFunction(node) => {
                         node.execute_many_async(input_for_exec).await
@@ -3000,9 +2980,6 @@ impl BasicPipelineEngine {
                         node.execute_many_async(input_for_exec).await
                     }
                     NodeDispatch::WsClientTrigger(node) => {
-                        node.execute_many_async(input_for_exec).await
-                    }
-                    NodeDispatch::WsClientSend(node) => {
                         node.execute_many_async(input_for_exec).await
                     }
                     NodeDispatch::InstalledNode {
@@ -4126,7 +4103,7 @@ mod tests {
                     // The sandbox denies fetch as shipped, which is the state a
                     // curated bundle must run in; what happens when an operator
                     // widens it is asserted separately.
-                    super::refuse_uncheckable_egress_node(&egress, &node.kind, false)
+                    super::refuse_uncheckable_egress_node(&egress, &node.kind, &node.config, false)
                         .unwrap_or_else(|error| {
                             panic!("embedded bundle '{slug}'/{path}: {}", error.message)
                         });
@@ -4161,14 +4138,14 @@ mod tests {
         let silent = BundleEgress::extend(None, "silent", &[]);
         assert!(!silent.is_active(), "the bundle declared nothing");
 
-        for kind in [
-            "ai.text.generate",
-            "pg.query.run",
-            "table.query.run",
-            "n.ws.client.send",
-            "trigger.socket",
+        for (kind, config) in [
+            ("ai.text.generate", json!({})),
+            ("pg.query.run", json!({})),
+            ("table.query.run", json!({})),
+            ("ws.message.send", json!({ "connection": "n0" })),
+            ("trigger.socket", json!({})),
         ] {
-            let error = super::refuse_uncheckable_egress_node(&silent, kind, false)
+            let error = super::refuse_uncheckable_egress_node(&silent, kind, &config, false)
                 .expect_err("an unreadable destination is refused whatever was declared");
             assert_eq!(error.code, "FW_EGRESS_UNCHECKED_NODE");
             assert!(
@@ -4180,8 +4157,11 @@ mod tests {
 
         // What a declaration does buy is still bought: a readable destination is
         // checked against the list rather than refused outright.
-        super::refuse_uncheckable_egress_node(&silent, super::http::request::NODE_KIND, false)
+        super::refuse_uncheckable_egress_node(&silent, super::http::request::NODE_KIND, &json!({}), false)
             .expect("a host-checked node is not an unreadable destination");
+        // A room send never leaves the platform; only `--connection` does.
+        super::refuse_uncheckable_egress_node(&silent, "ws.message.send", &json!({ "room": "lobby" }), false)
+            .expect("a room send is not an egress path");
     }
 
     /// `script.result.run` is a network node only when an operator has made it one, so
@@ -4195,10 +4175,10 @@ mod tests {
 
         let egress = BundleEgress::extend(None, "telegram", &["api.telegram.org".to_string()]);
 
-        super::refuse_uncheckable_egress_node(&egress, super::script::NODE_KIND, false)
+        super::refuse_uncheckable_egress_node(&egress, super::script::NODE_KIND, &json!({}), false)
             .expect("a sandbox that denies fetch reaches nothing to check");
 
-        let error = super::refuse_uncheckable_egress_node(&egress, super::script::NODE_KIND, true)
+        let error = super::refuse_uncheckable_egress_node(&egress, super::script::NODE_KIND, &json!({}), true)
             .expect_err("a sandbox that may fetch is an egress path the guard cannot read");
         assert_eq!(error.code, "FW_EGRESS_UNCHECKED_NODE");
         assert!(
@@ -5991,8 +5971,8 @@ enum NodeDispatch {
     Concept(logic::concept::Node),
     WebError(weberror::Node),
     WsTrigger(ws::trigger::Node),
-    WsSyncState(ws::sync_state::Node),
-    WsEmit(ws::emit::Node),
+    WsMessageSend(ws::message_send::Node),
+    WsState(ws::state::Node),
     /// Any `crypto.*` kind.
     Crypto(Box<dyn crate::pipeline::nodes::NodeHandler>),
     TriggerFunction(trigger_function::Node),
@@ -6022,7 +6002,6 @@ enum NodeDispatch {
     KvPublish(kv::publish::Node),
     KvSubscribe(kv_subscribe::Node),
     WsClientTrigger(trigger_ws_client::Node),
-    WsClientSend(ws::client_send::Node),
     McpTrigger(mcp_trigger::Node),
     /// A node provided by an installed bundle (`x.*`).
     ///
@@ -6062,8 +6041,15 @@ const HOST_CHECKED_NETWORK_NODES: &[&str] = &[http::request::NODE_KIND, browser:
 fn refuse_uncheckable_egress_node(
     egress: &crate::pipeline::security::BundleEgress,
     kind: &str,
+    config: &Value,
     sandbox_reaches_network: bool,
 ) -> Result<(), PipelineError> {
+    // A room send stays inside the platform; only `--connection` leaves it.
+    if kind == ws::message_send::NODE_KIND
+        && config.get("connection").is_none_or(|connection| connection.is_null() || connection == "")
+    {
+        return Ok(());
+    }
     if kind == script::NODE_KIND {
         if sandbox_reaches_network {
             return Err(egress.refuse_uncheckable(kind));

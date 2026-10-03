@@ -126,12 +126,13 @@ than an omission:
   widen its own list by composing a more permissive one.
 - **A network node whose destination never reaches a guard as a URL is refused,
   not allowed.** `ai.text.generate`, `pg.query.run`, `table.query.run`,
-  `n.ws.client.send` and `trigger.socket` reach hosts that come from a
+  `ws.message.send --connection` and `trigger.socket` reach hosts that come from a
   credential or a project connection, which the egress guard never sees. Inside
   any bundle they fail with `FW_EGRESS_UNCHECKED_NODE`. The set is derived from
   `native_node_capabilities()` — the same table the package review reads — so a
   network node added later is refused until it is given a guard, rather than
-  silently becoming the way out.
+  silently becoming the way out. `ws.message.send` without `--connection`
+  sends to a room of the platform and is not refused.
 - **An empty or absent list restricts no host, and buys nothing else.**
   `#[serde(default)]` makes the two identical on the wire, so reading empty as
   deny-all would break every bundle published before enforcement existed. That

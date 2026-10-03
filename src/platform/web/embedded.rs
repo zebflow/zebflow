@@ -442,16 +442,12 @@ pub const PLATFORM_NODE_ICON_ASSETS: &[EmbeddedAsset] = &[
         bytes: include_bytes!("assets/node-icons/zebflow/web.site.generate.svg"),
     },
     EmbeddedAsset {
-        path: "zebflow/n.ws.client.send.svg",
-        bytes: include_bytes!("assets/node-icons/zebflow/n.ws.client.send.svg"),
+        path: "zebflow/ws.message.send.svg",
+        bytes: include_bytes!("assets/node-icons/zebflow/ws.message.send.svg"),
     },
     EmbeddedAsset {
-        path: "zebflow/n.ws.emit.svg",
-        bytes: include_bytes!("assets/node-icons/zebflow/n.ws.emit.svg"),
-    },
-    EmbeddedAsset {
-        path: "zebflow/n.ws.sync_state.svg",
-        bytes: include_bytes!("assets/node-icons/zebflow/n.ws.sync_state.svg"),
+        path: "zebflow/ws.state.svg",
+        bytes: include_bytes!("assets/node-icons/zebflow/ws.state.svg"),
     },
     EmbeddedAsset {
         path: "zebflow/ai.embedding.generate.svg",

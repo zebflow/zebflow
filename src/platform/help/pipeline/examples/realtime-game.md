@@ -26,7 +26,7 @@ CREATE TABLE game_rooms (_key TEXT PRIMARY KEY, name TEXT, status TEXT, created_
 ```
 
 Room *state* (players, board, last move) lives in the WebSocket room's shared
-state object (`ws.sync_state`), not in this table — the table only tracks
+state object (`ws.state.put` / `ws.state.update` / `ws.state.delete`), not in this table — the table only tracks
 which rooms exist and whether they're joinable.
 
 ---
@@ -76,18 +76,17 @@ register game/api-room-create --
 
 ### ws-player-join — player joins room
 
-`--state-key` on `ws.sync_state` supports `{key}` placeholders read from the
-payload, so `player_id` is lifted to the top level first:
+A part of `--key` that comes from the payload is written with `{{ }}`; the
+`ws.*` nodes keep the payload, so `input.payload` and the trigger's room are
+still there for the next node:
 
 ```zf
 register game/ws-player-join --
 [a] trigger.room --event player.join
-[lift] script.result.run -- "return { player_id: input.payload.player_id, name: input.payload.name };"
-[merge] ws.sync_state --op merge --state-key "/players/{player_id}" --value "{{ { id: input.player_id, name: input.name, score: 0, joined_at: Date.now() } }}"
-[emit] ws.emit --to all --event state.updated
+[merge] ws.state.update --key "/players/{{ input.payload.player_id }}" --value "{{ { id: input.payload.player_id, name: input.payload.name, score: 0, joined_at: Date.now() } }}"
+[emit] ws.message.send --event state.updated --body "{{ { player_id: input.payload.player_id } }}"
 
-[a] -> [lift]
-[lift] -> [merge]
+[a] -> [merge]
 [merge] -> [emit]
 ```
 
@@ -97,13 +96,11 @@ register game/ws-player-join --
 register game/ws-player-move --
 [a] trigger.room --event player.move
 [guard] logic.if --expr "!!(input.payload && input.payload.player_id && input.payload.move)"
-[lift] script.result.run -- "return { player_id: input.payload.player_id, move: input.payload.move, ts: Date.now() };"
-[set] ws.sync_state --op set --state-key "/last_move" --value "{{ input }}"
-[emit] ws.emit --to all --event player.moved --payload "{{ input }}"
+[set] ws.state.put --key /last_move --value "{{ { player_id: input.payload.player_id, move: input.payload.move, ts: Date.now() } }}"
+[emit] ws.message.send --event player.moved --body "{{ { player_id: input.payload.player_id, move: input.payload.move } }}"
 
 [a] -> [guard]
-[guard]:true -> [lift]
-[lift] -> [set]
+[guard]:true -> [set]
 [set] -> [emit]
 ```
 
@@ -115,7 +112,7 @@ An invalid move just stops at `[guard]` — there is no `false` edge, and a
 
 ```
 | trigger.room --event player.leave
-| ws.emit --to all --event player.left --payload "{{ { player_id: input.payload.player_id } }}"
+| ws.message.send --event player.left --body "{{ { player_id: input.payload.player_id } }}"
 ```
 
 ---
@@ -125,9 +122,10 @@ An invalid move just stops at `[guard]` — there is no `false` edge, and a
 - `trigger.webhook` — HTTP lobby and room pages
 - `trigger.room --event <name>` — WebSocket event handlers (join, move, leave); `--room` omitted, it is a literal filter, not per-connection routing
 - `sekejap.query.run` — track which rooms exist; plain `SELECT`/`INSERT`, no `--table`/`--op`
-- `script` — lift nested payload fields, move validation
-- `ws.sync_state --state-key "/…/{key}" --value "{{ expr }}"` — merge/set patches into the server-side room state
-- `ws.emit --payload "{{ expr }}"` — broadcast events to all players in the room
+- `script` — shape the lobby rows and new room ids
+- `logic.if` — move validation
+- `ws.state.update` / `ws.state.put` / `ws.state.delete --key "/players/{{ expr }}"` — change the server-side room state
+- `ws.message.send --body "{{ expr }}"` — broadcast events to all players in the room
 
 ---
 
@@ -146,7 +144,7 @@ Server-side room state is a JSON object. Clients receive:
 the client replaces its local copy wholesale. `resync` arrives when the
 connection fell behind and messages were dropped.
 
-`ws.emit --to session` / `--to others` is enforced by the server: a session-only
+`ws.message.send --recipient session` / `--recipient others` is enforced by the server: a session-only
 event reaches that one socket and no other.
 
 ## Joining, leaving and who is online
@@ -165,16 +163,16 @@ is two small pipelines:
 ```
 register pipelines/presence-in --
 | trigger.room --event $connect
-| ws.sync_state --op merge --state-key "/players/{session_id}" --value "{{ { since: Date.now() } }}"
+| ws.state.update --key "/players/{{ input.session_id }}" --value "{{ { since: Date.now() } }}"
 
 register pipelines/presence-out --
 | trigger.room --event $disconnect
-| ws.sync_state --op delete --state-key "/players/{session_id}"
+| ws.state.delete --key "/players/{{ input.session_id }}"
 ```
 
-A path placeholder must resolve: `{session_id}` missing from the payload is the
-error `FW_NODE_WS_PATH_SEGMENT_EMPTY`, never a write to `/players` itself. Numbers are
-written as text. When the last connection leaves, the room and its state are
+Every segment of `--key` must say something: `{{ input.session_id }}` resolving
+empty leaves `/players/`, which is refused (`FW_NODE_WS_STATE_UPDATE_KEY`,
+`FW_NODE_WS_STATE_DELETE_KEY`), never a write to `/players` itself. When the last connection leaves, the room and its state are
 disposed; the next visitor starts from `{}`.
 
 A connection is admitted to a room when the room has no `trigger.room`, or one of

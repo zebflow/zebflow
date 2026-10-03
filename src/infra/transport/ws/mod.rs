@@ -5,7 +5,6 @@
 //! | Module | Responsibility |
 //! |---|---|
 //! | [`room`] | Room actor: shared state, broadcast channel, tick-based flush |
-//! | [`path`] | Dynamic path interpolation (`{session_id}`, `{user_id}`, …) |
 //! | [`WsHub`] | Central registry of all active rooms (held in `PlatformService`) |
 //!
 //! # Room key format
@@ -17,17 +16,15 @@
 //! # Quick start for pipeline authors
 //!
 //! ```text
-//! trigger.room   --event move
-//! n.ws.sync_state --op merge --state-key /players/{session_id} --silent
+//! trigger.room    --event move
+//! ws.state.update --key "/players/{{ input.session_id }}" --value "{{ input.payload }}" --batch
 //! ```
 //!
 //! This accumulates positional updates and broadcasts them at ≈30 fps via
 //! the room tick loop — see [`room::RoomCmd::PatchStateSilent`] for details.
 
-pub mod path;
 pub mod room;
 
-pub use path::interpolate_path;
 pub use room::{EmitTarget, RoomBroadcast, RoomCmd, RoomHandle, SessionGuard, StateOp};
 
 use std::collections::HashMap;
@@ -68,7 +65,7 @@ impl WsHub {
 
     /// Return an existing room without creating one.
     ///
-    /// Called by `n.ws.sync_state` and `n.ws.emit` when they need a room
+    /// Called by `ws.state.*` and `ws.message.send` when they need a room
     /// that must have been created by a prior WS connection.  Returns `None`
     /// if no client has ever joined the room.
     pub fn get_room(&self, room_key: &str) -> Option<Arc<RoomHandle>> {

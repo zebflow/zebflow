@@ -87,7 +87,7 @@ register forum/ws-chat-message --
 [guard] logic.if --expr "!!(input.payload && input.payload.user && input.payload.text)"
 [save] script.result.run -- "return { id: Date.now().toString(), room: input.room_id, user: input.payload.user, text: input.payload.text, ts: Date.now() };"
 [ins] sekejap.query.run --write --param "1={{ $nodes.save.id }}" --param "2={{ $nodes.save.room }}" --param "3={{ $nodes.save.user }}" --param "4={{ $nodes.save.text }}" --param "5={{ $nodes.save.ts }}" -- "INSERT INTO forum_messages (_key, room, user, text, ts) VALUES ($1, $2, $3, $4, $5)"
-[emit] ws.emit --to all --event chat.message --payload "{{ $nodes.save }}"
+[emit] ws.message.send --room "{{ $nodes.save.room }}" --event chat.message --body "{{ $nodes.save }}"
 
 [a] -> [guard]
 [guard]:true -> [save]
@@ -109,7 +109,7 @@ to it, and returning `null` from a script would not have stopped anything
 - `logic.if` — validate before saving
 - `script` — shape rows, carry the room lookup forward via `$nodes`
 - `web.response.send` — TSX templates
-- `ws.emit --payload "{{ expr }}"` — broadcast message to all room participants
+- `ws.message.send --room "{{ expr }}" --body "{{ expr }}"` — broadcast message to all room participants (the script replaced the payload, so the room is named)
 
 ---
 

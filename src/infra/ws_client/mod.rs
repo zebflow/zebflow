@@ -135,6 +135,46 @@ impl WsClientManager {
         }
     }
 
+    /// Send on the socket a `trigger.socket` node of this project holds open:
+    /// `connection` is `pipeline/path:node_id`, or a bare node id when exactly
+    /// one open socket of the project belongs to a node of that id.
+    pub async fn send_to_connection(
+        &self,
+        owner: &str,
+        project: &str,
+        connection: &str,
+        message: String,
+    ) -> Result<(), String> {
+        let scope = format!("{owner}/{project}/");
+        let key = if connection.contains(':') {
+            format!("{scope}{connection}")
+        } else {
+            let senders = self.senders.lock().await;
+            let open: Vec<&String> = senders
+                .keys()
+                .filter(|key| key.starts_with(&scope))
+                .filter(|key| key.rsplit_once(':').is_some_and(|(_, node)| node == connection))
+                .collect();
+            match open.as_slice() {
+                [only] => (*only).clone(),
+                [] => return Err(format!("no open WS client connection for node '{connection}'")),
+                _ => {
+                    return Err(format!(
+                        "{} open WS client connections belong to a node '{connection}'; name one as pipeline/path:{connection}",
+                        open.len()
+                    ));
+                }
+            }
+        };
+        self.send(&key, message).await
+    }
+
+    /// Stand in for an open socket: what `send` hands to `key` arrives on `tx`.
+    #[cfg(test)]
+    pub(crate) async fn attach_sender(&self, key: &str, tx: mpsc::Sender<String>) {
+        self.senders.lock().await.insert(key.to_string(), tx);
+    }
+
     #[allow(clippy::too_many_arguments)]
     async fn register_task(
         &self,
@@ -153,7 +193,7 @@ impl WsClientManager {
     ) {
         let task_key = format!("{}/{}/{}:{}", owner, project, file_rel_path, node_id);
 
-        // Create send channel for n.ws.client.send to communicate with this connection.
+        // Create send channel for ws.message.send --connection to communicate with this connection.
         let (send_tx, send_rx) = mpsc::channel::<String>(256);
         self.senders.lock().await.insert(task_key.clone(), send_tx);
 

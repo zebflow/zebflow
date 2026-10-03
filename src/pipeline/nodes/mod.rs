@@ -162,7 +162,7 @@
 //! | `Scalar` | `--key value` | `"value"` |
 //! | `CommaSeparatedList` | `--key a,b,c` or `--key a --key b` | `["a","b"]` |
 //! | `RepeatedList` | `--key a --key b` or `--key a,b` | `["a","b"]` |
-//! | `Bool` | `--silent` (no value) | `true` |
+//! | `Bool` | `--batch` (no value) | `true` |
 //!
 //! Body content (after ` -- `) is always captured separately as the node body string.
 //!

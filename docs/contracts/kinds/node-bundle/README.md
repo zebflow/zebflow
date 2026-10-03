@@ -538,7 +538,7 @@ Four limits, stated rather than implied:
   prove they meant.
 - A node that reaches the network through a destination the egress guard never
   sees as a URL — `ai.text.generate`, `pg.query.run`, `table.query.run`,
-  `n.ws.client.send`, `trigger.socket` — is **refused** inside any bundle,
+  `ws.message.send --connection`, `trigger.socket` — is **refused** inside any bundle,
   rather than allowed through unchecked. A bundle needing one of those cannot be
   confined by a host list today, and that is true whether it declared hosts or
   not: an empty list weakens the host allowlist and nothing else, so an author

@@ -388,9 +388,6 @@ pub fn default_pins(kind: &str) -> (Vec<String>, Vec<String>) {
         "logic.match" => (vec!["in".to_string()], vec!["default".to_string()]),
         "web.response.send" => (vec!["in".to_string()], vec!["out".to_string()]),
         "trigger.room" | "trigger.socket" => (vec![], vec!["out".to_string()]),
-        "n.ws.emit" | "n.ws.sync_state" | "n.ws.client.send" => {
-            (vec!["in".to_string()], vec!["out".to_string()])
-        }
         "function.result.call" => (
             vec!["in".to_string()],
             vec!["out".to_string(), "error".to_string()],

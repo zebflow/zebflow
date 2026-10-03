@@ -24,9 +24,10 @@
 //! | `event` | string | The event name sent by the client |
 //! | `payload` | object | The event body sent by the client |
 //!
-//! These fields are consumed by downstream nodes (`n.ws.sync_state`,
-//! `n.ws.emit`) automatically — pipeline authors do not need to extract them
-//! manually in most cases.
+//! Without `--room`, the room nodes downstream (`ws.state.*`,
+//! `ws.message.send`) act on `room_id`, and `ws.message.send --recipient
+//! session|others` targets `session_id`; everything else reads these fields
+//! through `{{ input.… }}`.
 //!
 //! # Matching rules
 //!
@@ -42,27 +43,27 @@
 //! **Match all events in any room:**
 //! ```text
 //! | trigger.room
-//! | n.ws.emit --event echo --to session
+//! | ws.message.send --event echo --recipient session --body "{{ input.payload }}"
 //! ```
 //!
 //! **Multiplayer 3D position update (batched at 30 fps):**
 //! ```text
 //! | trigger.room --event move
-//! | n.ws.sync_state --op merge --state-key /players/{session_id} --silent
+//! | ws.state.update --key "/players/{{ input.session_id }}" --value "{{ input.payload }}" --batch
 //! ```
 //!
 //! **Chat message in a specific room:**
 //! ```text
 //! | trigger.room --room lobby --event chat
-//! | n.ws.emit --event message --to all
+//! | ws.message.send --event message --body "{{ input.payload }}"
 //! ```
 //!
 //! **Classroom action (any room, specific event):**
 //! ```text
 //! | trigger.room --event classroom_action
 //! | script.result.run -- "/* validate role, build response */"
-//! | n.ws.sync_state --op merge --state-key /classroom
-//! | n.ws.emit --event classroom_updated --to all
+//! | ws.state.update --key /classroom --value "{{ input.payload }}"
+//! | ws.message.send --event classroom_updated --body "{{ input.payload }}"
 //! ```
 
 use async_trait::async_trait;
@@ -90,8 +91,8 @@ pub fn definition() -> NodeDefinition {
         description: "Runs when a browser connected to this project's WebSocket sends an event — the server half of a chat, a live \
             board, a multiplayer scene. `--room` scopes it to one room (empty = any), `--event` to one event name (empty = any); the \
             same `--auth-*` flags as `trigger.webhook` guard the connection. The payload is `{ room_id, session_id, event, payload }` \
-            — what the client sent is `input.payload`, not `input`. Answer with `ws.emit` (to the room or one session) or \
-            `ws.sync_state` (shared state every client mirrors); a `web.response.send` here answers nobody. The server raises \
+            — what the client sent is `input.payload`, not `input`. Answer with `ws.message.send` (to the room or one session) or \
+            `ws.state.put` / `ws.state.update` / `ws.state.delete` (shared state every client mirrors); a `web.response.send` here answers nobody. The server raises \
             `$connect` and `$disconnect` (payload `{ reason }`) on each connection's ordered queue — only `--event $connect` / \
             `--event $disconnect` receive them, and clients cannot send `$` events. The client is a plain `WebSocket` to \
             `/ws/{owner}/{project}/rooms/{room}` receiving `joined`, `state_patch`, `event` and `resync` \
@@ -257,7 +258,7 @@ pub fn definition() -> NodeDefinition {
         examples: vec![
             crate::pipeline::model::NodeExample::dsl("Chat message in", r#"trigger.room --room lobby --event chat.send"#)
                 .output(serde_json::json!({ "room_id": "lobby", "session_id": "s_8f2", "event": "chat.send", "payload": { "text": "hello" } }))
-                .note("Then `| ws.emit --room lobby --event chat.message --payload \"{{ { from: input.session_id, text: input.payload.text } }}\"`."),
+                .note("Then `| ws.message.send --event chat.message --body \"{{ { from: input.session_id, text: input.payload.text } }}\"`."),
         ],
         ..Default::default()
     }

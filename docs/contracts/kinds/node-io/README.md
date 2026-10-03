@@ -97,7 +97,7 @@ that is a new code, not an edit. `logic.retry` retries only `failed`;
   value it checked.
 - **Manners are per family.** A producer (query, convert, generate) replaces
   the payload with its product; a reader (`kv.entry.get`, `kv.entry.head`, `kv.entry.increment`)
-  merges into it; a doer (`kv.entry.put`, `ws.emit`) passes it through or returns a
+  merges into it; a doer (`kv.entry.put`, `ws.message.send`) passes it through or returns a
   receipt. Sibling nodes never differ in manner, and every node's
   `output_schema` states which it is.
 
@@ -128,8 +128,9 @@ that is a new code, not an edit. `logic.retry` retries only `failed`;
 **Retired by this rule** (migration is its own loop, after this document):
 the paired `--*-expr` twins (~30), every payload-extraction flag in all four
 of its spellings (`-path` as pointer, `-path` as dot, `-from`, `-key`), the
-`$.` literal-or-path convention, and `{name}` interpolation in
-`ws.sync_state --state-key`. Each becomes the one mechanism:
+`$.` literal-or-path convention, and `{name}` interpolation in a room-state
+key (now `ws.state.* --key "/players/{{ input.session_id }}"`). Each becomes
+the one mechanism:
 `--value "{{ input.user.email }}"`.
 
 ## Scope — one set of names, two worlds

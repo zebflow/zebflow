@@ -425,10 +425,10 @@ export default function LiveFleet(input) {
     ws.onmessage = (e) => {
       const msg = JSON.parse(e.data);
       if (msg.type === "state_patch") {
-        // n.ws.sync_state broadcasts the room's FULL state on every change.
+        // ws.state.* sends the room's FULL state on every change.
         setVehicles(msg.state?.vehicles || []);
       } else if (msg.type === "event" && msg.event === "telemetry") {
-        // n.ws.emit broadcasts one event; merge it into what we have.
+        // ws.message.send sends one event; merge it into what we have.
         setVehicles(prev => {
           const v = msg.payload;
           if (!v?.id) return prev;
@@ -634,7 +634,7 @@ inst.setViewState({
 
 ```
 | trigger.room --room fleet --event telemetry
-| n.ws.sync_state --op merge --state-key /vehicles/{session_id} --value "{{ input.payload }}"
+| ws.state.update --key "/vehicles/{{ input.session_id }}" --value "{{ input.payload }}"
 ```
 
 ### Aggregated Data for Heatmap

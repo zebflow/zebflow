@@ -23,7 +23,7 @@
 //! ```text
 //! | trigger.socket --url wss://stream.example.com/feed
 //! | script.result.run -- "return { event: input.message };"
-//! | n.ws.emit --event feed --room dashboard --to all
+//! | ws.message.send --room dashboard --event feed --body "{{ input.event }}"
 //! ```
 
 use async_trait::async_trait;
@@ -49,7 +49,7 @@ pub fn definition() -> NodeDefinition {
             for every message it receives — price feeds, a broker, another Zebflow. `--url` is `ws://` or `wss://`; `--credential` \
             supplies auth if the server needs it; reconnects with backoff by default. The payload is `{ trigger: \"ws_client\", url, \
             node_id, message }` — the message is `input.message` (parsed JSON with `--message-format json`, a string with `text`). \
-            To send back on the same connection use `ws.client.send --connection <this node id>`. Not for browsers: that is `trigger.room`."
+            To send back on the same connection use `ws.message.send --connection <this node id>`. Not for browsers: that is `trigger.room`."
             .to_string(),
         input_schema: json!({ "type": "object" }),
         output_schema: json!({

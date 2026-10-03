@@ -23,7 +23,7 @@
 //! ```text
 //! | trigger.topic --channel alerts
 //! | script.result.run -- "return { alert: input.message };"
-//! | n.ws.emit --event alert --room dashboard --to all
+//! | ws.message.send --room dashboard --event alert --body "{{ input.alert }}"
 //! ```
 
 use async_trait::async_trait;

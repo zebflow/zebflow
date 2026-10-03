@@ -79,8 +79,8 @@ const TICK_INTERVAL_MS: u64 = 33;
 
 /// State mutation operation applied to the shared room state tree.
 ///
-/// All operations accept a JSON-pointer `path` (e.g. `"/players/abc123"`)
-/// that is resolved after dynamic interpolation by [`crate::ws::path::interpolate_path`].
+/// All operations accept a JSON-pointer `path` (e.g. `"/players/abc123"`),
+/// already resolved and checked by the node (`ws.state.*`).
 #[derive(Debug, Clone)]
 pub enum StateOp {
     /// Replace the value at `path` with the supplied value.
@@ -136,7 +136,7 @@ pub enum RoomCmd {
     PatchState {
         /// The mutation type (`Set`, `Merge`, `Delete`).
         op: StateOp,
-        /// JSON pointer path, already interpolated (see [`crate::ws::path`]).
+        /// JSON pointer path, already resolved by the node.
         path: String,
         /// New value (ignored for `Delete`).
         value: Option<Value>,
@@ -152,7 +152,7 @@ pub enum RoomCmd {
     PatchStateSilent {
         /// The mutation type (`Set`, `Merge`, `Delete`).
         op: StateOp,
-        /// JSON pointer path, already interpolated (see [`crate::ws::path`]).
+        /// JSON pointer path, already resolved by the node.
         path: String,
         /// New value (ignored for `Delete`).
         value: Option<Value>,

@@ -673,31 +673,24 @@
         "web.site.generate"
       ]
     },
-    "n.ws.client.send": {
-      "label": "WSSEND",
+    "ws.message.send": {
+      "label": "SEND",
       "method": "direct-svg",
-      "path": "/assets/node-icons/zebflow/n.ws.client.send.svg",
+      "path": "/assets/node-icons/zebflow/ws.message.send.svg",
       "source_url": "",
       "supports": [
-        "n.ws.client.send"
+        "ws.message.send"
       ]
     },
-    "n.ws.emit": {
-      "label": "EMIT",
+    "ws.state": {
+      "label": "STATE",
       "method": "direct-svg",
-      "path": "/assets/node-icons/zebflow/n.ws.emit.svg",
+      "path": "/assets/node-icons/zebflow/ws.state.svg",
       "source_url": "",
       "supports": [
-        "n.ws.emit"
-      ]
-    },
-    "n.ws.sync_state": {
-      "label": "SYNC",
-      "method": "direct-svg",
-      "path": "/assets/node-icons/zebflow/n.ws.sync_state.svg",
-      "source_url": "",
-      "supports": [
-        "n.ws.sync_state"
+        "ws.state.put",
+        "ws.state.update",
+        "ws.state.delete"
       ]
     }
   },

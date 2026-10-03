@@ -255,7 +255,7 @@ pub enum DslFlagKind {
     RepeatedList,
     /// Presence flag — no value consumed; sets config key to `true`.
     ///
-    /// `--silent` → `config["silent"] = true`
+    /// `--batch` → `config["batch"] = true`
     Bool,
     /// Repeated `--flag key=value` occurrences collected into a JSON object.
     ///
