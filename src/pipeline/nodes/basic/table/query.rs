@@ -43,7 +43,7 @@ pub fn definition() -> NodeDefinition {
         title: "Table Query".to_string(),
         description: "Run SQL across files — CSV, JSON, NDJSON, Parquet objects in the project's file store — as if they were tables. \
             Each `--from \"<path> as <alias>\"` binds one file; the SQL in the body queries the aliases; `--params` binds `$1, $2`. \
-            Answers `{ table: { engine, rows, columns, preview, data?, to?, url? } }` — rows are in `input.table.data` only with \
+            Adds `table: { engine, rows, columns, preview, data?, to?, file? }` to the payload — rows are in `input.table.data` only with \
             `--to-json`, otherwise they are written to `--to <path>` and only `preview` rows travel in the payload. For database \
             tables use `sekejap.query` / `pg.query`; this node is for files and analytics over them."
             .to_string(),
@@ -102,13 +102,7 @@ pub fn definition() -> NodeDefinition {
                 kind: DslFlagKind::Scalar,
                 required: false,
             },
-            DslFlag {
-                flag: "--to".to_string(),
-                config_key: "to_path".to_string(),
-                description: "ZebFS path to write query output.".to_string(),
-                kind: DslFlagKind::Scalar,
-                required: false,
-            },
+
             DslFlag {
                 flag: "--format".to_string(),
                 config_key: "to_format".to_string(),
@@ -137,7 +131,7 @@ pub fn definition() -> NodeDefinition {
                 kind: DslFlagKind::Scalar,
                 required: false,
             },
-        ],
+        ].into_iter().chain(super::destination_flags()).collect(),
         fields: vec![
             NodeFieldDef {
                 name: "engine".to_string(),
@@ -185,13 +179,7 @@ pub fn definition() -> NodeDefinition {
                 help: Some("Emit rows under table.data for downstream nodes.".to_string()),
                 ..Default::default()
             },
-            NodeFieldDef {
-                name: "to_path".to_string(),
-                label: "Write To FS".to_string(),
-                field_type: NodeFieldType::Text,
-                help: Some("Optional ZebFS object path to write query rows, e.g. exports/result.parquet.".to_string()),
-                ..Default::default()
-            },
+
             NodeFieldDef {
                 name: "to_format".to_string(),
                 label: "Output Format".to_string(),
@@ -221,7 +209,7 @@ pub fn definition() -> NodeDefinition {
                 help: Some("Maximum rows materialized after query execution. Prefer SQL LIMIT for large data.".to_string()),
                 ..Default::default()
             },
-        ],
+        ].into_iter().chain(super::destination_fields()).collect(),
         layout: vec![
             LayoutItem::Row { row: vec![
                 LayoutItem::Field("engine".to_string()),
@@ -231,7 +219,11 @@ pub fn definition() -> NodeDefinition {
             LayoutItem::Field("query".to_string()),
             LayoutItem::Field("params".to_string()),
             LayoutItem::Row { row: vec![
-                LayoutItem::Field("to_path".to_string()),
+                LayoutItem::Field("folder".to_string()),
+                LayoutItem::Field("filename".to_string()),
+                LayoutItem::Field("path".to_string()),
+                LayoutItem::Field("store".to_string()),
+                LayoutItem::Field("on_conflict".to_string()),
                 LayoutItem::Field("to_format".to_string()),
             ] },
             LayoutItem::Row { row: vec![
@@ -242,9 +234,9 @@ pub fn definition() -> NodeDefinition {
         ai_tool: Default::default(),
         examples: vec![
             crate::pipeline::model::NodeExample::dsl("Aggregate a CSV", r#"table.query --from "uploads/sales.csv as sales" --to-json -- "SELECT region, SUM(amount) AS total FROM sales GROUP BY region ORDER BY total DESC""#)
-                .output(serde_json::json!({ "table": { "engine": "geodatafusion", "rows": 2, "columns": ["region", "total"], "preview": [{ "region": "AU", "total": 1200 }], "data": [{ "region": "AU", "total": 1200 }, { "region": "NZ", "total": 300 }], "to": null, "url": null } })),
-            crate::pipeline::model::NodeExample::dsl("Join two files into Parquet", r#"table.query --from "datasets/orders.ndjson as o" --from "datasets/customers.csv as c" --to datasets/report.parquet --preview-rows 5 -- "SELECT c.name, COUNT(*) AS orders FROM o JOIN c ON o.customer_id = c.id GROUP BY c.name""#)
-                .note("The full result is the file at `datasets/report.parquet`; the payload carries `table.preview` (5 sample rows, from `--preview-rows`) and `table.url`."),
+                .output(serde_json::json!({ "table": { "engine": "geodatafusion", "rows": 2, "columns": ["region", "total"], "preview": [{ "region": "AU", "total": 1200 }], "data": [{ "region": "AU", "total": 1200 }, { "region": "NZ", "total": 300 }], "to": null, "file": null } })),
+            crate::pipeline::model::NodeExample::dsl("Join two files into Parquet", r#"table.query --from "datasets/orders.ndjson as o" --from "datasets/customers.csv as c" --path datasets/report.parquet --preview-rows 5 -- "SELECT c.name, COUNT(*) AS orders FROM o JOIN c ON o.customer_id = c.id GROUP BY c.name""#)
+                .note("The full result is the file at `datasets/report.parquet`; the payload carries `table.preview` (5 sample rows, from `--preview-rows`) and `table.file` (a FileRef)."),
         ],
         ..Default::default()
     }
@@ -286,8 +278,21 @@ pub struct Config {
     /// Bind values for `$1`, `$2`, … A whole `{{ }}` carries its typed value.
     #[serde(default)]
     pub params: Value,
+    /// Store folder for the written file (default: `tables`).
     #[serde(default)]
-    pub to_path: Option<String>,
+    pub folder: String,
+    /// Name of the written file (default: a UUID with the format's extension).
+    #[serde(default)]
+    pub filename: Option<String>,
+    /// Exact store key; overrides `folder` and `filename`.
+    #[serde(default)]
+    pub path: Option<String>,
+    /// The store to read sources from and write to; saved explicitly at registration.
+    #[serde(default)]
+    pub store: Option<String>,
+    /// `overwrite`, `skip` or `error` (default: error).
+    #[serde(default)]
+    pub on_conflict: Option<String>,
     #[serde(default)]
     pub to_format: Option<String>,
     #[serde(default)]
@@ -313,7 +318,11 @@ impl Default for Config {
             sources: Vec::new(),
             query: String::new(),
             params: Value::Null,
-            to_path: None,
+            folder: String::new(),
+            filename: None,
+            path: None,
+            store: None,
+            on_conflict: None,
             to_format: None,
             to_json: false,
             preview_rows: None,
@@ -385,19 +394,25 @@ impl NodeHandler for Node {
         let raw_sql = self.config.query.trim().to_string();
         let sql = normalize_select_sql(&raw_sql)?;
         let params = resolve_params(&self.config);
-        if non_empty(self.config.to_path.as_deref()).is_none() && !self.config.to_json {
+        let destination = super::TableDestination {
+            folder: &self.config.folder,
+            filename: self.config.filename.as_deref(),
+            path: self.config.path.as_deref(),
+        };
+        if !destination.requested() && !self.config.to_json {
             return Err(PipelineError::new(
                 "FW_NODE_TABLE_QUERY",
-                "set --to to write a ZebFS object or --to-json to emit rows downstream",
+                "set --folder, --filename or --path to write a file, or --to-json to emit rows downstream",
             ));
         }
         let (owner, project, ..) = metadata_scope(&input.metadata)?;
-        let layout = self
-            .platform
-            .file
-            .ensure_project_layout(owner, project)
-            .map_err(|err| PipelineError::new("FW_NODE_TABLE_QUERY", err.to_string()))?;
-        let zebfs = layout.open_files();
+        let zebfs = crate::pipeline::nodes::shared::project_store::open_store(
+            &self.platform,
+            owner,
+            project,
+            self.config.store.as_deref(),
+        )?
+        .fs;
         let QueryRows {
             rows,
             source_labels,
@@ -418,19 +433,27 @@ impl NodeHandler for Node {
 
         let columns = collect_columns(&rows);
         let mut to_path = None;
-        let mut url = None;
+        let mut file = Value::Null;
         let mut to_format_value = None;
 
-        if let Some(path) = non_empty(self.config.to_path.as_deref()) {
-            let rel_path = normalize_object_path(path)
-                .map_err(|err| PipelineError::new("FW_NODE_TABLE_QUERY", err.to_string()))?;
+        if destination.requested() {
+            let default_format = self.config.to_format.as_deref().map(str::trim).filter(|f| !f.is_empty()).unwrap_or("csv");
+            let rel_path = destination.key(default_format, "FW_NODE_TABLE_QUERY")?;
             let format = output_format(self.config.to_format.as_deref(), &rel_path)?;
             let bytes = encode_rows(&rows, &columns, format)
                 .map_err(|err| PipelineError::new("FW_NODE_TABLE_QUERY", err.to_string()))?;
-            zebfs
-                .put(&rel_path, &bytes)
-                .map_err(|err| PipelineError::new("FW_NODE_TABLE_QUERY", err.to_string()))?;
-            url = Some(format!("/fs/{owner}/{project}/{rel_path}"));
+            file = super::write_table_file(
+                &self.platform,
+                owner,
+                project,
+                self.config.store.as_deref(),
+                self.config.on_conflict.as_deref(),
+                &rel_path,
+                bytes,
+                super::table_mime(format.as_str()),
+                "table.query",
+                "FW_NODE_TABLE_QUERY",
+            )?;
             to_path = Some(rel_path);
             to_format_value = Some(format.as_str().to_string());
         }
@@ -443,7 +466,7 @@ impl NodeHandler for Node {
         table.insert("rows".to_string(), json!(rows.len()));
         table.insert("columns".to_string(), json!(columns));
         table.insert("to".to_string(), option_string(to_path));
-        table.insert("url".to_string(), option_string(url));
+        table.insert("file".to_string(), file);
         table.insert("to_format".to_string(), option_string(to_format_value));
         table.insert(
             "preview".to_string(),
@@ -455,7 +478,14 @@ impl NodeHandler for Node {
 
         Ok(NodeExecutionOutput {
             output_pins: vec![OUTPUT_PIN_OUT.to_string()],
-            payload: json!({ "table": table }),
+            payload: {
+                let mut payload = match &input.payload {
+                    Value::Object(map) => map.clone(),
+                    _ => Map::new(),
+                };
+                payload.insert("table".to_string(), Value::Object(table));
+                Value::Object(payload)
+            },
             trace: vec![
                 format!("node_kind={NODE_KIND}"),
                 format!("engine={engine_label} rows={}", rows.len()),

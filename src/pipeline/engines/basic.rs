@@ -33,7 +33,7 @@ use crate::pipeline::model::{
     ExecuteOptions, ExecutionBus, NodeTraceEntry, PipelineContext, PipelineError, PipelineGraph,
     PipelineNode, PipelineOutput, Signal,
 };
-use crate::pipeline::nodes::shared::file_ref::{BACKEND_ZEBFS, FILE_REF_TYPE, LIFECYCLE_DURABLE};
+use crate::pipeline::nodes::shared::file_ref::{FILE_REF_TYPE, LIFECYCLE_DURABLE};
 use crate::pipeline::nodes::basic::{
     ai, auth, browser, concept, crypto, fs, function, geo, http, input, kv, logic, mail, ms, pg,
     script, sekejap, sqlite, table,
@@ -912,7 +912,8 @@ fn materialize_node_output_files(
             .map_err(|err| PipelineError::new("FW_NODE_OUTPUT_FILE_WRITE", err.to_string()))?;
         let file_ref = json!({
             "__zf_type": FILE_REF_TYPE,
-            "backend": BACKEND_ZEBFS,
+            "backend": layout.file_backend().as_str(),
+            "store": layout.store_id(),
             "ref": stat.path,
             "filename": name,
             "mime": content_type,
@@ -2401,8 +2402,19 @@ impl BasicPipelineEngine {
                         node.execute_many_async(input_for_exec).await
                     }
                     NodeDispatch::InlineWebDocsGenerate { node_id, config } => {
-                        let Some(zebfs) =
-                            self.repo_layout.as_ref().map(|layout| layout.open_files())
+                        let node_store = match self.platform.as_ref() {
+                            Some(platform) => Some(crate::pipeline::nodes::shared::project_store::open_store(
+                                platform,
+                                &ctx.owner,
+                                &ctx.project,
+                                config.store.as_deref(),
+                            )?),
+                            None => None,
+                        };
+                        let Some(zebfs) = node_store
+                            .as_ref()
+                            .map(|store| store.fs.clone())
+                            .or_else(|| self.repo_layout.as_ref().map(|layout| layout.open_files()))
                         else {
                             return Err(PipelineError::new(
                                 "FW_NODE_WEB_DOCS_UNAVAILABLE",
@@ -2638,13 +2650,12 @@ impl BasicPipelineEngine {
 
                             Ok(vec![NodeExecutionOutput {
                                 output_pins: vec![web::docs_generate::OUTPUT_PIN_OUT.to_string()],
-                                payload: json!({
+                                payload: merged_payload(&input.payload, json!({
                                     "docs_generated": {
                                         "status": "ok",
                                         "site_title": site.site_title,
                                         "template": site.template_rel_path,
                                         "docs_root": config.docs_root,
-                                        "output_dir": config.output_dir,
                                         "site_root": site.site_root_rel,
                                         "deploy_base_url": site.deploy_base_url,
                                         "deploy_base_path": site.deploy_base_path,
@@ -2657,7 +2668,7 @@ impl BasicPipelineEngine {
                                         "search_index_path": search_index_rel,
                                         "urls": urls,
                                     }
-                                }),
+                                })),
                                 trace: vec![
                                     format!("node={node_id}"),
                                     format!("node_kind={}", web::docs_generate::NODE_KIND),
@@ -2667,8 +2678,19 @@ impl BasicPipelineEngine {
                         })
                     }
                     NodeDispatch::InlineWebStaticGenerate { node_id, config } => {
-                        let Some(zebfs) =
-                            self.repo_layout.as_ref().map(|layout| layout.open_files())
+                        let node_store = match self.platform.as_ref() {
+                            Some(platform) => Some(crate::pipeline::nodes::shared::project_store::open_store(
+                                platform,
+                                &ctx.owner,
+                                &ctx.project,
+                                config.store.as_deref(),
+                            )?),
+                            None => None,
+                        };
+                        let Some(zebfs) = node_store
+                            .as_ref()
+                            .map(|store| store.fs.clone())
+                            .or_else(|| self.repo_layout.as_ref().map(|layout| layout.open_files()))
                         else {
                             return Err(PipelineError::new(
                                 "FW_NODE_WEB_STATIC_UNAVAILABLE",
@@ -2742,11 +2764,7 @@ impl BasicPipelineEngine {
                                         &page_output_path,
                                     )?
                                 } else {
-                                    web::static_generate::default_route(
-                                        &ctx.owner,
-                                        &ctx.project,
-                                        &rel_path,
-                                    )
+                                    web::static_generate::default_route(&config)?
                                 };
 
                             let mut metadata = input.metadata.clone();
@@ -2767,7 +2785,7 @@ impl BasicPipelineEngine {
 
                             let render_out = web::response::render_compiled_page(
                                 &compiled,
-                                input.payload,
+                                input.payload.clone(),
                                 metadata,
                                 self.rwe.as_ref(),
                                 self.language.as_ref(),
@@ -2826,7 +2844,7 @@ impl BasicPipelineEngine {
                                 web::static_site::localize_static_html_assets(
                                     &site_store,
                                     &web::static_site::normalize_page_output_path(
-                                        &config.output_path,
+                                        &config.path,
                                     )?,
                                     &final_html,
                                     web::static_site::StaticAssetSources {
@@ -2872,7 +2890,17 @@ impl BasicPipelineEngine {
                                 &config.on_conflict,
                             )?;
                             let bytes = localized.html.as_bytes().len() as u64;
-                            let url = format!("/fs/{}/{}/{}", ctx.owner, ctx.project, rel_path);
+                            let file = match node_store.as_ref() {
+                                Some(store) => {
+                                    let written = zebfs.get(&rel_path).map_err(|err| {
+                                        PipelineError::new("WEB_STATIC_READ", err.to_string())
+                                    })?;
+                                    let leaf = rel_path.rsplit('/').next().unwrap_or(&rel_path).to_string();
+                                    store.file_ref(&rel_path, &leaf, "text/html", &written.bytes, "web.static.generate", "generated")
+                                }
+                                None => Value::Null,
+                            };
+                            let store_id = node_store.as_ref().map(|store| store.id.clone());
                             let site_root_rel =
                                 web::static_generate::effective_site_root_rel_path(&config)?;
                             let manifest_rel = if let Some(site_root_rel) = site_root_rel.as_deref()
@@ -2884,7 +2912,7 @@ impl BasicPipelineEngine {
                                     root_rel: site_root_rel.to_string(),
                                 };
                                 let page_path = web::static_site::normalize_page_output_path(
-                                    &config.output_path,
+                                    &config.path,
                                 )?;
                                 let page_record = web::static_site::StaticPageRecord {
                                     path: page_path,
@@ -2920,12 +2948,13 @@ impl BasicPipelineEngine {
 
                             Ok(vec![NodeExecutionOutput {
                                 output_pins: vec![web::static_generate::OUTPUT_PIN_OUT.to_string()],
-                                payload: json!({
+                                payload: merged_payload(&input.payload, json!({
                                     "generated": {
                                         "status": status,
                                         "path": rel_path,
-                                        "url": url,
                                         "route": route,
+                                        "store": store_id,
+                                        "file": file,
                                         "deploy_base_url": web::static_generate::effective_deploy_base_url(&config),
                                         "deploy_base_path": web::static_generate::effective_deploy_base_path(&config)?,
                                         "template": template_source.id,
@@ -2934,7 +2963,7 @@ impl BasicPipelineEngine {
                                         "asset_group": asset_group,
                                         "bytes": bytes,
                                     }
-                                }),
+                                })),
                                 trace,
                             }])
                         })
@@ -4761,8 +4790,8 @@ mod tests {
 [a] trigger.manual
 [b] fs.put --path qa/fs/hello.txt --text "hello fs"
 [c] fs.get --path qa/fs/hello.txt
-[d] fs.copy --from qa/fs/hello.txt --to qa/fs/copy.txt
-[e] fs.move --from qa/fs/copy.txt --to qa/fs/moved.txt
+[d] fs.copy --from qa/fs/hello.txt --filename copy.txt
+[e] fs.move --from qa/fs/copy.txt --filename moved.txt
 [f] fs.list --path qa/fs
 [g] fs.delete --path qa/fs/hello.txt
 [h] fs.mkdir --path qa/fs/prefix
@@ -4901,7 +4930,7 @@ mod tests {
 
         let dsl = r#"
 [a] trigger.manual
-[b] table.convert --from "{{ input.rows }}" --to datasets/posts.parquet
+[b] table.convert --from "{{ input.rows }}" --path datasets/posts.parquet
 [c] table.convert --from datasets/posts.parquet --to-json --preview-rows 2
 
 [a] -> [b]
@@ -6062,4 +6091,17 @@ fn refuse_uncheckable_egress_node(
 
 fn is_logic_collect(node: &PipelineNode) -> bool {
     node.kind == logic::collect::NODE_KIND
+}
+
+/// A node's answer added to the payload it was given, the rest kept
+/// (`docs/contracts/node-conventions.md` §5).
+fn merged_payload(input: &Value, answer: Value) -> Value {
+    let mut payload = match input {
+        Value::Object(map) => map.clone(),
+        _ => Map::new(),
+    };
+    if let Value::Object(answer) = answer {
+        payload.extend(answer);
+    }
+    Value::Object(payload)
 }

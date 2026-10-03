@@ -26,7 +26,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use uuid::Uuid;
 
-use crate::pipeline::nodes::shared::file_ref::{durable_file_ref, is_file_ref, read_file_ref_bytes};
+use crate::pipeline::nodes::shared::project_store::{OnConflict, on_conflict_flag, open_store, store_fields, store_flag, target_key};
+use crate::pipeline::nodes::shared::file_ref::{is_file_ref, read_file_ref_bytes};
 use crate::pipeline::nodes::shared::util::{metadata_scope, resolve_path};
 use crate::pipeline::model::NodeCapability;
 use crate::pipeline::{
@@ -230,6 +231,15 @@ pub struct Config {
     /// Useful for deterministic file paths (e.g. profile avatars).
     #[serde(default)]
     pub filename: Option<String>,
+
+    /// The store to write to (`local` or an s3 credential id); saved
+    /// explicitly when the pipeline is registered.
+    #[serde(default)]
+    pub store: Option<String>,
+
+    /// `overwrite`, `skip` or `error` (default: error).
+    #[serde(default)]
+    pub on_conflict: Option<String>,
 }
 
 impl Default for Config {
@@ -241,6 +251,8 @@ impl Default for Config {
             allowed_kinds: default_allowed_kinds(),
             max_size_mb: default_max_size_mb(),
             filename: None,
+            store: None,
+            on_conflict: None,
         }
     }
 }
@@ -338,11 +350,13 @@ pub fn definition() -> NodeDefinition {
                 flag: "--filename".to_string(),
                 config_key: "filename".to_string(),
                 description:
-                    "Custom filename without extension (default: random UUID). Overwrites if same name exists."
+                    "Custom filename without extension (default: random UUID)."
                         .to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
             },
+            store_flag(),
+            on_conflict_flag(OnConflict::Error),
         ],
         fields: vec![
             NodeFieldDef {
@@ -419,11 +433,11 @@ pub fn definition() -> NodeDefinition {
                 name: "filename".to_string(),
                 label: "Filename".to_string(),
                 field_type: NodeFieldType::Text,
-                help: Some("Custom filename without extension (default: random UUID). File with same name will be overwritten.".to_string()),
+                help: Some("Custom filename without extension (default: random UUID).".to_string()),
                 default_value: None,
                 ..Default::default()
             },
-        ],
+        ].into_iter().chain(store_fields(OnConflict::Error)).collect(),
         layout: vec![
             LayoutItem::Field("field".to_string()),
             LayoutItem::Field("path".to_string()),
@@ -431,6 +445,8 @@ pub fn definition() -> NodeDefinition {
             LayoutItem::Field("allowed_kinds".to_string()),
             LayoutItem::Field("max_size_mb".to_string()),
             LayoutItem::Field("filename".to_string()),
+            LayoutItem::Field("store".to_string()),
+            LayoutItem::Field("on_conflict".to_string()),
         ],
         examples: vec![
             crate::pipeline::model::NodeExample::dsl("Photo with a caption", "fs.save --field photo --folder uploads --allowed-kinds images --max-size 10")
@@ -718,24 +734,32 @@ impl NodeHandler for Node {
             .as_deref()
             .map(str::trim)
             .filter(|value| !value.is_empty())
-            .map(sanitize_dest_path);
-        let rel_path = match configured_path.filter(|value| !value.is_empty()) {
-            Some(path) if path.ends_with('/') => format!("{path}{storage_name}"),
-            Some(path) => path,
-            None => format!("{folder}/{storage_name}"),
+            .map(|path| {
+                if path.ends_with('/') {
+                    format!("{path}{storage_name}")
+                } else {
+                    path.to_string()
+                }
+            });
+        let rel_path = target_key(configured_path.as_deref(), &folder, &storage_name, "FW_NODE_FILE_SAVE")?;
+
+        // ── Write to the node's store ─────────────────────────────────────────
+        let store = open_store(&self.platform, owner, project, self.config.store.as_deref())?;
+        let on_conflict = OnConflict::parse(self.config.on_conflict.as_deref(), OnConflict::Error, "FW_NODE_FILE_SAVE")?;
+        let (bytes, written) = if on_conflict.allows(&store.fs, &rel_path, "FW_NODE_FILE_SAVE")? {
+            store
+                .fs
+                .put(&rel_path, &bytes)
+                .map_err(|err| PipelineError::new("FW_NODE_FILE_SAVE", err.to_string()))?;
+            (bytes, true)
+        } else {
+            // Skipped: the answer names the object already there.
+            let existing = store
+                .fs
+                .get(&rel_path)
+                .map_err(|err| PipelineError::new("FW_NODE_FILE_SAVE", err.to_string()))?;
+            (existing.bytes, false)
         };
-
-        // ── Write to disk ──────────────────────────────────────────────────────
-        let layout = self
-            .platform
-            .file
-            .ensure_project_layout(owner, project)
-            .map_err(|err| PipelineError::new("FW_NODE_FILE_SAVE", err.to_string()))?;
-
-        let zebfs = layout.open_files();
-        zebfs
-            .put(&rel_path, &bytes)
-            .map_err(|err| PipelineError::new("FW_NODE_FILE_SAVE", err.to_string()))?;
 
         // The form's other fields ride along: an upload form has a title and a
         // caption beside the file, and the INSERT after this node needs them.
@@ -745,13 +769,14 @@ impl NodeHandler for Node {
         };
         payload.insert(
             "saved".to_string(),
-            durable_file_ref(layout.file_backend(), &rel_path, &storage_name, &effective_mime, &bytes, "fs.save", &trust),
+            store.file_ref(&rel_path, &storage_name, &effective_mime, &bytes, "fs.save", &trust),
         );
         Ok(NodeExecutionOutput {
             output_pins: vec![OUTPUT_PIN_OUT.to_string()],
             payload: Value::Object(payload),
             trace: vec![format!(
-                "node_kind={NODE_KIND} field={field} path={rel_path}"
+                "node_kind={NODE_KIND} field={field} path={rel_path} store={} written={written}",
+                store.id
             )],
         })
     }
@@ -848,9 +873,10 @@ fn sanitize_filename(name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::pipeline::nodes::shared::file_ref::durable_file_ref;
 
     fn file_ref(name: &str) -> Value {
-        serde_json::json!({ "__zf_type": "file_ref", "backend": "zebfs", "ref": format!("tmp/runs/r/files/{name}"), "filename": name,
+        serde_json::json!({ "__zf_type": "file_ref", "backend": "zebfs", "store": "local", "ref": format!("tmp/runs/r/files/{name}"), "filename": name,
             "mime": "image/png", "kind": "image", "size": 1, "sha256": format!("sha256:{}", "0".repeat(64)),
             "lifecycle": "temporary", "origin": "fs.svg.convert", "trust": "generated" })
     }
@@ -921,13 +947,13 @@ mod tests {
     #[test]
     fn saved_is_exactly_a_durable_file_ref() {
         let bytes = b"\x89PNG\r\n\x1a\nnot really a png";
-        let saved = durable_file_ref(crate::zebfs::FileBackend::Zebfs, "uploads/abc.png", "abc.png", "image/png", bytes, "fs.save", "untrusted");
+        let saved = durable_file_ref(crate::zebfs::FileBackend::Zebfs, "local", "uploads/abc.png", "abc.png", "image/png", bytes, "fs.save", "untrusted");
         crate::pipeline::nodes::shared::file_ref::validate_file_ref(&saved).expect("a contract FileRef");
         let mut keys: Vec<&str> = saved.as_object().unwrap().keys().map(String::as_str).collect();
         keys.sort_unstable();
         assert_eq!(
             keys,
-            ["__zf_type", "backend", "filename", "kind", "lifecycle", "mime", "origin", "ref", "sha256", "size", "trust"]
+            ["__zf_type", "backend", "filename", "kind", "lifecycle", "mime", "origin", "ref", "sha256", "size", "store", "trust"]
         );
         assert_eq!(saved["__zf_type"], "file_ref");
         assert_eq!(saved["ref"], "uploads/abc.png");

@@ -32,13 +32,13 @@ fn default_meta_file() -> String {
 pub struct Config {
     /// Relative folder under `repo/docs/`.
     pub docs_root: String,
-    /// Zebflow FS output directory.
-    pub output_dir: String,
-    /// Optional static site root under Zebflow FS.
-    ///
-    /// Defaults to `output_dir`.
+    /// The site's root folder in the store (default: `docs`); every page,
+    /// asset, sitemap and search index is written beneath it.
     #[serde(default)]
     pub site_root: Option<String>,
+    /// The store to write to; saved explicitly at registration.
+    #[serde(default)]
+    pub store: Option<String>,
     /// Relative folder under `repo/pipelines/`.
     pub template_folder: String,
     #[serde(default)]
@@ -165,8 +165,8 @@ pub fn definition() -> NodeDefinition {
                         "site_title": { "type": "string" },
                         "template": { "type": "string" },
                         "docs_root": { "type": "string" },
-                        "output_dir": { "type": "string" },
                         "site_root": { "type": "string" },
+                        "store": { "type": "string" },
                         "deploy_base_url": { "type": ["string", "null"] },
                         "deploy_base_path": { "type": "string" },
                         "manifest_path": { "type": "string" },
@@ -187,15 +187,15 @@ pub fn definition() -> NodeDefinition {
         script_bridge: None,
         config_schema: json!({
             "type": "object",
-            "required": ["docs_root", "output_dir", "template_folder"],
+            "required": ["docs_root", "template_folder"],
             "properties": {
                 "docs_root": { "type": "string", "description": "Folder under repo/docs containing the markdown doc tree." },
-                "output_dir": { "type": "string", "description": "Zebflow FS folder where the generated site will be written." },
-                "site_root": { "type": "string", "description": "Optional static site root under Zebflow FS. Defaults to output_dir." },
+                "site_root": { "type": "string", "description": "The site's root folder in the store (default: docs)." },
+                "store": { "type": "string", "description": "The store to write to; saved explicitly at registration." },
                 "template_folder": { "type": "string", "description": "Folder under the source root where docs.template.tsx lives; it is created there when missing." },
                 "site_title": { "type": "string" },
                 "deploy_base_url": { "type": "string", "description": "Optional absolute deployed site origin used for canonical URLs and sitemap entries." },
-                "deploy_base_path": { "type": "string", "description": "Optional deployed URL base path seen by generated pages. Defaults to /{output_dir}/." },
+                "deploy_base_path": { "type": "string", "description": "Deployed URL base path seen by generated pages (default: /, the site at the root of its address)." },
                 "meta_file": { "type": "string", "description": "Folder metadata file name. Default: _meta.yaml" }
             }
         }),
@@ -208,19 +208,13 @@ pub fn definition() -> NodeDefinition {
                 required: true,
             },
             DslFlag {
-                flag: "--output-dir".to_string(),
-                config_key: "output_dir".to_string(),
-                description: "Zebflow FS folder where the generated site is written.".to_string(),
-                kind: DslFlagKind::Scalar,
-                required: true,
-            },
-            DslFlag {
                 flag: "--site-root".to_string(),
                 config_key: "site_root".to_string(),
-                description: "Optional static site root under Zebflow FS. Defaults to output_dir.".to_string(),
+                description: "The site's root folder in the store (default: docs).".to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
             },
+            crate::pipeline::nodes::shared::project_store::store_flag(),
             DslFlag {
                 flag: "--template-folder".to_string(),
                 config_key: "template_folder".to_string(),
@@ -245,7 +239,7 @@ pub fn definition() -> NodeDefinition {
             DslFlag {
                 flag: "--deploy-base-path".to_string(),
                 config_key: "deploy_base_path".to_string(),
-                description: "Optional deployed URL base path seen by generated pages. Defaults to /{output_dir}/.".to_string(),
+                description: "Deployed URL base path seen by generated pages (default: /).".to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
             },
@@ -266,20 +260,20 @@ pub fn definition() -> NodeDefinition {
                 help: Some("Folder under repo/docs/ that contains the markdown documentation tree.".to_string()),
                 ..Default::default()
             },
-            NodeFieldDef {
-                name: "output_dir".to_string(),
-                label: "Output Dir".to_string(),
-                field_type: NodeFieldType::Text,
-                placeholder: Some("docs".to_string()),
-                help: Some("Zebflow FS folder where the generated site will be written.".to_string()),
-                ..Default::default()
-            },
+
             NodeFieldDef {
                 name: "site_root".to_string(),
                 label: "Site Root".to_string(),
                 field_type: NodeFieldType::Text,
                 placeholder: Some("static/sekejap-docs".to_string()),
                 help: Some("Optional shared static site root under Zebflow FS. Defaults to Output Dir.".to_string()),
+                ..Default::default()
+            },
+            NodeFieldDef {
+                name: "store".to_string(),
+                label: "Store".to_string(),
+                field_type: NodeFieldType::Text,
+                help: Some("`local`, or the id of an s3 credential. Empty: the project's default, saved when the pipeline is registered.".to_string()),
                 ..Default::default()
             },
             NodeFieldDef {
@@ -311,7 +305,7 @@ pub fn definition() -> NodeDefinition {
                 label: "Deploy Base Path".to_string(),
                 field_type: NodeFieldType::Text,
                 placeholder: Some("/docs".to_string()),
-                help: Some("URL base path for generated pages. Leave empty to derive from output_dir.".to_string()),
+                help: Some("URL base path for generated pages (default: /).".to_string()),
                 ..Default::default()
             },
             NodeFieldDef {
@@ -328,8 +322,8 @@ pub fn definition() -> NodeDefinition {
             LayoutItem::Field("docs_root".to_string()),
             LayoutItem::Row {
                 row: vec![
-                    LayoutItem::Field("output_dir".to_string()),
                     LayoutItem::Field("site_root".to_string()),
+                    LayoutItem::Field("store".to_string()),
                 ],
             },
             LayoutItem::Field("template_folder".to_string()),
@@ -344,9 +338,9 @@ pub fn definition() -> NodeDefinition {
         ],
         ai_tool: Default::default(),
         examples: vec![
-            crate::pipeline::model::NodeExample::dsl("Build the docs site nightly", r#"web.docs.generate --docs-root handbook --output-dir public/docs --site-title "Acme Handbook""#)
-                .output(serde_json::json!({ "docs_generated": { "status": "written", "site_title": "Acme Handbook", "template": "docs/docs.template.tsx", "docs_root": "docs/handbook", "output_dir": "public/docs", "site_root": "public/docs" } }))
-                .note("Markdown under `docs/handbook/` becomes HTML under `public/docs/`, private until the owner serves that folder as a site in Studio → Files."),
+            crate::pipeline::model::NodeExample::dsl("Build the docs site nightly", r#"web.docs.generate --docs-root handbook --site-root handbook-site --site-title "Acme Handbook""#)
+                .output(serde_json::json!({ "docs_generated": { "status": "written", "site_title": "Acme Handbook", "template": "docs/docs.template.tsx", "docs_root": "docs/handbook", "site_root": "handbook-site", "store": "local" } }))
+                .note("Markdown under `docs/handbook/` becomes HTML under `handbook-site/`, private until the owner serves that folder as a site in Studio → Files."),
         ],
         ..Default::default()
     }
@@ -364,8 +358,7 @@ pub fn load_site(
     docs_root: &Path,
 ) -> Result<DocsSite, PipelineError> {
     let docs_root_rel = normalize_rel_dir_path(&config.docs_root, "docs_root")?;
-    let output_dir_rel = normalize_rel_dir_path(&config.output_dir, "output_dir")?;
-    let site_root_rel = effective_site_root_rel_path(config, &output_dir_rel)?;
+    let site_root_rel = effective_site_root_rel_path(config)?;
     let template_folder_rel = normalize_rel_dir_path(&config.template_folder, "template_folder")?;
     let meta_file = normalize_meta_file_name(&config.meta_file)?;
 
@@ -381,7 +374,7 @@ pub fn load_site(
         ensure_template_scaffold(template_root, &template_folder_rel, config)?;
     let deploy_base_path = static_site::normalize_deploy_base_path(
         config.deploy_base_path.as_deref(),
-        &output_dir_rel,
+        "/",
     )?;
 
     let mut folder_meta = HashMap::new();
@@ -488,16 +481,13 @@ pub fn page_payload(
     }))
 }
 
-pub fn effective_site_root_rel_path(
-    config: &Config,
-    output_dir_rel: &str,
-) -> Result<String, PipelineError> {
+pub fn effective_site_root_rel_path(config: &Config) -> Result<String, PipelineError> {
     let raw = config
         .site_root
         .as_deref()
         .map(str::trim)
         .filter(|s| !s.is_empty())
-        .unwrap_or(output_dir_rel);
+        .unwrap_or("docs");
     static_site::normalize_site_root_rel_path(raw)
 }
 
@@ -1881,7 +1871,7 @@ mod tests {
                 output_pins: vec!["out".to_string()],
                 config: json!({
                     "docs_root": "sekejap-docs",
-                    "output_dir": "docs",
+                    "site_root": "docs",
                     "template_folder": "pages/docs",
                     "deploy_base_url": "https://db.docs.example",
                     "site_title": "Sekejap Docs"
@@ -1925,7 +1915,7 @@ mod tests {
             result.value["docs_generated"]["deploy_base_url"],
             "https://db.docs.example"
         );
-        assert_eq!(result.value["docs_generated"]["deploy_base_path"], "/docs");
+        assert_eq!(result.value["docs_generated"]["deploy_base_path"], "/");
         assert_eq!(
             result.value["docs_generated"]["search_index_path"],
             "docs/search-index.json"
@@ -1982,13 +1972,13 @@ mod tests {
                 .join("zeb_react.mjs")
                 .is_file()
         );
-        assert!(sitemap.contains("https://db.docs.example/docs/"));
-        assert!(sitemap.contains("https://db.docs.example/docs/basic/query/"));
-        assert!(search_index.contains("\"href\": \"/docs/basic/query/\""));
+        assert!(sitemap.contains("https://db.docs.example/"));
+        assert!(sitemap.contains("https://db.docs.example/basic/query/"));
+        assert!(search_index.contains("\"href\": \"/basic/query/\""));
         assert!(search_index.contains("\"Query Basics\""));
         assert!(search_index.contains("\"Select\""));
         assert!(manifest.contains("\"site_root\": \"docs\""));
-        assert!(manifest.contains("\"deploy_base_path\": \"/docs\""));
+        assert!(manifest.contains("\"deploy_base_path\": \"/\""));
         assert!(manifest.contains("\"template\": \"pages/docs/docs.template.tsx\""));
 
         if std::env::var("ZEBFLOW_KEEP_DOCSGEN_TEST").ok().as_deref() != Some("1") {

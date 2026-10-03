@@ -1,8 +1,11 @@
 # Node Conventions
 
-Status: **target** — decided 2026-10-03 from an inventory of every official
-node under `src/pipeline/nodes/basic/`. Code has not caught up; the
-deviations are tracked per node in the project ledger, not here.
+Status: **review** — decided 2026-10-03 from an inventory of every official
+node under `src/pipeline/nodes/basic/`. Code caught up the same day for §1
+destinations and sources, §3 (store pinning, FileRef `store`, no `url`), §4
+and §5 on every file node (`src/pipeline/nodes/shared/project_store.rs`).
+Still owed, tracked in the project ledger: §6 error codes, §7, and the
+`-value` / `--input` cleanup outside the file nodes.
 
 How an official node spells what it takes and what it answers.
 [`NodeDefinition`](./kinds/node-definition/README.md) is the shape of a
@@ -24,15 +27,16 @@ has exactly one word.
 | An existing target | `--on-conflict` | `overwrite`, `skip` or `error`; see §4 |
 | A site's root | `--site-root` | site generators only; their `--path` is relative to it |
 | A file the node reads | `--source-key` | a dot-path into the payload holding a FileRef or a store key |
-| The source of a copy or move | `--from` | a store key or FileRef |
+| A source given directly | `--from` | a store key, or a FileRef through `{{ }}` (`fs.copy`, `fs.move`, `table.convert`, `geo.*`) |
 | A secret the node uses | `--credential` | a credential id, never a value |
 | A secret that checks a caller | `--auth-credential` | triggers only |
 | Output encoding | `--format`, `--quality`, `--width`, `--height` | the same units everywhere |
 | A switch | bare `--flag` | boolean; there is no `--no-flag` |
 
 `--path` is a store key and nothing else: a dot-path into state or payload is
-spelled `--key` (`--source-key`, `--out-key`). `--to`, `--output`,
-`--output-path` and `--output-dir` are retired.
+spelled `--key` (`--source-key`, `--out-key`). `--output`, `--output-path`
+and `--output-dir` are retired, and so is `--to` as a destination;
+`mail.send --to` stays, because there it names recipients.
 
 ## 2. Values
 

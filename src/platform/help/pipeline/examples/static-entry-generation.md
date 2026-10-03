@@ -76,7 +76,7 @@ return {
 "
 | web.static.generate \
     --template pages/static-entry-page.tsx \
-    --output-path "site/collections/{{ input.collection.slug }}/{{ input.entry.slug }}/index.html" \
+    --path "collections/{{ input.collection.slug }}/{{ input.entry.slug }}/index.html" \
     --route "/collections/{{ input.collection.slug }}/{{ input.entry.slug }}" \
     --on-conflict overwrite
 ```
@@ -133,7 +133,7 @@ return {
 "
 | web.static.generate \
     --template pages/static-entry-page.tsx \
-    --output-path "site/collections/{{ input.collection.slug }}/{{ input.entry.slug }}/index.html"
+    --path "collections/{{ input.collection.slug }}/{{ input.entry.slug }}/index.html"
 ```
 
 ---

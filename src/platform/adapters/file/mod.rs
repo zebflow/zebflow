@@ -43,6 +43,14 @@ pub trait FileAdapter: Send + Sync {
         project: &str,
         selection: &selection::FilesBackendSelection,
     ) -> Result<(), PlatformError>;
+    /// One of the project's stores by id: `local`, or an `s3` credential id.
+    /// A node saved with `--store` and a FileRef's `store` both resolve here.
+    fn open_project_store(
+        &self,
+        owner: &str,
+        project: &str,
+        store_id: &str,
+    ) -> Result<FileStore, PlatformError>;
 }
 
 /// Filesystem adapter implementation.
@@ -88,7 +96,7 @@ impl FilesystemFileAdapter {
         owner: &str,
         project: &str,
         store_dir: &Path,
-    ) -> Result<S3Config, PlatformError> {
+    ) -> Result<(String, S3Config), PlatformError> {
         let refuse = |message: String| PlatformError::new("PROJECT_FILES_BACKEND", message);
         let selection = selection::read_selection(store_dir)?;
         let Some(credential_id) = selection
@@ -102,6 +110,17 @@ impl FilesystemFileAdapter {
                 FileBackend::S3.as_str()
             )));
         };
+        Ok((credential_id.to_string(), self.s3_store_by_id(owner, project, credential_id)?))
+    }
+
+    /// The bucket one `s3` credential of the project reaches.
+    fn s3_store_by_id(
+        &self,
+        owner: &str,
+        project: &str,
+        credential_id: &str,
+    ) -> Result<S3Config, PlatformError> {
+        let refuse = |message: String| PlatformError::new("PROJECT_FILES_BACKEND", message);
         let Some(data) = &self.credentials else {
             return Err(refuse(format!(
                 "spec.files.backend is '{}' but this adapter has no credential store to resolve '{credential_id}' from",
@@ -189,6 +208,22 @@ impl FileAdapter for FilesystemFileAdapter {
         )
     }
 
+    fn open_project_store(
+        &self,
+        owner: &str,
+        project: &str,
+        store_id: &str,
+    ) -> Result<FileStore, PlatformError> {
+        let store_id = store_id.trim();
+        if store_id == crate::zebfs::LOCAL_STORE_ID {
+            return Ok(FileStore::Local(self.project_root(owner, project).join("files")));
+        }
+        if store_id.is_empty() {
+            return Err(PlatformError::new("PROJECT_FILES_STORE", "a store id is required"));
+        }
+        Ok(FileStore::S3(self.s3_store_by_id(owner, project, store_id)?))
+    }
+
     fn ensure_project_layout(
         &self,
         owner: &str,
@@ -213,10 +248,14 @@ impl FileAdapter for FilesystemFileAdapter {
         // project whose bytes went to a store it did not declare is worse than
         // a project that will not start.
         let file_backend = self.configs.project_file_backend(owner, project)?;
-        let file_store = match file_backend {
-            FileBackend::Zebfs => FileStore::Local(files_dir.clone()),
+        let (file_store_id, file_store) = match file_backend {
+            FileBackend::Zebfs => (
+                crate::zebfs::LOCAL_STORE_ID.to_string(),
+                FileStore::Local(files_dir.clone()),
+            ),
             FileBackend::S3 => {
-                FileStore::S3(self.s3_store(owner, project, &data_dir.join("store"))?)
+                let (id, config) = self.s3_store(owner, project, &data_dir.join("store"))?;
+                (id, FileStore::S3(config))
             }
         };
 
@@ -229,6 +268,7 @@ impl FileAdapter for FilesystemFileAdapter {
             project_config_file,
             repo_layout,
             file_store,
+            file_store_id,
         };
 
         // A pre-tier project has its whole runtime cache sitting at the old

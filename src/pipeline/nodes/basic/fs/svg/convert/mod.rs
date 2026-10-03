@@ -73,7 +73,7 @@ use crate::pipeline::model::{
     DslFlag, DslFlagKind, LayoutItem, NodeCapability, NodeExample, NodeFailureSemantic, NodeFieldDef, NodeFieldType,
     SelectOptionDef,
 };
-use crate::pipeline::nodes::shared::file_ref::{durable_file_ref, zebfs_rel_path_or_string};
+use crate::pipeline::nodes::shared::project_store::{OnConflict, on_conflict_flag, open_source, open_store, store_fields, store_flag, target_key};
 use crate::pipeline::nodes::shared::util::{filename_stem, metadata_scope, resolve_path};
 use crate::pipeline::{
     NodeDefinition, PipelineError,
@@ -149,9 +149,18 @@ pub struct Config {
     /// Remove a stored source after the picture is written.
     #[serde(default)]
     pub delete_source: bool,
-    /// Filename without extension (default: a UUID). Overwrites a same-named file.
+    /// Filename without extension (default: a UUID).
     #[serde(default)]
     pub filename: Option<String>,
+    /// Exact store key; overrides `folder` and `filename`.
+    #[serde(default)]
+    pub path: Option<String>,
+    /// The store to write to; saved explicitly at registration.
+    #[serde(default)]
+    pub store: Option<String>,
+    /// `overwrite`, `skip` or `error` (default: error).
+    #[serde(default)]
+    pub on_conflict: Option<String>,
 }
 
 pub fn definition() -> NodeDefinition {
@@ -219,7 +228,10 @@ pub fn definition() -> NodeDefinition {
             DslFlag { flag: "--folder".into(), config_key: "folder".into(), description: "Destination store folder (default: images)".into(), kind: DslFlagKind::Scalar, required: false },
             DslFlag { flag: "--source-key".into(), config_key: "source_key".into(), description: "Dot-path to the SVG in the payload: SVG text, a store path, or a FileRef (default: `svg`)".into(), kind: DslFlagKind::Scalar, required: false },
             DslFlag { flag: "--delete-source".into(), config_key: "delete_source".into(), description: "Remove a stored source after the picture is written (default: false)".into(), kind: DslFlagKind::Bool, required: false },
-            DslFlag { flag: "--filename".into(), config_key: "filename".into(), description: "Filename without extension (default: random UUID). Overwrites if same name exists.".into(), kind: DslFlagKind::Scalar, required: false },
+            DslFlag { flag: "--filename".into(), config_key: "filename".into(), description: "Filename without extension (default: random UUID).".into(), kind: DslFlagKind::Scalar, required: false },
+            DslFlag { flag: "--path".into(), config_key: "path".into(), description: "Exact store key for the picture; overrides --folder and --filename.".into(), kind: DslFlagKind::Scalar, required: false },
+            store_flag(),
+            on_conflict_flag(OnConflict::Error),
         ],
         fields: vec![
             NodeFieldDef { name: "width".into(), label: "Width (px)".into(), field_type: NodeFieldType::Text, placeholder: Some("the SVG's own".into()), help: Some("Canvas width. Empty = the SVG's own width; alone, the height follows in proportion.".into()), ..Default::default() },
@@ -240,7 +252,7 @@ pub fn definition() -> NodeDefinition {
             NodeFieldDef { name: "source_key".into(), label: "Source key".into(), field_type: NodeFieldType::Text, default_value: Some(json!(DEFAULT_SOURCE_KEY)), help: Some("Dot-path into the payload: SVG text, a store path string, or a FileRef of a stored .svg. Default: svg.".into()), ..Default::default() },
             NodeFieldDef { name: "delete_source".into(), label: "Delete source file".into(), field_type: NodeFieldType::Checkbox, default_value: Some(json!(false)), help: Some("Remove a stored source after the picture is written; the source key is dropped from the payload.".into()), ..Default::default() },
             NodeFieldDef { name: "filename".into(), label: "Filename".into(), field_type: NodeFieldType::Text, help: Some("Without extension (default: random UUID). A same-named file is overwritten.".into()), ..Default::default() },
-        ],
+        ].into_iter().chain(store_fields(OnConflict::Error)).collect(),
         layout: vec![
             LayoutItem::Field("source_key".into()),
             LayoutItem::Field("width".into()),
@@ -251,6 +263,8 @@ pub fn definition() -> NodeDefinition {
             LayoutItem::Field("folder".into()),
             LayoutItem::Field("filename".into()),
             LayoutItem::Field("delete_source".into()),
+            LayoutItem::Field("store".into()),
+            LayoutItem::Field("on_conflict".into()),
         ],
         failure_semantics: vec![
             NodeFailureSemantic { code: "FW_NODE_FS_SVG_CONVERT_CONFIG".into(), description: "A --fit that is not cover, contain or fill; a --format that is not png, jpg, webp or pdf; a --width, --height or --quality that is not a whole number in range; --width, --height or --fit given with --format pdf.".into(), ..Default::default() },
@@ -392,9 +406,10 @@ fn contained(root: &Path, rel: &str) -> Option<PathBuf> {
     Some(root.join(rel))
 }
 
-/// The project's bytes for the resolver: repo `static/` and the store.
+/// The project's bytes for the resolver: repo `static/` and the node's store.
 struct ProjectStore {
     layout: crate::platform::model::ProjectFileLayout,
+    store: crate::zebfs::ZebFs,
 }
 
 impl SourceStore for ProjectStore {
@@ -406,8 +421,7 @@ impl SourceStore for ProjectStore {
                 std::fs::read(&abs).map_err(|e| ConvertError::source(format!("repo file {path}: {e}")))
             }
             Source::Store(path) => self
-                .layout
-                .open_files()
+                .store
                 .get(path)
                 .map(|o| o.bytes)
                 .map_err(|e| ConvertError::source(format!("store object {path}: {}", e.message))),
@@ -444,7 +458,7 @@ impl NodeHandler for Node {
             .file
             .ensure_project_layout(owner, project)
             .map_err(|e| PipelineError::new("FS_SVG_CONVERT_RASTER", e.to_string()))?;
-        let zebfs = layout.open_files();
+        let store = open_store(&self.platform, owner, project, self.config.store.as_deref())?;
 
         // 1. The source: SVG text, or a stored .svg by path or FileRef.
         let key = self.source_key();
@@ -454,12 +468,13 @@ impl NodeHandler for Node {
         let (svg, stored_source) = match value.as_str().filter(|s| looks_like_svg(s.as_bytes())) {
             Some(text) => (text.to_string(), None),
             None => {
-                let rel = zebfs_rel_path_or_string(value)?.ok_or_else(|| {
+                let (source_store, rel) = open_source(&self.platform, owner, project, value, self.config.store.as_deref())?.ok_or_else(|| {
                     PipelineError::new(
                         "FS_SVG_CONVERT_SOURCE",
                         format!("payload key '{key}' must be SVG text, a store path string, or a FileRef of a stored .svg"),
                     )
                 })?;
+                let zebfs = &source_store.fs;
                 let rel = crate::zebfs::normalize_object_path(rel.trim_start_matches('/'))
                     .map_err(|e| PipelineError::new("FS_SVG_CONVERT_SOURCE", e.to_string()))?;
                 let object = zebfs
@@ -476,24 +491,30 @@ impl NodeHandler for Node {
                 if !looks_like_svg(text.as_bytes()) {
                     return Err(PipelineError::new("FS_SVG_CONVERT_SOURCE", format!("store object {rel} is not an SVG")));
                 }
-                (text, Some(rel))
+                (text, Some((source_store, rel)))
             }
         };
 
         // 2. Fonts, pictures, wrapping, pixels.
         let fonts = FontSet::for_project(&self.platform.fonts, owner, project).map_err(convert_error)?;
-        let resolver = Resolver::new(Arc::new(ProjectStore { layout: layout.clone() }));
+        let resolver = Resolver::new(Arc::new(ProjectStore { layout: layout.clone(), store: store.fs.clone() }));
         let rendered = convert(&svg, &fonts, &resolver, &self.target, self.format, self.quality).map_err(convert_error)?;
 
         // 3. Into the store, as a durable FileRef.
         let stem = self.config.filename.as_deref().map(filename_stem).filter(|s| !s.is_empty()).unwrap_or_else(|| Uuid::new_v4().to_string());
         let filename = format!("{stem}.{}", self.format.extension());
-        let rel = crate::zebfs::normalize_object_path(&format!("{}/{filename}", self.folder().trim_matches('/')))
-            .map_err(|e| config_error(format!("--folder: {e}")))?;
-        zebfs
-            .put(&rel, &rendered.bytes)
-            .map_err(|e| PipelineError::new("FS_SVG_CONVERT_RASTER", format!("store write {rel}: {}", e.message)))?;
-        let mut image = durable_file_ref(layout.file_backend(), &rel, &filename, self.format.mime(), &rendered.bytes, ORIGIN, "generated");
+        let rel = target_key(self.config.path.as_deref(), self.folder(), &filename, "FW_NODE_FS_SVG_CONVERT_CONFIG")?;
+        let on_conflict = OnConflict::parse(self.config.on_conflict.as_deref(), OnConflict::Error, "FW_NODE_FS_SVG_CONVERT_CONFIG")?;
+        let bytes = if on_conflict.allows(&store.fs, &rel, "FS_SVG_CONVERT_RASTER")? {
+            store
+                .fs
+                .put(&rel, &rendered.bytes)
+                .map_err(|e| PipelineError::new("FS_SVG_CONVERT_RASTER", format!("store write {rel}: {}", e.message)))?;
+            rendered.bytes.clone()
+        } else {
+            store.fs.get(&rel).map_err(|e| PipelineError::new("FS_SVG_CONVERT_RASTER", e.message))?.bytes
+        };
+        let mut image = store.file_ref(&rel, &filename, self.format.mime(), &bytes, ORIGIN, "generated");
         if let Some(obj) = image.as_object_mut() {
             obj.insert("width".into(), json!(rendered.width));
             obj.insert("height".into(), json!(rendered.height));
@@ -506,8 +527,8 @@ impl NodeHandler for Node {
             _ => serde_json::Map::new(),
         };
         if self.config.delete_source {
-            if let Some(src) = &stored_source {
-                if let Err(e) = std::fs::remove_file(layout.local_files_dir()?.join(src)) {
+            if let Some((source_store, src)) = &stored_source {
+                if let Err(e) = source_store.fs.delete(src) {
                     eprintln!("[{NODE_KIND}] delete-source failed for {src}: {e}");
                 }
             }
@@ -526,7 +547,7 @@ impl NodeHandler for Node {
                 format!("node={} node_kind={NODE_KIND}", input.node_id),
                 format!(
                     "source={} out={rel} {}x{} {} bytes={} parse_ms={} raster_ms={} encode_ms={} total_ms={total_ms}",
-                    stored_source.as_deref().unwrap_or("text"),
+                    stored_source.as_ref().map(|(_, rel)| rel.as_str()).unwrap_or("text"),
                     rendered.width,
                     rendered.height,
                     self.format.extension(),
@@ -577,7 +598,7 @@ mod node_tests {
         let flags: Vec<&str> = def.dsl_flags.iter().map(|f| f.flag.as_str()).collect();
         assert_eq!(
             flags,
-            vec!["--width", "--height", "--fit", "--format", "--quality", "--folder", "--source-key", "--delete-source", "--filename"]
+            vec!["--width", "--height", "--fit", "--format", "--quality", "--folder", "--source-key", "--delete-source", "--filename", "--path", "--store", "--on-conflict"]
         );
         let codes: Vec<&str> = def.failure_semantics.iter().map(|f| f.code.as_str()).collect();
         assert_eq!(codes, vec!["FW_NODE_FS_SVG_CONVERT_CONFIG", "FS_SVG_CONVERT_SOURCE", "FS_SVG_CONVERT_FONT", "FS_SVG_CONVERT_RASTER"]);

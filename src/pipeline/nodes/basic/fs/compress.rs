@@ -10,10 +10,11 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
-use serde_json::json;
+use serde_json::{Value, json};
 
+use crate::pipeline::nodes::shared::project_store::{OnConflict, on_conflict_flag, open_source, open_store, store_fields, store_flag, target_key};
 use crate::pipeline::nodes::shared::store_scratch::StoreScratch;
-use crate::pipeline::nodes::shared::file_ref::{durable_file_ref, zebfs_rel_path_or_string};
+
 use crate::pipeline::nodes::shared::util::{metadata_scope, resolve_path};
 use crate::pipeline::model::NodeCapability;
 use crate::pipeline::{
@@ -41,10 +42,23 @@ pub struct Config {
     pub source_key: String,
     #[serde(default)]
     pub extra_source_keys: Vec<String>,
+    /// Store folder for the archive (default: `archives`).
     #[serde(default)]
-    pub output_path: String,
+    pub folder: String,
+    /// Archive name (default: `<source>.tar.gz`).
+    #[serde(default)]
+    pub filename: Option<String>,
+    /// Exact store key; overrides `folder` and `filename`.
+    #[serde(default)]
+    pub path: Option<String>,
     #[serde(default = "default_format")]
     pub format: String,
+    /// The store to write to; saved explicitly at registration.
+    #[serde(default)]
+    pub store: Option<String>,
+    /// `overwrite`, `skip` or `error` (default: error).
+    #[serde(default)]
+    pub on_conflict: Option<String>,
 }
 
 impl Default for Config {
@@ -52,8 +66,12 @@ impl Default for Config {
         Self {
             source_key: default_source_key(),
             extra_source_keys: Vec::new(),
-            output_path: String::new(),
+            folder: String::new(),
+            filename: None,
+            path: None,
             format: default_format(),
+            store: None,
+            on_conflict: None,
         }
     }
 }
@@ -116,9 +134,23 @@ pub fn definition() -> NodeDefinition {
                 required: false,
             },
             DslFlag {
-                flag: "--output-path".to_string(),
-                config_key: "output_path".to_string(),
-                description: "Destination ZebFS object path. Defaults to archives/<source>.tar.gz".to_string(),
+                flag: "--folder".to_string(),
+                config_key: "folder".to_string(),
+                description: "Store folder for the archive (default: archives)".to_string(),
+                kind: DslFlagKind::Scalar,
+                required: false,
+            },
+            DslFlag {
+                flag: "--filename".to_string(),
+                config_key: "filename".to_string(),
+                description: "Archive name; `.tar.gz` is added when missing (default: <source>.tar.gz)".to_string(),
+                kind: DslFlagKind::Scalar,
+                required: false,
+            },
+            DslFlag {
+                flag: "--path".to_string(),
+                config_key: "path".to_string(),
+                description: "Exact store key for the archive; overrides --folder and --filename".to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
             },
@@ -129,6 +161,8 @@ pub fn definition() -> NodeDefinition {
                 kind: DslFlagKind::Scalar,
                 required: false,
             },
+            store_flag(),
+            on_conflict_flag(OnConflict::Error),
         ],
         fields: vec![
             NodeFieldDef {
@@ -150,10 +184,17 @@ pub fn definition() -> NodeDefinition {
                 ..Default::default()
             },
             NodeFieldDef {
-                name: "output_path".to_string(),
-                label: "Output Path".to_string(),
+                name: "folder".to_string(),
+                label: "Folder".to_string(),
                 field_type: NodeFieldType::Text,
-                help: Some("Destination ZebFS object path. Leave blank to use archives/<source>.tar.gz.".to_string()),
+                help: Some("Store folder for the archive (default: archives).".to_string()),
+                ..Default::default()
+            },
+            NodeFieldDef {
+                name: "filename".to_string(),
+                label: "Filename".to_string(),
+                field_type: NodeFieldType::Text,
+                help: Some("Archive name (default: <source>.tar.gz).".to_string()),
                 ..Default::default()
             },
             NodeFieldDef {
@@ -168,20 +209,23 @@ pub fn definition() -> NodeDefinition {
                 help: Some("Archive format to write. Current runtime supports tar.gz.".to_string()),
                 ..Default::default()
             },
-        ],
+        ].into_iter().chain(store_fields(OnConflict::Error)).collect(),
         layout: vec![LayoutItem::Col {
             col: vec![
                 LayoutItem::Field("source_key".to_string()),
                 LayoutItem::Field("extra_source_keys".to_string()),
-                LayoutItem::Field("output_path".to_string()),
+                LayoutItem::Field("folder".to_string()),
+                LayoutItem::Field("filename".to_string()),
                 LayoutItem::Field("format".to_string()),
+                LayoutItem::Field("store".to_string()),
+                LayoutItem::Field("on_conflict".to_string()),
             ],
         }],
         ai_tool: Default::default(),
         examples: vec![
-            crate::pipeline::model::NodeExample::dsl("Archive an export folder", "fs.compress --source-key export.folder --output-path archives/export.tar.gz")
+            crate::pipeline::model::NodeExample::dsl("Archive an export folder", "fs.compress --source-key export.folder --filename export.tar.gz")
                 .input(serde_json::json!({ "export": { "folder": "exports/2026-09" } }))
-                .output(serde_json::json!({ "compressed": { "__zf_type": "file_ref", "backend": "zebfs", "ref": "archives/export.tar.gz", "filename": "export.tar.gz", "mime": "application/gzip", "kind": "archive", "size": 40211, "sha256": "sha256:…", "lifecycle": "durable", "origin": "fs.compress", "trust": "generated" } })),
+                .output(serde_json::json!({ "export": { "folder": "exports/2026-09" }, "compressed": { "__zf_type": "file_ref", "backend": "zebfs", "store": "local", "ref": "archives/export.tar.gz", "filename": "export.tar.gz", "mime": "application/gzip", "kind": "archive", "size": 40211, "sha256": "sha256:…", "lifecycle": "durable", "origin": "fs.compress", "trust": "generated" } })),
         ],
         ..Default::default()
     }
@@ -225,129 +269,95 @@ impl NodeHandler for Node {
             self.config.source_key.trim()
         };
 
-        let primary_source_rel = resolve_path(&input.payload, source_key)
-            .map(zebfs_rel_path_or_string)
-            .transpose()?
-            .flatten()
-            .ok_or_else(|| {
+        // Every source is read from the store that holds it (a FileRef's own
+        // `store`, or this node's store for a bare key) into one scratch
+        // folder; tar archives there and the archive goes to this node's store.
+        let mut keys = vec![source_key.to_string()];
+        keys.extend(
+            self.config
+                .extra_source_keys
+                .iter()
+                .map(|key| key.trim().to_string())
+                .filter(|key| !key.is_empty()),
+        );
+        let scratch = StoreScratch::new("FW_NODE_FILE_COMPRESS")?;
+        let mut source_paths: Vec<String> = Vec::new();
+        for key in &keys {
+            let value = resolve_path(&input.payload, key).ok_or_else(|| {
                 PipelineError::new(
                     "FW_NODE_FILE_COMPRESS",
-                    format!(
-                        "source path not found at payload key '{source_key}' — chain after n.fs.save or set --source-key"
-                    ),
+                    format!("source path not found at payload key '{key}' — chain after n.fs.save or set --source-key"),
                 )
             })?;
-
-        let primary_source_rel = sanitize_rel_path(&primary_source_rel);
-        if primary_source_rel.is_empty() {
-            return Err(PipelineError::new(
-                "FW_NODE_FILE_COMPRESS",
-                "resolved source path is empty after sanitization",
-            ));
-        }
-
-        let mut source_paths = vec![primary_source_rel.clone()];
-        for extra_key in &self.config.extra_source_keys {
-            let extra_key = extra_key.trim();
-            if extra_key.is_empty() {
-                continue;
-            }
-            let extra_rel = resolve_path(&input.payload, extra_key)
-                .map(zebfs_rel_path_or_string)
-                .transpose()?
-                .flatten()
+            let (source_store, rel) = open_source(&self.platform, owner, project, value, self.config.store.as_deref())?
                 .ok_or_else(|| {
                     PipelineError::new(
                         "FW_NODE_FILE_COMPRESS",
-                        format!("extra source path not found at payload key '{extra_key}'"),
+                        format!("payload key '{key}' must be a FileRef or a store path string"),
                     )
                 })?;
-            let extra_rel = sanitize_rel_path(&extra_rel);
-            if extra_rel.is_empty() {
+            let rel = sanitize_rel_path(&rel);
+            if rel.is_empty() {
                 return Err(PipelineError::new(
                     "FW_NODE_FILE_COMPRESS",
-                    format!(
-                        "resolved extra source path is empty after sanitization for key '{extra_key}'"
-                    ),
+                    format!("resolved source path is empty after sanitization for key '{key}'"),
                 ));
             }
-            if !source_paths.iter().any(|existing| existing == &extra_rel) {
-                source_paths.push(extra_rel);
+            if !source_paths.contains(&rel) {
+                scratch.pull(&source_store.fs, &rel)?;
+                source_paths.push(rel);
             }
         }
 
-        let layout = self
-            .platform
-            .file
-            .ensure_project_layout(owner, project)
-            .map_err(|err| PipelineError::new("FW_NODE_FILE_COMPRESS", err.to_string()))?;
+        let archive_name = archive_filename(self.config.filename.as_deref(), &source_paths[0]);
+        let folder = if self.config.folder.trim().is_empty() { "archives" } else { self.config.folder.trim() };
+        let archive_rel = target_key(self.config.path.as_deref(), folder, &archive_name, "FW_NODE_FILE_COMPRESS")?;
+        let store = open_store(&self.platform, owner, project, self.config.store.as_deref())?;
+        let on_conflict = OnConflict::parse(self.config.on_conflict.as_deref(), OnConflict::Error, "FW_NODE_FILE_COMPRESS")?;
 
-        // tar speaks paths and the project's files live in its one active
-        // store, so the sources are pulled into a scratch folder, archived
-        // there, and the archive is put back into the store.
-        let zebfs = layout.open_files();
-        let scratch = StoreScratch::new("FW_NODE_FILE_COMPRESS")?;
-        let mut source_rels_for_task = Vec::with_capacity(source_paths.len());
-        for source_rel in &source_paths {
-            scratch.pull(&zebfs, source_rel)?;
-            source_rels_for_task.push(source_rel.clone());
-        }
-
-        let archive_rel = resolve_archive_leaf(&self.config.output_path, &primary_source_rel);
-        let archive_abs = scratch.path().join(".zf-archive").join(
-            archive_rel.rsplit('/').next().unwrap_or(&archive_rel),
-        );
-        if let Some(parent) = archive_abs.parent() {
-            std::fs::create_dir_all(parent).map_err(|err| {
-                PipelineError::new(
-                    "FW_NODE_FILE_COMPRESS",
-                    format!("create archive parent dir: {err}"),
-                )
-            })?;
-        }
-
-        let archive_abs_for_task = archive_abs.clone();
-        let files_root_for_task = scratch.path().to_path_buf();
-        tokio::task::spawn_blocking(move || {
-            compress_tar_gz(
-                &files_root_for_task,
-                &source_rels_for_task,
-                &archive_abs_for_task,
-            )
-        })
-        .await
-        .map_err(|err| {
-            PipelineError::new(
-                "FW_NODE_FILE_COMPRESS",
-                format!("archive task failed: {err}"),
-            )
-        })??;
-
-        let archive_bytes = scratch.push_file(&zebfs, &archive_abs, &archive_rel)?;
+        let archive_bytes = if on_conflict.allows(&store.fs, &archive_rel, "FW_NODE_FILE_COMPRESS")? {
+            let archive_abs = scratch.path().join(".zf-archive").join(&archive_name);
+            if let Some(parent) = archive_abs.parent() {
+                std::fs::create_dir_all(parent).map_err(|err| {
+                    PipelineError::new("FW_NODE_FILE_COMPRESS", format!("create archive parent dir: {err}"))
+                })?;
+            }
+            let archive_abs_for_task = archive_abs.clone();
+            let files_root_for_task = scratch.path().to_path_buf();
+            let source_rels_for_task = source_paths.clone();
+            tokio::task::spawn_blocking(move || {
+                compress_tar_gz(&files_root_for_task, &source_rels_for_task, &archive_abs_for_task)
+            })
+            .await
+            .map_err(|err| PipelineError::new("FW_NODE_FILE_COMPRESS", format!("archive task failed: {err}")))??;
+            scratch.push_file(&store.fs, &archive_abs, &archive_rel)?
+        } else {
+            store
+                .fs
+                .get(&archive_rel)
+                .map_err(|err| PipelineError::new("FW_NODE_FILE_COMPRESS", err.to_string()))?
+                .bytes
+        };
         let size = archive_bytes.len() as u64;
 
         // `compressed` is a bare durable FileRef for the archive, so `fs.copy
         // --from "{{ input.compressed }}"` or a `--preview` takes it as it is.
-        let compressed = {
-            let archive_name = archive_rel.rsplit('/').next().unwrap_or(&archive_rel).to_string();
-            durable_file_ref(
-                layout.file_backend(),
-                &archive_rel,
-                &archive_name,
-                "application/gzip",
-                &archive_bytes,
-                "fs.compress",
-                "generated",
-            )
+        let leaf = archive_rel.rsplit('/').next().unwrap_or(&archive_rel).to_string();
+        let compressed = store.file_ref(&archive_rel, &leaf, "application/gzip", &archive_bytes, "fs.compress", "generated");
+        let mut payload = match &input.payload {
+            Value::Object(map) => map.clone(),
+            _ => serde_json::Map::new(),
         };
+        payload.insert("compressed".to_string(), compressed);
 
         Ok(NodeExecutionOutput {
             output_pins: vec![OUTPUT_PIN_OUT.to_string()],
-            payload: json!({ "compressed": compressed }),
+            payload: Value::Object(payload),
             trace: vec![format!(
-                "node_kind={NODE_KIND} srcs={} archive={} size={}",
+                "node_kind={NODE_KIND} srcs={} archive={} store={} size={}",
                 source_paths.join(","),
                 archive_rel,
+                store.id,
                 size
             )],
         })
@@ -433,28 +443,24 @@ fn sanitize_filename_stem(name: &str) -> String {
         .join("-")
 }
 
-fn resolve_archive_leaf(configured: &str, source_rel_path: &str) -> String {
-    let configured = sanitize_rel_path(configured);
-    if !configured.is_empty() {
-        if configured.ends_with(".tar.gz") {
-            return configured;
-        }
-        return format!("{configured}.tar.gz");
+/// The archive's name: `--filename` (with `.tar.gz` added when missing), or
+/// the first source's name.
+fn archive_filename(configured: Option<&str>, source_rel_path: &str) -> String {
+    if let Some(name) = configured.map(str::trim).filter(|name| !name.is_empty()) {
+        let name = name.rsplit('/').next().unwrap_or(name);
+        return if name.ends_with(".tar.gz") { name.to_string() } else { format!("{name}.tar.gz") };
     }
     let source_leaf = Path::new(source_rel_path)
         .file_name()
         .and_then(|value| value.to_str())
         .unwrap_or("bundle");
     let stem = sanitize_filename_stem(source_leaf);
-    format!(
-        "archives/{}.tar.gz",
-        if stem.is_empty() { "bundle" } else { &stem }
-    )
+    format!("{}.tar.gz", if stem.is_empty() { "bundle" } else { &stem })
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{resolve_archive_leaf, sanitize_rel_path};
+    use super::{archive_filename, sanitize_rel_path};
 
     #[test]
     fn sanitizes_source_relative_paths() {
@@ -463,9 +469,8 @@ mod tests {
 
     #[test]
     fn derives_default_archive_leaf() {
-        assert_eq!(
-            resolve_archive_leaf("", "pdf/My Paper"),
-            "archives/my-paper.tar.gz"
-        );
+        assert_eq!(archive_filename(None, "pdf/My Paper"), "my-paper.tar.gz");
+        assert_eq!(archive_filename(Some("export"), "pdf/x"), "export.tar.gz");
+        assert_eq!(archive_filename(Some("export.tar.gz"), "pdf/x"), "export.tar.gz");
     }
 }

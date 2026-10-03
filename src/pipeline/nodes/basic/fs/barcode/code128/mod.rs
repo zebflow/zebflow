@@ -73,6 +73,15 @@ pub struct Config {
     pub folder: String,
     #[serde(default)]
     pub filename: Option<String>,
+    /// Exact store key; overrides `folder` and `filename`.
+    #[serde(default)]
+    pub path: Option<String>,
+    /// The store to write to; saved explicitly at registration.
+    #[serde(default)]
+    pub store: Option<String>,
+    /// `overwrite`, `skip` or `error` (default: error).
+    #[serde(default)]
+    pub on_conflict: Option<String>,
 }
 
 impl Default for Config {
@@ -112,7 +121,7 @@ pub fn definition() -> NodeDefinition {
             flag("--background", "background", "Background, #rgb or #rrggbb (default #ffffff).", DslFlagKind::Scalar, false),
             flag("--folder", "folder", "Store folder (default barcodes).", DslFlagKind::Scalar, false),
             flag("--filename", "filename", "File name without extension (default a UUID).", DslFlagKind::Scalar, false),
-        ],
+        ].into_iter().chain(super::destination_flags()).collect(),
         fields: vec![
             field("text", "Text", "Printable ASCII: a ticket, order or certificate number.", None),
             select("format", "Format", "SVG stays sharp at any size; PNG for places that need pixels.", "svg", &[("svg", "SVG"), ("png", "PNG")]),
@@ -122,9 +131,9 @@ pub fn definition() -> NodeDefinition {
             field("color", "Colour", "#rgb or #rrggbb.", Some(json!("#000000"))),
             field("background", "Background", "#rgb or #rrggbb.", Some(json!("#ffffff"))),
             field("folder", "Folder", "Store folder (default barcodes).", Some(json!("barcodes"))),
-            field("filename", "Filename", "Without extension (default a UUID). A same-named file is overwritten.", None),
-        ],
-        layout: ["text", "format", "size", "height", "margin", "color", "background", "folder", "filename"]
+            field("filename", "Filename", "Without extension (default a UUID).", None),
+        ].into_iter().chain(super::destination_fields()).collect(),
+        layout: ["text", "format", "size", "height", "margin", "color", "background", "folder", "filename", "path", "store", "on_conflict"]
             .into_iter()
             .map(|f| LayoutItem::Field(f.into()))
             .collect(),
@@ -191,7 +200,7 @@ impl NodeHandler for Node {
         };
         let mut barcode = super::save(
             &self.platform,
-            super::Output { owner, project, folder: &c.folder, filename: c.filename.as_deref(), format: &format, bytes, origin: "fs.barcode.code128" },
+            super::Output { owner, project, folder: &c.folder, filename: c.filename.as_deref(), path: c.path.as_deref(), store: c.store.as_deref(), on_conflict: c.on_conflict.as_deref(), format: &format, bytes, origin: "fs.barcode.code128" },
         )?;
         if let Some(map) = barcode.as_object_mut() {
             map.insert("format".into(), json!(format));

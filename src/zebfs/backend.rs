@@ -129,6 +129,10 @@ impl FileStore {
     }
 }
 
+/// The id of a project's local store. Every other store a project has is
+/// named by the id of the credential that reaches it.
+pub const LOCAL_STORE_ID: &str = "local";
+
 /// The seam: a resolved store becomes the implementation that owns the bytes.
 ///
 /// Every caller that needs a project's storage passes through here, so a

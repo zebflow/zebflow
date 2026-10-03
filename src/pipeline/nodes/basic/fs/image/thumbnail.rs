@@ -25,7 +25,8 @@ use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use super::load_with_limits;
-use crate::pipeline::nodes::shared::file_ref::{FILE_REF_TYPE, LIFECYCLE_DURABLE, zebfs_rel_path_or_string};
+use crate::pipeline::nodes::shared::project_store::{OnConflict, on_conflict_flag, open_source, open_store, store_fields, store_flag, target_key};
+use crate::pipeline::nodes::shared::file_ref::{FILE_REF_TYPE, LIFECYCLE_DURABLE};
 use crate::pipeline::nodes::shared::util::{filename_stem, metadata_scope, resolve_path};
 use crate::pipeline::model::NodeCapability;
 use crate::pipeline::{
@@ -107,6 +108,18 @@ pub struct Config {
     /// Useful for deterministic thumbnail paths (e.g. user avatars).
     #[serde(default)]
     pub filename: Option<String>,
+
+    /// Exact store key; overrides `folder` and `filename`.
+    #[serde(default)]
+    pub path: Option<String>,
+
+    /// The store to write to; saved explicitly at registration.
+    #[serde(default)]
+    pub store: Option<String>,
+
+    /// `overwrite`, `skip` or `error` (default: error).
+    #[serde(default)]
+    pub on_conflict: Option<String>,
 }
 
 impl Default for Config {
@@ -121,6 +134,9 @@ impl Default for Config {
             source_key: default_source_key(),
             delete_source: default_delete_source(),
             filename: None,
+            path: None,
+            store: None,
+            on_conflict: None,
         }
     }
 }
@@ -224,10 +240,19 @@ pub fn definition() -> NodeDefinition {
             DslFlag {
                 flag: "--filename".to_string(),
                 config_key: "filename".to_string(),
-                description: "Custom filename without extension (default: random UUID). Overwrites if same name exists.".to_string(),
+                description: "Custom filename without extension (default: random UUID).".to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
             },
+            DslFlag {
+                flag: "--path".to_string(),
+                config_key: "path".to_string(),
+                description: "Exact store key for the thumbnail; overrides --folder and --filename.".to_string(),
+                kind: DslFlagKind::Scalar,
+                required: false,
+            },
+            store_flag(),
+            on_conflict_flag(OnConflict::Error),
         ],
         fields: vec![
             NodeFieldDef {
@@ -312,7 +337,7 @@ pub fn definition() -> NodeDefinition {
                 default_value: None,
                 ..Default::default()
             },
-        ],
+        ].into_iter().chain(store_fields(OnConflict::Error)).collect(),
         layout: vec![
             LayoutItem::Field("width".to_string()),
             LayoutItem::Field("height".to_string()),
@@ -323,6 +348,8 @@ pub fn definition() -> NodeDefinition {
             LayoutItem::Field("source_key".to_string()),
             LayoutItem::Field("delete_source".to_string()),
             LayoutItem::Field("filename".to_string()),
+            LayoutItem::Field("store".to_string()),
+            LayoutItem::Field("on_conflict".to_string()),
         ],
         examples: vec![
             crate::pipeline::model::NodeExample::dsl("Avatar after an upload", "fs.image.thumbnail --width 320 --height 320 --fit cover --format webp --folder public/thumbs")
@@ -379,22 +406,17 @@ impl NodeHandler for Node {
                 ),
             )
         })?;
-        let rel_path = zebfs_rel_path_or_string(source_value)?.ok_or_else(|| {
-            PipelineError::new(
-                "IMG_THUMBNAIL",
-                format!("payload key '{source_key}' must be a FileRef or string path"),
-            )
-        })?;
-
-        // ── Resolve absolute path ─────────────────────────────────────────
-        let layout = self
-            .platform
-            .file
-            .ensure_project_layout(owner, project)
-            .map_err(|e| PipelineError::new("IMG_THUMBNAIL", e.to_string()))?;
-
-        // Every read and write goes through the project's one active store.
-        let zebfs = layout.open_files();
+        // The source is read from the store that holds it (a FileRef's own
+        // `store`, or this node's store for a bare key); the thumbnail is
+        // written to this node's store.
+        let (source_store, rel_path) = open_source(&self.platform, owner, project, source_value, self.config.store.as_deref())?
+            .ok_or_else(|| {
+                PipelineError::new(
+                    "IMG_THUMBNAIL",
+                    format!("payload key '{source_key}' must be a FileRef or string path"),
+                )
+            })?;
+        let zebfs = &source_store.fs;
         let rel_path = crate::zebfs::normalize_object_path(rel_path.trim_start_matches('/'))
             .map_err(|e| PipelineError::new("IMG_THUMBNAIL", e.to_string()))?;
 
@@ -464,10 +486,22 @@ impl NodeHandler for Node {
                 None => format!("{}.{ext_out}", Uuid::new_v4()),
             }
         };
-        let thumb_rel = format!("{folder}/{storage_name}");
-        zebfs
-            .put(&thumb_rel, &encoded)
-            .map_err(|e| PipelineError::new("IMG_THUMBNAIL", format!("write: {e}")))?;
+        let thumb_rel = target_key(self.config.path.as_deref(), &folder, &storage_name, "IMG_THUMBNAIL")?;
+        let store = open_store(&self.platform, owner, project, self.config.store.as_deref())?;
+        let on_conflict = OnConflict::parse(self.config.on_conflict.as_deref(), OnConflict::Error, "IMG_THUMBNAIL")?;
+        let encoded = if on_conflict.allows(&store.fs, &thumb_rel, "IMG_THUMBNAIL")? {
+            store
+                .fs
+                .put(&thumb_rel, &encoded)
+                .map_err(|e| PipelineError::new("IMG_THUMBNAIL", format!("write: {e}")))?;
+            encoded
+        } else {
+            store
+                .fs
+                .get(&thumb_rel)
+                .map_err(|e| PipelineError::new("IMG_THUMBNAIL", format!("read: {e}")))?
+                .bytes
+        };
 
         // ── Delete source file if requested ───────────────────────────────
         // Best-effort: non-fatal. Thumbnail is already written successfully.
@@ -485,7 +519,8 @@ impl NodeHandler for Node {
         };
         let thumbnail = json!({
             "__zf_type": FILE_REF_TYPE,
-            "backend": layout.file_backend().as_str(),
+            "backend": store.backend.as_str(),
+            "store": store.id,
             "ref": thumb_rel,
             "filename": storage_name,
             "mime": thumb_mime,

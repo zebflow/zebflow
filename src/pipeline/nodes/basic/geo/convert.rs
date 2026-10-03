@@ -10,7 +10,8 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use crate::pipeline::nodes::shared::file_ref::zebfs_rel_path_or_string;
+use crate::pipeline::nodes::shared::file_ref::mime_for_filename;
+use crate::pipeline::nodes::shared::project_store::{OnConflict, on_conflict_flag, open_source, open_store, store_fields, store_flag, target_key};
 use crate::pipeline::nodes::shared::store_scratch::StoreScratch;
 use crate::pipeline::nodes::shared::util::metadata_scope;
 use crate::pipeline::model::NodeCapability;
@@ -31,12 +32,24 @@ fn default_batch_size() -> usize {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
+    /// The source: a store key, or a FileRef through `{{ }}`.
     #[serde(default)]
-    pub input: String,
+    pub from: serde_json::Value,
+    /// Store folder for the output (default: `geo`).
     #[serde(default)]
-    pub input_value: serde_json::Value,
+    pub folder: String,
+    /// Output name, `.parquet` or `.geojson` (default: `<source>.parquet`).
     #[serde(default)]
-    pub output: String,
+    pub filename: Option<String>,
+    /// Exact store key; overrides `folder` and `filename`.
+    #[serde(default)]
+    pub path: Option<String>,
+    /// The store to write to; saved explicitly at registration.
+    #[serde(default)]
+    pub store: Option<String>,
+    /// `overwrite`, `skip` or `error` (default: error).
+    #[serde(default)]
+    pub on_conflict: Option<String>,
     #[serde(default)]
     pub layer: String,
     #[serde(default)]
@@ -50,9 +63,12 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
-            input: String::new(),
-            input_value: serde_json::Value::Null,
-            output: String::new(),
+            from: serde_json::Value::Null,
+            folder: String::new(),
+            filename: None,
+            path: None,
+            store: None,
+            on_conflict: None,
             layer: String::new(),
             to_crs: String::new(),
             hilbert: false,
@@ -96,28 +112,35 @@ pub fn definition() -> NodeDefinition {
         config_schema: Default::default(),
         dsl_flags: vec![
             DslFlag {
-                flag: "--input".to_string(),
-                config_key: "input".to_string(),
-                description: "Project-relative path to the input spatial file".to_string(),
+                flag: "--from".to_string(),
+                config_key: "from".to_string(),
+                description: "The input spatial file: a store key, or a FileRef through {{ }} (e.g. \"{{ input.saved }}\")".to_string(),
+                kind: DslFlagKind::Scalar,
+                required: true,
+            },
+            DslFlag {
+                flag: "--folder".to_string(),
+                config_key: "folder".to_string(),
+                description: "Store folder for the output (default: geo)".to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
             },
             DslFlag {
-                flag: "--input-value".to_string(),
-                config_key: "input_value".to_string(),
-                description: "Dot-path into upstream payload resolving to the input path"
-                    .to_string(),
+                flag: "--filename".to_string(),
+                config_key: "filename".to_string(),
+                description: "Output name, .parquet or .geojson (default: <source>.parquet)".to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
             },
             DslFlag {
-                flag: "--output".to_string(),
-                config_key: "output".to_string(),
-                description: "Project-relative path for the output file (.parquet or .geojson)"
-                    .to_string(),
+                flag: "--path".to_string(),
+                config_key: "path".to_string(),
+                description: "Exact store key for the output; overrides --folder and --filename".to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
             },
+            store_flag(),
+            on_conflict_flag(OnConflict::Error),
             DslFlag {
                 flag: "--layer".to_string(),
                 config_key: "layer".to_string(),
@@ -150,28 +173,31 @@ pub fn definition() -> NodeDefinition {
         ],
         fields: vec![
             NodeFieldDef {
-                name: "input".to_string(),
-                label: "Input".to_string(),
+                name: "from".to_string(),
+                label: "From".to_string(),
                 field_type: NodeFieldType::Text,
-                help: Some("Project-relative path to the input spatial file.".to_string()),
+                help: Some("The input spatial file: a store key, or a FileRef through {{ }}.".to_string()),
                 ..Default::default()
             },
             NodeFieldDef {
-                name: "input_value".to_string(),
-                label: "Input Expression".to_string(),
+                name: "folder".to_string(),
+                label: "Folder".to_string(),
                 field_type: NodeFieldType::Text,
-                help: Some(
-                    "Dot-path into upstream payload resolving to the input path.".to_string(),
-                ),
+                help: Some("Store folder for the output (default: geo).".to_string()),
                 ..Default::default()
             },
             NodeFieldDef {
-                name: "output".to_string(),
-                label: "Output".to_string(),
+                name: "filename".to_string(),
+                label: "Filename".to_string(),
                 field_type: NodeFieldType::Text,
-                help: Some(
-                    "Project-relative path for the output file (.parquet or .geojson).".to_string(),
-                ),
+                help: Some("Output name, .parquet or .geojson (default: <source>.parquet).".to_string()),
+                ..Default::default()
+            },
+            NodeFieldDef {
+                name: "path".to_string(),
+                label: "Path".to_string(),
+                field_type: NodeFieldType::Text,
+                help: Some("Exact store key; overrides folder and filename.".to_string()),
                 ..Default::default()
             },
             NodeFieldDef {
@@ -204,13 +230,16 @@ pub fn definition() -> NodeDefinition {
                 default_value: Some(json!(10000)),
                 ..Default::default()
             },
-        ],
+        ].into_iter().chain(store_fields(OnConflict::Error)).collect(),
         layout: vec![
             LayoutItem::Col {
                 col: vec![
-                    LayoutItem::Field("input".to_string()),
-                    LayoutItem::Field("input_value".to_string()),
-                    LayoutItem::Field("output".to_string()),
+                    LayoutItem::Field("from".to_string()),
+                    LayoutItem::Field("folder".to_string()),
+                    LayoutItem::Field("filename".to_string()),
+                    LayoutItem::Field("path".to_string()),
+                    LayoutItem::Field("store".to_string()),
+                    LayoutItem::Field("on_conflict".to_string()),
                 ],
             },
             LayoutItem::Col {
@@ -224,8 +253,8 @@ pub fn definition() -> NodeDefinition {
         ],
         ai_tool: Default::default(),
         examples: vec![
-            crate::pipeline::model::NodeExample::dsl("Shapefile to GeoParquet in WGS84", "geo.convert --input uploads/suburbs.zip --output datasets/suburbs.parquet --to-crs EPSG:4326 --hilbert")
-                .output(serde_json::json!({ "converted": { "input": "uploads/suburbs.zip", "output": "datasets/suburbs.parquet", "features": 312, "output_bytes": 918233, "elapsed_secs": 0.8 } }))
+            crate::pipeline::model::NodeExample::dsl("Shapefile to GeoParquet in WGS84", "geo.convert --from uploads/suburbs.zip --folder datasets --filename suburbs.parquet --to-crs EPSG:4326 --hilbert")
+                .output(serde_json::json!({ "converted": { "source": "uploads/suburbs.zip", "store": "local", "file": { "__zf_type": "file_ref", "backend": "zebfs", "store": "local", "ref": "datasets/suburbs.parquet", "filename": "suburbs.parquet", "mime": "application/vnd.apache.parquet", "kind": "parquet", "size": 918233, "sha256": "sha256:…", "lifecycle": "durable", "origin": "geo.convert", "trust": "generated" }, "files": ["…every file written, sidecars too"], "features": 312, "elapsed_secs": 0.8 } }))
                 .note("Then `ms.publish --name suburbs --path suburbs --source-path datasets/suburbs.parquet --source-kind geoparquet`."),
         ],
         ..Default::default()
@@ -239,12 +268,6 @@ pub struct Node {
 
 impl Node {
     pub fn new(config: Config, platform: Arc<PlatformService>) -> Result<Self, PipelineError> {
-        if config.output.trim().is_empty() {
-            return Err(PipelineError::new(
-                "FW_NODE_GEO_CONVERT",
-                "output path is required — set --output",
-            ));
-        }
         Ok(Self { config, platform })
     }
 }
@@ -269,28 +292,48 @@ impl NodeHandler for Node {
     ) -> Result<NodeExecutionOutput, PipelineError> {
         let (owner, project, ..) = metadata_scope(&input.metadata)?;
 
-        let input_rel = resolve_input_path(&self.config)?;
-        let output_rel = sanitize_rel_path(self.config.output.trim());
-
-        if output_rel.is_empty() {
-            return Err(PipelineError::new(
-                "FW_NODE_GEO_CONVERT",
-                "output path is empty after sanitization",
-            ));
+        // GDAL speaks paths and the project's files live in their stores:
+        // the input (and its sidecar files) is pulled into a scratch folder
+        // from the store that holds it, converted there, and every file
+        // written goes into this node's store.
+        let (source_store, input_rel) = open_source(&self.platform, owner, project, &self.config.from, self.config.store.as_deref())?
+            .ok_or_else(|| {
+                PipelineError::new(
+                    "FW_NODE_GEO_CONVERT",
+                    "no input configured — set --from to a store key or a FileRef",
+                )
+            })?;
+        let input_rel = sanitize_rel_path(&input_rel);
+        let stem = input_rel
+            .rsplit('/')
+            .next()
+            .unwrap_or(&input_rel)
+            .split('.')
+            .next()
+            .unwrap_or("output")
+            .to_string();
+        let folder = if self.config.folder.trim().is_empty() { "geo" } else { self.config.folder.trim() };
+        let filename = self
+            .config
+            .filename
+            .as_deref()
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .map(ToString::to_string)
+            .unwrap_or_else(|| format!("{stem}.parquet"));
+        let output_rel = target_key(self.config.path.as_deref(), folder, &filename, "FW_NODE_GEO_CONVERT")?;
+        let store = open_store(&self.platform, owner, project, self.config.store.as_deref())?;
+        let on_conflict = OnConflict::parse(self.config.on_conflict.as_deref(), OnConflict::Error, "FW_NODE_GEO_CONVERT")?;
+        if !on_conflict.allows(&store.fs, &output_rel, "FW_NODE_GEO_CONVERT")? {
+            let existing = store.fs.get(&output_rel).map_err(|err| PipelineError::new("FW_NODE_GEO_CONVERT", err.to_string()))?;
+            let file = store.file_ref(&output_rel, &filename, mime_for_filename(&filename), &existing.bytes, "geo.convert", "generated");
+            return Ok(answer(&input.payload, json!({
+                "source": input_rel, "store": store.id, "file": file, "files": [], "skipped": true
+            }), format!("node_kind={NODE_KIND} input={input_rel} output={output_rel} skipped=true")));
         }
 
-        let layout = self
-            .platform
-            .file
-            .ensure_project_layout(owner, project)
-            .map_err(|err| PipelineError::new("FW_NODE_GEO_CONVERT", err.to_string()))?;
-
-        // GDAL speaks paths and the project's files live in its one active
-        // store: the input (and its sidecar files) is pulled into a scratch
-        // folder, converted there, and every file written is put back.
-        let zebfs = layout.open_files();
         let scratch = StoreScratch::new("FW_NODE_GEO_CONVERT")?;
-        let input_abs = scratch.pull_with_siblings(&zebfs, &input_rel).map_err(|_| {
+        let input_abs = scratch.pull_with_siblings(&source_store.fs, &input_rel).map_err(|_| {
             PipelineError::new(
                 "FW_NODE_GEO_CONVERT",
                 format!("input file not found: {input_rel}"),
@@ -348,54 +391,43 @@ impl NodeHandler for Node {
             )
         })?
         .map_err(|err| PipelineError::new("FW_NODE_GEO_CONVERT", err.to_string()))?;
-        scratch.push_tree(&zebfs, &output_dir_local, &output_parent_rel)?;
+        let files = scratch.push_tree_refs(&store, &output_dir_local, &output_parent_rel, "geo.convert", "generated")?;
+        let file = files
+            .iter()
+            .find(|file| file.get("ref").and_then(|value| value.as_str()) == Some(output_rel.as_str()))
+            .cloned()
+            .unwrap_or(serde_json::Value::Null);
 
-        Ok(NodeExecutionOutput {
-            output_pins: vec![OUTPUT_PIN_OUT.to_string()],
-            payload: json!({
-                "converted": {
-                    "input": input_rel,
-                    "output": output_rel,
-                    "features": stats.features,
-                    "output_bytes": stats.output_bytes,
-                    "elapsed_secs": stats.elapsed_secs,
-                }
+        Ok(answer(
+            &input.payload,
+            json!({
+                "source": input_rel,
+                "store": store.id,
+                "file": file,
+                "files": files,
+                "features": stats.features,
+                "elapsed_secs": stats.elapsed_secs,
             }),
-            trace: vec![format!(
+            format!(
                 "node_kind={NODE_KIND} input={input_rel} output={output_rel} features={}",
                 stats.features
-            )],
-        })
+            ),
+        ))
     }
 }
 
-fn resolve_input_path(
-    config: &Config,
-) -> Result<String, PipelineError> {
-    if !config.input.trim().is_empty() {
-        return Ok(sanitize_rel_path(config.input.trim()));
+/// `converted` added to the payload, the rest kept.
+fn answer(input: &serde_json::Value, converted: serde_json::Value, trace: String) -> NodeExecutionOutput {
+    let mut payload = match input {
+        serde_json::Value::Object(map) => map.clone(),
+        _ => serde_json::Map::new(),
+    };
+    payload.insert("converted".to_string(), converted);
+    NodeExecutionOutput {
+        output_pins: vec![OUTPUT_PIN_OUT.to_string()],
+        payload: serde_json::Value::Object(payload),
+        trace: vec![trace],
     }
-    // Arrives final — a literal or a resolved `{{ expr }}`. The flag was
-    // `--input-expr` and resolved a dot-path, which was neither an expression
-    // nor a path anyone could guess. It stays typed rather than a string
-    // because a FileRef is a legal answer: `{{ input.saved }}` hands this the
-    // whole reference and the path is read out of it.
-    if !config.input_value.is_null() {
-        let val = zebfs_rel_path_or_string(&config.input_value)?.ok_or_else(|| {
-            PipelineError::new(
-                "FW_NODE_GEO_CONVERT",
-                format!(
-                    "--input-value is not a path or a FileRef: {}",
-                    config.input_value
-                ),
-            )
-        })?;
-        return Ok(sanitize_rel_path(&val));
-    }
-    Err(PipelineError::new(
-        "FW_NODE_GEO_CONVERT",
-        "no input path configured — set --input or --input-value",
-    ))
 }
 
 fn parse_optional_crs(s: &str) -> Result<Option<geonative_core::Crs>, PipelineError> {
@@ -421,44 +453,4 @@ fn sanitize_rel_path(path: &str) -> String {
         .filter(|s| !s.is_empty() && *s != "." && *s != "..")
         .collect::<Vec<_>>()
         .join("/")
-}
-
-#[cfg(test)]
-mod tests {
-    use serde_json::json;
-
-    use super::{Config, resolve_input_path};
-
-    #[test]
-    fn input_value_accepts_a_file_ref() {
-        let config = Config {
-            input_value: json!({
-                "__zf_type": "file_ref",
-                "backend": "zebfs",
-                "ref": "tmp/runs/r/files/data.geojson",
-                "sha256": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-                "mime": "application/geo+json",
-                "size": 1,
-                "lifecycle": "temporary"
-            }),
-            output: "out/data.parquet".to_string(),
-            ..Default::default()
-        };
-        let payload = json!({
-            "source": {
-                "__zf_type": "file_ref",
-                "backend": "zebfs",
-                "ref": "tmp/runs/r/files/data.geojson",
-                "sha256": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-                "mime": "application/geo+json",
-                "size": 1,
-                "lifecycle": "temporary"
-            }
-        });
-
-        assert_eq!(
-            resolve_input_path(&config).expect("input path"),
-            "tmp/runs/r/files/data.geojson"
-        );
-    }
 }

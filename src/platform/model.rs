@@ -2537,6 +2537,10 @@ pub struct ProjectFileLayout {
     /// it (`data/store/files-backend.json`). Resolved here so that
     /// `open_files` cannot fail.
     pub file_store: FileStore,
+    /// The id of that store: `local`, or the id of the `s3` credential that
+    /// reaches the bucket. What a node saves as `--store` and a FileRef
+    /// carries as `store`.
+    pub file_store_id: String,
 }
 
 impl ProjectFileLayout {
@@ -2553,6 +2557,11 @@ impl ProjectFileLayout {
     /// here carries in `backend`.
     pub fn file_backend(&self) -> FileBackend {
         self.file_store.backend()
+    }
+
+    /// The id of the project's default store.
+    pub fn store_id(&self) -> &str {
+        &self.file_store_id
     }
 
     /// The local directory behind this project's store, for the engines that

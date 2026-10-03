@@ -16,7 +16,7 @@ pub mod s3;
 pub mod store;
 
 pub use acl::{ZebFsAccess, ZebFsAclScope};
-pub use backend::{BACKEND_S3, BACKEND_ZEBFS, FILE_BACKENDS, FileBackend, FileStore};
+pub use backend::{BACKEND_S3, BACKEND_ZEBFS, FILE_BACKENDS, FileBackend, FileStore, LOCAL_STORE_ID};
 pub use error::ZebFsError;
 pub use local::{LocalZebFs, normalize_object_path};
 pub use model::{ZebFsEntry, ZebFsEntryKind, ZebFsObject, ZebFsStat};

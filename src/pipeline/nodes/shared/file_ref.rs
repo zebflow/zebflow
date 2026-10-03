@@ -74,6 +74,7 @@ pub const FILE_REF_KINDS: [&str; 11] = [
 /// what it was handed carries the source's word forward.
 pub fn durable_file_ref(
     backend: FileBackend,
+    store_id: &str,
     rel_path: &str,
     filename: &str,
     mime: &str,
@@ -86,6 +87,7 @@ pub fn durable_file_ref(
     json!({
         "__zf_type": FILE_REF_TYPE,
         "backend": backend.as_str(),
+        "store": store_id,
         "ref": rel_path,
         "filename": filename,
         "mime": mime,
@@ -131,6 +133,7 @@ pub fn durable_file_ref_for_store_path(
     Ok(json!({
         "__zf_type": FILE_REF_TYPE,
         "backend": layout.file_backend().as_str(),
+        "store": layout.store_id(),
         "ref": object.stat.path,
         "filename": filename,
         "mime": mime,
@@ -206,7 +209,7 @@ pub fn remove_run_temporary_files(
 
 /// The content type a stored object's name implies, for a FileRef built from
 /// a path rather than an upload. The store keeps no content type of its own.
-fn mime_for_filename(filename: &str) -> &'static str {
+pub fn mime_for_filename(filename: &str) -> &'static str {
     let ext = filename
         .rsplit_once('.')
         .map(|(_, ext)| ext.to_ascii_lowercase())
@@ -319,6 +322,7 @@ pub fn write_tmp_file_ref(
     Ok(json!({
         "__zf_type": FILE_REF_TYPE,
         "backend": layout.file_backend().as_str(),
+        "store": layout.store_id(),
         "ref": stat.path,
         "filename": clean_name,
         "mime": mime,
@@ -341,21 +345,24 @@ pub fn read_file_ref_bytes(
     let path = file_ref_path(value).ok_or_else(|| {
         PipelineError::new("FW_FILE_REF_READ", "value is not a FileRef with a ref")
     })?;
-    let layout = platform
-        .file
-        .ensure_project_layout(owner, project)
-        .map_err(|err| PipelineError::new("FW_FILE_REF_READ", err.to_string()))?;
-    // Only the backend that wrote a ref may read it. The project's store is
-    // that backend, so a ref carrying any other word is refused by name.
+    // The store that wrote a ref reads it, whichever of the project's stores
+    // is the default now; a ref whose backend word disagrees with that store
+    // is refused by name.
+    let store_id = value.get("store").and_then(Value::as_str);
+    let store = super::project_store::open_store(platform, owner, project, store_id)
+        .map_err(|err| PipelineError::new("FW_FILE_REF_READ", err.message))?;
     let backend = file_ref_backend(value);
-    let native = layout.file_backend().as_str();
-    if backend != native {
+    if backend != store.backend.as_str() {
         return Err(PipelineError::new(
             "FW_FILE_REF_BACKEND",
-            format!("FileRef backend '{backend}' is not this project's store ('{native}')"),
+            format!(
+                "FileRef backend '{backend}' is not the backend of its store '{}' ('{}')",
+                store.id,
+                store.backend.as_str()
+            ),
         ));
     }
-    let zebfs = layout.open_files();
+    let zebfs = store.fs;
     let object = zebfs
         .get(path)
         .map_err(|err| PipelineError::new("FW_FILE_REF_READ", err.to_string()))?;
@@ -393,6 +400,7 @@ pub fn validate_file_ref(value: &Value) -> Result<(), PipelineError> {
         ));
     }
     required_non_empty_string(value, "backend")?;
+    required_non_empty_string(value, "store")?;
     required_non_empty_string(value, "ref")?;
     required_non_empty_string(value, "filename")?;
     required_non_empty_string(value, "mime")?;
@@ -619,6 +627,7 @@ mod tests {
         json!({
             "__zf_type": "file_ref",
             "backend": "zebfs",
+            "store": "local",
             "ref": "tmp/runs/abc123/files/9f2c8d.jpg",
             "filename": "photo.jpg",
             "mime": "image/jpeg",
@@ -642,12 +651,13 @@ mod tests {
         );
     }
 
-    /// `kinds/file-ref/README.md`: "All eleven fields are required."
+    /// `kinds/file-ref/README.md`: every field is required, `store` included.
     #[test]
-    fn every_one_of_the_eleven_fields_is_required() {
+    fn every_field_is_required() {
         for field in [
             "__zf_type",
             "backend",
+            "store",
             "ref",
             "filename",
             "mime",

@@ -138,6 +138,29 @@ impl StoreScratch {
         Ok(bytes)
     }
 
+    /// [`Self::push_tree`], answering a durable FileRef for every file.
+    pub fn push_tree_refs(
+        &self,
+        store: &super::project_store::NodeStore,
+        local_dir: &Path,
+        rel_prefix: &str,
+        origin: &str,
+        trust: &str,
+    ) -> Result<Vec<serde_json::Value>, PipelineError> {
+        let prefix = rel_prefix.trim_matches('/');
+        let written = self.push_tree(&store.fs, local_dir, prefix)?;
+        let mut refs = Vec::with_capacity(written.len());
+        for rel in written {
+            let inner = if prefix.is_empty() { rel.as_str() } else { rel.strip_prefix(&format!("{prefix}/")).unwrap_or(&rel) };
+            let bytes = std::fs::read(local_dir.join(inner))
+                .map_err(|err| self.err(format!("read '{inner}': {err}")))?;
+            let filename = rel.rsplit('/').next().unwrap_or(&rel).to_string();
+            let mime = super::file_ref::mime_for_filename(&filename);
+            refs.push(store.file_ref(&rel, &filename, mime, &bytes, origin, trust));
+        }
+        Ok(refs)
+    }
+
     /// Stores every file under `local_dir` in the project's store beneath
     /// `rel_prefix`, keeping their relative layout. Answers the store paths.
     pub fn push_tree(&self, store: &ZebFs, local_dir: &Path, rel_prefix: &str) -> Result<Vec<String>, PipelineError> {

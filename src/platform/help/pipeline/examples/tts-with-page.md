@@ -66,7 +66,7 @@ return {
   slug: String(input.body.slug || Date.now())
 };
 "
-[c] ai.tts --provider piper --credential narrator-tts --text "{{ input.text }}" --output-path "{{ 'audio/tts-' + input.slug + '.wav' }}" --return both
+[c] ai.tts --provider piper --credential narrator-tts --text "{{ input.text }}" --filename "{{ 'tts-' + input.slug }}" --on-conflict overwrite --return both
 [d] web.response
 
 [a] -> [guard]
@@ -84,8 +84,12 @@ Response shape:
     "provider": "piper",
     "format": "wav",
     "mime_type": "audio/wav",
-    "path": "audio/tts-my-demo.wav",
-    "url": "/fs/superadmin/default/audio/tts-my-demo.wav",
+    "file": {
+      "__zf_type": "file_ref", "backend": "zebfs", "store": "local",
+      "ref": "audio/tts-my-demo.wav", "filename": "tts-my-demo.wav",
+      "mime": "audio/wav", "kind": "audio", "size": 186924,
+      "sha256": "sha256:…", "lifecycle": "durable", "origin": "ai.tts", "trust": "generated"
+    },
     "sample_rate": 22050,
     "samples": 93440,
     "bytes": 186924,
@@ -193,7 +197,7 @@ export default function Page(input) {
       );
       const nextAudioUrl = URL.createObjectURL(blob);
       setAudioUrl(nextAudioUrl);
-      setFileUrl(payload?.audio?.url || "");
+      setFileUrl(payload?.audio?.file?.ref || "");
       setMeta(payload?.audio || null);
     } catch (err) {
       setError(String(err?.message || err));
@@ -307,14 +311,16 @@ Type text, click **Generate Voice**, and the page should:
 2. receive `audio_blob_base64`
 3. create a browser `Blob`
 4. play the audio immediately
-5. expose the generated `.wav` URL for download/debugging
+5. show where the `.wav` was stored (its store key)
 
 ---
 
 ## Notes
 
 - `audio_blob_base64` is the right field for immediate browser playback or websocket delivery.
-- `audio.url` is the right field when you want a persisted downloadable file.
+- `audio.file` is the stored `.wav` as a FileRef. It is private like every
+  stored file; to offer it for download, expose its folder (`audio/`) in
+  Studio → Files and link to it on the project's file host.
 - For local Piper, the current stable requirement is just:
   - `model_file`
   - `config_file`

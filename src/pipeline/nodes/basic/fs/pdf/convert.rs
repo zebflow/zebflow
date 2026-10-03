@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::pipeline::nodes::shared::store_scratch::StoreScratch;
-use crate::pipeline::nodes::shared::file_ref::zebfs_rel_path_or_string;
+use crate::pipeline::nodes::shared::project_store::{OnConflict, on_conflict_flag, open_source, open_store, store_fields, store_flag, target_key};
 use crate::pipeline::nodes::shared::util::{metadata_scope, resolve_path};
 use crate::pipeline::model::NodeCapability;
 use crate::pipeline::{
@@ -53,9 +53,15 @@ pub struct Config {
     /// Dot-path in the payload containing the project-relative PDF path.
     #[serde(default = "default_source_key")]
     pub source_key: String,
-    /// Destination ZebFS object directory.
+    /// The folder the export goes into (default: `pdf/<source-file-stem>`).
     #[serde(default)]
-    pub output_dir: String,
+    pub folder: String,
+    /// The store to write to; saved explicitly at registration.
+    #[serde(default)]
+    pub store: Option<String>,
+    /// `overwrite`, `skip` or `error` when the folder is not empty (default: error).
+    #[serde(default)]
+    pub on_conflict: Option<String>,
     /// Export text markdown per page.
     #[serde(default = "default_emit_fulltext")]
     pub emit_fulltext: bool,
@@ -74,7 +80,9 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             source_key: default_source_key(),
-            output_dir: String::new(),
+            folder: String::new(),
+            store: None,
+            on_conflict: None,
             emit_fulltext: default_emit_fulltext(),
             emit_page_images: default_emit_page_images(),
             emit_page_raster: default_emit_page_raster(),
@@ -94,9 +102,12 @@ pub struct PageArtifact {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PdfConvertOutput {
-    pub source_path: String,
-    pub output_dir: String,
+    pub source: String,
+    pub folder: String,
+    pub store: String,
     pub manifest_path: String,
+    /// A durable FileRef for every file written.
+    pub files: Vec<serde_json::Value>,
     pub page_count: usize,
     pub options: PdfConvertOptions,
     pub pages: Vec<PageArtifact>,
@@ -130,9 +141,11 @@ pub fn definition() -> NodeDefinition {
                 "pdf_convert": {
                     "type": "object",
                     "properties": {
-                        "source_path": { "type": "string" },
-                        "output_dir": { "type": "string" },
+                        "source": { "type": "string" },
+                        "folder": { "type": "string" },
+                        "store": { "type": "string" },
                         "manifest_path": { "type": "string" },
+                        "files": { "type": "array", "description": "A durable FileRef per file written" },
                         "page_count": { "type": "integer" }
                     }
                 }
@@ -152,9 +165,9 @@ pub fn definition() -> NodeDefinition {
                 required: false,
             },
             DslFlag {
-                flag: "--output-dir".to_string(),
-                config_key: "output_dir".to_string(),
-                description: "Destination ZebFS object directory. Defaults to pdf/<source-file-stem>".to_string(),
+                flag: "--folder".to_string(),
+                config_key: "folder".to_string(),
+                description: "The folder the export goes into (default: pdf/<source-file-stem>)".to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
             },
@@ -186,6 +199,8 @@ pub fn definition() -> NodeDefinition {
                 kind: DslFlagKind::Scalar,
                 required: false,
             },
+            store_flag(),
+            on_conflict_flag(OnConflict::Error),
         ],
         fields: vec![
             NodeFieldDef {
@@ -197,10 +212,10 @@ pub fn definition() -> NodeDefinition {
                 ..Default::default()
             },
             NodeFieldDef {
-                name: "output_dir".to_string(),
-                label: "Output Dir".to_string(),
+                name: "folder".to_string(),
+                label: "Folder".to_string(),
                 field_type: NodeFieldType::Text,
-                help: Some("Destination ZebFS object directory. Leave blank to use pdf/<source-file-stem>.".to_string()),
+                help: Some("The folder the export goes into (default: pdf/<source-file-stem>).".to_string()),
                 ..Default::default()
             },
             NodeFieldDef {
@@ -235,22 +250,24 @@ pub fn definition() -> NodeDefinition {
                 help: Some("DPI used when rendering page PNG previews.".to_string()),
                 ..Default::default()
             },
-        ],
+        ].into_iter().chain(store_fields(OnConflict::Error)).collect(),
         layout: vec![LayoutItem::Col {
             col: vec![
                 LayoutItem::Field("source_key".to_string()),
-                LayoutItem::Field("output_dir".to_string()),
+                LayoutItem::Field("folder".to_string()),
                 LayoutItem::Field("emit_fulltext".to_string()),
                 LayoutItem::Field("emit_page_images".to_string()),
                 LayoutItem::Field("emit_page_raster".to_string()),
                 LayoutItem::Field("dpi".to_string()),
+                LayoutItem::Field("store".to_string()),
+                LayoutItem::Field("on_conflict".to_string()),
             ],
         }],
         ai_tool: Default::default(),
         examples: vec![
-            crate::pipeline::model::NodeExample::dsl("Text and page images from an uploaded PDF", "fs.pdf.convert --output-dir pdf/brief --dpi 110")
-                .input(serde_json::json!({ "saved": { "__zf_type": "file_ref", "backend": "zebfs", "ref": "uploads/brief.pdf", "filename": "brief.pdf", "mime": "application/pdf", "kind": "pdf", "size": 182331, "sha256": "sha256:…", "lifecycle": "durable", "origin": "fs.save", "trust": "untrusted" } }))
-                .output(serde_json::json!({ "pdf_convert": { "source_path": "uploads/brief.pdf", "output_dir": "pdf/brief", "manifest_path": "pdf/brief/manifest.json", "page_count": 4 } }))
+            crate::pipeline::model::NodeExample::dsl("Text and page images from an uploaded PDF", "fs.pdf.convert --folder pdf/brief --dpi 110")
+                .input(serde_json::json!({ "saved": { "__zf_type": "file_ref", "backend": "zebfs", "store": "local", "ref": "uploads/brief.pdf", "filename": "brief.pdf", "mime": "application/pdf", "kind": "pdf", "size": 182331, "sha256": "sha256:…", "lifecycle": "durable", "origin": "fs.save", "trust": "untrusted" } }))
+                .output(serde_json::json!({ "pdf_convert": { "source": "uploads/brief.pdf", "folder": "pdf/brief", "store": "local", "manifest_path": "pdf/brief/manifest.json", "page_count": 4, "files": ["…a FileRef per file"] } }))
                 .note("Each page's text is `pdf/brief/page-N/text.md`; read one back with `fs.get`."),
         ],
         ..Default::default()
@@ -294,10 +311,13 @@ impl NodeHandler for Node {
             self.config.source_key.trim()
         };
 
-        let rel_path = resolve_path(&input.payload, source_key)
-            .map(zebfs_rel_path_or_string)
-            .transpose()?
-            .flatten()
+        let source_value = resolve_path(&input.payload, source_key).ok_or_else(|| {
+            PipelineError::new(
+                "FW_NODE_PDF_CONVERT",
+                format!("source PDF path not found at payload key '{source_key}' — chain after n.fs.save or set --source-key"),
+            )
+        })?;
+        let (source_store, rel_path) = open_source(&self.platform, owner, project, source_value, self.config.store.as_deref())?
             .ok_or_else(|| {
                 PipelineError::new(
                     "FW_NODE_PDF_CONVERT",
@@ -315,16 +335,10 @@ impl NodeHandler for Node {
             ));
         }
 
-        let layout = self
-            .platform
-            .file
-            .ensure_project_layout(owner, project)
-            .map_err(|err| PipelineError::new("FW_NODE_PDF_CONVERT", err.to_string()))?;
-
-        // pdfium speaks paths and the project's files live in its one active
-        // store: the PDF is pulled into a scratch folder, exported there, and
-        // the export is put back into the store.
-        let zebfs = layout.open_files();
+        // pdfium speaks paths and the project's files live in their stores:
+        // the PDF is pulled into a scratch folder, exported there, and the
+        // export is put into this node's store.
+        let zebfs = &source_store.fs;
         let scratch = StoreScratch::new("FW_NODE_PDF_CONVERT")?;
         match zebfs.head(&rel_path) {
             Ok(stat) if stat.kind == crate::zebfs::ZebFsEntryKind::Object => {}
@@ -339,7 +353,21 @@ impl NodeHandler for Node {
 
         validate_pdf_magic(&abs_path)?;
 
-        let output_rel_dir = resolve_output_dir(&self.config.output_dir, &rel_path);
+        let output_rel_dir = target_key(Some(&resolve_output_dir(&self.config.folder, &rel_path)), "", "", "FW_NODE_PDF_CONVERT")?;
+        let store = open_store(&self.platform, owner, project, self.config.store.as_deref())?;
+        let on_conflict = OnConflict::parse(self.config.on_conflict.as_deref(), OnConflict::Error, "FW_NODE_PDF_CONVERT")?;
+        if !on_conflict.allows_tree(&store.fs, &output_rel_dir, "FW_NODE_PDF_CONVERT")? {
+            let mut payload = match &input.payload {
+                serde_json::Value::Object(map) => map.clone(),
+                _ => serde_json::Map::new(),
+            };
+            payload.insert("pdf_convert".to_string(), json!({ "source": rel_path, "folder": output_rel_dir, "store": store.id, "skipped": true, "files": [] }));
+            return Ok(NodeExecutionOutput {
+                output_pins: vec![OUTPUT_PIN_OUT.to_string()],
+                payload: serde_json::Value::Object(payload),
+                trace: vec![format!("node_kind={NODE_KIND} src={rel_path} out={output_rel_dir} skipped=true")],
+            });
+        }
         let output_root = scratch.path().join(".zf-out");
         let output_root_local = output_root.clone();
 
@@ -362,7 +390,8 @@ impl NodeHandler for Node {
             )
         })?
         .map_err(|err| PipelineError::new("FW_NODE_PDF_CONVERT", err.to_string()))?;
-        scratch.push_tree(&zebfs, &output_root_local, &output_rel_dir)?;
+        let trust = source_value.get("trust").and_then(|value| value.as_str()).unwrap_or("untrusted").to_string();
+        let files = scratch.push_tree_refs(&store, &output_root_local, &output_rel_dir, "fs.pdf.convert", &trust)?;
 
         let pages = manifest
             .pages
@@ -388,9 +417,11 @@ impl NodeHandler for Node {
             .collect::<Vec<_>>();
 
         let output = PdfConvertOutput {
-            source_path: rel_path.clone(),
-            output_dir: output_rel_dir.clone(),
+            source: rel_path.clone(),
+            folder: output_rel_dir.clone(),
+            store: store.id.clone(),
             manifest_path: format!("{output_rel_dir}/manifest.json"),
+            files,
             page_count: manifest.page_count,
             options: PdfConvertOptions {
                 emit_fulltext: self.config.emit_fulltext,
@@ -403,7 +434,14 @@ impl NodeHandler for Node {
 
         Ok(NodeExecutionOutput {
             output_pins: vec![OUTPUT_PIN_OUT.to_string()],
-            payload: json!({ "pdf_convert": output }),
+            payload: {
+                let mut payload = match &input.payload {
+                    serde_json::Value::Object(map) => map.clone(),
+                    _ => serde_json::Map::new(),
+                };
+                payload.insert("pdf_convert".to_string(), json!(output));
+                serde_json::Value::Object(payload)
+            },
             trace: vec![format!(
                 "node_kind={NODE_KIND} src={} out={} pages={}",
                 rel_path, output_rel_dir, manifest.page_count
@@ -569,7 +607,7 @@ mod tests {
             .and_then(|value| value.as_str())
             .expect("manifest path");
         let output_dir = pdf
-            .get("output_dir")
+            .get("folder")
             .and_then(|value| value.as_str())
             .expect("output dir");
         let page_count = pdf

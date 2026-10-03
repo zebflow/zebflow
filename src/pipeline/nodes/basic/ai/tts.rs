@@ -17,6 +17,7 @@ use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
+use crate::pipeline::nodes::shared::project_store::{OnConflict, on_conflict_flag, open_store, store_fields, store_flag, target_key};
 use crate::pipeline::nodes::shared::store_scratch::StoreScratch;
 use crate::pipeline::nodes::shared::util::metadata_scope;
 use crate::pipeline::PipelineError;
@@ -160,8 +161,21 @@ pub struct Config {
     /// migration there was no literal form at all: even fixed words had to be
     /// written as a quoted JS string.
     pub text: String,
+    /// Store folder for the audio file (default: `audio`).
     #[serde(default)]
-    pub output_path: Option<String>,
+    pub folder: String,
+    /// Audio file name; `.wav` is added (default: a UUID).
+    #[serde(default)]
+    pub filename: Option<String>,
+    /// Exact store key; overrides `folder` and `filename`.
+    #[serde(default)]
+    pub path: Option<String>,
+    /// The store to write to; saved explicitly at registration.
+    #[serde(default)]
+    pub store: Option<String>,
+    /// `overwrite`, `skip` or `error` (default: error).
+    #[serde(default)]
+    pub on_conflict: Option<String>,
 
     #[serde(default = "default_return_mode")]
     pub return_mode: ReturnMode,
@@ -182,7 +196,11 @@ impl Default for Config {
             provider: default_provider(),
             credential_id: String::new(),
             text: String::new(),
-            output_path: None,
+            folder: String::new(),
+            filename: None,
+            path: None,
+            store: None,
+            on_conflict: None,
 
             return_mode: default_return_mode(),
             speaker: None,
@@ -228,7 +246,7 @@ pub fn definition() -> NodeDefinition {
         capabilities: vec![NodeCapability::Filesystem, NodeCapability::Credential, NodeCapability::Process],
         title: "AI TTS".to_string(),
         description: "Turns text into speech with a local Piper model named by a credential (the owner installs the voice files; the \
-            credential points at them). `--text \"{{ expr }}\"` is what to say; `--output-path audio/x.wav` writes the file, `--return file|blob|both` \
+            credential points at them). `--text \"{{ expr }}\"` is what to say; `--filename x` (in `--folder`, default `audio`) or `--path audio/x.wav` writes the file, `--return file|blob|both` \
             decides whether the payload carries a FileRef, the bytes, or both. Replaces the payload with `{ audio: { … FileRef … }, provider, format, mime_type }`; \
             the page plays `input.audio` through its `/fs/…` url."
             .to_string(),
@@ -245,8 +263,7 @@ pub fn definition() -> NodeDefinition {
                         "provider": { "type": "string" },
                         "format": { "type": "string" },
                         "mime_type": { "type": "string" },
-                        "path": { "type": ["string", "null"] },
-                        "url": { "type": ["string", "null"] },
+                        "file": { "description": "A durable FileRef for the written wav, or null" },
                         "sample_rate": { "type": "integer" },
                         "samples": { "type": "integer" },
                         "bytes": { "type": "integer" },
@@ -284,12 +301,28 @@ pub fn definition() -> NodeDefinition {
                 required: true,
             },
             DslFlag {
-                flag: "--output-path".to_string(),
-                config_key: "output_path".to_string(),
-                description: "Zebflow FS output object path, for example audio/demo.wav.".to_string(),
+                flag: "--folder".to_string(),
+                config_key: "folder".to_string(),
+                description: "Store folder for the audio file (default: audio).".to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
             },
+            DslFlag {
+                flag: "--filename".to_string(),
+                config_key: "filename".to_string(),
+                description: "Audio file name; .wav is added (default: a UUID).".to_string(),
+                kind: DslFlagKind::Scalar,
+                required: false,
+            },
+            DslFlag {
+                flag: "--path".to_string(),
+                config_key: "path".to_string(),
+                description: "Exact store key for the audio file; overrides --folder and --filename.".to_string(),
+                kind: DslFlagKind::Scalar,
+                required: false,
+            },
+            store_flag(),
+            on_conflict_flag(OnConflict::Error),
             DslFlag {
                 flag: "--return".to_string(),
                 config_key: "return_mode".to_string(),
@@ -361,11 +394,25 @@ pub fn definition() -> NodeDefinition {
                 ..Default::default()
             },
             NodeFieldDef {
-                name: "output_path".to_string(),
-                label: "Output Path".to_string(),
+                name: "folder".to_string(),
+                label: "Folder".to_string(),
+                field_type: NodeFieldType::Text,
+                help: Some("Store folder for the audio file (default: audio).".to_string()),
+                ..Default::default()
+            },
+            NodeFieldDef {
+                name: "filename".to_string(),
+                label: "Filename".to_string(),
+                field_type: NodeFieldType::Text,
+                help: Some("Audio file name; .wav is added (default: a UUID).".to_string()),
+                ..Default::default()
+            },
+            NodeFieldDef {
+                name: "path".to_string(),
+                label: "Path".to_string(),
                 field_type: NodeFieldType::Text,
                 placeholder: Some("audio/narrator-demo.wav".to_string()),
-                help: Some("Private-relative output file path. Required for file/both return mode.".to_string()),
+                help: Some("Exact store key; overrides folder and filename.".to_string()),
                 ..Default::default()
             },
             NodeFieldDef {
@@ -416,7 +463,7 @@ pub fn definition() -> NodeDefinition {
                 span: Some("full".to_string()),
                 ..Default::default()
             },
-        ],
+        ].into_iter().chain(store_fields(OnConflict::Error)).collect(),
         layout: vec![
             LayoutItem::Row {
                 row: vec![
@@ -427,7 +474,11 @@ pub fn definition() -> NodeDefinition {
             LayoutItem::Row {
                 row: vec![
                     LayoutItem::Field("return_mode".to_string()),
-                    LayoutItem::Field("output_path".to_string()),
+                    LayoutItem::Field("folder".to_string()),
+                    LayoutItem::Field("filename".to_string()),
+                    LayoutItem::Field("path".to_string()),
+                    LayoutItem::Field("store".to_string()),
+                    LayoutItem::Field("on_conflict".to_string()),
                 ],
             },
             LayoutItem::Row {
@@ -445,8 +496,8 @@ pub fn definition() -> NodeDefinition {
             LayoutItem::Field("text".to_string()),
         ],
         examples: vec![
-            crate::pipeline::model::NodeExample::dsl("Read a post aloud", r#"ai.tts --provider piper --credential piper_en --text "{{ input.rows[0].body }}" --output-path "audio/{{ $trigger.params.slug }}.wav" --return file"#)
-                .output(serde_json::json!({ "audio": { "__zf_type": "file_ref", "backend": "zebfs", "ref": "audio/hello.wav", "mime": "audio/wav" }, "provider": "piper", "format": "wav", "mime_type": "audio/wav" })),
+            crate::pipeline::model::NodeExample::dsl("Read a post aloud", r#"ai.tts --provider piper --credential piper_en --text "{{ input.rows[0].body }}" --filename "{{ $trigger.params.slug }}" --return file"#)
+                .output(serde_json::json!({ "audio": { "provider": "piper", "format": "wav", "mime_type": "audio/wav", "file": { "__zf_type": "file_ref", "backend": "zebfs", "store": "local", "ref": "audio/hello.wav", "filename": "hello.wav", "mime": "audio/wav", "kind": "audio", "size": 88244, "sha256": "sha256:…", "lifecycle": "durable", "origin": "ai.tts", "trust": "generated" } } })),
         ],
         ..Default::default()
     }
@@ -638,18 +689,32 @@ impl NodeHandler for Node {
         let needs_file = matches!(self.config.return_mode, ReturnMode::File | ReturnMode::Both);
         let needs_blob = matches!(self.config.return_mode, ReturnMode::Blob | ReturnMode::Both);
 
-        let (file_rel_path, file_url) = if needs_file {
-            let output_rel = resolve_output_rel_path(self.config.output_path.as_deref())?;
-            let final_rel = normalize_audio_output_rel_path(&output_rel)?;
-            zebfs.put(&final_rel, &wav_bytes).map_err(|err| {
-                PipelineError::new("AI_TTS_FILE", format!("failed to write wav file: {err}"))
-            })?;
-            (
-                Some(final_rel.clone()),
-                Some(format!("/fs/{owner}/{project}/{final_rel}")),
-            )
+        let file = if needs_file {
+            let folder = if self.config.folder.trim().is_empty() { "audio" } else { self.config.folder.trim() };
+            let filename = self
+                .config
+                .filename
+                .as_deref()
+                .map(str::trim)
+                .filter(|name| !name.is_empty())
+                .map(ToString::to_string)
+                .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+            let key = target_key(self.config.path.as_deref(), folder, &filename, "AI_TTS_OUTPUT_PATH")?;
+            let final_rel = normalize_audio_output_rel_path(&key)?;
+            let store = open_store(platform, owner, project, self.config.store.as_deref())?;
+            let on_conflict = OnConflict::parse(self.config.on_conflict.as_deref(), OnConflict::Error, "AI_TTS_FILE")?;
+            let bytes = if on_conflict.allows(&store.fs, &final_rel, "AI_TTS_FILE")? {
+                store.fs.put(&final_rel, &wav_bytes).map_err(|err| {
+                    PipelineError::new("AI_TTS_FILE", format!("failed to write wav file: {err}"))
+                })?;
+                wav_bytes.clone()
+            } else {
+                store.fs.get(&final_rel).map_err(|err| PipelineError::new("AI_TTS_FILE", err.to_string()))?.bytes
+            };
+            let leaf = final_rel.rsplit('/').next().unwrap_or(&final_rel).to_string();
+            store.file_ref(&final_rel, &leaf, "audio/wav", &bytes, "ai.tts", "generated")
         } else {
-            (None, None)
+            Value::Null
         };
 
         Ok(NodeExecutionOutput {
@@ -659,8 +724,7 @@ impl NodeHandler for Node {
                     "provider": provider,
                     "format": "wav",
                     "mime_type": "audio/wav",
-                    "path": file_rel_path,
-                    "url": file_url,
+                    "file": file,
                     "sample_rate": bridge_result.sample_rate,
                     "samples": bridge_result.samples,
                     "bytes": bridge_result.bytes,
@@ -1416,17 +1480,6 @@ fn fallback_viseme(word: &str) -> &'static str {
     }
 }
 
-/// Where the audio is written. Arrives final — a literal or a resolved
-/// `{{ expr }}`.
-fn resolve_output_rel_path(output_path: Option<&str>) -> Result<String, PipelineError> {
-    let Some(path) = output_path.map(str::trim).filter(|path| !path.is_empty()) else {
-        return Err(PipelineError::new(
-            "AI_TTS_OUTPUT_PATH",
-            "output_path is required when the return mode writes a file",
-        ));
-    };
-    Ok(path.to_string())
-}
 
 fn normalize_zebfs_asset_rel_path(raw: &str) -> Result<String, PipelineError> {
     let normalized = raw.trim().replace('\\', "/");
@@ -1723,7 +1776,11 @@ mod tests {
                 provider: "piper".to_string(),
                 credential_id: "narrator-tts".to_string(),
                 text: "Halo, ini Narrator dari node n.ai.tts Zebflow.".to_string(),
-                output_path: Some("audio/narrator-node-smoke.wav".to_string()),
+                path: Some("audio/narrator-node-smoke.wav".to_string()),
+                folder: String::new(),
+                filename: None,
+                store: None,
+                on_conflict: Some("overwrite".to_string()),
     
                 return_mode: ReturnMode::Both,
                 speaker: None,
@@ -1753,9 +1810,9 @@ mod tests {
             .await
             .expect("execute");
 
-        let file_rel = out.payload["audio"]["path"]
+        let file_rel = out.payload["audio"]["file"]["ref"]
             .as_str()
-            .expect("audio path should be present");
+            .expect("audio file should be present");
         assert_eq!(file_rel, "audio/narrator-node-smoke.wav");
         assert!(
             layout.files_dir.join(file_rel).is_file(),
@@ -1849,7 +1906,11 @@ mod tests {
                 provider: "piper".to_string(),
                 credential_id: "narrator-tts".to_string(),
                 text: "Warmup untuk benchmark lipsync Zebflow.".to_string(),
-                output_path: None,
+                path: None,
+                folder: String::new(),
+                filename: None,
+                store: None,
+                on_conflict: None,
     
                 return_mode: ReturnMode::Blob,
                 speaker: None,
@@ -1888,7 +1949,11 @@ mod tests {
                         provider: "piper".to_string(),
                         credential_id: "narrator-tts".to_string(),
                         text: sentence.to_string(),
-                        output_path: None,
+                        path: None,
+                folder: String::new(),
+                filename: None,
+                store: None,
+                on_conflict: None,
             
                         return_mode: ReturnMode::Blob,
                         speaker: None,

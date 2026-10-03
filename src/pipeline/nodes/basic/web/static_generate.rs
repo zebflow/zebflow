@@ -46,18 +46,19 @@ pub struct Config {
     /// compiled graphs can carry already-loaded markup if desired.
     #[serde(default)]
     pub markup: Option<String>,
-    /// Zebflow FS object path.
+    /// The page's path inside the site root.
     ///
     /// Config expressions are resolved before execution, so values like
     /// `artists/{{ $input.artist_slug }}/{{ $input.song_slug }}/lyric.html`
     /// are supported without node-specific syntax.
-    pub output_path: String,
-    /// Optional static site root under Zebflow FS.
-    ///
-    /// When set, `output_path` is resolved inside this site root so multiple
-    /// generated pages can contribute to one coherent site tree.
+    pub path: String,
+    /// The site's root folder in the store (default: `site`); every page of
+    /// one site shares it, with one manifest and one `_assets/`.
     #[serde(default)]
     pub site_root: Option<String>,
+    /// The store to write to; saved explicitly at registration.
+    #[serde(default)]
+    pub store: Option<String>,
     /// Optional absolute deployed site origin used for canonical/meta generation in templates.
     #[serde(default, alias = "base_url")]
     pub deploy_base_url: Option<String>,
@@ -66,7 +67,8 @@ pub struct Config {
     pub deploy_base_path: Option<String>,
     /// Optional route injected into the RWE render context as `ctx.route`.
     ///
-    /// Defaults to `/fs/{owner}/{project}/{output_path}`.
+    /// Defaults to the page's address on the site: `/` for `index.html`,
+    /// `/blog/` for `blog/index.html`, `/about.html` for `about.html`.
     #[serde(default)]
     pub route: Option<String>,
     /// `overwrite`, `skip`, or `error` when the file already exists and content differs.
@@ -148,27 +150,22 @@ pub fn normalize_output_rel_path(output_path: &str) -> Result<String, PipelineEr
 }
 
 pub fn effective_site_root_rel_path(config: &Config) -> Result<Option<String>, PipelineError> {
-    let Some(raw) = config
+    let raw = config
         .site_root
         .as_deref()
         .map(str::trim)
         .filter(|s| !s.is_empty())
-    else {
-        return Ok(None);
-    };
+        .unwrap_or("site");
     static_site::normalize_site_root_rel_path(raw).map(Some)
 }
 
 pub fn effective_output_rel_path(config: &Config) -> Result<String, PipelineError> {
-    if let Some(site_root_rel) = effective_site_root_rel_path(config)? {
-        static_site::page_rel_path_from_site_root(&site_root_rel, &config.output_path)
-    } else {
-        normalize_output_rel_path(&config.output_path)
-    }
+    let site_root_rel = effective_site_root_rel_path(config)?.unwrap_or_else(|| "site".to_string());
+    static_site::page_rel_path_from_site_root(&site_root_rel, &config.path)
 }
 
 pub fn effective_page_output_path(config: &Config) -> Result<String, PipelineError> {
-    static_site::normalize_page_output_path(&config.output_path)
+    static_site::normalize_page_output_path(&config.path)
 }
 
 pub fn effective_deploy_base_url(config: &Config) -> Option<String> {
@@ -187,9 +184,9 @@ pub fn effective_deploy_base_path(config: &Config) -> Result<Option<String>, Pip
     static_site::normalize_deploy_base_path(Some(raw), "/").map(Some)
 }
 
-/// Compute the route seen by the template at render time.
-pub fn default_route(owner: &str, project: &str, rel_path: &str) -> String {
-    format!("/fs/{owner}/{project}/{rel_path}")
+/// The route a page has when its site is served at the root of an address.
+pub fn default_route(config: &Config) -> Result<String, PipelineError> {
+    static_site::route_path_for_output_path("/", &effective_page_output_path(config)?)
 }
 
 /// Decorate a rendered RWE HTML document so the persisted file can open directly.
@@ -302,8 +299,9 @@ pub fn definition() -> NodeDefinition {
                     "properties": {
                         "status": { "type": "string" },
                         "path": { "type": "string" },
-                        "url": { "type": "string" },
                         "route": { "type": "string" },
+                        "store": { "type": ["string", "null"] },
+                        "file": { "description": "A durable FileRef for the page" },
                         "deploy_base_url": { "type": ["string", "null"] },
                         "deploy_base_path": { "type": ["string", "null"] },
                         "template": { "type": "string" },
@@ -321,11 +319,12 @@ pub fn definition() -> NodeDefinition {
         script_bridge: None,
         config_schema: json!({
             "type": "object",
-            "required": ["template", "output_path"],
+            "required": ["template", "path"],
             "properties": {
                 "template": { "type": "string", "description": "TSX page template relative to repo/pipelines. Must end with .tsx (e.g. pages/lyrics.tsx)." },
-                "site_root": { "type": "string", "description": "Optional static site root under Zebflow FS. When set, output_path is resolved inside this shared site tree." },
-                "output_path": { "type": "string", "description": "Zebflow FS object path. Supports config expressions." },
+                "site_root": { "type": "string", "description": "The site's root folder in the store (default: site)." },
+                "path": { "type": "string", "description": "The page's path inside the site root. Supports config expressions." },
+                "store": { "type": "string", "description": "The store to write to; saved explicitly at registration." },
                 "deploy_base_url": { "type": "string", "description": "Optional absolute deployed site origin used by templates for canonical/meta generation." },
                 "deploy_base_path": { "type": "string", "description": "Optional deployed URL base path used to derive ctx.route for generated pages." },
                 "route": { "type": "string", "description": "Optional route exposed to the template as ctx.route." },
@@ -341,19 +340,20 @@ pub fn definition() -> NodeDefinition {
                 required: true,
             },
             DslFlag {
-                flag: "--output-path".to_string(),
-                config_key: "output_path".to_string(),
-                description: "Zebflow FS object path. Supports {{ expr }} interpolation.".to_string(),
+                flag: "--path".to_string(),
+                config_key: "path".to_string(),
+                description: "The page's path inside the site root, e.g. posts/{{ input.slug }}.html. Supports {{ expr }} interpolation.".to_string(),
                 kind: DslFlagKind::Scalar,
                 required: true,
             },
             DslFlag {
                 flag: "--site-root".to_string(),
                 config_key: "site_root".to_string(),
-                description: "Optional static site root under Zebflow FS. When set, output_path is written inside this shared site tree.".to_string(),
+                description: "The site's root folder in the store (default: site). Pages of one site share it, with one manifest and one _assets/.".to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
             },
+            crate::pipeline::nodes::shared::project_store::store_flag(),
             DslFlag {
                 flag: "--deploy-base-url".to_string(),
                 config_key: "deploy_base_url".to_string(),
@@ -398,15 +398,22 @@ pub fn definition() -> NodeDefinition {
                 label: "Site Root".to_string(),
                 field_type: NodeFieldType::Text,
                 placeholder: Some("static/musicsite".to_string()),
-                help: Some("Optional shared static site root under Zebflow FS. Use this when many generated pages belong to one site tree.".to_string()),
+                help: Some("The site's root folder in the store (default: site).".to_string()),
                 ..Default::default()
             },
             NodeFieldDef {
-                name: "output_path".to_string(),
-                label: "Output Path".to_string(),
+                name: "path".to_string(),
+                label: "Path".to_string(),
                 field_type: NodeFieldType::Text,
                 placeholder: Some("artists/{{ $input.artist_slug }}/{{ $input.song_slug }}/lyric.html".to_string()),
-                help: Some("Zebflow FS object path. Config expressions are resolved before generation.".to_string()),
+                help: Some("The page's path inside the site root. Config expressions are resolved before generation.".to_string()),
+                ..Default::default()
+            },
+            NodeFieldDef {
+                name: "store".to_string(),
+                label: "Store".to_string(),
+                field_type: NodeFieldType::Text,
+                help: Some("`local`, or the id of an s3 credential. Empty: the project's default, saved when the pipeline is registered.".to_string()),
                 ..Default::default()
             },
             NodeFieldDef {
@@ -451,7 +458,8 @@ pub fn definition() -> NodeDefinition {
             LayoutItem::Field("template".to_string()),
             LayoutItem::Field("on_conflict".to_string()),
             LayoutItem::Field("site_root".to_string()),
-            LayoutItem::Field("output_path".to_string()),
+            LayoutItem::Field("path".to_string()),
+            LayoutItem::Field("store".to_string()),
             LayoutItem::Row {
                 row: vec![
                     LayoutItem::Field("deploy_base_url".to_string()),
@@ -462,8 +470,8 @@ pub fn definition() -> NodeDefinition {
         ],
         ai_tool: Default::default(),
         examples: vec![
-            crate::pipeline::model::NodeExample::dsl("Render one post to a static file", r#"web.static.generate --template pages/post.tsx --output-path "site/posts/{{ input.rows[0].slug }}.html" --site-root site --route "/posts/{{ input.rows[0].slug }}""#)
-                .output(serde_json::json!({ "generated": { "status": "written", "path": "site/posts/hello.html", "url": "/fs/acme/shop/site/posts/hello.html", "route": "/posts/hello", "template": "pages/post.tsx" } })),
+            crate::pipeline::model::NodeExample::dsl("Render one post to a static file", r#"web.static.generate --template pages/post.tsx --path "posts/{{ input.rows[0].slug }}.html" --route "/posts/{{ input.rows[0].slug }}""#)
+                .output(serde_json::json!({ "generated": { "status": "written", "path": "site/posts/hello.html", "route": "/posts/hello", "template": "pages/post.tsx", "site_root": "site", "store": "local", "file": { "__zf_type": "file_ref", "backend": "zebfs", "store": "local", "ref": "site/posts/hello.html", "filename": "hello.html", "mime": "text/html", "kind": "binary", "size": 5120, "sha256": "sha256:…", "lifecycle": "durable", "origin": "web.static.generate", "trust": "generated" } } })),
         ],
         ..Default::default()
     }
@@ -581,7 +589,7 @@ mod tests {
         assert_eq!(rel, "artists/a/song.html");
         assert!(normalize_output_rel_path("../escape.html").is_err());
         let rel = effective_output_rel_path(&super::Config {
-            output_path: "artists/a/song.html".to_string(),
+            path: "artists/a/song.html".to_string(),
             site_root: Some("static/musicsite".to_string()),
             ..Default::default()
         })
@@ -602,11 +610,11 @@ mod tests {
     }
 
     #[test]
-    fn default_route_targets_served_file() {
-        assert_eq!(
-            default_route("superadmin", "example-project", "collections/a/item.html"),
-            "/fs/superadmin/example-project/collections/a/item.html"
-        );
+    fn default_route_is_the_page_address_on_its_site() {
+        let config = |path: &str| super::Config { path: path.to_string(), ..Default::default() };
+        assert_eq!(default_route(&config("index.html")).unwrap(), "/");
+        assert_eq!(default_route(&config("blog/index.html")).unwrap(), "/blog/");
+        assert_eq!(default_route(&config("collections/a/item.html")).unwrap(), "/collections/a/item.html");
     }
 
     #[test]
@@ -703,7 +711,7 @@ export default function LyricPage(input) {
                 config: json!({
                     "template": "pages/lyric.tsx",
                     "site_root": "static/musicsite",
-                    "output_path": "artists/{{ $input.artist_slug }}/{{ $input.song_slug }}/lyric.html"
+                    "path": "artists/{{ $input.artist_slug }}/{{ $input.song_slug }}/lyric.html"
                 }),
             }],
             edges: vec![],
@@ -741,10 +749,6 @@ export default function LyricPage(input) {
         assert_eq!(
             first.value["generated"]["path"],
             "static/musicsite/artists/iwan-fals/bento/lyric.html"
-        );
-        assert_eq!(
-            first.value["generated"]["url"],
-            "/fs/superadmin/example-project/static/musicsite/artists/iwan-fals/bento/lyric.html"
         );
         assert_eq!(first.value["generated"]["site_root"], "static/musicsite");
         assert_eq!(
@@ -896,7 +900,7 @@ export default function LyricPage(input) {
                 config: json!({
                     "template": "pages/lyric.tsx",
                     "site_root": "static/musicsite",
-                    "output_path": "{{ $input.letter_slug }}/{{ $input.artist_slug }}/songs/{{ $input.song_slug }}/lyrics/index.html"
+                    "path": "{{ $input.letter_slug }}/{{ $input.artist_slug }}/songs/{{ $input.song_slug }}/lyrics/index.html"
                 }),
             }],
             edges: vec![],

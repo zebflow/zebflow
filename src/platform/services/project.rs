@@ -187,6 +187,32 @@ fn parse_and_validate_pipeline_source(source: &str) -> Result<PipelineGraph, Pla
     Ok(graph)
 }
 
+/// Saves the store every file-writing node writes to, explicitly: a node
+/// registered without `--store` gets the project's default store at that
+/// moment, so changing the default later moves no existing pipeline
+/// (`docs/contracts/node-conventions.md` §3).
+fn pin_file_stores(graph: &mut PipelineGraph, default_store: &str) {
+    use crate::pipeline::nodes::shared::project_store::FILE_WRITING_NODE_KINDS;
+    for node in &mut graph.nodes {
+        if !FILE_WRITING_NODE_KINDS.contains(&node.kind.as_str()) {
+            continue;
+        }
+        if node.config.is_null() {
+            node.config = Value::Object(Default::default());
+        }
+        let Some(config) = node.config.as_object_mut() else {
+            continue;
+        };
+        let missing = config
+            .get("store")
+            .and_then(Value::as_str)
+            .is_none_or(|store| store.trim().is_empty());
+        if missing {
+            config.insert("store".to_string(), Value::String(default_store.to_string()));
+        }
+    }
+}
+
 fn parse_and_validate_pipeline_source_for_save(
     source: &str,
 ) -> Result<PipelineGraph, PlatformError> {
@@ -845,7 +871,8 @@ impl ProjectService {
             ));
         }
         self.ensure_pipeline_editable(&owner, &project, &file_rel_path, "edited")?;
-        let graph = parse_and_validate_pipeline_source_for_save(source)?;
+        let mut graph = parse_and_validate_pipeline_source_for_save(source)?;
+        pin_file_stores(&mut graph, layout.store_id());
         let canonical_source = encode_pipeline_graph(graph)
             .and_then(|bytes| {
                 String::from_utf8(bytes)

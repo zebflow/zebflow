@@ -83,6 +83,8 @@ pub const ERROR_CLASS_REGISTRY: &[(&str, ErrorClass)] = &[
     ("FW_FUNCTION_NOT_FOUND", ErrorClass::Refused),
     ("FW_MY_NODE_CODE", ErrorClass::Failed),
     ("FW_NODE_AGENT_BAD_SCHEMA", ErrorClass::Refused),
+    // A store a node or a FileRef names cannot be opened.
+    ("FW_NODE_STORE", ErrorClass::Failed),
     ("FW_NODE_AGENT_CALL", ErrorClass::Failed),
     ("FW_NODE_AGENT_CONFIG", ErrorClass::Refused),
     ("FW_NODE_AGENT_CREDENTIAL", ErrorClass::Refused),

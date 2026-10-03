@@ -41,7 +41,7 @@ use uuid::Uuid;
 
 use super::load_with_limits;
 use crate::pipeline::model::{DslFlag, DslFlagKind, LayoutItem, NodeCapability, NodeExample, NodeFailureSemantic, NodeFieldDef, NodeFieldType, SelectOptionDef};
-use crate::pipeline::nodes::shared::file_ref::{durable_file_ref, zebfs_rel_path_or_string};
+use crate::pipeline::nodes::shared::project_store::{OnConflict, on_conflict_flag, open_source, open_store, store_fields, store_flag, target_key};
 use crate::pipeline::nodes::shared::util::{filename_stem, metadata_scope, resolve_path};
 use crate::pipeline::{
     NodeDefinition, PipelineError,
@@ -104,6 +104,15 @@ pub struct Config {
     /// Filename without extension (default: a UUID).
     #[serde(default)]
     pub filename: Option<String>,
+    /// Exact store key; overrides `folder` and `filename`.
+    #[serde(default)]
+    pub path: Option<String>,
+    /// The store to write to; saved explicitly at registration.
+    #[serde(default)]
+    pub store: Option<String>,
+    /// `overwrite`, `skip` or `error` (default: error).
+    #[serde(default)]
+    pub on_conflict: Option<String>,
 }
 
 impl Default for Config {
@@ -117,6 +126,9 @@ impl Default for Config {
             source_key: default_source_key(),
             delete_source: false,
             filename: None,
+            path: None,
+            store: None,
+            on_conflict: None,
         }
     }
 }
@@ -175,7 +187,10 @@ pub fn definition() -> NodeDefinition {
             DslFlag { flag: "--folder".into(), config_key: "folder".into(), description: "Destination store folder (default: cutouts)".into(), kind: DslFlagKind::Scalar, required: false },
             DslFlag { flag: "--source-key".into(), config_key: "source_key".into(), description: "Dot-path to the source in the payload: a FileRef or a store path string (default: `saved`)".into(), kind: DslFlagKind::Scalar, required: false },
             DslFlag { flag: "--delete-source".into(), config_key: "delete_source".into(), description: "Delete the source file after the cutout is written (default: false)".into(), kind: DslFlagKind::Bool, required: false },
-            DslFlag { flag: "--filename".into(), config_key: "filename".into(), description: "Custom filename without extension (default: random UUID). Overwrites if same name exists.".into(), kind: DslFlagKind::Scalar, required: false },
+            DslFlag { flag: "--filename".into(), config_key: "filename".into(), description: "Custom filename without extension (default: random UUID).".into(), kind: DslFlagKind::Scalar, required: false },
+            DslFlag { flag: "--path".into(), config_key: "path".into(), description: "Exact store key for the cutout; overrides --folder and --filename.".into(), kind: DslFlagKind::Scalar, required: false },
+            store_flag(),
+            on_conflict_flag(OnConflict::Error),
         ],
         fields: vec![
             NodeFieldDef { name: "color".into(), label: "Key colour".into(), field_type: NodeFieldType::Text, default_value: Some(json!(DEFAULT_COLOR)), help: Some("#rrggbb of the screen to remove. Default #00b140, the broadcast chroma green image models produce; measure a corner pixel for anything else.".into()), ..Default::default() },
@@ -189,7 +204,7 @@ pub fn definition() -> NodeDefinition {
             NodeFieldDef { name: "source_key".into(), label: "Source key".into(), field_type: NodeFieldType::Text, default_value: Some(json!(DEFAULT_SOURCE_KEY)), help: Some("Dot-path into the payload: a FileRef or a store path string. Default: saved (what fs.save answers).".into()), ..Default::default() },
             NodeFieldDef { name: "delete_source".into(), label: "Delete source file".into(), field_type: NodeFieldType::Checkbox, default_value: Some(json!(false)), help: Some("Remove the green-screen original after the cutout is written; its key is dropped from the payload.".into()), ..Default::default() },
             NodeFieldDef { name: "filename".into(), label: "Filename".into(), field_type: NodeFieldType::Text, help: Some("Without extension (default: random UUID).".into()), ..Default::default() },
-        ],
+        ].into_iter().chain(store_fields(OnConflict::Error)).collect(),
         layout: vec![
             LayoutItem::Field("source_key".into()),
             LayoutItem::Field("color".into()),
@@ -199,6 +214,8 @@ pub fn definition() -> NodeDefinition {
             LayoutItem::Field("folder".into()),
             LayoutItem::Field("filename".into()),
             LayoutItem::Field("delete_source".into()),
+            LayoutItem::Field("store".into()),
+            LayoutItem::Field("on_conflict".into()),
         ],
         failure_semantics: vec![
             NodeFailureSemantic { code: "FW_NODE_FS_IMAGE_CHROMAKEY_CONFIG".into(), description: "A --color that is not #rrggbb; a --tolerance or --soften that is not a number in range; a --format that is not png or webp.".into(), ..Default::default() },
@@ -299,20 +316,14 @@ impl NodeHandler for Node {
     async fn execute_async(&self, input: NodeExecutionInput) -> Result<NodeExecutionOutput, PipelineError> {
         let started = std::time::Instant::now();
         let (owner, project, ..) = metadata_scope(&input.metadata)?;
-        let layout = self
-            .platform
-            .file
-            .ensure_project_layout(owner, project)
-            .map_err(|e| PipelineError::new("FS_IMAGE_CHROMAKEY_RASTER", e.to_string()))?;
-        let zebfs = layout.open_files();
-
         let key = self.config.source_key.trim();
         let key = if key.is_empty() { DEFAULT_SOURCE_KEY } else { key };
         let value = resolve_path(&input.payload, key).ok_or_else(|| {
             PipelineError::new("FS_IMAGE_CHROMAKEY_SOURCE", format!("nothing at payload key '{key}' — chain after fs.save or set --source-key"))
         })?;
-        let rel = zebfs_rel_path_or_string(value)?
+        let (source_store, rel) = open_source(&self.platform, owner, project, value, self.config.store.as_deref())?
             .ok_or_else(|| PipelineError::new("FS_IMAGE_CHROMAKEY_SOURCE", format!("payload key '{key}' must be a FileRef or a store path string")))?;
+        let zebfs = &source_store.fs;
         let rel = crate::zebfs::normalize_object_path(rel.trim_start_matches('/'))
             .map_err(|e| PipelineError::new("FS_IMAGE_CHROMAKEY_SOURCE", e.to_string()))?;
         let object = zebfs
@@ -333,12 +344,19 @@ impl NodeHandler for Node {
         let filename = format!("{stem}.{ext}");
         let folder = self.config.folder.trim().trim_matches('/');
         let folder = if folder.is_empty() { DEFAULT_FOLDER } else { folder };
-        let out_rel = crate::zebfs::normalize_object_path(&format!("{folder}/{filename}"))
-            .map_err(|e| PipelineError::new("FW_NODE_FS_IMAGE_CHROMAKEY_CONFIG", format!("--folder: {e}")))?;
-        zebfs
-            .put(&out_rel, &bytes)
-            .map_err(|e| PipelineError::new("FS_IMAGE_CHROMAKEY_RASTER", format!("store write {out_rel}: {}", e.message)))?;
-        let mut image = durable_file_ref(layout.file_backend(), &out_rel, &filename, mime, &bytes, ORIGIN, "sanitized");
+        let out_rel = target_key(self.config.path.as_deref(), folder, &filename, "FW_NODE_FS_IMAGE_CHROMAKEY_CONFIG")?;
+        let store = open_store(&self.platform, owner, project, self.config.store.as_deref())?;
+        let on_conflict = OnConflict::parse(self.config.on_conflict.as_deref(), OnConflict::Error, "FW_NODE_FS_IMAGE_CHROMAKEY_CONFIG")?;
+        let bytes = if on_conflict.allows(&store.fs, &out_rel, "FS_IMAGE_CHROMAKEY_RASTER")? {
+            store
+                .fs
+                .put(&out_rel, &bytes)
+                .map_err(|e| PipelineError::new("FS_IMAGE_CHROMAKEY_RASTER", format!("store write {out_rel}: {}", e.message)))?;
+            bytes
+        } else {
+            store.fs.get(&out_rel).map_err(|e| PipelineError::new("FS_IMAGE_CHROMAKEY_RASTER", e.message))?.bytes
+        };
+        let mut image = store.file_ref(&out_rel, &filename, mime, &bytes, ORIGIN, "sanitized");
         if let Some(obj) = image.as_object_mut() {
             obj.insert("width".into(), json!(width));
             obj.insert("height".into(), json!(height));
@@ -396,7 +414,7 @@ mod tests {
         assert_eq!((ok.key, ok.tolerance, ok.soften, ok.webp), ([0, 177, 64], 80.0, DEFAULT_SOFTEN, true));
         let def = definition();
         let flags: Vec<&str> = def.dsl_flags.iter().map(|f| f.flag.as_str()).collect();
-        assert_eq!(flags, vec!["--color", "--tolerance", "--soften", "--format", "--folder", "--source-key", "--delete-source", "--filename"]);
+        assert_eq!(flags, vec!["--color", "--tolerance", "--soften", "--format", "--folder", "--source-key", "--delete-source", "--filename", "--path", "--store", "--on-conflict"]);
     }
 
     #[test]
