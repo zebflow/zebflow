@@ -114,6 +114,7 @@ pub fn definition() -> NodeDefinition {
                 description: "What this function does and when callers should use it.".to_string(),
                 kind: DslFlagKind::Scalar,
                 required: true,
+                ..Default::default()
             },
             DslFlag {
                 flag: "--input".to_string(),
@@ -123,6 +124,7 @@ pub fn definition() -> NodeDefinition {
                     .to_string(),
                 kind: DslFlagKind::SchemaField,
                 required: false,
+                ..Default::default()
             },
             DslFlag {
                 flag: "--output".to_string(),
@@ -132,6 +134,7 @@ pub fn definition() -> NodeDefinition {
                     .to_string(),
                 kind: DslFlagKind::SchemaField,
                 required: false,
+                ..Default::default()
             },
             DslFlag {
                 flag: "--input-schema".to_string(),
@@ -139,6 +142,7 @@ pub fn definition() -> NodeDefinition {
                 description: "Full JSON Schema object for this function's input.".to_string(),
                 kind: DslFlagKind::Scalar,
                 required: true,
+                ..Default::default()
             },
             DslFlag {
                 flag: "--output-schema".to_string(),
@@ -146,6 +150,7 @@ pub fn definition() -> NodeDefinition {
                 description: "Full JSON Schema object for this function's output.".to_string(),
                 kind: DslFlagKind::Scalar,
                 required: true,
+                ..Default::default()
             },
             DslFlag {
                 flag: "--example".to_string(),
@@ -154,6 +159,7 @@ pub fn definition() -> NodeDefinition {
                     .to_string(),
                 kind: DslFlagKind::RepeatedList,
                 required: false,
+                ..Default::default()
             },
             DslFlag {
                 flag: "--params".to_string(),
@@ -162,6 +168,7 @@ pub fn definition() -> NodeDefinition {
                     .to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
+                ..Default::default()
             },
         ],
         fields: vec![

@@ -91,12 +91,12 @@ pub fn definition() -> NodeDefinition {
         script_bridge: None,
         config_schema: Default::default(),
         dsl_flags: vec![
-            DslFlag { flag: "--target".to_string(), config_key: "target".to_string(), description: "Sekejap collection/type for records.".to_string(), kind: DslFlagKind::Scalar, required: true },
-            DslFlag { flag: "--records-key".to_string(), config_key: "records_key".to_string(), description: "Dot path to the input records array. Default: records.".to_string(), kind: DslFlagKind::Scalar, required: false },
-            DslFlag { flag: "--edges-key".to_string(), config_key: "edges_key".to_string(), description: "Dot path to the optional native edges array. Default: edges.".to_string(), kind: DslFlagKind::Scalar, required: false },
-            DslFlag { flag: "--record-key".to_string(), config_key: "record_key".to_string(), description: "Dot path inside each record for the record key. Default: key.".to_string(), kind: DslFlagKind::Scalar, required: false },
-            DslFlag { flag: "--max-records".to_string(), config_key: "max_records".to_string(), description: "Maximum records accepted in one execution. Default: 1000.".to_string(), kind: DslFlagKind::Scalar, required: false },
-            DslFlag { flag: "--max-edges".to_string(), config_key: "max_edges".to_string(), description: "Maximum edges accepted in one execution. Default: 1000.".to_string(), kind: DslFlagKind::Scalar, required: false },
+            DslFlag { flag: "--target".to_string(), config_key: "target".to_string(), description: "Sekejap collection/type for records.".to_string(), kind: DslFlagKind::Scalar, required: true, ..Default::default() },
+            DslFlag { flag: "--records-key".to_string(), config_key: "records_key".to_string(), description: "Dot path to the input records array. Default: records.".to_string(), kind: DslFlagKind::Scalar, required: false, ..Default::default() },
+            DslFlag { flag: "--edges-key".to_string(), config_key: "edges_key".to_string(), description: "Dot path to the optional native edges array. Default: edges.".to_string(), kind: DslFlagKind::Scalar, required: false, ..Default::default() },
+            DslFlag { flag: "--record-key".to_string(), config_key: "record_key".to_string(), description: "Dot path inside each record for the record key. Default: key.".to_string(), kind: DslFlagKind::Scalar, required: false, ..Default::default() },
+            DslFlag { flag: "--max-records".to_string(), config_key: "max_records".to_string(), description: "Maximum records accepted in one execution. Default: 1000.".to_string(), kind: DslFlagKind::Scalar, required: false, ..Default::default() },
+            DslFlag { flag: "--max-edges".to_string(), config_key: "max_edges".to_string(), description: "Maximum edges accepted in one execution. Default: 1000.".to_string(), kind: DslFlagKind::Scalar, required: false, ..Default::default() },
         ],
         fields: vec![
             NodeFieldDef { name: "target".to_string(), label: "Target".to_string(), field_type: NodeFieldType::Text, help: Some("Sekejap collection/type for inserted records.".to_string()), ..Default::default() },

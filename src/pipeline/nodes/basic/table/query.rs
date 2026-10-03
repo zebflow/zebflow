@@ -79,6 +79,7 @@ pub fn definition() -> NodeDefinition {
                 description: "Table query engine. Only geodatafusion is supported.".to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
+                ..Default::default()
             },
             DslFlag {
                 flag: "--from".to_string(),
@@ -86,6 +87,7 @@ pub fn definition() -> NodeDefinition {
                 description: "Table source binding. Repeat for each source: --from \"datasets/posts.parquet as posts\".".to_string(),
                 kind: DslFlagKind::RepeatedList,
                 required: true,
+                ..Default::default()
             },
             DslFlag {
                 flag: "--query".to_string(),
@@ -93,6 +95,7 @@ pub fn definition() -> NodeDefinition {
                 description: "SQL query. Body SQL after -- also writes this field.".to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
+                ..Default::default()
             },
             DslFlag {
                 flag: "--params".to_string(),
@@ -100,6 +103,7 @@ pub fn definition() -> NodeDefinition {
                 description: "Bind values for $1, $2, … — a literal or {{ expr }}. A whole {{ }} carries its typed value, so \"{{ [$trigger.params.slug] }}\" is a real array.".to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
+                ..Default::default()
             },
 
             DslFlag {
@@ -108,6 +112,7 @@ pub fn definition() -> NodeDefinition {
                 description: "Format of the written file: csv, json, ndjson, parquet. Default: from the destination extension.".to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
+                ..Default::default()
             },
             DslFlag {
                 flag: "--to-json".to_string(),
@@ -115,6 +120,7 @@ pub fn definition() -> NodeDefinition {
                 description: "Emit query rows downstream as table.data.".to_string(),
                 kind: DslFlagKind::Bool,
                 required: false,
+                ..Default::default()
             },
             DslFlag {
                 flag: "--preview-rows".to_string(),
@@ -122,6 +128,7 @@ pub fn definition() -> NodeDefinition {
                 description: "Number of sample rows to include in table.preview. (The canvas preview is --preview <as>.)".to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
+                ..Default::default()
             },
             DslFlag {
                 flag: "--limit".to_string(),
@@ -129,6 +136,7 @@ pub fn definition() -> NodeDefinition {
                 description: "Maximum rows to keep after query execution. Prefer SQL LIMIT for large data.".to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
+                ..Default::default()
             },
         ].into_iter().chain(super::destination_flags()).collect(),
         fields: vec![

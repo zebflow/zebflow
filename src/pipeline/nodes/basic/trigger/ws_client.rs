@@ -85,6 +85,7 @@ pub fn definition() -> NodeDefinition {
                 description: "WebSocket server URL (ws:// or wss://).".to_string(),
                 kind: DslFlagKind::Scalar,
                 required: true,
+                ..Default::default()
             },
             DslFlag {
                 flag: "--credential".to_string(),
@@ -92,6 +93,7 @@ pub fn definition() -> NodeDefinition {
                 description: "Credential ID for auth.".to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
+                ..Default::default()
             },
             DslFlag {
                 flag: "--reconnect".to_string(),
@@ -99,6 +101,7 @@ pub fn definition() -> NodeDefinition {
                 description: "Auto-reconnect on disconnect. Default: true.".to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
+                ..Default::default()
             },
             DslFlag {
                 flag: "--reconnect-delay-ms".to_string(),
@@ -106,6 +109,7 @@ pub fn definition() -> NodeDefinition {
                 description: "Base reconnect delay in ms. Default: 5000.".to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
+                ..Default::default()
             },
             DslFlag {
                 flag: "--max-reconnect-attempts".to_string(),
@@ -113,6 +117,7 @@ pub fn definition() -> NodeDefinition {
                 description: "Max reconnect attempts (0 = infinite). Default: 0.".to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
+                ..Default::default()
             },
             DslFlag {
                 flag: "--heartbeat-interval-ms".to_string(),
@@ -120,6 +125,7 @@ pub fn definition() -> NodeDefinition {
                 description: "Heartbeat ping interval in ms. Default: 30000.".to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
+                ..Default::default()
             },
             DslFlag {
                 flag: "--message-format".to_string(),
@@ -127,6 +133,7 @@ pub fn definition() -> NodeDefinition {
                 description: "Message format: json or text. Default: json.".to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
+                ..Default::default()
             },
         ],
         fields: vec![

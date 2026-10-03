@@ -2011,6 +2011,7 @@ return { values };
                 description: "What to embed.".to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
+                ..Default::default()
             }],
             ..Default::default()
         };
@@ -2079,6 +2080,7 @@ return { values };
                     description: "OpenAI-compatible credential.".to_string(),
                     kind: DslFlagKind::Scalar,
                     required: true,
+                    ..Default::default()
                 },
                 DslFlag {
                     flag: "--model".to_string(),
@@ -2086,6 +2088,7 @@ return { values };
                     description: "Embedding model.".to_string(),
                     kind: DslFlagKind::Scalar,
                     required: false,
+                    ..Default::default()
                 },
                 DslFlag {
                     flag: "--input-expr".to_string(),
@@ -2093,6 +2096,7 @@ return { values };
                     description: "Text expression.".to_string(),
                     kind: DslFlagKind::Scalar,
                     required: false,
+                    ..Default::default()
                 },
             ],
             ..Default::default()
@@ -2133,6 +2137,7 @@ return { values };
                     description: "Left integer operand.".to_string(),
                     kind: DslFlagKind::Scalar,
                     required: false,
+                    ..Default::default()
                 },
                 DslFlag {
                     flag: "--b".to_string(),
@@ -2140,6 +2145,7 @@ return { values };
                     description: "Right integer operand.".to_string(),
                     kind: DslFlagKind::Scalar,
                     required: false,
+                    ..Default::default()
                 },
             ],
             ..Default::default()

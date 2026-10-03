@@ -50,6 +50,7 @@ pub fn definition() -> NodeDefinition {
                 description: "SQL query (alternative to body `-- \"SELECT ...\"`)".to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
+                ..Default::default()
             },
             DslFlag {
                 flag: "--params".to_string(),
@@ -60,6 +61,7 @@ pub fn definition() -> NodeDefinition {
                         .to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
+                ..Default::default()
             },
         ],
         fields: vec![

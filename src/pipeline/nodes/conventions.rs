@@ -111,6 +111,53 @@ mod tests {
         report("flags_follow_the_grammar", problems);
     }
 
+    /// §2–§4: a flag's declared value type is one of the closed list, a
+    /// choice is a single value, and a repeat ceiling sits on a repeatable flag.
+    #[test]
+    fn flag_metadata_is_well_formed() {
+        use crate::pipeline::model::{DslFlagKind, FLAG_VALUE_TYPES};
+        let mut problems = Vec::new();
+        for def in crate::pipeline::nodes::builtin_node_definitions() {
+            for flag in &def.dsl_flags {
+                if !flag.value.is_empty() && !FLAG_VALUE_TYPES.contains(&flag.value.as_str()) {
+                    problems.push(format!("{}: {} declares value '{}'", def.kind, flag.flag, flag.value));
+                }
+                if !flag.choices.is_empty() && !matches!(flag.kind, DslFlagKind::Scalar | DslFlagKind::RepeatedList) {
+                    problems.push(format!("{}: {} lists choices on a {:?} flag", def.kind, flag.flag, flag.kind));
+                }
+                if flag.max_repeat.is_some() && !matches!(flag.kind, DslFlagKind::RepeatedList | DslFlagKind::CommaSeparatedList) {
+                    problems.push(format!("{}: {} has a repeat ceiling but does not repeat", def.kind, flag.flag));
+                }
+            }
+        }
+        report("flag_metadata_is_well_formed", problems);
+    }
+
+    /// The signature is generated from the definition: choices, value types,
+    /// repeats, optional brackets and the answer key all come from it.
+    #[test]
+    fn the_signature_is_generated_from_the_definition() {
+        use crate::pipeline::model::{DslFlag, DslFlagKind, NodeDefinition};
+        let def = NodeDefinition {
+            kind: "n.fs.image.thumbnail".to_string(),
+            dsl_flags: vec![
+                DslFlag { flag: "--from".into(), kind: DslFlagKind::Scalar, required: true, value: "file:image".into(), ..Default::default() },
+                DslFlag { flag: "--width".into(), value: "number".into(), ..Default::default() },
+                DslFlag { flag: "--fit".into(), choices: vec!["cover".into(), "contain".into(), "fill".into()], ..Default::default() },
+                DslFlag { flag: "--image".into(), kind: DslFlagKind::RepeatedList, value: "file:image".into(), max_repeat: Some(4), ..Default::default() },
+                DslFlag { flag: "--header".into(), kind: DslFlagKind::KeyValuePairs, value: "text".into(), ..Default::default() },
+                DslFlag { flag: "--delete-source".into(), kind: DslFlagKind::Bool, ..Default::default() },
+            ],
+            ..Default::default()
+        };
+        assert_eq!(
+            crate::pipeline::nodes::node_signature(&def),
+            "fs.image.thumbnail --from IMAGE [--width N] [--fit cover|contain|fill] [--image IMAGE…] [--header KEY=TEXT…] [--delete-source] → image"
+        );
+        assert_eq!(crate::pipeline::nodes::answer_key("trigger.webhook").as_deref(), Some("webhook"));
+        assert_eq!(crate::pipeline::nodes::answer_key("logic.if"), None);
+    }
+
     /// §3 one door: bytes are reached through `shared/project_store.rs` (and
     /// the scratch it lends), never through the default store or a joined
     /// local path.

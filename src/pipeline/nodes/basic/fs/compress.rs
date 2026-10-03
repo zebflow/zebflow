@@ -125,6 +125,7 @@ pub fn definition() -> NodeDefinition {
                 description: "Dot-path to the source in the payload: a FileRef or a store path string (default: `saved`, what `fs.save` answers)".to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
+                ..Default::default()
             },
             DslFlag {
                 flag: "--extra-source-keys".to_string(),
@@ -132,6 +133,7 @@ pub fn definition() -> NodeDefinition {
                 description: "Comma-separated extra payload keys to include in the same archive".to_string(),
                 kind: DslFlagKind::CommaSeparatedList,
                 required: false,
+                ..Default::default()
             },
             DslFlag {
                 flag: "--folder".to_string(),
@@ -139,6 +141,7 @@ pub fn definition() -> NodeDefinition {
                 description: "Store folder for the archive (default: archives)".to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
+                ..Default::default()
             },
             DslFlag {
                 flag: "--filename".to_string(),
@@ -146,6 +149,7 @@ pub fn definition() -> NodeDefinition {
                 description: "Archive name; `.tar.gz` is added when missing (default: <source>.tar.gz)".to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
+                ..Default::default()
             },
             DslFlag {
                 flag: "--path".to_string(),
@@ -153,6 +157,7 @@ pub fn definition() -> NodeDefinition {
                 description: "Exact store key for the archive; overrides --folder and --filename".to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
+                ..Default::default()
             },
             DslFlag {
                 flag: "--format".to_string(),
@@ -160,6 +165,7 @@ pub fn definition() -> NodeDefinition {
                 description: "Archive format. First slice supports only tar.gz".to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
+                ..Default::default()
             },
             store_flag(),
             on_conflict_flag(OnConflict::Error),

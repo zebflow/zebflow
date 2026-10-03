@@ -277,6 +277,7 @@ pub fn definition() -> NodeDefinition {
                 description: "TTS provider. First stable provider: piper.".to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
+                ..Default::default()
             },
             DslFlag {
                 flag: "--credential".to_string(),
@@ -284,6 +285,7 @@ pub fn definition() -> NodeDefinition {
                 description: "Project credential that binds the provider runtime and local model files.".to_string(),
                 kind: DslFlagKind::Scalar,
                 required: true,
+                ..Default::default()
             },
             DslFlag {
                 flag: "--text".to_string(),
@@ -291,6 +293,7 @@ pub fn definition() -> NodeDefinition {
                 description: "Expression that resolves to the text to synthesize.".to_string(),
                 kind: DslFlagKind::Scalar,
                 required: true,
+                ..Default::default()
             },
             DslFlag {
                 flag: "--folder".to_string(),
@@ -298,6 +301,7 @@ pub fn definition() -> NodeDefinition {
                 description: "Store folder for the audio file (default: audio).".to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
+                ..Default::default()
             },
             DslFlag {
                 flag: "--filename".to_string(),
@@ -305,6 +309,7 @@ pub fn definition() -> NodeDefinition {
                 description: "Audio file name; .wav is added (default: a UUID).".to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
+                ..Default::default()
             },
             DslFlag {
                 flag: "--path".to_string(),
@@ -312,6 +317,7 @@ pub fn definition() -> NodeDefinition {
                 description: "Exact store key for the audio file; overrides --folder and --filename.".to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
+                ..Default::default()
             },
             store_flag(),
             on_conflict_flag(OnConflict::Error),
@@ -321,6 +327,7 @@ pub fn definition() -> NodeDefinition {
                 description: "Return mode: file, blob, or both.".to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
+                ..Default::default()
             },
             DslFlag {
                 flag: "--speaker".to_string(),
@@ -328,6 +335,7 @@ pub fn definition() -> NodeDefinition {
                 description: "Optional speaker id for multi-speaker voices.".to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
+                ..Default::default()
             },
             DslFlag {
                 flag: "--speed".to_string(),
@@ -335,6 +343,7 @@ pub fn definition() -> NodeDefinition {
                 description: "Playback speed factor. 1.0 = normal. Greater is faster.".to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
+                ..Default::default()
             },
             DslFlag {
                 flag: "--volume".to_string(),
@@ -342,6 +351,7 @@ pub fn definition() -> NodeDefinition {
                 description: "Audio volume multiplier.".to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
+                ..Default::default()
             },
             DslFlag {
                 flag: "--lipsync".to_string(),
@@ -349,6 +359,7 @@ pub fn definition() -> NodeDefinition {
                 description: "Optional lipsync mode: none, basic, timed_words, audio_guided, or audio_segmented.".to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
+                ..Default::default()
             },
         ],
         fields: vec![

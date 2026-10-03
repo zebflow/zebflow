@@ -313,6 +313,7 @@ pub fn definition() -> NodeDefinition {
                 description: "TSX page file relative to the source root. Must end with .tsx, e.g. pages/post.tsx".to_string(),
                 kind: DslFlagKind::Scalar,
                 required: true,
+                ..Default::default()
             },
             DslFlag {
                 flag: "--path".to_string(),
@@ -320,6 +321,7 @@ pub fn definition() -> NodeDefinition {
                 description: "The page's path inside the site root, e.g. posts/{{ input.slug }}.html. Supports {{ expr }} interpolation.".to_string(),
                 kind: DslFlagKind::Scalar,
                 required: true,
+                ..Default::default()
             },
             DslFlag {
                 flag: "--site-root".to_string(),
@@ -327,6 +329,7 @@ pub fn definition() -> NodeDefinition {
                 description: "The site's root folder in the store (default: site). Pages of one site share it, with one manifest and one _assets/.".to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
+                ..Default::default()
             },
             crate::pipeline::nodes::shared::project_store::store_flag(),
             DslFlag {
@@ -335,6 +338,7 @@ pub fn definition() -> NodeDefinition {
                 description: "Optional ctx.route override seen by the template during generation".to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
+                ..Default::default()
             },
             DslFlag {
                 flag: "--on-conflict".to_string(),
@@ -342,6 +346,7 @@ pub fn definition() -> NodeDefinition {
                 description: "overwrite, skip, or error when destination exists (default: overwrite)".to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
+                ..Default::default()
             },
         ],
         fields: vec![

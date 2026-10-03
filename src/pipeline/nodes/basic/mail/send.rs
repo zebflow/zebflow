@@ -98,6 +98,7 @@ pub fn definition() -> NodeDefinition {
                 description: "ID of the smtp credential naming the relay.".to_string(),
                 kind: crate::pipeline::model::DslFlagKind::Scalar,
                 required: true,
+                ..Default::default()
             },
             crate::pipeline::model::DslFlag {
                 flag: "--to".to_string(),
@@ -105,6 +106,7 @@ pub fn definition() -> NodeDefinition {
                 description: "Recipient address — literal or {{ expr }}.".to_string(),
                 kind: crate::pipeline::model::DslFlagKind::Scalar,
                 required: true,
+                ..Default::default()
             },
             crate::pipeline::model::DslFlag {
                 flag: "--subject".to_string(),
@@ -112,6 +114,7 @@ pub fn definition() -> NodeDefinition {
                 description: "Subject line — literal or {{ expr }}.".to_string(),
                 kind: crate::pipeline::model::DslFlagKind::Scalar,
                 required: true,
+                ..Default::default()
             },
             crate::pipeline::model::DslFlag {
                 flag: "--text".to_string(),
@@ -119,6 +122,7 @@ pub fn definition() -> NodeDefinition {
                 description: "Plain-text body — literal or {{ expr }}.".to_string(),
                 kind: crate::pipeline::model::DslFlagKind::Scalar,
                 required: false,
+                ..Default::default()
             },
             crate::pipeline::model::DslFlag {
                 flag: "--html".to_string(),
@@ -126,6 +130,7 @@ pub fn definition() -> NodeDefinition {
                 description: "HTML body — literal or {{ expr }}. Given both, the mail is multipart/alternative.".to_string(),
                 kind: crate::pipeline::model::DslFlagKind::Scalar,
                 required: false,
+                ..Default::default()
             },
             crate::pipeline::model::DslFlag {
                 flag: "--from".to_string(),
@@ -133,6 +138,7 @@ pub fn definition() -> NodeDefinition {
                 description: "Override the credential's default From address.".to_string(),
                 kind: crate::pipeline::model::DslFlagKind::Scalar,
                 required: false,
+                ..Default::default()
             },
             crate::pipeline::model::DslFlag {
                 flag: "--attach".to_string(),
@@ -142,6 +148,7 @@ pub fn definition() -> NodeDefinition {
                     .to_string(),
                 kind: crate::pipeline::model::DslFlagKind::KeyValuePairs,
                 required: false,
+                ..Default::default()
             },
             crate::pipeline::model::DslFlag {
                 flag: "--embed".to_string(),
@@ -151,6 +158,7 @@ pub fn definition() -> NodeDefinition {
                     .to_string(),
                 kind: crate::pipeline::model::DslFlagKind::KeyValuePairs,
                 required: false,
+                ..Default::default()
             },
             crate::pipeline::nodes::shared::project_store::store_flag(),
             crate::pipeline::model::DslFlag {
@@ -159,6 +167,7 @@ pub fn definition() -> NodeDefinition {
                 description: "Reply-To address.".to_string(),
                 kind: crate::pipeline::model::DslFlagKind::Scalar,
                 required: false,
+                ..Default::default()
             },
         ],
         fields: {

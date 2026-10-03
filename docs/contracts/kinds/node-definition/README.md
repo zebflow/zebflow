@@ -112,6 +112,15 @@ change the documented meaning of a code.
 Input and output pins are compact unique tokens. A trigger can have no input
 pin. A node with graph-defined outputs can have no fixed output pins.
 
+A DSL flag carries `flag`, `config_key`, `description`, `kind` (scalar,
+list, bool, key-value pairs, schema field) and `required`, and — added
+2026-10-03 for the 0.11 grammar, optional and additive — `value` (what the
+value is: `text` `number` `duration` `size` `json` `expression` `ref` `file`
+`file:<kind>` `process`), `choices` (the closed words of a choice) and
+`max_repeat` (a repeatable role's ceiling). From these the node's one-line
+signature, its editor form and its save-time checks are generated
+([Node Conventions](../../node-conventions.md) §2–§4).
+
 Every user-facing configuration property must be documented by a UI field or a
 DSL flag. Field names are unique. Layout entries may only reference declared
 fields. DSL flag names are unique. Two flags may target the same configuration

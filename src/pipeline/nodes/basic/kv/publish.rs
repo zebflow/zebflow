@@ -63,6 +63,7 @@ pub fn definition() -> NodeDefinition {
                 description: "Channel name to publish to. Supports {{ expr }}.".to_string(),
                 kind: DslFlagKind::Scalar,
                 required: true,
+                ..Default::default()
             },
             DslFlag {
                 flag: "--payload".to_string(),
@@ -70,6 +71,7 @@ pub fn definition() -> NodeDefinition {
                 description: "What to publish — a literal or {{ expr }}. Omit to publish the whole payload.".to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
+                ..Default::default()
             },
         ],
         fields: vec![

@@ -98,6 +98,7 @@ pub fn definition() -> NodeDefinition {
                 description: "Slug of the function pipeline to call.".to_string(),
                 kind: DslFlagKind::Scalar,
                 required: true,
+                ..Default::default()
             },
             DslFlag {
                 flag: "--input".to_string(),
@@ -105,6 +106,7 @@ pub fn definition() -> NodeDefinition {
                 description: "What the function receives — a literal (JSON is parsed) or {{ expr }}, e.g. \"{{ { email: input.body.email } }}\". Omit to pass the whole payload.".to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
+                ..Default::default()
             },
         ],
         fields: vec![

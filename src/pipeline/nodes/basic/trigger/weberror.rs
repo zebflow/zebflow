@@ -120,6 +120,7 @@ pub fn definition() -> NodeDefinition {
                     .to_string(),
             kind: DslFlagKind::Scalar,
             required: false,
+            ..Default::default()
         }],
         fields: vec![NodeFieldDef {
             name: "code".to_string(),

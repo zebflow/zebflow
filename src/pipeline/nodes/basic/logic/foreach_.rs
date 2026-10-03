@@ -56,6 +56,7 @@ pub fn definition() -> NodeDefinition {
                 description: "JS expression returning the array to emit.".to_string(),
                 kind: DslFlagKind::Scalar,
                 required: true,
+                ..Default::default()
             },
             DslFlag {
                 flag: "--dispatch".to_string(),
@@ -64,6 +65,7 @@ pub fn definition() -> NodeDefinition {
                     .to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
+                ..Default::default()
             },
             DslFlag {
                 flag: "--chunk-size".to_string(),
@@ -72,6 +74,7 @@ pub fn definition() -> NodeDefinition {
                     .to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
+                ..Default::default()
             },
             DslFlag {
                 flag: "--keep-input".to_string(),
@@ -79,6 +82,7 @@ pub fn definition() -> NodeDefinition {
                 description: "Include the full upstream payload in every emitted item. Off by default to avoid fan-out amplification.".to_string(),
                 kind: DslFlagKind::Bool,
                 required: false,
+                ..Default::default()
             },
         ],
         fields: {

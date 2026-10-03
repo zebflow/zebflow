@@ -137,6 +137,7 @@ pub fn definition() -> NodeDefinition {
                     .to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
+                ..Default::default()
             },
 
             DslFlag {
@@ -147,6 +148,7 @@ pub fn definition() -> NodeDefinition {
                         .to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
+                ..Default::default()
             },
 
             DslFlag {
@@ -157,6 +159,7 @@ pub fn definition() -> NodeDefinition {
                         .to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
+                ..Default::default()
             },
             DslFlag {
                 flag: "--to-json".to_string(),
@@ -164,6 +167,7 @@ pub fn definition() -> NodeDefinition {
                 description: "Emit converted rows as JSON for downstream nodes.".to_string(),
                 kind: DslFlagKind::Bool,
                 required: false,
+                ..Default::default()
             },
             DslFlag {
                 flag: "--preview-rows".to_string(),
@@ -171,6 +175,7 @@ pub fn definition() -> NodeDefinition {
                 description: "Number of sample rows to include under table.preview. (The canvas preview is --preview <as>.)".to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
+                ..Default::default()
             },
             DslFlag {
                 flag: "--limit".to_string(),
@@ -178,6 +183,7 @@ pub fn definition() -> NodeDefinition {
                 description: "Maximum number of rows to convert.".to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
+                ..Default::default()
             },
         ].into_iter().chain(super::destination_flags()).collect(),
         fields: vec![

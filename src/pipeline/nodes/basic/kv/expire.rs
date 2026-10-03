@@ -66,6 +66,7 @@ pub fn definition() -> NodeDefinition {
                 description: "Key to update. Supports {{ expr }}.".to_string(),
                 kind: DslFlagKind::Scalar,
                 required: true,
+                ..Default::default()
             },
             DslFlag {
                 flag: "--ttl".to_string(),
@@ -73,6 +74,7 @@ pub fn definition() -> NodeDefinition {
                 description: "New TTL in seconds. 0 = remove expiry (persist forever).".to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
+                ..Default::default()
             },
             DslFlag {
                 flag: "--durable".to_string(),
@@ -81,6 +83,7 @@ pub fn definition() -> NodeDefinition {
                     .to_string(),
                 kind: DslFlagKind::Bool,
                 required: false,
+                ..Default::default()
             },
         ],
         fields: vec![

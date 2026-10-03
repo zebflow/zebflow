@@ -163,6 +163,7 @@ pub fn definition() -> NodeDefinition {
                 description: "Dot-path to the source PDF in the payload: a FileRef or a store path string (default: `saved`)".to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
+                ..Default::default()
             },
             DslFlag {
                 flag: "--folder".to_string(),
@@ -170,6 +171,7 @@ pub fn definition() -> NodeDefinition {
                 description: "The folder the export goes into (default: pdf/<source-file-stem>)".to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
+                ..Default::default()
             },
             DslFlag {
                 flag: "--emit-fulltext".to_string(),
@@ -177,6 +179,7 @@ pub fn definition() -> NodeDefinition {
                 description: "Write text.md per page (default: true)".to_string(),
                 kind: DslFlagKind::Bool,
                 required: false,
+                ..Default::default()
             },
             DslFlag {
                 flag: "--emit-page-images".to_string(),
@@ -184,6 +187,7 @@ pub fn definition() -> NodeDefinition {
                 description: "Extract embedded images per page (default: true)".to_string(),
                 kind: DslFlagKind::Bool,
                 required: false,
+                ..Default::default()
             },
             DslFlag {
                 flag: "--emit-page-raster".to_string(),
@@ -191,6 +195,7 @@ pub fn definition() -> NodeDefinition {
                 description: "Render PNG raster per page (default: true)".to_string(),
                 kind: DslFlagKind::Bool,
                 required: false,
+                ..Default::default()
             },
             DslFlag {
                 flag: "--dpi".to_string(),
@@ -198,6 +203,7 @@ pub fn definition() -> NodeDefinition {
                 description: "Raster DPI when page PNG export is enabled (default: 144)".to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
+                ..Default::default()
             },
             store_flag(),
             on_conflict_flag(OnConflict::Error),

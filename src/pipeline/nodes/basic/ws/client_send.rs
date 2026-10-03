@@ -67,6 +67,7 @@ pub fn definition() -> NodeDefinition {
                 description: "Node ID of the WS client trigger owning the connection.".to_string(),
                 kind: DslFlagKind::Scalar,
                 required: true,
+                ..Default::default()
             },
             DslFlag {
                 flag: "--message".to_string(),
@@ -74,6 +75,7 @@ pub fn definition() -> NodeDefinition {
                 description: "What to send — a literal or {{ expr }}. Omit to send the whole payload.".to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
+                ..Default::default()
             },
         ],
         fields: vec![

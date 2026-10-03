@@ -74,7 +74,7 @@ pub(super) fn destination_fields() -> Vec<NodeFieldDef> {
 // ── Definition helpers shared by the symbologies ─────────────────────────
 
 pub(super) fn flag(flag: &str, key: &str, description: &str, kind: DslFlagKind, required: bool) -> DslFlag {
-    DslFlag { flag: flag.into(), config_key: key.into(), description: description.into(), kind, required }
+    DslFlag { flag: flag.into(), config_key: key.into(), description: description.into(), kind, required, ..Default::default() }
 }
 
 pub(super) fn field(name: &str, label: &str, help: &str, default: Option<Value>) -> NodeFieldDef {

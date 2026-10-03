@@ -62,6 +62,7 @@ pub fn definition() -> NodeDefinition {
                 description: "Sekejap SQL (alternative to body `-- \"SELECT ...\"`)".to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
+                ..Default::default()
             },
             DslFlag {
                 flag: "--limit".to_string(),
@@ -69,6 +70,7 @@ pub fn definition() -> NodeDefinition {
                 description: "Maximum rows to return for read queries.".to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
+                ..Default::default()
             },
             DslFlag {
                 flag: "--read-only".to_string(),
@@ -76,6 +78,7 @@ pub fn definition() -> NodeDefinition {
                 description: "Reject write statements when true.".to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
+                ..Default::default()
             },
             DslFlag {
                 flag: "--params".to_string(),
@@ -83,6 +86,7 @@ pub fn definition() -> NodeDefinition {
                 description: "Bind values for $1, $2, … — a literal or {{ expr }}. A whole {{ }} carries its typed value, so \"{{ [$trigger.params.slug] }}\" is a real array.".to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
+                ..Default::default()
             },
         ],
         fields: vec![

@@ -71,6 +71,7 @@ pub fn definition() -> NodeDefinition {
                 description: "Counter key.".to_string(),
                 kind: DslFlagKind::Scalar,
                 required: true,
+                ..Default::default()
             },
             DslFlag {
                 flag: "--amount".to_string(),
@@ -79,6 +80,7 @@ pub fn definition() -> NodeDefinition {
                     .to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
+                ..Default::default()
             },
             DslFlag {
                 flag: "--out-key".to_string(),
@@ -87,6 +89,7 @@ pub fn definition() -> NodeDefinition {
                     .to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
+                ..Default::default()
             },
             DslFlag {
                 flag: "--durable".to_string(),
@@ -95,6 +98,7 @@ pub fn definition() -> NodeDefinition {
                     .to_string(),
                 kind: DslFlagKind::Bool,
                 required: false,
+                ..Default::default()
             },
         ],
         fields: vec![

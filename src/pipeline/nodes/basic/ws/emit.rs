@@ -135,6 +135,7 @@ pub fn definition() -> NodeDefinition {
                 description: "Event name clients receive. Examples: chat, player_shot. Default: event.".to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
+                ..Default::default()
             },
             DslFlag {
                 flag: "--to".to_string(),
@@ -142,6 +143,7 @@ pub fn definition() -> NodeDefinition {
                 description: "Recipient: all (broadcast), session (sender only), others (all except sender). Default: all.".to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
+                ..Default::default()
             },
             DslFlag {
                 flag: "--payload".to_string(),
@@ -149,6 +151,7 @@ pub fn definition() -> NodeDefinition {
                 description: "What to emit — a literal or {{ expr }}. Omit to emit the whole payload.".to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
+                ..Default::default()
             },
             DslFlag {
                 flag: "--room".to_string(),
@@ -156,6 +159,7 @@ pub fn definition() -> NodeDefinition {
                 description: "Static room id for server-initiated pipelines without a WS trigger.".to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
+                ..Default::default()
             },
         ],
         fields: {

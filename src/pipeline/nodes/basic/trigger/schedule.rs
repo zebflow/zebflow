@@ -45,6 +45,7 @@ pub fn definition() -> NodeDefinition {
                         .to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
+                ..Default::default()
             },
             DslFlag {
                 flag: "--timezone".to_string(),
@@ -52,6 +53,7 @@ pub fn definition() -> NodeDefinition {
                 description: "IANA timezone, e.g. UTC or Asia/Jakarta.".to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
+                ..Default::default()
             },
         ],
         fields: vec![

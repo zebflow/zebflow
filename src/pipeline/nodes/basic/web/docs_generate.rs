@@ -199,6 +199,7 @@ pub fn definition() -> NodeDefinition {
                 description: "Folder under docs/ (source root) containing the Markdown tree.".to_string(),
                 kind: DslFlagKind::Scalar,
                 required: true,
+                ..Default::default()
             },
             DslFlag {
                 flag: "--site-root".to_string(),
@@ -206,6 +207,7 @@ pub fn definition() -> NodeDefinition {
                 description: "The site's root folder in the store (default: docs).".to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
+                ..Default::default()
             },
             crate::pipeline::nodes::shared::project_store::store_flag(),
             DslFlag {
@@ -214,6 +216,7 @@ pub fn definition() -> NodeDefinition {
                 description: "Folder under repo/pipelines/. docs.template.tsx is auto-created here when missing.".to_string(),
                 kind: DslFlagKind::Scalar,
                 required: true,
+                ..Default::default()
             },
             DslFlag {
                 flag: "--site-title".to_string(),
@@ -221,6 +224,7 @@ pub fn definition() -> NodeDefinition {
                 description: "Site title fallback used by the scaffold and generated payload.".to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
+                ..Default::default()
             },
             DslFlag {
                 flag: "--meta-file".to_string(),
@@ -228,6 +232,7 @@ pub fn definition() -> NodeDefinition {
                 description: "Folder metadata file name (default: _meta.yaml).".to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
+                ..Default::default()
             },
         ],
         fields: vec![

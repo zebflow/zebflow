@@ -218,6 +218,7 @@ fn scalar_flag(flag: &str, config_key: &str, description: &str) -> DslFlag {
         description: description.to_string(),
         kind: DslFlagKind::Scalar,
         required: false,
+        ..Default::default()
     }
 }
 
@@ -228,6 +229,7 @@ fn bool_flag(flag: &str, config_key: &str, description: &str) -> DslFlag {
         description: description.to_string(),
         kind: DslFlagKind::Bool,
         required: false,
+        ..Default::default()
     }
 }
 
@@ -289,6 +291,7 @@ pub fn publish_definition() -> NodeDefinition {
                     .to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
+                ..Default::default()
             },
             bool_flag(
                 "--bbox-optional",

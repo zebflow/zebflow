@@ -166,6 +166,7 @@ pub fn definition() -> NodeDefinition {
                     .to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
+                ..Default::default()
             },
             DslFlag {
                 flag: "--event".to_string(),
@@ -174,6 +175,7 @@ pub fn definition() -> NodeDefinition {
                     .to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
+                ..Default::default()
             },
             DslFlag {
                 flag: "--auth-type".to_string(),
@@ -181,6 +183,7 @@ pub fn definition() -> NodeDefinition {
                 description: "Authentication mode: none (default), jwt, hmac, api_key.".to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
+                ..Default::default()
             },
             DslFlag {
                 flag: "--auth-credential".to_string(),
@@ -188,6 +191,7 @@ pub fn definition() -> NodeDefinition {
                 description: "Credential ID for auth verification. Required when auth_type != none.".to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
+                ..Default::default()
             },
             DslFlag {
                 flag: "--auth-required-role".to_string(),
@@ -195,6 +199,7 @@ pub fn definition() -> NodeDefinition {
                 description: "Comma-separated roles required for this trigger. JWT claim 'roles' must match one. E.g. lecturer,student. Empty = any authenticated user.".to_string(),
                 kind: DslFlagKind::CommaSeparatedList,
                 required: false,
+                ..Default::default()
             },
         ],
         fields: vec![

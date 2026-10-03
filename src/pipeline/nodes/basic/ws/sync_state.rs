@@ -139,6 +139,7 @@ pub fn definition() -> NodeDefinition {
                 description: "State mutation: set (replace), merge (shallow-merge), delete. Default: set.".to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
+                ..Default::default()
             },
             DslFlag {
                 flag: "--state-key".to_string(),
@@ -146,6 +147,7 @@ pub fn definition() -> NodeDefinition {
                 description: "JSON-pointer destination. Supports {key} placeholders from payload. Example: /players/{session_id}.".to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
+                ..Default::default()
             },
             DslFlag {
                 flag: "--value".to_string(),
@@ -153,6 +155,7 @@ pub fn definition() -> NodeDefinition {
                 description: "What to write — a literal or {{ expr }}. Omit to write the whole payload.".to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
+                ..Default::default()
             },
             DslFlag {
                 flag: "--room".to_string(),
@@ -160,6 +163,7 @@ pub fn definition() -> NodeDefinition {
                 description: "Static room id for server-initiated pipelines without a WS trigger.".to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
+                ..Default::default()
             },
             DslFlag {
                 flag: "--silent".to_string(),
@@ -167,6 +171,7 @@ pub fn definition() -> NodeDefinition {
                 description: "Batch via 33ms tick loop instead of immediate broadcast. Recommended for >=10 Hz update streams.".to_string(),
                 kind: DslFlagKind::Bool,
                 required: false,
+                ..Default::default()
             },
         ],
         fields: {

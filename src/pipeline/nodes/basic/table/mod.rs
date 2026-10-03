@@ -91,6 +91,7 @@ pub(crate) fn destination_flags() -> Vec<DslFlag> {
         description: description.to_string(),
         kind: DslFlagKind::Scalar,
         required: false,
+        ..Default::default()
     };
     vec![
         flag("--folder", "folder", "Store folder for the written file (default: tables)."),

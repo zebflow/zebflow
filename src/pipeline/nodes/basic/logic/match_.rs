@@ -46,6 +46,7 @@ pub fn definition() -> NodeDefinition {
                     .to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
+                ..Default::default()
             },
             DslFlag {
                 flag: "--cases".to_string(),
@@ -53,6 +54,7 @@ pub fn definition() -> NodeDefinition {
                 description: "Comma-separated case values; each becomes an output pin.".to_string(),
                 kind: DslFlagKind::CommaSeparatedList,
                 required: false,
+                ..Default::default()
             },
             DslFlag {
                 flag: "--default".to_string(),
@@ -60,6 +62,7 @@ pub fn definition() -> NodeDefinition {
                 description: "Pin name to route to when no case matches.".to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
+                ..Default::default()
             },
         ],
         fields: {

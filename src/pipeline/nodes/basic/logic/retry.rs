@@ -87,6 +87,7 @@ pub fn definition() -> NodeDefinition {
                 description: "Maximum total attempts before routing to failed.".to_string(),
                 kind: DslFlagKind::Scalar,
                 required: true,
+                ..Default::default()
             },
             DslFlag {
                 flag: "--delay-ms".to_string(),
@@ -94,6 +95,7 @@ pub fn definition() -> NodeDefinition {
                 description: "Optional delay before retrying; the first wait when `--backoff` grows it.".to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
+                ..Default::default()
             },
             DslFlag {
                 flag: "--backoff".to_string(),
@@ -102,6 +104,7 @@ pub fn definition() -> NodeDefinition {
                     .to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
+                ..Default::default()
             },
             DslFlag {
                 flag: "--max-delay-ms".to_string(),
@@ -109,6 +112,7 @@ pub fn definition() -> NodeDefinition {
                 description: "Cap for a delay grown by `--backoff`.".to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
+                ..Default::default()
             },
             DslFlag {
                 flag: "--max-elapsed-ms".to_string(),
@@ -117,6 +121,7 @@ pub fn definition() -> NodeDefinition {
                     .to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
+                ..Default::default()
             },
             DslFlag {
                 flag: "--when".to_string(),
@@ -125,6 +130,7 @@ pub fn definition() -> NodeDefinition {
                     .to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
+                ..Default::default()
             },
         ],
         fields: {

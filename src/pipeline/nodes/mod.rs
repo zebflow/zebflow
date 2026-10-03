@@ -138,14 +138,14 @@
 //!         description: "TSX page file relative to templates/, e.g. pages/blog-home.".to_string(),
 //!         kind: DslFlagKind::Scalar,
 //!         required: true,
-//!     },
+//!, ..Default::default()     },
 //!     DslFlag {
 //!         flag: "--load-scripts".to_string(),
 //!         config_key: "load_scripts".to_string(),
 //!         description: "Comma-separated external script URLs. Each must match allow_list.".to_string(),
 //!         kind: DslFlagKind::CommaSeparatedList,
 //!         required: false,
-//!     },
+//!, ..Default::default()     },
 //! ],
 //! ```
 //!
@@ -336,7 +336,7 @@
 //!                 description: "Label injected into the output payload as echo_tag.".to_string(),
 //!                 kind: DslFlagKind::Scalar,
 //!                 required: true,
-//!             },
+//!, ..Default::default()             },
 //!         ],
 //!         script_available: false,
 //!         script_bridge: None,
@@ -548,9 +548,63 @@ pub fn validate_node_definition_contract(def: &NodeDefinition) -> Result<(), Vec
     }
 }
 
+/// The one-line signature a node's definition generates
+/// (`node-conventions.md` §1–§4): its short kind, every declared flag with its
+/// value type, choices and cardinality — optional flags in brackets — and the
+/// key it answers. The presentation flags every kind takes are left out.
+pub fn node_signature(def: &NodeDefinition) -> String {
+    let common: Vec<String> = crate::pipeline::model::engine_common_dsl_flags()
+        .into_iter()
+        .map(|flag| flag.flag)
+        .collect();
+    let kind = crate::platform::shell::parser::short_kind(&def.kind);
+    let mut out = kind.to_string();
+    for flag in def.dsl_flags.iter().filter(|flag| !common.contains(&flag.flag)) {
+        let value = if !flag.choices.is_empty() {
+            flag.choices.join("|")
+        } else {
+            match flag.value.as_str() {
+                "" => "VALUE".to_string(),
+                "number" => "N".to_string(),
+                "expression" => "EXPR".to_string(),
+                other => other.trim_start_matches("file:").to_ascii_uppercase(),
+            }
+        };
+        let token = match flag.kind {
+            DslFlagKind::Bool => flag.flag.clone(),
+            DslFlagKind::KeyValuePairs => format!("{} KEY={value}…", flag.flag),
+            DslFlagKind::RepeatedList | DslFlagKind::CommaSeparatedList => format!("{} {value}…", flag.flag),
+            _ => format!("{} {value}", flag.flag),
+        };
+        if flag.required {
+            out.push_str(&format!(" {token}"));
+        } else {
+            out.push_str(&format!(" [{token}]"));
+        }
+    }
+    if let Some(key) = answer_key(&kind) {
+        out.push_str(&format!(" → {key}"));
+    }
+    out
+}
+
+/// The key a kind answers under (`node-conventions.md` §1, §6): an acting
+/// node's noun, an entry node's source; control nodes and run inputs (whose
+/// key is their `--name`) have none fixed.
+pub fn answer_key(short_kind: &str) -> Option<String> {
+    let parts: Vec<&str> = short_kind.split('.').collect();
+    match parts.as_slice() {
+        ["trigger", source, ..] => Some((*source).to_string()),
+        ["logic", ..] | ["input", ..] => None,
+        [_, noun, _] => Some((*noun).to_string()),
+        _ => None,
+    }
+}
+
 pub fn format_node_definition_markdown(def: &NodeDefinition) -> String {
     let mut s = String::new();
     s.push_str(&format!("### `{}` — {}\n\n", def.kind, def.title));
+    s.push_str(&format!("```\n{}\n```\n\n", node_signature(def)));
     s.push_str(def.description.trim());
     s.push_str("\n\n");
     let ip = if def.input_pins.is_empty() {

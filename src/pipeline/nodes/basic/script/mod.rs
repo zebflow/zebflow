@@ -54,6 +54,7 @@ pub fn definition() -> NodeDefinition {
                 description: "Script language (default: js). Supported: js, ts. Source is provided via -- body.".to_string(),
                 kind: crate::pipeline::model::DslFlagKind::Scalar,
                 required: false,
+                ..Default::default()
             },
             crate::pipeline::model::DslFlag {
                 flag: "--source-expr".to_string(),
@@ -61,6 +62,7 @@ pub fn definition() -> NodeDefinition {
                 description: "JS expression returning the script source string. Overrides the body source at runtime.".to_string(),
                 kind: crate::pipeline::model::DslFlagKind::Scalar,
                 required: false,
+                ..Default::default()
             },
         ],
         fields: vec![

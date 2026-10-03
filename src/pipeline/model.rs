@@ -285,7 +285,7 @@ pub enum DslFlagKind {
 /// - **LLM context**: surfaced in `/docs/node` so agents know exactly what flags to emit.
 ///
 /// Every flag used in DSL MUST be declared here. No fallback, no auto-rule.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 #[serde(deny_unknown_fields)]
 pub struct DslFlag {
     /// CLI flag name including `--` prefix (e.g. `"--template-path"`).
@@ -306,7 +306,26 @@ pub struct DslFlag {
     pub kind: DslFlagKind,
     /// Whether this flag must be present for the node to be valid.
     pub required: bool,
+    /// What the value is (`node-conventions.md` §4): one of [`FLAG_VALUE_TYPES`].
+    /// Empty while a node predates the 0.11 metadata; the save-time checks
+    /// and the generated signature read it.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub value: String,
+    /// The closed words a choice accepts (§3); empty for a free value.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub choices: Vec<String>,
+    /// The most times a repeatable role may be given.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_repeat: Option<u32>,
 }
+
+/// The value types a flag may declare (`node-conventions.md` §4). `file` takes
+/// any FileRef or store key; `file:<kind>` only that FileRef kind.
+pub const FLAG_VALUE_TYPES: &[&str] = &[
+    "text", "number", "duration", "size", "json", "expression", "ref", "file", "file:image",
+    "file:video", "file:audio", "file:pdf", "file:archive", "file:geojson", "file:csv",
+    "file:parquet", "file:json", "process",
+];
 
 // ── Engine-level common flags ─────────────────────────────────────────────────
 //
@@ -324,6 +343,7 @@ pub fn engine_common_dsl_flags() -> Vec<DslFlag> {
                 .to_string(),
             kind: DslFlagKind::Scalar,
             required: false,
+            ..Default::default()
         },
         DslFlag {
             flag: "--timeout".to_string(),
@@ -334,6 +354,7 @@ pub fn engine_common_dsl_flags() -> Vec<DslFlag> {
                 .to_string(),
             kind: DslFlagKind::Scalar,
             required: false,
+            ..Default::default()
         },
         DslFlag {
             flag: "--preview".to_string(),
@@ -345,6 +366,7 @@ pub fn engine_common_dsl_flags() -> Vec<DslFlag> {
                 .to_string(),
             kind: DslFlagKind::Scalar,
             required: false,
+            ..Default::default()
         },
         DslFlag {
             flag: "--preview-in".to_string(),
@@ -355,6 +377,7 @@ pub fn engine_common_dsl_flags() -> Vec<DslFlag> {
                 .to_string(),
             kind: DslFlagKind::Scalar,
             required: false,
+            ..Default::default()
         },
     ]
 }

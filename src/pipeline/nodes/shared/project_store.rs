@@ -291,6 +291,7 @@ pub fn store_flag() -> DslFlag {
         description: "The project store to write to: `local`, or the id of an `s3` credential. Saved explicitly when the pipeline is registered (default: the project's default store at that moment)".to_string(),
         kind: DslFlagKind::Scalar,
         required: false,
+        ..Default::default()
     }
 }
 
@@ -305,6 +306,7 @@ pub fn on_conflict_flag(default: OnConflict) -> DslFlag {
         ),
         kind: DslFlagKind::Scalar,
         required: false,
+        ..Default::default()
     }
 }
 

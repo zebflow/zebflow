@@ -119,6 +119,7 @@ pub fn definition() -> NodeDefinition {
                     .to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
+                ..Default::default()
             },
             DslFlag {
                 flag: "--status".to_string(),
@@ -127,6 +128,7 @@ pub fn definition() -> NodeDefinition {
                     .to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
+                ..Default::default()
             },
             DslFlag {
                 flag: "--location".to_string(),
@@ -136,6 +138,7 @@ pub fn definition() -> NodeDefinition {
                         .to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
+                ..Default::default()
             },
             DslFlag {
                 flag: "--message".to_string(),
@@ -143,6 +146,7 @@ pub fn definition() -> NodeDefinition {
                 description: "Short plain-text response body.".to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
+                ..Default::default()
             },
             DslFlag {
                 flag: "--body".to_string(),
@@ -152,6 +156,7 @@ pub fn definition() -> NodeDefinition {
                         .to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
+                ..Default::default()
             },
             DslFlag {
                 flag: "--set-cookie".to_string(),
@@ -161,6 +166,7 @@ pub fn definition() -> NodeDefinition {
                         .to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
+                ..Default::default()
             },
             DslFlag {
                 flag: "--header".to_string(),
@@ -168,6 +174,7 @@ pub fn definition() -> NodeDefinition {
                 description: "Extra response header. Repeatable: --header X-Custom=hello --header X-Other=world".to_string(),
                 kind: DslFlagKind::KeyValuePairs,
                 required: false,
+                ..Default::default()
             },
             DslFlag {
                 flag: "--load-scripts".to_string(),
@@ -177,6 +184,7 @@ pub fn definition() -> NodeDefinition {
                         .to_string(),
                 kind: DslFlagKind::CommaSeparatedList,
                 required: false,
+                ..Default::default()
             },
             DslFlag {
                 flag: "--file".to_string(),
@@ -186,6 +194,7 @@ pub fn definition() -> NodeDefinition {
                     .to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
+                ..Default::default()
             },
             DslFlag {
                 flag: "--folder".to_string(),
@@ -194,6 +203,7 @@ pub fn definition() -> NodeDefinition {
                     .to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
+                ..Default::default()
             },
         ],
         fields: {

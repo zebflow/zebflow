@@ -79,6 +79,7 @@ pub fn definition() -> NodeDefinition {
                 description: "The spatial file: a store key, or a FileRef through {{ }}".to_string(),
                 kind: DslFlagKind::Scalar,
                 required: true,
+                ..Default::default()
             },
             DslFlag {
                 flag: "--layer".to_string(),
@@ -86,6 +87,7 @@ pub fn definition() -> NodeDefinition {
                 description: "Layer name for multi-layer sources (e.g. FileGDB)".to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
+                ..Default::default()
             },
             crate::pipeline::nodes::shared::project_store::store_flag(),
         ],

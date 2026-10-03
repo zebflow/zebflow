@@ -506,6 +506,7 @@ fn flag(flag: &str, key: &str, description: &str, kind: DslFlagKind) -> DslFlag 
         description: description.to_string(),
         kind,
         required: false,
+        ..Default::default()
     }
 }
 
@@ -565,6 +566,7 @@ pub fn definition_for(kind: InputKind) -> NodeDefinition {
             description: format!("The envelope field this node declares — also the first bare token: `{short} <name>`."),
             kind: DslFlagKind::Scalar,
             required: true,
+            ..Default::default()
         },
         flag("--label", "label", "Form label shown in the Run form. Default: the field name.", DslFlagKind::Scalar),
         flag("--optional", "optional", "A missing value is allowed; the node's value is then null.", DslFlagKind::Bool),

@@ -315,6 +315,7 @@ pub fn definition() -> NodeDefinition {
                 description: "Dot-path to the file in the payload (default: files.file — the upload field `file`; files.photo, response.body, image)".to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
+                ..Default::default()
             },
             DslFlag {
                 flag: "--path".to_string(),
@@ -324,6 +325,7 @@ pub fn definition() -> NodeDefinition {
                         .to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
+                ..Default::default()
             },
             DslFlag {
                 flag: "--folder".to_string(),
@@ -331,6 +333,7 @@ pub fn definition() -> NodeDefinition {
                 description: "ZebFS object folder (default: \"uploads\")".to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
+                ..Default::default()
             },
             DslFlag {
                 flag: "--allowed-kinds".to_string(),
@@ -340,6 +343,7 @@ pub fn definition() -> NodeDefinition {
                         .to_string(),
                 kind: DslFlagKind::CommaSeparatedList,
                 required: false,
+                ..Default::default()
             },
             DslFlag {
                 flag: "--max-size".to_string(),
@@ -347,6 +351,7 @@ pub fn definition() -> NodeDefinition {
                 description: "Maximum file size in MB (default: 10)".to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
+                ..Default::default()
             },
             DslFlag {
                 flag: "--filename".to_string(),
@@ -356,6 +361,7 @@ pub fn definition() -> NodeDefinition {
                         .to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
+                ..Default::default()
             },
             store_flag(),
             on_conflict_flag(OnConflict::Error),

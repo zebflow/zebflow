@@ -70,6 +70,7 @@ pub fn definition() -> NodeDefinition {
             description: "What this step will do, in markdown.".to_string(),
             kind: DslFlagKind::Scalar,
             required: false,
+            ..Default::default()
         }],
         fields: vec![NodeFieldDef {
             name: "text".to_string(),

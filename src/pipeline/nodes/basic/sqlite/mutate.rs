@@ -52,6 +52,7 @@ pub fn definition() -> NodeDefinition {
                 description: "SQL mutation (alternative to body `-- \"INSERT INTO ...\"`)".to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
+                ..Default::default()
             },
             DslFlag {
                 flag: "--params".to_string(),
@@ -59,6 +60,7 @@ pub fn definition() -> NodeDefinition {
                 description: "Bind values for ?1, ?2, … — a literal or {{ expr }}. A whole {{ }} carries its typed value, so \"{{ [input.id, 10] }}\" is a real array.".to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
+                ..Default::default()
             },
         ],
         fields: vec![

@@ -45,6 +45,7 @@ pub fn definition() -> NodeDefinition {
                 description: "Key to delete from the store.".to_string(),
                 kind: DslFlagKind::Scalar,
                 required: true,
+                ..Default::default()
             },
             DslFlag {
                 flag: "--durable".to_string(),
@@ -53,6 +54,7 @@ pub fn definition() -> NodeDefinition {
                     .to_string(),
                 kind: DslFlagKind::Bool,
                 required: false,
+                ..Default::default()
             },
         ],
         fields: vec![

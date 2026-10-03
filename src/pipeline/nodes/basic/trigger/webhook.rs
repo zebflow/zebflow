@@ -149,6 +149,7 @@ pub fn definition() -> NodeDefinition {
                 description: "HTTP path this webhook listens on. Must start with /. Examples: /blog, /api/users/:id.".to_string(),
                 kind: DslFlagKind::Scalar,
                 required: true,
+                ..Default::default()
             },
             DslFlag {
                 flag: "--method".to_string(),
@@ -156,6 +157,7 @@ pub fn definition() -> NodeDefinition {
                 description: "HTTP method: GET (default), POST, PUT, PATCH, DELETE.".to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
+                ..Default::default()
             },
             DslFlag {
                 flag: "--auth-type".to_string(),
@@ -163,6 +165,7 @@ pub fn definition() -> NodeDefinition {
                 description: "Authentication mode: none (default), jwt, hmac, api_key.".to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
+                ..Default::default()
             },
             DslFlag {
                 flag: "--auth-credential".to_string(),
@@ -170,6 +173,7 @@ pub fn definition() -> NodeDefinition {
                 description: "Credential ID for auth verification. Required when auth_type != none.".to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
+                ..Default::default()
             },
             DslFlag {
                 flag: "--auth-required-role".to_string(),
@@ -177,6 +181,7 @@ pub fn definition() -> NodeDefinition {
                 description: "Comma-separated roles required for this route. One entry of the JWT 'roles' array claim must match. E.g. lecturer,student. Empty = any authenticated user.".to_string(),
                 kind: DslFlagKind::CommaSeparatedList,
                 required: false,
+                ..Default::default()
             },
             DslFlag {
                 flag: "--auth-optional".to_string(),
@@ -184,6 +189,7 @@ pub fn definition() -> NodeDefinition {
                 description: "With --auth-type jwt: the route stays public; a valid token fills input.auth, no token or a bad one leaves input.auth null instead of answering 401. For a public page that greets a signed-in user.".to_string(),
                 kind: DslFlagKind::Bool,
                 required: false,
+                ..Default::default()
             },
             DslFlag {
                 flag: "--errors".to_string(),
@@ -191,6 +197,7 @@ pub fn definition() -> NodeDefinition {
                 description: "show or hide: what a failure on this route reveals to the caller, overriding the project's errors switch (Settings → Addressing). Absent: the project decides. The status code is the same either way.".to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
+                ..Default::default()
             },
         ],
         layout: vec![

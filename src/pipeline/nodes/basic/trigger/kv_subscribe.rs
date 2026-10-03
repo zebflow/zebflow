@@ -76,6 +76,7 @@ pub fn definition() -> NodeDefinition {
             description: "Channel name to subscribe to.".to_string(),
             kind: DslFlagKind::Scalar,
             required: true,
+            ..Default::default()
         }],
         fields: vec![NodeFieldDef {
             name: "channel".to_string(),

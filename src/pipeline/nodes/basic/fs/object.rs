@@ -481,6 +481,7 @@ fn scalar_flag(flag: &str, config_key: &str, description: &str) -> DslFlag {
         description: description.to_string(),
         kind: DslFlagKind::Scalar,
         required: false,
+        ..Default::default()
     }
 }
 

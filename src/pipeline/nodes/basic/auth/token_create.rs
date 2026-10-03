@@ -66,6 +66,7 @@ pub fn definition() -> NodeDefinition {
                 description: "ID of the jwt_signing_key credential used to sign the token.".to_string(),
                 kind: crate::pipeline::model::DslFlagKind::Scalar,
                 required: true,
+                ..Default::default()
             },
             crate::pipeline::model::DslFlag {
                 flag: "--expires-in".to_string(),
@@ -73,6 +74,7 @@ pub fn definition() -> NodeDefinition {
                 description: "Token lifetime in seconds (default 900).".to_string(),
                 kind: crate::pipeline::model::DslFlagKind::Scalar,
                 required: false,
+                ..Default::default()
             },
             crate::pipeline::model::DslFlag {
                 flag: "--claim".to_string(),
@@ -80,6 +82,7 @@ pub fn definition() -> NodeDefinition {
                 description: "Map a JWT claim from the input payload. Repeat for each claim. Format: claim_name={{ expr }} or claim_name=literal. End the name with :public to expose the claim in the browser via ctx.auth (e.g. --claim \"name:public={{ input.fullname }}\"); the value keeps its type. Claims without :public are signed but never reach the browser DOM. e.g. --claim \"sub={{ input.id }}\" --claim \"name:public={{ input.fullname }}\"".to_string(),
                 kind: crate::pipeline::model::DslFlagKind::KeyValuePairs,
                 required: false,
+                ..Default::default()
             },
             crate::pipeline::model::DslFlag {
                 flag: "--issuer".to_string(),
@@ -87,6 +90,7 @@ pub fn definition() -> NodeDefinition {
                 description: "JWT issuer claim (iss).".to_string(),
                 kind: crate::pipeline::model::DslFlagKind::Scalar,
                 required: false,
+                ..Default::default()
             },
             crate::pipeline::model::DslFlag {
                 flag: "--audience".to_string(),
@@ -94,6 +98,7 @@ pub fn definition() -> NodeDefinition {
                 description: "JWT audience claim (aud).".to_string(),
                 kind: crate::pipeline::model::DslFlagKind::Scalar,
                 required: false,
+                ..Default::default()
             },
         ],
         fields: {

@@ -116,6 +116,7 @@ pub fn definition() -> NodeDefinition {
                 description: "The input spatial file: a store key, or a FileRef through {{ }} (e.g. \"{{ input.saved }}\")".to_string(),
                 kind: DslFlagKind::Scalar,
                 required: true,
+                ..Default::default()
             },
             DslFlag {
                 flag: "--folder".to_string(),
@@ -123,6 +124,7 @@ pub fn definition() -> NodeDefinition {
                 description: "Store folder for the output (default: geo)".to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
+                ..Default::default()
             },
             DslFlag {
                 flag: "--filename".to_string(),
@@ -130,6 +132,7 @@ pub fn definition() -> NodeDefinition {
                 description: "Output name, .parquet or .geojson (default: <source>.parquet)".to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
+                ..Default::default()
             },
             DslFlag {
                 flag: "--path".to_string(),
@@ -137,6 +140,7 @@ pub fn definition() -> NodeDefinition {
                 description: "Exact store key for the output; overrides --folder and --filename".to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
+                ..Default::default()
             },
             store_flag(),
             on_conflict_flag(OnConflict::Error),
@@ -146,6 +150,7 @@ pub fn definition() -> NodeDefinition {
                 description: "Layer name for multi-layer sources (e.g. FileGDB)".to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
+                ..Default::default()
             },
             DslFlag {
                 flag: "--to-crs".to_string(),
@@ -154,6 +159,7 @@ pub fn definition() -> NodeDefinition {
                     .to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
+                ..Default::default()
             },
             DslFlag {
                 flag: "--hilbert".to_string(),
@@ -161,6 +167,7 @@ pub fn definition() -> NodeDefinition {
                 description: "Hilbert-sort output by bbox centroid (parquet only)".to_string(),
                 kind: DslFlagKind::Bool,
                 required: false,
+                ..Default::default()
             },
             DslFlag {
                 flag: "--batch-size".to_string(),
@@ -168,6 +175,7 @@ pub fn definition() -> NodeDefinition {
                 description: "Rows per parquet row group (default: 10000)".to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
+                ..Default::default()
             },
         ],
         fields: vec![

@@ -129,12 +129,12 @@ pub fn definition() -> NodeDefinition {
         script_bridge: None,
         config_schema: Default::default(),
         dsl_flags: vec![
-            DslFlag { flag: "--op".to_string(), config_key: "op".to_string(), description: "Cryptographic operation: sha256, sha512, bcrypt_hash, bcrypt_verify, argon2_hash, argon2_verify, hmac_sha256, base64_encode, base64_decode, random_hex.".to_string(), kind: DslFlagKind::Scalar, required: true },
-            DslFlag { flag: "--value".to_string(), config_key: "value".to_string(), description: "The value to operate on — a literal or {{ expr }}.".to_string(), kind: DslFlagKind::Scalar, required: false },
-            DslFlag { flag: "--hash".to_string(), config_key: "hash".to_string(), description: "The stored hash to verify against — a literal or {{ expr }}.".to_string(), kind: DslFlagKind::Scalar, required: false },
-            DslFlag { flag: "--key".to_string(), config_key: "key".to_string(), description: "The HMAC secret — a literal or {{ expr }}.".to_string(), kind: DslFlagKind::Scalar, required: false },
-            DslFlag { flag: "--cost".to_string(), config_key: "cost".to_string(), description: "bcrypt cost factor 4-31 (default 12).".to_string(), kind: DslFlagKind::Scalar, required: false },
-            DslFlag { flag: "--length".to_string(), config_key: "length".to_string(), description: "Random byte count for random_hex (default 32).".to_string(), kind: DslFlagKind::Scalar, required: false },
+            DslFlag { flag: "--op".to_string(), config_key: "op".to_string(), description: "Cryptographic operation: sha256, sha512, bcrypt_hash, bcrypt_verify, argon2_hash, argon2_verify, hmac_sha256, base64_encode, base64_decode, random_hex.".to_string(), kind: DslFlagKind::Scalar, required: true, ..Default::default() },
+            DslFlag { flag: "--value".to_string(), config_key: "value".to_string(), description: "The value to operate on — a literal or {{ expr }}.".to_string(), kind: DslFlagKind::Scalar, required: false, ..Default::default() },
+            DslFlag { flag: "--hash".to_string(), config_key: "hash".to_string(), description: "The stored hash to verify against — a literal or {{ expr }}.".to_string(), kind: DslFlagKind::Scalar, required: false, ..Default::default() },
+            DslFlag { flag: "--key".to_string(), config_key: "key".to_string(), description: "The HMAC secret — a literal or {{ expr }}.".to_string(), kind: DslFlagKind::Scalar, required: false, ..Default::default() },
+            DslFlag { flag: "--cost".to_string(), config_key: "cost".to_string(), description: "bcrypt cost factor 4-31 (default 12).".to_string(), kind: DslFlagKind::Scalar, required: false, ..Default::default() },
+            DslFlag { flag: "--length".to_string(), config_key: "length".to_string(), description: "Random byte count for random_hex (default 32).".to_string(), kind: DslFlagKind::Scalar, required: false, ..Default::default() },
         ],
         fields: {
             use crate::pipeline::model::{NodeFieldDef, NodeFieldType, SelectOptionDef};

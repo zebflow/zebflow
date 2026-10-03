@@ -120,6 +120,7 @@ pub fn definition() -> NodeDefinition {
                     .to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
+                ..Default::default()
             },
             DslFlag {
                 flag: "--folder".to_string(),
@@ -127,6 +128,7 @@ pub fn definition() -> NodeDefinition {
                 description: "The folder the archive opens into (default: extracted/<archive>)".to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
+                ..Default::default()
             },
             DslFlag {
                 flag: "--format".to_string(),
@@ -134,6 +136,7 @@ pub fn definition() -> NodeDefinition {
                 description: "Archive format. First slice supports only tar.gz".to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
+                ..Default::default()
             },
             DslFlag {
                 flag: "--delete-source".to_string(),
@@ -141,6 +144,7 @@ pub fn definition() -> NodeDefinition {
                 description: "Delete the source archive after successful extraction".to_string(),
                 kind: DslFlagKind::Bool,
                 required: false,
+                ..Default::default()
             },
             store_flag(),
             on_conflict_flag(OnConflict::Error),

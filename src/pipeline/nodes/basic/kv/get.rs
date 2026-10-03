@@ -69,6 +69,7 @@ pub fn definition() -> NodeDefinition {
                 description: "Storage key to retrieve.".to_string(),
                 kind: DslFlagKind::Scalar,
                 required: true,
+                ..Default::default()
             },
             DslFlag {
                 flag: "--out-key".to_string(),
@@ -77,6 +78,7 @@ pub fn definition() -> NodeDefinition {
                     .to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
+                ..Default::default()
             },
             DslFlag {
                 flag: "--default".to_string(),
@@ -84,6 +86,7 @@ pub fn definition() -> NodeDefinition {
                 description: "Fallback value when the key is missing or expired — a literal or {{ expr }}.".to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
+                ..Default::default()
             },
             DslFlag {
                 flag: "--durable".to_string(),
@@ -92,6 +95,7 @@ pub fn definition() -> NodeDefinition {
                     .to_string(),
                 kind: DslFlagKind::Bool,
                 required: false,
+                ..Default::default()
             },
         ],
         fields: vec![

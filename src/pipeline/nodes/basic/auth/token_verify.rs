@@ -83,6 +83,7 @@ pub fn definition() -> NodeDefinition {
                 description: "Id of the `jwt_signing_key` credential that signed it".to_string(),
                 kind: DslFlagKind::Scalar,
                 required: true,
+                ..Default::default()
             },
             DslFlag {
                 flag: "--token".to_string(),
@@ -91,6 +92,7 @@ pub fn definition() -> NodeDefinition {
                     .to_string(),
                 kind: DslFlagKind::Scalar,
                 required: true,
+                ..Default::default()
             },
             DslFlag {
                 flag: "--issuer".to_string(),
@@ -98,6 +100,7 @@ pub fn definition() -> NodeDefinition {
                 description: "Require this `iss` claim".to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
+                ..Default::default()
             },
             DslFlag {
                 flag: "--audience".to_string(),
@@ -105,6 +108,7 @@ pub fn definition() -> NodeDefinition {
                 description: "Require this `aud` claim".to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
+                ..Default::default()
             },
         ],
         fields: vec![

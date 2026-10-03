@@ -53,6 +53,7 @@ pub fn definition() -> NodeDefinition {
                 description: "Expression producing the initial accumulator.".to_string(),
                 kind: DslFlagKind::Scalar,
                 required: true,
+                ..Default::default()
             },
             DslFlag {
                 flag: "--step-expr".to_string(),
@@ -61,6 +62,7 @@ pub fn definition() -> NodeDefinition {
                     .to_string(),
                 kind: DslFlagKind::Scalar,
                 required: true,
+                ..Default::default()
             },
         ],
         fields: {

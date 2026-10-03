@@ -70,6 +70,7 @@ pub fn definition() -> NodeDefinition {
                 description: "Key to check. Supports {{ expr }}.".to_string(),
                 kind: DslFlagKind::Scalar,
                 required: true,
+                ..Default::default()
             },
             DslFlag {
                 flag: "--out-key".to_string(),
@@ -77,6 +78,7 @@ pub fn definition() -> NodeDefinition {
                 description: "Payload key for the boolean result (default: \"exists\").".to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
+                ..Default::default()
             },
             DslFlag {
                 flag: "--durable".to_string(),
@@ -84,6 +86,7 @@ pub fn definition() -> NodeDefinition {
                 description: "Check durable storage (survives restart). Default: ephemeral.".to_string(),
                 kind: DslFlagKind::Bool,
                 required: false,
+                ..Default::default()
             },
         ],
         fields: vec![

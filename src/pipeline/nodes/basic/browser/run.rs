@@ -64,8 +64,8 @@ pub fn definition() -> NodeDefinition {
         script_bridge: None,
         config_schema: Default::default(),
         dsl_flags: vec![
-            DslFlag { flag: "--credential".to_string(), config_key: "credential_id".to_string(), description: "Credential ID of the browser connection (kind: browser_*).".to_string(), kind: DslFlagKind::Scalar, required: true },
-            DslFlag { flag: "--timeout-ms".to_string(), config_key: "timeout_ms".to_string(), description: "Browser script timeout in milliseconds (default 30000).".to_string(), kind: DslFlagKind::Scalar, required: false },
+            DslFlag { flag: "--credential".to_string(), config_key: "credential_id".to_string(), description: "Credential ID of the browser connection (kind: browser_*).".to_string(), kind: DslFlagKind::Scalar, required: true, ..Default::default() },
+            DslFlag { flag: "--timeout-ms".to_string(), config_key: "timeout_ms".to_string(), description: "Browser script timeout in milliseconds (default 30000).".to_string(), kind: DslFlagKind::Scalar, required: false, ..Default::default() },
         ],
         fields: vec![
             NodeFieldDef { name: "credential_id".to_string(), label: "Credential".to_string(), field_type: NodeFieldType::Select, data_source: Some(NodeFieldDataSource::CredentialsBrowser), help: Some("Browser credential (kind: browser_browserless or similar).".to_string()), ..Default::default() },

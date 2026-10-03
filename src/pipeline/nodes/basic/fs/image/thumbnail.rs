@@ -189,6 +189,7 @@ pub fn definition() -> NodeDefinition {
                 description: "Target width in pixels (default: 256)".to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
+                ..Default::default()
             },
             DslFlag {
                 flag: "--height".to_string(),
@@ -196,6 +197,7 @@ pub fn definition() -> NodeDefinition {
                 description: "Target height in pixels (default: 256)".to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
+                ..Default::default()
             },
             DslFlag {
                 flag: "--fit".to_string(),
@@ -203,6 +205,7 @@ pub fn definition() -> NodeDefinition {
                 description: "cover | contain | fill (default: cover)".to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
+                ..Default::default()
             },
             DslFlag {
                 flag: "--format".to_string(),
@@ -210,6 +213,7 @@ pub fn definition() -> NodeDefinition {
                 description: "jpg | png | webp (default: jpg)".to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
+                ..Default::default()
             },
             DslFlag {
                 flag: "--quality".to_string(),
@@ -217,6 +221,7 @@ pub fn definition() -> NodeDefinition {
                 description: "JPEG quality 1–100 (default: 82)".to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
+                ..Default::default()
             },
             DslFlag {
                 flag: "--folder".to_string(),
@@ -224,6 +229,7 @@ pub fn definition() -> NodeDefinition {
                 description: "Destination ZebFS object folder (default: thumbnails)".to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
+                ..Default::default()
             },
             DslFlag {
                 flag: "--source-key".to_string(),
@@ -231,6 +237,7 @@ pub fn definition() -> NodeDefinition {
                 description: "Dot-path to the source in the payload: a FileRef or a store path string (default: `saved`)".to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
+                ..Default::default()
             },
             DslFlag {
                 flag: "--delete-source".to_string(),
@@ -238,6 +245,7 @@ pub fn definition() -> NodeDefinition {
                 description: "Delete the source file after successful thumbnail write (default: false)".to_string(),
                 kind: DslFlagKind::Bool,
                 required: false,
+                ..Default::default()
             },
             DslFlag {
                 flag: "--filename".to_string(),
@@ -245,6 +253,7 @@ pub fn definition() -> NodeDefinition {
                 description: "Custom filename without extension (default: random UUID).".to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
+                ..Default::default()
             },
             DslFlag {
                 flag: "--path".to_string(),
@@ -252,6 +261,7 @@ pub fn definition() -> NodeDefinition {
                 description: "Exact store key for the thumbnail; overrides --folder and --filename.".to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
+                ..Default::default()
             },
             store_flag(),
             on_conflict_flag(OnConflict::Error),
