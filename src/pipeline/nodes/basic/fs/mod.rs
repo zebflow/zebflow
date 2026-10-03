@@ -2,7 +2,7 @@
 //! `fs.file.get`, `fs.file.delete`, `fs.file.copy`, `fs.file.move`, `fs.folder.create`,
 //! `fs.archive.create`, `fs.archive.extract`; and by format, `fs.pdf.convert`,
 //! `fs.image.thumbnail`, `fs.image.chromakey`, `fs.image.render` (`fs/<format>/<verb>.rs`);
-//! and codes a scanner reads, `fs.barcode.qr`, `fs.barcode.code128` (`fs/barcode/<symbology>/`).
+//! and codes a scanner reads, `fs.barcode.render` (`fs/barcode/node.rs`, one encoder per symbology).
 //!
 //! Every node that stores a file answers it as a bare FileRef — the eleven
 //! contract fields and nothing else (`crate::pipeline::nodes::shared::file_ref`).
@@ -20,8 +20,7 @@ pub mod svg;
 
 pub fn definitions() -> Vec<NodeDefinition> {
     vec![
-        barcode::code128::definition(),
-        barcode::qr::definition(),
+        barcode::definition(),
         compress::definition(),
         decompress::definition(),
         object::list_definition(),

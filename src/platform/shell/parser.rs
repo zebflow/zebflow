@@ -501,12 +501,15 @@ fn find_body_delimiter(raw: &str) -> Option<usize> {
 }
 
 /// Coerce a DSL flag string value to the appropriate JSON type.
-/// "true"/"false" → bool, integer strings → i64, float strings → f64, else string.
+/// "true"/"false" → bool; a number written plainly (`-?(0|[1-9]\d*)(\.\d+)?`)
+/// → a number; anything else stays text. `0012`, `+5`, `1e3`, `inf` and `nan`
+/// are text: reading them as numbers drops the zeros a barcode, an account
+/// number or a postcode needs, and turns `nan` into `null`.
 fn coerce_scalar_value(s: &str) -> Value {
     match s {
         "true" => json!(true),
         "false" => json!(false),
-        _ => {
+        _ if is_plain_number(s) => {
             if let Ok(n) = s.parse::<i64>() {
                 json!(n)
             } else if let Ok(f) = s.parse::<f64>() {
@@ -515,7 +518,19 @@ fn coerce_scalar_value(s: &str) -> Value {
                 json!(s)
             }
         }
+        _ => json!(s),
     }
+}
+
+fn is_plain_number(s: &str) -> bool {
+    let digits = s.strip_prefix('-').unwrap_or(s);
+    let (whole, fraction) = match digits.split_once('.') {
+        Some((whole, fraction)) => (whole, Some(fraction)),
+        None => (digits, None),
+    };
+    let whole_ok = whole == "0" || (!whole.is_empty() && !whole.starts_with('0') && whole.bytes().all(|b| b.is_ascii_digit()));
+    let fraction_ok = fraction.is_none_or(|f| !f.is_empty() && f.bytes().all(|b| b.is_ascii_digit()));
+    whole_ok && fraction_ok
 }
 
 // ── Node previews ─────────────────────────────────────────────────────────────
@@ -1694,6 +1709,28 @@ mod tests {
         let err = build_pipeline_graph("parser-positional-expr", "| trigger.manual | input.text {{ input.x }}")
             .expect_err("an unquoted expression is refused, not stored as `{{`");
         assert!(err.contains("unquoted expression"), "{err}");
+    }
+
+    #[test]
+    fn only_a_plainly_written_number_becomes_a_number() {
+        for (raw, want) in [
+            ("12", json!(12)),
+            ("-3", json!(-3)),
+            ("0", json!(0)),
+            ("0.5", json!(0.5)),
+            ("2.75", json!(2.75)),
+            ("true", json!(true)),
+            ("0012", json!("0012")),
+            ("+5", json!("+5")),
+            ("1e3", json!("1e3")),
+            ("inf", json!("inf")),
+            ("nan", json!("nan")),
+            ("1.", json!("1.")),
+            (".5", json!(".5")),
+            ("-", json!("-")),
+        ] {
+            assert_eq!(super::coerce_scalar_value(raw), want, "{raw}");
+        }
     }
 
     #[test]

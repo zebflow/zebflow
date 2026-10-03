@@ -439,9 +439,12 @@ pub const ERROR_CLASS_REGISTRY: &[(&str, ErrorClass)] = &[
     ("FW_NODE_AI_TTS_PROVIDER_MISMATCH", ErrorClass::Refused),
     ("FW_NODE_AI_TTS_SPEED", ErrorClass::Refused),
     ("FW_NODE_AI_TTS_TEXT", ErrorClass::Refused),
-    ("FW_NODE_FS_BARCODE", ErrorClass::Failed),
-    ("FW_NODE_FS_BARCODE_CODE128", ErrorClass::Refused),
-    ("FW_NODE_FS_BARCODE_QR", ErrorClass::Refused),
+    // `fs.barcode.render`: the flags and the text are the author's; only the
+    // store write and the PNG encoder can fail on their own.
+    ("FW_NODE_FS_BARCODE_RENDER", ErrorClass::Failed),
+    ("FW_NODE_FS_BARCODE_RENDER_CONFIG", ErrorClass::Refused),
+    ("FW_NODE_FS_BARCODE_RENDER_SIZE", ErrorClass::Refused),
+    ("FW_NODE_FS_BARCODE_RENDER_TEXT", ErrorClass::Refused),
     ("FW_NODE_FS_IMAGE_THUMBNAIL", ErrorClass::Failed),
     ("FW_NODE_KV_DEL_STATE_BUS", ErrorClass::Failed),
     ("FW_NODE_KV_EXISTS_STATE_BUS", ErrorClass::Failed),

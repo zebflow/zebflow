@@ -53,6 +53,7 @@ const NODE_KIND_COLORS: Record<string, string> = {
   "fs.image.thumbnail": "#4a1d96",
   "fs.image.chromakey": "#4a1d96",
   "fs.image.render": "#4a1d96",
+  "fs.barcode.render": "#4a1d96",
   "kv.entry.put": "#b45309",
   "kv.entry.get": "#b45309",
   "kv.entry.head": "#b45309",

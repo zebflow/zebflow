@@ -565,6 +565,14 @@ Effects — shadow, blur, glow, grain, colour grading — are SVG filters
 (`feDropShadow`, `feGaussianBlur`, `feColorMatrix`, `feTurbulence`); resvg
 draws them and the PDF keeps them.
 
+**A code on the certificate.** `fs.barcode.render --text "{{ 'https://example.com/c/' + input.number }}" --folder certificates/qr --filename "{{ input.number }}"`
+draws a QR Code (`--ecc L|M|Q|H`, default M); `--symbology code128` draws a
+linear barcode for printable ASCII instead, with `--height` its bar height.
+`--format svg|png` (default svg), `--width` in px, `--margin` in modules. The
+answer adds `barcode` — a durable FileRef (`origin: fs.barcode.render`) with
+`symbology`, `format`, `width` and `height` — and the poster places it with
+`<image href="{{ input.barcode.ref }}" …/>`.
+
 **A generated picture inside the poster.** Ask the image model for the
 subject "on a solid flat #00ff00 green screen background", `fs.file.put` it,
 then `fs.image.chromakey --source-key file --folder sandbox/posters/cutouts` turns the screen

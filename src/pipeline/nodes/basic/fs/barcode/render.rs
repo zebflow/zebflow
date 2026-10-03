@@ -69,7 +69,7 @@ impl Drawing<'_> {
 
     pub fn png(&self) -> Result<Vec<u8>, PipelineError> {
         // A raster is allocated whole: refuse it over the shared ceiling first.
-        let (w, h) = crate::pipeline::nodes::shared::limits::raster(self.width_px(), self.height_px(), "FW_NODE_FS_BARCODE")?;
+        let (w, h) = crate::pipeline::nodes::shared::limits::raster(self.width_px(), self.height_px(), super::node::SIZE_CODE)?;
         let top = self.margin as u32 * self.module_px;
         let mut img = RgbImage::from_pixel(w, h, Rgb(self.light));
         for (y, row) in self.rows.iter().enumerate() {
@@ -88,7 +88,7 @@ impl Drawing<'_> {
         }
         let mut out = Vec::new();
         img.write_to(&mut Cursor::new(&mut out), ImageFormat::Png)
-            .map_err(|e| PipelineError::new("FW_NODE_FS_BARCODE", format!("PNG encode: {e}")))?;
+            .map_err(|e| PipelineError::new(super::node::CODE, format!("PNG encode: {e}")))?;
         Ok(out)
     }
 }
