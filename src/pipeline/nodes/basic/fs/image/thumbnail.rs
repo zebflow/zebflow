@@ -1,6 +1,6 @@
 //! fs.image.thumbnail — resize + compress an uploaded image into a small thumbnail.
 //!
-//! Reads `input.saved` by default (the FileRef `fs.save` answers, or a store path string), or a custom `--source-key` dot-path into
+//! Reads `input.saved` by default (a FileRef or a store path string; after `fs.file.put`, `--source-key file`), or a custom `--source-key` dot-path into
 //! the payload. The source may be a string path or FileRef. Produces a resized,
 //! re-encoded file and injects `thumbnail` FileRef metadata into the payload.
 //!
@@ -96,7 +96,7 @@ pub struct Config {
     pub folder: String,
 
     /// Dot-path into the payload for the source file path
-    /// (default: "saved" — the FileRef n.fs.save answers).
+    /// (default: "saved"; after `fs.file.put` it is `file`).
     #[serde(default = "default_source_key")]
     pub source_key: String,
 
@@ -151,11 +151,11 @@ pub fn definition() -> NodeDefinition {
         capabilities: vec![NodeCapability::Filesystem],
         title: "Image Thumbnail".to_string(),
         description:
-            "Make a small image from a stored one. Reads the source at `--source-key` (default `saved` — the FileRef `fs.save` answers, or a store path string — i.e. right after \
-             `fs.save`), resizes to `--width`×`--height` with `--fit cover|contain|fill`, writes `--format jpg|png|webp` into `--folder` \
+            "Make a small image from a stored one. Reads the source at `--source-key` (default `saved`; `file` right after `fs.file.put`) — a FileRef or a store path string — \
+             and resizes to `--width`×`--height` with `--fit cover|contain|fill`, writes `--format jpg|png|webp` into `--folder` \
              (default `thumbnails/`). Adds `thumbnail` (a FileRef: `ref`, `filename`, \
              `width`, `height`, `format`, `size`) to the payload and keeps the rest; with `--delete-source` the original is removed \
-             and its key (`saved`) dropped. Store `thumbnail.ref` in the row."
+             and its key dropped. Store `thumbnail.ref` in the row."
             .to_string(),
         input_schema: json!({
             "type": "object",
@@ -329,7 +329,7 @@ pub fn definition() -> NodeDefinition {
                 name: "source_key".to_string(),
                 label: "Source path key".to_string(),
                 field_type: NodeFieldType::Text,
-                help: Some("Dot-path into the payload for the source: a FileRef or a store path string. Default: saved (what n.fs.save answers).".to_string()),
+                help: Some("Dot-path into the payload for the source: a FileRef or a store path string. Default: saved; after fs.file.put, file.".to_string()),
                 default_value: Some(json!("saved")),
                 ..Default::default()
             },
@@ -364,9 +364,9 @@ pub fn definition() -> NodeDefinition {
             LayoutItem::Field("on_conflict".to_string()),
         ],
         examples: vec![
-            crate::pipeline::model::NodeExample::dsl("Avatar after an upload", "fs.image.thumbnail --width 320 --height 320 --fit cover --format webp --folder public/thumbs")
-                .input(serde_json::json!({ "body": { "caption": "Sunset" }, "saved": { "__zf_type": "file_ref", "backend": "zebfs", "ref": "uploads/3f9c….jpg", "filename": "3f9c….jpg", "mime": "image/jpeg", "kind": "image", "size": 182331, "sha256": "sha256:…", "lifecycle": "durable", "origin": "fs.save", "trust": "untrusted" } }))
-                .output(serde_json::json!({ "body": { "caption": "Sunset" }, "saved": { "__zf_type": "file_ref", "backend": "zebfs", "ref": "uploads/3f9c….jpg", "filename": "3f9c….jpg", "mime": "image/jpeg", "kind": "image", "size": 182331, "sha256": "sha256:…", "lifecycle": "durable", "origin": "fs.save", "trust": "untrusted" }, "thumbnail": { "__zf_type": "file_ref", "backend": "zebfs", "ref": "public/thumbs/9a1d….webp", "filename": "9a1d….webp", "mime": "image/webp", "width": 320, "height": 320, "format": "webp", "size": 8120 } })),
+            crate::pipeline::model::NodeExample::dsl("Avatar after an upload", "fs.image.thumbnail --source-key file --width 320 --height 320 --fit cover --format webp --folder public/thumbs")
+                .input(serde_json::json!({ "body": { "caption": "Sunset" }, "file": { "__zf_type": "file_ref", "backend": "zebfs", "ref": "uploads/3f9c….jpg", "filename": "3f9c….jpg", "mime": "image/jpeg", "kind": "image", "size": 182331, "sha256": "sha256:…", "lifecycle": "durable", "origin": "fs.file.put", "trust": "untrusted" } }))
+                .output(serde_json::json!({ "body": { "caption": "Sunset" }, "file": { "__zf_type": "file_ref", "backend": "zebfs", "ref": "uploads/3f9c….jpg", "filename": "3f9c….jpg", "mime": "image/jpeg", "kind": "image", "size": 182331, "sha256": "sha256:…", "lifecycle": "durable", "origin": "fs.file.put", "trust": "untrusted" }, "thumbnail": { "__zf_type": "file_ref", "backend": "zebfs", "ref": "public/thumbs/9a1d….webp", "filename": "9a1d….webp", "mime": "image/webp", "width": 320, "height": 320, "format": "webp", "size": 8120 } })),
         ],
         ..Default::default()
     }
@@ -414,7 +414,7 @@ impl NodeHandler for Node {
             PipelineError::new(
                 "FW_NODE_FS_IMAGE_THUMBNAIL",
                 format!(
-                    "source path not found at payload key '{source_key}' — chain after n.fs.save or set --source-key"
+                    "source path not found at payload key '{source_key}' — after fs.file.put set --source-key file"
                 ),
             )
         })?;

@@ -271,8 +271,8 @@ pub fn definition() -> NodeDefinition {
         }],
         ai_tool: Default::default(),
         examples: vec![
-            crate::pipeline::model::NodeExample::dsl("Text and page images from an uploaded PDF", "fs.pdf.convert --folder pdf/brief --dpi 110")
-                .input(serde_json::json!({ "saved": { "__zf_type": "file_ref", "backend": "zebfs", "store": "local", "ref": "uploads/brief.pdf", "filename": "brief.pdf", "mime": "application/pdf", "kind": "pdf", "size": 182331, "sha256": "sha256:…", "lifecycle": "durable", "origin": "fs.save", "trust": "untrusted" } }))
+            crate::pipeline::model::NodeExample::dsl("Text and page images from an uploaded PDF", "fs.pdf.convert --source-key file --folder pdf/brief --dpi 110")
+                .input(serde_json::json!({ "file": { "__zf_type": "file_ref", "backend": "zebfs", "store": "local", "ref": "uploads/brief.pdf", "filename": "brief.pdf", "mime": "application/pdf", "kind": "pdf", "size": 182331, "sha256": "sha256:…", "lifecycle": "durable", "origin": "fs.file.put", "trust": "untrusted" } }))
                 .output(serde_json::json!({ "pdf_convert": { "source": "uploads/brief.pdf", "folder": "pdf/brief", "store": "local", "manifest_path": "pdf/brief/manifest.json", "page_count": 4, "files": ["…a FileRef per file"] } }))
                 .note("Each page's text is `pdf/brief/page-N/text.md`; read one back with `fs.file.get`."),
         ],
@@ -320,7 +320,7 @@ impl NodeHandler for Node {
         let source_value = resolve_path(&input.payload, source_key).ok_or_else(|| {
             PipelineError::new(
                 "FW_NODE_FS_PDF_CONVERT",
-                format!("source PDF path not found at payload key '{source_key}' — chain after n.fs.save or set --source-key"),
+                format!("source PDF path not found at payload key '{source_key}' — after fs.file.put set --source-key file"),
             )
         })?;
         let (source_store, rel_path) = open_source(&self.platform, owner, project, source_value, self.config.store.as_deref())?
@@ -328,7 +328,7 @@ impl NodeHandler for Node {
                 PipelineError::new(
                     "FW_NODE_FS_PDF_CONVERT",
                     format!(
-                        "source PDF path not found at payload key '{source_key}' — chain after n.fs.save or set --source-key"
+                        "source PDF path not found at payload key '{source_key}' — after fs.file.put set --source-key file"
                     ),
                 )
             })?;

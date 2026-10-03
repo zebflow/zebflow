@@ -46,7 +46,7 @@ const AUTO_PICK_DEPTH = 3;
 const MEDIA_KINDS = ["image", "video", "audio", "pdf", "html"];
 
 /** What a media cell says of a FileRef whose bytes were deleted with the run. */
-export const TEMPORARY_FILE_GONE = "temporary file — gone after the run; add fs.save to keep it";
+export const TEMPORARY_FILE_GONE = "temporary file — gone after the run; add fs.file.put to keep it";
 /** The caption on a snapshot: the picture is the record's copy, not a file. */
 export const TEMPORARY_SNAPSHOT_NOTE = "temporary — not saved";
 
@@ -54,7 +54,7 @@ export const TEMPORARY_SNAPSHOT_NOTE = "temporary — not saved";
  * The record's own small copy of a temporary image, when the engine kept one
  * for this half (`entry.preview_snapshot`, see kinds/invocation-record). The
  * cell draws it from a data URI, captioned, so "run, look, tweak, run again"
- * works without `fs.save`. Absent or skipped: nothing, and the caller says
+ * works without `fs.file.put`. Absent or skipped: nothing, and the caller says
  * the file is gone.
  */
 export function snapshotCell(entry: any, which: "in" | "out", as: PreviewKind): PreviewCell | undefined {

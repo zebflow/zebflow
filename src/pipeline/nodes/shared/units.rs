@@ -71,7 +71,7 @@ fn amount(
 mod tests {
     use super::*;
 
-    const CODE: &str = "FW_NODE_TEST_UNIT";
+    const CODE: &str = "TEST_UNIT";
 
     #[test]
     fn durations_read_every_unit() {

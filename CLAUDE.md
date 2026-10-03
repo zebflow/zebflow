@@ -265,27 +265,29 @@ If browser is stuck with "already in use" error: call `browser_close` once, then
 
 ### 7. Testing an upload → thumbnail pipeline
 
-The nodes are **`n.fs.save`** and **`fs.image.thumbnail`**. (`n.file.save` and
-`n.img.thumbnail` do not exist — nothing under `n.img.` or `n.file.` does.)
-Neither takes an `--access` flag; visibility is not a node setting.
+The nodes are **`fs.file.put`** and **`fs.image.thumbnail`**. (`fs.save`,
+`n.fs.save`, `n.file.save` and `n.img.thumbnail` do not exist.) Neither takes
+an `--access` flag; visibility is not a node setting.
 
-`n.fs.save` — `--source-key` (dot-path to the file, default `files.file`;
-an upload field named `photo` is `files.photo`), `--path` (exact
-object path; otherwise folder + generated name), `--folder` (default
-`uploads`), `--allowed-kinds` (default `images`), `--max-size` (MB, default
-10), `--filename`.
+`fs.file.put` — exactly one source: `--from` (the file, e.g.
+`"{{ input.files.photo }}"` for an upload field named `photo`), `--text`
+(`--encoding base64` for bytes) or `--value` (JSON); `--accept`
+(repeat; `image|pdf|csv|json|glb|audio|video|archive`, default `image`,
+`--from` only), `--max-size` (with a unit, default `10MB`), `--folder`
+(default `uploads`), `--filename`, `--path` (exact store key), `--store`,
+`--on-conflict` (error|skip|overwrite). It answers `file`, a durable FileRef.
 
 `fs.image.thumbnail` — `--width` / `--height` (default 256), `--fit`
 (cover|contain|fill), `--format` (jpg|png|webp), `--quality` (1–100, default
 82), `--folder` (default `thumbnails`), `--source-key` (dot-path to the source
-in the payload, default `saved` — the FileRef `fs.save` answers, or a store
-path string), `--delete-source`, `--filename`.
+in the payload, default `saved`; after `fs.file.put` it is `file`), `--delete-source`,
+`--filename`.
 
 ```bash
 # Register. Always write the JSON to a file and use -d @file: the DSL is full
 # of `--flags` and shell quoting mangles them.
 cat > /tmp/reg.json << 'EOJSON'
-{"dsl": "register pipelines/test/fs-thumb-check -- | trigger.webhook --path /test/fs-thumb --method POST | n.fs.save --source-key files.photo --folder test-uploads | fs.image.thumbnail --width 200 --height 200 --fit cover --format jpg --quality 80 --folder test-thumbs --delete-source"}
+{"dsl": "register pipelines/test/fs-thumb-check -- | trigger.webhook --path /test/fs-thumb --method POST | fs.file.put --from \"{{ input.files.photo }}\" --folder test-uploads | fs.image.thumbnail --source-key file --width 200 --height 200 --fit cover --format jpg --quality 80 --folder test-thumbs --delete-source"}
 EOJSON
 curl -s -b /tmp/zf.txt -X POST -H "Content-Type: application/json" \
   -d @/tmp/reg.json \
@@ -318,9 +320,9 @@ curl -s -b /tmp/zf.txt -X POST -F photo=@/tmp/test_img.png \
   http://localhost:10610/wh/superadmin/default/test/fs-thumb
 ```
 
-The answer is the request payload (`body`, `files`, `saved`, …) plus
+The answer is the request payload (`body`, `files`, `file`, …) plus
 `thumbnail`, a FileRef. A node never removes a payload key: with
-`--delete-source` the source object is gone but `saved` stays, and
+`--delete-source` the source object is gone but `file` stays, and
 `thumbnail.source_deleted` is `true`. The FileRef:
 
 ```json

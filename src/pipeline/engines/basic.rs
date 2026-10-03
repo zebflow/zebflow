@@ -1564,24 +1564,20 @@ impl BasicPipelineEngine {
                     self.platform.clone(),
                 )))
             }
-            fs::save::NODE_KIND => {
-                let config: fs::save::Config =
-                    serde_json::from_value(node.config.clone()).unwrap_or_default();
+            fs::put::NODE_KIND => {
+                let config: fs::put::Config = serde_json::from_value(node.config.clone())
+                    .map_err(|err| PipelineError::new(fs::put::CONFIG_CODE, err.to_string()))?;
                 let Some(platform) = &self.platform else {
                     return Err(PipelineError::new(
-                        "FW_NODE_FS_SAVE",
+                        fs::put::CODE,
                         "platform service not available in this engine context",
                     ));
                 };
-                Ok(NodeDispatch::FileSave(fs::save::Node::new(
-                    config,
-                    platform.clone(),
-                )?))
+                Ok(NodeDispatch::FilePut(fs::put::Node::new(config, platform.clone())?))
             }
             fs::object::LIST_NODE_KIND
             | fs::object::HEAD_NODE_KIND
             | fs::object::GET_NODE_KIND
-            | fs::object::PUT_NODE_KIND
             | fs::object::DELETE_NODE_KIND
             | fs::object::COPY_NODE_KIND
             | fs::object::MOVE_NODE_KIND
@@ -1598,7 +1594,6 @@ impl BasicPipelineEngine {
                     fs::object::LIST_NODE_KIND => fs::object::Operation::List,
                     fs::object::HEAD_NODE_KIND => fs::object::Operation::Head,
                     fs::object::GET_NODE_KIND => fs::object::Operation::Get,
-                    fs::object::PUT_NODE_KIND => fs::object::Operation::Put,
                     fs::object::DELETE_NODE_KIND => fs::object::Operation::Delete,
                     fs::object::COPY_NODE_KIND => fs::object::Operation::Copy,
                     fs::object::MOVE_NODE_KIND => fs::object::Operation::Move,
@@ -2992,7 +2987,7 @@ impl BasicPipelineEngine {
                     NodeDispatch::FunctionCall(node) => {
                         node.execute_many_async(input_for_exec).await
                     }
-                    NodeDispatch::FileSave(node) => node.execute_many_async(input_for_exec).await,
+                    NodeDispatch::FilePut(node) => node.execute_many_async(input_for_exec).await,
                     NodeDispatch::FsObject(node) => node.execute_many_async(input_for_exec).await,
                     NodeDispatch::MapserverCrud(node) => {
                         node.execute_many_async(input_for_exec).await
@@ -5990,7 +5985,7 @@ enum NodeDispatch {
     Crypto(crypto::Node),
     TriggerFunction(trigger_function::Node),
     FunctionCall(function::call::Node),
-    FileSave(fs::save::Node),
+    FilePut(fs::put::Node),
     FsObject(fs::object::Node),
     MapserverCrud(ms::crud::Node),
     TableConvert(table::convert::Node),

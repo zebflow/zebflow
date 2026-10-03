@@ -34,7 +34,7 @@ const [doc, setDoc] = useState(EMPTY);
 async function uploadImage(file) {              // the page decides where images go
   const form = new FormData();
   form.append("file", file);
-  const { saved } = await (await fetch("/wh/o/p/upload", { method: "POST", body: form })).json();   // n.fs.save
+  const { file: saved } = await (await fetch("/wh/o/p/upload", { method: "POST", body: form })).json();   // fs.file.put
   return { src: \`/files/o/p/\${saved.ref}\`, ref: saved.ref, alt: file.name };
 }
 

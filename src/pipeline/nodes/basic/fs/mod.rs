@@ -1,5 +1,5 @@
-//! `fs.*` — project file storage (ZebFS): `fs.save`, `fs.folder.list`, `fs.file.head`,
-//! `fs.file.get`, `fs.file.put`, `fs.file.delete`, `fs.file.copy`, `fs.file.move`, `fs.folder.create`,
+//! `fs.*` — project file storage (ZebFS): `fs.file.put` (`put.rs`), `fs.folder.list`, `fs.file.head`,
+//! `fs.file.get`, `fs.file.delete`, `fs.file.copy`, `fs.file.move`, `fs.folder.create`,
 //! `fs.archive.create`, `fs.archive.extract`; and by format, `fs.pdf.convert`,
 //! `fs.image.thumbnail`, `fs.image.chromakey`, `fs.image.render` (`fs/<format>/<verb>.rs`);
 //! and codes a scanner reads, `fs.barcode.qr`, `fs.barcode.code128` (`fs/barcode/<symbology>/`).
@@ -15,7 +15,7 @@ pub mod decompress;
 pub mod image;
 pub mod object;
 pub mod pdf;
-pub mod save;
+pub mod put;
 pub mod svg;
 
 pub fn definitions() -> Vec<NodeDefinition> {
@@ -27,13 +27,12 @@ pub fn definitions() -> Vec<NodeDefinition> {
         object::list_definition(),
         object::head_definition(),
         object::get_definition(),
-        object::put_definition(),
         object::delete_definition(),
         object::copy_definition(),
         object::move_definition(),
         object::mkdir_definition(),
         pdf::convert::definition(),
-        save::definition(),
+        put::definition(),
         image::chromakey::definition(),
         image::thumbnail::definition(),
         svg::convert::definition(),

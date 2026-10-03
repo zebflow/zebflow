@@ -3,7 +3,7 @@
 //!
 //! | Use | DSL |
 //! |---|---|
-//! | A generated character, cut out for a poster | `\| fs.save --folder posters/photos \| fs.image.chromakey --folder posters/cutouts --preview image` |
+//! | A generated character, cut out for a poster | `\| fs.file.put --from "{{ input.response.body }}" --folder posters/photos \| fs.image.chromakey --source-key file --folder posters/cutouts --preview image` |
 //!
 //! Plain pixel maths, no model: every pixel whose colour is within
 //! `--tolerance` of `--color` (RGB distance, 0–441) becomes transparent, and
@@ -19,8 +19,8 @@
 //! and keys nothing; measure a corner and pass `--color` when the screen
 //! is another colour.
 //!
-//! Reads the source at `--source-key` (default `saved`, the FileRef `fs.save`
-//! answers, or a store path string), decodes it with the same
+//! Reads the source at `--source-key` (default `saved`; `file` after
+//! `fs.file.put`) — a FileRef or a store path string, decodes it with the same
 //! decompression-bomb limits as `fs.image.thumbnail`, writes `--format
 //! png|webp` (both keep alpha; default png) into `--folder` (default
 //! `cutouts/`) as `--filename` or a UUID, and adds `image` — a durable FileRef
@@ -139,7 +139,7 @@ pub fn definition() -> NodeDefinition {
         kind: NODE_KIND.to_string(),
         capabilities: vec![NodeCapability::Filesystem],
         title: "Chroma Key".to_string(),
-        description: "Make a green screen transparent. Reads the source at `--source-key` (default `saved`, right after `fs.save`), turns every pixel within \
+        description: "Make a green screen transparent. Reads the source at `--source-key` (default `saved`; `file` right after `fs.file.put`), turns every pixel within \
             `--tolerance` of `--color` (default #00b140, broadcast chroma green — what image models produce for \"green screen\") transparent with a `--soften` ramp at the edge and despill, writes `--format png|webp` (both keep alpha) into \
             `--folder` (default `cutouts/`) and adds `image` — a durable FileRef with `width`, `height`, `format` — to the payload. No model: plain pixel maths. \
             Generate the picture on a flat green background, then place the cutout in a poster with `fs.image.render` as `<image href=\"<image.ref>\">`."
@@ -202,7 +202,7 @@ pub fn definition() -> NodeDefinition {
                 SelectOptionDef { value: "webp".into(), label: "WebP (lossless)".into() },
             ], ..Default::default() },
             NodeFieldDef { name: "folder".into(), label: "Folder".into(), field_type: NodeFieldType::Text, default_value: Some(json!(DEFAULT_FOLDER)), help: Some("Destination store folder (default: cutouts). Private until the owner exposes it in Studio → Files.".into()), ..Default::default() },
-            NodeFieldDef { name: "source_key".into(), label: "Source key".into(), field_type: NodeFieldType::Text, default_value: Some(json!(DEFAULT_SOURCE_KEY)), help: Some("Dot-path into the payload: a FileRef or a store path string. Default: saved (what fs.save answers).".into()), ..Default::default() },
+            NodeFieldDef { name: "source_key".into(), label: "Source key".into(), field_type: NodeFieldType::Text, default_value: Some(json!(DEFAULT_SOURCE_KEY)), help: Some("Dot-path into the payload: a FileRef or a store path string. Default: saved; after fs.file.put, file.".into()), ..Default::default() },
             NodeFieldDef { name: "delete_source".into(), label: "Delete source file".into(), field_type: NodeFieldType::Checkbox, default_value: Some(json!(false)), help: Some("Remove the green-screen original after the cutout is written; its key is dropped from the payload.".into()), ..Default::default() },
             NodeFieldDef { name: "filename".into(), label: "Filename".into(), field_type: NodeFieldType::Text, help: Some("Without extension (default: random UUID).".into()), ..Default::default() },
         ].into_iter().chain(store_fields(OnConflict::Error)).collect(),
@@ -224,9 +224,9 @@ pub fn definition() -> NodeDefinition {
             NodeFailureSemantic { code: "FW_NODE_FS_IMAGE_CHROMAKEY_RASTER".into(), description: "The encoder or the store write failed.".into(), retryable: true, ..Default::default() },
         ],
         examples: vec![
-            NodeExample::dsl("A generated character, cut out for a poster", "fs.image.chromakey --folder sandbox/posters/cutouts --preview image")
-                .input(json!({ "saved": { "__zf_type": "file_ref", "backend": "zebfs", "ref": "sandbox/posters/photos/3f9c….png", "filename": "3f9c….png", "mime": "image/png", "kind": "image", "size": 1822310, "sha256": "sha256:…", "lifecycle": "durable", "origin": "fs.save", "trust": "untrusted" } }))
-                .output(json!({ "saved": { "__zf_type": "file_ref", "backend": "zebfs", "ref": "sandbox/posters/photos/3f9c….png", "filename": "3f9c….png", "mime": "image/png", "kind": "image", "size": 1822310, "sha256": "sha256:…", "lifecycle": "durable", "origin": "fs.save", "trust": "untrusted" },
+            NodeExample::dsl("A generated character, cut out for a poster", "fs.image.chromakey --source-key file --folder sandbox/posters/cutouts --preview image")
+                .input(json!({ "file": { "__zf_type": "file_ref", "backend": "zebfs", "ref": "sandbox/posters/photos/3f9c….png", "filename": "3f9c….png", "mime": "image/png", "kind": "image", "size": 1822310, "sha256": "sha256:…", "lifecycle": "durable", "origin": "fs.file.put", "trust": "untrusted" } }))
+                .output(json!({ "file": { "__zf_type": "file_ref", "backend": "zebfs", "ref": "sandbox/posters/photos/3f9c….png", "filename": "3f9c….png", "mime": "image/png", "kind": "image", "size": 1822310, "sha256": "sha256:…", "lifecycle": "durable", "origin": "fs.file.put", "trust": "untrusted" },
                     "image": { "__zf_type": "file_ref", "backend": "zebfs", "ref": "sandbox/posters/cutouts/9a1d….png", "filename": "9a1d….png", "mime": "image/png", "kind": "image", "size": 912400, "sha256": "sha256:…", "lifecycle": "durable", "origin": "fs.image.chromakey", "trust": "sanitized", "width": 1024, "height": 1536, "format": "png" } }))
                 .note("The picture was generated \"standing on a solid flat bright green chroma key background\"; the default key #00b140 is what the model paints. Then `fs.image.render` draws it with `<image href=\"sandbox/posters/cutouts/9a1d….png\" x=… y=… width=… height=…/>`."),
         ],
@@ -320,7 +320,7 @@ impl NodeHandler for Node {
         let key = self.config.source_key.trim();
         let key = if key.is_empty() { DEFAULT_SOURCE_KEY } else { key };
         let value = resolve_path(&input.payload, key).ok_or_else(|| {
-            PipelineError::new("FW_NODE_FS_IMAGE_CHROMAKEY_SOURCE", format!("nothing at payload key '{key}' — chain after fs.save or set --source-key"))
+            PipelineError::new("FW_NODE_FS_IMAGE_CHROMAKEY_SOURCE", format!("nothing at payload key '{key}' — after fs.file.put set --source-key file"))
         })?;
         let (source_store, rel) = open_source(&self.platform, owner, project, value, self.config.store.as_deref())?
             .ok_or_else(|| PipelineError::new("FW_NODE_FS_IMAGE_CHROMAKEY_SOURCE", format!("payload key '{key}' must be a FileRef or a store path string")))?;

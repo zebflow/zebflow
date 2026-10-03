@@ -82,5 +82,5 @@ Safety rules:
 - Do not use malformed case pins. `logic.match` output edges must use declared case pins.
 - Do not carry huge arrays through `logic.foreach` unless the node is configured for item-only flow or the input is intentionally small.
 - Use FileRef/files for upload and artifact movement.
-- Use `fs.file.put` for content writes and `n.fs.save` when validating/promoting uploads.
+- Use `fs.file.put` for every file write: `--from` an upload (checked by content, `--accept`), `--text`, or `--value` JSON; it answers `file`.
 - Use `table.data.convert` or `table.query.run` for structured file data instead of hand-parsing large CSV/JSON in scripts.

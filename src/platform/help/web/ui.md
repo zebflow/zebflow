@@ -56,11 +56,11 @@ import { DocumentView, renderDocumentHtml, documentText } from "zeb/ui/editor-re
 
 const [doc, setDoc] = useState(post.body_json);
 
-// Images go wherever the page sends them — here a webhook running n.fs.save.
+// Images go wherever the page sends them — here a webhook running fs.file.put.
 async function uploadImage(file) {
   const form = new FormData();
   form.append("file", file);
-  const { saved } = await (await fetch("/wh/o/p/upload", { method: "POST", body: form })).json();
+  const { file: saved } = await (await fetch("/wh/o/p/upload", { method: "POST", body: form })).json();
   return { src: `/files/o/p/${saved.ref}`, ref: saved.ref, alt: file.name };
 }
 

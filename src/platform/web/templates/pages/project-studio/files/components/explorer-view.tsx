@@ -72,7 +72,7 @@ export function ExplorerView({ nav, browser, queue, exposure, onDelete, onServe 
           <p className="px-2 py-6 text-[0.78rem] text-muted-foreground">
             {browser.currentPath
               ? "Empty folder"
-              : <>No objects yet. Upload here or via a pipeline using <code className="font-mono text-[0.75rem]">n.fs.save</code>.</>}
+              : <>No objects yet. Upload here or via a pipeline using <code className="font-mono text-[0.75rem]">fs.file.put</code>.</>}
           </p>
         ) : null}
         {browser.folders.map((folder) => (

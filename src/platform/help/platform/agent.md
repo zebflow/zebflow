@@ -52,7 +52,7 @@ Read the help topic before writing in a domain you have not used this session:
 | Domain | Topic |
 |---|---|
 | pipelines and the DSL | `help(topic="pipeline")` → `pipeline/dsl`, `pipeline/authoring`, `pipeline/web` |
-| which node does what | `help(topic="pipeline/nodes")` — one line per kind; one node in full: `help(topic="pipeline/nodes/fs.save")` |
+| which node does what | `help(topic="pipeline/nodes")` — one line per kind; one node in full: `help(topic="pipeline/nodes/fs.file.put")` |
 | pages | `help(topic="web")` → `web/hooks`, `web/ui`, `web/tailwind`, `web/libraries` |
 | databases | `help(topic="db")`, `help(topic="db/sekejap")` |
 | script helpers | `help(topic="tool")` |

@@ -45,7 +45,8 @@ reads only its own credentials (`owner/project` is the store's key).
   (`kinds/invocation-record` rule 3, `services/credential.rs`); a node does
   not have to remember to redact.
 - Uploads are typed by magic bytes and the browser's type together
-  (`n.fs.save`, `infer`); ZIP-based disguises are refused.
+  (`fs.file.put --from`, `infer`), and the stored extension follows the
+  detected type; ZIP-based disguises are refused.
 
 ## 3. What a compromised piece can reach
 
@@ -84,6 +85,6 @@ reads only its own credentials (`owner/project` is the store's key).
 `logout_submit`; `services/mcp_session.rs`; `nodes/basic/auth/token_verify.rs`
 (algorithm pin, `set_audience`); `infra/secrets/keyring.rs`;
 `adapters/data/sqlite.rs` keyring report and reencrypt;
-`services/credential.rs` confidential registry; `nodes/basic/fs/save.rs`;
+`services/credential.rs` confidential registry; `nodes/basic/fs/put.rs`;
 `confinement.md`. Absences in §4 are grep results on the same day, not a
 design decision — each becomes a row in §1–3 when it lands.

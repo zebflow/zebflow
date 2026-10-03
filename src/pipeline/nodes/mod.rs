@@ -2,7 +2,7 @@
 //!
 //! This module is the **single source of truth** for how nodes are authored in Zebflow.
 //! Every built-in node lives under [`basic`], in the folder of its DSL family:
-//! `n.fs.save` is `basic/fs/save.rs`, `kv.entry.get` is `basic/kv/get.rs`, and a
+//! `fs.file.put` is `basic/fs/put.rs`, `kv.entry.get` is `basic/kv/get.rs`, and a
 //! family with one node keeps it in that folder's `mod.rs`. Helpers several
 //! families use live in [`shared`]. This doc is the living specification —
 //! read it before creating or modifying any node.

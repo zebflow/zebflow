@@ -144,8 +144,8 @@ A FileRef:
   "sha256": "sha256:<64 hex>", "lifecycle": "temporary", "origin": "webhook", "trust": "untrusted" }
 ```
 
-It is temporary until a node keeps it — `fs.save` writes it into the project's
-files and answers with the durable path. Bytes never travel inline in the
+It is temporary until a node keeps it — `fs.file.put --from "{{ input.files.photo }}"`
+writes it into the project's files and answers `file`, the durable FileRef. Bytes never travel inline in the
 payload.
 
 ---

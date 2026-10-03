@@ -21,8 +21,8 @@
 //! file-like bytes between nodes without embedding bytes in JSON. File-like
 //! content should move as FileRef metadata, not inline base64, unless a node is
 //! explicitly preserving a legacy shape. Multipart webhook files and
-//! `http.response.fetch --response-type bytes` produce temporary FileRefs; FS nodes either
-//! read those bytes (`fs.file.put`) or validate/promote them (`fs.save`). Durable
+//! `http.response.fetch --response-type bytes` produce temporary FileRefs; FS nodes read those
+//! bytes, and `fs.file.put --from` checks and keeps them. Durable
 //! dataset nodes such as table, geo, and mapserver nodes operate on ZebFS paths,
 //! but payload path keys should accept either a plain path string or a FileRef and
 //! resolve it through [`crate::pipeline::nodes::shared::file_ref`].
@@ -30,7 +30,7 @@
 use crate::pipeline::NodeDefinition;
 
 // One folder per DSL family, one file per node, the path mirroring the kind:
-// `n.fs.save` is `fs/save.rs`, `kv.entry.get` is `kv/get.rs`. A family with one
+// `fs.file.put` is `fs/put.rs`, `kv.entry.get` is `kv/get.rs`. A family with one
 // node and no submodules keeps that node in its `mod.rs` (`crypto`,
 // `script`). Every family exposes `definitions()`; nothing else is registered
 // here. A test in `crate::pipeline::nodes` refuses a `.rs` file beside this

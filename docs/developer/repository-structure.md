@@ -85,7 +85,7 @@ src/
 │   ├── expr/
 │   ├── nodes/
 │   │   ├── basic/     one folder per DSL family (`fs/`, `kv/`, `trigger/`, …),
-│   │   │              one file per node: `n.fs.save` is `basic/fs/save.rs`
+│   │   │              one file per node: `fs.file.put` is `basic/fs/put.rs`
 │   │   ├── bundled/
 │   │   └── shared/    helpers several families use (`file_ref.rs`, `util.rs`)
 │   └── prototypes/

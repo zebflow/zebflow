@@ -266,10 +266,6 @@ pub const PLATFORM_NODE_ICON_ASSETS: &[EmbeddedAsset] = &[
         bytes: include_bytes!("assets/node-icons/zebflow/fs.file.put.svg"),
     },
     EmbeddedAsset {
-        path: "zebflow/n.fs.save.svg",
-        bytes: include_bytes!("assets/node-icons/zebflow/n.fs.save.svg"),
-    },
-    EmbeddedAsset {
         path: "zebflow/fs.image.chromakey.svg",
         bytes: include_bytes!("assets/node-icons/zebflow/fs.image.chromakey.svg"),
     },

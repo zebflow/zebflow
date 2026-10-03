@@ -47,7 +47,6 @@ const NODE_KIND_COLORS: Record<string, string> = {
   "fs.file.copy": "#0c4a6e",
   "fs.file.move": "#0c4a6e",
   "fs.folder.create": "#0c4a6e",
-  "n.fs.save": "#0c4a6e",
   "fs.archive.create": "#0c4a6e",
   "fs.archive.extract": "#0c4a6e",
   "fs.pdf.convert": "#0c4a6e",

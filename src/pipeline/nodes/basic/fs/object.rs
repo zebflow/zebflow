@@ -4,11 +4,9 @@
 //! FileRef IR and backend/lifecycle rules, read
 //! `src/pipeline/nodes/shared/file_ref.rs`.
 //!
-//! `fs.file.put --source-key` accepts text-like JSON, legacy byte envelopes, and FileRef
-//! metadata. FileRef values are read through the shared helper instead of treating
-//! `ref` as a local filesystem path.
+//! `fs.file.put` is its own node (`put.rs`).
 //!
-//! `fs.file.put`, `fs.file.copy` and `fs.file.move` answer the stored file at `fs.object` as a
+//! `fs.file.copy` and `fs.file.move` answer the stored file at `fs.object` as a
 //! **bare durable FileRef** — the eleven contract fields and nothing else. The
 //! store path is `fs.object.ref` (and the envelope's `fs.path`); a URL is not a
 //! node's business. `fs.folder.list` entries and `fs.file.head` describe objects the node
@@ -23,11 +21,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::pipeline::nodes::shared::project_store::{OnConflict, on_conflict_flag, open_store, store_fields, store_flag, target_key};
-use crate::pipeline::nodes::shared::util::{metadata_scope, resolve_path};
+use crate::pipeline::nodes::shared::util::metadata_scope;
 use crate::pipeline::model::NodeCapability;
-use crate::pipeline::nodes::shared::file_ref::{
-    is_file_ref, read_file_ref_bytes,
-};
 use crate::pipeline::{
     NodeDefinition, PipelineError,
     model::{DslFlag, DslFlagKind, LayoutItem, NodeExample, NodeFieldDef, NodeFieldType, SelectOptionDef},
@@ -39,7 +34,6 @@ use crate::zebfs::model::{ZebFsEntry, ZebFsEntryKind, ZebFsStat};
 pub const LIST_NODE_KIND: &str = "fs.folder.list";
 pub const HEAD_NODE_KIND: &str = "fs.file.head";
 pub const GET_NODE_KIND: &str = "fs.file.get";
-pub const PUT_NODE_KIND: &str = "fs.file.put";
 pub const DELETE_NODE_KIND: &str = "fs.file.delete";
 pub const COPY_NODE_KIND: &str = "fs.file.copy";
 pub const MOVE_NODE_KIND: &str = "fs.file.move";
@@ -53,7 +47,6 @@ pub enum Operation {
     List,
     Head,
     Get,
-    Put,
     Delete,
     Copy,
     Move,
@@ -66,7 +59,6 @@ impl Operation {
             Self::List => LIST_NODE_KIND,
             Self::Head => HEAD_NODE_KIND,
             Self::Get => GET_NODE_KIND,
-            Self::Put => PUT_NODE_KIND,
             Self::Delete => DELETE_NODE_KIND,
             Self::Copy => COPY_NODE_KIND,
             Self::Move => MOVE_NODE_KIND,
@@ -79,7 +71,6 @@ impl Operation {
             Self::List => "list",
             Self::Head => "head",
             Self::Get => "get",
-            Self::Put => "put",
             Self::Delete => "delete",
             Self::Copy => "copy",
             Self::Move => "move",
@@ -96,24 +87,17 @@ pub struct Config {
     #[serde(default)]
     pub from: Value,
     #[serde(default)]
-    pub source_key: String,
-    #[serde(default)]
-    pub text: Option<String>,
-    #[serde(default)]
-    pub base64: Option<String>,
-    #[serde(default)]
     pub encoding: String,
-    /// Destination folder for put/copy/move (put default: `files`; copy and
-    /// move default: the source's folder).
+    /// Destination folder for copy/move (default: the source's folder).
     #[serde(default)]
     pub folder: String,
-    /// Destination name for put/copy/move (copy and move default: the source's name).
+    /// Destination name for copy/move (default: the source's name).
     #[serde(default)]
     pub filename: Option<String>,
     /// The store this operation works in; writers save it explicitly at registration.
     #[serde(default)]
     pub store: Option<String>,
-    /// `overwrite`, `skip` or `error` for put/copy/move (default: error).
+    /// `overwrite`, `skip` or `error` for copy/move (default: error).
     #[serde(default)]
     pub on_conflict: Option<String>,
 }
@@ -122,7 +106,7 @@ pub fn list_definition() -> NodeDefinition {
     let mut def = object_definition(
         LIST_NODE_KIND,
         "FS List",
-        "List the immediate children of a folder in the project's file store (the same store `fs.save` writes to). \
+        "List the immediate children of a folder in the project's file store (the same store `fs.file.put` writes to). \
          Needs `--path` (empty = project root). Adds `fs: { operation, path, count, entries: [{ path, kind, size, modified }] }` to the payload — \
          the next node reads `input.fs.entries`, not `input.entries`. One level only; it does not recurse.",
         vec![
@@ -235,73 +219,6 @@ pub fn get_definition() -> NodeDefinition {
     def
 }
 
-pub fn put_definition() -> NodeDefinition {
-    let mut def = object_definition(
-        PUT_NODE_KIND,
-        "FS Put",
-        "Write one file into the project's file store. Needs `--filename` (in `--folder`, default `files`) or an exact `--path`, and one source: \
-         `--text` (literal or {{ expr }}), `--base64`, or `--source-key <dot.path>` (a string, a FileRef, or JSON in the payload). \
-         Adds `fs: { operation, path, object }` to the payload, \
-         where `object` is a bare durable FileRef (`ref`, `filename`, `mime`, `kind`, `size`, `sha256`, `origin: fs.file.put`, …) and nothing else. \
-         For a browser upload use `fs.save`, not this; `fs.file.put` is for content the pipeline already has.",
-        destination_flags("Destination folder (default: files).", "Destination name.")
-            .into_iter()
-            .chain([
-            scalar_flag(
-                "--source-key",
-                "source_key",
-                "Dot-path in payload to write. FileRef values are read as file bytes.",
-            ),
-            scalar_flag("--text", "text", "Literal UTF-8 content."),
-            scalar_flag("--base64", "base64", "Base64 encoded content."),
-        ])
-            .collect(),
-        destination_fields("Destination folder (default: files).", "Destination name.")
-            .into_iter()
-            .chain([
-            text_field(
-                "source_key",
-                "Source Key",
-                "Dot-path in payload to write. FileRef values are read as file bytes.",
-            ),
-            NodeFieldDef {
-                name: "text".to_string(),
-                label: "Text".to_string(),
-                field_type: NodeFieldType::Textarea,
-                rows: Some(6),
-                help: Some(
-                    "Literal UTF-8 content. Ignored when From Key or Base64 is set.".to_string(),
-                ),
-                ..Default::default()
-            },
-            NodeFieldDef {
-                name: "base64".to_string(),
-                label: "Base64".to_string(),
-                field_type: NodeFieldType::Textarea,
-                rows: Some(4),
-                help: Some("Base64 encoded content. Ignored when From Key is set.".to_string()),
-                ..Default::default()
-            },
-        ])
-            .collect(),
-        vec![
-            LayoutItem::Field("folder".to_string()),
-            LayoutItem::Field("filename".to_string()),
-            LayoutItem::Field("path".to_string()),
-            LayoutItem::Field("on_conflict".to_string()),
-            LayoutItem::Field("source_key".to_string()),
-            LayoutItem::Field("text".to_string()),
-            LayoutItem::Field("base64".to_string()),
-        ],
-    );
-    def.examples = vec![example(
-        "Write a generated file",
-        "fs.file.put --folder exports --filename report.json --source-key report",
-        json!({ "report": { "total": 3 }, "fs": { "operation": "put", "path": "exports/report.json", "object": { "__zf_type": "file_ref", "backend": "zebfs", "store": "local", "ref": "exports/report.json", "filename": "report.json", "mime": "application/json", "kind": "json", "size": 812, "sha256": "sha256:…", "lifecycle": "durable", "origin": "fs.file.put", "trust": "generated" } } }),
-    )];
-    def
-}
-
 pub fn delete_definition() -> NodeDefinition {
     let mut def = object_definition(
         DELETE_NODE_KIND,
@@ -340,7 +257,7 @@ pub fn copy_definition() -> NodeDefinition {
     );
     def.examples = vec![example(
         "Keep a copy of an upload",
-        "fs.file.copy --from \"{{ input.saved.ref }}\" --folder images",
+        "fs.file.copy --from \"{{ input.file.ref }}\" --folder images",
         json!({ "fs": { "operation": "copy", "path": "images/a1.jpg", "object": { "__zf_type": "file_ref", "backend": "zebfs", "store": "local", "ref": "images/a1.jpg", "filename": "a1.jpg", "mime": "image/jpeg", "kind": "image", "size": 1723, "sha256": "sha256:…", "lifecycle": "durable", "origin": "fs.file.copy", "trust": "generated" } } }),
     )];
     def
@@ -368,7 +285,7 @@ pub fn mkdir_definition() -> NodeDefinition {
         MKDIR_NODE_KIND,
         "FS Mkdir",
         "Create a folder in the project's file store. Needs `--path`. Adds `fs: { operation: \"mkdir\", path, object }` to the payload. \
-         Rarely needed: `fs.file.put`, `fs.save` and `fs.file.copy` create the folders they write into; use this only for a folder that \
+         Rarely needed: `fs.file.put` and `fs.file.copy` create the folders they write into; use this only for a folder that \
          must exist before anything is in it (a listing page, an upload target).",
         vec![scalar_flag("--path", "path", "Prefix path to create.")],
         vec![text_field("path", "Path", "Prefix path to create.")],
@@ -453,7 +370,7 @@ fn object_definition(
     }
 }
 
-/// `--folder`, `--filename`, `--path` and `--on-conflict` for the writers.
+/// `--folder`, `--filename`, `--path` and `--on-conflict` for copy and move.
 fn destination_flags(folder_help: &str, filename_help: &str) -> Vec<DslFlag> {
     vec![
         scalar_flag("--folder", "folder", folder_help),
@@ -610,36 +527,6 @@ impl NodeHandler for Node {
                     }
                 })
             }
-            Operation::Put => {
-                let filename = self.config.filename.as_deref().map(str::trim).unwrap_or("");
-                if self.config.path.trim().is_empty() && filename.is_empty() {
-                    return Err(PipelineError::new(
-                        "FW_NODE_FS_PUT",
-                        "fs.file.put needs --filename (in --folder, default files) or an exact --path",
-                    ));
-                }
-                let folder = if self.config.folder.trim().is_empty() { "files" } else { self.config.folder.trim() };
-                let path = target_key(Some(self.config.path.as_str()), folder, filename, "FW_NODE_FS_PUT")?;
-                let bytes = self.resolve_put_bytes(owner, project, &input.payload)?;
-                let object = if self.on_conflict("FW_NODE_FS_PUT")?.allows(zebfs, &path, "FW_NODE_FS_PUT")? {
-                    zebfs
-                        .put(&path, &bytes)
-                        .map_err(|err| PipelineError::new("FW_NODE_FS_PUT", err.to_string()))?;
-                    let leaf = path.rsplit('/').next().unwrap_or(&path).to_string();
-                    store.file_ref(&path, &leaf, content_type_for_path(&path), &bytes, "fs.file.put", "generated")
-                } else {
-                    // Skipped: the answer is the file already there, as it is.
-                    store.stored_ref(&path, "fs.file.put", "generated", "FW_NODE_FS_PUT")?
-                };
-                let stat = zebfs.head(&path).map_err(|err| PipelineError::new("FW_NODE_FS_PUT", err.to_string()))?;
-                json!({
-                    "fs": {
-                        "operation": op.label(),
-                        "path": stat.path,
-                        "object": object
-                    }
-                })
-            }
             Operation::Delete => {
                 let path = required(&self.config.path, "--path", "FW_NODE_FS_DELETE")?;
                 zebfs
@@ -791,68 +678,6 @@ impl Node {
     fn on_conflict(&self, code: &'static str) -> Result<OnConflict, PipelineError> {
         OnConflict::parse(self.config.on_conflict.as_deref(), OnConflict::Error, code)
     }
-
-    fn resolve_put_bytes(
-        &self,
-        owner: &str,
-        project: &str,
-        payload: &Value,
-    ) -> Result<Vec<u8>, PipelineError> {
-        let source_key = self.config.source_key.trim();
-        if !source_key.is_empty() {
-            let value = resolve_path(payload, source_key).ok_or_else(|| {
-                PipelineError::new(
-                    "FW_NODE_FS_PUT_SOURCE",
-                    format!("payload key '{source_key}' was not found"),
-                )
-            })?;
-            if is_file_ref(value) {
-                return read_file_ref_bytes(&self.platform, owner, project, value);
-            }
-            return value_to_bytes(value);
-        }
-        if let Some(encoded) = self
-            .config
-            .base64
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-        {
-            return base64::engine::general_purpose::STANDARD
-                .decode(encoded)
-                .map_err(|err| PipelineError::new("FW_NODE_FS_PUT_BASE64", err.to_string()));
-        }
-        // An empty --text is no source (as the editor sends a blank field).
-        if let Some(text) = self.config.text.as_deref().filter(|text| !text.is_empty()) {
-            return Ok(text.as_bytes().to_vec());
-        }
-        Err(PipelineError::new(
-            "FW_NODE_FS_PUT_SOURCE",
-            "set one of --source-key, --base64, or --text",
-        ))
-    }
-}
-
-fn value_to_bytes(value: &Value) -> Result<Vec<u8>, PipelineError> {
-    if let Some(text) = value.as_str() {
-        return Ok(text.as_bytes().to_vec());
-    }
-    if let Some(encoded) = value.get("__zf_bytes").and_then(Value::as_str) {
-        return base64::engine::general_purpose::STANDARD
-            .decode(encoded)
-            .map_err(|err| PipelineError::new("FW_NODE_FS_PUT_BASE64", err.to_string()));
-    }
-    if value.get("filename").is_some()
-        && value.get("content_type").is_some()
-        && value.get("size").is_some()
-        && let Some(encoded) = value.get("data").and_then(Value::as_str)
-    {
-        return base64::engine::general_purpose::STANDARD
-            .decode(encoded)
-            .map_err(|err| PipelineError::new("FW_NODE_FS_PUT_BASE64", err.to_string()));
-    }
-    serde_json::to_vec(value)
-        .map_err(|err| PipelineError::new("FW_NODE_FS_PUT_JSON", err.to_string()))
 }
 
 fn required<'a>(value: &'a str, flag: &str, code: &'static str) -> Result<&'a str, PipelineError> {
@@ -917,27 +742,5 @@ fn content_type_for_path(path: &str) -> &'static str {
         "pdf" => "application/pdf",
         "parquet" => "application/vnd.apache.parquet",
         _ => "application/octet-stream",
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use base64::Engine as _;
-    use serde_json::json;
-
-    use super::value_to_bytes;
-
-    #[test]
-    fn put_decodes_legacy_webhook_file_object() {
-        let original = b"{\"type\":\"FeatureCollection\",\"features\":[]}";
-        let value = json!({
-            "filename": "data.geojson",
-            "content_type": "application/geo+json",
-            "size": original.len(),
-            "data": base64::engine::general_purpose::STANDARD.encode(original),
-        });
-
-        let bytes = value_to_bytes(&value).expect("decode webhook file object");
-        assert_eq!(bytes, original);
     }
 }

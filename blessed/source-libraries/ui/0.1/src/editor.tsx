@@ -14,7 +14,7 @@ import { Toggle } from "zeb/ui/toggle";
  * This is the one zeb/ui component with a runtime dependency: `zeb/prosemirror`
  * is the engine (schema, commands, plugins) and draws nothing; every visible
  * piece here is zeb/ui on the theme. Uploads go through `uploadImage(file)`,
- * which the page supplies — usually a webhook running `n.fs.save` — and
+ * which the page supplies — usually a webhook running `fs.file.put` — and
  * which returns a URL or `{ src, ref, alt }`. Without it, images are refused.
  *
  *   <Editor value={doc} onChange={setDoc} placeholder="Write…" uploadImage={upload} />

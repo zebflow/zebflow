@@ -95,7 +95,7 @@ Rules of evidence:
   row. Submit it wrong and the error is shown next to the field.
 - An upload: `page.waitForEvent("filechooser")` around the click, `setFiles`,
   then the `<img>` has `naturalWidth > 0` and `pipeline_get_invocations` shows
-  `fs.save`.
+  `fs.file.put`.
 - The editor: type `/`, choose a block, type text, select it and press bold;
   the rendered `DocumentView` beside it (or the stored JSON) contains what you
   typed, in the block you chose.

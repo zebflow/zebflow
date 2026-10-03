@@ -171,15 +171,6 @@
         "fs.file.put"
       ]
     },
-    "n.fs.save": {
-      "label": "SAVE",
-      "method": "direct-svg",
-      "path": "/assets/node-icons/zebflow/n.fs.save.svg",
-      "source_url": "",
-      "supports": [
-        "n.fs.save"
-      ]
-    },
     "fs.image.chromakey": {
       "label": "KEY",
       "method": "direct-svg",

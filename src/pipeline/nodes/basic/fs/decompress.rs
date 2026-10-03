@@ -85,7 +85,7 @@ pub fn definition() -> NodeDefinition {
         capabilities: vec![NodeCapability::Filesystem, NodeCapability::Process],
         title: "File Decompress".to_string(),
         description: "Extract one archive into project file storage. \
-            Reads the source at `input.saved` by default — a FileRef (what `fs.save` answers) or a store path string. \
+            Reads the source at `input.saved` by default — a FileRef or a store path string (after `fs.file.put`, `--source-key file`). \
             First slice supports only tar.gz."
             .to_string(),
         input_schema: json!({
@@ -201,8 +201,8 @@ pub fn definition() -> NodeDefinition {
         }],
         ai_tool: Default::default(),
         examples: vec![
-            crate::pipeline::model::NodeExample::dsl("Unpack an uploaded archive", "fs.archive.extract --folder imports/latest --delete-source")
-                .input(serde_json::json!({ "saved": { "__zf_type": "file_ref", "backend": "zebfs", "store": "local", "ref": "uploads/bundle.tar.gz", "filename": "bundle.tar.gz", "mime": "application/gzip", "kind": "archive", "size": 40211, "sha256": "sha256:…", "lifecycle": "durable", "origin": "fs.save", "trust": "untrusted" } }))
+            crate::pipeline::model::NodeExample::dsl("Unpack an uploaded archive", "fs.archive.extract --source-key file --folder imports/latest --delete-source")
+                .input(serde_json::json!({ "file": { "__zf_type": "file_ref", "backend": "zebfs", "store": "local", "ref": "uploads/bundle.tar.gz", "filename": "bundle.tar.gz", "mime": "application/gzip", "kind": "archive", "size": 40211, "sha256": "sha256:…", "lifecycle": "durable", "origin": "fs.file.put", "trust": "untrusted" } }))
                 .output(serde_json::json!({ "decompressed": { "source": "uploads/bundle.tar.gz", "folder": "imports/latest", "store": "local", "format": "tar.gz", "files": [{ "__zf_type": "file_ref", "backend": "zebfs", "store": "local", "ref": "imports/latest/a.csv", "filename": "a.csv", "mime": "text/csv", "kind": "csv", "size": 120, "sha256": "sha256:…", "lifecycle": "durable", "origin": "fs.archive.extract", "trust": "untrusted" }] } })),
         ],
         ..Default::default()
@@ -250,7 +250,7 @@ impl NodeHandler for Node {
         let source_value = resolve_path(&input.payload, source_key).ok_or_else(|| {
             PipelineError::new(
                 "FW_NODE_FS_DECOMPRESS",
-                format!("source path not found at payload key '{source_key}' — chain after n.fs.save or set --source-key"),
+                format!("source path not found at payload key '{source_key}' — after fs.file.put set --source-key file"),
             )
         })?;
         let (source_store, source_rel) = open_source(&self.platform, owner, project, source_value, self.config.store.as_deref())?

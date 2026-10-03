@@ -122,7 +122,7 @@ pub fn definition() -> NodeDefinition {
             DslFlag {
                 flag: "--source-key".to_string(),
                 config_key: "source_key".to_string(),
-                description: "Dot-path to the source in the payload: a FileRef or a store path string (default: `saved`, what `fs.save` answers)".to_string(),
+                description: "Dot-path to the source in the payload: a FileRef or a store path string (default: `saved`; `file` after `fs.file.put`)".to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
                 ..Default::default()
@@ -293,7 +293,7 @@ impl NodeHandler for Node {
             let value = resolve_path(&input.payload, key).ok_or_else(|| {
                 PipelineError::new(
                     "FW_NODE_FS_COMPRESS",
-                    format!("source path not found at payload key '{key}' — chain after n.fs.save or set --source-key"),
+                    format!("source path not found at payload key '{key}' — after fs.file.put set --source-key file"),
                 )
             })?;
             let (source_store, rel) = open_source(&self.platform, owner, project, value, self.config.store.as_deref())?

@@ -86,7 +86,7 @@ that is a new code, not an edit. `logic.retry` retries only `failed`;
 - **One envelope, whatever the trigger.** A trigger delivers `body` (fields)
   and `files` (FileRefs). A file that arrives at a trigger is
   `lifecycle: temporary` — it lives for the run and is deleted after, unless a
-  node such as `fs.save` makes it durable. A manual run delivers the same
+  node such as `fs.file.put` makes it durable. A manual run delivers the same
   envelope a webhook does. The `input.*` nodes are pass-through validators of
   one envelope field each: they change no value that was sent and fetch and
   store nothing; the one thing an input node writes is its `--default`, at

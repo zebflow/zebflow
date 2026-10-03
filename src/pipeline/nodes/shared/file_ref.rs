@@ -67,7 +67,7 @@ pub const FILE_REF_KINDS: [&str; 11] = [
 
 /// A durable FileRef for bytes a node has just written to the native store.
 ///
-/// The one builder for every node that keeps a file — `fs.save`, `fs.file.put`,
+/// The one builder for every node that keeps a file — `fs.file.put`,
 /// `fs.archive.create` — so all of them derive `kind` through [`infer_kind`] and
 /// take the digest from the bytes they wrote, never from a claim. `trust` is
 /// the caller's: a node that re-encodes says `sanitized`, one that writes
@@ -185,7 +185,7 @@ pub fn resolve_manual_input_files(
 /// Deletes every `lifecycle: temporary` object a run wrote.
 ///
 /// A file that arrives at a trigger lives for the run and is deleted after,
-/// unless a node such as `fs.save` made it durable by copying it out. The
+/// unless a node such as `fs.file.put` made it durable by copying it out. The
 /// bytes sit under `tmp/runs/{request_id}/files/`, one folder per run, so the
 /// whole folder goes at once. Best-effort by design: a folder that is already
 /// gone, or was never written, is the common case and not an error.

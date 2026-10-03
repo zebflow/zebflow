@@ -341,7 +341,7 @@ payload with `--preview-rows <n>` and can preview that sample:
 
 A trigger delivers one envelope: `body` (fields) and `files` (FileRefs). A
 file that arrives at a trigger is `lifecycle: temporary` — it lives for the run
-and is deleted after, unless a node such as `fs.save` makes it durable. The
+and is deleted after, unless a node such as `fs.file.put` makes it durable. The
 webhook already does this for a multipart post; a **manual run** delivers the
 same envelope (the Studio's Run form, or `pipelines/execute` as JSON or
 multipart), and **input nodes** declare and check one field of that envelope
@@ -400,8 +400,8 @@ same Run button tries the route from the canvas:
 | trigger.webhook --path /apply --method POST
 | input.text name --label "Full name"
 | input.file cv --accept pdf
-| fs.save --source-key files.cv --folder applications --allowed-kinds documents
-| web.response.send --status 200 --body "{{ { received: input.saved.ref } }}"
+| fs.file.put --from "{{ input.files.cv }}" --accept pdf --folder applications
+| web.response.send --status 200 --body "{{ { received: input.file.ref } }}"
 ```
 
 Over MCP: `pipeline_execute` with
@@ -455,24 +455,26 @@ before.
 Bytes never travel inline. A file is a **FileRef** —
 `{ "__zf_type": "file_ref", "ref": "…", "filename", "mime", "kind", "size", "sha256", "lifecycle", "origin", "trust" }` —
 produced by an upload (`input.files.<field>`), by `http.response.fetch --response-type bytes`,
-or by any `fs.*` node. `fs.save` keeps an uploaded file:
+or by any `fs.*` node. `fs.file.put` keeps an uploaded file:
 
 ```
 | trigger.webhook --path /upload --method POST
-| fs.save --source-key files.photo --folder uploads --allowed-kinds images --max-size 10
-| fs.image.thumbnail --width 320 --height 320 --fit cover --format webp --folder thumbs
+| fs.file.put --from "{{ input.files.photo }}" --folder uploads --accept image --max-size 10MB
+| fs.image.thumbnail --source-key file --width 320 --height 320 --fit cover --format webp --folder thumbs
 ```
 
-`fs.save` adds `saved` — a durable FileRef and nothing else (`__zf_type`,
-`backend`, `ref`, `filename`, `mime`, `kind`, `size`, `sha256`,
-`lifecycle: durable`, `origin: fs.save`, `trust`); the store path is
-`saved.ref`, and there is no `path`, `url` or `content_type` beside it —
-and `fs.image.thumbnail` (whose `--source-key` defaults to `saved`, the FileRef
-itself) adds `thumbnail` (a FileRef); the form's other fields
-(`input.body.caption`) stay beside them. `fs.file.put`, `fs.file.copy`, `fs.file.move`
-(their `object` under `fs`) and `fs.archive.create` (`compressed`) answer a stored
-file the same way: a bare FileRef. Store `ref` in a row; a URL is not a
-node's business.
+`fs.file.put` takes exactly one source — `--from` a file (checked by its
+content: the claimed type must agree, `--accept` must allow it, and the stored
+extension follows the detected type), `--text` (with `--encoding base64` for
+bytes) or `--value` (any JSON value, written as JSON) — and adds `file`: a
+durable FileRef (`__zf_type`, `backend`, `store`, `ref`, `filename`, `mime`,
+`kind`, `size`, `sha256`, `lifecycle: durable`, `origin: fs.file.put`,
+`trust`); the store path is `file.ref`, and there is no `path`, `url` or
+`content_type` beside it — and `fs.image.thumbnail --source-key file` adds
+`thumbnail` (a FileRef); the form's other fields (`input.body.caption`) stay
+beside them. `fs.file.copy`, `fs.file.move` (their `object` under `fs`) and
+`fs.archive.create` (`compressed`) answer a stored file the same way: a bare
+FileRef. Store `ref` in a row; a URL is not a node's business.
 
 **Every file is private** until the owner exposes its folder in Studio →
 Files (`PUT /api/projects/{owner}/{project}/files/access`); no folder name and
@@ -497,11 +499,11 @@ the node's own `--body "{{ expr }}"`, so the payload's shape stays in the
 pipeline and only the key lives in the credential. Send a FileRef to the
 provider with `--body-type form-data` and a FileRef as one field of the body;
 receive one with `--response-type bytes`, which stores the reply as a
-temporary FileRef at `response.body`; then `fs.save` keeps it — it reads
-`response.body` when there is no upload field. The key is redacted from the
+temporary FileRef at `response.body`; then
+`fs.file.put --from "{{ input.response.body }}"` keeps it. The key is redacted from the
 run's record at every capture level. On the canvas, the download node's
 `--preview image` can only ever say "temporary file — gone after the run":
-the bytes were deleted with the run, by design. The `fs.save` node's preview
+the bytes were deleted with the run, by design. The `fs.file.put` node's preview
 is the one that shows the picture, from the durable file it wrote.
 
 ```
@@ -511,7 +513,7 @@ is the one that shows the picture, from the durable file it wrote.
 | http.response.fetch --credential runware --body "{{ [ { taskType: 'imageInference', taskUUID: input.taskUUID, positivePrompt: input.body.prompt, model: 'runware:101@1', width: 1024, height: 1024, numberResults: 1, outputType: 'URL', outputFormat: 'JPG' } ] }}" --preview json:response.body
 | script.result.run -- "return { url: input.response.body.data[0].imageURL }"
 | http.response.fetch --url "{{ input.url }}" --response-type bytes --preview image
-| fs.save --folder generated/runware --preview image
+| fs.file.put --from "{{ input.response.body }}" --folder generated/runware --preview image
 ```
 
 The profile `runware` is `POST https://api.runware.ai/v1` with
@@ -530,7 +532,7 @@ into lines measured by the shaper — one `<tspan>` per line. Pictures come
 from the project only: `<image href="sandbox/posters/photos/venue.jpg">`
 is a store path, `repo://static/brand/logo.svg` a repository file; a URL or
 a `data:` URI is refused — fetch with `http.response.fetch --response-type bytes`,
-`fs.save` it, then name the path.
+`fs.file.put` it, then name the path.
 
 ```
 | trigger.manual
@@ -564,8 +566,8 @@ Effects — shadow, blur, glow, grain, colour grading — are SVG filters
 draws them and the PDF keeps them.
 
 **A generated picture inside the poster.** Ask the image model for the
-subject "on a solid flat #00ff00 green screen background", `fs.save` it,
-then `fs.image.chromakey --folder sandbox/posters/cutouts` turns the screen
+subject "on a solid flat #00ff00 green screen background", `fs.file.put` it,
+then `fs.image.chromakey --source-key file --folder sandbox/posters/cutouts` turns the screen
 transparent (plain pixel maths, no model; the default key is broadcast
 green `#00b140`, which is what the models paint) and answers
 `image`, a PNG with alpha. The agent places it with

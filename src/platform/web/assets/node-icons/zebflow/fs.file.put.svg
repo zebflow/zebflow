@@ -5,8 +5,8 @@
     <path d="M 40 9 V 21 H 52" fill="none" stroke="#30384a" stroke-width="7" stroke-linejoin="round"/>
     <path d="M 25 42 H 39" fill="none" stroke="#e2a35b" stroke-width="7" stroke-linecap="round"/>
   </g>
-  <g id="operation-badge" transform="translate(78.7273 78.3636) scale(0.727273)">
-    <path d="M 32 55 V 16 M 20 28 L 32 16 L 44 28" fill="none" stroke="#e2a35b" stroke-width="10" stroke-linecap="round" stroke-linejoin="round"/>
-    <path d="M 17 9 H 47" fill="none" stroke="#e2a35b" stroke-width="8" stroke-linecap="round"/>
+  <g id="operation-badge" transform="translate(78.7273 79.0909) scale(0.727273)">
+    <path d="M 32 9 V 48 M 20 36 L 32 48 L 44 36" fill="none" stroke="#e2a35b" stroke-width="10" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M 17 55 H 47" fill="none" stroke="#e2a35b" stroke-width="8" stroke-linecap="round"/>
   </g>
 </svg>

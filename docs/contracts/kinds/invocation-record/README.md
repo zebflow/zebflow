@@ -31,11 +31,11 @@ group and a count, never a thousand payloads.
   "trace": [
     {
       "node_id": "save-photo",
-      "node_kind": "n.fs.save",
-      "config": { "folder": "uploads", "access": "private" },
+      "node_kind": "fs.file.put",
+      "config": { "from": { "__zf_type": "file_ref", "…": "…" }, "folder": "uploads" },
       "duration_ms": 180,
-      "input": { "photo": { "__zf_type": "file_ref", "…": "…" } },
-      "output": { "saved": { "__zf_type": "file_ref", "ref": "uploads/9f2c.jpg", "…": "…" } }
+      "input": { "files": { "photo": { "__zf_type": "file_ref", "…": "…" } } },
+      "output": { "files": { "photo": { "…": "…" } }, "file": { "__zf_type": "file_ref", "ref": "uploads/9f2c.jpg", "…": "…" } }
     }
   ]
 }

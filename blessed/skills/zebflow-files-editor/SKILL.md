@@ -1,6 +1,6 @@
 ---
 name: zebflow-files-editor
-description: Uploads, images, files and rich text in a Zebflow project — FileRef, fs.save and fs.image.thumbnail, public vs private URLs, the zeb/ui editor and how its document is stored and rendered. Use before building an upload form, an image field, a media library, or any page with authored rich content.
+description: Uploads, images, files and rich text in a Zebflow project — FileRef, fs.file.put and fs.image.thumbnail, public vs private URLs, the zeb/ui editor and how its document is stored and rendered. Use before building an upload form, an image field, a media library, or any page with authored rich content.
 license: MIT
 metadata:
   version: "1"
@@ -20,23 +20,23 @@ and **rich text is a JSON document, HTML is derived from it**. Facts:
 2. The webhook delivers the file as `input.files.photo` — a FileRef
    (`ref`, `filename`, `mime`, `kind`, `size`, `sha256`, `lifecycle: temporary`).
    It is discarded after the run unless a node keeps it.
-3. Keep it: `fs.save --source-key files.photo --folder uploads --allowed-kinds images --max-size 10`
-   adds `saved` — a durable FileRef and nothing else (`ref`, `filename`,
-   `mime`, `kind`, `size`, `sha256`, `lifecycle: durable`, `origin: fs.save`,
-   `trust`) — to the payload; `input.body.caption` from the same form is
-   still there.
-4. Derive what you need: `fs.image.thumbnail --width 320 --height 320 --fit cover --format webp --folder thumbs`
-   reads `saved` (its default `--source-key`) and adds `thumbnail` (a FileRef,
-   `thumbnail.ref`) the same way.
-5. Store the **store path** (`saved.ref`) in your table, not a URL — URLs
+3. Keep it: `fs.file.put --from "{{ input.files.photo }}" --folder uploads --accept image --max-size 10MB`
+   checks the file by its content (the claimed type must agree, `--accept`
+   must allow it, the stored extension follows the detected type) and adds
+   `file` — a durable FileRef (`ref`, `store`, `filename`, `mime`, `kind`,
+   `size`, `sha256`, `lifecycle: durable`, `origin: fs.file.put`, `trust`) —
+   to the payload; `input.body.caption` from the same form is still there.
+4. Derive what you need: `fs.image.thumbnail --source-key file --width 320 --height 320 --fit cover --format webp --folder thumbs`
+   reads `file` and adds `thumbnail` (a FileRef, `thumbnail.ref`) the same way.
+5. Store the **store path** (`file.ref`) in your table, not a URL — URLs
    depend on owner, project and visibility.
 
 ```
 | trigger.webhook --path /api/upload --method POST --auth-type jwt --auth-credential jwt_main
-| fs.save --source-key files.file --folder uploads --allowed-kinds images --max-size 10
+| fs.file.put --from "{{ input.files.file }}" --folder uploads --accept image --max-size 10MB
 ```
 
-The response carries `saved` (a FileRef). Store its **`ref`**; a page
+The response carries `file` (a FileRef). Store its **`ref`**; a page
 writes the URL as a root-relative path on the project's own host and the
 renderer makes it absolute (`docs/contracts/addressing.md`).
 
@@ -48,7 +48,7 @@ renderer makes it absolute (`docs/contracts/addressing.md`).
 | a folder exposed `public_execute` | `/` on each address in its `serve` | anyone; served as a site, scripts running |
 | anything else | nowhere without sign-in; the Studio reads it at `files/object?ref=…` | a signed-in session with files access |
 
-No node answers a URL — `saved` carries only `ref`. A folder name never
+No node answers a URL — `file` carries only `ref`. A folder name never
 decides visibility, and no node can expose anything: the owner does, per
 folder, in Studio → Files. Never put `input.files` or base64 into a payload, a script
 return, or a database column.
@@ -68,7 +68,7 @@ const [doc, setDoc] = useState(input.rows?.[0]?.body_json ?? null);
 async function uploadImage(file) {                       // the page decides where images go
   const form = new FormData();
   form.append("file", file);
-  const { saved } = await (await fetch(`${input.base}/api/upload`, { method: "POST", body: form })).json();
+  const { file: saved } = await (await fetch(`${input.base}/api/upload`, { method: "POST", body: form })).json();
   return { src: `${input.files}/${saved.ref}`, ref: saved.ref, alt: file.name };
 }
 
@@ -91,7 +91,7 @@ async function uploadImage(file) {                       // the page decides whe
 ## Prove it
 
 1. Upload a real file through the form; `pipeline_get_invocations` shows
-   `fs.save` with the path; the URL loads (`curl -I` → 200, right `Content-Type`);
+   `fs.file.put` with the path; the URL loads (`curl -I` → 200, right `Content-Type`);
    the private form returns 401 without a session.
 2. An upload over `--max-size` or of the wrong kind is refused with a message
    the form shows.
