@@ -45,6 +45,16 @@ logic.<verb>          control node   logic.if              logic.foreach
 - **Same task, same answer — one kind.** A difference of format is a flag
   (`fs.barcode.render --symbology qr|code128`); a task only some providers of
   a swappable task offer is a new noun or verb (`ai.video.edit`).
+- **Three origins, one grammar.** A *native* node (built into the engine) and
+  an *official composite* (a bundle of function pipelines shipped with the
+  platform, e.g. `telegram.*`) share these names: how a node is built is
+  never in its name, so either can become the other without a rename; the
+  catalog shows it as a badge. A *custom composite* — built by a user or
+  installed from the hub — is `x.<package>.<noun>.<verb>`: the package owns
+  every name under it, so no two packages and no official release can ever
+  collide. Everything after `x.<package>.` follows this contract, its answer
+  key is its noun, and the engine places the function's result under that
+  noun itself.
 - `logic.*` is closed: `if` `match` `foreach` `reduce` `collect` `retry`
   `concept` (a stand-in for a step not built yet; passes its input on).
 
@@ -315,6 +325,7 @@ it is registered:
 | `config_keys_have_one_name` | no `serde(alias)` |
 | `codes_carry_the_node_family` | every raised code is the kind's or a pass-through, and registered |
 | `store_nodes_declare_their_store` | every node that opens a store declares `--store`; every file writer declares the whole destination set |
+| `composites_follow_the_grammar` | every shipped bundle's kinds, flags and answers pass the rows above; an installed bundle is checked the same way before it is registered, under `x.<package>.` |
 | `providers_declare_profiles` | a kind with `--provider` has a profile per provider |
 | `long_tasks_can_return_a_process` | a node waiting on outside work offers `--return process` |
 
