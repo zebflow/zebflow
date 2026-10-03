@@ -1,6 +1,14 @@
-//! fs.archive.extract — extract one archive into project file storage.
+//! `fs.archive.extract` — one archive opened into a folder of a project store.
 //!
-//! First slice supports only `tar.gz`.
+//! `--from` names the archive — a FileRef, an upload, or a store key. tar
+//! speaks paths and the project's files live in their stores, so the archive
+//! is pulled into a scratch folder, its listing and then its members checked
+//! there (no climbing out, no links), and only the checked files are written
+//! under `--folder` with the tree writer's destination set. Only `tar.gz` is
+//! read. Members are as untrusted as any file the node did not re-encode.
+//!
+//! The answer is one key, `archive: { folder, items, count, source_deleted }`
+//! — `items` a durable FileRef per extracted file; the rest of the payload stays.
 
 use std::path::Path;
 use std::process::Command;
@@ -8,15 +16,16 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
-use serde_json::json;
+use serde_json::{Value, json};
 
-use crate::pipeline::nodes::shared::store_scratch::StoreScratch;
-use crate::pipeline::nodes::shared::project_store::{OnConflict, on_conflict_flag, open_source, open_store, store_fields, store_flag, target_key};
-use crate::pipeline::nodes::shared::util::{metadata_scope, resolve_path};
 use crate::pipeline::model::NodeCapability;
+use crate::pipeline::nodes::shared::limits::choice;
+use crate::pipeline::nodes::shared::project_store::{OnConflict, on_conflict_flag, open_from, open_store, store_fields, store_flag, target_key};
+use crate::pipeline::nodes::shared::store_scratch::StoreScratch;
+use crate::pipeline::nodes::shared::util::{metadata_scope, with_answer};
 use crate::pipeline::{
     NodeDefinition, PipelineError,
-    model::{DslFlag, DslFlagKind, LayoutItem, NodeFieldDef, NodeFieldType, SelectOptionDef},
+    model::{DslFlag, DslFlagKind, LayoutItem, NodeExample, NodeFieldDef, NodeFieldType, SelectOptionDef},
     nodes::{NodeExecutionInput, NodeExecutionOutput, NodeHandler},
 };
 use crate::platform::services::PlatformService;
@@ -25,84 +34,75 @@ pub const NODE_KIND: &str = "fs.archive.extract";
 const INPUT_PIN_IN: &str = "in";
 const OUTPUT_PIN_OUT: &str = "out";
 
-fn default_source_key() -> String {
-    "saved".to_string()
-}
+/// The store, `tar` and the writes: the world's side.
+pub const CODE: &str = "FW_NODE_FS_ARCHIVE_EXTRACT";
+/// A flag the author set wrong.
+pub const CONFIG_CODE: &str = "FW_NODE_FS_ARCHIVE_EXTRACT_CONFIG";
+/// `--from` is missing, not there, or an archive whose members are refused.
+const SOURCE_CODE: &str = "FW_NODE_FS_ARCHIVE_EXTRACT_SOURCE";
 
-fn default_format() -> String {
-    "tar.gz".to_string()
-}
+const FORMATS: &[&str] = &["tar.gz"];
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Config {
-    #[serde(default = "default_source_key")]
-    pub source_key: String,
-    /// The folder the archive opens into (default: `extracted/<archive>`).
+    /// The archive: a FileRef, an upload or a store key.
     #[serde(default)]
-    pub folder: String,
-    #[serde(default = "default_format")]
+    pub from: Value,
+    /// `tar.gz`, the only one read.
+    #[serde(default)]
     pub format: String,
+    /// Delete the archive once every member is written.
     #[serde(default)]
     pub delete_source: bool,
     /// The store to write to; saved explicitly at registration.
     #[serde(default)]
     pub store: Option<String>,
-    /// `overwrite`, `skip` or `error` when the folder is not empty (default: error).
+    /// The folder the archive opens into (default: `extracted/<archive>`).
+    #[serde(default)]
+    pub folder: String,
+    /// `error` (default, when the folder is not empty), `skip` or `overwrite`.
     #[serde(default)]
     pub on_conflict: Option<String>,
 }
 
-impl Default for Config {
-    fn default() -> Self {
-        Self {
-            source_key: default_source_key(),
-            folder: String::new(),
-            format: default_format(),
-            store: None,
-            on_conflict: None,
-            delete_source: false,
-        }
+fn flag(name: &str, key: &str, description: &str, value: &str) -> DslFlag {
+    DslFlag {
+        flag: name.to_string(),
+        config_key: key.to_string(),
+        description: description.to_string(),
+        kind: DslFlagKind::Scalar,
+        required: false,
+        value: value.to_string(),
+        ..Default::default()
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DecompressOutput {
-    /// The archive that was opened.
-    pub source: String,
-    /// The folder it opened into, in `store`.
-    pub folder: String,
-    pub store: String,
-    pub format: String,
-    /// A durable FileRef for every extracted file.
-    pub files: Vec<serde_json::Value>,
-    /// Whether `--delete-source` removed the archive.
-    pub source_deleted: bool,
+fn field(name: &str, label: &str, field_type: NodeFieldType, help: &str) -> NodeFieldDef {
+    NodeFieldDef { name: name.to_string(), label: label.to_string(), field_type, help: Some(help.to_string()), ..Default::default() }
 }
 
 pub fn definition() -> NodeDefinition {
+    let upload = json!({ "__zf_type": "file_ref", "backend": "zebfs", "store": "local", "ref": "uploads/bundle.tar.gz", "filename": "bundle.tar.gz", "mime": "application/gzip", "kind": "archive", "size": 40211, "sha256": "sha256:…", "lifecycle": "durable", "origin": "fs.file.put", "trust": "untrusted" });
     NodeDefinition {
         kind: NODE_KIND.to_string(),
         capabilities: vec![NodeCapability::Filesystem, NodeCapability::Process],
-        title: "File Decompress".to_string(),
-        description: "Extract one archive into project file storage. \
-            Reads the source at `input.saved` by default — a FileRef or a store path string (after `fs.file.put`, `--source-key file`). \
-            First slice supports only tar.gz."
+        title: "Archive Extract".to_string(),
+        description: "Open the tar.gz archive `--from` names — a FileRef, an upload or a store key — into `--folder` (default `extracted/<archive>`). \
+            A member that climbs out of the folder or is a link refuses the whole archive before anything is written. A folder that is not empty is an \
+            error unless `--on-conflict` says otherwise (`overwrite` replaces it). `--delete-source` removes the archive once every member is written. \
+            Adds `archive: { folder, items, count, source_deleted }` — `items` a durable FileRef per file — and keeps the rest of the payload."
             .to_string(),
-        input_schema: json!({
-            "type": "object",
-            "description": "Payload must contain a project-relative archive path at the configured source_key."
-        }),
+        input_schema: json!({ "type": "object" }),
         output_schema: json!({
             "type": "object",
             "properties": {
-                "decompressed": {
+                "archive": {
                     "type": "object",
                     "properties": {
-                        "source": { "type": "string" },
                         "folder": { "type": "string" },
-                        "store": { "type": "string" },
-                        "format": { "type": "string" },
-                        "files": { "type": "array", "description": "A durable FileRef per extracted file" }
+                        "items": { "type": "array", "description": "A durable FileRef per extracted file" },
+                        "count": { "type": "integer" },
+                        "source_deleted": { "type": "boolean" }
                     }
                 }
             }
@@ -113,97 +113,34 @@ pub fn definition() -> NodeDefinition {
         script_bridge: None,
         config_schema: Default::default(),
         dsl_flags: vec![
+            DslFlag { required: true, ..flag("--from", "from", "The archive: a FileRef, an upload or a store key.", "file:archive") },
+            DslFlag { choices: vec!["tar.gz".to_string()], ..flag("--format", "format", "The archive format: tar.gz (default, the only one).", "") },
+            DslFlag { kind: DslFlagKind::Bool, ..flag("--delete-source", "delete_source", "Delete the archive once every member is written.", "") },
+            DslFlag { value: "text".to_string(), ..store_flag() },
+            flag("--folder", "folder", "The folder the archive opens into (default: extracted/<archive>).", "text"),
             DslFlag {
-                flag: "--source-key".to_string(),
-                config_key: "source_key".to_string(),
-                description: "Dot-path to the source archive in the payload: a FileRef or a store path string (default: `saved`)"
-                    .to_string(),
-                kind: DslFlagKind::Scalar,
-                required: false,
-                ..Default::default()
+                choices: ["error", "skip", "overwrite"].iter().map(|w| w.to_string()).collect(),
+                ..on_conflict_flag(OnConflict::Error)
             },
-            DslFlag {
-                flag: "--folder".to_string(),
-                config_key: "folder".to_string(),
-                description: "The folder the archive opens into (default: extracted/<archive>)".to_string(),
-                kind: DslFlagKind::Scalar,
-                required: false,
-                ..Default::default()
-            },
-            DslFlag {
-                flag: "--format".to_string(),
-                config_key: "format".to_string(),
-                description: "Archive format. First slice supports only tar.gz".to_string(),
-                kind: DslFlagKind::Scalar,
-                required: false,
-                ..Default::default()
-            },
-            DslFlag {
-                flag: "--delete-source".to_string(),
-                config_key: "delete_source".to_string(),
-                description: "Delete the source archive after successful extraction".to_string(),
-                kind: DslFlagKind::Bool,
-                required: false,
-                ..Default::default()
-            },
-            store_flag(),
-            on_conflict_flag(OnConflict::Error),
         ],
         fields: vec![
+            field("from", "From", NodeFieldType::Text, "The archive, e.g. {{ input.file }}."),
             NodeFieldDef {
-                name: "source_key".to_string(),
-                label: "Source Key".to_string(),
-                field_type: NodeFieldType::Text,
-                help: Some(
-                    "Dot-path to the project-relative archive path in the input payload."
-                        .to_string(),
-                ),
-                default_value: Some(json!("saved")),
-                ..Default::default()
-            },
-            NodeFieldDef {
-                name: "folder".to_string(),
-                label: "Folder".to_string(),
-                field_type: NodeFieldType::Text,
-                help: Some("The folder the archive opens into (default: extracted/<archive>).".to_string()),
-                ..Default::default()
-            },
-            NodeFieldDef {
-                name: "format".to_string(),
-                label: "Format".to_string(),
-                field_type: NodeFieldType::Select,
                 default_value: Some(json!("tar.gz")),
-                options: vec![SelectOptionDef {
-                    label: "tar.gz".to_string(),
-                    value: "tar.gz".to_string(),
-                }],
-                help: Some("Archive format to read. Current runtime supports tar.gz.".to_string()),
-                ..Default::default()
+                options: FORMATS.iter().map(|v| SelectOptionDef { value: v.to_string(), label: v.to_string() }).collect(),
+                ..field("format", "Format", NodeFieldType::Select, "The archive format.")
             },
-            NodeFieldDef {
-                name: "delete_source".to_string(),
-                label: "Delete Source".to_string(),
-                field_type: NodeFieldType::Checkbox,
-                help: Some("Delete the source archive after successful extraction.".to_string()),
-                default_value: Some(json!(false)),
-                ..Default::default()
-            },
-        ].into_iter().chain(store_fields(OnConflict::Error)).collect(),
-        layout: vec![LayoutItem::Col {
-            col: vec![
-                LayoutItem::Field("source_key".to_string()),
-                LayoutItem::Field("folder".to_string()),
-                LayoutItem::Field("format".to_string()),
-                LayoutItem::Field("delete_source".to_string()),
-                LayoutItem::Field("store".to_string()),
-                LayoutItem::Field("on_conflict".to_string()),
-            ],
-        }],
-        ai_tool: Default::default(),
+            NodeFieldDef { default_value: Some(json!(false)), ..field("delete_source", "Delete source", NodeFieldType::Checkbox, "Delete the archive once every member is written.") },
+            field("folder", "Folder", NodeFieldType::Text, "The folder the archive opens into (default: extracted/<archive>)."),
+        ]
+        .into_iter()
+        .chain(store_fields(OnConflict::Error))
+        .collect(),
+        layout: ["from", "format", "delete_source", "folder", "store", "on_conflict"].iter().map(|name| LayoutItem::Field(name.to_string())).collect(),
         examples: vec![
-            crate::pipeline::model::NodeExample::dsl("Unpack an uploaded archive", "fs.archive.extract --source-key file --folder imports/latest --delete-source")
-                .input(serde_json::json!({ "file": { "__zf_type": "file_ref", "backend": "zebfs", "store": "local", "ref": "uploads/bundle.tar.gz", "filename": "bundle.tar.gz", "mime": "application/gzip", "kind": "archive", "size": 40211, "sha256": "sha256:…", "lifecycle": "durable", "origin": "fs.file.put", "trust": "untrusted" } }))
-                .output(serde_json::json!({ "decompressed": { "source": "uploads/bundle.tar.gz", "folder": "imports/latest", "store": "local", "format": "tar.gz", "files": [{ "__zf_type": "file_ref", "backend": "zebfs", "store": "local", "ref": "imports/latest/a.csv", "filename": "a.csv", "mime": "text/csv", "kind": "csv", "size": 120, "sha256": "sha256:…", "lifecycle": "durable", "origin": "fs.archive.extract", "trust": "untrusted" }] } })),
+            NodeExample::dsl("Unpack an uploaded archive", "fs.archive.extract --from \"{{ input.file }}\" --folder imports/latest --delete-source")
+                .input(json!({ "file": upload.clone() }))
+                .output(json!({ "file": upload, "archive": { "folder": "imports/latest", "count": 1, "source_deleted": true, "items": [{ "__zf_type": "file_ref", "backend": "zebfs", "store": "local", "ref": "imports/latest/a.csv", "filename": "a.csv", "mime": "text/csv", "kind": "csv", "size": 120, "sha256": "sha256:…", "lifecycle": "durable", "origin": NODE_KIND, "trust": "untrusted" }] } })),
         ],
         ..Default::default()
     }
@@ -234,92 +171,39 @@ impl NodeHandler for Node {
         &[OUTPUT_PIN_OUT]
     }
 
-    async fn execute_async(
-        &self,
-        input: NodeExecutionInput,
-    ) -> Result<NodeExecutionOutput, PipelineError> {
+    async fn execute_async(&self, input: NodeExecutionInput) -> Result<NodeExecutionOutput, PipelineError> {
         let (owner, project, ..) = metadata_scope(&input.metadata)?;
-        validate_format(&self.config.format)?;
+        choice(&self.config.format, FORMATS, "tar.gz", "--format", CONFIG_CODE)?;
+        let on_conflict = OnConflict::parse(self.config.on_conflict.as_deref(), OnConflict::Error, CONFIG_CODE)?;
+        let (source_store, source_rel) =
+            open_from(&self.platform, owner, project, &self.config.from, self.config.store.as_deref(), "--from", SOURCE_CODE)?;
+        // The members were never re-encoded, whatever the source's FileRef claims.
+        let trust = "untrusted";
 
-        let source_key = if self.config.source_key.trim().is_empty() {
-            "saved"
-        } else {
-            self.config.source_key.trim()
-        };
-
-        let source_value = resolve_path(&input.payload, source_key).ok_or_else(|| {
-            PipelineError::new(
-                "FW_NODE_FS_DECOMPRESS",
-                format!("source path not found at payload key '{source_key}' — after fs.file.put set --source-key file"),
-            )
-        })?;
-        let (source_store, source_rel) = open_source(&self.platform, owner, project, source_value, self.config.store.as_deref())?
-            .ok_or_else(|| {
-                PipelineError::new(
-                    "FW_NODE_FS_DECOMPRESS",
-                    format!("payload key '{source_key}' must be a FileRef or a store path string"),
-                )
-            })?;
-        let source_rel = crate::zebfs::normalize_object_path(&source_rel)
-            .map_err(|err| PipelineError::new("FW_NODE_FS_DECOMPRESS", format!("source: {}", err.message)))?;
-        // Extracted files carry the archive's trust: an uploaded archive's
-        // members are as untrusted as the archive.
-        let trust = if crate::pipeline::nodes::shared::file_ref::is_file_ref(source_value) {
-            source_value.get("trust").and_then(|value| value.as_str()).unwrap_or("untrusted").to_string()
-        } else {
-            "untrusted".to_string()
-        };
-
-        // tar speaks paths and the project's files live in their stores: the
-        // archive is pulled into a scratch folder, extracted and checked
-        // there, and only the checked files are put into this node's store.
         match source_store.fs.head(&source_rel) {
             Ok(stat) if stat.kind == crate::zebfs::ZebFsEntryKind::Object => {}
-            _ => {
-                return Err(PipelineError::new(
-                    "FW_NODE_FS_DECOMPRESS",
-                    format!("source archive not found: {source_rel}"),
-                ));
-            }
+            _ => return Err(PipelineError::new(SOURCE_CODE, format!("--from: no archive at '{source_rel}'"))),
         }
         let folder = resolve_output_dir(&self.config.folder, &source_rel);
-        let folder = target_key(Some(&folder), "", "", "FW_NODE_FS_DECOMPRESS")?;
+        let folder = target_key(Some(&folder), "", "", CONFIG_CODE)?;
         let store = open_store(&self.platform, owner, project, self.config.store.as_deref())?;
-        let on_conflict = OnConflict::parse(self.config.on_conflict.as_deref(), OnConflict::Error, "FW_NODE_FS_DECOMPRESS")?;
-        if !on_conflict.allows_tree(&store.fs, &folder, "FW_NODE_FS_DECOMPRESS")? {
-            let output = DecompressOutput {
-                source: source_rel.clone(),
-                folder: folder.clone(),
-                store: store.id.clone(),
-                format: "tar.gz".to_string(),
-                files: Vec::new(),
-                source_deleted: false,
-            };
+        if !on_conflict.allows_tree(&store.fs, &folder, CODE)? {
+            // Skipped: nothing was written and the archive stays.
             return Ok(NodeExecutionOutput {
                 output_pins: vec![OUTPUT_PIN_OUT.to_string()],
-                payload: crate::pipeline::nodes::shared::util::with_answer(&input.payload, json!({ "decompressed": output })),
+                payload: with_answer(&input.payload, json!({ "archive": { "folder": folder, "items": [], "count": 0, "source_deleted": false } })),
                 trace: vec![format!("node_kind={NODE_KIND} src={source_rel} out={folder} skipped=true")],
             });
         }
         // `overwrite` replaces the folder: files from an earlier extraction
         // that this archive does not hold would otherwise stay beside it.
-        if on_conflict == OnConflict::Overwrite
-            && store.fs.list(&folder).map(|entries| !entries.is_empty()).unwrap_or(false)
-        {
-            store
-                .fs
-                .delete(&folder)
-                .map_err(|err| PipelineError::new("FW_NODE_FS_DECOMPRESS", format!("clear '{folder}': {err}")))?;
+        if on_conflict == OnConflict::Overwrite && store.fs.list(&folder).map(|entries| !entries.is_empty()).unwrap_or(false) {
+            store.fs.delete(&folder).map_err(|err| PipelineError::new(CODE, format!("clear '{folder}': {err}")))?;
         }
-        let scratch = StoreScratch::new("FW_NODE_FS_DECOMPRESS")?;
+        let scratch = StoreScratch::new(CODE)?;
         let source_abs = scratch.pull(&source_store.fs, &source_rel)?;
         let output_abs = scratch.path().join(".zf-extract");
-        std::fs::create_dir_all(&output_abs).map_err(|err| {
-            PipelineError::new(
-                "FW_NODE_FS_DECOMPRESS",
-                format!("create extract dir: {err}"),
-            )
-        })?;
+        std::fs::create_dir_all(&output_abs).map_err(|err| PipelineError::new(CODE, format!("create extract dir: {err}")))?;
 
         let source_abs_for_task = source_abs.clone();
         let output_abs_for_task = output_abs.clone();
@@ -335,39 +219,21 @@ impl NodeHandler for Node {
             Ok::<(), PipelineError>(())
         })
         .await
-        .map_err(|err| {
-            PipelineError::new(
-                "FW_NODE_FS_DECOMPRESS",
-                format!("decompress task failed: {err}"),
-            )
-        })??;
+        .map_err(|err| PipelineError::new(CODE, format!("extract task failed: {err}")))??;
 
-        let files = scratch.push_tree_refs(&store, &output_abs, &folder, "fs.archive.extract", &trust)?;
+        let items = scratch.push_tree_refs(&store, &output_abs, &folder, NODE_KIND, trust)?;
 
         // The archive goes once every member is written, and a failed delete
         // fails the node.
         let source_deleted = self.config.delete_source;
         if source_deleted {
-            source_store.delete_named(&self.platform, owner, project, &source_rel, "FW_NODE_FS_DECOMPRESS")?;
+            source_store.delete_named(&self.platform, owner, project, &source_rel, CODE)?;
         }
-
-        let count = files.len();
-        let output = DecompressOutput {
-            source: source_rel.clone(),
-            folder: folder.clone(),
-            store: store.id.clone(),
-            format: "tar.gz".to_string(),
-            files,
-            source_deleted,
-        };
-
+        let count = items.len();
         Ok(NodeExecutionOutput {
             output_pins: vec![OUTPUT_PIN_OUT.to_string()],
-            payload: crate::pipeline::nodes::shared::util::with_answer(&input.payload, json!({ "decompressed": output })),
-            trace: vec![format!(
-                "node_kind={NODE_KIND} src={source_rel} out={folder} store={} files={count}",
-                store.id
-            )],
+            payload: with_answer(&input.payload, json!({ "archive": { "folder": folder, "items": items, "count": count, "source_deleted": source_deleted } })),
+            trace: vec![format!("node_kind={NODE_KIND} src={source_rel} out={folder} store={} files={count}", store.id)],
         })
     }
 }
@@ -380,10 +246,7 @@ impl NodeHandler for Node {
 fn refuse_unsafe_archive_entries(source_abs: &Path) -> Result<(), PipelineError> {
     crate::platform::services::project_transfer::validate_archive_entry_names(source_abs).map_err(
         |err| {
-            PipelineError::new(
-                "FW_NODE_FS_DECOMPRESS",
-                format!("unsafe archive entry: {}", err.message),
-            )
+            PipelineError::new(SOURCE_CODE, format!("unsafe archive entry: {}", err.message))
         },
     )
 }
@@ -402,10 +265,7 @@ fn refuse_extracted_symlinks(output_abs: &Path) -> Result<(), PipelineError> {
         return Ok(());
     };
     unlink_symlinks_under(output_abs);
-    Err(PipelineError::new(
-        "FW_NODE_FS_DECOMPRESS",
-        format!("unsafe archive entry: {}", err.message),
-    ))
+    Err(PipelineError::new(SOURCE_CODE, format!("unsafe archive entry: {}", err.message)))
 }
 
 /// Removes every symbolic link under `root`, following none of them.
@@ -435,32 +295,18 @@ fn extract_tar_gz(source_abs: &Path, output_abs: &Path) -> Result<(), PipelineEr
         .output()
         .map_err(|err| {
             PipelineError::new(
-                "FW_NODE_FS_DECOMPRESS",
+                CODE,
                 format!("failed running tar: {err}"),
             )
         })?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
         return Err(PipelineError::new(
-            "FW_NODE_FS_DECOMPRESS",
+            CODE,
             format!("tar extract failed: {stderr}"),
         ));
     }
     Ok(())
-}
-
-fn validate_format(format: &str) -> Result<(), PipelineError> {
-    if format.trim().eq_ignore_ascii_case("tar.gz") {
-        Ok(())
-    } else {
-        Err(PipelineError::new(
-            "FW_NODE_FS_DECOMPRESS",
-            format!(
-                "unsupported archive format '{}'; first slice supports only tar.gz",
-                format
-            ),
-        ))
-    }
 }
 
 fn sanitize_archive_stem(name: &str) -> String {
@@ -508,7 +354,7 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        Config, Node, NodeExecutionInput, NodeHandler, refuse_extracted_symlinks,
+        Config, NODE_KIND, Node, NodeExecutionInput, NodeHandler, SOURCE_CODE, refuse_extracted_symlinks,
         refuse_unsafe_archive_entries, resolve_output_dir,
     };
     use crate::platform::PlatformConfig;
@@ -569,7 +415,7 @@ mod tests {
         );
 
         let error = refuse_unsafe_archive_entries(&archive).expect_err("traversal is refused");
-        assert_eq!(error.code, "FW_NODE_FS_DECOMPRESS");
+        assert_eq!(error.code, SOURCE_CODE);
         assert!(error.message.contains("unsafe archive entry"), "{error:?}");
     }
 
@@ -631,7 +477,6 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tempdir");
         let mut config = PlatformConfig::default();
         config.data_root = tmp.path().join("platform");
-        config.default_password = "secret".to_string();
         let platform = Arc::new(PlatformService::from_config(config).expect("platform"));
         let layout = platform
             .file
@@ -652,23 +497,9 @@ mod tests {
         );
         let escape = layout.files_dir.join("../../owned.txt");
 
-        let node = Node::new(Config::default(), Arc::clone(&platform)).expect("node");
-        let error = node
-            .execute_async(NodeExecutionInput {
-                node_id: "n-test".to_string(),
-                input_pin: "in".to_string(),
-                payload: json!({ "saved": source_rel }),
-                metadata: json!({
-                    "owner": "superadmin",
-                    "project": "default",
-                    "pipeline": "test",
-                    "request_id": "req-1"
-                }),
-                bus: None,
-            })
-            .await
+        let error = extract(&platform, source_rel, json!({ "keep": true })).await
             .expect_err("a hostile archive is refused");
-        assert_eq!(error.code, "FW_NODE_FS_DECOMPRESS");
+        assert_eq!(error.code, SOURCE_CODE);
         assert!(
             !escape.exists(),
             "an archive member escaped to {}",
@@ -694,20 +525,7 @@ mod tests {
                 ("payload/passwd", b'2', "/etc/passwd", b""),
             ],
         );
-        let error = node
-            .execute_async(NodeExecutionInput {
-                node_id: "n-test".to_string(),
-                input_pin: "in".to_string(),
-                payload: json!({ "saved": linked_rel }),
-                metadata: json!({
-                    "owner": "superadmin",
-                    "project": "default",
-                    "pipeline": "test",
-                    "request_id": "req-3"
-                }),
-                bus: None,
-            })
-            .await
+        let error = extract(&platform, linked_rel, json!({ "keep": true })).await
             .expect_err("a symlink member is refused");
         assert!(error.message.contains("unsafe archive entry"), "{error:?}");
         let link = layout.files_dir.join("extracted/linked/payload/passwd");
@@ -723,28 +541,64 @@ mod tests {
             &layout.files_dir.join(ok_rel),
             &[("bundle/paper.txt", b'0', "", b"content")],
         );
-        let output = node
-            .execute_async(NodeExecutionInput {
-                node_id: "n-test".to_string(),
-                input_pin: "in".to_string(),
-                payload: json!({ "saved": ok_rel }),
-                metadata: json!({
-                    "owner": "superadmin",
-                    "project": "default",
-                    "pipeline": "test",
-                    "request_id": "req-2"
-                }),
-                bus: None,
-            })
-            .await
+        let output = extract(&platform, ok_rel, json!({ "keep": true })).await
             .expect("an ordinary archive extracts");
-        assert_eq!(output.payload["decompressed"]["files"].as_array().map(Vec::len), Some(1));
-        assert_eq!(output.payload["decompressed"]["files"][0]["ref"], "extracted/ok/bundle/paper.txt");
+        assert_eq!(output.payload["keep"], true, "the payload stays");
+        assert_eq!(output.payload["archive"]["count"], 1);
+        assert_eq!(output.payload["archive"]["folder"], "extracted/ok");
+        assert_eq!(output.payload["archive"]["items"][0]["ref"], "extracted/ok/bundle/paper.txt");
+        assert_eq!(output.payload["archive"]["items"][0]["origin"], NODE_KIND);
+        assert_eq!(output.payload["archive"]["source_deleted"], false);
         assert!(
             layout
                 .files_dir
                 .join("extracted/ok/bundle/paper.txt")
                 .is_file()
+        );
+    }
+
+    async fn extract(
+        platform: &Arc<PlatformService>,
+        from: &str,
+        payload: serde_json::Value,
+    ) -> Result<crate::pipeline::nodes::NodeExecutionOutput, crate::pipeline::PipelineError> {
+        let config: Config = serde_json::from_value(json!({ "from": from })).expect("config");
+        Node::new(config, Arc::clone(platform))
+            .expect("node")
+            .execute_async(NodeExecutionInput {
+                node_id: "n-test".to_string(),
+                input_pin: "in".to_string(),
+                payload,
+                metadata: json!({ "owner": "superadmin", "project": "default", "pipeline": "test", "request_id": "req-1" }),
+                bus: None,
+            })
+            .await
+    }
+
+    #[tokio::test]
+    async fn from_is_required() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let mut config = PlatformConfig::default();
+        config.data_root = tmp.path().join("platform");
+        let platform = Arc::new(PlatformService::from_config(config).expect("platform"));
+        let node = Node::new(Config::default(), Arc::clone(&platform)).expect("node");
+        let error = node
+            .execute_async(NodeExecutionInput {
+                node_id: "n-test".to_string(),
+                input_pin: "in".to_string(),
+                payload: json!({ "saved": "uploads/a.tar.gz" }),
+                metadata: json!({ "owner": "superadmin", "project": "default", "pipeline": "test", "request_id": "req-1" }),
+                bus: None,
+            })
+            .await
+            .expect_err("no --from");
+        assert_eq!(error.code, SOURCE_CODE);
+        let missing = extract(&platform, "uploads/none.tar.gz", json!({})).await.expect_err("nothing there");
+        assert_eq!(missing.code, SOURCE_CODE);
+        assert_eq!(
+            crate::pipeline::nodes::node_signature(&super::definition()),
+            "fs.archive.extract --from ARCHIVE [--format tar.gz] [--delete-source] [--store TEXT] [--folder TEXT] \
+             [--on-conflict error|skip|overwrite] → archive"
         );
     }
 

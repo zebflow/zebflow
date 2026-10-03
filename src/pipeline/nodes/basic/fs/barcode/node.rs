@@ -17,7 +17,7 @@ use super::code128;
 use super::qr::{encode as qr_encode, tables::Ecc};
 use super::render::{Drawing, parse_colour};
 use crate::pipeline::model::NodeCapability;
-use crate::pipeline::nodes::shared::limits::{MAX_RASTER_SIDE, choice, raster, within};
+use crate::pipeline::nodes::shared::limits::{MAX_RASTER_SIDE, choice, raster, whole, within};
 use crate::pipeline::nodes::shared::project_store::{OnConflict, on_conflict_flag, open_store, store_fields, store_flag, target_key};
 use crate::pipeline::nodes::shared::util::{filename_stem, metadata_scope, with_answer};
 use crate::pipeline::{
@@ -227,18 +227,6 @@ fn text_of(value: &Value, flag: &str, code: &'static str) -> Result<String, Pipe
     }
 }
 
-/// A whole number flag, `None` when unset.
-fn number_of(value: &Value, flag: &str) -> Result<Option<u32>, PipelineError> {
-    let bad = || PipelineError::new(CONFIG_CODE, format!("{flag} '{value}' is not a whole number"));
-    match value {
-        Value::Null => Ok(None),
-        Value::String(s) if s.trim().is_empty() => Ok(None),
-        Value::String(s) => s.trim().parse::<u32>().map(Some).map_err(|_| bad()),
-        Value::Number(n) => n.as_u64().and_then(|n| u32::try_from(n).ok()).map(Some).ok_or_else(bad),
-        _ => Err(bad()),
-    }
-}
-
 /// Every flag read and checked before anything is drawn.
 struct Plan {
     symbology: &'static Symbology,
@@ -264,16 +252,16 @@ impl Plan {
         }
         let format = choice(&c.format, FORMATS, "svg", "--format", CONFIG_CODE)?;
         let ecc = choice(&c.ecc, ECC_LEVELS, "M", "--ecc", CONFIG_CODE)?;
-        let height = number_of(&c.height, "--height")?;
+        let height = whole(&c.height, "--height", CONFIG_CODE)?;
         if symbology.name == "qr" && height.is_some() {
             return Err(PipelineError::new(CONFIG_CODE, "--height is for code128: a QR Code is square, so set --width only"));
         }
         if symbology.name == "code128" && !c.ecc.trim().is_empty() {
             return Err(PipelineError::new(CONFIG_CODE, "--ecc is for qr: Code 128 has a check symbol, not error correction levels"));
         }
-        let width = within(number_of(&c.width, "--width")?.unwrap_or(symbology.width), 1, MAX_RASTER_SIDE, "--width", CONFIG_CODE)?;
+        let width = within(whole(&c.width, "--width", CONFIG_CODE)?.unwrap_or(symbology.width), 1, MAX_RASTER_SIDE, "--width", CONFIG_CODE)?;
         let bar_height = within(height.unwrap_or(DEFAULT_BAR_HEIGHT), 1, MAX_RASTER_SIDE, "--height", CONFIG_CODE)?;
-        let margin = within(number_of(&c.margin, "--margin")?.unwrap_or(symbology.margin), 0, symbology.max_margin, "--margin", CONFIG_CODE)?;
+        let margin = within(whole(&c.margin, "--margin", CONFIG_CODE)?.unwrap_or(symbology.margin), 0, symbology.max_margin, "--margin", CONFIG_CODE)?;
         let colour = |raw: &str, default: &str, flag: &str| {
             let raw = if raw.trim().is_empty() { default } else { raw };
             parse_colour(raw).ok_or_else(|| PipelineError::new(CONFIG_CODE, format!("{flag} '{raw}' is not #rgb or #rrggbb")))

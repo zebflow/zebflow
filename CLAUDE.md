@@ -270,24 +270,25 @@ The nodes are **`fs.file.put`** and **`fs.image.thumbnail`**. (`fs.save`,
 an `--access` flag; visibility is not a node setting.
 
 `fs.file.put` — exactly one source: `--from` (the file, e.g.
-`"{{ $trigger.files.photo }}"` for an upload field named `photo`), `--text`
+`"{{ input.webhook.files.photo }}"` for an upload field named `photo`), `--text`
 (`--encoding base64` for bytes) or `--value` (JSON); `--accept`
 (repeat; `image|pdf|csv|json|glb|audio|video|archive`, default `image`,
 `--from` only), `--max-size` (with a unit, default `10MB`), `--folder`
 (default `uploads`), `--filename`, `--path` (exact store key), `--store`,
 `--on-conflict` (error|skip|overwrite). It answers `file`, a durable FileRef.
 
-`fs.image.thumbnail` — `--width` / `--height` (default 256), `--fit`
+`fs.image.thumbnail` — `--from` (required: the image, a FileRef, an upload
+or a store key; after `fs.file.put` it is `"{{ input.file }}"` — no node reads
+a default payload key), `--width` / `--height` (default 256), `--fit`
 (cover|contain|fill), `--format` (jpg|png|webp), `--quality` (1–100, default
-82), `--folder` (default `thumbnails`), `--source-key` (dot-path to the source
-in the payload, default `saved`; after `fs.file.put` it is `file`), `--delete-source`,
-`--filename`.
+82), `--delete-source`, `--store`, `--folder` (default `thumbnails`),
+`--filename`, `--path`, `--on-conflict`. It answers `image`, a durable FileRef.
 
 ```bash
 # Register. Always write the JSON to a file and use -d @file: the DSL is full
 # of `--flags` and shell quoting mangles them.
 cat > /tmp/reg.json << 'EOJSON'
-{"dsl": "register pipelines/test/fs-thumb-check -- | trigger.webhook --route /test/fs-thumb --method POST | fs.file.put --from \"{{ $trigger.files.photo }}\" --folder test-uploads | fs.image.thumbnail --source-key file --width 200 --height 200 --fit cover --format jpg --quality 80 --folder test-thumbs --delete-source"}
+{"dsl": "register pipelines/test/fs-thumb-check -- | trigger.webhook --route /test/fs-thumb --method POST | fs.file.put --from \"{{ input.webhook.files.photo }}\" --folder test-uploads | fs.image.thumbnail --from \"{{ input.file }}\" --width 200 --height 200 --fit cover --format jpg --quality 80 --folder test-thumbs --delete-source"}
 EOJSON
 curl -s -b /tmp/zf.txt -X POST -H "Content-Type: application/json" \
   -d @/tmp/reg.json \
@@ -321,12 +322,12 @@ curl -s -b /tmp/zf.txt -X POST -F photo=@/tmp/test_img.png \
 ```
 
 The answer is the payload: `webhook: { body, files, … }` plus each node's
-answer — `file` (from `fs.file.put`) and `thumbnail`, a FileRef. A node never removes a payload key: with
+answer — `file` (from `fs.file.put`) and `image`, a FileRef. A node never removes a payload key: with
 `--delete-source` the source object is gone but `file` stays, and
-`thumbnail.source_deleted` is `true`. The FileRef:
+`image.source_deleted` is `true`. The FileRef:
 
 ```json
-{"thumbnail":{"__zf_type":"file_ref","backend":"zebfs",
+{"image":{"__zf_type":"file_ref","backend":"zebfs","store":"local",
   "ref":"test-thumbs/<uuid>.jpg","filename":"<uuid>.jpg","mime":"image/jpeg",
   "kind":"image","size":1723,"sha256":"sha256:...","lifecycle":"durable",
   "origin":"fs.image.thumbnail","trust":"sanitized",

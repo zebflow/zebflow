@@ -1554,23 +1554,14 @@ impl BasicPipelineEngine {
             | fs::object::COPY_NODE_KIND
             | fs::object::MOVE_NODE_KIND
             | fs::object::MKDIR_NODE_KIND => {
-                let config: fs::object::Config =
-                    serde_json::from_value(node.config.clone()).unwrap_or_default();
+                let operation = fs::object::Operation::for_kind(&node.kind).expect("an fs object kind");
+                let config: fs::object::Config = serde_json::from_value(node.config.clone())
+                    .map_err(|err| PipelineError::new(operation.config_code(), err.to_string()))?;
                 let Some(platform) = &self.platform else {
                     return Err(PipelineError::new(
-                        "FW_NODE_FS_OBJECT",
+                        operation.code(),
                         "platform service not available in this engine context",
                     ));
-                };
-                let operation = match node.kind.as_str() {
-                    fs::object::LIST_NODE_KIND => fs::object::Operation::List,
-                    fs::object::HEAD_NODE_KIND => fs::object::Operation::Head,
-                    fs::object::GET_NODE_KIND => fs::object::Operation::Get,
-                    fs::object::DELETE_NODE_KIND => fs::object::Operation::Delete,
-                    fs::object::COPY_NODE_KIND => fs::object::Operation::Copy,
-                    fs::object::MOVE_NODE_KIND => fs::object::Operation::Move,
-                    fs::object::MKDIR_NODE_KIND => fs::object::Operation::Mkdir,
-                    _ => unreachable!(),
                 };
                 Ok(NodeDispatch::FsObject(fs::object::Node::new(
                     config,
@@ -1618,11 +1609,11 @@ impl BasicPipelineEngine {
                 )?))
             }
             fs::compress::NODE_KIND => {
-                let config: fs::compress::Config =
-                    serde_json::from_value(node.config.clone()).unwrap_or_default();
+                let config: fs::compress::Config = serde_json::from_value(node.config.clone())
+                    .map_err(|err| PipelineError::new(fs::compress::CONFIG_CODE, err.to_string()))?;
                 let Some(platform) = &self.platform else {
                     return Err(PipelineError::new(
-                        "FW_NODE_FS_COMPRESS",
+                        fs::compress::CODE,
                         "platform service not available in this engine context",
                     ));
                 };
@@ -1632,11 +1623,11 @@ impl BasicPipelineEngine {
                 )?))
             }
             fs::decompress::NODE_KIND => {
-                let config: fs::decompress::Config =
-                    serde_json::from_value(node.config.clone()).unwrap_or_default();
+                let config: fs::decompress::Config = serde_json::from_value(node.config.clone())
+                    .map_err(|err| PipelineError::new(fs::decompress::CONFIG_CODE, err.to_string()))?;
                 let Some(platform) = &self.platform else {
                     return Err(PipelineError::new(
-                        "FW_NODE_FS_DECOMPRESS",
+                        fs::decompress::CODE,
                         "platform service not available in this engine context",
                     ));
                 };
@@ -1674,11 +1665,11 @@ impl BasicPipelineEngine {
                 )?))
             }
             fs::pdf::convert::NODE_KIND => {
-                let config: fs::pdf::convert::Config =
-                    serde_json::from_value(node.config.clone()).unwrap_or_default();
+                let config: fs::pdf::convert::Config = serde_json::from_value(node.config.clone())
+                    .map_err(|err| PipelineError::new(fs::pdf::convert::CONFIG_CODE, err.to_string()))?;
                 let Some(platform) = &self.platform else {
                     return Err(PipelineError::new(
-                        "FW_NODE_FS_PDF_CONVERT",
+                        fs::pdf::convert::CODE,
                         "platform service not available in this engine context",
                     ));
                 };
@@ -1689,21 +1680,21 @@ impl BasicPipelineEngine {
             }
             fs::svg::convert::NODE_KIND => {
                 let config: fs::svg::convert::Config = serde_json::from_value(node.config.clone())
-                    .map_err(|e| PipelineError::new("FW_NODE_FS_SVG_CONVERT_CONFIG", e.to_string()))?;
+                    .map_err(|e| PipelineError::new(fs::svg::convert::CONFIG_CODE, e.to_string()))?;
                 let Some(platform) = &self.platform else {
                     return Err(PipelineError::new(
-                        "FW_NODE_FS_SVG_CONVERT_CONFIG",
+                        fs::svg::convert::CONFIG_CODE,
                         "platform service not available in this engine context",
                     ));
                 };
                 Ok(NodeDispatch::SvgConvert(fs::svg::convert::Node::new(config, platform.clone())?))
             }
             fs::image::chromakey::NODE_KIND => {
-                let config: fs::image::chromakey::Config =
-                    serde_json::from_value(node.config.clone()).unwrap_or_default();
+                let config: fs::image::chromakey::Config = serde_json::from_value(node.config.clone())
+                    .map_err(|err| PipelineError::new(fs::image::chromakey::CONFIG_CODE, err.to_string()))?;
                 let Some(platform) = &self.platform else {
                     return Err(PipelineError::new(
-                        "FW_NODE_FS_IMAGE_CHROMAKEY_CONFIG",
+                        fs::image::chromakey::CONFIG_CODE,
                         "platform service not available in this engine context",
                     ));
                 };
@@ -1721,11 +1712,11 @@ impl BasicPipelineEngine {
                 Ok(NodeDispatch::Barcode(fs::barcode::Node::new(config, platform.clone())?))
             }
             fs::image::thumbnail::NODE_KIND => {
-                let config: fs::image::thumbnail::Config =
-                    serde_json::from_value(node.config.clone()).unwrap_or_default();
+                let config: fs::image::thumbnail::Config = serde_json::from_value(node.config.clone())
+                    .map_err(|err| PipelineError::new(fs::image::thumbnail::CONFIG_CODE, err.to_string()))?;
                 let Some(platform) = &self.platform else {
                     return Err(PipelineError::new(
-                        "FW_NODE_FS_IMAGE_THUMBNAIL",
+                        fs::image::thumbnail::CODE,
                         "platform service not available in this engine context",
                     ));
                 };
@@ -4195,12 +4186,12 @@ mod tests {
         let dsl = r#"
 [a] trigger.manual
 [b] fs.file.put --path qa/fs/hello.txt --text "hello fs"
-[c] fs.file.get --path qa/fs/hello.txt
+[c] fs.file.get --from qa/fs/hello.txt
 [d] fs.file.copy --from qa/fs/hello.txt --filename copy.txt
 [e] fs.file.move --from qa/fs/copy.txt --filename moved.txt
-[f] fs.folder.list --path qa/fs
-[g] fs.file.delete --path qa/fs/hello.txt
-[h] fs.folder.create --path qa/fs/prefix
+[f] fs.folder.list --from qa/fs
+[g] fs.file.delete --from qa/fs/hello.txt
+[h] fs.folder.create --folder qa/fs/prefix
 
 [a] -> [b]
 [b] -> [c]
@@ -4230,8 +4221,10 @@ mod tests {
             .await
             .expect("execute");
 
-        assert_eq!(out.value["fs"]["operation"], "mkdir");
-        assert_eq!(out.value["fs"]["object"]["kind"], "prefix");
+        // Each node adds its own key and keeps the rest: the last `file` is
+        // the delete's answer, the last `folder` the create's.
+        assert_eq!(out.value["folder"], json!({ "path": "qa/fs/prefix", "created": true }));
+        assert_eq!(out.value["file"], json!({ "ref": "qa/fs/hello.txt", "deleted": true }));
 
         let layout = platform
             .file

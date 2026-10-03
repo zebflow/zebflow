@@ -93,6 +93,34 @@ pub fn open_source(
     Ok(Some((open_store(platform, owner, project, store_id)?, rel)))
 }
 
+/// The file a node's `--from` names, opened (`node-conventions.md` §2, §5): a
+/// FileRef — an upload included — read from the store it names, or a store
+/// key in the node's own store. Nothing, an empty key, a list or any other
+/// value is refused under `code`, naming the flag; the key comes back
+/// normalised, `..` refused.
+pub fn open_from(
+    platform: &Arc<PlatformService>,
+    owner: &str,
+    project: &str,
+    value: &Value,
+    node_store: Option<&str>,
+    flag: &str,
+    code: &'static str,
+) -> Result<(NodeStore, String), PipelineError> {
+    if value.is_array() {
+        return Err(PipelineError::new(code, format!("{flag} is a list; name one file, e.g. {{{{ input.files[0] }}}}")));
+    }
+    if !(value.is_null() || value.is_string() || super::file_ref::is_file_ref(value)) {
+        return Err(PipelineError::new(code, format!("{flag} is not a file: give a FileRef, an upload or a store key")));
+    }
+    let Some((store, key)) = open_source(platform, owner, project, value, node_store)? else {
+        return Err(PipelineError::new(code, format!("{flag} is required: a FileRef, an upload or a store key")));
+    };
+    let key = crate::zebfs::normalize_object_path(&key)
+        .map_err(|err| PipelineError::new(code, format!("{flag} '{key}': {}", err.message)))?;
+    Ok((store, key))
+}
+
 /// One repository file's bytes, for a node that serves or draws from the
 /// project's source (`web.response.send --file`, `svg.convert repo://`, a site's
 /// static assets). The key is normalised (`..`, absolute and empty segments

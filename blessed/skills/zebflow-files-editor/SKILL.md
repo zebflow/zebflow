@@ -26,8 +26,8 @@ and **rich text is a JSON document, HTML is derived from it**. Facts:
    `file` — a durable FileRef (`ref`, `store`, `filename`, `mime`, `kind`,
    `size`, `sha256`, `lifecycle: durable`, `origin: fs.file.put`, `trust`) —
    to the payload; `input.webhook.body.caption` from the same form is still there.
-4. Derive what you need: `fs.image.thumbnail --source-key file --width 320 --height 320 --fit cover --format webp --folder thumbs`
-   reads `file` and adds `thumbnail` (a FileRef, `thumbnail.ref`) the same way.
+4. Derive what you need: `fs.image.thumbnail --from "{{ input.file }}" --width 320 --height 320 --fit cover --format webp --folder thumbs`
+   reads the file `--from` names and adds `image` (a FileRef, `image.ref`) the same way.
 5. Store the **store path** (`file.ref`) in your table, not a URL — URLs
    depend on owner, project and visibility.
 

@@ -1,9 +1,15 @@
-//! fs.pdf.convert — break a project PDF into page-level artifacts.
+//! `fs.pdf.convert` — one PDF broken into page-level files.
 //!
-//! This node is the Zebflow wrapper around the standalone `pdfwrangler` library.
-//! It resolves a project-scoped source PDF path from the payload, writes exported
-//! page assets under Zebflow FS, and emits a structured summary
-//! for downstream indexing flows.
+//! The Zebflow wrapper around the standalone `pdfwrangler` library. `--from`
+//! names the PDF — a FileRef, an upload or a store key; pdfium speaks paths,
+//! so it is pulled into a scratch folder, exported there, and the export is
+//! written under `--folder` with the tree writer's destination set.
+//! `--include text|image|raster` (repeat; default all three) picks what each
+//! page yields: its text as `text.md`, its embedded images, a PNG of the page
+//! at `--dpi`. Every page also gets `page.json`, and the folder a `manifest.json`.
+//!
+//! The answer is one key, `pdf: { folder, items, count, page_count,
+//! manifest_path, pages }`; the rest of the payload stays.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -11,15 +17,16 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use pdfwrangler::{ExportOptions, export_document};
 use serde::{Deserialize, Serialize};
-use serde_json::json;
+use serde_json::{Value, json};
 
-use crate::pipeline::nodes::shared::store_scratch::StoreScratch;
-use crate::pipeline::nodes::shared::project_store::{OnConflict, on_conflict_flag, open_source, open_store, store_fields, store_flag, target_key};
-use crate::pipeline::nodes::shared::util::{metadata_scope, resolve_path};
 use crate::pipeline::model::NodeCapability;
+use crate::pipeline::nodes::shared::limits::{choice, within};
+use crate::pipeline::nodes::shared::project_store::{OnConflict, on_conflict_flag, open_from, open_store, store_fields, store_flag, target_key};
+use crate::pipeline::nodes::shared::store_scratch::StoreScratch;
+use crate::pipeline::nodes::shared::util::{metadata_scope, with_answer};
 use crate::pipeline::{
     NodeDefinition, PipelineError,
-    model::{DslFlag, DslFlagKind, LayoutItem, NodeFieldDef, NodeFieldType},
+    model::{DslFlag, DslFlagKind, LayoutItem, NodeExample, NodeFieldDef, NodeFieldType, SelectOptionDef},
     nodes::{NodeExecutionInput, NodeExecutionOutput, NodeHandler},
 };
 use crate::platform::services::PlatformService;
@@ -28,67 +35,37 @@ pub const NODE_KIND: &str = "fs.pdf.convert";
 const INPUT_PIN_IN: &str = "in";
 const OUTPUT_PIN_OUT: &str = "out";
 
-fn default_source_key() -> String {
-    "saved".to_string()
-}
+/// pdfium, the scratch folder and the store: the world's side.
+pub const CODE: &str = "FW_NODE_FS_PDF_CONVERT";
+/// A flag the author set wrong.
+pub const CONFIG_CODE: &str = "FW_NODE_FS_PDF_CONVERT_CONFIG";
+/// `--from` is missing, not there, or not a PDF.
+const SOURCE_CODE: &str = "FW_NODE_FS_PDF_CONVERT_SOURCE";
 
-fn default_emit_fulltext() -> bool {
-    true
-}
+/// What a page yields, in the order the help lists them.
+const INCLUDE_WORDS: &[&str] = &["text", "image", "raster"];
+const DEFAULT_DPI: f32 = 144.0;
 
-fn default_emit_page_images() -> bool {
-    true
-}
-
-fn default_emit_page_raster() -> bool {
-    true
-}
-
-fn default_dpi() -> f32 {
-    144.0
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Config {
-    /// Dot-path in the payload containing the project-relative PDF path.
-    #[serde(default = "default_source_key")]
-    pub source_key: String,
-    /// The folder the export goes into (default: `pdf/<source-file-stem>`).
+    /// The PDF: a FileRef, an upload or a store key.
     #[serde(default)]
-    pub folder: String,
+    pub from: Value,
+    /// What each page yields: `text`, `image`, `raster` (default: all three).
+    #[serde(default)]
+    pub include: Vec<String>,
+    /// Raster resolution, 36–600 (default 144).
+    #[serde(default)]
+    pub dpi: Value,
     /// The store to write to; saved explicitly at registration.
     #[serde(default)]
     pub store: Option<String>,
-    /// `overwrite`, `skip` or `error` when the folder is not empty (default: error).
+    /// The folder the export goes into (default: `pdf/<source-file-stem>`).
+    #[serde(default)]
+    pub folder: String,
+    /// `error` (default, when the folder is not empty), `skip` or `overwrite`.
     #[serde(default)]
     pub on_conflict: Option<String>,
-    /// Export text markdown per page.
-    #[serde(default = "default_emit_fulltext")]
-    pub emit_fulltext: bool,
-    /// Export embedded images per page.
-    #[serde(default = "default_emit_page_images")]
-    pub emit_page_images: bool,
-    /// Export a raster PNG per page.
-    #[serde(default = "default_emit_page_raster")]
-    pub emit_page_raster: bool,
-    /// Raster DPI when page PNG export is enabled.
-    #[serde(default = "default_dpi")]
-    pub dpi: f32,
-}
-
-impl Default for Config {
-    fn default() -> Self {
-        Self {
-            source_key: default_source_key(),
-            folder: String::new(),
-            store: None,
-            on_conflict: None,
-            emit_fulltext: default_emit_fulltext(),
-            emit_page_images: default_emit_page_images(),
-            emit_page_raster: default_emit_page_raster(),
-            dpi: default_dpi(),
-        }
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -100,53 +77,50 @@ pub struct PageArtifact {
     pub embedded_images: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PdfConvertOutput {
-    pub source: String,
-    pub folder: String,
-    pub store: String,
-    pub manifest_path: String,
-    /// A durable FileRef for every file written.
-    pub files: Vec<serde_json::Value>,
-    pub page_count: usize,
-    pub options: PdfConvertOptions,
-    pub pages: Vec<PageArtifact>,
+fn flag(name: &str, key: &str, description: &str, value: &str) -> DslFlag {
+    DslFlag {
+        flag: name.to_string(),
+        config_key: key.to_string(),
+        description: description.to_string(),
+        kind: DslFlagKind::Scalar,
+        required: false,
+        value: value.to_string(),
+        ..Default::default()
+    }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PdfConvertOptions {
-    pub emit_fulltext: bool,
-    pub emit_page_images: bool,
-    pub emit_page_raster: bool,
-    pub dpi: f32,
+fn field(name: &str, label: &str, help: &str) -> NodeFieldDef {
+    NodeFieldDef { name: name.to_string(), label: label.to_string(), field_type: NodeFieldType::Text, help: Some(help.to_string()), ..Default::default() }
+}
+
+fn words(list: &[&str]) -> Vec<String> {
+    list.iter().map(|word| word.to_string()).collect()
 }
 
 pub fn definition() -> NodeDefinition {
+    let upload = json!({ "__zf_type": "file_ref", "backend": "zebfs", "store": "local", "ref": "uploads/brief.pdf", "filename": "brief.pdf", "mime": "application/pdf", "kind": "pdf", "size": 182331, "sha256": "sha256:…", "lifecycle": "durable", "origin": "fs.file.put", "trust": "untrusted" });
     NodeDefinition {
         kind: NODE_KIND.to_string(),
         capabilities: vec![NodeCapability::Filesystem],
         title: "PDF Convert".to_string(),
-        description: "Convert one project PDF file into page-level artifacts under Zebflow FS. \
-            Reads the source PDF at `input.saved` by default (a FileRef or a store path string) and writes \
-            `text.md`, `page.json`, optional page rasters, and optional extracted embedded \
-            images. Output payload includes a page manifest for downstream indexing."
+        description: "Break the PDF `--from` names — a FileRef, an upload or a store key — into page-level files under `--folder` (default `pdf/<file stem>`). \
+            `--include text|image|raster` (repeat; default all three) picks what each page yields: `text.md`, its embedded images, a PNG at `--dpi` (default 144). \
+            Every page also gets `page.json` and the folder a `manifest.json`. A folder that is not empty is an error unless `--on-conflict` says otherwise. \
+            Adds `pdf: { folder, items, count, page_count, manifest_path, pages }` — `items` a durable FileRef per file written — and keeps the rest of the payload."
             .to_string(),
-        input_schema: json!({
-            "type": "object",
-            "description": "Payload must contain the PDF — a FileRef or a project-relative path string — at the configured source_key (default: `saved`)."
-        }),
+        input_schema: json!({ "type": "object" }),
         output_schema: json!({
             "type": "object",
             "properties": {
-                "pdf_convert": {
+                "pdf": {
                     "type": "object",
                     "properties": {
-                        "source": { "type": "string" },
                         "folder": { "type": "string" },
-                        "store": { "type": "string" },
+                        "items": { "type": "array", "description": "A durable FileRef per file written" },
+                        "count": { "type": "integer" },
+                        "page_count": { "type": "integer" },
                         "manifest_path": { "type": "string" },
-                        "files": { "type": "array", "description": "A durable FileRef per file written" },
-                        "page_count": { "type": "integer" }
+                        "pages": { "type": "array", "description": "Per page: page, text_path, page_meta_path, page_raster_path, embedded_images" }
                     }
                 }
             }
@@ -157,127 +131,65 @@ pub fn definition() -> NodeDefinition {
         script_bridge: None,
         config_schema: Default::default(),
         dsl_flags: vec![
+            DslFlag { required: true, ..flag("--from", "from", "The PDF: a FileRef, an upload or a store key.", "file:pdf") },
             DslFlag {
-                flag: "--source-key".to_string(),
-                config_key: "source_key".to_string(),
-                description: "Dot-path to the source PDF in the payload: a FileRef or a store path string (default: `saved`)".to_string(),
-                kind: DslFlagKind::Scalar,
-                required: false,
-                ..Default::default()
+                kind: DslFlagKind::RepeatedList,
+                choices: words(INCLUDE_WORDS),
+                max_repeat: Some(INCLUDE_WORDS.len() as u32),
+                ..flag("--include", "include", "What each page yields (repeat; default: text, image and raster).", "")
             },
-            DslFlag {
-                flag: "--folder".to_string(),
-                config_key: "folder".to_string(),
-                description: "The folder the export goes into (default: pdf/<source-file-stem>)".to_string(),
-                kind: DslFlagKind::Scalar,
-                required: false,
-                ..Default::default()
-            },
-            DslFlag {
-                flag: "--emit-fulltext".to_string(),
-                config_key: "emit_fulltext".to_string(),
-                description: "Write text.md per page (default: true)".to_string(),
-                kind: DslFlagKind::Bool,
-                required: false,
-                ..Default::default()
-            },
-            DslFlag {
-                flag: "--emit-page-images".to_string(),
-                config_key: "emit_page_images".to_string(),
-                description: "Extract embedded images per page (default: true)".to_string(),
-                kind: DslFlagKind::Bool,
-                required: false,
-                ..Default::default()
-            },
-            DslFlag {
-                flag: "--emit-page-raster".to_string(),
-                config_key: "emit_page_raster".to_string(),
-                description: "Render PNG raster per page (default: true)".to_string(),
-                kind: DslFlagKind::Bool,
-                required: false,
-                ..Default::default()
-            },
-            DslFlag {
-                flag: "--dpi".to_string(),
-                config_key: "dpi".to_string(),
-                description: "Raster DPI when page PNG export is enabled (default: 144)".to_string(),
-                kind: DslFlagKind::Scalar,
-                required: false,
-                ..Default::default()
-            },
-            store_flag(),
-            on_conflict_flag(OnConflict::Error),
+            flag("--dpi", "dpi", "Page raster resolution, 36–600 (default: 144).", "number"),
+            DslFlag { value: "text".to_string(), ..store_flag() },
+            flag("--folder", "folder", "The folder the export goes into (default: pdf/<file stem>).", "text"),
+            DslFlag { choices: words(&["error", "skip", "overwrite"]), ..on_conflict_flag(OnConflict::Error) },
         ],
         fields: vec![
+            field("from", "From", "The PDF, e.g. {{ input.file }}."),
             NodeFieldDef {
-                name: "source_key".to_string(),
-                label: "Source Key".to_string(),
-                field_type: NodeFieldType::Text,
-                help: Some("Dot-path to the project-relative PDF path in the input payload.".to_string()),
-                default_value: Some(json!("saved")),
-                ..Default::default()
+                field_type: NodeFieldType::MultiCheckbox,
+                options: INCLUDE_WORDS.iter().map(|v| SelectOptionDef { value: v.to_string(), label: v.to_string() }).collect(),
+                ..field("include", "Include", "What each page yields. None ticked: all three.")
             },
-            NodeFieldDef {
-                name: "folder".to_string(),
-                label: "Folder".to_string(),
-                field_type: NodeFieldType::Text,
-                help: Some("The folder the export goes into (default: pdf/<source-file-stem>).".to_string()),
-                ..Default::default()
-            },
-            NodeFieldDef {
-                name: "emit_fulltext".to_string(),
-                label: "Emit Text".to_string(),
-                field_type: NodeFieldType::Checkbox,
-                default_value: Some(json!(true)),
-                help: Some("Extract full document text into the conversion output.".to_string()),
-                ..Default::default()
-            },
-            NodeFieldDef {
-                name: "emit_page_images".to_string(),
-                label: "Extract Embedded Images".to_string(),
-                field_type: NodeFieldType::Checkbox,
-                default_value: Some(json!(true)),
-                help: Some("Extract embedded PDF images into output files when possible.".to_string()),
-                ..Default::default()
-            },
-            NodeFieldDef {
-                name: "emit_page_raster".to_string(),
-                label: "Render Page PNG".to_string(),
-                field_type: NodeFieldType::Checkbox,
-                default_value: Some(json!(true)),
-                help: Some("Render each page as a raster PNG preview.".to_string()),
-                ..Default::default()
-            },
-            NodeFieldDef {
-                name: "dpi".to_string(),
-                label: "Raster DPI".to_string(),
-                field_type: NodeFieldType::Text,
-                default_value: Some(json!("144")),
-                help: Some("DPI used when rendering page PNG previews.".to_string()),
-                ..Default::default()
-            },
-        ].into_iter().chain(store_fields(OnConflict::Error)).collect(),
-        layout: vec![LayoutItem::Col {
-            col: vec![
-                LayoutItem::Field("source_key".to_string()),
-                LayoutItem::Field("folder".to_string()),
-                LayoutItem::Field("emit_fulltext".to_string()),
-                LayoutItem::Field("emit_page_images".to_string()),
-                LayoutItem::Field("emit_page_raster".to_string()),
-                LayoutItem::Field("dpi".to_string()),
-                LayoutItem::Field("store".to_string()),
-                LayoutItem::Field("on_conflict".to_string()),
-            ],
-        }],
-        ai_tool: Default::default(),
+            NodeFieldDef { default_value: Some(json!("144")), ..field("dpi", "Raster DPI", "Page PNG resolution, 36–600 (default 144).") },
+            field("folder", "Folder", "The folder the export goes into (default: pdf/<file stem>)."),
+        ]
+        .into_iter()
+        .chain(store_fields(OnConflict::Error))
+        .collect(),
+        layout: ["from", "include", "dpi", "folder", "store", "on_conflict"].iter().map(|name| LayoutItem::Field(name.to_string())).collect(),
         examples: vec![
-            crate::pipeline::model::NodeExample::dsl("Text and page images from an uploaded PDF", "fs.pdf.convert --source-key file --folder pdf/brief --dpi 110")
-                .input(serde_json::json!({ "file": { "__zf_type": "file_ref", "backend": "zebfs", "store": "local", "ref": "uploads/brief.pdf", "filename": "brief.pdf", "mime": "application/pdf", "kind": "pdf", "size": 182331, "sha256": "sha256:…", "lifecycle": "durable", "origin": "fs.file.put", "trust": "untrusted" } }))
-                .output(serde_json::json!({ "pdf_convert": { "source": "uploads/brief.pdf", "folder": "pdf/brief", "store": "local", "manifest_path": "pdf/brief/manifest.json", "page_count": 4, "files": ["…a FileRef per file"] } }))
-                .note("Each page's text is `pdf/brief/page-N/text.md`; read one back with `fs.file.get`."),
+            NodeExample::dsl("Text and page images from an uploaded PDF", "fs.pdf.convert --from \"{{ input.file }}\" --include text --include raster --folder pdf/brief --dpi 110")
+                .input(json!({ "file": upload.clone() }))
+                .output(json!({ "file": upload, "pdf": { "folder": "pdf/brief", "count": 9, "page_count": 4, "manifest_path": "pdf/brief/manifest.json", "items": ["…a FileRef per file"], "pages": ["…"] } }))
+                .note("Each page's text is `pdf/brief/<page>/text.md`; read one back with `fs.file.get --from pdf/brief/1/text.md`."),
         ],
         ..Default::default()
     }
+}
+
+/// `--dpi` as a number or the number as text; unset is the default.
+fn dpi(value: &Value) -> Result<f32, PipelineError> {
+    let bad = || PipelineError::new(CONFIG_CODE, format!("--dpi '{value}' is not a number"));
+    let dpi = match value {
+        Value::Null => DEFAULT_DPI,
+        Value::String(s) if s.trim().is_empty() => DEFAULT_DPI,
+        Value::String(s) => s.trim().parse::<f32>().map_err(|_| bad())?,
+        Value::Number(n) => n.as_f64().ok_or_else(bad)? as f32,
+        _ => return Err(bad()),
+    };
+    within(dpi, 36.0, 600.0, "--dpi", CONFIG_CODE)
+}
+
+/// `--include`, read: (text, image, raster). None given is all three.
+fn include(words: &[String]) -> Result<(bool, bool, bool), PipelineError> {
+    let mut chosen = Vec::new();
+    for word in words.iter().filter(|word| !word.trim().is_empty()) {
+        chosen.push(choice(word, INCLUDE_WORDS, "", "--include", CONFIG_CODE)?);
+    }
+    if chosen.is_empty() {
+        return Ok((true, true, true));
+    }
+    Ok((chosen.contains(&"text"), chosen.contains(&"image"), chosen.contains(&"raster")))
 }
 
 pub struct Node {
@@ -305,140 +217,72 @@ impl NodeHandler for Node {
         &[OUTPUT_PIN_OUT]
     }
 
-    async fn execute_async(
-        &self,
-        input: NodeExecutionInput,
-    ) -> Result<NodeExecutionOutput, PipelineError> {
+    async fn execute_async(&self, input: NodeExecutionInput) -> Result<NodeExecutionOutput, PipelineError> {
         let (owner, project, ..) = metadata_scope(&input.metadata)?;
-
-        let source_key = if self.config.source_key.trim().is_empty() {
-            "saved"
-        } else {
-            self.config.source_key.trim()
-        };
-
-        let source_value = resolve_path(&input.payload, source_key).ok_or_else(|| {
-            PipelineError::new(
-                "FW_NODE_FS_PDF_CONVERT",
-                format!("source PDF path not found at payload key '{source_key}' — after fs.file.put set --source-key file"),
-            )
-        })?;
-        let (source_store, rel_path) = open_source(&self.platform, owner, project, source_value, self.config.store.as_deref())?
-            .ok_or_else(|| {
-                PipelineError::new(
-                    "FW_NODE_FS_PDF_CONVERT",
-                    format!(
-                        "source PDF path not found at payload key '{source_key}' — after fs.file.put set --source-key file"
-                    ),
-                )
-            })?;
-
-        let rel_path = crate::zebfs::normalize_object_path(&rel_path)
-            .map_err(|err| PipelineError::new("FW_NODE_FS_PDF_CONVERT", format!("source: {}", err.message)))?;
-        crate::pipeline::nodes::shared::limits::within(self.config.dpi, 36.0, 600.0, "--dpi", "FW_NODE_FS_PDF_CONVERT")?;
+        let (emit_fulltext, emit_page_images, emit_page_raster) = include(&self.config.include)?;
+        let dpi = dpi(&self.config.dpi)?;
+        let on_conflict = OnConflict::parse(self.config.on_conflict.as_deref(), OnConflict::Error, CONFIG_CODE)?;
+        let (source_store, rel_path) =
+            open_from(&self.platform, owner, project, &self.config.from, self.config.store.as_deref(), "--from", SOURCE_CODE)?;
 
         // pdfium speaks paths and the project's files live in their stores:
         // the PDF is pulled into a scratch folder, exported there, and the
         // export is put into this node's store.
-        let zebfs = &source_store.fs;
-        let scratch = StoreScratch::new("FW_NODE_FS_PDF_CONVERT")?;
-        match zebfs.head(&rel_path) {
+        match source_store.fs.head(&rel_path) {
             Ok(stat) if stat.kind == crate::zebfs::ZebFsEntryKind::Object => {}
-            _ => {
-                return Err(PipelineError::new(
-                    "FW_NODE_FS_PDF_CONVERT",
-                    format!("source PDF not found: {rel_path}"),
-                ));
-            }
+            _ => return Err(PipelineError::new(SOURCE_CODE, format!("--from: no PDF at '{rel_path}'"))),
         }
-        let abs_path = scratch.pull(&zebfs, &rel_path)?;
-
+        let scratch = StoreScratch::new(CODE)?;
+        let abs_path = scratch.pull(&source_store.fs, &rel_path)?;
         validate_pdf_magic(&abs_path)?;
 
-        let output_rel_dir = target_key(Some(&resolve_output_dir(&self.config.folder, &rel_path)), "", "", "FW_NODE_FS_PDF_CONVERT")?;
+        let output_rel_dir = target_key(Some(&resolve_output_dir(&self.config.folder, &rel_path)), "", "", CONFIG_CODE)?;
         let store = open_store(&self.platform, owner, project, self.config.store.as_deref())?;
-        let on_conflict = OnConflict::parse(self.config.on_conflict.as_deref(), OnConflict::Error, "FW_NODE_FS_PDF_CONVERT")?;
-        if !on_conflict.allows_tree(&store.fs, &output_rel_dir, "FW_NODE_FS_PDF_CONVERT")? {
+        if !on_conflict.allows_tree(&store.fs, &output_rel_dir, CODE)? {
+            // Skipped: nothing was written.
             return Ok(NodeExecutionOutput {
                 output_pins: vec![OUTPUT_PIN_OUT.to_string()],
-                payload: crate::pipeline::nodes::shared::util::with_answer(
-                    &input.payload,
-                    json!({ "pdf_convert": { "source": rel_path, "folder": output_rel_dir, "store": store.id, "skipped": true, "files": [] } }),
-                ),
+                payload: with_answer(&input.payload, json!({ "pdf": { "folder": output_rel_dir, "items": [], "count": 0 } })),
                 trace: vec![format!("node_kind={NODE_KIND} src={rel_path} out={output_rel_dir} skipped=true")],
             });
         }
         let output_root = scratch.path().join(".zf-out");
         let output_root_local = output_root.clone();
-
-        let options = ExportOptions {
-            emit_fulltext: self.config.emit_fulltext,
-            emit_page_images: self.config.emit_page_images,
-            emit_page_raster: self.config.emit_page_raster,
-            dpi: self.config.dpi,
-        };
-
+        let options = ExportOptions { emit_fulltext, emit_page_images, emit_page_raster, dpi };
         let source_path = abs_path.clone();
-        let manifest = tokio::task::spawn_blocking(move || {
-            export_document(&source_path, &output_root, options)
-        })
-        .await
-        .map_err(|err| {
-            PipelineError::new(
-                "FW_NODE_FS_PDF_CONVERT",
-                format!("pdf export task failed: {err}"),
-            )
-        })?
-        .map_err(|err| PipelineError::new("FW_NODE_FS_PDF_CONVERT", err.to_string()))?;
-        let trust = source_value.get("trust").and_then(|value| value.as_str()).unwrap_or("untrusted").to_string();
-        let files = scratch.push_tree_refs(&store, &output_root_local, &output_rel_dir, "fs.pdf.convert", &trust)?;
+        let manifest = tokio::task::spawn_blocking(move || export_document(&source_path, &output_root, options))
+            .await
+            .map_err(|err| PipelineError::new(CODE, format!("pdf export task failed: {err}")))?
+            .map_err(|err| PipelineError::new(CODE, err.to_string()))?;
+        // What came out of the PDF was never re-encoded by this node.
+        let items = scratch.push_tree_refs(&store, &output_root_local, &output_rel_dir, NODE_KIND, "untrusted")?;
 
         let pages = manifest
             .pages
             .into_iter()
             .map(|page| PageArtifact {
                 page: page.page,
-                text_path: page
-                    .text_path
-                    .map(|path| prefixed_output_path(&output_rel_dir, &path)),
-                page_meta_path: prefixed_output_path(
-                    &output_rel_dir,
-                    &format!("{}/page.json", page.page),
-                ),
-                page_raster_path: page
-                    .page_raster_path
-                    .map(|path| prefixed_output_path(&output_rel_dir, &path)),
-                embedded_images: page
-                    .embedded_images
-                    .into_iter()
-                    .map(|path| prefixed_output_path(&output_rel_dir, &path))
-                    .collect(),
+                text_path: page.text_path.map(|path| prefixed_output_path(&output_rel_dir, &path)),
+                page_meta_path: prefixed_output_path(&output_rel_dir, &format!("{}/page.json", page.page)),
+                page_raster_path: page.page_raster_path.map(|path| prefixed_output_path(&output_rel_dir, &path)),
+                embedded_images: page.embedded_images.into_iter().map(|path| prefixed_output_path(&output_rel_dir, &path)).collect(),
             })
             .collect::<Vec<_>>();
-
-        let output = PdfConvertOutput {
-            source: rel_path.clone(),
-            folder: output_rel_dir.clone(),
-            store: store.id.clone(),
-            manifest_path: format!("{output_rel_dir}/manifest.json"),
-            files,
-            page_count: manifest.page_count,
-            options: PdfConvertOptions {
-                emit_fulltext: self.config.emit_fulltext,
-                emit_page_images: self.config.emit_page_images,
-                emit_page_raster: self.config.emit_page_raster,
-                dpi: self.config.dpi,
-            },
-            pages,
-        };
-
+        let count = items.len();
         Ok(NodeExecutionOutput {
             output_pins: vec![OUTPUT_PIN_OUT.to_string()],
-            payload: crate::pipeline::nodes::shared::util::with_answer(&input.payload, json!({ "pdf_convert": output })),
-            trace: vec![format!(
-                "node_kind={NODE_KIND} src={} out={} pages={}",
-                rel_path, output_rel_dir, manifest.page_count
-            )],
+            payload: with_answer(
+                &input.payload,
+                json!({ "pdf": {
+                    "folder": output_rel_dir,
+                    "items": items,
+                    "count": count,
+                    "page_count": manifest.page_count,
+                    "manifest_path": format!("{output_rel_dir}/manifest.json"),
+                    "pages": pages,
+                } }),
+            ),
+            trace: vec![format!("node_kind={NODE_KIND} src={rel_path} out={output_rel_dir} pages={}", manifest.page_count)],
         })
     }
 }
@@ -505,12 +349,9 @@ fn validate_pdf_magic(path: &PathBuf) -> Result<(), PipelineError> {
     let mut head = [0u8; 5];
     std::fs::File::open(path)
         .and_then(|mut file| file.read_exact(&mut head))
-        .map_err(|err| PipelineError::new("FW_NODE_FS_PDF_CONVERT", format!("read source PDF: {err}")))?;
+        .map_err(|err| PipelineError::new(SOURCE_CODE, format!("--from: {err}")))?;
     if &head != b"%PDF-" {
-        return Err(PipelineError::new(
-            "FW_NODE_FS_PDF_CONVERT",
-            "source file is not a PDF".to_string(),
-        ));
+        return Err(PipelineError::new(SOURCE_CODE, "--from is not a PDF"));
     }
     Ok(())
 }
@@ -521,7 +362,7 @@ mod tests {
 
     use serde_json::json;
 
-    use super::{Config, Node, prefixed_output_path, resolve_output_dir};
+    use super::{CONFIG_CODE, Config, Node, SOURCE_CODE, dpi, include, prefixed_output_path, resolve_output_dir};
     use crate::pipeline::nodes::{NodeExecutionInput, NodeHandler};
     use crate::platform::model::PlatformConfig;
     use crate::platform::services::PlatformService;
@@ -531,6 +372,22 @@ mod tests {
         assert_eq!(
             resolve_output_dir("", "uploads/My Paper.pdf"),
             "pdf/my-paper"
+        );
+    }
+
+    #[test]
+    fn include_and_dpi_are_closed() {
+        assert_eq!(include(&[]).unwrap(), (true, true, true));
+        assert_eq!(include(&["raster".to_string()]).unwrap(), (false, false, true));
+        assert_eq!(include(&["pages".to_string()]).unwrap_err().code, CONFIG_CODE);
+        assert_eq!(dpi(&json!(null)).unwrap(), 144.0);
+        assert_eq!(dpi(&json!("110")).unwrap(), 110.0);
+        assert_eq!(dpi(&json!(1200)).unwrap_err().code, CONFIG_CODE);
+        assert_eq!(dpi(&json!("high")).unwrap_err().code, CONFIG_CODE);
+        assert_eq!(
+            crate::pipeline::nodes::node_signature(&super::definition()),
+            "fs.pdf.convert --from PDF [--include text|image|raster…] [--dpi N] [--store TEXT] [--folder TEXT] \
+             [--on-conflict error|skip|overwrite] → pdf"
         );
     }
 
@@ -547,7 +404,6 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tempdir");
         let mut config = PlatformConfig::default();
         config.data_root = tmp.path().join("platform");
-        config.default_password = "secret".to_string();
         let platform = Arc::new(PlatformService::from_config(config).expect("platform"));
 
         let layout = platform
@@ -559,22 +415,27 @@ mod tests {
         std::fs::create_dir_all(source_abs.parent().expect("parent")).expect("create parent");
         std::fs::write(&source_abs, minimal_pdf_bytes("Hello PDF")).expect("write pdf");
 
-        let node = Node::new(
-            Config {
-                emit_fulltext: true,
-                emit_page_images: false,
-                emit_page_raster: true,
-                ..Config::default()
-            },
-            platform,
-        )
-        .expect("node");
+        let missing = Node::new(Config::default(), platform.clone())
+            .expect("node")
+            .execute_async(NodeExecutionInput {
+                node_id: "n-test".to_string(),
+                input_pin: "in".to_string(),
+                payload: json!({ "saved": source_rel }),
+                metadata: json!({ "owner": "superadmin", "project": "default", "pipeline": "test", "request_id": "req-0" }),
+                bus: None,
+            })
+            .await
+            .expect_err("no --from");
+        assert_eq!(missing.code, SOURCE_CODE, "the payload is never read without a flag");
+
+        let config = json!({ "from": source_rel, "include": ["text", "raster"] });
+        let node = Node::new(serde_json::from_value(config).expect("config"), platform).expect("node");
 
         let output = node
             .execute_async(NodeExecutionInput {
                 node_id: "n-test".to_string(),
                 input_pin: "in".to_string(),
-                payload: json!({ "saved": source_rel }),
+                payload: json!({ "keep": true }),
                 metadata: json!({
                     "owner": "superadmin",
                     "project": "default",
@@ -588,9 +449,11 @@ mod tests {
 
         let pdf = output
             .payload
-            .get("pdf_convert")
+            .get("pdf")
             .cloned()
-            .expect("pdf_convert payload");
+            .expect("pdf payload");
+        assert_eq!(output.payload["keep"], true, "the payload stays");
+        assert_eq!(pdf["count"].as_u64(), pdf["items"].as_array().map(|items| items.len() as u64));
         let manifest_rel = pdf
             .get("manifest_path")
             .and_then(|value| value.as_str())

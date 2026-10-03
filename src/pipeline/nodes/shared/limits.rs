@@ -46,6 +46,20 @@ pub fn raster(width: u32, height: u32, code: &'static str) -> Result<(u32, u32),
     Ok((width, height))
 }
 
+/// A whole-number flag as the DSL or the editor sends it — a number, or the
+/// number as text; unset or empty is `None`. Anything else is refused.
+pub fn whole(value: &serde_json::Value, flag: &str, code: &'static str) -> Result<Option<u32>, PipelineError> {
+    use serde_json::Value;
+    let bad = || PipelineError::new(code, format!("{flag} '{value}' is not a whole number"));
+    match value {
+        Value::Null => Ok(None),
+        Value::String(s) if s.trim().is_empty() => Ok(None),
+        Value::String(s) => s.trim().parse::<u32>().map(Some).map_err(|_| bad()),
+        Value::Number(n) => n.as_u64().and_then(|n| u32::try_from(n).ok()).map(Some).ok_or_else(bad),
+        _ => Err(bad()),
+    }
+}
+
 /// A number inside `min..=max`, refused outside it.
 pub fn within<T: PartialOrd + std::fmt::Display + Copy>(
     value: T,
@@ -62,7 +76,7 @@ pub fn within<T: PartialOrd + std::fmt::Display + Copy>(
 
 #[cfg(test)]
 mod tests {
-    use super::{choice, raster, within};
+    use super::{choice, raster, whole, within};
 
     #[test]
     fn a_choice_is_closed_and_a_size_has_a_ceiling() {
@@ -75,5 +89,10 @@ mod tests {
         assert!(raster(0, 10, "T").is_err());
         assert_eq!(within(300, 36, 600, "--dpi", "T").unwrap(), 300);
         assert!(within(1200, 36, 600, "--dpi", "T").is_err());
+        assert_eq!(whole(&serde_json::json!("256"), "--width", "T").unwrap(), Some(256));
+        assert_eq!(whole(&serde_json::json!(80), "--width", "T").unwrap(), Some(80));
+        assert_eq!(whole(&serde_json::json!(" "), "--width", "T").unwrap(), None);
+        assert!(whole(&serde_json::json!("wide"), "--width", "T").is_err());
+        assert!(whole(&serde_json::json!(-1), "--width", "T").is_err());
     }
 }

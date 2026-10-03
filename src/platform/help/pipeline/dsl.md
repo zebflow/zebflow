@@ -110,8 +110,8 @@ the ceiling for a local `fetch('/path')` read inside a script. Bytes still
 do not belong in a payload: whatever a node returns is carried in `$nodes`,
 the run record and every downstream payload. Pass files as FileRefs, shrink
 an image with `fs.image.thumbnail` before anything reads it, and read bytes inline
-only for a provider that needs them: `fs.file.get --path <p> --encoding base64`
-answers the bytes at `input.fs.object.base64`, which a `{{ }}` body can prefix with
+only for a provider that needs them: `fs.file.get --from <file> --encoding base64`
+answers the bytes at `input.file.base64`, which a `{{ }}` body can prefix with
 `data:image/jpeg;base64,` — the story pipeline sends its reference photo as
 a 640 px thumbnail (~120 KB as a data URI) rather than the 1200 px original.
 
@@ -392,8 +392,8 @@ drop zone under the two nodes, and Run posts them as multipart:
 | trigger.manual
 | input.text prompt --label "Caption" --max 200
 | input.image photo
-| fs.image.thumbnail --source-key photo --width 200 --height 200 --preview image
-| script.result.run --preview json -- return { caption: input.prompt, thumb: input.thumbnail }
+| fs.image.thumbnail --from "{{ input.photo }}" --width 200 --height 200 --preview image
+| script.result.run --preview json -- return { caption: input.prompt, thumb: input.image }
 ```
 
 A webhook form that takes a CV — a browser posts the same multipart, and the
@@ -464,7 +464,7 @@ or by any `fs.*` node. `fs.file.put` keeps an uploaded file:
 ```
 | trigger.webhook --route /upload --method POST
 | fs.file.put --from "{{ input.webhook.files.photo }}" --folder uploads --accept image --max-size 10MB
-| fs.image.thumbnail --source-key file --width 320 --height 320 --fit cover --format webp --folder thumbs
+| fs.image.thumbnail --from "{{ input.file }}" --width 320 --height 320 --fit cover --format webp --folder thumbs
 ```
 
 `fs.file.put` takes exactly one source — `--from` a file (checked by its
@@ -474,11 +474,16 @@ bytes) or `--value` (any JSON value, written as JSON) — and adds `file`: a
 durable FileRef (`__zf_type`, `backend`, `store`, `ref`, `filename`, `mime`,
 `kind`, `size`, `sha256`, `lifecycle: durable`, `origin: fs.file.put`,
 `trust`); the store path is `file.ref`, and there is no `path`, `url` or
-`content_type` beside it — and `fs.image.thumbnail --source-key file` adds
-`thumbnail` (a FileRef); the form's other fields (`input.webhook.body.caption`)
-stay beside them. `fs.file.copy`, `fs.file.move` (their `object` under `fs`) and
-`fs.archive.create` (`compressed`) answer a stored file the same way: a bare
-FileRef. Store `ref` in a row; a URL is not a node's business.
+`content_type` beside it — and `fs.image.thumbnail --from "{{ input.file }}"` adds
+`image` (a FileRef with `width`, `height`, `format`); the form's other fields
+(`input.webhook.body.caption`) stay beside them. Every `fs.*` node names its
+subject with `--from` — a FileRef, an upload or a store key; none reads a
+default payload key. `fs.file.copy` and `fs.file.move` (`file`) and
+`fs.archive.create` (`archive`) answer a stored file the same way: a FileRef.
+`fs.folder.list --from <folder>` answers `folder: { path, items, count }`;
+`fs.archive.extract` and `fs.pdf.convert`, which write a tree, answer
+`{ folder, items, count, … }` under `archive` and `pdf`. Store `ref` in a row;
+a URL is not a node's business.
 
 **Every file is private** until the owner exposes its folder in Studio →
 Files (`PUT /api/projects/{owner}/{project}/files/access`); no folder name and
@@ -542,14 +547,16 @@ a `data:` URI is refused — fetch with `http.response.fetch --response-type byt
 | trigger.manual
 | input.text brief --label "What the poster is for"
 | ai.text.generate --credential openrouter --output-mode final_only --schema '{"type":"object","required":["svg"],"properties":{"svg":{"type":"string"}}}' -- Write one 1080x1350 SVG poster (xmlns, width and height set, font-family Inter, the headline as a <text> with inline-size="918") for: {{ input.brief }}
-| fs.image.render --source-key data.svg --folder sandbox/posters/out --preview image
+| fs.image.render --text "{{ input.data.svg }}" --folder sandbox/posters/out --preview image
 ```
 
-The flags are `fs.image.thumbnail`'s. With no `--width`/`--height` the
+The SVG is exactly one of `--from` (a stored `.svg`: a FileRef, an upload or
+a store key) and `--text` (the markup). The other flags are
+`fs.image.thumbnail`'s. With no `--width`/`--height` the
 canvas is the SVG's own size; one side scales the other in proportion; both
 go through `--fit cover|contain|fill`. `--format png|jpg|webp` (default
 png), `--quality` for jpg, `--folder` (default `images/`), `--filename`,
-`--delete-source`. The answer adds `image` — a durable FileRef
+`--delete-source` (for a `--from` file). The answer adds `image` — a durable FileRef
 (`origin: fs.image.render`) with `width`, `height`, `format` and `layout` —
 and keeps the rest of the payload, so `data.svg` is still there for the next
 node. `image.layout` holds every text and picture with its box, the pairs
@@ -564,7 +571,7 @@ vector and text stays text with the font subset embedded, so a name is
 selectable. `data-fit="shrink"` beside `inline-size` shrinks a `<text>` until
 it fits `data-max-lines` (default 1) — a certificate is a stored template
 `.svg`, a `fs.file.get`, a `script` that fills the placeholders, then
-`fs.image.render --format pdf --folder certificates --filename cert-<number>`.
+`fs.image.render --text "{{ input.svg }}" --format pdf --folder certificates --filename cert-<number>`.
 Effects — shadow, blur, glow, grain, colour grading — are SVG filters
 (`feDropShadow`, `feGaussianBlur`, `feColorMatrix`, `feTurbulence`); resvg
 draws them and the PDF keeps them.
@@ -579,7 +586,7 @@ answer adds `barcode` — a durable FileRef (`origin: fs.barcode.render`) with
 
 **A generated picture inside the poster.** Ask the image model for the
 subject "on a solid flat #00ff00 green screen background", `fs.file.put` it,
-then `fs.image.chromakey --source-key file --folder sandbox/posters/cutouts` turns the screen
+then `fs.image.chromakey --from "{{ input.file }}" --folder sandbox/posters/cutouts` turns the screen
 transparent (plain pixel maths, no model; the default key is broadcast
 green `#00b140`, which is what the models paint) and answers
 `image`, a PNG with alpha. The agent places it with

@@ -1,16 +1,24 @@
-//! S3-like object operations for Zebflow FS.
+//! Files and folders in a project store, as they are: `fs.file.get`,
+//! `fs.file.head`, `fs.file.delete`, `fs.file.copy`, `fs.file.move`,
+//! `fs.folder.list`, `fs.folder.create`. (`fs.file.put` is its own node,
+//! `put.rs`.)
 //!
-//! For general node authoring rules, read `src/pipeline/nodes/mod.rs`; for
-//! FileRef IR and backend/lifecycle rules, read
-//! `src/pipeline/nodes/shared/file_ref.rs`.
+//! Every subject is explicit (`node-conventions.md` §2): a file node reads the
+//! file `--from` names — a FileRef or an upload, read from the store it names,
+//! or a store key in the node's own `--store` — and `fs.folder.list` the
+//! folder `--from` names. `fs.folder.create` makes `--folder`.
 //!
-//! `fs.file.put` is its own node (`put.rs`).
+//! Each answers one key, its noun, and keeps the rest of the payload:
 //!
-//! `fs.file.copy` and `fs.file.move` answer the stored file at `fs.object` as a
-//! **bare durable FileRef** — the eleven contract fields and nothing else. The
-//! store path is `fs.object.ref` (and the envelope's `fs.path`); a URL is not a
-//! node's business. `fs.folder.list` entries and `fs.file.head` describe objects the node
-//! did not write, so they stay plain stats.
+//! ```text
+//! fs.file.get      → file:   { path, size, modified, kind, content_type, content, base64 }
+//! fs.file.head     → file:   { path, size, modified, kind, content_type }
+//! fs.file.delete   → file:   { ref, deleted: true }   (+ recursive: true for a folder)
+//! fs.file.copy     → file:   the durable FileRef of the copy
+//! fs.file.move     → file:   the durable FileRef at the new key
+//! fs.folder.list   → folder: { path, items, count }
+//! fs.folder.create → folder: { path, created }
+//! ```
 
 use std::sync::Arc;
 use std::time::SystemTime;
@@ -20,9 +28,12 @@ use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use crate::pipeline::nodes::shared::project_store::{OnConflict, on_conflict_flag, open_store, store_fields, store_flag, target_key};
-use crate::pipeline::nodes::shared::util::metadata_scope;
 use crate::pipeline::model::NodeCapability;
+use crate::pipeline::nodes::shared::limits::choice;
+use crate::pipeline::nodes::shared::project_store::{
+    NodeStore, OnConflict, on_conflict_flag, open_from, open_store, read_capped, store_fields, store_flag, target_key,
+};
+use crate::pipeline::nodes::shared::util::{metadata_scope, with_answer};
 use crate::pipeline::{
     NodeDefinition, PipelineError,
     model::{DslFlag, DslFlagKind, LayoutItem, NodeExample, NodeFieldDef, NodeFieldType, SelectOptionDef},
@@ -42,7 +53,14 @@ pub const MKDIR_NODE_KIND: &str = "fs.folder.create";
 const INPUT_PIN_IN: &str = "in";
 const OUTPUT_PIN_OUT: &str = "out";
 
-#[derive(Debug, Clone, Copy)]
+/// `fs.file.get --encoding text` met bytes that are not UTF-8.
+const GET_UTF8_CODE: &str = "FW_NODE_FS_FILE_GET_UTF8";
+/// `fs.file.delete --from` names a folder that holds files, without `--recursive`.
+const DELETE_FOLDER_CODE: &str = "FW_NODE_FS_FILE_DELETE_FOLDER";
+const ENCODINGS: &[&str] = &["text", "base64"];
+const ON_CONFLICT_WORDS: &[&str] = &["error", "skip", "overwrite"];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Operation {
     List,
     Head,
@@ -54,6 +72,19 @@ pub enum Operation {
 }
 
 impl Operation {
+    pub fn for_kind(kind: &str) -> Option<Self> {
+        Some(match kind {
+            LIST_NODE_KIND => Self::List,
+            HEAD_NODE_KIND => Self::Head,
+            GET_NODE_KIND => Self::Get,
+            DELETE_NODE_KIND => Self::Delete,
+            COPY_NODE_KIND => Self::Copy,
+            MOVE_NODE_KIND => Self::Move,
+            MKDIR_NODE_KIND => Self::Mkdir,
+            _ => return None,
+        })
+    }
+
     fn kind(self) -> &'static str {
         match self {
             Self::List => LIST_NODE_KIND,
@@ -66,343 +97,87 @@ impl Operation {
         }
     }
 
-    fn label(self) -> &'static str {
+    /// The store and the world failed.
+    pub fn code(self) -> &'static str {
         match self {
-            Self::List => "list",
-            Self::Head => "head",
-            Self::Get => "get",
-            Self::Delete => "delete",
-            Self::Copy => "copy",
-            Self::Move => "move",
-            Self::Mkdir => "mkdir",
+            Self::List => "FW_NODE_FS_FOLDER_LIST",
+            Self::Head => "FW_NODE_FS_FILE_HEAD",
+            Self::Get => "FW_NODE_FS_FILE_GET",
+            Self::Delete => "FW_NODE_FS_FILE_DELETE",
+            Self::Copy => "FW_NODE_FS_FILE_COPY",
+            Self::Move => "FW_NODE_FS_FILE_MOVE",
+            Self::Mkdir => "FW_NODE_FS_FOLDER_CREATE",
+        }
+    }
+
+    /// A flag the author set wrong.
+    pub fn config_code(self) -> &'static str {
+        match self {
+            Self::List => "FW_NODE_FS_FOLDER_LIST_CONFIG",
+            Self::Head => "FW_NODE_FS_FILE_HEAD_CONFIG",
+            Self::Get => "FW_NODE_FS_FILE_GET_CONFIG",
+            Self::Delete => "FW_NODE_FS_FILE_DELETE_CONFIG",
+            Self::Copy => "FW_NODE_FS_FILE_COPY_CONFIG",
+            Self::Move => "FW_NODE_FS_FILE_MOVE_CONFIG",
+            Self::Mkdir => "FW_NODE_FS_FOLDER_CREATE_CONFIG",
+        }
+    }
+
+    /// `--from` (or `fs.folder.create --folder`) is missing or names nothing usable.
+    pub fn source_code(self) -> &'static str {
+        match self {
+            Self::List => "FW_NODE_FS_FOLDER_LIST_SOURCE",
+            Self::Head => "FW_NODE_FS_FILE_HEAD_SOURCE",
+            Self::Get => "FW_NODE_FS_FILE_GET_SOURCE",
+            Self::Delete => "FW_NODE_FS_FILE_DELETE_SOURCE",
+            Self::Copy => "FW_NODE_FS_FILE_COPY_SOURCE",
+            Self::Move => "FW_NODE_FS_FILE_MOVE_SOURCE",
+            Self::Mkdir => "FW_NODE_FS_FOLDER_CREATE_CONFIG",
         }
     }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Config {
-    #[serde(default)]
-    pub path: String,
-    /// copy/move source: a store key, or a FileRef through `{{ }}`.
+    /// The subject: a FileRef, an upload or a store key (a folder key for `fs.folder.list`).
     #[serde(default)]
     pub from: Value,
+    /// `fs.file.get`: `text` (default) or `base64`.
     #[serde(default)]
     pub encoding: String,
-    /// Destination folder for copy/move (default: the source's folder).
+    /// `fs.folder.create`: the folder made. copy/move: the destination folder (default: the source's).
     #[serde(default)]
     pub folder: String,
-    /// Destination name for copy/move (default: the source's name).
+    /// copy/move: the destination name (default: the source's).
     #[serde(default)]
     pub filename: Option<String>,
-    /// The store this operation works in; writers save it explicitly at registration.
+    /// copy/move: the exact destination key.
+    #[serde(default)]
+    pub path: Option<String>,
+    /// The store a bare key is read from and a copy is written to; saved explicitly at registration.
     #[serde(default)]
     pub store: Option<String>,
-    /// `overwrite`, `skip` or `error` for copy/move (default: error).
+    /// copy/move: `error` (default), `skip` or `overwrite`.
     #[serde(default)]
     pub on_conflict: Option<String>,
+    /// `fs.file.delete`: a store key naming a folder removes everything under it.
+    #[serde(default)]
+    pub recursive: bool,
 }
 
-pub fn list_definition() -> NodeDefinition {
-    let mut def = object_definition(
-        LIST_NODE_KIND,
-        "FS List",
-        "List the immediate children of a folder in the project's file store (the same store `fs.file.put` writes to). \
-         Needs `--path` (empty = project root). Adds `fs: { operation, path, count, entries: [{ path, kind, size, modified }] }` to the payload — \
-         the next node reads `input.fs.entries`, not `input.entries`. One level only; it does not recurse.",
-        vec![
-            scalar_flag(
-                "--path",
-                "path",
-                "Prefix to list. Empty lists the project root.",
-            ),
-        ],
-        vec![
-            text_field(
-                "path",
-                "Path",
-                "Prefix to list. Empty lists the project root.",
-            ),
-        ],
-        vec![
-            LayoutItem::Field("path".to_string()),
-        ],
-    );
-    def.examples = vec![example(
-        "List a folder",
-        "fs.folder.list --path uploads",
-        json!({ "fs": { "operation": "list", "path": "uploads", "count": 1, "entries": [{ "path": "uploads/a1.jpg", "kind": "object", "size": 1723, "modified": "2026-09-13T04:00:00Z" }] } }),
-    )];
-    def
-}
-
-pub fn head_definition() -> NodeDefinition {
-    let mut def = object_definition(
-        HEAD_NODE_KIND,
-        "FS Head",
-        "Read one file's metadata (size, kind, modified, content_type) without reading its bytes. Needs `--path`. \
-         Adds `fs: { operation, path, object }` to the payload. Use it to check that a file exists before `fs.file.get`; \
-         a missing path fails the node, it does not return null.",
-        vec![scalar_flag("--path", "path", "Object or prefix path.")],
-        vec![text_field("path", "Path", "Object or prefix path.")],
-        vec![LayoutItem::Field("path".to_string())],
-    );
-    def.examples = vec![example(
-        "Stat a file",
-        "fs.file.head --path uploads/a1.jpg",
-        json!({ "fs": { "operation": "head", "path": "uploads/a1.jpg", "object": { "path": "uploads/a1.jpg", "size": 1723, "modified": "2026-09-13T04:00:00Z", "kind": "object", "content_type": "image/jpeg" } } }),
-    )];
-    def
-}
-
-pub fn get_definition() -> NodeDefinition {
-    let mut def = object_definition(
-        GET_NODE_KIND,
-        "FS Get",
-        "Read one file's content from the project's file store. Needs `--path`; `--encoding text` (default) puts UTF-8 in `object.content`, \
-         `--encoding base64` puts bytes in `object.base64`. Adds `fs: { operation, path, object: { content | base64, size, … } }` to the payload — \
-         the text is `input.fs.object.content`. A binary file read as text fails with FW_NODE_FS_GET_UTF8; use base64.",
-        vec![
-            scalar_flag("--path", "path", "Object path."),
-            scalar_flag("--encoding", "encoding", "text or base64. Default: text."),
-        ],
-        vec![
-            text_field("path", "Path", "Object path."),
-            NodeFieldDef {
-                name: "encoding".to_string(),
-                label: "Encoding".to_string(),
-                field_type: NodeFieldType::Select,
-                default_value: Some(json!("text")),
-                options: vec![
-                    SelectOptionDef {
-                        value: "text".to_string(),
-                        label: "Text".to_string(),
-                    },
-                    SelectOptionDef {
-                        value: "base64".to_string(),
-                        label: "Base64".to_string(),
-                    },
-                ],
-                help: Some(
-                    "Decode object bytes as UTF-8 text or return base64 for binary-safe payloads."
-                        .to_string(),
-                ),
-                ..Default::default()
-            },
-        ],
-        vec![
-            LayoutItem::Field("path".to_string()),
-            LayoutItem::Field("encoding".to_string()),
-        ],
-    );
-    def.output_schema = json!({
-        "type": "object",
-        "properties": {
-            "fs": {
-                "type": "object",
-                "properties": {
-                    "object": {
-                        "type": "object",
-                        "properties": {
-                            "content": { "type": ["string", "null"] },
-                            "base64": { "type": ["string", "null"] }
-                        }
-                    }
-                }
-            }
-        }
-    });
-    def.examples = vec![example(
-        "Read a text file",
-        "fs.file.get --path docs/notes.md",
-        json!({ "fs": { "operation": "get", "path": "docs/notes.md", "object": { "path": "docs/notes.md", "content": "# Notes\n…", "base64": null, "size": 42, "kind": "object" } } }),
-    )];
-    def
-}
-
-pub fn delete_definition() -> NodeDefinition {
-    let mut def = object_definition(
-        DELETE_NODE_KIND,
-        "FS Delete",
-        "Delete one file, or a whole folder tree, from the project's file store. Needs `--path`. Adds \
-         `fs: { operation: \"delete\", path, deleted: true }` to the payload; deleting a path that is already gone succeeds. \
-         There is no confirmation and no trash — a folder path removes everything under it.",
-        vec![scalar_flag(
-            "--path",
-            "path",
-            "Object or prefix path to delete.",
-        )],
-        vec![text_field(
-            "path",
-            "Path",
-            "Object or prefix path to delete.",
-        )],
-        vec![LayoutItem::Field("path".to_string())],
-    );
-    def.examples = vec![example(
-        "Delete an upload",
-        "fs.file.delete --path \"{{ $trigger.body.path }}\"",
-        json!({ "fs": { "operation": "delete", "path": "uploads/a1.jpg", "deleted": true } }),
-    )];
-    def
-}
-
-pub fn copy_definition() -> NodeDefinition {
-    let mut def = copy_like_definition(
-        COPY_NODE_KIND,
-        "FS Copy",
-        "Copy one file inside the project's file store. Needs `--from` and a destination: `--folder` (keeps the name), \
-         `--filename`, or an exact `--path`. Adds `fs: { operation: \"copy\", path, object }` to the payload, where `object` is a durable FileRef for the copy \
-         (`origin: fs.file.copy`). An existing destination is an error unless `--on-conflict` says otherwise. \
-         A copy is private like any object until the owner exposes its folder in Studio → Files.",
-    );
-    def.examples = vec![example(
-        "Keep a copy of an upload",
-        "fs.file.copy --from \"{{ input.file.ref }}\" --folder images",
-        json!({ "fs": { "operation": "copy", "path": "images/a1.jpg", "object": { "__zf_type": "file_ref", "backend": "zebfs", "store": "local", "ref": "images/a1.jpg", "filename": "a1.jpg", "mime": "image/jpeg", "kind": "image", "size": 1723, "sha256": "sha256:…", "lifecycle": "durable", "origin": "fs.file.copy", "trust": "generated" } } }),
-    )];
-    def
-}
-
-pub fn move_definition() -> NodeDefinition {
-    let mut def = copy_like_definition(
-        MOVE_NODE_KIND,
-        "FS Move",
-        "Move one file inside the project's file store: copy to the destination (`--folder`, `--filename` or `--path`), then delete `--from`. \
-         Adds `fs: { operation: \"move\", path, object }` to the payload, where `object` is a durable FileRef at the \
-         new path (`origin: fs.file.move`). Any FileRef still pointing at `--from` \
-         is now dangling — update the row that stored it.",
-    );
-    def.examples = vec![example(
-        "Archive a processed file",
-        "fs.file.move --from \"{{ input.fs.path }}\" --folder archive/inbox",
-        json!({ "fs": { "operation": "move", "path": "archive/inbox/a1.csv", "object": { "__zf_type": "file_ref", "backend": "zebfs", "store": "local", "ref": "archive/inbox/a1.csv", "filename": "a1.csv", "mime": "text/csv", "kind": "csv", "size": 9021, "sha256": "sha256:…", "lifecycle": "durable", "origin": "fs.file.move", "trust": "generated" } } }),
-    )];
-    def
-}
-
-pub fn mkdir_definition() -> NodeDefinition {
-    let mut def = object_definition(
-        MKDIR_NODE_KIND,
-        "FS Mkdir",
-        "Create a folder in the project's file store. Needs `--path`. Adds `fs: { operation: \"mkdir\", path, object }` to the payload. \
-         Rarely needed: `fs.file.put` and `fs.file.copy` create the folders they write into; use this only for a folder that \
-         must exist before anything is in it (a listing page, an upload target).",
-        vec![scalar_flag("--path", "path", "Prefix path to create.")],
-        vec![text_field("path", "Path", "Prefix path to create.")],
-        vec![LayoutItem::Field("path".to_string())],
-    );
-    def.examples = vec![example(
-        "Create an upload folder",
-        "fs.folder.create --path uploads/2026",
-        json!({ "fs": { "operation": "mkdir", "path": "uploads/2026", "object": { "path": "uploads/2026", "kind": "prefix" } } }),
-    )];
-    def
-}
-
-fn example(title: &str, dsl: &str, output: Value) -> NodeExample {
-    NodeExample::dsl(title, dsl).output(output)
-}
-
-fn copy_like_definition(kind: &str, title: &str, description: &str) -> NodeDefinition {
-    object_definition(
-        kind,
-        title,
-        description,
-        [scalar_flag("--from", "from", "Source object path.")]
-            .into_iter()
-            .chain(destination_flags("Destination folder (default: the source's folder).", "Destination name (default: the source's name)."))
-            .collect(),
-        [text_field("from", "From", "Source object path.")]
-            .into_iter()
-            .chain(destination_fields("Destination folder (default: the source's folder).", "Destination name (default: the source's name)."))
-            .collect(),
-        vec![
-            LayoutItem::Field("from".to_string()),
-            LayoutItem::Field("folder".to_string()),
-            LayoutItem::Field("filename".to_string()),
-            LayoutItem::Field("path".to_string()),
-            LayoutItem::Field("on_conflict".to_string()),
-        ],
-    )
-}
-
-fn object_definition(
-    kind: &str,
-    title: &str,
-    description: &str,
-    dsl_flags: Vec<DslFlag>,
-    fields: Vec<NodeFieldDef>,
-    layout: Vec<LayoutItem>,
-) -> NodeDefinition {
-    NodeDefinition {
-        kind: kind.to_string(),
-        capabilities: vec![NodeCapability::Filesystem],
-        title: title.to_string(),
-        description: description.to_string(),
-        input_schema: json!({"type": "object"}),
-        output_schema: json!({
-            "type": "object",
-            "properties": {
-                "fs": {
-                    "type": "object",
-                    "properties": {
-                        "operation": { "type": "string" },
-                        "path": { "type": "string", "description": "The object path the operation answered for" },
-                        "object": { "type": "object", "description": "put, copy, move: a bare durable FileRef (the eleven contract fields). head, get, mkdir: a plain stat." },
-                        "entries": { "type": "array" }
-                    }
-                }
-            }
-        }),
-        input_pins: vec![INPUT_PIN_IN.to_string()],
-        output_pins: vec![OUTPUT_PIN_OUT.to_string()],
-        script_available: false,
-        script_bridge: None,
-        config_schema: Default::default(),
-        dsl_flags: dsl_flags.into_iter().chain([store_flag()]).collect(),
-        fields: fields
-            .into_iter()
-            .chain(store_fields(OnConflict::Error).into_iter().filter(|field| field.name == "store"))
-            .collect(),
-        layout: layout.into_iter().chain([LayoutItem::Field("store".to_string())]).collect(),
-        ai_tool: Default::default(),
-        ..Default::default()
-    }
-}
-
-/// `--folder`, `--filename`, `--path` and `--on-conflict` for copy and move.
-fn destination_flags(folder_help: &str, filename_help: &str) -> Vec<DslFlag> {
-    vec![
-        scalar_flag("--folder", "folder", folder_help),
-        scalar_flag("--filename", "filename", filename_help),
-        scalar_flag("--path", "path", "Exact destination key; overrides --folder and --filename."),
-        on_conflict_flag(OnConflict::Error),
-    ]
-}
-
-fn destination_fields(folder_help: &str, filename_help: &str) -> Vec<NodeFieldDef> {
-    vec![
-        text_field("folder", "Folder", folder_help),
-        text_field("filename", "Filename", filename_help),
-        text_field("path", "Path", "Exact destination key; overrides folder and filename."),
-    ]
-    .into_iter()
-    .chain(store_fields(OnConflict::Error).into_iter().filter(|field| field.name == "on_conflict"))
-    .collect()
-}
-
-fn scalar_flag(flag: &str, config_key: &str, description: &str) -> DslFlag {
+fn flag(name: &str, key: &str, description: &str, value: &str) -> DslFlag {
     DslFlag {
-        flag: flag.to_string(),
-        config_key: config_key.to_string(),
+        flag: name.to_string(),
+        config_key: key.to_string(),
         description: description.to_string(),
         kind: DslFlagKind::Scalar,
         required: false,
+        value: value.to_string(),
         ..Default::default()
     }
 }
 
-fn text_field(name: &str, label: &str, help: &str) -> NodeFieldDef {
+fn field(name: &str, label: &str, help: &str) -> NodeFieldDef {
     NodeFieldDef {
         name: name.to_string(),
         label: label.to_string(),
@@ -412,6 +187,269 @@ fn text_field(name: &str, label: &str, help: &str) -> NodeFieldDef {
     }
 }
 
+fn words(list: &[&str]) -> Vec<String> {
+    list.iter().map(|word| word.to_string()).collect()
+}
+
+fn from_flag(description: &str) -> DslFlag {
+    DslFlag { required: true, ..flag("--from", "from", description, "file") }
+}
+
+fn read_store_flag() -> DslFlag {
+    DslFlag {
+        description: "The store a bare key is read from: `local`, or the id of an `s3` credential; a FileRef is read from its own store. Saved explicitly when the pipeline is registered.".to_string(),
+        value: "text".to_string(),
+        ..store_flag()
+    }
+}
+
+fn store_field() -> NodeFieldDef {
+    store_fields(OnConflict::Error).into_iter().find(|field| field.name == "store").expect("the store field")
+}
+
+/// A definition with the shape every node here shares; `answer` is the one
+/// key it adds.
+fn object_definition(
+    kind: &str,
+    title: &str,
+    description: &str,
+    answer: (&str, Value),
+    dsl_flags: Vec<DslFlag>,
+    fields: Vec<NodeFieldDef>,
+    examples: Vec<NodeExample>,
+) -> NodeDefinition {
+    let layout = fields.iter().map(|field| LayoutItem::Field(field.name.clone())).collect();
+    NodeDefinition {
+        kind: kind.to_string(),
+        capabilities: vec![NodeCapability::Filesystem],
+        title: title.to_string(),
+        description: description.to_string(),
+        input_schema: json!({ "type": "object" }),
+        output_schema: json!({ "type": "object", "properties": { answer.0: answer.1 } }),
+        input_pins: vec![INPUT_PIN_IN.to_string()],
+        output_pins: vec![OUTPUT_PIN_OUT.to_string()],
+        script_available: false,
+        script_bridge: None,
+        config_schema: Default::default(),
+        dsl_flags,
+        fields,
+        layout,
+        examples,
+        ..Default::default()
+    }
+}
+
+fn stat_schema(description: &str) -> Value {
+    json!({
+        "type": "object",
+        "description": description,
+        "properties": {
+            "path": { "type": "string" },
+            "size": { "type": "integer" },
+            "modified": { "type": ["string", "null"] },
+            "kind": { "type": "string", "description": "object or prefix" },
+            "content_type": { "type": "string" }
+        }
+    })
+}
+
+fn file_ref_schema(origin: &str) -> Value {
+    json!({
+        "type": "object",
+        "description": "The durable FileRef of the stored file; the store path is `ref`.",
+        "properties": {
+            "ref": { "type": "string" },
+            "store": { "type": "string" },
+            "origin": { "type": "string", "const": origin }
+        }
+    })
+}
+
+fn stored(r: &str, mime: &str, kind: &str, size: u64, origin: &str) -> Value {
+    json!({ "__zf_type": "file_ref", "backend": "zebfs", "store": "local", "ref": r, "filename": r.rsplit('/').next().unwrap_or(r), "mime": mime, "kind": kind, "size": size, "sha256": "sha256:…", "lifecycle": "durable", "origin": origin, "trust": "generated" })
+}
+
+pub fn list_definition() -> NodeDefinition {
+    object_definition(
+        LIST_NODE_KIND,
+        "Folder List",
+        "List the immediate children of the folder `--from` names in a project store (`/` is the store's root). One level; it does not recurse. \
+         Adds `folder: { path, items, count }` — each item `{ name, path, size, modified, kind, content_type }`, `kind` being `object` or `prefix` — \
+         and keeps the rest of the payload, so the next node reads `input.folder.items`.",
+        ("folder", json!({
+            "type": "object",
+            "properties": { "path": { "type": "string" }, "items": { "type": "array" }, "count": { "type": "integer" } }
+        })),
+        vec![
+            DslFlag { required: true, ..flag("--from", "from", "The folder to list, a store key; `/` is the store's root.", "text") },
+            read_store_flag(),
+        ],
+        vec![field("from", "Folder", "The folder to list, e.g. uploads; / is the store's root."), store_field()],
+        vec![NodeExample::dsl("List a folder", "fs.folder.list --from uploads").input(json!({ "keep": true })).output(json!({
+            "keep": true,
+            "folder": { "path": "uploads", "count": 1, "items": [{ "name": "a1.jpg", "path": "uploads/a1.jpg", "size": 1723, "modified": "2026-09-13T04:00:00Z", "kind": "object", "content_type": "image/jpeg" }] }
+        }))],
+    )
+}
+
+pub fn head_definition() -> NodeDefinition {
+    object_definition(
+        HEAD_NODE_KIND,
+        "File Head",
+        "Read what is known about the file `--from` names — a FileRef, an upload or a store key — without reading its bytes. \
+         Adds `file: { path, size, modified, kind, content_type }` and keeps the rest of the payload. A missing file fails the node; it does not answer null.",
+        ("file", stat_schema("The file's stat.")),
+        vec![from_flag("The file: a FileRef, an upload or a store key."), read_store_flag()],
+        vec![field("from", "From", "The file, e.g. {{ input.file }} or uploads/a1.jpg."), store_field()],
+        vec![NodeExample::dsl("Stat a stored file", "fs.file.head --from uploads/a1.jpg").output(json!({
+            "file": { "path": "uploads/a1.jpg", "size": 1723, "modified": "2026-09-13T04:00:00Z", "kind": "object", "content_type": "image/jpeg" }
+        }))],
+    )
+}
+
+pub fn get_definition() -> NodeDefinition {
+    let mut schema = stat_schema("The file's stat and its content: UTF-8 text in `content`, or bytes in `base64`.");
+    schema["properties"]["content"] = json!({ "type": ["string", "null"] });
+    schema["properties"]["base64"] = json!({ "type": ["string", "null"] });
+    object_definition(
+        GET_NODE_KIND,
+        "File Get",
+        "Read the content of the file `--from` names — a FileRef, an upload or a store key. `--encoding text` (default) puts UTF-8 in `file.content`; \
+         `--encoding base64` puts the bytes in `file.base64`. Adds `file: { path, size, modified, kind, content_type, content, base64 }` and keeps the rest of the payload. \
+         A binary file read as text fails with FW_NODE_FS_FILE_GET_UTF8; use base64.",
+        ("file", schema),
+        vec![
+            from_flag("The file: a FileRef, an upload or a store key."),
+            DslFlag { choices: words(ENCODINGS), ..flag("--encoding", "encoding", "text (default) or base64.", "") },
+            read_store_flag(),
+        ],
+        vec![
+            field("from", "From", "The file, e.g. {{ input.file }} or docs/notes.md."),
+            NodeFieldDef {
+                field_type: NodeFieldType::Select,
+                default_value: Some(json!("text")),
+                options: ENCODINGS.iter().map(|v| SelectOptionDef { value: v.to_string(), label: v.to_string() }).collect(),
+                ..field("encoding", "Encoding", "UTF-8 text, or base64 for bytes.")
+            },
+            store_field(),
+        ],
+        vec![NodeExample::dsl("Read a text file", "fs.file.get --from docs/notes.md").output(json!({
+            "file": { "path": "docs/notes.md", "size": 42, "modified": "2026-09-13T04:00:00Z", "kind": "object", "content_type": "text/plain; charset=utf-8", "content": "# Notes\n…", "base64": null }
+        }))],
+    )
+}
+
+pub fn delete_definition() -> NodeDefinition {
+    object_definition(
+        DELETE_NODE_KIND,
+        "File Delete",
+        "Delete the file `--from` names — a FileRef from the store it names, or a store key — and forget its exposure rule, so a later file at that key starts private. \
+         A store key naming a folder that holds files is refused (FW_NODE_FS_FILE_DELETE_FOLDER) unless `--recursive` is set, which removes the folder and everything \
+         under it — no confirmation, no trash. A FileRef is always one file. A file that is already gone succeeds. \
+         Adds `file: { ref, deleted: true }` (`recursive: true` beside them when a folder went) and keeps the rest of the payload.",
+        ("file", json!({ "type": "object", "properties": {
+            "ref": { "type": "string" },
+            "deleted": { "type": "boolean", "const": true },
+            "recursive": { "type": "boolean", "description": "Present, true, when --recursive removed a folder" }
+        } })),
+        vec![
+            from_flag("The file to delete: a FileRef or a store key."),
+            DslFlag { kind: DslFlagKind::Bool, ..flag("--recursive", "recursive", "Let a store key naming a folder remove the folder and everything under it.", "") },
+            read_store_flag(),
+        ],
+        vec![
+            field("from", "From", "The file to delete, e.g. {{ input.file }}."),
+            NodeFieldDef {
+                field_type: NodeFieldType::Checkbox,
+                default_value: Some(json!(false)),
+                ..field("recursive", "Recursive", "Allow a folder: remove it and everything under it.")
+            },
+            store_field(),
+        ],
+        vec![NodeExample::dsl("Delete an upload once it is processed", "fs.file.delete --from \"{{ input.file }}\"")
+            .input(json!({ "file": stored("uploads/a1.jpg", "image/jpeg", "image", 1723, "fs.file.put") }))
+            .output(json!({ "file": { "ref": "uploads/a1.jpg", "deleted": true } }))],
+    )
+}
+
+fn copy_like_definition(kind: &str, title: &str, description: &str, example: NodeExample) -> NodeDefinition {
+    object_definition(
+        kind,
+        title,
+        description,
+        ("file", file_ref_schema(kind)),
+        vec![
+            from_flag("The file: a FileRef, an upload or a store key."),
+            DslFlag {
+                description: "The store to write to: `local`, or the id of an `s3` credential; a bare --from key is read from it too. Saved explicitly when the pipeline is registered.".to_string(),
+                ..read_store_flag()
+            },
+            flag("--folder", "folder", "Destination folder (default: the source's folder).", "text"),
+            flag("--filename", "filename", "Destination name (default: the source's name).", "text"),
+            flag("--path", "path", "Exact destination key; overrides --folder and --filename.", "text"),
+            DslFlag { choices: words(ON_CONFLICT_WORDS), ..on_conflict_flag(OnConflict::Error) },
+        ],
+        [
+            field("from", "From", "The file, e.g. {{ input.file }} or uploads/a1.jpg."),
+            store_field(),
+            field("folder", "Folder", "Destination folder (default: the source's folder)."),
+            field("filename", "Filename", "Destination name (default: the source's name)."),
+            field("path", "Path", "Exact destination key; overrides folder and filename."),
+        ]
+        .into_iter()
+        .chain(store_fields(OnConflict::Error).into_iter().filter(|field| field.name == "on_conflict"))
+        .collect(),
+        vec![example],
+    )
+}
+
+pub fn copy_definition() -> NodeDefinition {
+    copy_like_definition(
+        COPY_NODE_KIND,
+        "File Copy",
+        "Copy the file `--from` names — a FileRef from any store, an upload, or a store key — to `--folder` (keeps the name), `--filename`, or an exact `--path`, \
+         in the node's `--store`. An existing destination is an error unless `--on-conflict` says otherwise. Adds `file`, the durable FileRef of the copy \
+         (`origin: fs.file.copy`), and keeps the rest of the payload. A copy is private like any file until the owner exposes its folder in Studio → Files.",
+        NodeExample::dsl("Keep a copy of an upload", "fs.file.copy --from \"{{ input.file }}\" --folder images")
+            .input(json!({ "file": stored("uploads/a1.jpg", "image/jpeg", "image", 1723, "fs.file.put") }))
+            .output(json!({ "file": stored("images/a1.jpg", "image/jpeg", "image", 1723, COPY_NODE_KIND) })),
+    )
+}
+
+pub fn move_definition() -> NodeDefinition {
+    copy_like_definition(
+        MOVE_NODE_KIND,
+        "File Move",
+        "Move the file `--from` names: copy it to the destination (`--folder`, `--filename` or `--path`, in the node's `--store`), then delete the source and \
+         forget its exposure rule. Adds `file`, the durable FileRef at the new key (`origin: fs.file.move`), and keeps the rest of the payload. \
+         Any FileRef still pointing at the source is now dangling — update the row that stored it.",
+        NodeExample::dsl("Archive a processed file", "fs.file.move --from \"{{ input.file }}\" --folder archive/inbox")
+            .input(json!({ "file": stored("inbox/a1.csv", "text/csv", "csv", 9021, "fs.file.put") }))
+            .output(json!({ "file": stored("archive/inbox/a1.csv", "text/csv", "csv", 9021, MOVE_NODE_KIND) })),
+    )
+}
+
+pub fn mkdir_definition() -> NodeDefinition {
+    object_definition(
+        MKDIR_NODE_KIND,
+        "Folder Create",
+        "Create `--folder` in a project store. Rarely needed: every file writer creates the folders it writes into; use this only for a folder that \
+         must exist before anything is in it. A folder that already exists is left as it is. Adds `folder: { path, created }` — `created` is false when \
+         it was already there — and keeps the rest of the payload.",
+        ("folder", json!({ "type": "object", "properties": { "path": { "type": "string" }, "created": { "type": "boolean" } } })),
+        vec![
+            DslFlag { required: true, ..flag("--folder", "folder", "The folder to create, a store key.", "text") },
+            DslFlag {
+                description: "The store to create it in: `local`, or the id of an `s3` credential. Saved explicitly when the pipeline is registered.".to_string(),
+                ..read_store_flag()
+            },
+        ],
+        vec![field("folder", "Folder", "The folder to create, e.g. uploads/2026."), store_field()],
+        vec![NodeExample::dsl("Create an upload folder", "fs.folder.create --folder uploads/2026")
+            .output(json!({ "folder": { "path": "uploads/2026", "created": true } }))],
+    )
+}
+
 pub struct Node {
     config: Config,
     platform: Arc<PlatformService>,
@@ -419,16 +457,148 @@ pub struct Node {
 }
 
 impl Node {
-    pub fn new(
-        config: Config,
-        platform: Arc<PlatformService>,
-        operation: Operation,
-    ) -> Result<Self, PipelineError> {
-        Ok(Self {
-            config,
-            platform,
-            operation,
-        })
+    pub fn new(config: Config, platform: Arc<PlatformService>, operation: Operation) -> Result<Self, PipelineError> {
+        Ok(Self { config, platform, operation })
+    }
+
+    /// The file `--from` names, opened in its store.
+    fn source(&self, owner: &str, project: &str) -> Result<(NodeStore, String), PipelineError> {
+        open_from(&self.platform, owner, project, &self.config.from, self.config.store.as_deref(), "--from", self.operation.source_code())
+    }
+
+    fn list(&self, owner: &str, project: &str) -> Result<Value, PipelineError> {
+        let op = self.operation;
+        let folder = match &self.config.from {
+            Value::String(raw) if raw.trim() == "/" => String::new(),
+            Value::String(raw) if !raw.trim().is_empty() => crate::zebfs::normalize_object_path(raw)
+                .map_err(|err| PipelineError::new(op.source_code(), format!("--from '{raw}': {}", err.message)))?,
+            Value::Null | Value::String(_) => {
+                return Err(PipelineError::new(op.source_code(), "--from is required: the folder to list; `/` is the store's root"));
+            }
+            other => return Err(PipelineError::new(op.source_code(), format!("--from is a folder key, not {other}"))),
+        };
+        let store = open_store(&self.platform, owner, project, self.config.store.as_deref())?;
+        let entries = store.fs.list(&folder).map_err(|err| PipelineError::new(op.code(), format!("'{folder}': {err}")))?;
+        let items: Vec<Value> = entries.iter().map(entry_json).collect();
+        Ok(json!({ "folder": { "path": folder, "count": items.len(), "items": items } }))
+    }
+
+    fn head(&self, owner: &str, project: &str) -> Result<Value, PipelineError> {
+        let (store, key) = self.source(owner, project)?;
+        let stat = store.fs.head(&key).map_err(|err| PipelineError::new(self.operation.code(), format!("'{key}': {err}")))?;
+        Ok(json!({ "file": stat_json(&stat) }))
+    }
+
+    fn get(&self, owner: &str, project: &str) -> Result<Value, PipelineError> {
+        let op = self.operation;
+        let encoding = choice(&self.config.encoding, ENCODINGS, "text", "--encoding", op.config_code())?;
+        let (store, key) = self.source(owner, project)?;
+        let stat = store.fs.head(&key).map_err(|err| PipelineError::new(op.code(), format!("'{key}': {err}")))?;
+        // Capped like every node read: the bytes go into the payload.
+        let bytes = read_capped(&store.fs, &key, op.code())?;
+        let mut file = stat_json(&stat);
+        if encoding == "base64" {
+            file["content"] = Value::Null;
+            file["base64"] = Value::String(base64::engine::general_purpose::STANDARD.encode(&bytes));
+        } else {
+            let text = String::from_utf8(bytes)
+                .map_err(|err| PipelineError::new(GET_UTF8_CODE, format!("'{key}' is not UTF-8; use --encoding base64: {err}")))?;
+            file["content"] = Value::String(text);
+            file["base64"] = Value::Null;
+        }
+        Ok(json!({ "file": file }))
+    }
+
+    fn delete(&self, owner: &str, project: &str) -> Result<Value, PipelineError> {
+        let code = self.operation.code();
+        let (store, key) = self.source(owner, project)?;
+        let is_folder = match store.fs.head(&key) {
+            Ok(stat) => stat.kind == ZebFsEntryKind::Prefix,
+            // Already gone: deleting it again succeeds.
+            Err(err) if err.code == "ZEBFS_NOT_FOUND" => false,
+            Err(err) => return Err(PipelineError::new(code, format!("'{key}': {err}"))),
+        };
+        let holds_files = is_folder && !store.fs.list(&key).map_err(|err| PipelineError::new(code, format!("'{key}': {err}")))?.is_empty();
+        if holds_files && crate::pipeline::nodes::shared::file_ref::is_file_ref(&self.config.from) {
+            return Err(PipelineError::new(DELETE_FOLDER_CODE, format!("--from is a FileRef, which names one file, but '{key}' is a folder")));
+        }
+        if holds_files && !self.config.recursive {
+            return Err(PipelineError::new(
+                DELETE_FOLDER_CODE,
+                format!("'{key}' is a folder that holds files; set --recursive to remove it and everything under it"),
+            ));
+        }
+        store.delete_named(&self.platform, owner, project, &key, code)?;
+        if holds_files {
+            return Ok(json!({ "file": { "ref": key, "deleted": true, "recursive": true } }));
+        }
+        Ok(json!({ "file": { "ref": key, "deleted": true } }))
+    }
+
+    fn copy_or_move(&self, owner: &str, project: &str) -> Result<Value, PipelineError> {
+        let op = self.operation;
+        let code = op.code();
+        let on_conflict = OnConflict::parse(self.config.on_conflict.as_deref(), OnConflict::Error, op.config_code())?;
+        let (source, from) = self.source(owner, project)?;
+        let store = open_store(&self.platform, owner, project, self.config.store.as_deref())?;
+        let (source_folder, source_name) = match from.rsplit_once('/') {
+            Some((folder, name)) => (folder.to_string(), name.to_string()),
+            None => (String::new(), from.clone()),
+        };
+        let folder = if self.config.folder.trim().is_empty() { source_folder.as_str() } else { self.config.folder.trim() };
+        let filename = self.config.filename.as_deref().map(str::trim).filter(|name| !name.is_empty()).unwrap_or(&source_name);
+        let to = target_key(self.config.path.as_deref(), folder, filename, op.config_code())?;
+        let same_store = source.id == store.id;
+        if same_store && to == from {
+            return Err(PipelineError::new(op.config_code(), "the destination is the source; set --folder, --filename or --path"));
+        }
+        if !on_conflict.allows(&store.fs, &to, code)? {
+            // Skipped: the answer is the file already there, as it is.
+            return Ok(json!({ "file": store.stored_ref(&to, op.kind(), "generated", code)? }));
+        }
+        let stat = if same_store {
+            store.fs.copy(&from, &to).map_err(|err| PipelineError::new(code, err.to_string()))?
+        } else {
+            // Between stores the bytes stream through a scratch file.
+            let scratch = crate::pipeline::nodes::shared::store_scratch::StoreScratch::new(code)?;
+            let local = scratch.local("object");
+            source
+                .fs
+                .get_to_file(&from, &local)
+                .map_err(|err| PipelineError::new(code, format!("read '{from}' from '{}': {err}", source.id)))?;
+            store.fs.put_from_file(&to, &local).map_err(|err| PipelineError::new(code, err.to_string()))?
+        };
+        if op == Operation::Move {
+            source.delete_named(&self.platform, owner, project, &from, code)?;
+        }
+        // A copied file answers its FileRef; a copied folder stays a plain stat.
+        let file = if matches!(stat.kind, ZebFsEntryKind::Object) {
+            store.stored_ref(&stat.path, op.kind(), "generated", code)?
+        } else {
+            stat_json(&stat)
+        };
+        Ok(json!({ "file": file }))
+    }
+
+    fn mkdir(&self, owner: &str, project: &str) -> Result<Value, PipelineError> {
+        let op = self.operation;
+        if self.config.folder.trim().is_empty() {
+            return Err(PipelineError::new(op.config_code(), "--folder is required: the folder to create"));
+        }
+        let folder = target_key(Some(&self.config.folder), "", "", op.config_code())?;
+        let store = open_store(&self.platform, owner, project, self.config.store.as_deref())?;
+        let created = match store.fs.head(&folder) {
+            Ok(stat) if stat.kind == ZebFsEntryKind::Object => {
+                return Err(PipelineError::new(op.code(), format!("'{folder}' is a file, not a folder")));
+            }
+            Ok(_) => false,
+            Err(err) if err.code == "ZEBFS_NOT_FOUND" => true,
+            Err(err) => return Err(PipelineError::new(op.code(), format!("'{folder}': {err}"))),
+        };
+        if created {
+            store.fs.create_prefix(&folder).map_err(|err| PipelineError::new(op.code(), format!("'{folder}': {err}")))?;
+        }
+        Ok(json!({ "folder": { "path": folder, "created": created } }))
     }
 }
 
@@ -446,250 +616,22 @@ impl NodeHandler for Node {
         &[OUTPUT_PIN_OUT]
     }
 
-    async fn execute_async(
-        &self,
-        input: NodeExecutionInput,
-    ) -> Result<NodeExecutionOutput, PipelineError> {
+    async fn execute_async(&self, input: NodeExecutionInput) -> Result<NodeExecutionOutput, PipelineError> {
         let (owner, project, ..) = metadata_scope(&input.metadata)?;
-        let layout = self
-            .platform
-            .file
-            .ensure_project_layout(owner, project)
-            .map_err(|err| PipelineError::new("FW_NODE_FS_OBJECT", err.to_string()))?;
-        let store = open_store(&self.platform, owner, project, self.config.store.as_deref())?;
-        let zebfs = &store.fs;
-        let op = self.operation;
-        let payload = match op {
-            Operation::List => {
-                let path = self.config.path.trim();
-                let entries = zebfs
-                    .list(path)
-                    .map_err(|err| PipelineError::new("FW_NODE_FS_LIST", err.to_string()))?;
-                json!({
-                    "fs": {
-                        "operation": op.label(),
-                        "path": normalize_output_path(path),
-                        "count": entries.len(),
-                        "entries": entries
-                            .iter()
-                            .map(entry_json)
-                            .collect::<Vec<_>>()
-                    }
-                })
-            }
-            Operation::Head => {
-                let path = required(&self.config.path, "--path", "FW_NODE_FS_HEAD")?;
-                let stat = zebfs
-                    .head(path)
-                    .map_err(|err| PipelineError::new("FW_NODE_FS_HEAD", err.to_string()))?;
-                json!({
-                    "fs": {
-                        "operation": op.label(),
-                        "path": stat.path,
-                        "object": stat_json(&stat)
-                    }
-                })
-            }
-            Operation::Get => {
-                let path = required(&self.config.path, "--path", "FW_NODE_FS_GET")?;
-                // Capped like every node read: the bytes go into the payload.
-                let stat = zebfs.head(path).map_err(|err| PipelineError::new("FW_NODE_FS_GET", err.to_string()))?;
-                let bytes = crate::pipeline::nodes::shared::project_store::read_capped(zebfs, path, "FW_NODE_FS_GET")?;
-                let object = crate::zebfs::ZebFsObject { path: stat.path.clone(), bytes, stat };
-                let mut object_out = stat_json(&object.stat);
-                let encoding = crate::pipeline::nodes::shared::limits::choice(
-                    &self.config.encoding,
-                    &["text", "base64"],
-                    "text",
-                    "--encoding",
-                    "FW_NODE_FS_GET",
-                )?;
-                if encoding == "base64" {
-                    object_out["base64"] = Value::String(
-                        base64::engine::general_purpose::STANDARD.encode(&object.bytes),
-                    );
-                    object_out["content"] = Value::Null;
-                } else {
-                    object_out["content"] =
-                        Value::String(String::from_utf8(object.bytes).map_err(|err| {
-                            PipelineError::new(
-                                "FW_NODE_FS_GET_UTF8",
-                                format!("object is not UTF-8; use --encoding base64: {err}"),
-                            )
-                        })?);
-                    object_out["base64"] = Value::Null;
-                }
-                json!({
-                    "fs": {
-                        "operation": op.label(),
-                        "path": object.path,
-                        "object": object_out
-                    }
-                })
-            }
-            Operation::Delete => {
-                let path = required(&self.config.path, "--path", "FW_NODE_FS_DELETE")?;
-                zebfs
-                    .delete(path)
-                    .map_err(|err| PipelineError::new("FW_NODE_FS_DELETE", err.to_string()))?;
-                // A deleted path takes its exposure rules with it, so a new
-                // object of the same name starts private.
-                crate::platform::services::zebfs_acl::forget(&layout.data_store_dir(), path)
-                    .map_err(|err| PipelineError::new("FW_NODE_FS_DELETE", err.to_string()))?;
-                json!({
-                    "fs": {
-                        "operation": op.label(),
-                        "path": normalize_output_path(path),
-                        "deleted": true
-                    }
-                })
-            }
-            Operation::Copy | Operation::Move => {
-                // `--from` is a key in this node's store, or a FileRef read
-                // from the store it names (`node-conventions.md` §1).
-                let code = if matches!(op, Operation::Move) { "FW_NODE_FS_MOVE" } else { "FW_NODE_FS_COPY" };
-                let Some((source, from_norm)) = crate::pipeline::nodes::shared::project_store::open_source(
-                    &self.platform,
-                    owner,
-                    project,
-                    &self.config.from,
-                    Some(store.id.as_str()),
-                )?
-                else {
-                    return Err(PipelineError::new(code, "--from is required: a store key or a FileRef"));
-                };
-                let from_norm = normalize_output_path(&from_norm);
-                let (source_folder, source_name) = match from_norm.rsplit_once('/') {
-                    Some((folder, name)) => (folder.to_string(), name.to_string()),
-                    None => (String::new(), from_norm.clone()),
-                };
-                let folder = if self.config.folder.trim().is_empty() { source_folder.as_str() } else { self.config.folder.trim() };
-                let filename = self
-                    .config
-                    .filename
-                    .as_deref()
-                    .map(str::trim)
-                    .filter(|name| !name.is_empty())
-                    .unwrap_or(&source_name);
-                let to = target_key(Some(self.config.path.as_str()), folder, filename, code)?;
-                let same_store = source.id == store.id;
-                if same_store && to == from_norm {
-                    return Err(PipelineError::new(code, "the destination is the source; set --folder, --filename or --path"));
-                }
-                let origin = if matches!(op, Operation::Move) { "fs.file.move" } else { "fs.file.copy" };
-                if !self.on_conflict(code)?.allows(zebfs, &to, code)? {
-                    let object = object_ref(&store, &to, "fs.file.copy", code)?;
-                    return Ok(merged_output(op, &input.payload, json!({
-                        "operation": op.label(), "path": to, "source_path": from_norm, "object": object, "skipped": true
-                    })));
-                }
-                let stat = if same_store {
-                    zebfs.copy(&from_norm, &to).map_err(|err| PipelineError::new(code, err.to_string()))?
-                } else {
-                    // Between stores the bytes stream through a scratch file.
-                    let scratch = crate::pipeline::nodes::shared::store_scratch::StoreScratch::new(code)?;
-                    let local = scratch.local("object");
-                    source
-                        .fs
-                        .get_to_file(&from_norm, &local)
-                        .map_err(|err| PipelineError::new(code, format!("read '{from_norm}' from '{}': {err}", source.id)))?;
-                    zebfs.put_from_file(&to, &local).map_err(|err| PipelineError::new(code, err.to_string()))?
-                };
-                if matches!(op, Operation::Move) {
-                    source.fs.delete(&from_norm).map_err(|err| PipelineError::new(code, err.to_string()))?;
-                    if let Ok(source_layout) = self.platform.file.ensure_project_layout(owner, project)
-                        && source_layout.store_id() == source.id
-                    {
-                        crate::platform::services::zebfs_acl::forget(&source_layout.data_store_dir(), &from_norm)
-                            .map_err(|err| PipelineError::new(code, err.to_string()))?;
-                    }
-                }
-                // A copied object answers a bare FileRef; a copied prefix
-                // stays the plain stat it was.
-                let object = if matches!(stat.kind, ZebFsEntryKind::Object) {
-                    object_ref(&store, &stat.path, origin, code)?
-                } else {
-                    stat_json(&stat)
-                };
-                json!({
-                    "fs": {
-                        "operation": op.label(),
-                        "path": stat.path,
-                        "source_path": from_norm,
-                        "source_store": source.id,
-                        "object": object
-                    }
-                })
-            }
-            Operation::Mkdir => {
-                let path = required(&self.config.path, "--path", "FW_NODE_FS_MKDIR")?;
-                let stat = zebfs
-                    .create_prefix(path)
-                    .map_err(|err| PipelineError::new("FW_NODE_FS_MKDIR", err.to_string()))?;
-                json!({
-                    "fs": {
-                        "operation": op.label(),
-                        "path": stat.path,
-                        "object": stat_json(&stat)
-                    }
-                })
-            }
+        let answer = match self.operation {
+            Operation::List => self.list(owner, project)?,
+            Operation::Head => self.head(owner, project)?,
+            Operation::Get => self.get(owner, project)?,
+            Operation::Delete => self.delete(owner, project)?,
+            Operation::Copy | Operation::Move => self.copy_or_move(owner, project)?,
+            Operation::Mkdir => self.mkdir(owner, project)?,
         };
-
-        let fs = payload.get("fs").cloned().unwrap_or(Value::Null);
-        Ok(merged_output(op, &input.payload, fs))
+        Ok(NodeExecutionOutput {
+            output_pins: vec![OUTPUT_PIN_OUT.to_string()],
+            payload: with_answer(&input.payload, answer),
+            trace: vec![format!("node_kind={}", self.operation.kind())],
+        })
     }
-}
-
-/// The operation's answer added to the payload under `fs`, the rest kept
-/// (`docs/contracts/node-conventions.md` §5).
-/// A durable FileRef for an object already in `store`, digested by
-/// streaming it rather than holding it.
-fn object_ref(
-    store: &crate::pipeline::nodes::shared::project_store::NodeStore,
-    key: &str,
-    origin: &str,
-    code: &'static str,
-) -> Result<Value, PipelineError> {
-    let leaf = key.rsplit('/').next().unwrap_or(key).to_string();
-    let local = store.fs.local_path(key).map_err(|err| PipelineError::new(code, err.to_string()))?;
-    let scratch;
-    let path = match local {
-        Some(path) => path,
-        None => {
-            scratch = crate::pipeline::nodes::shared::store_scratch::StoreScratch::new(code)?;
-            let path = scratch.local("object");
-            store.fs.get_to_file(key, &path).map_err(|err| PipelineError::new(code, err.to_string()))?;
-            path
-        }
-    };
-    store.file_ref_from_file(key, &leaf, content_type_for_path(key), &path, origin, "generated", code)
-}
-
-fn merged_output(op: Operation, input: &Value, fs: Value) -> NodeExecutionOutput {
-    NodeExecutionOutput {
-        output_pins: vec![OUTPUT_PIN_OUT.to_string()],
-        payload: crate::pipeline::nodes::shared::util::with_answer(input, json!({ "fs": fs })),
-        trace: vec![format!("node_kind={} operation={}", op.kind(), op.label())],
-    }
-}
-
-impl Node {
-    fn on_conflict(&self, code: &'static str) -> Result<OnConflict, PipelineError> {
-        OnConflict::parse(self.config.on_conflict.as_deref(), OnConflict::Error, code)
-    }
-}
-
-fn required<'a>(value: &'a str, flag: &str, code: &'static str) -> Result<&'a str, PipelineError> {
-    let trimmed = value.trim();
-    if trimmed.is_empty() {
-        return Err(PipelineError::new(code, format!("{flag} is required")));
-    }
-    Ok(trimmed)
-}
-
-fn normalize_output_path(path: &str) -> String {
-    path.trim().trim_start_matches('/').replace('\\', "/")
 }
 
 fn entry_json(entry: &ZebFsEntry) -> Value {
@@ -744,3 +686,6 @@ fn content_type_for_path(path: &str) -> &'static str {
         _ => "application/octet-stream",
     }
 }
+
+#[cfg(test)]
+mod tests;

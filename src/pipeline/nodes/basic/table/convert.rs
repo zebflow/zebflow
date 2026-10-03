@@ -47,7 +47,7 @@ const MAX_MATERIALIZED_OBJECT_BYTES: u64 = 128 * 1024 * 1024;
 pub struct Config {
     /// Where the table comes from — a literal or `{{ expr }}`, arriving final.
     /// Typed, because three shapes are all legal answers: a ZebFS path string,
-    /// a FileRef (`{{ input.saved }}`), or the rows themselves
+    /// a FileRef (`{{ input.file }}`), or the rows themselves
     /// (`{{ input.rows }}`).
     #[serde(default)]
     pub from: Value,

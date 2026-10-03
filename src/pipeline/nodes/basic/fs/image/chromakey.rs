@@ -3,7 +3,7 @@
 //!
 //! | Use | DSL |
 //! |---|---|
-//! | A generated character, cut out for a poster | `\| fs.file.put --from "{{ input.response.body }}" --folder posters/photos \| fs.image.chromakey --source-key file --folder posters/cutouts --preview image` |
+//! | A generated character, cut out for a poster | `\| fs.file.put --from "{{ input.response.body }}" --folder posters/photos \| fs.image.chromakey --from "{{ input.file }}" --folder posters/cutouts --preview image` |
 //!
 //! Plain pixel maths, no model: every pixel whose colour is within
 //! `--tolerance` of `--color` (RGB distance, 0–441) becomes transparent, and
@@ -19,14 +19,14 @@
 //! and keys nothing; measure a corner and pass `--color` when the screen
 //! is another colour.
 //!
-//! Reads the source at `--source-key` (default `saved`; `file` after
-//! `fs.file.put`) — a FileRef or a store path string, decodes it with the same
-//! decompression-bomb limits as `fs.image.thumbnail`, writes `--format
-//! png|webp` (both keep alpha; default png) into `--folder` (default
-//! `cutouts/`) as `--filename` or a UUID, and adds `image` — a durable FileRef
-//! (`origin: fs.image.chromakey`, `trust: sanitized`) with `width`, `height`,
-//! `format` — to the payload, keeping the rest. With `--delete-source` the
-//! original is removed and its key dropped.
+//! Reads the image `--from` names — a FileRef, an upload or a store key —
+//! decodes it with the same decompression-bomb limits as
+//! `fs.image.thumbnail`, writes `--format png|webp` (both keep alpha; default
+//! png) under `--folder` (default `cutouts/`) as `--filename` or a generated
+//! name, and adds `image` — a durable FileRef (`origin: fs.image.chromakey`,
+//! `trust: sanitized`) with `width`, `height`, `format` and `source_deleted`
+//! — keeping the rest of the payload. With `--delete-source` the original is
+//! removed once the cutout is written.
 //!
 //! Put it in a poster with `fs.image.render`: `<image href="<image.ref>"
 //! …/>` composites the alpha over whatever is drawn under it.
@@ -41,9 +41,9 @@ use uuid::Uuid;
 
 use super::load_with_limits;
 use crate::pipeline::model::{DslFlag, DslFlagKind, LayoutItem, NodeCapability, NodeExample, NodeFailureSemantic, NodeFieldDef, NodeFieldType, SelectOptionDef};
-use crate::pipeline::nodes::shared::util::with_answer;
-use crate::pipeline::nodes::shared::project_store::{OnConflict, on_conflict_flag, open_source, open_store, store_fields, store_flag, target_key};
-use crate::pipeline::nodes::shared::util::{filename_stem, metadata_scope, resolve_path};
+use crate::pipeline::nodes::shared::limits::choice;
+use crate::pipeline::nodes::shared::project_store::{OnConflict, on_conflict_flag, open_from, open_store, store_fields, store_flag, target_key};
+use crate::pipeline::nodes::shared::util::{filename_stem, metadata_scope, with_answer};
 use crate::pipeline::{
     NodeDefinition, PipelineError,
     nodes::{NodeExecutionInput, NodeExecutionOutput, NodeHandler},
@@ -54,11 +54,17 @@ pub const NODE_KIND: &str = "fs.image.chromakey";
 const INPUT_PIN_IN: &str = "in";
 const OUTPUT_PIN_OUT: &str = "out";
 pub const ORIGIN: &str = "fs.image.chromakey";
+/// A flag the author set wrong.
+pub const CONFIG_CODE: &str = "FW_NODE_FS_IMAGE_CHROMAKEY_CONFIG";
+/// `--from` is missing, not there, or not an image the decoder takes.
+const SOURCE_CODE: &str = "FW_NODE_FS_IMAGE_CHROMAKEY_SOURCE";
+/// The encoder or the store write.
+const RASTER_CODE: &str = "FW_NODE_FS_IMAGE_CHROMAKEY_RASTER";
+const FORMATS: &[&str] = &["png", "webp"];
 const DEFAULT_COLOR: &str = "#00b140";
 const DEFAULT_TOLERANCE: f32 = 60.0;
 const DEFAULT_SOFTEN: f32 = 40.0;
 const DEFAULT_FOLDER: &str = "cutouts";
-const DEFAULT_SOURCE_KEY: &str = "saved";
 
 fn default_color() -> String {
     DEFAULT_COLOR.to_string()
@@ -69,18 +75,12 @@ fn default_tolerance() -> Value {
 fn default_soften() -> Value {
     json!(DEFAULT_SOFTEN)
 }
-fn default_format() -> String {
-    "png".to_string()
-}
-fn default_folder() -> String {
-    DEFAULT_FOLDER.to_string()
-}
-fn default_source_key() -> String {
-    DEFAULT_SOURCE_KEY.to_string()
-}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
+    /// The image: a FileRef, an upload or a store key.
+    #[serde(default)]
+    pub from: Value,
     /// The key colour, `#rrggbb` (default `#00b140`, broadcast green).
     #[serde(default = "default_color")]
     pub color: String,
@@ -91,14 +91,11 @@ pub struct Config {
     #[serde(default = "default_soften")]
     pub soften: Value,
     /// png | webp (default png) — both keep alpha.
-    #[serde(default = "default_format")]
+    #[serde(default)]
     pub format: String,
     /// Destination store folder (default `cutouts`).
-    #[serde(default = "default_folder")]
+    #[serde(default)]
     pub folder: String,
-    /// Dot-path to the source in the payload (default `saved`).
-    #[serde(default = "default_source_key")]
-    pub source_key: String,
     /// Remove the source after the cutout is written.
     #[serde(default)]
     pub delete_source: bool,
@@ -119,12 +116,12 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
+            from: Value::Null,
             color: default_color(),
             tolerance: default_tolerance(),
             soften: default_soften(),
-            format: default_format(),
-            folder: default_folder(),
-            source_key: default_source_key(),
+            format: String::new(),
+            folder: String::new(),
             delete_source: false,
             filename: None,
             path: None,
@@ -134,32 +131,40 @@ impl Default for Config {
     }
 }
 
+fn flag(name: &str, key: &str, description: &str, value: &str) -> DslFlag {
+    DslFlag { flag: name.into(), config_key: key.into(), description: description.into(), kind: DslFlagKind::Scalar, required: false, value: value.into(), ..Default::default() }
+}
+
+fn words(list: &[&str]) -> Vec<String> {
+    list.iter().map(|word| word.to_string()).collect()
+}
+
 pub fn definition() -> NodeDefinition {
+    let photo = json!({ "__zf_type": "file_ref", "backend": "zebfs", "store": "local", "ref": "sandbox/posters/photos/3f9c….png", "filename": "3f9c….png", "mime": "image/png", "kind": "image", "size": 1822310, "sha256": "sha256:…", "lifecycle": "durable", "origin": "fs.file.put", "trust": "untrusted" });
     NodeDefinition {
         kind: NODE_KIND.to_string(),
         capabilities: vec![NodeCapability::Filesystem],
         title: "Chroma Key".to_string(),
-        description: "Make a green screen transparent. Reads the source at `--source-key` (default `saved`; `file` right after `fs.file.put`), turns every pixel within \
-            `--tolerance` of `--color` (default #00b140, broadcast chroma green — what image models produce for \"green screen\") transparent with a `--soften` ramp at the edge and despill, writes `--format png|webp` (both keep alpha) into \
-            `--folder` (default `cutouts/`) and adds `image` — a durable FileRef with `width`, `height`, `format` — to the payload. No model: plain pixel maths. \
-            Generate the picture on a flat green background, then place the cutout in a poster with `fs.image.render` as `<image href=\"<image.ref>\">`."
+        description: "Make a green screen transparent. Reads the image `--from` names — a FileRef, an upload or a store key — turns every pixel within \
+            `--tolerance` of `--color` (default #00b140, broadcast chroma green — what image models produce for \"green screen\") transparent with a `--soften` ramp at the edge and despill, \
+            writes `--format png|webp` (both keep alpha) under `--folder` (default `cutouts/`) and adds `image` — a durable FileRef with `width`, `height`, `format`, `source_deleted` — \
+            keeping the rest of the payload. No model: plain pixel maths. Generate the picture on a flat green background, then place the cutout in a poster with \
+            `fs.image.render` as `<image href=\"<image.ref>\">`."
             .to_string(),
-        input_schema: json!({
-            "type": "object",
-            "description": "Payload must contain the source — a FileRef or a store path string — at the dot-key `source_key` (default `saved`)."
-        }),
+        input_schema: json!({ "type": "object" }),
         output_schema: json!({
             "type": "object",
             "properties": {
                 "image": {
                     "type": "object",
-                    "description": "A durable FileRef (kinds/file-ref/README.md) of the cutout with alpha, `origin` fs.image.chromakey, plus `width`, `height`, `format`. The store path is `ref`.",
+                    "description": "A durable FileRef (kinds/file-ref/README.md) of the cutout with alpha, `origin` fs.image.chromakey, plus `width`, `height`, `format`, `source_deleted`. The store path is `ref`.",
                     "properties": {
                         "ref":    { "type": "string" },
                         "width":  { "type": "integer" },
                         "height": { "type": "integer" },
-                        "format": { "type": "string" },
-                        "size":   { "type": "integer" }
+                        "format": { "type": "string", "enum": FORMATS },
+                        "size":   { "type": "integer" },
+                        "source_deleted": { "type": "boolean" }
                     }
                 }
             },
@@ -167,33 +172,22 @@ pub fn definition() -> NodeDefinition {
         }),
         input_pins: vec![INPUT_PIN_IN.to_string()],
         output_pins: vec![OUTPUT_PIN_OUT.to_string()],
-        config_schema: json!({
-            "type": "object",
-            "properties": {
-                "color":         { "type": "string", "description": "#rrggbb key colour (default #00b140)." },
-                "tolerance":     { "type": "number", "description": "RGB distance that is fully transparent (default 60)." },
-                "soften":        { "type": "number", "description": "Ramp beyond tolerance to opaque (default 40)." },
-                "format":        { "type": "string", "enum": ["png", "webp"] },
-                "folder":        { "type": "string" },
-                "source_key":    { "type": "string" },
-                "delete_source": { "type": "boolean" },
-                "filename":      { "type": "string" }
-            }
-        }),
+        config_schema: Default::default(),
         dsl_flags: vec![
-            DslFlag { flag: "--color".into(), config_key: "color".into(), description: "Key colour as #rrggbb (default: #00b140, broadcast chroma green)".into(), kind: DslFlagKind::Scalar, required: false, ..Default::default() },
-            DslFlag { flag: "--tolerance".into(), config_key: "tolerance".into(), description: "RGB distance from the key that is fully transparent, 0–441 (default: 60)".into(), kind: DslFlagKind::Scalar, required: false, ..Default::default() },
-            DslFlag { flag: "--soften".into(), config_key: "soften".into(), description: "Distance beyond --tolerance over which the edge ramps to opaque (default: 40)".into(), kind: DslFlagKind::Scalar, required: false, ..Default::default() },
-            DslFlag { flag: "--format".into(), config_key: "format".into(), description: "png | webp (default: png) — both keep alpha".into(), kind: DslFlagKind::Scalar, required: false, ..Default::default() },
-            DslFlag { flag: "--folder".into(), config_key: "folder".into(), description: "Destination store folder (default: cutouts)".into(), kind: DslFlagKind::Scalar, required: false, ..Default::default() },
-            DslFlag { flag: "--source-key".into(), config_key: "source_key".into(), description: "Dot-path to the source in the payload: a FileRef or a store path string (default: `saved`)".into(), kind: DslFlagKind::Scalar, required: false, ..Default::default() },
-            DslFlag { flag: "--delete-source".into(), config_key: "delete_source".into(), description: "Delete the source file after the cutout is written (default: false)".into(), kind: DslFlagKind::Bool, required: false, ..Default::default() },
-            DslFlag { flag: "--filename".into(), config_key: "filename".into(), description: "Custom filename without extension (default: random UUID).".into(), kind: DslFlagKind::Scalar, required: false, ..Default::default() },
-            DslFlag { flag: "--path".into(), config_key: "path".into(), description: "Exact store key for the cutout; overrides --folder and --filename.".into(), kind: DslFlagKind::Scalar, required: false, ..Default::default() },
-            store_flag(),
-            on_conflict_flag(OnConflict::Error),
+            DslFlag { required: true, ..flag("--from", "from", "The image: a FileRef, an upload or a store key.", "file:image") },
+            flag("--color", "color", "Key colour as #rrggbb (default: #00b140, broadcast chroma green).", "text"),
+            flag("--tolerance", "tolerance", "RGB distance from the key that is fully transparent, 0–441 (default: 60).", "number"),
+            flag("--soften", "soften", "Distance beyond --tolerance over which the edge ramps to opaque (default: 40).", "number"),
+            DslFlag { choices: words(FORMATS), ..flag("--format", "format", "png (default) or webp; both keep alpha.", "") },
+            DslFlag { kind: DslFlagKind::Bool, ..flag("--delete-source", "delete_source", "Delete the source once the cutout is written.", "") },
+            DslFlag { value: "text".into(), ..store_flag() },
+            flag("--folder", "folder", "Destination folder (default: cutouts).", "text"),
+            flag("--filename", "filename", "Destination name without extension (default: a generated name).", "text"),
+            flag("--path", "path", "Exact destination key; overrides --folder and --filename.", "text"),
+            DslFlag { choices: words(&["error", "skip", "overwrite"]), ..on_conflict_flag(OnConflict::Error) },
         ],
         fields: vec![
+            NodeFieldDef { name: "from".into(), label: "From".into(), field_type: NodeFieldType::Text, help: Some("The image, e.g. {{ input.file }}.".into()), ..Default::default() },
             NodeFieldDef { name: "color".into(), label: "Key colour".into(), field_type: NodeFieldType::Text, default_value: Some(json!(DEFAULT_COLOR)), help: Some("#rrggbb of the screen to remove. Default #00b140, the broadcast chroma green image models produce; measure a corner pixel for anything else.".into()), ..Default::default() },
             NodeFieldDef { name: "tolerance".into(), label: "Tolerance".into(), field_type: NodeFieldType::Text, default_value: Some(json!("60")), help: Some("RGB distance from the key colour that is fully transparent (0–441). Raise it if green remains; lower it if the subject loses colour.".into()), ..Default::default() },
             NodeFieldDef { name: "soften".into(), label: "Soften".into(), field_type: NodeFieldType::Text, default_value: Some(json!("40")), help: Some("Distance beyond the tolerance over which the edge ramps from transparent to opaque.".into()), ..Default::default() },
@@ -201,33 +195,25 @@ pub fn definition() -> NodeDefinition {
                 SelectOptionDef { value: "png".into(), label: "PNG".into() },
                 SelectOptionDef { value: "webp".into(), label: "WebP (lossless)".into() },
             ], ..Default::default() },
-            NodeFieldDef { name: "folder".into(), label: "Folder".into(), field_type: NodeFieldType::Text, default_value: Some(json!(DEFAULT_FOLDER)), help: Some("Destination store folder (default: cutouts). Private until the owner exposes it in Studio → Files.".into()), ..Default::default() },
-            NodeFieldDef { name: "source_key".into(), label: "Source key".into(), field_type: NodeFieldType::Text, default_value: Some(json!(DEFAULT_SOURCE_KEY)), help: Some("Dot-path into the payload: a FileRef or a store path string. Default: saved; after fs.file.put, file.".into()), ..Default::default() },
-            NodeFieldDef { name: "delete_source".into(), label: "Delete source file".into(), field_type: NodeFieldType::Checkbox, default_value: Some(json!(false)), help: Some("Remove the green-screen original after the cutout is written; its key is dropped from the payload.".into()), ..Default::default() },
-            NodeFieldDef { name: "filename".into(), label: "Filename".into(), field_type: NodeFieldType::Text, help: Some("Without extension (default: random UUID).".into()), ..Default::default() },
+            NodeFieldDef { name: "delete_source".into(), label: "Delete source file".into(), field_type: NodeFieldType::Checkbox, default_value: Some(json!(false)), help: Some("Remove the green-screen original once the cutout is written.".into()), ..Default::default() },
+            NodeFieldDef { name: "folder".into(), label: "Folder".into(), field_type: NodeFieldType::Text, default_value: Some(json!(DEFAULT_FOLDER)), help: Some("Destination folder (default: cutouts). Private until the owner exposes it in Studio → Files.".into()), ..Default::default() },
+            NodeFieldDef { name: "filename".into(), label: "Filename".into(), field_type: NodeFieldType::Text, help: Some("Without extension (default: a generated name).".into()), ..Default::default() },
+            NodeFieldDef { name: "path".into(), label: "Path".into(), field_type: NodeFieldType::Text, help: Some("Exact destination key; overrides folder and filename.".into()), ..Default::default() },
         ].into_iter().chain(store_fields(OnConflict::Error)).collect(),
-        layout: vec![
-            LayoutItem::Field("source_key".into()),
-            LayoutItem::Field("color".into()),
-            LayoutItem::Field("tolerance".into()),
-            LayoutItem::Field("soften".into()),
-            LayoutItem::Field("format".into()),
-            LayoutItem::Field("folder".into()),
-            LayoutItem::Field("filename".into()),
-            LayoutItem::Field("delete_source".into()),
-            LayoutItem::Field("store".into()),
-            LayoutItem::Field("on_conflict".into()),
-        ],
+        layout: ["from", "color", "tolerance", "soften", "format", "delete_source", "folder", "filename", "path", "store", "on_conflict"]
+            .iter()
+            .map(|name| LayoutItem::Field(name.to_string()))
+            .collect(),
         failure_semantics: vec![
-            NodeFailureSemantic { code: "FW_NODE_FS_IMAGE_CHROMAKEY_CONFIG".into(), description: "A --color that is not #rrggbb; a --tolerance or --soften that is not a number in range; a --format that is not png or webp.".into(), ..Default::default() },
-            NodeFailureSemantic { code: "FW_NODE_FS_IMAGE_CHROMAKEY_SOURCE".into(), description: "Nothing at --source-key, the object is missing, or it is not a PNG/JPEG/WebP/GIF the decoder accepts within its limits.".into(), ..Default::default() },
-            NodeFailureSemantic { code: "FW_NODE_FS_IMAGE_CHROMAKEY_RASTER".into(), description: "The encoder or the store write failed.".into(), retryable: true, ..Default::default() },
+            NodeFailureSemantic { code: CONFIG_CODE.into(), description: "A --color that is not #rrggbb; a --tolerance or --soften that is not a number in range; a --format that is not png or webp; a destination that leaves the store.".into(), ..Default::default() },
+            NodeFailureSemantic { code: SOURCE_CODE.into(), description: "No --from, the file is missing, or it is not a PNG/JPEG/WebP/GIF the decoder accepts within its limits.".into(), ..Default::default() },
+            NodeFailureSemantic { code: RASTER_CODE.into(), description: "The encoder or the store write failed.".into(), retryable: true, ..Default::default() },
         ],
         examples: vec![
-            NodeExample::dsl("A generated character, cut out for a poster", "fs.image.chromakey --source-key file --folder sandbox/posters/cutouts --preview image")
-                .input(json!({ "file": { "__zf_type": "file_ref", "backend": "zebfs", "ref": "sandbox/posters/photos/3f9c….png", "filename": "3f9c….png", "mime": "image/png", "kind": "image", "size": 1822310, "sha256": "sha256:…", "lifecycle": "durable", "origin": "fs.file.put", "trust": "untrusted" } }))
-                .output(json!({ "file": { "__zf_type": "file_ref", "backend": "zebfs", "ref": "sandbox/posters/photos/3f9c….png", "filename": "3f9c….png", "mime": "image/png", "kind": "image", "size": 1822310, "sha256": "sha256:…", "lifecycle": "durable", "origin": "fs.file.put", "trust": "untrusted" },
-                    "image": { "__zf_type": "file_ref", "backend": "zebfs", "ref": "sandbox/posters/cutouts/9a1d….png", "filename": "9a1d….png", "mime": "image/png", "kind": "image", "size": 912400, "sha256": "sha256:…", "lifecycle": "durable", "origin": "fs.image.chromakey", "trust": "sanitized", "width": 1024, "height": 1536, "format": "png" } }))
+            NodeExample::dsl("A generated character, cut out for a poster", "fs.image.chromakey --from \"{{ input.file }}\" --folder sandbox/posters/cutouts --preview image")
+                .input(json!({ "file": photo.clone() }))
+                .output(json!({ "file": photo,
+                    "image": { "__zf_type": "file_ref", "backend": "zebfs", "store": "local", "ref": "sandbox/posters/cutouts/9a1d….png", "filename": "9a1d….png", "mime": "image/png", "kind": "image", "size": 912400, "sha256": "sha256:…", "lifecycle": "durable", "origin": "fs.image.chromakey", "trust": "sanitized", "width": 1024, "height": 1536, "format": "png", "source_deleted": false } }))
                 .note("The picture was generated \"standing on a solid flat bright green chroma key background\"; the default key #00b140 is what the model paints. Then `fs.image.render` draws it with `<image href=\"sandbox/posters/cutouts/9a1d….png\" x=… y=… width=… height=…/>`."),
         ],
         ..Default::default()
@@ -254,7 +240,7 @@ fn number(v: &Value, name: &str) -> Result<f32, PipelineError> {
     };
     n.map(|n| n as f32)
         .filter(|n| (0.0..=441.0).contains(n))
-        .ok_or_else(|| PipelineError::new("FW_NODE_FS_IMAGE_CHROMAKEY_CONFIG", format!("--{name} must be a number from 0 to 441")))
+        .ok_or_else(|| PipelineError::new(CONFIG_CODE, format!("--{name} must be a number from 0 to 441")))
 }
 
 /// The keyed image: alpha by RGB distance from `key`, a ramp of `soften`
@@ -290,14 +276,11 @@ pub struct Node {
 impl Node {
     pub fn new(config: Config, platform: Arc<PlatformService>) -> Result<Self, PipelineError> {
         let key = parse_color(&config.color)
-            .ok_or_else(|| PipelineError::new("FW_NODE_FS_IMAGE_CHROMAKEY_CONFIG", format!("--color '{}' is not #rrggbb", config.color)))?;
+            .ok_or_else(|| PipelineError::new(CONFIG_CODE, format!("--color '{}' is not #rrggbb", config.color)))?;
         let tolerance = number(&config.tolerance, "tolerance")?;
         let soften = number(&config.soften, "soften")?;
-        let webp = match config.format.trim().to_ascii_lowercase().as_str() {
-            "" | "png" => false,
-            "webp" => true,
-            other => return Err(PipelineError::new("FW_NODE_FS_IMAGE_CHROMAKEY_CONFIG", format!("--format '{other}' is not png or webp"))),
-        };
+        let webp = choice(&config.format, FORMATS, "png", "--format", CONFIG_CODE)? == "webp";
+        OnConflict::parse(config.on_conflict.as_deref(), OnConflict::Error, CONFIG_CODE)?;
         Ok(Self { config, platform, key, tolerance, soften, webp })
     }
 }
@@ -317,17 +300,10 @@ impl NodeHandler for Node {
     async fn execute_async(&self, input: NodeExecutionInput) -> Result<NodeExecutionOutput, PipelineError> {
         let started = std::time::Instant::now();
         let (owner, project, ..) = metadata_scope(&input.metadata)?;
-        let key = self.config.source_key.trim();
-        let key = if key.is_empty() { DEFAULT_SOURCE_KEY } else { key };
-        let value = resolve_path(&input.payload, key).ok_or_else(|| {
-            PipelineError::new("FW_NODE_FS_IMAGE_CHROMAKEY_SOURCE", format!("nothing at payload key '{key}' — after fs.file.put set --source-key file"))
-        })?;
-        let (source_store, rel) = open_source(&self.platform, owner, project, value, self.config.store.as_deref())?
-            .ok_or_else(|| PipelineError::new("FW_NODE_FS_IMAGE_CHROMAKEY_SOURCE", format!("payload key '{key}' must be a FileRef or a store path string")))?;
-        let rel = crate::zebfs::normalize_object_path(rel.trim_start_matches('/'))
-            .map_err(|e| PipelineError::new("FW_NODE_FS_IMAGE_CHROMAKEY_SOURCE", e.to_string()))?;
-        let source_bytes = source_store.read_capped(&rel, "FW_NODE_FS_IMAGE_CHROMAKEY_SOURCE")?;
-        let img = load_with_limits(&source_bytes, "FW_NODE_FS_IMAGE_CHROMAKEY_SOURCE")?;
+        let (source_store, rel) =
+            open_from(&self.platform, owner, project, &self.config.from, self.config.store.as_deref(), "--from", SOURCE_CODE)?;
+        let source_bytes = source_store.read_capped(&rel, SOURCE_CODE)?;
+        let img = load_with_limits(&source_bytes, SOURCE_CODE)?;
 
         let keyed = key_out(&img, self.key, self.tolerance, self.soften);
         let (width, height) = keyed.dimensions();
@@ -335,19 +311,19 @@ impl NodeHandler for Node {
         let (ext, mime) = if self.webp { ("webp", "image/webp") } else { ("png", "image/png") };
         DynamicImage::ImageRgba8(keyed)
             .write_to(&mut bytes, if self.webp { image::ImageFormat::WebP } else { image::ImageFormat::Png })
-            .map_err(|e| PipelineError::new("FW_NODE_FS_IMAGE_CHROMAKEY_RASTER", format!("{ext} encode: {e}")))?;
+            .map_err(|e| PipelineError::new(RASTER_CODE, format!("{ext} encode: {e}")))?;
         let bytes = bytes.into_inner();
 
         let stem = self.config.filename.as_deref().map(filename_stem).filter(|s| !s.is_empty()).unwrap_or_else(|| Uuid::new_v4().to_string());
         let filename = format!("{stem}.{ext}");
         let folder = self.config.folder.trim().trim_matches('/');
         let folder = if folder.is_empty() { DEFAULT_FOLDER } else { folder };
-        let out_rel = target_key(self.config.path.as_deref(), folder, &filename, "FW_NODE_FS_IMAGE_CHROMAKEY_CONFIG")?;
+        let out_rel = target_key(self.config.path.as_deref(), folder, &filename, CONFIG_CODE)?;
         let store = open_store(&self.platform, owner, project, self.config.store.as_deref())?;
-        let on_conflict = OnConflict::parse(self.config.on_conflict.as_deref(), OnConflict::Error, "FW_NODE_FS_IMAGE_CHROMAKEY_CONFIG")?;
+        let on_conflict = OnConflict::parse(self.config.on_conflict.as_deref(), OnConflict::Error, CONFIG_CODE)?;
         // A skipped write answers the file already there, as it is.
-        if !on_conflict.allows(&store.fs, &out_rel, "FW_NODE_FS_IMAGE_CHROMAKEY_RASTER")? {
-            let existing = store.stored_ref(&out_rel, ORIGIN, "sanitized", "FW_NODE_FS_IMAGE_CHROMAKEY_RASTER")?;
+        if !on_conflict.allows(&store.fs, &out_rel, RASTER_CODE)? {
+            let existing = store.stored_ref(&out_rel, ORIGIN, "sanitized", RASTER_CODE)?;
             return Ok(NodeExecutionOutput {
                 output_pins: vec![OUTPUT_PIN_OUT.to_string()],
                 payload: with_answer(&input.payload, json!({ "image": existing })),
@@ -357,11 +333,11 @@ impl NodeHandler for Node {
         store
             .fs
             .put(&out_rel, &bytes)
-            .map_err(|e| PipelineError::new("FW_NODE_FS_IMAGE_CHROMAKEY_RASTER", format!("store write {out_rel}: {}", e.message)))?;
+            .map_err(|e| PipelineError::new(RASTER_CODE, format!("store write {out_rel}: {}", e.message)))?;
         // The source goes only once the output is written and is not it.
         let source_deleted = self.config.delete_source && !(source_store.id == store.id && rel == out_rel);
         if source_deleted {
-            source_store.delete_named(&self.platform, owner, project, &rel, "FW_NODE_FS_IMAGE_CHROMAKEY_SOURCE")?;
+            source_store.delete_named(&self.platform, owner, project, &rel, RASTER_CODE)?;
         }
         let mut image = store.file_ref(&out_rel, &filename, mime, &bytes, ORIGIN, "sanitized");
         if let Some(obj) = image.as_object_mut() {
@@ -389,7 +365,6 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tempdir");
         let mut config = crate::platform::model::PlatformConfig::default();
         config.data_root = tmp.keep().join("platform");
-        config.default_password = "secret".to_string();
         Arc::new(PlatformService::from_config(config).expect("platform"))
     }
 
@@ -404,11 +379,53 @@ mod tests {
         assert!(bad(json!({ "tolerance": "lots" })).message.contains("--tolerance"));
         assert!(bad(json!({ "soften": 900 })).message.contains("--soften"));
         assert!(bad(json!({ "format": "jpg" })).message.contains("jpg"));
+        assert_eq!(bad(json!({ "on_conflict": "replace" })).code, CONFIG_CODE);
         let ok = Node::new(serde_json::from_value(json!({ "tolerance": "80", "format": "WEBP" })).unwrap(), p).unwrap();
         assert_eq!((ok.key, ok.tolerance, ok.soften, ok.webp), ([0, 177, 64], 80.0, DEFAULT_SOFTEN, true));
         let def = definition();
         let flags: Vec<&str> = def.dsl_flags.iter().map(|f| f.flag.as_str()).collect();
-        assert_eq!(flags, vec!["--color", "--tolerance", "--soften", "--format", "--folder", "--source-key", "--delete-source", "--filename", "--path", "--store", "--on-conflict"]);
+        assert_eq!(flags, vec!["--from", "--color", "--tolerance", "--soften", "--format", "--delete-source", "--store", "--folder", "--filename", "--path", "--on-conflict"]);
+        assert_eq!(
+            crate::pipeline::nodes::node_signature(&def),
+            "fs.image.chromakey --from IMAGE [--color TEXT] [--tolerance N] [--soften N] [--format png|webp] [--delete-source] \
+             [--store TEXT] [--folder TEXT] [--filename TEXT] [--path TEXT] [--on-conflict error|skip|overwrite] → image"
+        );
+    }
+
+    async fn run(p: &Arc<PlatformService>, config: Value, payload: Value) -> Result<Value, PipelineError> {
+        let node = Node::new(serde_json::from_value(config).unwrap(), p.clone())?;
+        let out = node
+            .execute_async(NodeExecutionInput {
+                node_id: "n0".to_string(),
+                input_pin: "in".to_string(),
+                payload,
+                metadata: json!({ "owner": "demo", "project": "demo", "pipeline": "test", "request_id": "r1" }),
+                bus: None,
+            })
+            .await?;
+        Ok(out.payload)
+    }
+
+    #[tokio::test]
+    async fn from_is_required_and_the_cutout_is_image_beside_the_payload() {
+        let p = platform();
+        let err = run(&p, json!({}), json!({ "saved": "uploads/green.png" })).await.unwrap_err();
+        assert_eq!(err.code, SOURCE_CODE);
+        assert!(err.message.contains("--from is required"), "{}", err.message);
+
+        let mut png = Vec::new();
+        DynamicImage::ImageRgba8(RgbaImage::from_pixel(8, 4, image::Rgba([0, 177, 64, 255])))
+            .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+            .unwrap();
+        let store = open_store(&p, "demo", "demo", None).unwrap();
+        store.fs.put("uploads/green.png", &png).unwrap();
+        let file = store.stored_ref("uploads/green.png", "fs.file.put", "untrusted", "T").unwrap();
+        let out = run(&p, json!({ "from": file, "filename": "cut" }), json!({ "file": file, "keep": 1 })).await.unwrap();
+        let mut keys: Vec<&str> = out.as_object().unwrap().keys().map(String::as_str).collect();
+        keys.sort_unstable();
+        assert_eq!(keys, vec!["file", "image", "keep"]);
+        assert_eq!((out["image"]["ref"].as_str(), out["image"]["origin"].as_str()), (Some("cutouts/cut.png"), Some(ORIGIN)));
+        assert_eq!((out["image"]["width"].as_u64(), out["image"]["source_deleted"].as_bool()), (Some(8), Some(false)));
     }
 
     #[test]

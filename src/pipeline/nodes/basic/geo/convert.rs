@@ -113,7 +113,7 @@ pub fn definition() -> NodeDefinition {
             DslFlag {
                 flag: "--from".to_string(),
                 config_key: "from".to_string(),
-                description: "The input spatial file: a store key, or a FileRef through {{ }} (e.g. \"{{ input.saved }}\")".to_string(),
+                description: "The input spatial file: a store key, or a FileRef through {{ }} (e.g. \"{{ input.file }}\")".to_string(),
                 kind: DslFlagKind::Scalar,
                 required: true,
                 ..Default::default()
