@@ -17,7 +17,7 @@
 //!
 //! # DSL
 //! ```text
-//! | trigger.webhook --path /scrape
+//! | trigger.webhook --route /scrape
 //! | browser.page.run --credential browserless-local
 //! ```
 
@@ -102,7 +102,7 @@ pub fn definition() -> NodeDefinition {
         ],
         ai_tool: Default::default(),
         examples: vec![
-            crate::pipeline::model::NodeExample::dsl("Title of a rendered page", r#"browser.page.run --credential browserless_main --timeout-ms 20000 -- "export default async ({ page }) => { await page.goto('{{ input.body.url }}'); return { title: await page.title() }; }""#)
+            crate::pipeline::model::NodeExample::dsl("Title of a rendered page", r#"browser.page.run --credential browserless_main --timeout-ms 20000 -- "export default async ({ page }) => { await page.goto('{{ $trigger.body.url }}'); return { title: await page.title() }; }""#)
                 .input(serde_json::json!({ "body": { "url": "https://example.com" } }))
                 .output(serde_json::json!({ "title": "Example Domain" })),
         ],

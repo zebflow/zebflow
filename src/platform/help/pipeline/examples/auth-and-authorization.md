@@ -30,10 +30,10 @@ Create a `jwt_signing_key` credential in the Credentials UI. Fields:
 
 `auth_redirect` and `auth_forbidden_redirect` trigger only on browser page navigation. API/fetch calls always receive JSON 401/403.
 
-### `--auth-required-role` behaviour
+### `--role` behaviour
 
-- **One or more roles selected** → the JWT `roles` array claim must contain one of the selected roles or request is rejected with 403.
-- **No roles selected (empty)** → any holder of a valid JWT may access — role is not checked. Use this for "authenticated but unrestricted" routes.
+- **One or more `--role` flags** (repeated, one per role) → the JWT `roles` array claim must contain one of the listed roles or the request is rejected with 403.
+- **No `--role` given (empty)** → any holder of a valid JWT may access — role is not checked. Use this for "authenticated but unrestricted" routes.
 
 ---
 
@@ -52,15 +52,15 @@ Create a `jwt_signing_key` credential in the Credentials UI. Fields:
 ### auth-login-page — render login form
 
 ```
-| trigger.webhook --path /auth/login --method GET
+| trigger.webhook --route /auth/login --method GET
 | web.response.send --template pages/auth-login.tsx
 ```
 
 ### auth-login-submit — authenticate and issue token
 
 ```
-| trigger.webhook --path /auth/login --method POST
-| pg.query.run --credential main-db --param "1={{ input.body.username }}" \
+| trigger.webhook --route /auth/login --method POST
+| pg.query.run --credential main-db --param "1={{ input.webhook.body.username }}" \
     -- "SELECT id::text, username, role FROM users WHERE username = $1 LIMIT 1"
 | logic.if --expr "input.query.rows && input.query.rows.length > 0"
 (false pin → `web.response.send --status 401 --body "invalid credentials"`)
@@ -74,20 +74,20 @@ Create a `jwt_signing_key` credential in the Credentials UI. Fields:
 ### auth-register-page — render register form
 
 ```
-| trigger.webhook --path /auth/register --method GET
+| trigger.webhook --route /auth/register --method GET
 | web.response.send --template pages/auth-register.tsx
 ```
 
 ### auth-register-submit — create new user
 
 ```
-| trigger.webhook --path /auth/register --method POST
-| logic.if --expr "input.body.username && input.body.email && input.body.password && input.body.password.length >= 12"
+| trigger.webhook --route /auth/register --method POST
+| logic.if --expr "input.webhook.body.username && input.webhook.body.email && input.webhook.body.password && input.webhook.body.password.length >= 12"
 (false pin → `web.response.send --status 400 --body "username, email and a password of at least 12 characters are required"`)
-| crypto.password.hash --from "{{ input.body.password }}"
+| crypto.password.hash --from "{{ $trigger.body.password }}"
 (`crypto.password.hash` adds `password: { hash, algorithm }` to the payload and
-keeps everything else, so `input.body.username` is still there for the insert.)
-| pg.query.run --credential main-db --write --param "1={{ input.body.username }}" --param "2={{ input.body.email }}" --param "3={{ input.password.hash }}" --param "4=user" \
+keeps everything else, so `$trigger.body.username` is still reachable for the insert.)
+| pg.query.run --credential main-db --write --param "1={{ $trigger.body.username }}" --param "2={{ $trigger.body.email }}" --param "3={{ input.password.hash }}" --param "4=user" \
     -- "INSERT INTO users (username, email, password_hash, role, created_at) VALUES ($1, $2, $3, $4, NOW()) RETURNING id::text"
 | web.response.send --status 302 --header "Location=/auth/login?registered=1"
 ```
@@ -100,15 +100,15 @@ verify answers on `true`/`false` pins, so the branch is the check.
 ### auth-logout — clear session cookie
 
 ```
-| trigger.webhook --path /auth/logout --method GET
+| trigger.webhook --route /auth/logout --method GET
 | web.response.send --status 302 --header "Location=/auth/login" --header "Set-Cookie=session=; Path=/; Max-Age=0"
 ```
 
 ### dashboard-protected — JWT-protected page
 
 ```
-| trigger.webhook --path /dashboard --method GET --auth-type jwt --auth-credential my-jwt
-| pg.query.run --credential main-db --param "1={{ input.auth.sub }}" \
+| trigger.webhook --route /dashboard --method GET --auth jwt --credential my-jwt
+| pg.query.run --credential main-db --param "1={{ $trigger.auth.sub }}" \
     -- "SELECT id::text, username, email, role FROM users WHERE id = $1::uuid"
 | script.result.run -- "const u = input.query.rows?.[0]; return { user: u }"
 | web.response.send --template pages/dashboard.tsx
@@ -119,8 +119,8 @@ JWT missing/invalid → `auth_redirect` fires as a 303 redirect (browser navigat
 ### admin-guard — role-checked admin route
 
 ```
-| trigger.webhook --path /admin/:section --method GET --auth-type jwt --auth-credential my-jwt --auth-required-role admin
-| script.result.run -- "return { section: input.params.section, user: input.auth }"
+| trigger.webhook --route /admin/:section --method GET --auth jwt --credential my-jwt --role admin
+| script.result.run -- "return { section: input.webhook.params.section, user: $trigger.auth }"
 | web.response.send --template pages/admin-section.tsx
 ```
 
@@ -130,8 +130,8 @@ Role mismatch → `auth_forbidden_redirect` fires as a 303 redirect (browser nav
 
 ## Nodes Used
 
-- `trigger.webhook --auth-type jwt --auth-credential <id>` — auto-verify JWT; `input.auth` = decoded claims
-- `trigger.webhook --auth-required-role <roles>` — comma-separated roles; checks against JWT `roles` array claim. Empty = any authenticated user.
+- `trigger.webhook --auth jwt --credential <id>` — auto-verify JWT; `$trigger.auth` = decoded claims
+- `trigger.webhook --role <role>` (repeated, one per role) — checks against JWT `roles` array claim. Empty = any authenticated user.
 - `pg.query.run` — user lookup and insert
 - `auth.token.create --claim "key={{ input.field }}"` — sign JWT; output `{{ input.access_token }}`. End the claim name with `:public` to expose that claim in the browser via `ctx.auth` (e.g. `--claim "role:public={{ input.role }}"`). Private claims like `sub` never reach the browser DOM.
 - `web.response.send --header "Set-Cookie=…"` — set the session cookie, sent as written: write `Path=/; SameSite=Lax; HttpOnly` (and `Secure` behind HTTPS)

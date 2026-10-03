@@ -85,8 +85,8 @@ site at `/`, a member app at `/member/`), each a separate icon.
 
 | Piece | Where it lives | Rule |
 |---|---|---|
-| manifest | `pwa/manifest.webmanifest` in the repo; `trigger.webhook --path /manifest.webmanifest \| web.response.send --file pwa/manifest.webmanifest` | a plain JSON file the author writes; typed by its extension. A second app is a second file and route with its own `id`, `scope` (ending in `/`) and `start_url` inside it |
-| worker | `pwa/site.sw.ts` in the repo; `trigger.webhook --path /sw.js \| web.response.send --file pwa/site.sw.ts` | TypeScript, compiled by the page engine; every script `--file` serves starts with `self.__ZF = { version, source }`; `text/javascript`, `Cache-Control: no-cache`. It must answer at the scope root: a store object at `/_files/sw.js` controls nothing. Served from deeper, add `--header Service-Worker-Allowed=/` |
+| manifest | `pwa/manifest.webmanifest` in the repo; `trigger.webhook --route /manifest.webmanifest \| web.response.send --file pwa/manifest.webmanifest` | a plain JSON file the author writes; typed by its extension. A second app is a second file and route with its own `id`, `scope` (ending in `/`) and `start_url` inside it |
+| worker | `pwa/site.sw.ts` in the repo; `trigger.webhook --route /sw.js \| web.response.send --file pwa/site.sw.ts` | TypeScript, compiled by the page engine; every script `--file` serves starts with `self.__ZF = { version, source }`; `text/javascript`, `Cache-Control: no-cache`. It must answer at the scope root: a store object at `/_files/sw.js` controls nothing. Served from deeper, add `--header Service-Worker-Allowed=/` |
 | icons | repo files `static/pwa/*.png` → `/_static/pwa/…`: they ship with the code (the repo write API takes bytes with `?encoding=base64`) | 192, 512, maskable 512, apple 180 (no transparency) |
 | head | `page.head`: `links: [{rel:"manifest"}, {rel:"apple-touch-icon"}]`, `themeColor` | the renderer already emits these; the shell's shared head links carry them once |
 | page side | a project component: registers the worker, keeps `beforeinstallprompt` and shows a quiet card, iOS hint, dismiss remembered | never a modal on first visit; a page places it on purpose |
@@ -108,7 +108,7 @@ credential), background sync, store packaging.
 ## 6a. The error page a visitor sees
 
 An uncaught failure never answers a browser with JSON. On a page request a
-5xx renders the project's own error page — the `trigger.error --code 500`
+5xx renders the project's own error page — the `trigger.error --status 500`
 archetype, registered like the 404 — or, when the project has none, the
 platform's neutral fallback: unbranded, no Studio styling, one sentence and the
 first eight characters of the run id as "reference". With `errors: shown`
@@ -128,8 +128,8 @@ What the catcher takes, and what it leaves alone:
 
 A request is a *JSON request* when its `Accept` names `application/json` and not `text/html`; everything else is a page request.
 
-What the page receives as `input`, from `trigger.error`: `error_code`,
-`error_message` (the reason phrase), `original_path`, `method`,
+What the page receives, as `input.error`, from `trigger.error`: `error_code`,
+`error_message` (the reason phrase), `original_path`, `path`, `method`,
 `request_id` (the run id, full; the page prints the first eight), and — only
 when the effective `errors` is `shown` — `detail: { code, message, node_id,
 run_url }`. Under `hidden` `detail` is absent, not empty, so a page cannot

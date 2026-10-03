@@ -91,7 +91,7 @@ pub fn definition() -> NodeDefinition {
         ],
         ai_tool: Default::default(),
         examples: vec![
-            crate::pipeline::model::NodeExample::dsl("Route by event type", r#"logic.match --expr "input.body.type" --cases created,updated,deleted --default other"#)
+            crate::pipeline::model::NodeExample::dsl("Route by event type", r#"logic.match --expr "$trigger.body.type" --cases created,updated,deleted --default other"#)
                 .note("Pins: `created`, `updated`, `deleted`, `other`. Wire each: `[b]:created -> [c]`."),
         ],
         ..Default::default()

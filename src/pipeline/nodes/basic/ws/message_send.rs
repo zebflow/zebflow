@@ -28,7 +28,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use super::{INPUT_PIN_IN, OUTPUT_PIN_OUT, answer, field, flag, room_key, room_of, text_of};
+use super::{INPUT_PIN_IN, OUTPUT_PIN_OUT, answer, field, flag, room_key, room_of, text_of, trigger_field};
 use crate::infra::transport::ws::{EmitTarget, RoomCmd, WsHub};
 use crate::infra::ws_client::WsClientManager;
 use crate::pipeline::model::{DslFlag, LayoutItem, NodeCapability, NodeExample, NodeFieldType, SelectOptionDef};
@@ -118,7 +118,7 @@ pub fn definition() -> NodeDefinition {
         examples: vec![
             NodeExample::dsl(
                 "Broadcast a chat line to the room",
-                r#"ws.message.send --event chat.message --body "{{ { from: input.session_id, text: input.payload.text } }}""#,
+                r#"ws.message.send --event chat.message --body "{{ { from: input.room.session_id, text: input.room.payload.text } }}""#,
             )
             .output(json!({ "message": { "sent": true, "room": "lobby", "event": "chat.message" } }))
             .note("After `trigger.room`, the room is the one the event came from."),
@@ -226,14 +226,15 @@ impl NodeHandler for Node {
     async fn execute_async(&self, input: NodeExecutionInput) -> Result<NodeExecutionOutput, PipelineError> {
         match &self.target {
             Target::Room { room, event, recipient, hub } => {
-                let room = room_of(room, &input.payload);
+                let room = room_of(room, &input.metadata);
                 if room.is_empty() {
                     return Err(PipelineError::new(
                         ROOM_CODE,
                         "no room: give --room or --connection, or start the run from trigger.room",
                     ));
                 }
-                let session = input.payload.get("session_id").and_then(Value::as_str).unwrap_or_default();
+                let session = trigger_field(&input.metadata, "session_id");
+                let session = session.as_str();
                 let to = match *recipient {
                     "all" => EmitTarget::All,
                     other => {

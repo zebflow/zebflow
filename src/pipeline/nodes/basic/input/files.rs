@@ -1,4 +1,4 @@
-//! `input.files` — an array of FileRefs at `files.<name>`; `--accept` and `--max` count.
+//! `input.files` — an array of FileRefs at `$trigger.files.<name>`; `--accept` and `--max` count.
 //!
 //! One member of the `input.*` family; the checks, the flags and the handler
 //! live in the parent module. This file is the kind's name and its

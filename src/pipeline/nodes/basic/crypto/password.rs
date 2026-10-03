@@ -71,7 +71,7 @@ pub fn hash_definition() -> NodeDefinition {
             LayoutItem::Row { row: vec![LayoutItem::Field("algorithm".to_string()), LayoutItem::Field("cost".to_string())] },
         ],
         examples: vec![
-            NodeExample::dsl("Hash a password at registration", r#"crypto.password.hash --from "{{ input.body.password }}""#)
+            NodeExample::dsl("Hash a password at registration", r#"crypto.password.hash --from "{{ $trigger.body.password }}""#)
                 .output(json!({ "password": { "hash": "$argon2id$v=19$m=19456,t=2,p=1$…", "algorithm": "argon2" } }))
                 .note("Store `input.password.hash`; the rest of the payload is still there for the INSERT."),
         ],
@@ -105,7 +105,7 @@ pub fn verify_definition() -> NodeDefinition {
         examples: vec![
             NodeExample::dsl(
                 "Check a password at login",
-                r#"crypto.password.verify --from "{{ $nodes.n0.body.password }}" --hash "{{ input.query.rows[0]?.password_hash }}""#,
+                r#"crypto.password.verify --from "{{ $trigger.body.password }}" --hash "{{ input.query.rows[0]?.password_hash }}""#,
             )
             .output(json!({ "query": { "rows": [{ "id": 7, "password_hash": "$argon2id$…" }] }, "password": { "valid": true } }))
             .note("Fires `true` or `false`; wire `false` to a 401. No user means an empty hash, which goes to `:error`."),

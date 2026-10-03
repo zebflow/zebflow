@@ -9,8 +9,8 @@ import {
 /**
  * The Run form, built from the graph.
  *
- * Every `input.*` node declares one field of the trigger envelope: `body`
- * (fields) and `files` (FileRefs). This module turns those nodes into the
+ * Every `input.*` node declares one field of the trigger envelope
+ * (`$trigger`): `body` (fields) and `files` (FileRefs). This module turns those nodes into the
  * widget specs the canvas draws, checks the values the operator typed, and
  * builds the request — multipart when a file is present, JSON otherwise.
  * Values live in editor state only; nothing here writes the pipeline.
@@ -263,7 +263,7 @@ export function webhookRouteOf(graph: any): { trigger: "webhook"; path: string; 
   const config = trigger.config || {};
   return {
     trigger: "webhook",
-    path: String(config.path || "/").trim() || "/",
+    path: String(config.route || "/").trim() || "/",
     method: String(config.method || "POST").trim().toUpperCase() || "POST",
   };
 }
@@ -296,6 +296,23 @@ function fileResult(ref: any, ctx: { owner: string; project: string }): InputRun
   return out;
 }
 
+/** The keys a trigger answers under (its source), in the order they are looked for. */
+const TRIGGER_SOURCE_KEYS = ["manual", "webhook", "function", "mcp", "room", "socket", "topic", "schedule", "error"];
+
+/**
+ * The trigger envelope inside a node's recorded input: the trigger answers it
+ * under its source key (`manual: { body, files }`), and every node after it
+ * keeps that key.
+ */
+function envelopeOf(payload: any): any {
+  if (!payload || typeof payload !== "object") return payload;
+  for (const key of TRIGGER_SOURCE_KEYS) {
+    const envelope = payload[key];
+    if (envelope && typeof envelope === "object" && !Array.isArray(envelope)) return envelope;
+  }
+  return payload;
+}
+
 /** One node's "what went in" from the latest invocation, or null before any run. */
 export function inputRunResult(
   spec: InputNodeSpec,
@@ -307,7 +324,7 @@ export function inputRunResult(
   if (!entry || entry.input === null || entry.input === undefined) return null;
   const runId = String(invocation?.run_id || invocation?.at || "");
   const slot = isFileInputKind(spec.kind) ? "files" : "body";
-  const value = followPath(entry.input, `${slot}.${spec.name}`);
+  const value = followPath(envelopeOf(entry.input), `${slot}.${spec.name}`);
   const result = ((): InputRunResult | null => {
     if (value === undefined || value === null || value === "") {
       return spec.optional ? { text: "(nothing sent)" } : null;

@@ -93,8 +93,8 @@ HTML as JSON.
 ### scraped-items-list — browse page
 
 ```
-| trigger.webhook --path /data/items --method GET
-| script.result.run -- "return { limit: Math.min(parseInt((input.query && input.query.limit) || '50', 10) || 50, 200) }"
+| trigger.webhook --route /data/items --method GET
+| script.result.run -- "return { limit: Math.min(parseInt((input.webhook.query && input.webhook.query.limit) || '50', 10) || 50, 200) }"
 | sekejap.query.run -- "SELECT * FROM scraped_items ORDER BY fetched_at DESC LIMIT {{ input.limit }}"
 | script.result.run -- "return { items: input.query.rows, count: input.query.rows.length }"
 | web.response.send --template pages/scraped-items.tsx
@@ -104,8 +104,8 @@ HTML as JSON.
 
 ```zf
 register scraping/scraped-item-detail --
-[a] trigger.webhook --path /data/items/:id --method GET
-[b] sekejap.query.run --param "1={{ input.params.id }}" -- "SELECT * FROM scraped_items WHERE _key = $1"
+[a] trigger.webhook --route /data/items/:id --method GET
+[b] sekejap.query.run --param "1={{ input.webhook.params.id }}" -- "SELECT * FROM scraped_items WHERE _key = $1"
 [c] logic.if --expr "input.query.rows.length > 0"
 [d] script.result.run -- "return { item: input.query.rows[0] };"
 [e] web.response.send --template pages/scraped-item-detail.tsx

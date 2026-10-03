@@ -97,7 +97,7 @@ for every downstream node in that run even after `sekejap.query.run` replaces
 ### admin-reports — view AI reports
 
 ```
-| trigger.webhook --path /admin/reports --method GET
+| trigger.webhook --route /admin/reports --method GET
 | sekejap.query.run -- "SELECT * FROM ai_summaries ORDER BY generated_at DESC LIMIT 30"
 | script.result.run -- "return { reports: input.query.rows }"
 | web.response.send --template pages/admin-reports.tsx

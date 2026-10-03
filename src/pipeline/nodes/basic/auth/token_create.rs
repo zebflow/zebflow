@@ -121,7 +121,7 @@ pub fn definition() -> NodeDefinition {
         examples: vec![
             crate::pipeline::model::NodeExample::dsl("Mint a session token after login", r#"auth.token.create --credential jwt_main --expires-in 86400 --claim "sub={{ input.query.rows[0]._key }}" --claim "name:public={{ input.query.rows[0].name }}" --claim "roles:public={{ input.query.rows[0].roles }}""#)
                 .output(serde_json::json!({ "access_token": "eyJhbGciOiJIUzI1NiJ9…", "token_type": "bearer", "expires_in": 86400, "profile": { "name": "Ana", "roles": ["editor"] } }))
-                .note("Then `web.response.send --status 303 --header \"Location=/home\" --header \"Set-Cookie=zebflow_session={{ input.access_token }}; Path=/; Max-Age=86400; SameSite=Lax; HttpOnly\"` (sent as written; add `; Secure` behind HTTPS). `roles` must be an array for `--auth-required-role`."),
+                .note("Then `web.response.send --status 303 --header \"Location=/home\" --header \"Set-Cookie=zebflow_session={{ input.access_token }}; Path=/; Max-Age=86400; SameSite=Lax; HttpOnly\"` (sent as written; add `; Secure` behind HTTPS). `roles` must be an array for a trigger's `--role`."),
         ],
         ..Default::default()
     }

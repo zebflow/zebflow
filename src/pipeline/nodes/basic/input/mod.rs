@@ -1,15 +1,17 @@
 //! `input.*` — declare and check one field of the trigger envelope.
 //!
-//! A trigger delivers one envelope: `body` (fields) and `files` (FileRefs).
-//! An input node names one field of it, checks it, and passes the envelope
-//! through **unchanged** — with one exception: a body field that was not
-//! sent and has a `--default` is **written into the envelope** at
-//! `body.<name>` as the checked default, so a DSL or MCP `execute` that
-//! omits it, a webhook post, and the Run form all leave the same envelope
-//! (files have no default). It fetches nothing and stores nothing. The set of
-//! input nodes reachable from a trigger *is* that trigger's declaration: the
-//! Studio builds a Run form from it, and an agent reads what a pipeline
-//! expects from it. The same nodes work after `trigger.manual` and after
+//! A trigger delivers one envelope — `$trigger`, the value it also answers
+//! under its source key (`manual`, `webhook`, …): `body` (fields) and
+//! `files` (FileRefs). An input node names one field of it, checks it, and
+//! **answers it at its `--name`** (`node-conventions.md` §1, §6): after
+//! `input.text prompt`, the payload holds `prompt: "<the checked string>"` and
+//! the rest is kept. A body field that was not sent and has a `--default`
+//! answers the checked default, so a DSL or MCP `execute` that omits it, a
+//! webhook post, and the Run form all leave the same answer (files have no
+//! default). It fetches nothing and stores nothing. The set of input nodes
+//! reachable from a trigger *is* that trigger's declaration: the Studio
+//! builds a Run form from it, and an agent reads what a pipeline expects from
+//! it. The same nodes work after `trigger.manual` and after
 //! `trigger.webhook`.
 //!
 //! | kind | value | checks |
@@ -22,16 +24,13 @@
 //! | `input.files` | FileRef array | `--accept`, `--max` count |
 //! | `input.image` / `input.audio` / `input.video` | one FileRef | `input.file` with `--accept` preset |
 //!
-//! Body fields are read at `payload.body.<name>`, files at
-//! `payload.files.<name>`. Required by default: a missing or invalid value
+//! Body fields are read at `$trigger.body.<name>`, files at
+//! `$trigger.files.<name>`. Required by default: a missing or invalid value
 //! fails the node with `FW_NODE_INPUT_MISSING` / `FW_NODE_INPUT_INVALID`.
 //!
-//! The payload leaves as it arrived (plus a filled default), so
-//! `$trigger.files.x` and the next node's `input.body.x` keep working. The
-//! node's *own* value — what `$nodes.<id>` answers — is the checked value
-//! (the string, the number, the FileRef); the engine asks [`scope_value`]
-//! for it on the payload the node passed, the same way it asks a kind for
-//! its secret paths, and a filled default checks to itself.
+//! The node's value is `input.<name>` for the next node and
+//! `$nodes.<id>.<name>` anywhere downstream; the envelope itself stays
+//! reachable at `$trigger.body.<name>`.
 
 pub mod audio;
 pub mod boolean;
@@ -63,7 +62,7 @@ use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{Value, json};
 
 use crate::pipeline::nodes::shared::file_ref::is_file_ref;
-use crate::pipeline::nodes::shared::util::resolve_path;
+use crate::pipeline::nodes::shared::util::{resolve_path, with_answer};
 use crate::pipeline::model::{
     DslFlag, DslFlagKind, NodeExample, NodeFieldDef, NodeFieldType, PipelineGraph,
 };
@@ -182,15 +181,6 @@ pub fn is_input_kind(kind: &str) -> bool {
     InputKind::from_kind(kind).is_some()
 }
 
-/// The node's checked value for the `$nodes` scope, or `None` for any other
-/// kind. Deterministic on the same payload the node passed, so the engine can
-/// ask after the fact without the node reporting anything.
-pub fn scope_value(kind: &str, config: &Value, payload: &Value) -> Option<Value> {
-    let kind = InputKind::from_kind(kind)?;
-    let config: Config = serde_json::from_value(config.clone()).ok()?;
-    check(kind, &config, payload).ok()
-}
-
 /// `--accept` may be typed in the dialog as `csv,xlsx` or arrive from the DSL
 /// as a list; both are the same declaration.
 fn string_or_list<'de, D: Deserializer<'de>>(de: D) -> Result<Vec<String>, D::Error> {
@@ -259,7 +249,7 @@ fn missing(kind: InputKind, name: &str) -> PipelineError {
     PipelineError::new(
         "FW_NODE_INPUT_MISSING",
         format!(
-            "input '{name}' is required: expected {} at {}.{name}, nothing was sent",
+            "input '{name}' is required: expected {} at $trigger.{}.{name}, nothing was sent",
             kind.expects(),
             kind.envelope_slot()
         ),
@@ -270,7 +260,7 @@ fn invalid(kind: InputKind, name: &str, detail: impl AsRef<str>) -> PipelineErro
     PipelineError::new(
         "FW_NODE_INPUT_INVALID",
         format!(
-            "input '{name}' expected {} at {}.{name}: {}",
+            "input '{name}' expected {} at $trigger.{}.{name}: {}",
             kind.expects(),
             kind.envelope_slot(),
             detail.as_ref()
@@ -331,9 +321,10 @@ fn check_file(kind: InputKind, name: &str, accept: &[String], file: &Value) -> R
     Ok(())
 }
 
-/// Checks the field this node declares and returns its value; the payload is
-/// not touched. `Ok(Value::Null)` is an optional field that was not sent.
-pub fn check(kind: InputKind, config: &Config, payload: &Value) -> Result<Value, PipelineError> {
+/// Checks the field this node declares in the trigger `envelope`
+/// (`$trigger`) and returns its value. `Ok(Value::Null)` is an optional
+/// field that was not sent.
+pub fn check(kind: InputKind, config: &Config, envelope: &Value) -> Result<Value, PipelineError> {
     let name = config.name.trim();
     if name.is_empty() {
         return Err(PipelineError::new(
@@ -341,7 +332,7 @@ pub fn check(kind: InputKind, config: &Config, payload: &Value) -> Result<Value,
             format!("{}: the field name is required — `{} <name>`", kind.node_kind(), kind.short()),
         ));
     }
-    let raw = sent_value(kind, name, payload);
+    let raw = sent_value(kind, name, envelope);
     if is_absent(&raw) {
         if !kind.is_file() {
             if let Some(default) = config.default.as_ref().filter(|d| !d.is_null()) {
@@ -357,8 +348,8 @@ pub fn check(kind: InputKind, config: &Config, payload: &Value) -> Result<Value,
 }
 
 /// What arrived for the field, `Null` when nothing did.
-fn sent_value(kind: InputKind, name: &str, payload: &Value) -> Value {
-    let slot = payload.get(kind.envelope_slot()).unwrap_or(&Value::Null);
+fn sent_value(kind: InputKind, name: &str, envelope: &Value) -> Value {
+    let slot = envelope.get(kind.envelope_slot()).unwrap_or(&Value::Null);
     resolve_path(slot, name).cloned().unwrap_or(Value::Null)
 }
 
@@ -373,42 +364,15 @@ fn is_absent(raw: &Value) -> bool {
     }
 }
 
-/// True when this node's `--default` stands in for a field that was not
-/// sent — the case where the node writes the default into the envelope.
-fn default_stands_in(kind: InputKind, config: &Config, payload: &Value) -> bool {
-    !kind.is_file()
-        && config.default.as_ref().is_some_and(|d| !d.is_null())
-        && is_absent(&sent_value(kind, config.name.trim(), payload))
-}
-
-/// Writes `value` at `body.<name>` (dotted names nest), making `body` an
-/// object when the trigger delivered none.
-fn write_body_field(payload: &mut Value, name: &str, value: Value) {
-    if !payload.is_object() {
-        *payload = json!({});
-    }
-    let map = payload.as_object_mut().expect("object");
-    let body = map.entry("body").or_insert_with(|| json!({}));
-    if !body.is_object() {
-        *body = json!({});
-    }
-    let mut current = body;
+/// The node's answer: its value at `--name`, a dotted name nesting
+/// (`page.size` → `{ page: { size } }`).
+fn answer_at(name: &str, value: Value) -> Value {
     let segments: Vec<&str> = name.split('.').map(str::trim).filter(|s| !s.is_empty()).collect();
-    let Some((last, parents)) = segments.split_last() else {
-        return;
-    };
-    for segment in parents {
-        let map = current.as_object_mut().expect("object");
-        let next = map.entry(segment.to_string()).or_insert_with(|| json!({}));
-        if !next.is_object() {
-            *next = json!({});
-        }
-        current = next;
-    }
-    current
-        .as_object_mut()
-        .expect("object")
-        .insert(last.to_string(), value);
+    segments.iter().rev().fold(value, |inner, segment| {
+        let mut map = serde_json::Map::new();
+        map.insert((*segment).to_string(), inner);
+        Value::Object(map)
+    })
 }
 
 fn check_value(kind: InputKind, config: &Config, name: &str, raw: Value) -> Result<Value, PipelineError> {
@@ -523,31 +487,31 @@ fn field(name: &str, label: &str, field_type: NodeFieldType, help: &str) -> Node
 fn example(kind: InputKind) -> NodeExample {
     match kind {
         InputKind::Text => NodeExample::dsl("A caption the Run form asks for", r#"input.text prompt --label "Caption" --max 200"#)
-            .input(json!({ "body": { "prompt": "A cat on a mat" } }))
-            .output(json!({ "body": { "prompt": "A cat on a mat" } }))
-            .note("The payload is unchanged; `$nodes.<id>` is the string."),
+            .input(json!({ "manual": { "body": { "prompt": "A cat on a mat" } } }))
+            .output(json!({ "manual": { "body": { "prompt": "A cat on a mat" } }, "prompt": "A cat on a mat" }))
+            .note("Read from `$trigger.body.prompt`; the checked string is `input.prompt` next, `$nodes.<id>.prompt` anywhere later."),
         InputKind::Number => NodeExample::dsl("A bounded count", "input.number count --min 1 --max 50 --default 10")
-            .input(json!({ "body": {} }))
-            .output(json!({ "body": { "count": 10.0 } }))
-            .note("Nothing was sent, so the default stands and is written into the envelope: `input.body.count` and `$nodes.<id>` are both 10."),
+            .input(json!({ "manual": { "body": {} } }))
+            .output(json!({ "manual": { "body": {} }, "count": 10.0 }))
+            .note("Nothing was sent, so the default stands: `input.count` and `$nodes.<id>.count` are 10."),
         InputKind::Boolean => NodeExample::dsl("A switch", "input.boolean dry_run --optional")
-            .input(json!({ "body": { "dry_run": "on" } }))
-            .output(json!({ "body": { "dry_run": "on" } }))
-            .note("A form posts `on`; the node's value is `true`."),
+            .input(json!({ "manual": { "body": { "dry_run": "on" } } }))
+            .output(json!({ "manual": { "body": { "dry_run": "on" } }, "dry_run": true }))
+            .note("A form posts `on`; the node answers `dry_run: true`."),
         InputKind::Json => NodeExample::dsl("A JSON document typed into the form", r#"input.json config --label "Settings""#)
-            .input(json!({ "body": { "config": "{\"theme\":\"dark\"}" } }))
-            .output(json!({ "body": { "config": "{\"theme\":\"dark\"}" } }))
-            .note("A JSON string in `body` is parsed; `$nodes.<id>` is the object."),
+            .input(json!({ "manual": { "body": { "config": "{\"theme\":\"dark\"}" } } }))
+            .output(json!({ "manual": { "body": { "config": "{\"theme\":\"dark\"}" } }, "config": { "theme": "dark" } }))
+            .note("A JSON string in `body` is parsed; the node answers the object."),
         InputKind::File => NodeExample::dsl("A spreadsheet or CSV", "input.file sheet --accept csv,xlsx")
-            .input(json!({ "body": {}, "files": { "sheet": { "__zf_type": "file_ref", "filename": "q3.xlsx", "mime": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "kind": "spreadsheet", "size": 18211 } } }))
-            .output(json!({ "body": {}, "files": { "sheet": { "__zf_type": "file_ref", "filename": "q3.xlsx", "mime": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "kind": "spreadsheet", "size": 18211 } } }))
+            .input(json!({ "webhook": { "body": {}, "files": { "sheet": { "__zf_type": "file_ref", "filename": "q3.xlsx", "mime": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "kind": "spreadsheet", "size": 18211 } } } }))
+            .output(json!({ "webhook": { "body": {}, "files": { "sheet": { "__zf_type": "file_ref", "filename": "q3.xlsx", "mime": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "kind": "spreadsheet", "size": 18211 } } }, "sheet": { "__zf_type": "file_ref", "filename": "q3.xlsx", "mime": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "kind": "spreadsheet", "size": 18211 } }))
             .note("`--accept` takes FileRef kinds, mimes (`image/png`, `image/`) or extensions."),
         InputKind::Files => NodeExample::dsl("Up to five attachments", "input.files attachments --accept pdf,image --max 5 --optional")
-            .note("`$nodes.<id>` is the array of FileRefs, `[]` when none were sent."),
+            .note("Answers `attachments`: the array of FileRefs, `[]` when none were sent."),
         InputKind::Image => NodeExample::dsl("A photo to process", "input.image photo")
-            .input(json!({ "body": {}, "files": { "photo": { "__zf_type": "file_ref", "filename": "cat.png", "mime": "image/png", "kind": "image", "size": 4321 } } }))
-            .output(json!({ "body": {}, "files": { "photo": { "__zf_type": "file_ref", "filename": "cat.png", "mime": "image/png", "kind": "image", "size": 4321 } } }))
-            .note("`--accept` is preset to `image`; `--accept png,webp` narrows it."),
+            .input(json!({ "manual": { "body": {}, "files": { "photo": { "__zf_type": "file_ref", "filename": "cat.png", "mime": "image/png", "kind": "image", "size": 4321 } } } }))
+            .output(json!({ "manual": { "body": {}, "files": { "photo": { "__zf_type": "file_ref", "filename": "cat.png", "mime": "image/png", "kind": "image", "size": 4321 } } }, "photo": { "__zf_type": "file_ref", "filename": "cat.png", "mime": "image/png", "kind": "image", "size": 4321 } }))
+            .note("`--accept` is preset to `image`; `--accept png,webp` narrows it. The next node takes `--from \"{{ input.photo }}\"`."),
         InputKind::Audio => NodeExample::dsl("A recording", "input.audio clip --optional")
             .note("`--accept` is preset to `audio`."),
         InputKind::Video => NodeExample::dsl("A clip", "input.video clip --accept mp4,webm")
@@ -563,7 +527,7 @@ pub fn definition_for(kind: InputKind) -> NodeDefinition {
         DslFlag {
             flag: "--name".to_string(),
             config_key: "name".to_string(),
-            description: format!("The envelope field this node declares — also the first bare token: `{short} <name>`."),
+            description: format!("The envelope field this node declares, and the key it answers — also the first bare token: `{short} <name>`."),
             kind: DslFlagKind::Scalar,
             required: true,
             ..Default::default()
@@ -572,7 +536,7 @@ pub fn definition_for(kind: InputKind) -> NodeDefinition {
         flag("--optional", "optional", "A missing value is allowed; the node's value is then null.", DslFlagKind::Bool),
     ];
     let mut fields = vec![
-        field("name", "Field name", NodeFieldType::Text, "The envelope field this node declares: read at body.<name> (or files.<name> for file kinds)."),
+        field("name", "Field name", NodeFieldType::Text, "The envelope field this node declares: read at $trigger.body.<name> (or $trigger.files.<name> for file kinds), answered at <name>."),
         field("label", "Label", NodeFieldType::Text, "Form label shown in the Run form. Defaults to the field name."),
         field("optional", "Optional", NodeFieldType::Checkbox, "A missing value is allowed; the node's value is then null. Required by default."),
     ];
@@ -618,16 +582,16 @@ pub fn definition_for(kind: InputKind) -> NodeDefinition {
     };
     let where_ = kind.envelope_slot();
     let description = format!(
-        "Declares and checks one field of the trigger envelope: {value_word} at `{where_}.<name>`. \
+        "Declares and checks one field of the trigger envelope: {value_word} at `$trigger.{where_}.<name>`. \
          Required by default — a missing or invalid value refuses the run with `FW_NODE_INPUT_MISSING` / `FW_NODE_INPUT_INVALID`, \
-         naming the field and what was expected; `--optional` allows absence. The payload passes through unchanged, so the next node \
-         still reads `input.{where_}.<name>` and `$trigger.{where_}.<name>`; the node's own value, `$nodes.<id>`, is the checked value.{} \
+         naming the field and what was expected; `--optional` allows absence (the answer is then null). Answers one key, its `--name`: \
+         the next node reads `input.<name>`, any later one `$nodes.<id>.<name>`, and the rest of the payload is kept.{} \
          The input nodes after a trigger are its declaration: the Studio builds the Run form from them and an agent reads them to know \
          what to send. Works after `trigger.manual` and after `trigger.webhook`. Fetches nothing, stores nothing.{}",
         if kind.is_file() {
             ""
         } else {
-            " A field that was not sent and has `--default` is written into the envelope at `body.<name>`, so `input.body.<name>` and `$nodes.<id>` agree on every path (DSL/MCP execute, webhook, Run form)."
+            " A field that was not sent and has `--default` answers the checked default, so every path (DSL/MCP execute, webhook, Run form) gives the same answer."
         },
         match kind {
             InputKind::Json => " A JSON string in `body` is parsed.",
@@ -642,12 +606,11 @@ pub fn definition_for(kind: InputKind) -> NodeDefinition {
         description,
         input_schema: json!({
             "type": "object",
-            "description": format!("The trigger envelope; this node reads `{where_}.<name>`."),
-            "properties": { "body": { "type": ["object", "null"] }, "files": { "type": "object" } }
+            "description": format!("Any payload; this node reads `$trigger.{where_}.<name>`.")
         }),
         output_schema: json!({
             "type": "object",
-            "description": "The same envelope, unchanged except that a missing body field with a `--default` is filled in. `$nodes.<id>` holds the checked value."
+            "description": "The payload plus the checked value at `--name` (null when optional and not sent)."
         }),
         input_pins: vec![INPUT_PIN_IN.to_string()],
         output_pins: vec![OUTPUT_PIN_OUT.to_string()],
@@ -777,7 +740,11 @@ impl NodeHandler for Node {
         &self,
         input: NodeExecutionInput,
     ) -> Result<NodeExecutionOutput, PipelineError> {
-        let value = check(self.kind, &self.config, &input.payload)?;
+        let envelope = crate::pipeline::nodes::basic::trigger::envelope(&input.metadata);
+        let filled = !self.kind.is_file()
+            && self.config.default.as_ref().is_some_and(|d| !d.is_null())
+            && is_absent(&sent_value(self.kind, self.config.name.trim(), envelope));
+        let value = check(self.kind, &self.config, envelope)?;
         let name = self.config.name.trim();
         let mut trace = format!(
             "node_kind={} field={} value={}",
@@ -785,18 +752,12 @@ impl NodeHandler for Node {
             name,
             describe(&value)
         );
-        // Pass-through, like `logic.if`: what arrived is what leaves — except
-        // a default standing in for a field nobody sent, which is written
-        // into the envelope so `input.body.<name>` and `$nodes.<id>` agree
-        // whether the run came from the Run form, the DSL, MCP or a webhook.
-        let mut payload = input.payload;
-        if default_stands_in(self.kind, &self.config, &payload) {
-            write_body_field(&mut payload, name, value.clone());
+        if filled {
             trace.push_str(" default=filled");
         }
         Ok(NodeExecutionOutput {
             output_pins: vec![OUTPUT_PIN_OUT.to_string()],
-            payload,
+            payload: with_answer(&input.payload, answer_at(name, value)),
             trace: vec![trace],
         })
     }
@@ -893,75 +854,71 @@ mod tests {
         assert_eq!(check(InputKind::Files, &cfg("docs"), &json!({ "files": {} })).unwrap_err().code, "FW_NODE_INPUT_MISSING");
     }
 
+    /// Runs one input node after a trigger: the envelope is `$trigger`, and
+    /// the payload holds it under the trigger's key.
+    async fn run(node: &Node, envelope: Value) -> NodeExecutionOutput {
+        node.execute_async(NodeExecutionInput {
+            node_id: "n1".into(),
+            input_pin: "in".into(),
+            payload: json!({ "manual": envelope.clone() }),
+            metadata: json!({ "trigger": envelope }),
+            bus: None,
+        })
+        .await
+        .unwrap()
+    }
+
     #[tokio::test]
-    async fn the_node_passes_the_envelope_through_unchanged() {
-        let payload = json!({ "body": { "prompt": "hi", "other": 1 }, "files": {} });
-        let node = Node::new(InputKind::Text, cfg("prompt"));
+    async fn the_node_reads_the_envelope_and_answers_at_its_name() {
+        let envelope = json!({ "body": { "prompt": "hi", "other": 1 }, "files": {} });
+        let out = run(&Node::new(InputKind::Text, cfg("prompt")), envelope.clone()).await;
+        assert_eq!(out.payload, json!({ "manual": envelope, "prompt": "hi" }), "one key added, the rest kept");
+    }
+
+    /// A field that is not in the payload is still found: the node reads
+    /// `$trigger`, so a node between the trigger and it changes nothing.
+    #[tokio::test]
+    async fn the_envelope_is_read_from_trigger_not_from_the_payload() {
+        let node = Node::new(InputKind::Image, cfg("photo"));
+        let photo = file_ref("cat.png", "image/png", "image");
         let out = node
             .execute_async(NodeExecutionInput {
-                node_id: "n1".into(),
+                node_id: "n2".into(),
                 input_pin: "in".into(),
-                payload: payload.clone(),
-                metadata: json!({}),
+                payload: json!({ "result": 1 }),
+                metadata: json!({ "trigger": { "body": {}, "files": { "photo": photo.clone() } } }),
                 bus: None,
             })
             .await
             .unwrap();
-        assert_eq!(out.payload, payload);
-        assert_eq!(scope_value(text::NODE_KIND, &json!({ "name": "prompt" }), &payload), Some(json!("hi")));
-        assert_eq!(scope_value("script.result.run", &json!({}), &payload), None);
+        assert_eq!(out.payload, json!({ "result": 1, "photo": photo }));
     }
 
-    /// A default for a field nobody sent is written into the envelope, so the
-    /// next node's `input.body.<name>` and `$nodes.<id>` agree; a sent value
-    /// wins and the envelope is untouched.
+    /// A default for a field nobody sent is the answer; a sent value wins.
     #[tokio::test]
-    async fn a_default_fills_the_missing_field_in_the_envelope_and_a_sent_value_wins() {
+    async fn a_default_answers_for_the_missing_field_and_a_sent_value_wins() {
         let node = Node::new(InputKind::Text, Config { default: Some(json!("world")), optional: true, ..cfg("who") });
-        let run = |payload: Value| {
-            let node = &node;
-            async move {
-                node.execute_async(NodeExecutionInput {
-                    node_id: "n1".into(),
-                    input_pin: "in".into(),
-                    payload,
-                    metadata: json!({}),
-                    bus: None,
-                })
-                .await
-                .unwrap()
-            }
-        };
-        // Omitted: filled, and `scope_value` on the passed payload agrees.
-        let out = run(json!({ "body": {} })).await;
-        assert_eq!(out.payload, json!({ "body": { "who": "world" } }));
-        assert_eq!(scope_value(text::NODE_KIND, &json!({ "name": "who", "default": "world" }), &out.payload), Some(json!("world")));
+        let out = run(&node, json!({ "body": {} })).await;
+        assert_eq!(out.payload["who"], json!("world"));
         assert!(out.trace[0].ends_with("default=filled"), "{}", out.trace[0]);
-        // No body at all (a schedule tick): body is made.
-        let out = run(json!({})).await;
-        assert_eq!(out.payload, json!({ "body": { "who": "world" } }));
-        // Sent: the given value wins, nothing else changes.
-        let out = run(json!({ "body": { "who": "x", "other": 1 }, "files": {} })).await;
-        assert_eq!(out.payload, json!({ "body": { "who": "x", "other": 1 }, "files": {} }));
+        // No body at all (a schedule tick).
+        assert_eq!(run(&node, json!({})).await.payload["who"], json!("world"));
+        // Sent: the given value wins.
+        let out = run(&node, json!({ "body": { "who": "x", "other": 1 }, "files": {} })).await;
+        assert_eq!(out.payload["who"], json!("x"));
         assert!(!out.trace[0].contains("default=filled"));
-        // A number default is written as the checked number, a dotted name nests.
+        // A number default answers the checked number; a dotted name nests.
         let node = Node::new(InputKind::Number, Config { default: Some(json!("10")), ..cfg("page.size") });
-        let out = node
-            .execute_async(NodeExecutionInput { node_id: "n2".into(), input_pin: "in".into(), payload: json!({ "body": { "page": {} } }), metadata: json!({}), bus: None })
-            .await
-            .unwrap();
-        assert_eq!(out.payload, json!({ "body": { "page": { "size": 10.0 } } }));
+        let out = run(&node, json!({ "body": { "page": {} } })).await;
+        assert_eq!(out.payload["page"], json!({ "size": 10.0 }));
     }
 
-    /// An optional field without a default stays absent — nothing is invented.
+    /// An optional field without a default answers null — nothing is invented.
     #[tokio::test]
-    async fn an_optional_field_without_a_default_leaves_the_envelope_alone() {
+    async fn an_optional_field_without_a_default_answers_null() {
         let node = Node::new(InputKind::Text, Config { optional: true, ..cfg("who") });
-        let out = node
-            .execute_async(NodeExecutionInput { node_id: "n1".into(), input_pin: "in".into(), payload: json!({ "body": {} }), metadata: json!({}), bus: None })
-            .await
-            .unwrap();
-        assert_eq!(out.payload, json!({ "body": {} }));
+        let out = run(&node, json!({ "body": {} })).await;
+        assert_eq!(out.payload, json!({ "manual": { "body": {} }, "who": null }));
     }
 
     #[test]
@@ -1046,7 +1003,7 @@ mod tests {
         .expect("the schedule reaches no input");
         // Webhook, function and manual triggers deliver a caller's envelope.
         ensure_inputs_reachable_from_empty_triggers(&graph(
-            "[w] trigger.webhook --path /x --method POST\n[b] input.text prompt\n[w] -> [b]\n",
+            "[w] trigger.webhook --route /x --method POST\n[b] input.text prompt\n[w] -> [b]\n",
         ))
         .expect("a webhook's missing field is the run's refusal, not activation's");
     }

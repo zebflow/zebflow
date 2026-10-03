@@ -2,7 +2,7 @@
 
 ## What this builds
 
-Login endpoint that verifies credentials against PostgreSQL and issues a JWT in an HttpOnly session cookie. Protected routes use `--auth-type jwt` to auto-verify the cookie — verified claims land in `input.auth`. Logout clears the cookie.
+Login endpoint that verifies credentials against PostgreSQL and issues a JWT in an HttpOnly session cookie. Protected routes use `--auth jwt` to auto-verify the cookie — verified claims land in `input.webhook.auth` right after the trigger (`$trigger.auth` anywhere later). Logout clears the cookie.
 
 ---
 
@@ -34,8 +34,8 @@ If `auth_redirect` / `auth_forbidden_redirect` are not set, auth failure returns
 
 ## Key Concepts
 
-- `trigger.webhook --auth-type jwt --auth-credential <id>` — auto-verifies JWT from `Authorization: Bearer` header or session cookie. On success: claims in `input.auth`. On failure: 303 redirect (page nav, to the credential's `auth_redirect`) or 401 JSON (fetch/API).
-- `trigger.webhook --auth-required-role admin,lecturer` — additionally checks the JWT `roles` array claim against the listed roles. Failure: 303 redirect (to `auth_forbidden_redirect`) or 403 JSON. **Empty (no roles specified) = any valid JWT is accepted — roles are not checked.**
+- `trigger.webhook --auth jwt --credential <id>` — auto-verifies JWT from `Authorization: Bearer` header or session cookie. On success: claims in `input.webhook.auth` right after the trigger (`$trigger.auth` anywhere later). On failure: 303 redirect (page nav, to the credential's `auth_redirect`) or 401 JSON (fetch/API).
+- `trigger.webhook --role admin --role lecturer` — repeat `--role` once per role; additionally checks the JWT `roles` array claim against the listed roles. Failure: 303 redirect (to `auth_forbidden_redirect`) or 403 JSON. **Empty (no `--role` given) = any valid JWT is accepted — roles are not checked.**
 - `auth.token.create --credential <id> --claim "sub={{ input.field }}" --claim "name:public={{ input.name }}"` — signs a JWT; output is `{{ input.access_token }}`. Claims whose name ends in `:public` are the only ones exposed in the browser via `ctx.auth` — all others remain server-only.
 - `web.response.send --header "Set-Cookie=session={{ input.access_token }}; Path=/; Max-Age=86400; SameSite=Lax; HttpOnly"` — sets the session cookie. Quote the whole header — an unquoted `{{ }}` is cut at its first space. The header is sent exactly as written: nothing is added, so the cookie names its own `Path`, `SameSite` and `HttpOnly` (and `Secure` behind HTTPS).
 - `web.response.send --status 302 --header "Location=/path"` — issues a 302 redirect.
@@ -47,8 +47,8 @@ If `auth_redirect` / `auth_forbidden_redirect` are not set, auth failure returns
 ### POST /auth/login — verify + issue cookie
 
 ```
-| trigger.webhook --path /auth/login --method POST
-| pg.query.run --credential my-pg --param "1={{ input.body.identifier }}" \
+| trigger.webhook --route /auth/login --method POST
+| pg.query.run --credential my-pg --param "1={{ input.webhook.body.identifier }}" \
     -- "SELECT player_id::text, fullname, role FROM app.player WHERE identifier = $1 AND is_active = true"
 | logic.if --expr "input.query.rows && input.query.rows.length > 0"
 (false pin → `web.response.send --status 401 --body "invalid credentials"`)
@@ -60,8 +60,8 @@ If `auth_redirect` / `auth_forbidden_redirect` are not set, auth failure returns
 ### GET /dashboard — protected page (auto-verify + redirect)
 
 ```
-| trigger.webhook --path /dashboard --method GET --auth-type jwt --auth-credential my-jwt
-| pg.query.run --credential my-pg --param "1={{ input.auth.sub }}" \
+| trigger.webhook --route /dashboard --method GET --auth jwt --credential my-jwt
+| pg.query.run --credential my-pg --param "1={{ $trigger.auth.sub }}" \
     -- "SELECT player_id::text, fullname, email FROM app.player WHERE player_id = $1::uuid"
 | script.result.run -- "const user = input.query.rows?.[0]; return { user }"
 | web.response.send --template pages/dashboard.tsx
@@ -72,14 +72,14 @@ When JWT is missing/invalid → credential `auth_redirect` fires as a 303 redire
 ### GET /api/me — protected JSON endpoint
 
 ```
-| trigger.webhook --path /api/me --method GET --auth-type jwt --auth-credential my-jwt
-| script.result.run -- "return { ok: true, user: input.auth }"
+| trigger.webhook --route /api/me --method GET --auth jwt --credential my-jwt
+| script.result.run -- "return { ok: true, user: $trigger.auth }"
 ```
 
 ### GET /admin/users — role-gated route
 
 ```
-| trigger.webhook --path /admin/users --method GET --auth-type jwt --auth-credential my-jwt --auth-required-role admin
+| trigger.webhook --route /admin/users --method GET --auth jwt --credential my-jwt --role admin
 | pg.query.run --credential my-pg -- "SELECT player_id::text, fullname, identifier FROM app.player ORDER BY created_at DESC"
 | web.response.send --template pages/admin-users.tsx
 ```
@@ -89,7 +89,7 @@ Role mismatch → credential `auth_forbidden_redirect` fires as a 303 redirect (
 ### POST /auth/logout — clear session cookie
 
 ```
-| trigger.webhook --path /auth/logout --method POST
+| trigger.webhook --route /auth/logout --method POST
 | web.response.send --status 302 --header "Location=/auth/login" --header "Set-Cookie=session=; Path=/; Max-Age=0"
 ```
 
@@ -99,9 +99,9 @@ An empty `value` is allowed and clears the cookie.
 
 ## Nodes Used
 
-- `trigger.webhook --auth-type jwt --auth-credential <id>` — auto-verify JWT; `input.auth` = decoded claims
-- `trigger.webhook --auth-required-role <roles>` — role check; comma-separated list from credential `auth_roles`
-- `pg.query.run --credential <id> --param` — look up user by identifier or sub claim, e.g. `--param "1={{ input.body.identifier }}"` or `--param "1={{ input.auth.sub }}"`
+- `trigger.webhook --auth jwt --credential <id>` — auto-verify JWT; `$trigger.auth` = decoded claims
+- `trigger.webhook --role <role>` (repeated, one per role) — role check against the credential's `auth_roles`
+- `pg.query.run --credential <id> --param` — look up user by identifier or sub claim, e.g. `--param "1={{ input.webhook.body.identifier }}"` or `--param "1={{ $trigger.auth.sub }}"`
 - `auth.token.create --claim "key={{ input.field }}"` — sign JWT; output `{{ input.access_token }}`. End the claim name with `:public` (e.g. `--claim "name:public={{ input.name }}"`) to expose that claim in the browser via `ctx.auth`. `sub` and other private claims stay server-only.
 - `web.response.send --header "Set-Cookie=…"` — set the cookie in the response, sent as written
 - `web.response.send --status 302 --header "Location=…"` — redirect

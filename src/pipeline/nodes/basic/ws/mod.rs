@@ -11,8 +11,8 @@
 //! `trigger.rs`) lives with the family it serves.
 //!
 //! A room node without `--room` uses the room of the `trigger.room` that
-//! started the run (`room_id` in its payload); a run started any other way
-//! names its room.
+//! started the run (`$trigger.room_id`, the envelope the trigger answers
+//! under `room`); a run started any other way names its room.
 
 pub mod message_send;
 pub mod state;
@@ -83,12 +83,22 @@ fn text_of(value: &Value, flag: &str, code: &'static str) -> Result<String, Pipe
 }
 
 /// The room a node acts on: `--room`, else the room of the `trigger.room`
-/// that started the run. Empty when there is neither.
-fn room_of(configured: &str, payload: &Value) -> String {
+/// that started the run (`$trigger.room_id`). Empty when there is neither.
+fn room_of(configured: &str, metadata: &Value) -> String {
     if !configured.is_empty() {
         return configured.to_string();
     }
-    payload.get("room_id").and_then(Value::as_str).unwrap_or_default().to_string()
+    trigger_field(metadata, "room_id")
+}
+
+/// One text field of the run's trigger envelope (`$trigger.<name>`), empty
+/// when the run has none.
+fn trigger_field(metadata: &Value, name: &str) -> String {
+    crate::pipeline::nodes::basic::trigger::envelope(metadata)
+        .get(name)
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string()
 }
 
 /// The hub's key for a room of this run's project.

@@ -125,20 +125,20 @@ pub fn definition() -> NodeDefinition {
         examples: vec![
             NodeExample::dsl("Read with a bound value", r#"sekejap.query.run --param "1={{ $trigger.params.slug }}" -- "SELECT _key, title, body FROM posts WHERE slug = $1""#)
                 .output(answer(&["_key", "title", "body"], json!([{ "_key": "hello-world", "title": "Hello", "body": "…" }]), None)),
-            NodeExample::dsl("Insert from a form, learning the new key", r#"sekejap.query.run --write --param "1={{ input.body.title }}" -- "INSERT INTO posts (title) VALUES ($1) RETURNING _key""#)
+            NodeExample::dsl("Insert from a form, learning the new key", r#"sekejap.query.run --write --param "1={{ $trigger.body.title }}" -- "INSERT INTO posts (title) VALUES ($1) RETURNING _key""#)
                 .output(answer(&["_key"], json!([{ "_key": "01M3JSKZFJ4AZGVR0PG6ZXMDH5" }]), Some(1)))
                 .note("The table declares `_key TEXT PRIMARY KEY DEFAULT ulid()`, so the INSERT leaves the key out and `RETURNING` hands it back — `input.query.rows[0]._key` for a redirect."),
-            NodeExample::dsl("Upsert", r#"sekejap.query.run --write --param "1={{ input.body.slug }}" --param "2={{ input.body.title }}" -- "INSERT INTO posts (_key, title) VALUES ($1, $2) ON CONFLICT (_key) DO UPDATE SET title = EXCLUDED.title""#)
+            NodeExample::dsl("Upsert", r#"sekejap.query.run --write --param "1={{ $trigger.body.slug }}" --param "2={{ $trigger.body.title }}" -- "INSERT INTO posts (_key, title) VALUES ($1, $2) ON CONFLICT (_key) DO UPDATE SET title = EXCLUDED.title""#)
                 .output(answer(&[], json!([]), Some(1)))
                 .note("A plain INSERT of a key that exists is refused with 23505; ON CONFLICT is the upsert."),
             NodeExample::dsl("Create a table", r#"sekejap.query.run --write -- "CREATE TABLE posts (_key TEXT PRIMARY KEY DEFAULT ulid(), title TEXT NOT NULL, slug TEXT UNIQUE, status TEXT DEFAULT 'draft', created_at TIMESTAMPTZ DEFAULT now()) WITH (fulltext: [title])""#)
                 .note("Run once from `pipeline_run` or a `jobs/migrate` function pipeline; keep the SQL in `db/001_posts.sql`. Scalar columns are indexed automatically; `WITH` declares full-text, spatial and vector indexes."),
-            NodeExample::dsl("Search by part of a name", r#"sekejap.query.run --param "1={{ '%' + input.query.q + '%' }}" -- "SELECT _key, name FROM members WHERE name ILIKE $1 ORDER BY name LIMIT 20""#)
+            NodeExample::dsl("Search by part of a name", r#"sekejap.query.run --param "1={{ '%' + $trigger.query.q + '%' }}" -- "SELECT _key, name FROM members WHERE name ILIKE $1 ORDER BY name LIMIT 20""#)
                 .output(answer(&["_key", "name"], json!([{ "_key": "m1", "name": "Alex Doe" }]), None)),
-            NodeExample::dsl("Newest first, one page at a time", r#"sekejap.query.run --param "1={{ input.query.after || '~' }}" -- "SELECT _key, title FROM posts WHERE _key < $1 ORDER BY _key DESC LIMIT 20""#)
+            NodeExample::dsl("Newest first, one page at a time", r#"sekejap.query.run --param "1={{ $trigger.query.after || '~' }}" -- "SELECT _key, title FROM posts WHERE _key < $1 ORDER BY _key DESC LIMIT 20""#)
                 .output(answer(&["_key", "title"], json!([{ "_key": "01M3JSKZFM6MM3GJFF0WKN71DD", "title": "Latest" }]), None))
                 .note("ULID keys sort by time, so `ORDER BY _key DESC` is newest first. The next page passes the last `_key` shown as `after`; there is no OFFSET."),
-            NodeExample::dsl("Add an edge", r#"sekejap.query.run --write --param "1={{ input.body.member }}" --param "2={{ input.body.institution }}" --param "3={{ input.body.position }}" -- "INSERT INTO affiliated_with (member_id, institution_id, position) VALUES ($1, $2, $3)""#)
+            NodeExample::dsl("Add an edge", r#"sekejap.query.run --write --param "1={{ $trigger.body.member }}" --param "2={{ $trigger.body.institution }}" --param "3={{ $trigger.body.position }}" -- "INSERT INTO affiliated_with (member_id, institution_id, position) VALUES ($1, $2, $3)""#)
                 .output(answer(&[], json!([]), Some(1)))
                 .note("`affiliated_with` is an edge table: a table with two REFERENCES columns declared in `CREATE PROPERTY GRAPH … EDGE TABLES`. UPDATE and DELETE name an end: `DELETE FROM affiliated_with WHERE member_id = $1 AND institution_id = $2`."),
             NodeExample::dsl("Walk the graph", r#"sekejap.query.run --param "1={{ $trigger.params.id }}" -- "SELECT name, position FROM GRAPH_TABLE (network MATCH (m WHERE m._key = $1)-[a:affiliated_with]->(i) RETURN i.name AS name, a.position AS position)""#)

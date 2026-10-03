@@ -10,18 +10,18 @@
 //! | Field | Type | Required | Description |
 //! |---|---|---|---|
 //! | `function` | string | yes | Slug of the function pipeline to call |
-//! | `input` | any | no | What the function receives — a literal (JSON is parsed) or `{{ expr }}`. Omit to pass the whole payload |
+//! | `argument` | map or `{{ object }}` | no | What the function receives — repeated `key=value`, or one `{{ object }}`. Omitted: no arguments (`{}`) |
 //!
 //! # DSL
 //! ```text
-//! | function.result.call --function my-fn --input-value "{{ input.body }}"
-//! | function.result.call --function my-fn --input '{"user_id": "abc"}'
+//! | function.result.call --function my-fn --argument "email={{ $trigger.body.email }}" --argument plan=pro
+//! | function.result.call --function my-fn --argument "{{ { user_id: input.webhook.params.id } }}"
 //! ```
 //!
 //! # Input/output
-//! - **Input:** any payload (or sub-section via `input_path`, or static `input`)
-//! - **Output `out`:** the function pipeline's last node output value
-//! - **Output `error`:** `{ "error": "..." }` on failure
+//! - **Input:** any payload; only `--argument` reaches the function
+//! - **Output `out`:** the payload plus `result`, the function pipeline's last node payload
+//! - **Output `error`:** the payload plus `result: { ok: false, error: { code, message } }`
 
 use std::sync::Arc;
 
@@ -44,11 +44,11 @@ pub const NODE_KIND: &str = "function.result.call";
 pub struct Config {
     /// Slug of the function pipeline to call (matches `PipelineMeta.name`).
     pub function: Option<String>,
-    /// What the called function receives — a literal or `{{ expr }}`,
-    /// arriving final. A literal that is JSON is parsed; null (unset) means
-    /// the whole payload.
+    /// What the called function receives: a map from repeated
+    /// `--argument key=value` (each value a literal or `{{ expr }}`), or one
+    /// `{{ object }}`, arriving final. Unset means no arguments.
     #[serde(default)]
-    pub input: serde_json::Value,
+    pub argument: serde_json::Value,
 }
 
 pub struct Node {
@@ -68,15 +68,16 @@ pub fn definition() -> NodeDefinition {
         capabilities: vec![NodeCapability::Process],
         title: "Call Function".to_string(),
         description: "Calls another active pipeline that starts with `trigger.function`. `--function` is that pipeline's slug — the file stem, \
-            `send-welcome` for `jobs/send-welcome`, not the path. What it receives: `--input` (a literal — JSON is parsed — or `{{ expr }}`, e.g. \
-            `\"{{ { email: input.body.email } }}\"`), else the whole current payload. `out` adds `result` — the function's last node's payload — \
-            and keeps the caller's payload. `error` adds `error: { code, message }` when the function is missing, inactive or failed."
+            `send-welcome` for `jobs/send-welcome`, not the path. What it receives is `--argument`: repeated `key=value` (`--argument \"email={{ $trigger.body.email }}\" --argument plan=pro`) \
+            or one `{{ object }}` (`--argument \"{{ { email: $trigger.body.email } }}\"`); without it the function receives `{}` and \
+            answers under its trigger's key, `function`. `out` adds `result` — the function's last node's payload — and keeps the caller's \
+            payload. `error` adds `result: { ok: false, error: { code, message } }` when the function is missing, inactive or failed."
             .to_string(),
         input_pins: vec!["in".to_string()],
         output_pins: vec!["out".to_string(), "error".to_string()],
         output_schema: serde_json::json!({
-            "description": "On `out`: the payload plus `result`, the called function's last node payload. On `error`: the payload plus `error: { code, message }`.",
-            "properties": { "result": {}, "error": { "type": "object" } }
+            "description": "On `out`: the payload plus `result`, the called function's last node payload. On `error`: the payload plus `result: { ok: false, error: { code, message } }`.",
+            "properties": { "result": {} }
         }),
         config_schema: serde_json::json!({
             "type": "object",
@@ -86,8 +87,8 @@ pub fn definition() -> NodeDefinition {
                     "type": "string",
                     "description": "Slug of the function pipeline to call."
                 },
-                "input": {
-                    "description": "What the function receives: a literal (JSON is parsed) or {{ expr }}. Omit to pass the whole payload."
+                "argument": {
+                    "description": "What the function receives: a map of key=value (each a literal or {{ expr }}), or one {{ object }}. Omitted: {}."
                 }
             }
         }),
@@ -98,14 +99,16 @@ pub fn definition() -> NodeDefinition {
                 description: "Slug of the function pipeline to call.".to_string(),
                 kind: DslFlagKind::Scalar,
                 required: true,
+                value: "text".to_string(),
                 ..Default::default()
             },
             DslFlag {
-                flag: "--input".to_string(),
-                config_key: "input".to_string(),
-                description: "What the function receives — a literal (JSON is parsed) or {{ expr }}, e.g. \"{{ { email: input.body.email } }}\". Omit to pass the whole payload.".to_string(),
-                kind: DslFlagKind::Scalar,
+                flag: "--argument".to_string(),
+                config_key: "argument".to_string(),
+                description: "What the function receives, repeated key=value (each a literal or {{ expr }}), or one {{ object }}: \"email={{ $trigger.body.email }}\". Omitted: {}.".to_string(),
+                kind: DslFlagKind::KeyValuePairs,
                 required: false,
+                value: "expression".to_string(),
                 ..Default::default()
             },
         ],
@@ -120,42 +123,34 @@ pub fn definition() -> NodeDefinition {
                 ..Default::default()
             },
             NodeFieldDef {
-                name: "input".to_string(),
-                label: "Input".to_string(),
-                field_type: NodeFieldType::Text,
-                placeholder: Some("{{ { email: input.body.email } }}  (leave empty for the full payload)".to_string()),
-                help: Some("What the function receives: a literal (JSON is parsed) or {{ expr }}. Leave empty to pass the full payload.".to_string()),
+                name: "argument".to_string(),
+                label: "Arguments".to_string(),
+                field_type: NodeFieldType::KeyValuePairs,
+                help: Some("What the function receives, one row per argument: a name and a literal or {{ expr }}. Empty: the function receives {}.".to_string()),
                 ..Default::default()
             },
         ],
         examples: vec![
-            crate::pipeline::model::NodeExample::dsl("Reuse a lookup function", r#"function.result.call --function find-user --input "{{ { email: input.body.email } }}""#)
-                .output(serde_json::json!({ "user": { "_key": "u_1", "email": "a@x.io" } }))
-                .note("Whatever `jobs/find-user`'s last node produced."),
+            crate::pipeline::model::NodeExample::dsl("Reuse a lookup function", r#"function.result.call --function find-user --argument "email={{ $trigger.body.email }}""#)
+                .output(serde_json::json!({ "result": { "user": { "_key": "u_1", "email": "a@example.com" } } }))
+                .note("`result` is whatever `jobs/find-user`'s last node produced; the rest of the payload is kept."),
         ],
         ..Default::default()
     }
 }
 
-/// What the called function receives.
+/// What the called function receives: `--argument`, arriving final.
 ///
-/// `input` arrives final — a whole `{{ }}` carries its typed value (NodeIO
-/// §Value resolution), and a literal string that is JSON is parsed. Null
-/// means "not set", so the whole payload goes.
-///
-/// The pointer this replaces had a trap worth naming: a path that matched
-/// nothing fell back to the *entire payload*, so a typo silently handed the
-/// function everything instead of the one field it asked for. An expression
-/// that matches nothing is null, and null is visible.
-fn extract_payload_input(
-    input: &serde_json::Value,
-    payload: serde_json::Value,
-) -> serde_json::Value {
-    match input {
-        serde_json::Value::Null => payload,
-        serde_json::Value::String(raw) if raw.trim().is_empty() => payload,
+/// A map is the arguments themselves; one whole `{{ }}` arrives as the
+/// object it evaluated to; a literal string that is JSON is parsed. Unset is
+/// `{}` — a node reads the payload only through a flag (`node-conventions.md`
+/// §3), so nothing of the caller's payload goes along by default.
+fn call_arguments(argument: &serde_json::Value) -> serde_json::Value {
+    match argument {
+        serde_json::Value::Null => serde_json::json!({}),
+        serde_json::Value::String(raw) if raw.trim().is_empty() => serde_json::json!({}),
         serde_json::Value::String(raw) => {
-            serde_json::from_str(raw.trim()).unwrap_or_else(|_| input.clone())
+            serde_json::from_str(raw.trim()).unwrap_or_else(|_| argument.clone())
         }
         other => other.clone(),
     }
@@ -183,7 +178,7 @@ impl NodeHandler for Node {
             Some(p) => p.clone(),
             None => {
                 return Err(PipelineError::new(
-                    "FW_NODE_FUNCTION_CALL_NO_PLATFORM",
+                    "FW_NODE_FUNCTION_RESULT_CALL_NO_PLATFORM",
                     "function.result.call: platform not injected into engine",
                 ));
             }
@@ -192,7 +187,7 @@ impl NodeHandler for Node {
         let slug = match &self.config.function {
             Some(s) if !s.is_empty() => s.clone(),
             _ => {
-                return Err(PipelineError::new("FW_NODE_FUNCTION_CALL_CONFIG", "--function is required"));
+                return Err(PipelineError::new("FW_NODE_FUNCTION_RESULT_CALL_CONFIG", "--function is required"));
             }
         };
 
@@ -209,7 +204,7 @@ impl NodeHandler for Node {
             .unwrap_or_default()
             .to_string();
 
-        let call_input = extract_payload_input(&self.config.input, input.payload.clone());
+        let call_input = call_arguments(&self.config.argument);
 
         match platform
             .execute_function_pipeline(&owner, &project, &slug, call_input)
@@ -224,7 +219,7 @@ impl NodeHandler for Node {
                 output_pins: vec!["error".to_string()],
                 payload: crate::pipeline::nodes::shared::util::with_answer(
                     &input.payload,
-                    serde_json::json!({ "error": { "code": e.code, "message": e.message } }),
+                    serde_json::json!({ "result": { "ok": false, "error": { "code": e.code, "message": e.message } } }),
                 ),
                 trace: vec![format!(
                     "function.result.call: '{}' error: {} — {}",
@@ -232,5 +227,21 @@ impl NodeHandler for Node {
                 )],
             }),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::call_arguments;
+
+    #[test]
+    fn the_arguments_are_what_the_flag_says_and_nothing_else() {
+        assert_eq!(call_arguments(&json!({ "email": "a@example.com", "plan": "pro" })), json!({ "email": "a@example.com", "plan": "pro" }));
+        assert_eq!(call_arguments(&json!({ "user_id": 7 })), json!({ "user_id": 7 }), "a resolved {{ object }}");
+        assert_eq!(call_arguments(&json!("{\"a\":1}")), json!({ "a": 1 }), "a JSON literal is parsed");
+        assert_eq!(call_arguments(&json!(null)), json!({}), "unset: no arguments, not the payload");
+        assert_eq!(call_arguments(&json!("  ")), json!({}));
     }
 }

@@ -27,7 +27,7 @@ pub fn definition() -> NodeDefinition {
         title: "Script".to_string(),
         description:
             "Runs JavaScript in a sandbox: the body after `--` is the function body of `async function(input, n, ctx)`, and whatever it \
-             `return`s is the next node's entire payload. `input` is the current payload (after a webhook, `input.body.x`); \
+             `return`s is the next node's entire payload. `input` is the current payload (right after a webhook, `input.webhook.body.x`; the request anywhere, `$trigger.body.x`); \
              `ctx.trigger.params/query/auth` is the request and `ctx.nodes.<id>` an earlier node's output. It cannot set a status or header \
              (`web.response.send` does), `return null` does not stop the run (`logic.if` does), and `fetch`, `setTimeout`, `require` and \
              `import` are blocked (`http.response.fetch` calls out). Keep it to shaping data: compose, rename, compute — a run has 1 s and \

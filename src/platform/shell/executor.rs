@@ -504,7 +504,7 @@ impl DslExecutor {
         if body.is_empty() {
             return DslOutput::err(
                 "register: pipeline body is required. \
-                 Example: register api/my-pipe | trigger.webhook --path /api | pg.query.run --credential main-db",
+                 Example: register api/my-pipe | trigger.webhook --route /api | pg.query.run --credential main-db",
             );
         }
 
@@ -922,6 +922,16 @@ impl DslExecutor {
                         Value::String(s) => vec![s.as_str()],
                         _ => vec![],
                     };
+                    // One whole `{{ object }}` is the map, given at once.
+                    if let [whole] = items.as_slice()
+                        && crate::platform::shell::parser::is_whole_expression(whole)
+                    {
+                        cfg.insert(config_key.clone(), Value::String(whole.trim().to_string()));
+                        continue;
+                    }
+                    if cfg.get(config_key).is_some_and(Value::is_string) {
+                        cfg.remove(config_key);
+                    }
                     let entry = cfg
                         .entry(config_key.clone())
                         .or_insert_with(|| Value::Object(serde_json::Map::new()));
@@ -2088,14 +2098,14 @@ mod note_tests {
     async fn register_keeps_the_notes_it_did_not_redeclare() {
         let (_tmp, ex) = executor();
         let out = ex
-            .execute_dsl("register api/notes-keep | trigger.webhook --path /nk | web.response.send --template pages/x.tsx | note --id why --text \"first\" --color amber")
+            .execute_dsl("register api/notes-keep | trigger.webhook --route /nk | web.response.send --template pages/x.tsx | note --id why --text \"first\" --color amber")
             .await;
         assert!(out.ok, "{}", text(&out));
         assert_eq!(notes_of(&ex, "api/notes-keep").await.len(), 1);
 
         // Re-register without any note: the note survives.
         let out = ex
-            .execute_dsl("register api/notes-keep | trigger.webhook --path /nk | web.response.send --template pages/y.tsx")
+            .execute_dsl("register api/notes-keep | trigger.webhook --route /nk | web.response.send --template pages/y.tsx")
             .await;
         assert!(out.ok, "{}", text(&out));
         let notes = notes_of(&ex, "api/notes-keep").await;
@@ -2104,7 +2114,7 @@ mod note_tests {
 
         // Re-register redeclaring the same id: the body wins for that id.
         let out = ex
-            .execute_dsl("register api/notes-keep | trigger.webhook --path /nk | web.response.send --template pages/y.tsx | note --id why --text \"second\" | note --id more --text \"another\"")
+            .execute_dsl("register api/notes-keep | trigger.webhook --route /nk | web.response.send --template pages/y.tsx | note --id why --text \"second\" | note --id more --text \"another\"")
             .await;
         assert!(out.ok, "{}", text(&out));
         let mut ids: Vec<(String, String)> = notes_of(&ex, "api/notes-keep")
@@ -2120,7 +2130,7 @@ mod note_tests {
     async fn patch_note_creates_updates_and_removes() {
         let (_tmp, ex) = executor();
         let out = ex
-            .execute_dsl("register api/notes-patch | trigger.webhook --path /np | web.response.send --template pages/x.tsx")
+            .execute_dsl("register api/notes-patch | trigger.webhook --route /np | web.response.send --template pages/x.tsx")
             .await;
         assert!(out.ok, "{}", text(&out));
 
@@ -2379,7 +2389,7 @@ mod patch_body_tests {
         let owner = platform.config.default_owner.clone();
         let executor = super::DslExecutor::new(platform.clone(), &owner, "patchbody");
         let out = executor
-            .execute_dsl(r#"register api/rows -- | trigger.webhook --path /rows --method GET | sekejap.query.run -- "SELECT 1 AS one""#)
+            .execute_dsl(r#"register api/rows -- | trigger.webhook --route /rows --method GET | sekejap.query.run -- "SELECT 1 AS one""#)
             .await;
         assert!(out.lines.iter().any(|l| l.text.contains("registered")), "{:?}", out.lines.iter().map(|l| l.text.clone()).collect::<Vec<_>>());
         let out = executor

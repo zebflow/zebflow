@@ -26,8 +26,8 @@ SQL goes in the body; values go in `--param`:
 
 ```
 | sekejap.query.run --param "1={{ $trigger.params.id }}" -- "SELECT id, title FROM posts WHERE id = $1"
-| sekejap.query.run --param "1={{ input.body.title }}" --param "2={{ input.body.slug }}" --write -- "INSERT INTO posts (title, slug) VALUES ($1, $2)"
-| sqlite.query.run --param "1={{ input.body.email }}" -- "SELECT * FROM users WHERE email = ?1"
+| sekejap.query.run --param "1={{ $trigger.body.title }}" --param "2={{ $trigger.body.slug }}" --write -- "INSERT INTO posts (title, slug) VALUES ($1, $2)"
+| sqlite.query.run --param "1={{ $trigger.body.email }}" -- "SELECT * FROM users WHERE email = ?1"
 | pg.query.run --credential pg_main --param "1={{ $trigger.auth.sub }}" -- "SELECT * FROM accounts WHERE id = $1"
 ```
 

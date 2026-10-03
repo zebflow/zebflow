@@ -14,7 +14,7 @@
 //! # Example
 //!
 //! ```text
-//! | trigger.webhook --path /profile --method GET
+//! | trigger.webhook --route /profile --method GET
 //! | kv.entry.head --key "profile:{{ input.user_id }}" --out-key cached
 //! | logic.if --cond "input.cached" --then cached-branch --else fetch-branch
 //! ```

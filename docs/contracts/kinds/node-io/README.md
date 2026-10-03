@@ -80,21 +80,23 @@ that is a new code, not an edit. `logic.retry` retries only `failed`;
   that needs them. A FileRef is a *value*: nestable (`{ user: { avatar } }`),
   plural (`{ pages: [...] }`). There is deliberately no sibling binary
   channel. Inlining bytes is legal when explicit (`fs.file.get --encoding base64`).
-- **Trigger context is initial payload.** `query`, `body`, `auth`, `params`,
-  `files` arrive as ordinary keys, freely overwritable downstream — the
-  originals are reachable forever via `$trigger`.
-- **One envelope, whatever the trigger.** A trigger delivers `body` (fields)
-  and `files` (FileRefs). A file that arrives at a trigger is
-  `lifecycle: temporary` — it lives for the run and is deleted after, unless a
-  node such as `fs.file.put` makes it durable. A manual run delivers the same
-  envelope a webhook does. The `input.*` nodes are pass-through validators of
-  one envelope field each: they change no value that was sent and fetch and
-  store nothing; the one thing an input node writes is its `--default`, at
-  `body.<name>`, when that field was not sent — so the Run form, `execute
-  pipeline`, MCP and a webhook all leave the same envelope, and
-  `input.body.<name>` agrees with `$nodes.<id>`. The set of them after a
-  trigger is that trigger's declaration, and `$nodes.<id>` of one is the
-  value it checked.
+- **Trigger context arrives under one key, the source.** A trigger adds
+  exactly one key to the payload — its source (`trigger.webhook` → `webhook`)
+  — holding its envelope (`body`, `query`, `auth`, `params`, `files`, …);
+  nothing else lands at the payload root. That key is freely overwritable
+  downstream — the original is reachable forever via `$trigger`.
+- **One shape inside a request envelope.** A webhook or manual envelope
+  delivers `body` (fields) and `files` (FileRefs). A file that
+  arrives at a trigger is `lifecycle: temporary` — it lives for the run and is
+  deleted after, unless a node such as `fs.file.put` makes it durable. A
+  manual run delivers the same `body`/`files` shape a webhook does, under
+  `manual` instead of `webhook`. The `input.*` nodes are validators
+  of one envelope field each, read from `$trigger.body.<name>`
+  (files: `$trigger.files.<name>`): they change no value that was sent and
+  fetch and store nothing; they answer at their own `--name`, so the next node
+  reads `input.<name>` and a later node `$nodes.<id>.<name>`. The one thing an
+  input node writes is its own answer: `--default` when the field was not
+  sent, `null` for an unsent `--optional` field.
 - **Manners are per family.** A producer (query, convert, generate) replaces
   the payload with its product; a reader (`kv.entry.get`, `kv.entry.head`, `kv.entry.increment`)
   merges into it; a doer (`kv.entry.put`, `ws.message.send`) passes it through or returns a
@@ -180,6 +182,7 @@ do not move.
 | Date | Change | Why it was safe |
 | --- | --- | --- |
 | 2026-09-21 | An `input.*` node writes its `--default` at `body.<name>` when the field was not sent. | The Run form already posted defaults; the DSL, MCP and webhook paths now leave the same envelope, and a sent value is never touched. |
+| 2026-10-04 | A trigger's envelope moved under one key, its source (`webhook`, `manual`, …), instead of sitting at the payload root; an `input.*` node now answers at its own `--name` instead of writing into `body.<name>`. | Part of the 0.11 node-grammar decision (`node-conventions.md` §1, §6); no slot changed, only where callers find the same fields. |
 
 ## Enforcement
 

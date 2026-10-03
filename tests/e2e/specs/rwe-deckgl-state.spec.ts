@@ -33,7 +33,7 @@ export default function Page() {
     const graph = {
       id: "deck", entry_nodes: ["trigger"],
       nodes: [
-        { id: "trigger", kind: "trigger.webhook", input_pins: [], output_pins: ["out"], config: { path: "/deck", method: "GET" } },
+        { id: "trigger", kind: "trigger.webhook", input_pins: [], output_pins: ["out"], config: { route: "/deck", method: "GET" } },
         { id: "page", kind: "web.response.send", input_pins: ["in"], output_pins: ["out"], config: { template: "deck.tsx" } },
       ],
       edges: [{ from_node: "trigger", from_pin: "out", to_node: "page", to_pin: "in" }],

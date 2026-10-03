@@ -50,7 +50,7 @@ The template receives a single input payload like:
 Minimal version as a callable function pipeline:
 
 ```zf
-| trigger.function --description "Generate the static page for one entry" --input "entry_slug:string!" "Slug of the entry to generate"
+| trigger.function --description "Generate the static page for one entry" --argument "entry_slug:string!" "Slug of the entry to generate"
 | script.result.run -- "
 const collection = {
   name: 'Field Notes',
@@ -96,8 +96,8 @@ Served URL, once the owner serves `site/` as a site on `https://www.example.com`
 This is a more realistic content-backed version:
 
 ```zf
-| trigger.function --description "Generate the static page for one content entry" --input "entry_id:string!" "Entry UUID"
-| pg.query.run --credential content-db --param "1={{ input.entry_id }}" -- "
+| trigger.function --description "Generate the static page for one content entry" --argument "entry_id:string!" "Entry UUID"
+| pg.query.run --credential content-db --param "1={{ input.function.entry_id }}" -- "
 SELECT
   e.entry_id::text AS entry_id,
   e.slug AS entry_slug,

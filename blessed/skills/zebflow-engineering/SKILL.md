@@ -66,7 +66,7 @@ so a tool, a skill or a new session can walk any depth without asking.
 
 A pipeline's `file_rel_path` is its location in this tree
 (`modules/finance/modules/invoicing/api/create`); its URL is whatever
-`--path` says. A template is referenced by its full path
+`--route` says. A template is referenced by its full path
 (`--template modules/finance/pages/invoices.tsx`, import
 `@/modules/finance/components/invoice-row`). Depth costs nothing.
 
@@ -120,7 +120,7 @@ first, in known places:
 2. `docs/schema.md` + `db/NNN_<entity>.sql` — the table, applied and read back
    with `connection_describe`.
 3. `modules/<m>/api/<entity>/{list,create,update,delete}` — JSON routes,
-   validated `input.body`, the same status codes as the other modules.
+   validated `input.webhook.body`, the same status codes as the other modules.
 4. `modules/<m>/pages/<entities>.tsx` + `<entity>.tsx` — list and detail
    inside `PageShell`, using `shared/components` first, module components
    second, a new component last.

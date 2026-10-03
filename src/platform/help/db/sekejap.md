@@ -44,7 +44,7 @@ the id from `GET …/db/connections`, not the slug.
 ```
 | sekejap.query.run -- "SELECT _key, title FROM posts LIMIT 20"
 | sekejap.query.run --param "1={{ $trigger.params.slug }}" -- "SELECT _key, title FROM posts WHERE slug = $1"
-| sekejap.query.run --param "1={{ input.body.title }}" --write -- "INSERT INTO posts (title) VALUES ($1) RETURNING _key"
+| sekejap.query.run --param "1={{ $trigger.body.title }}" --write -- "INSERT INTO posts (title) VALUES ($1) RETURNING _key"
 ```
 
 Flags: `--param key=value` (repeated; the key is the placeholder position —

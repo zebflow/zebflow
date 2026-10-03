@@ -240,7 +240,7 @@ pub fn delete_definition() -> NodeDefinition {
     );
     def.examples = vec![example(
         "Delete an upload",
-        "fs.file.delete --path \"{{ input.body.path }}\"",
+        "fs.file.delete --path \"{{ $trigger.body.path }}\"",
         json!({ "fs": { "operation": "delete", "path": "uploads/a1.jpg", "deleted": true } }),
     )];
     def

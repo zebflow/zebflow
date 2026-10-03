@@ -28,7 +28,7 @@
           "out"
         ],
         "config": {
-          "path": "/catalog/search",
+          "route": "/catalog/search",
           "method": "POST"
         }
       },

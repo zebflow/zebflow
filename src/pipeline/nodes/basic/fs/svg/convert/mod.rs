@@ -283,7 +283,7 @@ pub fn definition() -> NodeDefinition {
                 .note("A `fs.file.get` of the template .svg and a `script` that fills the placeholders come before it. The name is real text in the PDF; a long one shrinks instead of wrapping. `--width/--height/--fit` are refused with pdf."),
             NodeExample::dsl("A stored SVG at a size", "fs.image.render --source-key file --width 512 --height 512 --fit contain --format webp --folder logos")
                 .input(json!({ "file": { "__zf_type": "file_ref", "backend": "zebfs", "ref": "uploads/logo.svg", "filename": "logo.svg", "mime": "image/svg+xml", "kind": "image", "size": 2210, "sha256": "sha256:…", "lifecycle": "durable", "origin": "fs.file.put", "trust": "untrusted" } }))
-                .note("After `fs.file.put --from \"{{ input.files.logo }}\" --accept image`. `contain` keeps the proportions, so a wide logo answers 512×n."),
+                .note("After `fs.file.put --from \"{{ $trigger.files.logo }}\" --accept image`. `contain` keeps the proportions, so a wide logo answers 512×n."),
         ],
         ..Default::default()
     }

@@ -12,7 +12,7 @@
 //! # Example
 //!
 //! ```text
-//! | trigger.webhook --path /save --method POST
+//! | trigger.webhook --route /save --method POST
 //! | kv.entry.put --key "user:{{ input.user_id }}" --value "{{ input.data }}" --ttl 3600
 //! ```
 

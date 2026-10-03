@@ -1,4 +1,4 @@
-//! `input.number` — a number at `body.<name>` (a form's digits are parsed); `--min` / `--max` bound it.
+//! `input.number` — a number at `$trigger.body.<name>` (a form's digits are parsed); `--min` / `--max` bound it.
 //!
 //! One member of the `input.*` family; the checks, the flags and the handler
 //! live in the parent module. This file is the kind's name and its

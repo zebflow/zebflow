@@ -35,7 +35,7 @@ pub struct WebhookTriggerSpec {
     #[serde(default)]
     pub auth_required_role: Vec<String>,
     /// A public route that knows who is signed in: auth failure means
-    /// `input.auth` is null, not a 401.
+    /// `webhook.auth` is null, not a 401.
     #[serde(default)]
     pub auth_optional: bool,
     /// `show` or `hide`: what this route's 5xx reveals, overriding the
@@ -49,7 +49,7 @@ pub struct WebhookTriggerSpec {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct WebErrorTriggerSpec {
     pub node_id: String,
-    /// Code pattern: `"404"`, `"4xx"`, `"5xx"`, `"*"`, or `""` (catch-all).
+    /// Status pattern (`--status`): `"404"`, `"4xx"`, `"5xx"`, `"*"`, or `""` (catch-all).
     pub code: String,
 }
 
@@ -84,7 +84,7 @@ pub struct WsTriggerSpec {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct KvSubscribeTriggerSpec {
     pub node_id: String,
-    /// Channel name to subscribe to.
+    /// Topic (`--topic`, the publisher's channel) to subscribe to.
     pub channel: String,
 }
 
@@ -97,34 +97,15 @@ pub struct WsClientTriggerSpec {
     /// Credential ID for injecting auth headers/tokens into the connection.
     #[serde(default)]
     pub credential_id: String,
-    /// Whether to auto-reconnect on disconnect.
-    #[serde(default = "default_true")]
-    pub reconnect: bool,
-    /// Base reconnect delay in milliseconds. Exponential backoff applied.
-    #[serde(default = "default_reconnect_delay_ms")]
-    pub reconnect_delay_ms: u64,
-    /// Max reconnect attempts (0 = infinite).
+    /// First reconnect delay (`--delay`) in milliseconds; backoff doubles it.
+    pub delay_ms: u64,
+    /// Reconnects allowed (`--max-attempts`): `None` unlimited, `Some(0)` never.
     #[serde(default)]
-    pub max_reconnect_attempts: u64,
-    /// Heartbeat ping interval in milliseconds.
-    #[serde(default = "default_heartbeat_interval_ms")]
-    pub heartbeat_interval_ms: u64,
-    /// Message format hint: "json" or "text".
-    #[serde(default = "default_message_format")]
-    pub message_format: String,
-}
-
-fn default_true() -> bool {
-    true
-}
-fn default_reconnect_delay_ms() -> u64 {
-    5000
-}
-fn default_heartbeat_interval_ms() -> u64 {
-    30000
-}
-fn default_message_format() -> String {
-    "json".to_string()
+    pub max_attempts: Option<u64>,
+    /// Heartbeat ping interval (`--heartbeat`) in milliseconds.
+    pub heartbeat_ms: u64,
+    /// How a message is read (`--parse`): `json` or `text`.
+    pub parse: String,
 }
 
 /// One extracted MCP trigger from an active compiled pipeline.
@@ -231,9 +212,10 @@ impl CompiledPipeline {
         for node in &graph.nodes {
             match node.kind.as_str() {
                 "trigger.webhook" => {
+                    check_trigger_flags(meta, node)?;
                     let path = node
                         .config
-                        .get("path")
+                        .get("route")
                         .and_then(serde_json::Value::as_str)
                         .unwrap_or("/")
                         .to_string();
@@ -244,7 +226,7 @@ impl CompiledPipeline {
                         return Err(PlatformError::new(
                             "PIPELINE_ROUTE_RESERVED",
                             format!(
-                                "pipeline '{}': webhook path '{}' starts with `/_`, which is reserved for the platform's surfaces on a project host (/_files, /_ws, …). Choose another path.",
+                                "pipeline '{}': webhook route '{}' starts with `/_`, which is reserved for the platform's surfaces on a project host (/_files, /_ws, …). Choose another route.",
                                 meta.file_rel_path, path
                             ),
                         ));
@@ -255,28 +237,7 @@ impl CompiledPipeline {
                         .and_then(serde_json::Value::as_str)
                         .unwrap_or("POST")
                         .to_string();
-                    let auth_type = node
-                        .config
-                        .get("auth_type")
-                        .and_then(serde_json::Value::as_str)
-                        .unwrap_or_default()
-                        .to_string();
-                    let auth_credential = node
-                        .config
-                        .get("auth_credential")
-                        .and_then(serde_json::Value::as_str)
-                        .unwrap_or_default()
-                        .to_string();
-                    let auth_required_role = node
-                        .config
-                        .get("auth_required_role")
-                        .and_then(|v| v.as_array())
-                        .map(|arr| {
-                            arr.iter()
-                                .filter_map(|v| v.as_str().map(ToString::to_string))
-                                .collect()
-                        })
-                        .unwrap_or_default();
+                    let (auth_type, auth_credential, auth_required_role) = trigger_auth(&node.config);
                     let auth_optional = node
                         .config
                         .get("auth_optional")
@@ -300,9 +261,9 @@ impl CompiledPipeline {
                     });
                 }
                 "trigger.error" => {
-                    // `--code 404` arrives as a number from the DSL; as a string
+                    // `--status 404` arrives as a number from the DSL; as a string
                     // it would have silently become the catch-all.
-                    let code = match node.config.get("code") {
+                    let code = match node.config.get("status") {
                         Some(serde_json::Value::String(s)) => s.clone(),
                         Some(serde_json::Value::Number(n)) => n.to_string(),
                         _ => String::new(),
@@ -332,6 +293,7 @@ impl CompiledPipeline {
                     });
                 }
                 "trigger.room" => {
+                    check_trigger_flags(meta, node)?;
                     let room = node
                         .config
                         .get("room")
@@ -344,28 +306,7 @@ impl CompiledPipeline {
                         .and_then(serde_json::Value::as_str)
                         .unwrap_or_default()
                         .to_string();
-                    let auth_type = node
-                        .config
-                        .get("auth_type")
-                        .and_then(serde_json::Value::as_str)
-                        .unwrap_or_default()
-                        .to_string();
-                    let auth_credential = node
-                        .config
-                        .get("auth_credential")
-                        .and_then(serde_json::Value::as_str)
-                        .unwrap_or_default()
-                        .to_string();
-                    let auth_required_role = node
-                        .config
-                        .get("auth_required_role")
-                        .and_then(|v| v.as_array())
-                        .map(|arr| {
-                            arr.iter()
-                                .filter_map(|v| v.as_str().map(ToString::to_string))
-                                .collect()
-                        })
-                        .unwrap_or_default();
+                    let (auth_type, auth_credential, auth_required_role) = trigger_auth(&node.config);
                     ws_triggers.push(WsTriggerSpec {
                         node_id: node.id.clone(),
                         room,
@@ -378,7 +319,7 @@ impl CompiledPipeline {
                 "trigger.topic" => {
                     let channel = node
                         .config
-                        .get("channel")
+                        .get("topic")
                         .and_then(serde_json::Value::as_str)
                         .unwrap_or_default()
                         .to_string();
@@ -400,55 +341,30 @@ impl CompiledPipeline {
                         .and_then(serde_json::Value::as_str)
                         .unwrap_or_default()
                         .to_string();
-                    let reconnect = node
-                        .config
-                        .get("reconnect")
-                        .and_then(serde_json::Value::as_bool)
-                        .unwrap_or(true);
-                    let reconnect_delay_ms = node
-                        .config
-                        .get("reconnect_delay_ms")
-                        .and_then(serde_json::Value::as_u64)
-                        .unwrap_or(5000);
-                    let max_reconnect_attempts = node
-                        .config
-                        .get("max_reconnect_attempts")
-                        .and_then(serde_json::Value::as_u64)
-                        .unwrap_or(0);
-                    let heartbeat_interval_ms = node
-                        .config
-                        .get("heartbeat_interval_ms")
-                        .and_then(serde_json::Value::as_u64)
-                        .unwrap_or(30000);
-                    let message_format = node
-                        .config
-                        .get("message_format")
-                        .and_then(serde_json::Value::as_str)
-                        .unwrap_or("json")
-                        .to_string();
+                    let settings = crate::pipeline::nodes::basic::trigger::ws_client::Settings::of(&node.config)
+                        .map_err(|err| trigger_refused(meta, node, err))?;
                     if !url.is_empty() {
                         ws_client_triggers.push(WsClientTriggerSpec {
                             node_id: node.id.clone(),
                             url,
                             credential_id,
-                            reconnect,
-                            reconnect_delay_ms,
-                            max_reconnect_attempts,
-                            heartbeat_interval_ms,
-                            message_format,
+                            delay_ms: settings.delay_ms,
+                            max_attempts: settings.max_attempts,
+                            heartbeat_ms: settings.heartbeat_ms,
+                            parse: settings.parse,
                         });
                     }
                 }
                 "trigger.mcp" => {
                     let tool_name = node
                         .config
-                        .get("tool_name")
+                        .get("name")
                         .and_then(serde_json::Value::as_str)
                         .unwrap_or_default()
                         .to_string();
                     let tool_description = node
                         .config
-                        .get("tool_description")
+                        .get("description")
                         .and_then(serde_json::Value::as_str)
                         .unwrap_or_default()
                         .to_string();
@@ -533,6 +449,84 @@ impl CompiledPipeline {
             mcp_triggers,
         })
     }
+}
+
+/// `--auth`, `--credential`, `--role` of a webhook or room trigger.
+fn trigger_auth(config: &serde_json::Value) -> (String, String, Vec<String>) {
+    let text = |key: &str| {
+        config
+            .get(key)
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+            .to_string()
+    };
+    let roles = config
+        .get("role")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(ToString::to_string))
+                .collect()
+        })
+        .unwrap_or_default();
+    (text("auth"), text("credential_id"), roles)
+}
+
+/// A trigger's flags as the pipeline's refusal at activation.
+fn trigger_refused(
+    meta: &PipelineMeta,
+    node: &crate::pipeline::PipelineNode,
+    err: crate::pipeline::PipelineError,
+) -> PlatformError {
+    PlatformError::new(
+        err.code,
+        format!(
+            "pipeline '{}': {} (node '{}'): {}",
+            meta.file_rel_path, node.kind, node.id, err.message
+        ),
+    )
+}
+
+/// The closed words of a webhook or room trigger (`--method`, `--auth`,
+/// `--errors`), checked when the pipeline is activated: an unknown word is
+/// refused, never mapped to a default.
+fn check_trigger_flags(
+    meta: &PipelineMeta,
+    node: &crate::pipeline::PipelineNode,
+) -> Result<(), PlatformError> {
+    use crate::pipeline::nodes::basic::trigger::webhook;
+    use crate::pipeline::nodes::shared::limits::choice;
+    let code = if node.kind == "trigger.room" {
+        "FW_NODE_TRIGGER_ROOM_CONFIG"
+    } else {
+        webhook::CONFIG_CODE
+    };
+    let text = |key: &str| {
+        node.config
+            .get(key)
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+            .to_string()
+    };
+    let refuse = |err| trigger_refused(meta, node, err);
+    let auth = choice(&text("auth"), &webhook::AUTH_MODES, "none", "--auth", code).map_err(refuse)?;
+    // A guard without its key would refuse every request at run time; say so
+    // once, at activation, instead.
+    if auth != "none" && text("credential_id").trim().is_empty() {
+        return Err(refuse(crate::pipeline::PipelineError::new(
+            code,
+            format!("--auth {auth} needs --credential naming the credential that verifies it"),
+        )));
+    }
+    let has_role = node.config.get("role").and_then(serde_json::Value::as_array).is_some_and(|roles| !roles.is_empty());
+    if has_role && auth != "jwt" {
+        return Err(refuse(crate::pipeline::PipelineError::new(code, "--role checks JWT claims: it needs --auth jwt")));
+    }
+    if node.kind == "trigger.webhook" {
+        choice(&text("method"), &webhook::METHODS, "GET", "--method", code).map_err(refuse)?;
+        choice(&text("errors"), &webhook::ERRORS_MODES, "show", "--errors", code).map_err(refuse)?;
+    }
+    Ok(())
 }
 
 /// Production runtime registry for activated pipelines.
@@ -694,4 +688,127 @@ fn render_trigger_path(template: &str, config: &serde_json::Value) -> String {
     }
     out.push_str(rest);
     out
+}
+
+#[cfg(test)]
+mod trigger_tests {
+    use super::CompiledPipeline;
+    use crate::contracts::kinds::encode_pipeline_graph;
+    use crate::platform::model::PipelineMeta;
+    use crate::platform::shell::parser::build_pipeline_graph;
+
+    fn compile(dsl: &str) -> Result<CompiledPipeline, crate::platform::error::PlatformError> {
+        let graph = build_pipeline_graph("triggers", dsl).expect("graph");
+        let source = String::from_utf8(encode_pipeline_graph(graph).expect("encode")).expect("utf8");
+        let meta = PipelineMeta {
+            owner: "demo".into(),
+            project: "site-a".into(),
+            name: "triggers".into(),
+            title: String::new(),
+            virtual_path: String::new(),
+            file_rel_path: "pipelines/triggers.zf.json".into(),
+            description: String::new(),
+            trigger_kind: String::new(),
+            hash: "h".into(),
+            active_hash: Some("h".into()),
+            activated_at: None,
+            created_at: 0,
+            updated_at: 0,
+        };
+        CompiledPipeline::from_active_meta(&meta, &source, None)
+    }
+
+    #[test]
+    fn a_webhook_route_is_registered_with_its_guard_and_roles() {
+        let compiled = compile(
+            "| trigger.webhook --route /admin/posts/:id --method POST --auth jwt --credential jwt_main --role editor --role admin --auth-optional --errors hide",
+        )
+        .expect("compiles");
+        let spec = &compiled.webhook_triggers[0];
+        assert_eq!((spec.path.as_str(), spec.method.as_str()), ("/admin/posts/:id", "POST"));
+        assert_eq!((spec.auth_type.as_str(), spec.auth_credential.as_str()), ("jwt", "jwt_main"));
+        assert_eq!(spec.auth_required_role, vec!["editor".to_string(), "admin".to_string()]);
+        assert!(spec.auth_optional);
+        assert_eq!(spec.errors, "hide");
+    }
+
+    /// A guard that cannot verify anything is refused when the pipeline is
+    /// activated, not on every request afterwards.
+    #[test]
+    fn a_guard_without_its_credential_or_a_role_without_jwt_is_refused_at_activation() {
+        for (dsl, says) in [
+            ("| trigger.webhook --route /x --auth jwt", "needs --credential"),
+            ("| trigger.webhook --route /x --role editor", "needs --auth jwt"),
+            ("| trigger.webhook --route /x --auth hmac --credential hook_key --role editor", "needs --auth jwt"),
+        ] {
+            let err = compile(dsl).err().unwrap_or_else(|| panic!("accepted: {dsl}"));
+            assert_eq!(err.code, "FW_NODE_TRIGGER_WEBHOOK_CONFIG", "{dsl}");
+            assert!(err.message.contains(says), "{dsl}: {}", err.message);
+        }
+    }
+
+    #[test]
+    fn an_unknown_word_in_a_closed_choice_is_refused_at_activation() {
+        for dsl in [
+            "| trigger.webhook --route /x --method FETCH",
+            "| trigger.webhook --route /x --auth oauth",
+            "| trigger.webhook --route /x --errors loud",
+        ] {
+            let err = compile(dsl).err().unwrap_or_else(|| panic!("accepted: {dsl}"));
+            assert_eq!(err.code, "FW_NODE_TRIGGER_WEBHOOK_CONFIG", "{dsl}");
+        }
+        let err = compile("| trigger.room --auth sometimes").err().expect("refused");
+        assert_eq!(err.code, "FW_NODE_TRIGGER_ROOM_CONFIG");
+    }
+
+    #[test]
+    fn a_room_reads_the_same_guard_words() {
+        let compiled = compile("| trigger.room --room lobby --event move --auth jwt --credential jwt_main --role player").expect("compiles");
+        let spec = &compiled.ws_triggers[0];
+        assert_eq!((spec.room.as_str(), spec.event.as_str()), ("lobby", "move"));
+        assert_eq!((spec.auth_type.as_str(), spec.auth_credential.as_str()), ("jwt", "jwt_main"));
+        assert_eq!(spec.auth_required_role, vec!["player".to_string()]);
+    }
+
+    #[test]
+    fn a_socket_reads_durations_and_attempts() {
+        let compiled = compile("| trigger.socket --url wss://feed.example.com/ticks --delay 2s --heartbeat 15s --max-attempts 4 --parse text").expect("compiles");
+        let spec = &compiled.ws_client_triggers[0];
+        assert_eq!((spec.delay_ms, spec.heartbeat_ms, spec.max_attempts), (2000, 15000, Some(4)));
+        assert_eq!(spec.parse, "text");
+        let spec = compile("| trigger.socket --url wss://feed.example.com/ticks").expect("compiles").ws_client_triggers[0].clone();
+        assert_eq!((spec.delay_ms, spec.heartbeat_ms, spec.max_attempts), (5000, 30000, None), "omitted: unlimited");
+        let err = compile("| trigger.socket --url wss://feed.example.com/ticks --delay soon").err().expect("refused");
+        assert_eq!(err.code, "FW_NODE_TRIGGER_SOCKET_CONFIG");
+    }
+
+    #[test]
+    fn mcp_topic_and_error_triggers_register_under_their_new_words() {
+        let compiled = compile("| trigger.mcp --name stock_lookup --description \"Stock for one SKU.\" --params sku:string").expect("compiles");
+        let spec = &compiled.mcp_triggers[0];
+        assert_eq!((spec.tool_name.as_str(), spec.tool_description.as_str()), ("stock_lookup", "Stock for one SKU."));
+        assert_eq!(spec.input_schema["properties"]["sku"]["type"], "string");
+
+        let compiled = compile("| trigger.topic --topic order.placed").expect("compiles");
+        assert_eq!(compiled.kv_subscribe_triggers[0].channel, "order.placed");
+
+        let compiled = compile("| trigger.error --status 404").expect("compiles");
+        assert_eq!(compiled.weberror_triggers[0].code, "404");
+        let compiled = compile("| trigger.error --status 5xx").expect("compiles");
+        assert_eq!(compiled.weberror_triggers[0].code, "5xx");
+    }
+
+    #[test]
+    fn a_function_declares_its_arguments_and_result_under_the_new_keys() {
+        let graph = build_pipeline_graph(
+            "fn",
+            "| trigger.function --description \"Find one user.\" --argument email:string! \"Address.\" --result user:object",
+        )
+        .expect("graph");
+        let config = &graph.nodes[0].config;
+        let schema = crate::pipeline::nodes::basic::trigger::function::input_schema_from_config(config);
+        assert_eq!(schema["required"], serde_json::json!(["email"]));
+        let result = crate::pipeline::nodes::basic::trigger::function::output_schema_from_config(config);
+        assert!(result["properties"]["user"].is_object(), "{result}");
+    }
 }

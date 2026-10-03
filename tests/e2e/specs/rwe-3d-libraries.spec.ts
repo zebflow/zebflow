@@ -40,7 +40,7 @@ async function servePage(request: APIRequestContext, project: string, source: st
   const graph = {
     id: "page", entry_nodes: ["trigger"],
     nodes: [
-      { id: "trigger", kind: "trigger.webhook", input_pins: [], output_pins: ["out"], config: { path: "/page", method: "GET" } },
+      { id: "trigger", kind: "trigger.webhook", input_pins: [], output_pins: ["out"], config: { route: "/page", method: "GET" } },
       { id: "page", kind: "web.response.send", input_pins: ["in"], output_pins: ["out"], config: { template: "page.tsx" } },
     ],
     edges: [{ from_node: "trigger", from_pin: "out", to_node: "page", to_pin: "in" }],

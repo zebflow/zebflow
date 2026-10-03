@@ -1,4 +1,4 @@
-//! `input.boolean` — a boolean at `body.<name>`; a form's `on` / `off` / `1` / `0` are read as one.
+//! `input.boolean` — a boolean at `$trigger.body.<name>`; a form's `on` / `off` / `1` / `0` are read as one.
 //!
 //! One member of the `input.*` family; the checks, the flags and the handler
 //! live in the parent module. This file is the kind's name and its

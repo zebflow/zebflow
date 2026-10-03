@@ -118,7 +118,7 @@ async fn a_logic_expression_reads_input_as_the_payload() {
     let graph = build_pipeline_graph(
         "input-binding",
         "[a] trigger.manual\n\
-         [b] logic.if --expr \"input.rows && input.rows.length > 0\"\n\
+         [b] logic.if --expr \"input.manual.rows && input.manual.rows.length > 0\"\n\
          [yes] script.result.run -- \"return { took: 'true' };\"\n\
          [no] script.result.run -- \"return { took: 'false' };\"\n\
          [a] -> [b]\n[b]:true -> [yes]\n[b]:false -> [no]\n",
@@ -142,14 +142,14 @@ async fn a_logic_expression_reads_input_as_the_payload() {
     assert_eq!(
         out.value.get("took").and_then(|v| v.as_str()),
         Some("true"),
-        "`input.rows` must see the payload, not the scope object"
+        "`input.manual.rows` must see the payload, not the scope object"
     );
 
     // And `$input` keeps working, because documents and pipelines use both.
     let graph = build_pipeline_graph(
         "input-binding-dollar",
         "[a] trigger.manual\n\
-         [b] logic.if --expr \"$input.rows.length > 0\"\n\
+         [b] logic.if --expr \"$input.manual.rows.length > 0\"\n\
          [yes] script.result.run -- \"return { took: 'true' };\"\n\
          [no] script.result.run -- \"return { took: 'false' };\"\n\
          [a] -> [b]\n[b]:true -> [yes]\n[b]:false -> [no]\n",

@@ -42,7 +42,7 @@ query nodes in `pipeline/nodes`.
   what this engine version refuses, and the pinned grammar link are in
   `skill_read name="zebflow-sekejap"` — read it before the first
   `sekejap.query.run`. Timestamps come from the pipeline:
-  `--param "1={{ input.body.name }}" --param "2={{ new Date().toISOString() }}"`.
+  `--param "1={{ $trigger.body.name }}" --param "2={{ new Date().toISOString() }}"`.
 - Seeds go in `initial-data/` so a fresh install of the project (or of a
   bundle made from it) gets them.
 
@@ -50,8 +50,8 @@ query nodes in `pipeline/nodes`.
 
 ```
 | sekejap.query.run --param "1={{ $trigger.params.slug }}" -- "SELECT id, title, body_json FROM posts WHERE slug = $1"
-| sekejap.query.run --param "1={{ input.body.title }}" --param "2={{ input.body.slug }}" --write -- "INSERT INTO posts (title, slug) VALUES ($1, $2)"
-| sqlite.query.run --param "1={{ input.body.email }}" -- "SELECT * FROM users WHERE email = ?1"
+| sekejap.query.run --param "1={{ $trigger.body.title }}" --param "2={{ $trigger.body.slug }}" --write -- "INSERT INTO posts (title, slug) VALUES ($1, $2)"
+| sqlite.query.run --param "1={{ $trigger.body.email }}" -- "SELECT * FROM users WHERE email = ?1"
 | pg.query.run --credential pg_main --param "1={{ $trigger.auth.sub }}" -- "SELECT * FROM accounts WHERE id = $1"
 ```
 

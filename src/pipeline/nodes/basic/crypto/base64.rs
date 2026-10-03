@@ -70,7 +70,7 @@ pub fn decode_definition() -> NodeDefinition {
         fields: vec![field("from", "Base64", "The Base64 string: a literal or {{ expr }}.")],
         layout: vec![LayoutItem::Field("from".to_string())],
         examples: vec![
-            NodeExample::dsl("Read an encoded field", r#"crypto.base64.decode --from "{{ input.body.data }}""#)
+            NodeExample::dsl("Read an encoded field", r#"crypto.base64.decode --from "{{ $trigger.body.data }}""#)
                 .input(json!({ "body": { "data": "aGVsbG8=" } }))
                 .output(json!({ "body": { "data": "aGVsbG8=" }, "base64": { "text": "hello" } })),
         ],

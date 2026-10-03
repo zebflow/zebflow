@@ -31,18 +31,20 @@ Facts live in `help(topic="pipeline")`, `pipeline/dsl`, `pipeline/authoring`,
 - **Pipe mode** for a chain; **graph mode** (`[id]` and `->`) the moment you
   branch, fan out or loop. Every node must be reachable from the one entry —
   an unwired node is a second entry that fires on every request.
-- **Payload shape.** After `trigger.webhook`: `input.body` — the JSON body,
-  or for a `<form method="post">` an object of its fields (`<input name="email">`
-  → `input.body.email`); `null` on GET — plus `input.params`, `input.query`,
-  `input.files.<field>` (FileRef), `input.auth` when the trigger verified a
-  token. After a query node: `query: { columns, rows, … }` — the rows are
+- **Payload shape.** After `trigger.webhook`: `input.webhook.body` — the JSON
+  body, or for a `<form method="post">` an object of its fields
+  (`<input name="email">` → `input.webhook.body.email`); `null` on GET — plus
+  `input.webhook.params`, `input.webhook.query`, `input.webhook.files.<field>`
+  (FileRef), `input.webhook.auth` when the trigger verified a token (`$trigger.body`,
+  `$trigger.params`, `$trigger.query`, … reach the same envelope anywhere later
+  in the chain). After a query node: `query: { columns, rows, … }` — the rows are
   `input.query.rows`, objects keyed by column (`input.query.rows[0].title`), never `input`.
   After a `crypto.*` node: the same payload plus its noun —
   `input.password.hash`, `input.digest.value`, `input.random.value` — with
-  `input.body` still there. Reach an earlier node's output
+  `input.webhook.body` still there. Reach an earlier node's output
   with `$nodes.<id>` in `{{ }}`.
 - **SQL in the body, values in `--param`:**
-  `sekejap.query.run --param "1={{ input.body.email }}" -- "SELECT * FROM users WHERE email = $1"`.
+  `sekejap.query.run --param "1={{ $trigger.body.email }}" -- "SELECT * FROM users WHERE email = $1"`.
   Never interpolate a value into SQL text.
 - **A script returns the next payload and nothing else.** It cannot set a
   status or a header, `return null` does not stop the pipeline, and
@@ -55,18 +57,18 @@ Facts live in `help(topic="pipeline")`, `pipeline/dsl`, `pipeline/authoring`,
   `--header "Set-Cookie=name=value; Path=/; Max-Age=86400; SameSite=Lax; HttpOnly"` → a cookie, sent as
   written (repeat `--header` for several). A 404 is a `logic.if` with
   two `web.response.send` nodes on its pins.
-- **A site-wide 404 is `trigger.error --code 404 | web.response.send --status 404 --template pages/not-found.tsx`.**
-  A webhook with `--path /*` or `/:path` does not catch unknown routes — four
+- **A site-wide 404 is `trigger.error --status 404 | web.response.send --status 404 --template pages/not-found.tsx`.**
+  A webhook with `--route /*` or `/:path` does not catch unknown routes — four
   of five models tried; none of them worked.
 - **Forms are two pipelines.** `GET` renders the page; `POST` validates
-  `input.body`, writes, then redirects back with `--status 303 --header "Location=…"` (browser) or answers JSON
-  (fetch). Both carry the same `--auth-*` flags.
+  `input.webhook.body`, writes, then redirects back with `--status 303 --header "Location=…"` (browser) or answers JSON
+  (fetch). Both carry the same auth flags (`--auth`, `--credential`, `--role`).
 
 ```
 register api/posts/create --title "Create post"
-[a] trigger.webhook --path /api/posts --method POST --auth-type jwt --auth-credential jwt_main --auth-required-role editor
-[b] logic.if --expr "typeof input.body?.title === 'string' && input.body.title.length > 0"
-[c] sekejap.query.run --param "1={{ input.body.title }}" --param "2={{ input.body.slug }}" --write -- "INSERT INTO posts (title, slug) VALUES ($1, $2)"
+[a] trigger.webhook --route /api/posts --method POST --auth jwt --credential jwt_main --role editor
+[b] logic.if --expr "typeof input.webhook.body?.title === 'string' && input.webhook.body.title.length > 0"
+[c] sekejap.query.run --param "1={{ $trigger.body.title }}" --param "2={{ $trigger.body.slug }}" --write -- "INSERT INTO posts (title, slug) VALUES ($1, $2)"
 [d] web.response.send --status 302 --header "Location=/admin/posts"
 [e] web.response.send --status 400 --body "{{ { error: 'title is required' } }}"
 [a] -> [b]
@@ -86,7 +88,7 @@ pipeline_activate  file_rel_path="api/posts/create"              → active
 `zebflow.yaml` says otherwise) and is the pipeline's place in the project's
 layout (`docs/structure.md`): `api/…`, `pages/…`, `jobs/…` in a flat project,
 `modules/<domain>/api/…` in a domain one (`zebflow-engineering`) — never a
-`pipelines/` prefix. The URL is `--path`, independent of the file's folder. To change one node later: `pipeline_describe` (node ids `n0, n1, …`)
+`pipelines/` prefix. The URL is `--route`, independent of the file's folder. To change one node later: `pipeline_describe` (node ids `n0, n1, …`)
 → `pipeline_patch node_id=` → `pipeline_activate` again; until then the
 status is `stale` and traffic runs the old snapshot.
 
@@ -113,6 +115,6 @@ To try a body without saving: `pipeline_run body="| trigger.function | …" inpu
 - `looks like an unquoted expression` — quote the whole value.
 - the template is "not found" — the path in `--template` is not an exact
   `file_list` path, or lacks `.tsx`.
-- `input.title is undefined` in a script after a webhook — it is `input.body.title`.
+- `input.title is undefined` in a script after a webhook — it is `input.webhook.body.title` (or `$trigger.body.title`).
 - rows missing after a query — you read `input`, the rows are `input.query.rows`.
 - the route answers the old behaviour — the pipeline is `stale`; activate.

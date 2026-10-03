@@ -234,7 +234,7 @@ struct PipelineRegisterParams {
     #[schemars(with = "String")]
     description: Option<String>,
     /// Pipeline body: pipe-chained nodes starting with |.
-    /// Example: "| trigger.webhook --path /blog --method GET | pg.query.run --credential main-db -- \"SELECT * FROM posts\""
+    /// Example: "| trigger.webhook --route /blog --method GET | pg.query.run --credential main-db -- \"SELECT * FROM posts\""
     /// Use help("pipeline/dsl") for the full node catalog and syntax.
     body: String,
 }
@@ -660,7 +660,7 @@ impl ZebflowMcpHandler {
 
     #[tool(
         description = "Register (create or update) a pipeline at file_rel_path from a DSL body. \
-                       The body is the nodes only — pipe mode '| trigger.webhook --path /x | sekejap.query.run -- \"SQL\" | web.response.send --template pages/x.tsx' \
+                       The body is the nodes only — pipe mode '| trigger.webhook --route /x | sekejap.query.run -- \"SQL\" | web.response.send --template pages/x.tsx' \
                        or graph mode '[a] trigger.webhook … [b] … [a] -> [b]' — with no leading 'register …' line (that is the console form). \
                        It is saved as a draft; call pipeline_activate to make it live. Re-registering a live pipeline makes it stale until activated. \
                        help(\"pipeline/dsl\") for the syntax, help(\"pipeline/nodes/<kind>\") for a node's flags."
@@ -1583,7 +1583,11 @@ impl ZebflowMcpHandler {
             request_id: request_id.clone(),
             route: Default::default(),
             input: input_payload.clone(),
+            // `$trigger` is the envelope `trigger.mcp` answers under `mcp`,
+            // with where the call came from beside it.
             trigger: Some(serde_json::json!({
+                "tool_name": tool_name,
+                "arguments": input_payload["arguments"].clone(),
                 "kind": "mcp",
                 "source": format!("tools/call:{tool_name}"),
             })),

@@ -10,7 +10,7 @@
 //! - `put` replaces the value at `--key`, creating the objects above it;
 //!   `update` shallow-merges an object into it; `delete` removes it.
 //! - `--key` is a JSON pointer (`/players/p1`). A part that comes from the
-//!   payload is written with `{{ }}` — `/players/{{ input.session_id }}` — and
+//!   payload is written with `{{ }}` — `/players/{{ input.room.session_id }}` — and
 //!   a segment that resolves empty is refused: `/players/` would otherwise
 //!   write into, or delete, the whole map.
 //! - Without `--room` the room is the one of the `trigger.room` that started
@@ -123,11 +123,11 @@ pub fn definition(verb: Verb) -> NodeDefinition {
     let mut dsl_flags = vec![flag(
         "--key",
         "key",
-        "A JSON pointer into the room's state: /players/{{ input.session_id }}. A segment that resolves empty is refused.",
+        "A JSON pointer into the room's state: /players/{{ input.room.session_id }}. A segment that resolves empty is refused.",
         "text",
         true,
     )];
-    let mut fields = vec![field("key", "Key", "A JSON pointer: /players/{{ input.session_id }}.")];
+    let mut fields = vec![field("key", "Key", "A JSON pointer: /players/{{ input.room.session_id }}.")];
     if verb != Verb::Delete {
         dsl_flags.push(flag("--value", "value", value_help, "json", true));
         fields.push(field("value", "Value", value_help));
@@ -149,19 +149,19 @@ pub fn definition(verb: Verb) -> NodeDefinition {
     layout.push(LayoutItem::Row { row: vec![LayoutItem::Field("room".to_string()), LayoutItem::Field("batch".to_string())] });
     let examples = match verb {
         Verb::Put => vec![
-            NodeExample::dsl("Keep the last move", r#"ws.state.put --key /last_move --value "{{ input.payload }}""#)
+            NodeExample::dsl("Keep the last move", r#"ws.state.put --key /last_move --value "{{ input.room.payload }}""#)
                 .output(json!({ "state": { "key": "/last_move", "room": "lobby" } })),
         ],
         Verb::Update => vec![
             NodeExample::dsl(
                 "Move a player",
-                r#"ws.state.update --key "/players/{{ input.session_id }}" --value "{{ { x: input.payload.x, y: input.payload.y } }}" --batch"#,
+                r#"ws.state.update --key "/players/{{ input.room.session_id }}" --value "{{ { x: input.room.payload.x, y: input.room.payload.y } }}" --batch"#,
             )
             .output(json!({ "state": { "key": "/players/s_8f2", "room": "lobby" } }))
             .note("Every client in the room sees the same `state.players`; `--batch` sends it at most 30 times a second."),
         ],
         Verb::Delete => vec![
-            NodeExample::dsl("Remove a player who left", r#"ws.state.delete --key "/players/{{ input.session_id }}""#)
+            NodeExample::dsl("Remove a player who left", r#"ws.state.delete --key "/players/{{ input.room.session_id }}""#)
                 .output(json!({ "state": { "key": "/players/s_8f2", "room": "lobby" } })),
         ],
     };
@@ -252,7 +252,7 @@ fn pointer(key: &str, code: &'static str) -> Result<String, PipelineError> {
         if segment.contains('{') || segment.contains('}') {
             return Err(PipelineError::new(
                 code,
-                format!("--key {key}: a part from the payload is written with {{{{ }}}}, e.g. /players/{{{{ input.session_id }}}}"),
+                format!("--key {key}: a part from the payload is written with {{{{ }}}}, e.g. /players/{{{{ input.room.session_id }}}}"),
             ));
         }
     }
@@ -272,7 +272,7 @@ impl NodeHandler for Node {
     }
 
     async fn execute_async(&self, input: NodeExecutionInput) -> Result<NodeExecutionOutput, PipelineError> {
-        let room = room_of(&self.room, &input.payload);
+        let room = room_of(&self.room, &input.metadata);
         if room.is_empty() {
             return Err(PipelineError::new(
                 self.verb.codes().room,

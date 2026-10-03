@@ -20,7 +20,7 @@
         "id": "prepare",
         "kind": "script.result.run",
         "config": {
-          "source": "var body = { chat_id: String(input.chat_id), text: String(input.text) }; if (input.parse_mode) body.parse_mode = String(input.parse_mode); if (input.disable_notification) body.disable_notification = true; if (input.reply_to_message_id) body.reply_to_message_id = Number(input.reply_to_message_id); return body;"
+          "source": "var body = { chat_id: String(input.function.chat_id), text: String(input.function.text) }; if (input.function.parse_mode) body.parse_mode = String(input.function.parse_mode); if (input.function.disable_notification) body.disable_notification = true; if (input.function.reply_to_message_id) body.reply_to_message_id = Number(input.function.reply_to_message_id); return body;"
         },
         "input_pins": [
           "in"

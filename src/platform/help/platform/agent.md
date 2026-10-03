@@ -108,7 +108,7 @@ Project docs are files under `docs/` (`file_write rel_path="docs/schema.md"`).
 |---|---|
 | `connection_list` | database connections: slug, label, kind. Every project has `default` (SQLite) and `default-multimodel` (Sekejap) |
 | `connection_describe` | tables and columns of a connection; `scope`, `schema`, `table` narrow it |
-| `credential_list` | credential ids, titles and kinds — values are never returned. `--credential`, `--auth-credential` and `mail.message.send --credential` take an **id from here**, not a connection slug |
+| `credential_list` | credential ids, titles and kinds — values are never returned. `--credential` (trigger auth, `pg.query.run`, `mail.message.send`, …) takes an **id from here**, not a connection slug |
 | `list_ui_catalog` / `install_ui_components` | the clone-to-own component catalog (`shared/ui/`); pages import `zeb/ui/*` without installing anything |
 | `theme_generate` | a complete contrast-checked theme from a seed colour and a mood: tokens, `globals.css` blocks, fonts, geometry, contrast table (skill `brand-system`) |
 | `route_fetch` | fetch one of the project's routes through the real ingress — status, `location`, `set_cookie`, `rwe_component_errors`, body; `method`, `form`, `body`, `cookie`, `headers`; the verification step |
@@ -126,7 +126,7 @@ tool of its own, named by the pipeline.
 
 - **Read exact names; never guess them.** `--template` is a `rel_path` from `file_list` ending in `.tsx`; `--credential` is an id from `credential_list`; a table name comes from `connection_describe`. A guessed template is a 500 at request time; a guessed credential id is an auth failure.
 - **A node accepts only the flags it declares.** `help(topic="pipeline/nodes/<kind>")` before using an unfamiliar node.
-- **Webhook data is under `input.body`.** A form field is `input.body.email`; path params `input.params`, query `input.query`. In `{{ }}` use `$trigger.params`, `$trigger.query`, `$trigger.auth` (no `body`).
+- **Webhook data is under `input.webhook.body`.** A form field is `input.webhook.body.email`; path params `input.webhook.params`, query `input.webhook.query`. In `{{ }}` use `$trigger.body`, `$trigger.params`, `$trigger.query`, `$trigger.auth`.
 - **Quote any flag value with `{{ }}` or a space** as one argument.
 - **Draft is not live.** After `pipeline_register` or `pipeline_patch`, `pipeline_activate`. Then fetch the route (`/wh/{owner}/{project}{path}`) and look at what came back; `pipeline_get_invocations` shows the trace.
 - **A 200 is not a rendered page.** A component that throws is replaced by `<!-- RWE component error: … -->` and the response is still 200. Search the body for it. A page whose hydration failed serves correct HTML and logs a browser console error — open it.
@@ -144,7 +144,7 @@ pipeline_run  body="| trigger.function | sekejap.query.run --write -- \"CREATE T
 file_create   kind=page  name=blog-home  parent_rel_path=pages
 file_write    rel_path=pages/blog-home.tsx  content="…"           ← help(topic="web")
 pipeline_register  file_rel_path="pages/blog-home"  title="Blog home"
-                   body="| trigger.webhook --path /blog --method GET | sekejap.query.run -- \"SELECT id, title, slug, created_at FROM posts ORDER BY created_at DESC LIMIT 20\" | web.response.send --template pages/blog-home.tsx"
+                   body="| trigger.webhook --route /blog --method GET | sekejap.query.run -- \"SELECT id, title, slug, created_at FROM posts ORDER BY created_at DESC LIMIT 20\" | web.response.send --template pages/blog-home.tsx"
 pipeline_activate  file_rel_path="pages/blog-home"
 ```
 

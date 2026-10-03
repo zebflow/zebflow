@@ -19,7 +19,7 @@ The parsed result is the JSON document described in `help("pipeline/authoring")`
 receives the previous node's output as `input`. Node ids are `n0, n1, …`.
 
 ```
-| trigger.webhook --path /posts/:slug --method GET
+| trigger.webhook --route /posts/:slug --method GET
 | sekejap.query.run --param "1={{ $trigger.params.slug }}" -- "SELECT * FROM posts WHERE slug = $1"
 | web.response.send --template pages/post.tsx
 ```
@@ -28,7 +28,7 @@ receives the previous node's output as `input`. Node ids are `n0, n1, …`.
 branching, fan-out, fan-in and loops.
 
 ```
-[a] trigger.webhook --path /status --method GET
+[a] trigger.webhook --route /status --method GET
 [b] http.response.fetch --url https://example.com/health --method GET
 [c] logic.if --expr "input.response.status >= 400"
 [d] http.response.fetch --url https://hooks.example.com/alert --method POST --body "{{ input }}"
@@ -72,7 +72,7 @@ Flag value kinds, as each node declares them:
 |---|---|---|
 | scalar | `--template pages/post.tsx` | `"pages/post.tsx"` |
 | bool | `--durable` | `true` — no value consumed |
-| comma-list | `--auth-required-role admin,editor` or `--cases a --cases b` | `["admin","editor"]` — one style per flag |
+| comma-list | `--accept pdf,docx` or `--cases a --cases b` | `["pdf","docx"]` — one style per flag |
 | key-value-pairs | `--claim "sub={{ input.id }}" --claim "name:public={{ input.name }}"` | `{ sub: …, name: … }` — repeat the flag, one key each |
 
 Two flags exist on every node: `--timeout <seconds>` (engine timeout for this
@@ -94,8 +94,8 @@ budget).
 | Name | Meaning |
 |---|---|
 | `input`, `$input` | the payload flowing into this node |
-| `$trigger` | the trigger snapshot: `params`, `query`, `search`, `pathname`, `headers` (`host`, `x-forwarded-proto`, `content-type`, `user-agent`, `referer`, `origin`, …), `auth` — never `body` |
-| `$nodes.<id>` | the output of an upstream node by its id (in pipe mode `n0`, `n1`, …). The trigger's own output — including `body` — is `$nodes.<trigger id>` |
+| `$trigger` | the trigger's envelope for the whole run — for a webhook: `body`, `query`, `params`, `files`, `method`, `path`, `auth`, `headers` (`host`, `x-forwarded-proto`, `content-type`, `user-agent`, `referer`, `origin`, …), plus `search` and `pathname` |
+| `$nodes.<id>` | the output of an upstream node by its id (in pipe mode `n0`, `n1`, …). The trigger node's own output — `{ webhook: { … } }`, `{ manual: { … } }`, … — is `$nodes.<trigger id>`; reach its body as `$nodes.<trigger id>.webhook.body` |
 | `$item`, `$index`, `$count` | inside a `logic.foreach` branch |
 
 A value that is **only** an expression keeps its JSON type; an expression
@@ -161,7 +161,7 @@ string.
 | Node | Pins | Flags |
 |---|---|---|
 | `logic.if` | `true`, `false` | `--expr "input.count > 0"` |
-| `logic.match` | one per case + `--default` | `--expr "input.body.type" --cases create,update --default other` |
+| `logic.match` | one per case + `--default` | `--expr "input.webhook.body.type" --cases create,update --default other` |
 | `logic.foreach` | `item` | `--items-expr "input.rows" [--chunk-size N] [--keep-input]` |
 | `logic.collect` | `out` | none — fires once every wired input has arrived; payload `{ <upstream id>: payload, … }` |
 | `logic.reduce` | `out` | `--init-expr "{ total: 0 }" --step-expr "{ total: $acc.total + $input.item.amount }"` |
@@ -275,12 +275,12 @@ credential to create, why a branch exists, or what is still missing. `note`
 is a reserved word in both modes:
 
 ```
-[t] trigger.webhook --path /signup
-[m] mail.message.send --credential smtp-main --to "{{ input.body.email }}"
+[t] trigger.webhook --route /signup
+[m] mail.message.send --credential smtp-main --to "{{ input.webhook.body.email }}"
 [t] -> [m]
 [why] note --text "Create the `smtp-main` credential before activating." --at 120,-80 --size 320x90 --color amber
 
-| trigger.webhook --path /signup | mail.message.send --credential smtp-main | note --id why --text "Create the smtp-main credential first."
+| trigger.webhook --route /signup | mail.message.send --credential smtp-main | note --id why --text "Create the smtp-main credential first."
 ```
 
 Flags: `--text` (markdown: headings, bullets, **bold**, `code`), `--at x,y`
@@ -366,13 +366,16 @@ after `trigger.manual` and after `trigger.webhook`.
 
 The field name is the first bare token (also `--name`). Every kind takes
 `--optional`, `--label "…"` (the form label), and `--default <v>` (text,
-number, boolean, json). Body fields are read at `input.body.<name>`, files at
-`input.files.<name>`. The payload leaves as it arrived, so the next node still
-reads `input.body.<name>` and `$trigger.files.<name>`; the node's own value —
-`$nodes.<id>` — is the checked string, number or FileRef. A body field that
-was not sent and has a `--default` is written into the envelope at
-`body.<name>`, so `input.body.<name>` and `$nodes.<id>` agree whether the run
-came from the Run form, `execute pipeline`, MCP or a webhook.
+number, boolean, json). Body fields are read at `$trigger.body.<name>`, files
+at `$trigger.files.<name>` — the node checks the trigger's own envelope, not
+`input`. It then **answers at its `--name`**: after `input.text prompt`, the
+next node reads `input.prompt` and any later node `$nodes.<id>.prompt` (a
+dotted name nests: `page.size` → `input.page.size`); the rest of the payload
+is kept. A `--default` is the answer when nothing was sent — it is **not**
+written back into the envelope, so `$trigger.body.<name>` stays absent and
+only `input.<name>` / `$nodes.<id>.<name>` carry the default, whether the run
+came from the Run form, `execute pipeline`, MCP or a webhook. An `--optional`
+field that was not sent answers `null` the same way.
 
 **Required by default.** A missing or invalid value fails the node with
 `FW_NODE_INPUT_MISSING` / `FW_NODE_INPUT_INVALID` (both *refused*), naming the
@@ -389,18 +392,18 @@ drop zone under the two nodes, and Run posts them as multipart:
 | trigger.manual
 | input.text prompt --label "Caption" --max 200
 | input.image photo
-| fs.image.thumbnail --source-key files.photo --width 200 --height 200 --preview image
-| script.result.run --preview json -- return { caption: $trigger.body.prompt, thumb: input.thumbnail }
+| fs.image.thumbnail --source-key photo --width 200 --height 200 --preview image
+| script.result.run --preview json -- return { caption: input.prompt, thumb: input.thumbnail }
 ```
 
 A webhook form that takes a CV — a browser posts the same multipart, and the
 same Run button tries the route from the canvas:
 
 ```
-| trigger.webhook --path /apply --method POST
+| trigger.webhook --route /apply --method POST
 | input.text name --label "Full name"
 | input.file cv --accept pdf
-| fs.file.put --from "{{ input.files.cv }}" --accept pdf --folder applications
+| fs.file.put --from "{{ input.cv }}" --accept pdf --folder applications
 | web.response.send --status 200 --body "{{ { received: input.file.ref } }}"
 ```
 
@@ -414,13 +417,14 @@ not exist is refused, naming it, before the run starts. The JSON form of
 ## Webhooks: auth and streaming
 
 ```
-| trigger.webhook --path /admin/posts --method POST --auth-type jwt --auth-credential jwt_main --auth-required-role admin,editor
+| trigger.webhook --route /admin/posts --method POST --auth jwt --credential jwt_main --role admin --role editor
 ```
 
-`--auth-type` is `none`, `jwt`, `hmac` or `api_key`; `--auth-credential` is
-the credential id; `--auth-required-role` matches one entry of the token's
-`roles` array. Payload shape (`input.body`, `input.params`, `input.query`,
-`input.files`, `input.auth`): `help("pipeline/authoring")`.
+`--auth` is `none`, `jwt`, `hmac` or `api_key`; `--credential` is
+the credential id; `--role` (repeated) matches one entry of the token's
+`roles` array. Payload shape (`input.webhook.body`, `input.webhook.params`,
+`input.webhook.query`, `input.webhook.files`, `input.webhook.auth`):
+`help("pipeline/authoring")`.
 
 Any webhook pipeline streams when the client asks: a request with
 `Accept: text/event-stream` receives `event: signal` messages while nodes
@@ -454,12 +458,12 @@ before.
 
 Bytes never travel inline. A file is a **FileRef** —
 `{ "__zf_type": "file_ref", "ref": "…", "filename", "mime", "kind", "size", "sha256", "lifecycle", "origin", "trust" }` —
-produced by an upload (`input.files.<field>`), by `http.response.fetch --response-type bytes`,
+produced by an upload (`$trigger.files.<field>`), by `http.response.fetch --response-type bytes`,
 or by any `fs.*` node. `fs.file.put` keeps an uploaded file:
 
 ```
-| trigger.webhook --path /upload --method POST
-| fs.file.put --from "{{ input.files.photo }}" --folder uploads --accept image --max-size 10MB
+| trigger.webhook --route /upload --method POST
+| fs.file.put --from "{{ input.webhook.files.photo }}" --folder uploads --accept image --max-size 10MB
 | fs.image.thumbnail --source-key file --width 320 --height 320 --fit cover --format webp --folder thumbs
 ```
 
@@ -471,8 +475,8 @@ durable FileRef (`__zf_type`, `backend`, `store`, `ref`, `filename`, `mime`,
 `kind`, `size`, `sha256`, `lifecycle: durable`, `origin: fs.file.put`,
 `trust`); the store path is `file.ref`, and there is no `path`, `url` or
 `content_type` beside it — and `fs.image.thumbnail --source-key file` adds
-`thumbnail` (a FileRef); the form's other fields (`input.body.caption`) stay
-beside them. `fs.file.copy`, `fs.file.move` (their `object` under `fs`) and
+`thumbnail` (a FileRef); the form's other fields (`input.webhook.body.caption`)
+stay beside them. `fs.file.copy`, `fs.file.move` (their `object` under `fs`) and
 `fs.archive.create` (`compressed`) answer a stored file the same way: a bare
 FileRef. Store `ref` in a row; a URL is not a node's business.
 
@@ -509,7 +513,7 @@ is the one that shows the picture, from the durable file it wrote.
 ```
 | trigger.manual
 | input.text prompt --label "Describe the image"
-| script.result.run -- "return { body: input.body, taskUUID: crypto.randomUUID() }"
+| script.result.run -- "return { body: $trigger.body, taskUUID: crypto.randomUUID() }"
 | http.response.fetch --credential runware --body "{{ [ { taskType: 'imageInference', taskUUID: input.taskUUID, positivePrompt: input.body.prompt, model: 'runware:101@1', width: 1024, height: 1024, numberResults: 1, outputType: 'URL', outputFormat: 'JPG' } ] }}" --preview json:response.body
 | script.result.run -- "return { url: input.response.body.data[0].imageURL }"
 | http.response.fetch --url "{{ input.url }}" --response-type bytes --preview image
@@ -537,7 +541,7 @@ a `data:` URI is refused — fetch with `http.response.fetch --response-type byt
 ```
 | trigger.manual
 | input.text brief --label "What the poster is for"
-| ai.text.generate --credential openrouter --output-mode final_only --schema '{"type":"object","required":["svg"],"properties":{"svg":{"type":"string"}}}' -- Write one 1080x1350 SVG poster (xmlns, width and height set, font-family Inter, the headline as a <text> with inline-size="918") for: {{ input.body.brief }}
+| ai.text.generate --credential openrouter --output-mode final_only --schema '{"type":"object","required":["svg"],"properties":{"svg":{"type":"string"}}}' -- Write one 1080x1350 SVG poster (xmlns, width and height set, font-family Inter, the headline as a <text> with inline-size="918") for: {{ input.brief }}
 | fs.image.render --source-key data.svg --folder sandbox/posters/out --preview image
 ```
 

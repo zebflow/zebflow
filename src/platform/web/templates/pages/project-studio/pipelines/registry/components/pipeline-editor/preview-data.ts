@@ -136,13 +136,16 @@ function fileRefMatchesKind(ref: any, as: string): boolean {
   return mime.startsWith(prefix) || kind === as;
 }
 
-/** The trigger envelope's own keys: what arrived, not what a node made. */
-const ENVELOPE_KEYS = ["body", "files"];
+/**
+ * What arrived, not what a node made: the keys a trigger answers under (its
+ * source), and the envelope's own `body` / `files`.
+ */
+const ENVELOPE_KEYS = ["manual", "webhook", "function", "mcp", "room", "socket", "topic", "schedule", "error", "body", "files"];
 
 /**
  * No path given: take the first value in the payload that fits the kind.
  * json and text take the whole payload; the rest go looking — a node's own
- * product first (the envelope's `body` / `files` are searched last), and a
+ * product first (a trigger's answer and its `body` / `files` are searched last), and a
  * durable file before a temporary one, which is gone once the run ends.
  */
 export function autoPickValue(payload: any, as: string): any {

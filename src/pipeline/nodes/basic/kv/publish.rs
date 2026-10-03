@@ -13,7 +13,7 @@
 //! # Example
 //!
 //! ```text
-//! | trigger.webhook --path /alert --method POST
+//! | trigger.webhook --route /alert --method POST
 //! | kv.message.publish --channel notifications
 //! ```
 
@@ -81,8 +81,8 @@ pub fn definition() -> NodeDefinition {
         layout: vec![],
         ai_tool: Default::default(),
         examples: vec![
-            crate::pipeline::model::NodeExample::dsl("Hand off slow work after answering", r#"kv.message.publish --channel order.placed --payload "{{ { order_id: input.query.rows[0]._key, email: input.body.email } }}""#)
-                .note("A pipeline starting with `trigger.topic --channel order.placed` receives it as `input.message`. Payload passes through unchanged."),
+            crate::pipeline::model::NodeExample::dsl("Hand off slow work after answering", r#"kv.message.publish --channel order.placed --payload "{{ { order_id: input.query.rows[0]._key, email: $trigger.body.email } }}""#)
+                .note("A pipeline starting with `trigger.topic --topic order.placed` receives it as `input.topic.message`."),
         ],
         ..Default::default()
     }

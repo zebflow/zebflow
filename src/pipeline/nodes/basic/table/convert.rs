@@ -286,7 +286,7 @@ pub fn definition() -> NodeDefinition {
         examples: vec![
             crate::pipeline::model::NodeExample::dsl("Query result to CSV download", r#"table.data.convert --from "{{ input.rows }}" --folder exports --filename orders.csv"#)
                 .output(serde_json::json!({ "table": { "from": "$expr", "to": "exports/orders.csv", "file": { "__zf_type": "file_ref", "backend": "zebfs", "store": "local", "ref": "exports/orders.csv", "filename": "orders.csv", "mime": "text/csv", "kind": "csv", "size": 4120, "sha256": "sha256:…", "lifecycle": "durable", "origin": "table.data.convert", "trust": "generated" }, "from_format": "json", "to_format": "csv", "rows": 120, "columns": ["id", "total"], "preview": [] } })),
-            crate::pipeline::model::NodeExample::dsl("Uploaded CSV to rows", r#"table.data.convert --from "{{ input.files.sheet }}" --from-format csv --to-json --limit 500"#)
+            crate::pipeline::model::NodeExample::dsl("Uploaded CSV to rows", r#"table.data.convert --from "{{ $trigger.files.sheet }}" --from-format csv --to-json --limit 500"#)
                 .note("After `trigger.webhook` with a multipart field `sheet`; the next node reads `input.table.data`."),
         ],
         ..Default::default()

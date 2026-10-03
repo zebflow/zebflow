@@ -60,7 +60,7 @@ file_write
 
   ## Tech decisions
   - Data: PostgreSQL via credential `main-db`
-  - Auth: JWT session cookie on admin routes, checked by `--auth-type jwt`
+  - Auth: JWT session cookie on admin routes, checked by `--auth jwt`
     on `trigger.webhook` before the pipeline runs
   - No JS framework needed for public pages (hydration: static)
   - Admin panel needs reactivity (hydration: reactive)
@@ -156,8 +156,8 @@ file_write
   ## Auth strategy
   Authenticate at the door, not in a script, on every /admin route:
 
-      trigger.webhook --path /admin/posts --method GET \
-        --auth-type jwt --auth-credential session-key --auth-required-role admin
+      trigger.webhook --route /admin/posts --method GET \
+        --auth jwt --credential session-key --role admin
 
     The platform verifies the signature, the expiry and the role before the
     pipeline runs, and redirects a browser with no session to the credential's
@@ -185,7 +185,7 @@ Agent builds pipelines one by one. Register first (draft), then scaffold templat
 pipeline_register
   file_rel_path=pages/blog-list.zf.json
   body="""
-  | trigger.webhook --path /blog --method GET
+  | trigger.webhook --route /blog --method GET
   | pg.query.run --credential main-db -- "
       SELECT id, slug, title, created_at
       FROM posts
@@ -203,8 +203,8 @@ pipeline_register
 pipeline_register
   file_rel_path=pages/blog-post.zf.json
   body="""
-  | trigger.webhook --path /blog/post --method GET
-  | pg.query.run --credential main-db --param "1={{ input.query.slug }}" -- "
+  | trigger.webhook --route /blog/post --method GET
+  | pg.query.run --credential main-db --param "1={{ input.webhook.query.slug }}" -- "
       SELECT id, slug, title, body, created_at
       FROM posts
       WHERE slug = $1
@@ -221,8 +221,8 @@ pipeline_register
 pipeline_register
   file_rel_path=admin/admin-posts.zf.json
   body="""
-  | trigger.webhook --path /admin/posts --method GET \
-      --auth-type jwt --auth-credential session-key --auth-required-role admin
+  | trigger.webhook --route /admin/posts --method GET \
+      --auth jwt --credential session-key --role admin
   | pg.query.run --credential main-db -- "
       SELECT id, slug, title, status, created_at
       FROM posts
@@ -238,9 +238,9 @@ pipeline_register
 pipeline_register
   file_rel_path=admin/admin-post-get.zf.json
   body="""
-  | trigger.webhook --path /admin/post --method GET \
-      --auth-type jwt --auth-credential session-key --auth-required-role admin
-  | pg.query.run --credential main-db --param "1={{ input.query.slug }}" -- "
+  | trigger.webhook --route /admin/post --method GET \
+      --auth jwt --credential session-key --role admin
+  | pg.query.run --credential main-db --param "1={{ input.webhook.query.slug }}" -- "
       SELECT id, slug, title, body, status
       FROM posts
       WHERE slug = $1
@@ -256,10 +256,10 @@ pipeline_register
 pipeline_register
   file_rel_path=admin/admin-post-put.zf.json
   body="""
-  | trigger.webhook --path /admin/post --method PUT \
-      --auth-type jwt --auth-credential session-key --auth-required-role admin
+  | trigger.webhook --route /admin/post --method PUT \
+      --auth jwt --credential session-key --role admin
   | script.result.run -- "
-      const { slug, title, body, status } = input.body
+      const { slug, title, body, status } = input.webhook.body
       return { slug, title, body, status: status || 'draft' }
     "
   | pg.query.run --credential main-db --write --param "1={{ input.slug }}" --param "2={{ input.title }}" --param "3={{ input.body }}" --param "4={{ input.status }}" -- "

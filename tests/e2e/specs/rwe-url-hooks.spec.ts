@@ -32,7 +32,7 @@ export default function Page() {
     const graph = {
       id: "query_probe", entry_nodes: ["trigger"],
       nodes: [
-        { id: "trigger", kind: "trigger.webhook", input_pins: [], output_pins: ["out"], config: { path: "/probe", method: "GET" } },
+        { id: "trigger", kind: "trigger.webhook", input_pins: [], output_pins: ["out"], config: { route: "/probe", method: "GET" } },
         { id: "page", kind: "web.response.send", input_pins: ["in"], output_pins: ["out"], config: { template: "query_probe.tsx" } },
       ],
       edges: [{ from_node: "trigger", from_pin: "out", to_node: "page", to_pin: "in" }],

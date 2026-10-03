@@ -44,7 +44,7 @@ short form with examples; this skill is the order of work.
   `SELECT *`, `COUNT(*)` or a filter on neither end is refused. To count
   edges, walk them in `GRAPH_TABLE` and `COUNT(*)` the outer select.
 - **Values go in `--param`, never in the SQL text.** A `JSONB` column takes
-  a bound object or array: `--param "1={{ input.body.meta }}"`.
+  a bound object or array: `--param "1={{ $trigger.body.meta }}"`.
 - `now()` works in `VALUES` and `SET`; `meta->>'k'` works in a select list;
   `lower(col) = $1` works without an index when `$1` is already lower-case.
 - **Refused here, and the replacement:**

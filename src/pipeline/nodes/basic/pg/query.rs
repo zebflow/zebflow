@@ -138,7 +138,7 @@ pub fn definition() -> NodeDefinition {
         examples: vec![
             NodeExample::dsl("Read with a bound value", r#"pg.query.run --credential pg_main --param "1={{ $trigger.auth.sub }}" -- "SELECT id, email FROM accounts WHERE id = $1""#)
                 .output(json!({ "query": { "rows": [{ "id": 7, "email": "a@example.com" }], "columns": ["id", "email"], "row_count": 1, "truncated": false } })),
-            NodeExample::dsl("Insert and get the id back", r#"pg.query.run --credential pg_main --write --param "1={{ input.body.email }}" -- "INSERT INTO accounts (email) VALUES ($1) RETURNING id""#)
+            NodeExample::dsl("Insert and get the id back", r#"pg.query.run --credential pg_main --write --param "1={{ $trigger.body.email }}" -- "INSERT INTO accounts (email) VALUES ($1) RETURNING id""#)
                 .output(json!({ "query": { "rows": [{ "id": 8 }], "columns": ["id"], "row_count": 1, "truncated": false, "rows_affected": 1 } })),
         ],
         ..Default::default()

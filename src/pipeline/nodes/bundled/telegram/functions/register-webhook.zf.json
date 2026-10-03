@@ -20,7 +20,7 @@
         "id": "prepare",
         "kind": "script.result.run",
         "config": {
-          "source": "var body = { url: input.platform.public_url + '/wh/' + input.owner + '/' + input.project + '/tg/' + input.config.bot_credential_id }; if (input.config.allowed_updates) { body.allowed_updates = input.config.allowed_updates.split(',').map(function(s) { return s.trim(); }); } if (ctx.placeholder && ctx.placeholder.WEBHOOK_SECRET) { body.secret_token = ctx.placeholder.WEBHOOK_SECRET; } return body;"
+          "source": "var body = { url: input.function.platform.public_url + '/wh/' + input.function.owner + '/' + input.function.project + '/tg/' + input.function.config.bot_credential_id }; if (input.function.config.allowed_updates) { body.allowed_updates = input.function.config.allowed_updates.split(',').map(function(s) { return s.trim(); }); } if (ctx.placeholder && ctx.placeholder.WEBHOOK_SECRET) { body.secret_token = ctx.placeholder.WEBHOOK_SECRET; } return body;"
         },
         "input_pins": [
           "in"

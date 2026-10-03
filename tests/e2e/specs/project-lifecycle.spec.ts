@@ -65,7 +65,7 @@ test("a new project scaffolds a flat repository with runnable samples", async ({
   expect((await dsl("activate pipeline sample_api_pipeline.zf.json")).ok()).toBeTruthy();
   const api = await request.get(`/wh/${OWNER}/${PROJECT}/sample`);
   expect(api.status(), "sample API after activation").toBe(200);
-  expect(await api.json()).toMatchObject({ method: "GET", path: "/sample" });
+  expect(await api.json()).toMatchObject({ webhook: { method: "GET", path: "/sample" } });
 
   // --- the web sample renders and hydrates -------------------------------
   expect((await dsl("activate pipeline sample_web_page_pipeline.zf.json")).ok()).toBeTruthy();

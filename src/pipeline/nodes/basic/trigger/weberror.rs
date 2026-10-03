@@ -7,15 +7,16 @@
 //! - A pipeline sets `_status: 4xx/5xx` in its output
 //! - A pipeline execution fails (500)
 //!
-//! The node itself is a passthrough — the error context flows downstream unchanged.
+//! The node answers one key, `error`, holding the error context the platform
+//! built (`node-conventions.md` §6).
 //!
 //! # Config flags
 //!
 //! | Flag | Type | Default | Description |
 //! |---|---|---|---|
-//! | `--code` | string | `"*"` | Error code pattern to match |
+//! | `--status` | number or range | `"*"` | HTTP status pattern to match |
 //!
-//! # Code patterns
+//! # Status patterns
 //!
 //! | Pattern | Matches |
 //! |---|---|
@@ -27,7 +28,7 @@
 //!
 //! Exact matches take priority over ranges, which take priority over catch-all.
 //!
-//! # Injected payload fields
+//! # The answer: `error: { … }`
 //!
 //! | Field | Type | Description |
 //! |---|---|---|
@@ -35,24 +36,25 @@
 //! | `error_message` | string | Standard HTTP reason phrase |
 //! | `original_path` | string | The path that triggered the error |
 //! | `method` | string | HTTP method of the original request |
+//! | `request_id` | string | The run id of the failed request |
 //!
 //! # Example pipelines
 //!
 //! **Custom 404 page:**
 //! ```text
-//! | trigger.error --code 404
+//! | trigger.error --status 404
 //! | web.response.send --template pages/error-404.tsx
 //! ```
 //!
 //! **Custom unauthorized page:**
 //! ```text
-//! | trigger.error --code 401
+//! | trigger.error --status 401
 //! | web.response.send --template pages/error-unauthorized.tsx
 //! ```
 //!
 //! **Catch-all error page (5xx):**
 //! ```text
-//! | trigger.error --code 5xx
+//! | trigger.error --status 5xx
 //! | web.response.send --template pages/error-server.tsx
 //! ```
 //!
@@ -77,6 +79,8 @@ use crate::pipeline::{
 pub const NODE_KIND: &str = "trigger.error";
 const INPUT_PIN_IN: &str = "in";
 const OUTPUT_PIN_OUT: &str = "out";
+/// The key this trigger answers under.
+pub const ANSWER_KEY: &str = "error";
 
 /// Return the [`NodeDefinition`] for `trigger.error`.
 pub fn definition() -> NodeDefinition {
@@ -84,8 +88,9 @@ pub fn definition() -> NodeDefinition {
         kind: NODE_KIND.to_string(),
         title: "Web Error Trigger".to_string(),
         description: "Runs when a request to this project ends in an HTTP error that no pipeline answered — a `/wh/…` path nobody \
-            registered (404), a refused auth (401/403), a failed node (500). `--code` picks which: `404`, `4xx`, `5xx`, or empty for \
-            all. The payload is `{ error_code, error_message, original_path, method }` — there is no `body`. End in \
+            registered (404), a refused auth (401/403), a failed node (500). `--status` picks which: `404`, `4xx`, `5xx`, or empty for \
+            all. Answers one key, `error`: `{ error_code, error_message, original_path, method, request_id }` \
+            (`input.error.error_code`, `$trigger.error_code`) — there is no `body`. End in \
             `web.response.send --template pages/not-found.tsx --status 404` to serve a designed error page; without `--status` the page \
             answers 200 and browsers and crawlers treat the error as a success. One pipeline per code range; the most specific wins."
             .to_string(),
@@ -101,10 +106,16 @@ pub fn definition() -> NodeDefinition {
         output_schema: json!({
             "type": "object",
             "properties": {
-                "error_code":    { "type": "integer" },
-                "error_message": { "type": "string" },
-                "original_path": { "type": "string" },
-                "method":        { "type": "string" }
+                "error": {
+                    "type": "object",
+                    "properties": {
+                        "error_code":    { "type": "integer" },
+                        "error_message": { "type": "string" },
+                        "original_path": { "type": "string" },
+                        "method":        { "type": "string" },
+                        "request_id":    { "type": "string" }
+                    }
+                }
             }
         }),
         input_pins: vec![INPUT_PIN_IN.to_string()],
@@ -113,18 +124,19 @@ pub fn definition() -> NodeDefinition {
         script_bridge: None,
         config_schema: Default::default(),
         dsl_flags: vec![DslFlag {
-            flag: "--code".to_string(),
-            config_key: "code".to_string(),
+            flag: "--status".to_string(),
+            config_key: "status".to_string(),
             description:
-                "Error code pattern: exact code (404), range (4xx/5xx), or empty for catch-all."
+                "The HTTP status this pipeline answers: an exact status (404), a range (4xx, 5xx), or empty for every error."
                     .to_string(),
             kind: DslFlagKind::Scalar,
             required: false,
+            value: "number".to_string(),
             ..Default::default()
         }],
         fields: vec![NodeFieldDef {
-            name: "code".to_string(),
-            label: "Error Code Pattern".to_string(),
+            name: "status".to_string(),
+            label: "Status".to_string(),
             field_type: NodeFieldType::Select,
             options: vec![
                 SelectOptionDef {
@@ -147,11 +159,11 @@ pub fn definition() -> NodeDefinition {
             help: Some("Which HTTP error code(s) this pipeline handles.".to_string()),
             ..Default::default()
         }],
-        layout: vec![LayoutItem::Field("code".to_string())],
+        layout: vec![LayoutItem::Field("status".to_string())],
         ai_tool: Default::default(),
         examples: vec![
-            crate::pipeline::model::NodeExample::dsl("A designed 404", "trigger.error --code 404")
-                .output(serde_json::json!({ "error_code": 404, "error_message": "no pipeline for GET /blog/old-post", "original_path": "/blog/old-post", "method": "GET" }))
+            crate::pipeline::model::NodeExample::dsl("A designed 404", "trigger.error --status 404")
+                .output(serde_json::json!({ "error": { "error_code": 404, "error_message": "Not Found", "original_path": "/blog/old-post", "method": "GET", "request_id": "weberror-404" } }))
                 .note("Then `| web.response.send --template pages/not-found.tsx --status 404`."),
         ],
         ..Default::default()
@@ -161,26 +173,25 @@ pub fn definition() -> NodeDefinition {
 /// Configuration for `trigger.error`.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Config {
-    /// Error code pattern to match.
+    /// HTTP status pattern to match.
     ///
     /// - Exact: `"404"`, `"401"`, `"500"`
     /// - Range: `"4xx"` (400–499), `"5xx"` (500–599)
     /// - Catch-all: `""` or `"*"` (default, matches any error)
     ///
-    /// The DSL types an unquoted `--code 404` as a number, so the field
-    /// accepts a number and keeps it as its digits — the node's own example
-    /// used to fail at run time with "expected a string".
-    #[serde(default, deserialize_with = "code_from_string_or_number")]
-    pub code: String,
+    /// The DSL types an unquoted `--status 404` as a number, so the field
+    /// accepts a number and keeps it as its digits.
+    #[serde(default, deserialize_with = "status_from_string_or_number")]
+    pub status: String,
 }
 
-fn code_from_string_or_number<'de, D: serde::Deserializer<'de>>(d: D) -> Result<String, D::Error> {
+fn status_from_string_or_number<'de, D: serde::Deserializer<'de>>(d: D) -> Result<String, D::Error> {
     let value = serde_json::Value::deserialize(d)?;
     Ok(match value {
         serde_json::Value::String(s) => s,
         serde_json::Value::Number(n) => n.to_string(),
         serde_json::Value::Null => String::new(),
-        other => return Err(serde::de::Error::custom(format!("code must be a string or a number, got {other}"))),
+        other => return Err(serde::de::Error::custom(format!("status must be a string or a number, got {other}"))),
     })
 }
 
@@ -207,7 +218,6 @@ pub fn match_specificity(code_pattern: &str, error_code: u16) -> Option<u8> {
 
 /// `trigger.error` node instance.
 pub struct Node {
-    #[allow(dead_code)]
     config: Config,
 }
 
@@ -233,11 +243,11 @@ impl NodeHandler for Node {
         &self,
         input: NodeExecutionInput,
     ) -> Result<NodeExecutionOutput, PipelineError> {
-        // Passthrough — error context was injected by the platform before dispatch.
+        // The error context was injected by the platform before dispatch.
         Ok(NodeExecutionOutput {
             output_pins: vec![OUTPUT_PIN_OUT.to_string()],
-            payload: input.payload,
-            trace: vec!["trigger.error: passthrough".to_string()],
+            payload: super::answer_under(ANSWER_KEY, input.payload),
+            trace: vec![format!("trigger.error: status={}", self.config.status)],
         })
     }
 }
@@ -246,12 +256,12 @@ impl NodeHandler for Node {
 mod code_tests {
     use super::*;
     #[test]
-    fn code_accepts_the_number_the_dsl_types_it_as() {
-        let numeric: Config = serde_json::from_value(serde_json::json!({ "code": 404 })).unwrap();
-        assert_eq!(numeric.code, "404");
-        let text: Config = serde_json::from_value(serde_json::json!({ "code": "4xx" })).unwrap();
-        assert_eq!(text.code, "4xx");
+    fn status_accepts_the_number_the_dsl_types_it_as() {
+        let numeric: Config = serde_json::from_value(serde_json::json!({ "status": 404 })).unwrap();
+        assert_eq!(numeric.status, "404");
+        let text: Config = serde_json::from_value(serde_json::json!({ "status": "4xx" })).unwrap();
+        assert_eq!(text.status, "4xx");
         let missing: Config = serde_json::from_value(serde_json::json!({})).unwrap();
-        assert_eq!(missing.code, "");
+        assert_eq!(missing.status, "");
     }
 }

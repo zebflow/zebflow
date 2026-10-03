@@ -1,4 +1,4 @@
-//! `input.json` — any JSON value at `body.<name>`; a JSON string is parsed.
+//! `input.json` — any JSON value at `$trigger.body.<name>`; a JSON string is parsed.
 //!
 //! One member of the `input.*` family; the checks, the flags and the handler
 //! live in the parent module. This file is the kind's name and its

@@ -3,8 +3,9 @@
 //! This node is a **routing declaration**, not an active processor.  At
 //! runtime the WS route handler scans all active pipelines for their
 //! [`WsTriggerSpec`](crate::platform::services::WsTriggerSpec) and fires
-//! matching ones when a client sends an event.  The node itself is a
-//! passthrough — the WS context flows downstream unchanged.
+//! matching ones when a client sends an event.  The node answers one key,
+//! `room`, holding the event's envelope (`node-conventions.md` §6) — the same
+//! value `$trigger` holds for the run.
 //!
 //! # Config flags
 //!
@@ -12,10 +13,13 @@
 //! |---|---|---|---|
 //! | `--room` | string | `""` | Room id pattern to match; empty = any room |
 //! | `--event` | string | `""` | Event name pattern to match; empty = any event |
+//! | `--auth` | `none\|jwt\|hmac\|api_key` | `none` | How the connection is guarded |
+//! | `--credential` | string | | The credential that verifies `--auth` |
+//! | `--role` | string, repeated | | A role allowed in |
 //!
-//! # Injected payload fields
+//! # The answer: `room: { … }`
 //!
-//! The WS route handler populates the initial payload before execution:
+//! The WS route handler builds the envelope before execution:
 //!
 //! | Field | Type | Description |
 //! |---|---|---|
@@ -23,11 +27,12 @@
 //! | `session_id` | string | Unique identifier for the connected client session |
 //! | `event` | string | The event name sent by the client |
 //! | `payload` | object | The event body sent by the client |
+//! | `auth` | object | Verified claims, when `--auth jwt` admitted the connection |
 //!
 //! Without `--room`, the room nodes downstream (`ws.state.*`,
-//! `ws.message.send`) act on `room_id`, and `ws.message.send --recipient
-//! session|others` targets `session_id`; everything else reads these fields
-//! through `{{ input.… }}`.
+//! `ws.message.send`) act on `$trigger.room_id`, and `ws.message.send
+//! --recipient session|others` targets `$trigger.session_id`; everything else
+//! reads these fields through `{{ input.room.… }}` or `{{ $trigger.… }}`.
 //!
 //! # Matching rules
 //!
@@ -43,37 +48,35 @@
 //! **Match all events in any room:**
 //! ```text
 //! | trigger.room
-//! | ws.message.send --event echo --recipient session --body "{{ input.payload }}"
+//! | ws.message.send --event echo --recipient session --body "{{ input.room.payload }}"
 //! ```
 //!
 //! **Multiplayer 3D position update (batched at 30 fps):**
 //! ```text
 //! | trigger.room --event move
-//! | ws.state.update --key "/players/{{ input.session_id }}" --value "{{ input.payload }}" --batch
+//! | ws.state.update --key "/players/{{ input.room.session_id }}" --value "{{ input.room.payload }}" --batch
 //! ```
 //!
 //! **Chat message in a specific room:**
 //! ```text
 //! | trigger.room --room lobby --event chat
-//! | ws.message.send --event message --body "{{ input.payload }}"
+//! | ws.message.send --event message --body "{{ input.room.payload }}"
 //! ```
 //!
 //! **Classroom action (any room, specific event):**
 //! ```text
 //! | trigger.room --event classroom_action
 //! | script.result.run -- "/* validate role, build response */"
-//! | ws.state.update --key /classroom --value "{{ input.payload }}"
-//! | ws.message.send --event classroom_updated --body "{{ input.payload }}"
+//! | ws.state.update --key /classroom --value "{{ $trigger.payload }}"
+//! | ws.message.send --event classroom_updated --body "{{ $trigger.payload }}"
 //! ```
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use crate::pipeline::model::{
-    DslFlag, DslFlagKind, LayoutItem, NodeFieldDataSource, NodeFieldDef, NodeFieldType,
-    SelectOptionDef,
-};
+use crate::pipeline::model::{DslFlag, DslFlagKind, LayoutItem, NodeFieldDef, NodeFieldType};
+use crate::pipeline::nodes::basic::trigger::webhook::{AUTH_MODES, auth_fields, auth_flags};
 use crate::pipeline::{
     NodeDefinition, PipelineError,
     nodes::{NodeExecutionInput, NodeExecutionOutput, NodeHandler},
@@ -82,6 +85,8 @@ use crate::pipeline::{
 pub const NODE_KIND: &str = "trigger.room";
 const INPUT_PIN_IN: &str = "in";
 const OUTPUT_PIN_OUT: &str = "out";
+/// The key this trigger answers under.
+pub const ANSWER_KEY: &str = "room";
 
 /// Return the [`NodeDefinition`] for `trigger.room`.
 pub fn definition() -> NodeDefinition {
@@ -90,8 +95,8 @@ pub fn definition() -> NodeDefinition {
         title: "WebSocket Trigger".to_string(),
         description: "Runs when a browser connected to this project's WebSocket sends an event — the server half of a chat, a live \
             board, a multiplayer scene. `--room` scopes it to one room (empty = any), `--event` to one event name (empty = any); the \
-            same `--auth-*` flags as `trigger.webhook` guard the connection. The payload is `{ room_id, session_id, event, payload }` \
-            — what the client sent is `input.payload`, not `input`. Answer with `ws.message.send` (to the room or one session) or \
+            same `--auth` / `--credential` / `--role` flags as `trigger.webhook` guard the connection. Answers one key, `room`: \
+            `{ room_id, session_id, event, payload, auth? }` — what the client sent is `input.room.payload` (`$trigger.payload`). Answer with `ws.message.send` (to the room or one session) or \
             `ws.state.put` / `ws.state.update` / `ws.state.delete` (shared state every client mirrors); a `web.response.send` here answers nobody. The server raises \
             `$connect` and `$disconnect` (payload `{ reason }`) on each connection's ordered queue — only `--event $connect` / \
             `--event $disconnect` receive them, and clients cannot send `$` events. The client is a plain `WebSocket` to \
@@ -122,10 +127,16 @@ pub fn definition() -> NodeDefinition {
         output_schema: json!({
             "type": "object",
             "properties": {
-                "room_id":    { "type": "string" },
-                "session_id": { "type": "string" },
-                "event":      { "type": "string" },
-                "payload":    { "type": "object" }
+                "room": {
+                    "type": "object",
+                    "properties": {
+                        "room_id":    { "type": "string" },
+                        "session_id": { "type": "string" },
+                        "event":      { "type": "string" },
+                        "payload":    { "type": "object" },
+                        "auth":       {}
+                    }
+                }
             }
         }),
         input_pins: vec![INPUT_PIN_IN.to_string()],
@@ -143,23 +154,23 @@ pub fn definition() -> NodeDefinition {
                     "type": "string",
                     "description": "Event name to match. Empty string (default) matches any event sent by the client. Exact string equality."
                 },
-                "auth_type": {
+                "auth": {
                     "type": "string",
-                    "enum": ["none", "jwt", "hmac", "api_key"],
-                    "description": "Authentication mode. none = open (default). jwt/hmac/api_key require auth_credential."
+                    "enum": AUTH_MODES,
+                    "description": "Authentication mode. none = open (default). jwt/hmac/api_key require credential_id."
                 },
-                "auth_credential": {
+                "credential_id": {
                     "type": "string",
-                    "description": "Credential ID used for auth verification. Required when auth_type is not none."
+                    "description": "Credential ID used for auth verification. Required when auth is not none."
                 },
-                "auth_required_role": {
+                "role": {
                     "type": "array",
                     "items": { "type": "string" },
                     "description": "Required roles for this trigger. JWT claim 'roles' must match one. Empty = any authenticated user."
                 }
             }
         }),
-        dsl_flags: vec![
+        dsl_flags: [
             DslFlag {
                 flag: "--room".to_string(),
                 config_key: "room".to_string(),
@@ -167,6 +178,7 @@ pub fn definition() -> NodeDefinition {
                     .to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
+                value: "text".to_string(),
                 ..Default::default()
             },
             DslFlag {
@@ -176,34 +188,11 @@ pub fn definition() -> NodeDefinition {
                     .to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
+                value: "text".to_string(),
                 ..Default::default()
             },
-            DslFlag {
-                flag: "--auth-type".to_string(),
-                config_key: "auth_type".to_string(),
-                description: "Authentication mode: none (default), jwt, hmac, api_key.".to_string(),
-                kind: DslFlagKind::Scalar,
-                required: false,
-                ..Default::default()
-            },
-            DslFlag {
-                flag: "--auth-credential".to_string(),
-                config_key: "auth_credential".to_string(),
-                description: "Credential ID for auth verification. Required when auth_type != none.".to_string(),
-                kind: DslFlagKind::Scalar,
-                required: false,
-                ..Default::default()
-            },
-            DslFlag {
-                flag: "--auth-required-role".to_string(),
-                config_key: "auth_required_role".to_string(),
-                description: "Comma-separated roles required for this trigger. JWT claim 'roles' must match one. E.g. lecturer,student. Empty = any authenticated user.".to_string(),
-                kind: DslFlagKind::CommaSeparatedList,
-                required: false,
-                ..Default::default()
-            },
-        ],
-        fields: vec![
+        ].into_iter().chain(auth_flags("the connection")).collect(),
+        fields: [
             NodeFieldDef {
                 name: "room".to_string(),
                 label: "Room".to_string(),
@@ -218,47 +207,18 @@ pub fn definition() -> NodeDefinition {
                 help: Some("WebSocket event name to listen for.".to_string()),
                 ..Default::default()
             },
-            NodeFieldDef {
-                name: "auth_type".to_string(),
-                label: "Auth Type".to_string(),
-                field_type: NodeFieldType::Select,
-                options: vec![
-                    SelectOptionDef { value: "none".to_string(), label: "None (public)".to_string() },
-                    SelectOptionDef { value: "jwt".to_string(), label: "JWT Bearer".to_string() },
-                    SelectOptionDef { value: "hmac".to_string(), label: "HMAC Signature".to_string() },
-                    SelectOptionDef { value: "api_key".to_string(), label: "API Key (X-API-Key)".to_string() },
-                ],
-                help: Some("Trigger-level auth. On failure the event is silently dropped.".to_string()),
-                ..Default::default()
-            },
-            NodeFieldDef {
-                name: "auth_credential".to_string(),
-                label: "Auth Credential".to_string(),
-                field_type: NodeFieldType::Select,
-                data_source: Some(NodeFieldDataSource::CredentialsWebhookAuth),
-                help: Some("Credential for signing key / secret / api_key.".to_string()),
-                ..Default::default()
-            },
-            NodeFieldDef {
-                name: "auth_required_role".to_string(),
-                label: "Required Role".to_string(),
-                field_type: NodeFieldType::MultiCheckbox,
-                data_source: Some(NodeFieldDataSource::CredentialJwtRoles),
-                help: Some("Roles allowed to access this trigger. Populated from the selected JWT credential's registered roles. Empty = any authenticated user.".to_string()),
-                ..Default::default()
-            },
-        ],
+        ].into_iter().chain(auth_fields("On failure the event is silently dropped.")).collect(),
         layout: vec![
             LayoutItem::Field("room".to_string()),
             LayoutItem::Field("event".to_string()),
-            LayoutItem::Field("auth_type".to_string()),
-            LayoutItem::Row { row: vec![LayoutItem::Field("auth_credential".to_string()), LayoutItem::Field("auth_required_role".to_string())] },
+            LayoutItem::Field("auth".to_string()),
+            LayoutItem::Row { row: vec![LayoutItem::Field("credential_id".to_string()), LayoutItem::Field("role".to_string())] },
         ],
         ai_tool: Default::default(),
         examples: vec![
             crate::pipeline::model::NodeExample::dsl("Chat message in", r#"trigger.room --room lobby --event chat.send"#)
-                .output(serde_json::json!({ "room_id": "lobby", "session_id": "s_8f2", "event": "chat.send", "payload": { "text": "hello" } }))
-                .note("Then `| ws.message.send --event chat.message --body \"{{ { from: input.session_id, text: input.payload.text } }}\"`."),
+                .output(serde_json::json!({ "room": { "room_id": "lobby", "session_id": "s_8f2", "event": "chat.send", "payload": { "text": "hello" } } }))
+                .note("Then `| ws.message.send --event chat.message --body \"{{ { from: input.room.session_id, text: input.room.payload.text } }}\"`."),
         ],
         ..Default::default()
     }
@@ -282,18 +242,18 @@ pub struct Config {
     #[serde(default)]
     pub event: String,
 
-    /// Auth type: `"none"` (default), `"jwt"`, `"hmac"`, `"api_key"`.
+    /// `"none"` (default), `"jwt"`, `"hmac"`, `"api_key"`.
     #[serde(default)]
-    pub auth_type: String,
+    pub auth: String,
 
-    /// Credential ID to use for auth verification (required when `auth_type != "none"`).
+    /// Credential ID to use for auth verification (required when `auth != "none"`).
     #[serde(default)]
-    pub auth_credential: String,
+    pub credential_id: String,
 
-    /// Required roles for this trigger. JWT claim `roles` must match one of these.
+    /// Roles allowed in; the JWT `roles` claim must hold one of these.
     /// Empty = any authenticated user may access.
     #[serde(default)]
-    pub auth_required_role: Vec<String>,
+    pub role: Vec<String>,
 }
 
 /// `trigger.room` node instance.
@@ -324,12 +284,11 @@ impl NodeHandler for Node {
         &self,
         input: NodeExecutionInput,
     ) -> Result<NodeExecutionOutput, PipelineError> {
-        // Passthrough — the WS context (room_id, session_id, event, payload)
-        // was injected into the payload by the WS route handler before
-        // dispatch.  Downstream nodes consume those fields directly.
+        // The WS route handler built the envelope (room_id, session_id,
+        // event, payload, auth) before dispatch.
         Ok(NodeExecutionOutput {
             output_pins: vec![OUTPUT_PIN_OUT.to_string()],
-            payload: input.payload,
+            payload: crate::pipeline::nodes::basic::trigger::answer_under(ANSWER_KEY, input.payload),
             trace: vec!["trigger.room: passthrough".to_string()],
         })
     }

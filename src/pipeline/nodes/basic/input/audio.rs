@@ -1,4 +1,4 @@
-//! `input.audio` — one audio FileRef at `files.<name>` — `input.file` with `--accept` preset to `audio`.
+//! `input.audio` — one audio FileRef at `$trigger.files.<name>` — `input.file` with `--accept` preset to `audio`.
 //!
 //! One member of the `input.*` family; the checks, the flags and the handler
 //! live in the parent module. This file is the kind's name and its

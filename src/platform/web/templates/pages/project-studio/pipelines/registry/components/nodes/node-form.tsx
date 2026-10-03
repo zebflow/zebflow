@@ -171,8 +171,8 @@ function enrichFields(
         })
       ).filter((o: any) => o.value);
     } else if (f.data_source === "credential_jwt_roles") {
-      // Roles come from the JWT credential selected in the sibling auth_credential field.
-      const selectedCredId = String(config.auth_credential ?? "");
+      // Roles come from the JWT credential selected in the sibling credential_id field.
+      const selectedCredId = String(config.credential_id ?? "");
       const cred = (dataState.jwtCredentials as any[]).find((c: any) => c.credential_id === selectedCredId);
       const roles: string[] = Array.isArray(cred?.auth_roles) ? cred.auth_roles : [];
       options = roles.map((r: string) => ({ value: r, label: r }));
@@ -189,7 +189,7 @@ function enrichFields(
     }
 
     if (f.type === "copy_url") {
-      value = webhookPublicUrlFor(dataState, String(config.path ?? "/"));
+      value = webhookPublicUrlFor(dataState, String(config.route ?? "/"));
     }
     if (f.type === "match_cases") {
       const draft = config[f.name];

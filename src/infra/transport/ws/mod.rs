@@ -17,7 +17,7 @@
 //!
 //! ```text
 //! trigger.room    --event move
-//! ws.state.update --key "/players/{{ input.session_id }}" --value "{{ input.payload }}" --batch
+//! ws.state.update --key "/players/{{ input.room.session_id }}" --value "{{ input.room.payload }}" --batch
 //! ```
 //!
 //! This accumulates positional updates and broadcasts them at ≈30 fps via

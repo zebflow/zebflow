@@ -2,9 +2,9 @@
 //!
 //! | Use | DSL |
 //! |---|---|
-//! | One call, text back | `\| ai.text.generate --credential openai_main --prompt "Summarise: {{ input.body.text }}"` |
-//! | One call, JSON back | `\| ai.text.generate --credential openai_main --schema '{"type":"object","required":["sentiment"]}' -- Classify: {{ input.body.review }}` |
-//! | Tools, until it answers | `\| ai.text.generate --credential openai_main --tools lookup-order,list-slots --budget 8 --prompt "{{ input.body.message }}"` |
+//! | One call, text back | `\| ai.text.generate --credential openai_main --prompt "Summarise: {{ $trigger.body.text }}"` |
+//! | One call, JSON back | `\| ai.text.generate --credential openai_main --schema '{"type":"object","required":["sentiment"]}' -- Classify: {{ $trigger.body.review }}` |
+//! | Tools, until it answers | `\| ai.text.generate --credential openai_main --tools lookup-order,list-slots --budget 8 --prompt "{{ $trigger.body.message }}"` |
 //!
 //! The loop is the one every coding agent runs: send the messages with the
 //! tool definitions, run each tool call the model returns, append the results,
@@ -224,15 +224,15 @@ pub fn definition() -> NodeDefinition {
             crate::pipeline::model::NodeFailureSemantic { code: "FW_NODE_AI_AGENT_CALL".into(), description: "The provider refused or the request failed; the message carries the provider's text.".into(), retryable: true, retry_hint: "429 and 5xx recover on retry; a 401 needs a new key.".into() },
         ],
         examples: vec![
-            crate::pipeline::model::NodeExample::dsl("One call: summarise a submission", r#"ai.text.generate --credential openai_main --system-prompt "You write one plain sentence." --prompt "Summarise: {{ input.body.text }}""#)
+            crate::pipeline::model::NodeExample::dsl("One call: summarise a submission", r#"ai.text.generate --credential openai_main --system-prompt "You write one plain sentence." --prompt "Summarise: {{ $trigger.body.text }}""#)
                 .input(json!({ "body": { "text": "Our clinic moved to 12 High St and now opens Saturdays 9–1." } }))
                 .output(json!({ "response": "The clinic has moved to 12 High St and now opens on Saturday mornings.", "verified": true, "tools_called": [], "iterations": 1, "budget_exhausted": false }))
                 .note("No --tools, so one round trip. The answer is added to the payload and the rest is kept. The credential is created by the owner in Studio → Credentials."),
-            crate::pipeline::model::NodeExample::dsl("One call: classify to JSON", r#"ai.text.generate --credential openai_main --output-mode final_only --schema '{"type":"object","required":["sentiment"],"properties":{"sentiment":{"enum":["positive","neutral","negative"]}}}' -- Classify this review: {{ input.body.review }}"#)
+            crate::pipeline::model::NodeExample::dsl("One call: classify to JSON", r#"ai.text.generate --credential openai_main --output-mode final_only --schema '{"type":"object","required":["sentiment"],"properties":{"sentiment":{"enum":["positive","neutral","negative"]}}}' -- Classify this review: {{ $trigger.body.review }}"#)
                 .input(json!({ "body": { "review": "Booking was easy but the wait was long." } }))
                 .output(json!({ "response": "{\"sentiment\":\"neutral\"}", "data": { "sentiment": "neutral" }, "verified": true }))
                 .note("`data` is the parsed, checked answer; branch on it with `logic.if --expr \"$nodes.a.data.sentiment == 'negative'\"`. A failed check is fed back once (--max-repairs)."),
-            crate::pipeline::model::NodeExample::dsl("Tools: answer from the project's data", r#"ai.text.generate --credential openai_main --tools lookup-order --budget 6 --system-prompt "You answer questions about orders. Use the tools; never guess." --prompt "{{ input.body.message }}""#)
+            crate::pipeline::model::NodeExample::dsl("Tools: answer from the project's data", r#"ai.text.generate --credential openai_main --tools lookup-order --budget 6 --system-prompt "You answer questions about orders. Use the tools; never guess." --prompt "{{ $trigger.body.message }}""#)
                 .input(json!({ "body": { "message": "Where is order o_91?" } }))
                 .output(json!({ "response": "Order o_91 shipped yesterday and arrives Friday.", "verified": true, "tools_called": ["lookup-order"], "iterations": 2, "budget_exhausted": false }))
                 .note("`lookup-order` is a function pipeline (trigger.function) in this project; the model calls it with the arguments its input schema declares."),
@@ -651,15 +651,24 @@ fn function_tool_result_for_agent(result: Result<Value, PipelineError>) -> Resul
 }
 
 fn goal_from_payload(payload: &Value) -> Option<String> {
-    let s = payload
-        .get("message")
-        .or_else(|| payload.get("body"))
-        .or_else(|| payload.get("text"))
-        .or_else(|| payload.get("query"))
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string());
-    if s.is_some() {
-        return s;
+    let text_in = |holder: &Value| {
+        holder
+            .get("message")
+            .or_else(|| holder.get("body"))
+            .or_else(|| holder.get("text"))
+            .or_else(|| holder.get("query"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+    };
+    if let Some(s) = text_in(payload) {
+        return Some(s);
+    }
+    // A trigger answers its envelope under its source key (`topic.message`,
+    // `webhook.body`), so the fallback looks there too.
+    for source in crate::pipeline::nodes::basic::trigger::SOURCE_KEYS {
+        if let Some(s) = payload.get(source).filter(|v| v.is_object()).and_then(text_in) {
+            return Some(s);
+        }
     }
     payload.as_str().map(|s| s.to_string())
 }

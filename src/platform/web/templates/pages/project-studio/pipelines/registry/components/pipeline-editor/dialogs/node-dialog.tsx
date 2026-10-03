@@ -24,7 +24,7 @@ function schemaType(def: any): string {
 }
 
 function schemaPropertiesFromTriggerConfig(config: any): Record<string, any> | null {
-  const inputSchema = parseMaybeJson(config?.input_schema);
+  const inputSchema = parseMaybeJson(config?.schema);
   if (inputSchema && typeof inputSchema === "object" && !Array.isArray(inputSchema)) {
     const props = inputSchema.properties && typeof inputSchema.properties === "object"
       ? inputSchema.properties
@@ -40,10 +40,12 @@ function schemaPropertiesFromTriggerConfig(config: any): Record<string, any> | n
     }
     return Object.keys(out).length > 0 ? out : null;
   }
-  const params = parseMaybeJson(config?.params);
-  return params && typeof params === "object" && !Array.isArray(params) && Object.keys(params).length > 0
-    ? params
-    : null;
+  return null;
+}
+
+/** `--argument` as a map: the stored map, or `{}` for one `{{ object }}` or nothing. */
+function argumentMap(value: unknown): Record<string, any> {
+  return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, any>) : {};
 }
 
 function coerceFunctionParamInput(value: string, def: any): any {
@@ -155,17 +157,16 @@ export default function NodeDialog({
         const params = schemaPropertiesFromTriggerConfig(triggerNode?.config || {});
         setFunctionParams(params && Object.keys(params).length > 0 ? params : null);
 
-        // Auto-populate input with defaults if currently empty
+        // Auto-populate the arguments with defaults if none are set yet
         if (params && Object.keys(params).length > 0) {
           setFormState((prev) => {
-            const existing = String(prev.input || "").trim();
-            if (existing) return prev;
+            if (prev.argument && (typeof prev.argument === "string" || Object.keys(argumentMap(prev.argument)).length > 0)) return prev;
             const template: Record<string, any> = {};
             for (const [key, def] of Object.entries(params)) {
               const dflt = (def as any)?.default;
               template[key] = dflt !== undefined ? dflt : "";
             }
-            return { ...prev, input: JSON.stringify(template, null, 2) };
+            return { ...prev, argument: template };
           });
         }
       })
@@ -173,15 +174,15 @@ export default function NodeDialog({
       .finally(() => setFunctionParamsLoading(false));
   }, [kind, formState.function]);
 
-  // Sync webhook URL field when path changes
+  // Sync webhook URL field when the route changes
   useEffect(() => {
     if (kind !== "trigger.webhook") return;
-    const path = String(formState.path || "/");
+    const path = String(formState.route || "/");
     const base = webhookBaseUrl || (typeof window !== "undefined" ? window.location.origin : "");
     const norm = path.startsWith("/") ? path : `/${path}`;
     const url = norm === "/" ? base : `${base}${norm}`;
     setFormState((prev) => ({ ...prev, __webhook_public_url: url }));
-  }, [formState.path, kind]);
+  }, [formState.route, kind]);
 
   // Sync <dialog> open/closed
   useEffect(() => {
@@ -214,32 +215,25 @@ export default function NodeDialog({
     onClose();
   }
 
-  // Derive per-param display values from formState.input JSON
+  // Derive per-param display values from the `--argument` map
   const parsedParamInput: Record<string, string> = (() => {
     if (!functionParams) return {};
-    const raw = String(formState.input || "").trim();
-    if (!raw) return {};
-    try {
-      const obj = JSON.parse(raw);
-      const result: Record<string, string> = {};
-      for (const key of Object.keys(functionParams)) {
-        const val = obj[key];
-        result[key] = val !== undefined && val !== null
-          ? (typeof val === "object" ? JSON.stringify(val) : String(val))
-          : "";
-      }
-      return result;
-    } catch { return {}; }
+    const obj = argumentMap(formState.argument);
+    const result: Record<string, string> = {};
+    for (const key of Object.keys(functionParams)) {
+      const val = obj[key];
+      result[key] = val !== undefined && val !== null
+        ? (typeof val === "object" ? JSON.stringify(val) : String(val))
+        : "";
+    }
+    return result;
   })();
 
   function handleParamInputChange(key: string, val: string) {
-    const raw = String(formState.input || "").trim();
-    let current: Record<string, any> = {};
-    if (raw) { try { current = JSON.parse(raw); } catch { current = {}; } }
-    handleChange("input", JSON.stringify({
-      ...current,
+    handleChange("argument", {
+      ...argumentMap(formState.argument),
       [key]: coerceFunctionParamInput(val, functionParams?.[key]),
-    }, null, 2));
+    });
   }
 
   const title = `Edit Node | ${kind || "node"}`;
@@ -266,12 +260,12 @@ export default function NodeDialog({
           />
 
           {/* Server-driven fields via NodeForm.
-              For function.result.call with params loaded: hide input_path (replaced by param inputs below). */}
+              For function.result.call with params loaded: hide the argument rows (replaced by param inputs below). */}
           {serverFields.length > 0 ? (
             <NodeForm
               fields={
                 kind === "function.result.call" && functionParams !== null
-                  ? serverFields.filter((f) => f.name !== "input_path" && f.name !== "input")
+                  ? serverFields.filter((f) => f.name !== "argument")
                   : serverFields
               }
               layout={catalogEntry?.layout}
@@ -311,7 +305,7 @@ export default function NodeDialog({
                 )}
                 {!functionParamsLoading && !functionParams && (
                   <span className="text-[0.7rem] text-muted-foreground">
-                    No params defined — passes full payload through.
+                    No arguments declared — set them in the rows above.
                   </span>
                 )}
                 <span className="ml-auto">

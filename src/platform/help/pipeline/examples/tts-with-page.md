@@ -57,13 +57,13 @@ Graph DSL:
 
 ```zf
 register tts/api --
-[a] trigger.webhook --path /api/tts --method POST
-[guard] logic.if --expr "!!(input.body && input.body.text && String(input.body.text).trim())"
+[a] trigger.webhook --route /api/tts --method POST
+[guard] logic.if --expr "!!(input.webhook.body && input.webhook.body.text && String(input.webhook.body.text).trim())"
 [bad]   web.response.send --status 400 --body "{{ { ok: false, error: 'text is required' } }}"
 [b] script.result.run -- "
 return {
-  text: String(input.body.text),
-  slug: String(input.body.slug || Date.now())
+  text: String($trigger.body.text),
+  slug: String($trigger.body.slug || Date.now())
 };
 "
 [c] ai.audio.generate --provider piper --credential narrator-tts --text "{{ input.text }}" --filename "{{ 'tts-' + input.slug }}" --on-conflict overwrite --return both
@@ -114,7 +114,7 @@ This page renders the frontend shell.
 Graph DSL:
 
 ```zf
-[a] trigger.webhook --path /tts-demo --method GET
+[a] trigger.webhook --route /tts-demo --method GET
 [b] script.result.run -- "
 return {
   title: 'Narrator TTS Demo',

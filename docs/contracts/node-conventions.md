@@ -201,7 +201,7 @@ Every node adds **one key** to the payload — its noun (§1) — and keeps the
 rest, through `with_answer`. Everything about the result nests inside it:
 
 ```
-trigger.webhook        → webhook: { body, query, params, headers, files, method, path }
+trigger.webhook        → webhook: { body, query, params, headers, files, method, path, auth }
 fs.image.thumbnail     → image:   { …FileRef…, width, height, source_deleted }
 pg.query.run           → query:   { rows, columns, row_count }
 kv.entry.get           → entry:   { key, value, ttl }

@@ -134,7 +134,7 @@ Mobile: cards stack; recommended first.
 
 **empty / 404** — `max-w-md`, centred
 1. `Empty` from zeb/ui: an icon, a title ("No bookings yet" / "That page does not exist"), one sentence, the primary action (`Button`) or the way home (`Link`).
-2. For 404: the pipeline is `trigger.error --code 404 | web.response.send --status 404 --template pages/not-found.tsx`.
+2. For 404: the pipeline is `trigger.error --status 404 | web.response.send --status 404 --template pages/not-found.tsx`.
 
 ## 3b. States and mobile, per archetype
 

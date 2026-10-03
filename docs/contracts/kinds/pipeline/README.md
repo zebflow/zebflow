@@ -65,7 +65,7 @@ package. Hub package versions and digests belong to `HubPackage`.
         "input_pins": [],
         "output_pins": ["out"],
         "config": {
-          "path": "/catalog/search",
+          "route": "/catalog/search",
           "method": "POST"
         }
       },

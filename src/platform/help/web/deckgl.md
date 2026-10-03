@@ -617,7 +617,7 @@ inst.setViewState({
 ### Serve a Map Page
 
 ```
-| trigger.webhook --path /fleet --method GET
+| trigger.webhook --route /fleet --method GET
 | pg.query.run --credential main-db -- "SELECT id, name, ST_AsGeoJSON(geom)::json as geometry FROM vehicles"
 | web.response.send --template pages/fleet-map.tsx
 ```
@@ -625,7 +625,7 @@ inst.setViewState({
 ### API Endpoint for Map Data
 
 ```
-| trigger.webhook --path /api/locations --method GET
+| trigger.webhook --route /api/locations --method GET
 | pg.query.run --credential main-db -- "SELECT id, name, longitude, latitude, value FROM locations"
 | web.response.send
 ```
@@ -634,13 +634,13 @@ inst.setViewState({
 
 ```
 | trigger.room --room fleet --event telemetry
-| ws.state.update --key "/vehicles/{{ input.session_id }}" --value "{{ input.payload }}"
+| ws.state.update --key "/vehicles/{{ input.room.session_id }}" --value "{{ input.room.payload }}"
 ```
 
 ### Aggregated Data for Heatmap
 
 ```
-| trigger.webhook --path /api/incidents --method GET
+| trigger.webhook --route /api/incidents --method GET
 | pg.query.run --credential main-db -- "SELECT longitude as lon, latitude as lat, severity FROM incidents WHERE created_at > NOW() - INTERVAL '7 days'"
 | web.response.send
 ```

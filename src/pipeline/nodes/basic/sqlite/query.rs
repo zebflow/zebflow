@@ -110,9 +110,9 @@ pub fn definition() -> NodeDefinition {
             }),
         },
         examples: vec![
-            NodeExample::dsl("Read with a bound value", r#"sqlite.query.run --param "1={{ input.body.email }}" -- "SELECT id, name FROM users WHERE email = ?1""#)
+            NodeExample::dsl("Read with a bound value", r#"sqlite.query.run --param "1={{ $trigger.body.email }}" -- "SELECT id, name FROM users WHERE email = ?1""#)
                 .output(json!({ "query": { "rows": [{ "id": 1, "name": "Ana" }], "columns": ["id", "name"], "row_count": 1, "truncated": false } })),
-            NodeExample::dsl("Insert from a form", r#"sqlite.query.run --write --param "email={{ input.body.email }}" --param "name={{ input.body.name }}" -- "INSERT INTO users (email, name) VALUES (:email, :name) RETURNING id""#)
+            NodeExample::dsl("Insert from a form", r#"sqlite.query.run --write --param "email={{ $trigger.body.email }}" --param "name={{ $trigger.body.name }}" -- "INSERT INTO users (email, name) VALUES (:email, :name) RETURNING id""#)
                 .output(json!({ "query": { "rows": [{ "id": 2 }], "columns": ["id"], "row_count": 1, "truncated": false, "rows_affected": 1 } })),
             NodeExample::dsl("Create a table", r#"sqlite.query.run --write -- "CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY, email TEXT UNIQUE NOT NULL, name TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP)""#)
                 .output(json!({ "query": { "rows": [], "columns": [], "row_count": 0, "truncated": false, "rows_affected": 0 } })),

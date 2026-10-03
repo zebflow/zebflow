@@ -20,7 +20,7 @@
 //! | Set session cookie | `\| web.response.send --status 303 --header "Location=/home" --header "Set-Cookie=zebflow_session={{ input.access_token }}; Path=/; Max-Age=86400; SameSite=Lax; HttpOnly"` |
 //! | Serve a project file (manifest, robots, icon) | `\| web.response.send --file pwa/manifest.webmanifest` |
 //! | Serve a service worker | `\| web.response.send --file pwa/site.sw.ts --header Service-Worker-Allowed=/` |
-//! | Serve one file out of a folder by URL parameter | `\| web.response.send --root pwa/icons --file "{{ input.params.file }}"` |
+//! | Serve one file out of a folder by URL parameter | `\| web.response.send --root pwa/icons --file "{{ $trigger.params.file }}"` |
 //!
 //! Every header is sent as written, `Set-Cookie` included: a session cookie
 //! carries `Path=/; SameSite=Lax; HttpOnly` (and `Secure` behind HTTPS)
@@ -88,7 +88,7 @@ pub fn definition() -> NodeDefinition {
              200. At most one source: `--body VALUE` (a string answers text/plain, anything else JSON, unless a `Content-Type` header says otherwise); \
              `--template pages/x.tsx` (exact `file_list` path, `.tsx` required): render the page with the payload as its `input`; \
              `--file pwa/manifest.webmanifest`: a project file, content type by extension, a `.ts` compiled to JavaScript \
-             (a service worker: `--file pwa/site.sw.ts` behind `--path /sw.js`); `--root pwa/icons --file \"{{ input.params.file }}\"`: \
+             (a service worker: `--file pwa/site.sw.ts` behind `trigger.webhook --route /sw.js`); `--root pwa/icons --file \"{{ $trigger.params.file }}\"`: \
              one file out of a folder, the name from the route, never outside it. `--status N`, `--header K=V` (repeat; a repeated name is sent twice). \
              A redirect is `--status 303 --header \"Location=/home\"` — a Location without a 3xx, or a 3xx without a Location, is refused. \
              Every header is sent exactly as written, `Set-Cookie` too: nothing is added, so a session cookie writes its own attributes — \
@@ -152,10 +152,10 @@ pub fn definition() -> NodeDefinition {
             crate::pipeline::model::NodeExample::dsl("Set the session cookie and go home", r#"web.response.send --status 303 --header "Location=/home" --header "Set-Cookie=zebflow_session={{ input.access_token }}; Path=/; Max-Age=86400; SameSite=Lax; HttpOnly""#)
                 .note("The header is sent as written: the cookie carries the attributes it names and no others. Add `; Secure` behind HTTPS. Logout: `--header \"Set-Cookie=zebflow_session=; Path=/; Max-Age=0\"`."),
             crate::pipeline::model::NodeExample::dsl("The web-app manifest, a file in the project", "web.response.send --file pwa/manifest.webmanifest")
-                .note("Behind `trigger.webhook --path /manifest.webmanifest`; pages link it with `head.links: [{ rel: \"manifest\", href: \"/manifest.webmanifest\" }]`."),
+                .note("Behind `trigger.webhook --route /manifest.webmanifest`; pages link it with `head.links: [{ rel: \"manifest\", href: \"/manifest.webmanifest\" }]`."),
             crate::pipeline::model::NodeExample::dsl("The service worker, compiled from TypeScript", "web.response.send --file pwa/site.sw.ts")
                 .note("Behind `--path /sw.js`. The file starts with `self.__ZF = { version, source }`; the page registers it once with `navigator.serviceWorker.register(\"/sw.js\")`."),
-            crate::pipeline::model::NodeExample::dsl("One icon out of a folder", r#"web.response.send --root pwa/icons --file "{{ input.params.file }}""#)
+            crate::pipeline::model::NodeExample::dsl("One icon out of a folder", r#"web.response.send --root pwa/icons --file "{{ $trigger.params.file }}""#)
                 .note("Behind `--path /pwa/{file}`. The name may not leave the folder, so this is safe to expose."),
         ],
         failure_semantics: vec![

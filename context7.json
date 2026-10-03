@@ -17,8 +17,8 @@
   ],
   "rules": [
     "Change a Zebflow project only through its MCP tools or HTTP API; never write into users/{owner}/{project}/ directly.",
-    "The DSL: register <file_rel_path> | trigger.webhook --path /x | sekejap.query.run --param \"1={{ .. }}\" -- \"SQL\" | web.response.send --template pages/x.tsx; a draft serves nothing until activated.",
-    "Webhook data is under input.body; input.params, input.query, input.files, input.auth sit beside it; $trigger has no body.",
+    "The DSL: register <file_rel_path> | trigger.webhook --route /x | sekejap.query.run --param \"1={{ .. }}\" -- \"SQL\" | web.response.send --template pages/x.tsx; a draft serves nothing until activated.",
+    "Each trigger answers one key, its source (trigger.webhook -> webhook: { body, query, params, headers, files, method, path, auth }); right after the trigger read input.webhook.body (and .params, .query, .files, .auth); anywhere later use $trigger.body, $trigger.params, $trigger.query, $trigger.auth.",
     "Every TSX file imports what it uses from \"zeb/react\", \"zeb/ui/<name>\" or \"@/…\"; colours are theme roles (bg-primary, text-muted-foreground), never palette classes.",
     "A 200 response can carry '<!-- RWE component error -->'; read the body and open the page before claiming it works.",
     "Pipeline DSL has two modes: pipe (| chains) for a linear flow and graph ([id] nodes + [a] -> [b] edges, :pin for branches) — every node must be reachable from the one entry.",

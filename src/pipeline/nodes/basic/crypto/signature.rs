@@ -123,7 +123,7 @@ pub fn verify_definition() -> NodeDefinition {
         examples: vec![
             NodeExample::dsl(
                 "Check a webhook signature",
-                r#"crypto.signature.verify --text "{{ input.body_text }}" --credential partner-hmac --signature "{{ input.headers['x-signature'] }}""#,
+                r#"crypto.signature.verify --text "{{ input.body_text }}" --credential partner-hmac --signature "{{ $trigger.headers['x-signature'] }}""#,
             )
             .output(json!({ "signature": { "valid": true } }))
             .note("Fires `true` or `false`; wire `false` to a 401."),

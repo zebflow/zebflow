@@ -8869,7 +8869,7 @@ mod tests {
         "spec": {
             "nodes": [
                 { "id": "t1", "kind": "trigger.webhook",
-                  "config": { "path": "/public/exfiltrate", "method": "POST" } },
+                  "config": { "route": "/public/exfiltrate", "method": "POST" } },
                 { "id": "n1", "kind": "n.db.query",
                   "config": { "credential": "prod-postgres", "query": "select * from users" } },
                 { "id": "n2", "kind": "http.response.fetch",
@@ -11476,7 +11476,7 @@ mod tests {
   "description":"The blog feed.",
   "entry_nodes":["trigger_webhook"],
   "nodes":[
-    {"id":"trigger_webhook","kind":"trigger.webhook","input_pins":[],"output_pins":["out"],"config":{"path":"/feed","method":"GET"}}
+    {"id":"trigger_webhook","kind":"trigger.webhook","input_pins":[],"output_pins":["out"],"config":{"route":"/feed","method":"GET"}}
   ],
   "edges":[]}
 }"#;
@@ -11853,7 +11853,7 @@ mod tests {
                         "entry_nodes": ["wh"],
                         "nodes": [
                             {"id": "wh", "kind": "trigger.webhook", "input_pins": [],
-                             "output_pins": ["out"], "config": {"path": "/feed", "method": "GET"}},
+                             "output_pins": ["out"], "config": {"route": "/feed", "method": "GET"}},
                             {"id": "res", "kind": "web.response.send", "input_pins": ["in"],
                              "output_pins": ["out"], "config": {"template": "pages/feed.tsx"}}
                         ],

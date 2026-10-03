@@ -11,6 +11,7 @@
 //! |------------------|---------------------------------------------------------|
 //! | `$input`         | The current payload flowing into this node              |
 //! | `$input.field`   | Specific field from upstream output                     |
+//! | `$trigger`       | The envelope the trigger answers under its source key (`webhook`, `manual`, `room`, …) — for the whole run |
 //! | `$trigger.body`  | The envelope's fields as they arrived (manual or webhook) |
 //! | `$trigger.files` | The envelope's FileRefs as they arrived                  |
 //! | `$trigger.auth`  | Verified JWT claims from the original request           |

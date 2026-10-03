@@ -1825,7 +1825,7 @@ mod rename_tests {
                     "kind": "trigger.webhook",
                     "input_pins": [],
                     "output_pins": ["out"],
-                    "config": { "path": "/hook", "method": "POST" }
+                    "config": { "route": "/hook", "method": "POST" }
                 }],
                 "edges": []
             }
@@ -2848,13 +2848,13 @@ fn pipeline_trigger_summary(ops: &PlatformOps, meta: &PipelineMeta) -> String {
                 .and_then(Value::as_str)
                 .filter(|s| !s.trim().is_empty())
                 .unwrap_or("GET");
-            let path = node
+            let route = node
                 .config
-                .get("path")
+                .get("route")
                 .and_then(Value::as_str)
                 .filter(|s| !s.trim().is_empty())
                 .unwrap_or("/");
-            format!("trigger.webhook {} {}", method.to_uppercase(), path)
+            format!("trigger.webhook {} {}", method.to_uppercase(), route)
         }
         "trigger.schedule" => {
             let cron = node
@@ -2865,19 +2865,19 @@ fn pipeline_trigger_summary(ops: &PlatformOps, meta: &PipelineMeta) -> String {
                 .unwrap_or("* * * * *");
             format!("trigger.schedule {cron}")
         }
-        "n.trigger.memsubscribe" => {
-            let channel = node
+        "trigger.topic" => {
+            let topic = node
                 .config
-                .get("channel")
+                .get("topic")
                 .and_then(Value::as_str)
                 .filter(|s| !s.trim().is_empty())
                 .unwrap_or("*");
-            format!("n.trigger.memsubscribe {channel}")
+            format!("trigger.topic {topic}")
         }
         "trigger.mcp" => {
             let tool_name = node
                 .config
-                .get("tool_name")
+                .get("name")
                 .and_then(Value::as_str)
                 .filter(|s| !s.trim().is_empty())
                 .unwrap_or(&meta.name);

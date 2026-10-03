@@ -14,7 +14,7 @@
 //! # Example
 //!
 //! ```text
-//! | trigger.webhook --path /refresh --method POST
+//! | trigger.webhook --route /refresh --method POST
 //! | kv.entry.expire --key "session:{{ input.token }}" --ttl 1800
 //! ```
 

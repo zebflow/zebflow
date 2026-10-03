@@ -36,7 +36,7 @@ which rooms exist and whether they're joinable.
 ### game-lobby — lobby page
 
 ```
-| trigger.webhook --path /game --method GET
+| trigger.webhook --route /game --method GET
 | sekejap.query.run -- "SELECT * FROM game_rooms WHERE status = 'waiting'"
 | script.result.run -- "return { rooms: input.query.rows }"
 | web.response.send --template pages/game-lobby.tsx
@@ -46,8 +46,8 @@ which rooms exist and whether they're joinable.
 
 ```zf
 register game/room --
-[a] trigger.webhook --path /game/:room --method GET
-[b] sekejap.query.run --param "1={{ input.params.room }}" -- "SELECT * FROM game_rooms WHERE _key = $1"
+[a] trigger.webhook --route /game/:room --method GET
+[b] sekejap.query.run --param "1={{ input.webhook.params.room }}" -- "SELECT * FROM game_rooms WHERE _key = $1"
 [c] logic.if --expr "input.query.rows.length > 0"
 [d] script.result.run -- "return { room: input.query.rows[0] };"
 [e] web.response.send --template pages/game-room.tsx
@@ -64,8 +64,8 @@ register game/room --
 
 ```zf
 register game/api-room-create --
-[trig] trigger.webhook --path /api/game/rooms --method POST
-[draft] script.result.run -- "const id = 'room-' + Math.random().toString(36).slice(2,8); return { id, name: (input.body && input.body.name) || id };"
+[trig] trigger.webhook --route /api/game/rooms --method POST
+[draft] script.result.run -- "const id = 'room-' + Math.random().toString(36).slice(2,8); return { id, name: (input.webhook.body && input.webhook.body.name) || id };"
 [ins] sekejap.query.run --write --param "1={{ $nodes.draft.id }}" --param "2={{ $nodes.draft.name }}" --param "3={{ Date.now() }}" -- "INSERT INTO game_rooms (_key, name, status, created_at) VALUES ($1, $2, 'waiting', $3)"
 [ok] script.result.run -- "return { ok: true, room_id: $nodes.draft.id };"
 
@@ -77,14 +77,15 @@ register game/api-room-create --
 ### ws-player-join — player joins room
 
 A part of `--key` that comes from the payload is written with `{{ }}`; the
-`ws.*` nodes keep the payload, so `input.payload` and the trigger's room are
-still there for the next node:
+`ws.*` nodes keep the payload, so `input.room.payload` right after the
+trigger (`$trigger.payload` deeper in the chain) is still there for the next
+node:
 
 ```zf
 register game/ws-player-join --
 [a] trigger.room --event player.join
-[merge] ws.state.update --key "/players/{{ input.payload.player_id }}" --value "{{ { id: input.payload.player_id, name: input.payload.name, score: 0, joined_at: Date.now() } }}"
-[emit] ws.message.send --event state.updated --body "{{ { player_id: input.payload.player_id } }}"
+[merge] ws.state.update --key "/players/{{ input.room.payload.player_id }}" --value "{{ { id: input.room.payload.player_id, name: input.room.payload.name, score: 0, joined_at: Date.now() } }}"
+[emit] ws.message.send --event state.updated --body "{{ { player_id: $trigger.payload.player_id } }}"
 
 [a] -> [merge]
 [merge] -> [emit]
@@ -95,9 +96,9 @@ register game/ws-player-join --
 ```zf
 register game/ws-player-move --
 [a] trigger.room --event player.move
-[guard] logic.if --expr "!!(input.payload && input.payload.player_id && input.payload.move)"
-[set] ws.state.put --key /last_move --value "{{ { player_id: input.payload.player_id, move: input.payload.move, ts: Date.now() } }}"
-[emit] ws.message.send --event player.moved --body "{{ { player_id: input.payload.player_id, move: input.payload.move } }}"
+[guard] logic.if --expr "!!(input.room.payload && input.room.payload.player_id && input.room.payload.move)"
+[set] ws.state.put --key /last_move --value "{{ { player_id: $trigger.payload.player_id, move: $trigger.payload.move, ts: Date.now() } }}"
+[emit] ws.message.send --event player.moved --body "{{ { player_id: $trigger.payload.player_id, move: $trigger.payload.move } }}"
 
 [a] -> [guard]
 [guard]:true -> [set]
@@ -112,7 +113,7 @@ An invalid move just stops at `[guard]` — there is no `false` edge, and a
 
 ```
 | trigger.room --event player.leave
-| ws.message.send --event player.left --body "{{ { player_id: input.payload.player_id } }}"
+| ws.message.send --event player.left --body "{{ { player_id: input.room.payload.player_id } }}"
 ```
 
 ---
@@ -163,14 +164,14 @@ is two small pipelines:
 ```
 register pipelines/presence-in --
 | trigger.room --event $connect
-| ws.state.update --key "/players/{{ input.session_id }}" --value "{{ { since: Date.now() } }}"
+| ws.state.update --key "/players/{{ input.room.session_id }}" --value "{{ { since: Date.now() } }}"
 
 register pipelines/presence-out --
 | trigger.room --event $disconnect
-| ws.state.delete --key "/players/{{ input.session_id }}"
+| ws.state.delete --key "/players/{{ input.room.session_id }}"
 ```
 
-Every segment of `--key` must say something: `{{ input.session_id }}` resolving
+Every segment of `--key` must say something: `{{ input.room.session_id }}` resolving
 empty leaves `/players/`, which is refused (`FW_NODE_WS_STATE_UPDATE_KEY`,
 `FW_NODE_WS_STATE_DELETE_KEY`), never a write to `/players` itself. When the last connection leaves, the room and its state are
 disposed; the next visitor starts from `{}`.

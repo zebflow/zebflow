@@ -44,10 +44,10 @@ pub fn definition() -> NodeDefinition {
         capabilities: vec![NodeCapability::Process],
         title: "Verify Token".to_string(),
         description: "Checks a JWT that arrived as data — a password-reset or e-mail-confirmation link (`$trigger.query.token`), a token \
-            posted by another system (`input.body.token`) — against a `jwt_signing_key` credential. `valid` carries the payload plus \
+            posted by another system (`$trigger.body.token`) — against a `jwt_signing_key` credential. `valid` carries the payload plus \
             `token: { valid: true, claims, sub }`; `invalid` carries the payload plus `token: { valid: false, reason }`. The algorithm comes from the credential, never from the token's header, \
             so `alg: none` is refused. To protect a route with the session cookie or a bearer header do not use this: put \
-            `--auth-type jwt --auth-credential <id>` on the trigger and read `input.auth`."
+            `--auth jwt --credential <id>` on the trigger and read `$trigger.auth`."
             .to_string(),
         input_schema: json!({
             "type": "object",
@@ -88,7 +88,7 @@ pub fn definition() -> NodeDefinition {
             DslFlag {
                 flag: "--token".to_string(),
                 config_key: "token".to_string(),
-                description: "The token — a literal or {{ expr }}, e.g. \"{{ $trigger.query.token }}\" or \"{{ input.body.token }}\""
+                description: "The token — a literal or {{ expr }}, e.g. \"{{ $trigger.query.token }}\" or \"{{ $trigger.body.token }}\""
                     .to_string(),
                 kind: DslFlagKind::Scalar,
                 required: true,

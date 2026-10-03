@@ -138,13 +138,13 @@ pub fn definition() -> NodeDefinition {
         capabilities: vec![NodeCapability::Filesystem],
         title: "File Put".to_string(),
         description: "Write one file into a project store. Exactly one source: `--from` a file the run holds — an upload \
-            (`{{ input.files.photo }}`), a FileRef from any store, a byte envelope, or a store key — checked by its content \
+            (`{{ $trigger.files.photo }}`), a FileRef from any store, a byte envelope, or a store key — checked by its content \
             (the claimed type must agree, `--accept` must allow it, default `image`, and the stored extension follows the detected type); \
             `--text` written as given (`--encoding base64` decodes it to bytes first); or `--value`, any JSON value written as JSON \
             (a string is written as its text). Every source is refused above `--max-size` (default 10MB). Writes under `--folder` \
             (default `uploads`) as a generated name, as `--filename`, or at an exact `--path`; a named file that exists is an error \
             unless `--on-conflict` says otherwise. Adds `file` — the durable FileRef (`ref`, `store`, `mime`, `kind`, `size`, `sha256`, \
-            `origin: fs.file.put`, `trust`) — and keeps the rest of the payload, so `input.body.caption` from the same form is still there. \
+            `origin: fs.file.put`, `trust`) — and keeps the rest of the payload, so `input.webhook.body.caption` from the same form is still there. \
             Store `file.ref` in a row, never a URL."
             .to_string(),
         input_schema: json!({ "type": "object" }),
@@ -155,7 +155,7 @@ pub fn definition() -> NodeDefinition {
         script_bridge: None,
         config_schema: Default::default(),
         dsl_flags: vec![
-            flag("--from", "from", "The file to write: an upload, a FileRef, a byte envelope or a store key, usually `{{ input.files.<field> }}`.", "file"),
+            flag("--from", "from", "The file to write: an upload, a FileRef, a byte envelope or a store key, usually `{{ $trigger.files.<field> }}`.", "file"),
             flag("--text", "text", "Content written as given.", "text"),
             DslFlag {
                 choices: words(&["text", "base64"]),
@@ -176,7 +176,7 @@ pub fn definition() -> NodeDefinition {
             DslFlag { choices: words(&["error", "skip", "overwrite"]), ..on_conflict_flag(OnConflict::Error) },
         ],
         fields: vec![
-            field("from", "From", NodeFieldType::Text, "The file to write, e.g. {{ input.files.photo }}. Set one of From, Text or Value."),
+            field("from", "From", NodeFieldType::Text, "The file to write, e.g. {{ $trigger.files.photo }}. Set one of From, Text or Value."),
             NodeFieldDef { rows: Some(6), ..field("text", "Text", NodeFieldType::Textarea, "Content written as given.") },
             NodeFieldDef {
                 default_value: Some(json!("text")),
@@ -201,10 +201,10 @@ pub fn definition() -> NodeDefinition {
             .map(|name| LayoutItem::Field(name.to_string()))
             .collect(),
         examples: vec![
-            NodeExample::dsl("Keep an uploaded photo", "fs.file.put --from \"{{ input.files.photo }}\" --folder uploads --accept image --max-size 10MB")
+            NodeExample::dsl("Keep an uploaded photo", "fs.file.put --from \"{{ $trigger.files.photo }}\" --folder uploads --accept image --max-size 10MB")
                 .input(json!({ "body": { "caption": "Sunset" }, "files": { "photo": upload } }))
                 .output(json!({ "body": { "caption": "Sunset" }, "files": { "photo": upload }, "file": { "__zf_type": "file_ref", "backend": "zebfs", "store": "local", "ref": "uploads/3f9c….jpg", "filename": "3f9c….jpg", "mime": "image/jpeg", "kind": "image", "size": 182331, "sha256": "sha256:…", "lifecycle": "durable", "origin": NODE_KIND, "trust": "untrusted" } }))
-                .note("Then `sekejap.query.run --write --param \"1={{ input.body.caption }}\" --param \"2={{ input.file.ref }}\" -- \"INSERT INTO photos (caption, path) VALUES ($1, $2)\"`. `file` is a FileRef, so `fs.image.thumbnail --source-key file` and a `--preview image` take it as it is."),
+                .note("Then `sekejap.query.run --write --param \"1={{ $trigger.body.caption }}\" --param \"2={{ input.file.ref }}\" -- \"INSERT INTO photos (caption, path) VALUES ($1, $2)\"`. `file` is a FileRef, so `fs.image.thumbnail --source-key file` and a `--preview image` take it as it is."),
             NodeExample::dsl("Write a report", "fs.file.put --value \"{{ input.report }}\" --folder exports --filename report.json")
                 .input(json!({ "report": { "total": 3 } }))
                 .output(json!({ "report": { "total": 3 }, "file": { "__zf_type": "file_ref", "backend": "zebfs", "store": "local", "ref": "exports/report.json", "filename": "report.json", "mime": "application/json", "kind": "json", "size": 11, "sha256": "sha256:…", "lifecycle": "durable", "origin": NODE_KIND, "trust": "generated" } })),
@@ -366,7 +366,7 @@ impl Node {
             let claimed = text_of("content_type").unwrap_or("application/octet-stream").to_string();
             (name, claimed, decode_capped(encoded, max)?)
         } else if from.is_array() {
-            return Err(PipelineError::new(SOURCE_CODE, "--from is a list; name one file, e.g. {{ input.files.photos[0] }}"));
+            return Err(PipelineError::new(SOURCE_CODE, "--from is a list; name one file, e.g. {{ $trigger.files.photos[0] }}"));
         } else {
             return Err(PipelineError::new(SOURCE_CODE, "--from is not a file: give an upload, a FileRef, a byte envelope or a store key"));
         };

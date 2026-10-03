@@ -10,15 +10,20 @@
 //! | Field | Type | Required | Description |
 //! |---|---|---|---|
 //! | `description` | string | yes | What the function does and when to use it |
-//! | `input_schema` | object | yes | JSON Schema object describing function inputs |
-//! | `output_schema` | object | yes | JSON Schema object describing function output |
+//! | `schema` | object | no | JSON Schema object of the arguments (`--argument` / `--schema`) |
+//! | `result_schema` | object | no | JSON Schema object of the result (`--result` / `--result-schema`) |
 //! | `examples` | array | no | Optional input/output examples for tool callers |
+//!
+//! # Answer
+//!
+//! One key, `function`: the arguments the caller passed
+//! (`function.result.call --argument …`), also `$trigger` for the run.
 //!
 //! # DSL
 //! ```text
 //! | trigger.function --title "Lookup user" --description "Looks up one user." \
-//!     --input user_id:string! "User id." --output ok:boolean! "Whether lookup succeeded."
-//! | script.result.run -- return { greeting: "hello " + input.user_id }
+//!     --argument user_id:string! "User id." --result ok:boolean! "Whether lookup succeeded."
+//! | script.result.run -- return { greeting: "hello " + input.function.user_id }
 //! ```
 
 use async_trait::async_trait;
@@ -32,24 +37,23 @@ use crate::pipeline::{
 };
 
 pub const NODE_KIND: &str = "trigger.function";
+/// The key this trigger answers under.
+pub const ANSWER_KEY: &str = "function";
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Config {
     /// What this function does and when callers should use it.
     #[serde(default)]
     pub description: String,
-    /// Full JSON Schema object defining function input.
+    /// Full JSON Schema object of the arguments (`--argument`, `--schema`).
     #[serde(default)]
-    pub input_schema: Value,
-    /// Full JSON Schema object defining function output.
+    pub schema: Value,
+    /// Full JSON Schema object of the result (`--result`, `--result-schema`).
     #[serde(default)]
-    pub output_schema: Value,
+    pub result_schema: Value,
     /// Optional examples: `[{"input": {...}, "output": {...}}]`.
     #[serde(default)]
     pub examples: Value,
-    /// Deprecated compatibility alias for `input_schema.properties`.
-    #[serde(default)]
-    pub params: Value,
 }
 
 pub struct Node {
@@ -68,10 +72,11 @@ pub fn definition() -> NodeDefinition {
         kind: NODE_KIND.to_string(),
         title: "Function Trigger".to_string(),
         description: "Makes this pipeline a function other pipelines call with `function.result.call --function <slug>` — the slug is the file's \
-            stem (`jobs/send-welcome` → `send-welcome`). The payload is exactly what the caller passed; the function's answer is its \
-            last node's payload. Declare the contract with `--input name:type! \"doc\"` / `--output name:type!` (or full \
-            `--input-schema` / `--output-schema` JSON) so callers and the assistant see typed fields. Also the trigger for one-off runs \
-            through `pipeline_run` (`| trigger.function | …`), where the `input` argument is the payload."
+            stem (`jobs/send-welcome` → `send-welcome`). Answers one key, `function`: exactly the arguments the caller passed \
+            (`input.function.<name>`, `$trigger.<name>`); the function's result is its last node's payload. Declare the contract with \
+            `--argument name:type! \"doc\"` / `--result name:type!` (or full `--schema` / `--result-schema` JSON) so callers and the \
+            assistant see typed fields. Also the trigger for one-off runs through `pipeline_run` (`| trigger.function | …`), where the \
+            `input` argument is what it answers."
             .to_string(),
         input_pins: vec![],
         output_pins: vec!["out".to_string()],
@@ -88,22 +93,18 @@ pub fn definition() -> NodeDefinition {
                     "type": "string",
                     "description": "What this function does and when callers should use it."
                 },
-                "input_schema": {
+                "schema": {
                     "type": "object",
-                    "description": "JSON Schema object describing the function input."
+                    "description": "JSON Schema object describing the function's arguments."
                 },
-                "output_schema": {
+                "result_schema": {
                     "type": "object",
-                    "description": "JSON Schema object describing the function output."
+                    "description": "JSON Schema object describing the function's result."
                 },
                 "examples": {
                     "type": "array",
                     "description": "Optional examples with input and output objects.",
                     "items": { "type": "object" }
-                },
-                "params": {
-                    "type": "object",
-                    "description": "Deprecated compatibility alias for input_schema.properties."
                 }
             }
         }),
@@ -114,42 +115,47 @@ pub fn definition() -> NodeDefinition {
                 description: "What this function does and when callers should use it.".to_string(),
                 kind: DslFlagKind::Scalar,
                 required: true,
+                value: "text".to_string(),
                 ..Default::default()
             },
             DslFlag {
-                flag: "--input".to_string(),
-                config_key: "input_schema".to_string(),
-                description: "Input field declaration: name:type! plus optional description. \
-                    Example: --input columns:string[]! \"Source column names.\""
+                flag: "--argument".to_string(),
+                config_key: "schema".to_string(),
+                description: "One argument the function takes, repeated: name:type! plus an optional description. \
+                    Example: --argument columns:string[]! \"Source column names.\""
                     .to_string(),
                 kind: DslFlagKind::SchemaField,
                 required: false,
+                value: "text".to_string(),
                 ..Default::default()
             },
             DslFlag {
-                flag: "--output".to_string(),
-                config_key: "output_schema".to_string(),
-                description: "Output field declaration: name:type! plus optional description. \
-                    Example: --output ok:boolean! \"Whether the function succeeded.\""
+                flag: "--result".to_string(),
+                config_key: "result_schema".to_string(),
+                description: "One field of the function's result, repeated: name:type! plus an optional description. \
+                    Example: --result ok:boolean! \"Whether the function succeeded.\""
                     .to_string(),
                 kind: DslFlagKind::SchemaField,
                 required: false,
+                value: "text".to_string(),
                 ..Default::default()
             },
             DslFlag {
-                flag: "--input-schema".to_string(),
-                config_key: "input_schema".to_string(),
-                description: "Full JSON Schema object for this function's input.".to_string(),
+                flag: "--schema".to_string(),
+                config_key: "schema".to_string(),
+                description: "The arguments as one full JSON Schema object (instead of --argument).".to_string(),
                 kind: DslFlagKind::Scalar,
-                required: true,
+                required: false,
+                value: "json".to_string(),
                 ..Default::default()
             },
             DslFlag {
-                flag: "--output-schema".to_string(),
-                config_key: "output_schema".to_string(),
-                description: "Full JSON Schema object for this function's output.".to_string(),
+                flag: "--result-schema".to_string(),
+                config_key: "result_schema".to_string(),
+                description: "The result as one full JSON Schema object (instead of --result).".to_string(),
                 kind: DslFlagKind::Scalar,
-                required: true,
+                required: false,
+                value: "json".to_string(),
                 ..Default::default()
             },
             DslFlag {
@@ -159,15 +165,7 @@ pub fn definition() -> NodeDefinition {
                     .to_string(),
                 kind: DslFlagKind::RepeatedList,
                 required: false,
-                ..Default::default()
-            },
-            DslFlag {
-                flag: "--params".to_string(),
-                config_key: "params".to_string(),
-                description: "Deprecated input properties object. Prefer --input or --input-schema."
-                    .to_string(),
-                kind: DslFlagKind::Scalar,
-                required: false,
+                value: "json".to_string(),
                 ..Default::default()
             },
         ],
@@ -182,22 +180,22 @@ pub fn definition() -> NodeDefinition {
                 ..Default::default()
             },
             NodeFieldDef {
-                name: "input_schema".to_string(),
-                label: "Input Schema".to_string(),
+                name: "schema".to_string(),
+                label: "Arguments".to_string(),
                 field_type: NodeFieldType::ParamsBuilder,
                 help: Some(
-                    "Define the input arguments this function accepts. Required fields are enforced before execution.".to_string(),
+                    "Define the arguments this function accepts. Required fields are enforced before execution.".to_string(),
                 ),
                 default_value: Some(json!({ "type": "object", "required": [], "properties": {} })),
                 span: Some("full".to_string()),
                 ..Default::default()
             },
             NodeFieldDef {
-                name: "output_schema".to_string(),
-                label: "Output Schema".to_string(),
+                name: "result_schema".to_string(),
+                label: "Result".to_string(),
                 field_type: NodeFieldType::ParamsBuilder,
                 help: Some(
-                    "Define the structured output this function returns. Include ok:boolean for tool-friendly results.".to_string(),
+                    "Define the structured result this function returns. Include ok:boolean for tool-friendly results.".to_string(),
                 ),
                 default_value: Some(json!({
                     "type": "object",
@@ -226,23 +224,25 @@ pub fn definition() -> NodeDefinition {
             },
         ],
         examples: vec![
-            crate::pipeline::model::NodeExample::dsl("A reusable lookup", r#"trigger.function --description "Find one user by email." --input email:string! "Address to look up." --output user:object "The row, or null.""#)
-                .input(serde_json::json!({ "email": "a@x.io" }))
-                .output(serde_json::json!({ "email": "a@x.io" }))
-                .note("Registered as `jobs/find-user`; called with `function.result.call --function find-user --input \"{{ { email: input.body.email } }}\"`."),
+            crate::pipeline::model::NodeExample::dsl("A reusable lookup", r#"trigger.function --description "Find one user by email." --argument email:string! "Address to look up." --result user:object "The row, or null.""#)
+                .input(serde_json::json!({ "email": "a@example.com" }))
+                .output(serde_json::json!({ "function": { "email": "a@example.com" } }))
+                .note("Registered as `jobs/find-user`; called with `function.result.call --function find-user --argument \"email={{ $trigger.body.email }}\"`; the next node reads `input.function.email`."),
         ],
         ..Default::default()
     }
 }
 
+/// The arguments' schema (`--argument` / `--schema`), an open object when
+/// none is declared.
 pub fn input_schema_from_config(config: &Value) -> Value {
-    schema_from_config(config, "input_schema")
-        .or_else(|| params_schema_from_config(config))
-        .unwrap_or_else(empty_object_schema)
+    schema_from_config(config, "schema").unwrap_or_else(empty_object_schema)
 }
 
+/// The result's schema (`--result` / `--result-schema`), `{ ok }` when none is
+/// declared.
 pub fn output_schema_from_config(config: &Value) -> Value {
-    schema_from_config(config, "output_schema").unwrap_or_else(|| {
+    schema_from_config(config, "result_schema").unwrap_or_else(|| {
         json!({
             "type": "object",
             "required": ["ok"],
@@ -342,18 +342,6 @@ fn schema_from_config(config: &Value, key: &str) -> Option<Value> {
         .get(key)
         .and_then(parse_json_value)
         .map(normalize_schema_object)
-}
-
-fn params_schema_from_config(config: &Value) -> Option<Value> {
-    let props = config.get("params").and_then(parse_json_value)?;
-    if !props.is_object() {
-        return None;
-    }
-    Some(json!({
-        "type": "object",
-        "properties": props,
-        "required": required_from_properties(&props)
-    }))
 }
 
 fn parse_json_value(value: &Value) -> Option<Value> {
@@ -474,11 +462,11 @@ impl NodeHandler for Node {
         &self,
         input: NodeExecutionInput,
     ) -> Result<NodeExecutionOutput, PipelineError> {
-        // Passthrough — the caller's payload is injected before dispatch.
+        // The caller's arguments were injected before dispatch.
         Ok(NodeExecutionOutput {
             output_pins: vec!["out".to_string()],
-            payload: input.payload,
-            trace: vec![format!("node_kind={NODE_KIND}: passthrough")],
+            payload: super::answer_under(ANSWER_KEY, input.payload),
+            trace: vec![format!("node_kind={NODE_KIND}")],
         })
     }
 }
@@ -491,7 +479,7 @@ mod tests {
     #[test]
     fn function_input_validation_checks_required_and_special_types() {
         let config = json!({
-            "input_schema": {
+            "schema": {
                 "type": "object",
                 "required": ["source", "image"],
                 "properties": {

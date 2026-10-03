@@ -759,6 +759,26 @@ pub fn parse_node_config_with_positional(
                 }
                 DslFlagKind::KeyValuePairs => {
                     let raw = tokens.get(i + 1).cloned().unwrap_or_default();
+                    // One whole `{{ object }}` gives the map at once
+                    // (`--argument "{{ { id: input.id } }}"`); it is the
+                    // map, so it is not also given pairs.
+                    if is_whole_expression(&raw) {
+                        if config.get(&dsl_flag.config_key).is_some_and(|v| v.as_object().is_some_and(|m| !m.is_empty())) {
+                            return Err(format!(
+                                "`{}` takes repeated key=value pairs or one {{{{ object }}}}, not both",
+                                dsl_flag.flag
+                            ));
+                        }
+                        config.insert(dsl_flag.config_key.clone(), Value::String(raw.trim().to_string()));
+                        i += 2;
+                        continue;
+                    }
+                    if config.get(&dsl_flag.config_key).is_some_and(Value::is_string) {
+                        return Err(format!(
+                            "`{}` takes repeated key=value pairs or one {{{{ object }}}}, not both",
+                            dsl_flag.flag
+                        ));
+                    }
                     let (k, v) = if let Some(eq) = raw.find('=') {
                         (raw[..eq].trim().to_string(), raw[eq + 1..].to_string())
                     } else {
@@ -1040,7 +1060,7 @@ fn parse_register(tokens: &[String], cmd: &str) -> DslVerb {
     let body = extract_pipeline_body(cmd);
 
     // Anything between the header flags and the first `|` / `[` is not a
-    // header and not a body: `register p trigger.webhook --path /x | …` used
+    // header and not a body: `register p trigger.webhook --route /x | …` used
     // to lose its webhook silently and gain a manual trigger. Refuse it.
     let stray: Vec<&str> = tokens[i..]
         .iter()
@@ -1477,6 +1497,13 @@ pub fn insert_pair(map: &mut serde_json::Map<String, Value>, key: String, value:
             map.insert(key, Value::String(value));
         }
     }
+}
+
+/// True when a map flag's token is one whole `{{ expr }}` — the map given at
+/// once — rather than a `key=value` pair. A key never starts with `{{`.
+pub fn is_whole_expression(raw: &str) -> bool {
+    let raw = raw.trim();
+    raw.starts_with("{{") && raw.ends_with("}}")
 }
 
 /// The values one key of a map flag renders as, one `--flag key=value` each.
@@ -2203,7 +2230,7 @@ return { ok, label: "lat|lon", pair: `${lat || ""}|${lon || ""}` };"#;
     #[test]
     fn function_trigger_schema_field_flags_build_json_schema() {
         let dsl = r#"
-[fn] trigger.function --title "Inspect CSV" --description "Reads a CSV." --input source:file! "CSV file reference." --input options:any "Provider options." --output ok:boolean! "Whether it worked." --output columns:string[] "Detected columns."
+[fn] trigger.function --title "Inspect CSV" --description "Reads a CSV." --argument source:file! "CSV file reference." --argument options:any "Provider options." --result ok:boolean! "Whether it worked." --result columns:string[] "Detected columns."
 [fn] -> [done]
 [done] script.result.run -- return input;
 "#;
@@ -2212,21 +2239,25 @@ return { ok, label: "lat|lon", pair: `${lat || ""}|${lon || ""}` };"#;
         let node = graph.nodes.iter().find(|node| node.id == "fn").expect("fn");
 
         assert_eq!(node.config["description"], json!("Reads a CSV."));
-        assert_eq!(node.config["input_schema"]["type"], json!("object"));
-        assert_eq!(node.config["input_schema"]["required"], json!(["source"]));
+        assert_eq!(node.config["schema"]["type"], json!("object"));
+        assert_eq!(node.config["schema"]["required"], json!(["source"]));
         assert_eq!(
-            node.config["input_schema"]["properties"]["source"]["x-zebflow-type"],
+            node.config["schema"]["properties"]["source"]["x-zebflow-type"],
             json!("file")
         );
         assert_eq!(
-            node.config["input_schema"]["properties"]["options"],
+            node.config["schema"]["properties"]["options"],
             json!({"description": "Provider options."})
         );
-        assert_eq!(node.config["output_schema"]["required"], json!(["ok"]));
+        assert_eq!(node.config["result_schema"]["required"], json!(["ok"]));
         assert_eq!(
-            node.config["output_schema"]["properties"]["columns"]["items"]["type"],
+            node.config["result_schema"]["properties"]["columns"]["items"]["type"],
             json!("string")
         );
+        // Written back whole, through the flag that takes the whole schema.
+        let segment = super::node_to_segment_no_body(node);
+        assert!(segment.contains("--schema ") && segment.contains("--result-schema "), "{segment}");
+        assert!(!segment.contains("--argument") && !segment.contains("--result "), "{segment}");
     }
 }
 
@@ -2463,7 +2494,10 @@ fn node_to_segment(node: &PipelineNode) -> String {
                 parts.push(quote_dsl_arg(&s));
             }
             DslFlagKind::KeyValuePairs => {
-                if let Some(map) = val.as_object() {
+                if let Some(whole) = val.as_str().filter(|raw| is_whole_expression(raw)) {
+                    parts.push(flag.flag.clone());
+                    parts.push(quote_dsl_arg(whole));
+                } else if let Some(map) = val.as_object() {
                     for (k, v) in map {
                         for v_str in pair_values(v) {
                             parts.push(flag.flag.clone());
@@ -2474,11 +2508,7 @@ fn node_to_segment(node: &PipelineNode) -> String {
             }
             DslFlagKind::SchemaField => {
                 if let Ok(s) = serde_json::to_string(val) {
-                    parts.push(
-                        flag.flag
-                            .replace("--input", "--input-schema")
-                            .replace("--output", "--output-schema"),
-                    );
+                    parts.push(schema_flag_for(dsl_flags, flag));
                     parts.push(quote_dsl_arg(&s));
                 }
             }
@@ -2587,7 +2617,10 @@ pub fn node_to_segment_no_body(node: &PipelineNode) -> String {
                 parts.push(quote_dsl_arg(&s));
             }
             DslFlagKind::KeyValuePairs => {
-                if let Some(map) = val.as_object() {
+                if let Some(whole) = val.as_str().filter(|raw| is_whole_expression(raw)) {
+                    parts.push(flag.flag.clone());
+                    parts.push(quote_dsl_arg(whole));
+                } else if let Some(map) = val.as_object() {
                     for (k, v) in map {
                         for v_str in pair_values(v) {
                             parts.push(flag.flag.clone());
@@ -2598,11 +2631,7 @@ pub fn node_to_segment_no_body(node: &PipelineNode) -> String {
             }
             DslFlagKind::SchemaField => {
                 if let Ok(s) = serde_json::to_string(val) {
-                    parts.push(
-                        flag.flag
-                            .replace("--input", "--input-schema")
-                            .replace("--output", "--output-schema"),
-                    );
+                    parts.push(schema_flag_for(dsl_flags, flag));
                     parts.push(quote_dsl_arg(&s));
                 }
             }
@@ -2610,6 +2639,17 @@ pub fn node_to_segment_no_body(node: &PipelineNode) -> String {
     }
 
     parts.join(" ")
+}
+
+/// A schema built from repeated field declarations (`--argument a:string!`)
+/// is written back whole, through the flag that takes the whole schema under
+/// the same config key (`--schema`); the field flag itself when none does.
+fn schema_flag_for(dsl_flags: &[DslFlag], field_flag: &DslFlag) -> String {
+    dsl_flags
+        .iter()
+        .find(|other| other.config_key == field_flag.config_key && other.kind == DslFlagKind::Scalar)
+        .map(|other| other.flag.clone())
+        .unwrap_or_else(|| field_flag.flag.clone())
 }
 
 /// The positional's rendered token, `(config_key, token)`, when the kind
@@ -2717,7 +2757,7 @@ fn graph_to_graph_mode(graph: &PipelineGraph) -> String {
 
 // ─── Pipe mode builder ───────────────────────────────────────────────────────
 
-/// Build pipeline from pipe-notation: `trigger.webhook --path /test | pg.query.run --credential main`
+/// Build pipeline from pipe-notation: `trigger.webhook --route /test | pg.query.run --credential main`
 fn build_pipe_mode(
     id: &str,
     body: &str,
@@ -2881,21 +2921,21 @@ mod register_shape_tests {
 
     #[test]
     fn a_body_without_a_leading_pipe_is_refused_not_truncated() {
-        match parse_one_command("register api/x trigger.webhook --path /x --method POST | ai.text.generate --credential c") {
+        match parse_one_command("register api/x trigger.webhook --route /x --method POST | ai.text.generate --credential c") {
             DslVerb::Invalid { message } => {
                 assert!(message.contains("must start with `|`"), "{message}");
-                assert!(message.contains("trigger.webhook --path /x --method POST"), "{message}");
+                assert!(message.contains("trigger.webhook --route /x --method POST"), "{message}");
             }
             other => panic!("expected a refusal, got {other:?}"),
         }
-        match parse_one_command("register api/x --title \"T\" -- | trigger.webhook --path /x | ai.text.generate --credential c") {
+        match parse_one_command("register api/x --title \"T\" -- | trigger.webhook --route /x | ai.text.generate --credential c") {
             DslVerb::Register { body, title, .. } => {
                 assert_eq!(title, "T");
                 assert!(body.starts_with("| trigger.webhook"), "{body}");
             }
             other => panic!("{other:?}"),
         }
-        match parse_one_command("register api/x\n[t] trigger.webhook --path /x\n[a] ai.text.generate --credential c\n[t] -> [a]") {
+        match parse_one_command("register api/x\n[t] trigger.webhook --route /x\n[a] ai.text.generate --credential c\n[t] -> [a]") {
             DslVerb::Register { body, .. } => assert!(body.starts_with("[t]"), "{body}"),
             other => panic!("{other:?}"),
         }
@@ -2903,7 +2943,7 @@ mod register_shape_tests {
 
     #[test]
     fn a_body_key_that_is_also_a_flag_is_rendered_once() {
-        let g = build_pipeline_graph("p", "trigger.webhook --path /x | logic.if --expr \"$trigger.query.who == 'm'\" | ai.text.generate --credential c --output-mode final_only -- Classify: {{ input.body.review }}").expect("parse");
+        let g = build_pipeline_graph("p", "trigger.webhook --route /x | logic.if --expr \"$trigger.query.who == 'm'\" | ai.text.generate --credential c --output-mode final_only -- Classify: {{ $trigger.body.review }}").expect("parse");
         let dsl = graph_to_dsl(&g);
         let if_line = dsl.lines().find(|l| l.contains("logic.if")).unwrap();
         assert_eq!(if_line.matches("$trigger.query.who").count(), 1, "{if_line}");
@@ -2921,7 +2961,7 @@ mod register_shape_tests {
     fn a_repeated_map_key_keeps_every_value_and_round_trips() {
         let g = build_pipeline_graph(
             "p",
-            "trigger.webhook --path /x | web.response.send --status 303 --header \"Location=/home\" --header \"Set-Cookie=a=1; Max-Age=60\" --header \"Set-Cookie=b=2\"",
+            "trigger.webhook --route /x | web.response.send --status 303 --header \"Location=/home\" --header \"Set-Cookie=a=1; Max-Age=60\" --header \"Set-Cookie=b=2\"",
         )
         .expect("parse");
         let headers = &g.nodes[1].config["headers"];
@@ -2940,7 +2980,7 @@ mod note_tests {
 
     #[test]
     fn graph_mode_note_is_a_note_not_a_node() {
-        let body = "[t] trigger.webhook --path /x\n[r] web.response.send --template pages/x.tsx\n[t] -> [r]\n[why] note --text \"Create the `smtp` credential first.\" --at 120,40 --size 320x140 --color amber";
+        let body = "[t] trigger.webhook --route /x\n[r] web.response.send --template pages/x.tsx\n[t] -> [r]\n[why] note --text \"Create the `smtp` credential first.\" --at 120,40 --size 320x140 --color amber";
         let graph = build_pipeline_graph("p", body).expect("parse");
         assert_eq!(graph.nodes.len(), 2);
         assert_eq!(graph.edges.len(), 1);
@@ -2954,7 +2994,7 @@ mod note_tests {
 
     #[test]
     fn pipe_mode_note_does_not_break_the_chain() {
-        let body = "trigger.webhook --path /x | note --text \"first\" | web.response.send --template pages/x.tsx | note --id tail -- a longer text, after the flags";
+        let body = "trigger.webhook --route /x | note --text \"first\" | web.response.send --template pages/x.tsx | note --id tail -- a longer text, after the flags";
         let graph = build_pipeline_graph("p", body).expect("parse");
         assert_eq!(graph.nodes.iter().map(|n| n.id.as_str()).collect::<Vec<_>>(), vec!["n0", "n1"]);
         assert_eq!(graph.edges.len(), 1);
@@ -2969,8 +3009,8 @@ mod note_tests {
     #[test]
     fn notes_survive_the_dsl_round_trip_in_both_modes() {
         for body in [
-            "trigger.webhook --path /x | web.response.send --template pages/x.tsx | note --id n1 --text \"keep me\" --at 10,20 --size 200x80 --color blue",
-            "[t] trigger.webhook --path /x\n[a] logic.if --expr \"true\"\n[b] web.response.send --template pages/a.tsx\n[c] web.response.send --template pages/b.tsx\n[t] -> [a]\n[a]:then -> [b]\n[a]:else -> [c]\n[n1] note --text \"keep me\" --color blue",
+            "trigger.webhook --route /x | web.response.send --template pages/x.tsx | note --id n1 --text \"keep me\" --at 10,20 --size 200x80 --color blue",
+            "[t] trigger.webhook --route /x\n[a] logic.if --expr \"true\"\n[b] web.response.send --template pages/a.tsx\n[c] web.response.send --template pages/b.tsx\n[t] -> [a]\n[a]:then -> [b]\n[a]:else -> [c]\n[n1] note --text \"keep me\" --color blue",
         ] {
             let first = build_pipeline_graph("p", body).expect("parse");
             let rendered = graph_to_dsl(&first);
@@ -2982,11 +3022,11 @@ mod note_tests {
 
     #[test]
     fn bad_note_flags_are_refused_with_the_flag_list() {
-        let err = build_pipeline_graph("p", "trigger.webhook --path /x | note --colour red").unwrap_err();
+        let err = build_pipeline_graph("p", "trigger.webhook --route /x | note --colour red").unwrap_err();
         assert!(err.contains("unknown flag `--colour`"), "{err}");
-        let err = build_pipeline_graph("p", "trigger.webhook --path /x | note --at 12").unwrap_err();
+        let err = build_pipeline_graph("p", "trigger.webhook --route /x | note --at 12").unwrap_err();
         assert!(err.contains("--at expects x,y"), "{err}");
-        let err = build_pipeline_graph("p", "[t] trigger.webhook --path /x\n[r] web.response.send --template pages/x.tsx\n[t] -> [r]\n[a] note --text one\n[a] note --text two").unwrap_err();
+        let err = build_pipeline_graph("p", "[t] trigger.webhook --route /x\n[r] web.response.send --template pages/x.tsx\n[t] -> [r]\n[a] note --text one\n[a] note --text two").unwrap_err();
         assert!(err.contains("duplicate note id"), "{err}");
     }
 
@@ -3039,11 +3079,11 @@ mod quoting_tests {
     /// guard has to survive — a one-line pipeline proves nothing about a
     /// pipeline anyone writes.
     const COMPLEX: &str = r#"
-[t] trigger.webhook --path /orders --method POST
-[k] kv.entry.get --key "order:{{ input.query.id }}" --out-key order
+[t] trigger.webhook --route /orders --method POST
+[k] kv.entry.get --key "order:{{ $trigger.query.id }}" --out-key order
 [c] logic.if --expr "input.order !== null"
-[m] mail.message.send --credential relay --to "{{ input.order.email }}" --subject "Order {{ input.query.id }}" --text "Thank you."
-[f] kv.entry.put --key "seen:{{ input.query.id }}" --value "{{ input.order }}" --ttl 600
+[m] mail.message.send --credential relay --to "{{ input.order.email }}" --subject "Order {{ $trigger.query.id }}" --text "Thank you."
+[f] kv.entry.put --key "seen:{{ $trigger.query.id }}" --value "{{ input.order }}" --ttl 600
 [w] web.response.send --status 200 --body "ok"
 [e] web.response.send --status 404 --body "no such order"
 
@@ -3071,7 +3111,7 @@ mod quoting_tests {
 
         // Expressions reached their config intact — spaces and all.
         assert_eq!(
-            by_id("k").config["key"], "order:{{ input.query.id }}",
+            by_id("k").config["key"], "order:{{ $trigger.query.id }}",
             "an interpolated key kept its expression"
         );
         assert_eq!(
@@ -3079,7 +3119,7 @@ mod quoting_tests {
             "a whole-field expression kept its braces"
         );
         assert_eq!(
-            by_id("m").config["subject"], "Order {{ input.query.id }}",
+            by_id("m").config["subject"], "Order {{ $trigger.query.id }}",
             "text around an expression survived tokenizing"
         );
         assert_eq!(
@@ -3087,7 +3127,7 @@ mod quoting_tests {
             "the migrated --value flag carries an expression"
         );
         // Bare literals still work with no quotes at all.
-        assert_eq!(by_id("t").config["path"], "/orders");
+        assert_eq!(by_id("t").config["route"], "/orders");
         assert_eq!(by_id("w").config["status"], 200);
     }
 

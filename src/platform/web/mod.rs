@@ -1,11 +1,12 @@
 //! Axum web layer for Zebflow platform flows, rendered via RWE templates.
 //!
 //! Pipeline webhook ingress is normalized in [`build_webhook_ingress_input`].
-//! Keep the wire-to-pipeline payload contract there in sync with
+//! Keep the wire-to-pipeline envelope contract there in sync with
 //! `src/pipeline/nodes/basic/trigger/mod.rs` and
 //! `src/pipeline/nodes/shared/file_ref.rs`: user body data lives under
-//! `input.body`, request context at root, and multipart files under
-//! `input.files` as FileRef metadata.
+//! `body`, request context beside it, and multipart files under `files` as
+//! FileRef metadata. `trigger.webhook` answers that envelope under `webhook`
+//! (`input.webhook.body`), and it is `$trigger` for the whole run.
 
 pub(crate) mod embedded;
 mod file_host;
@@ -22968,7 +22969,7 @@ fn verify_webhook_auth(
     }
     if auth_credential.is_empty() {
         return Err(AuthError::Internal(
-            "auth_type set but auth_credential is empty".to_string(),
+            "--auth is set but --credential is empty".to_string(),
         ));
     }
 
@@ -23680,7 +23681,7 @@ async fn public_webhook_ingress_run(
         );
         // `--auth-optional`: the route is public and only wants to know who is
         // signed in. A missing, expired or role-less token is a guest, not a
-        // refusal; the page reads `input.auth` and decides. A misconfigured
+        // refusal; the page reads `$trigger.auth` and decides. A misconfigured
         // credential is still an error — that is the operator's, not the visitor's.
         match verified {
             Err(AuthError::Unauthenticated { .. }) | Err(AuthError::Forbidden { .. })
@@ -23819,9 +23820,11 @@ async fn public_webhook_ingress_run(
                 .into_response();
         }
     };
-    // Inject JWT claims as `auth` field when auth_type == "jwt".
-    if let Some(claims) = auth_claims {
-        if let Value::Object(ref mut map) = input {
+    // The request's safe headers ride in the envelope (`webhook.headers`),
+    // and verified JWT claims are `auth` when `--auth jwt` admitted it.
+    if let Value::Object(ref mut map) = input {
+        map.insert("headers".to_string(), safe_headers(&headers));
+        if let Some(claims) = auth_claims {
             map.insert("auth".to_string(), claims);
         }
     }
@@ -23830,12 +23833,16 @@ async fn public_webhook_ingress_run(
     // `body` and `files` ride along: the envelope is what an `input.*` node
     // declared, and `$trigger.body.x` must still answer after a node has
     // replaced the payload (`kinds/node-io`, "reachable forever via `$trigger`").
+    // It is the envelope `trigger.webhook` answers under `webhook`, plus the
+    // raw URL context a page needs.
     let trigger = json!({
         "auth": input.get("auth").cloned().unwrap_or(Value::Null),
         "body": input.get("body").cloned().unwrap_or(Value::Null),
         "files": input.get("files").cloned().unwrap_or(json!({})),
         "params": input.get("params").cloned().unwrap_or(json!({})),
         "query": input.get("query").cloned().unwrap_or(json!({})),
+        "method": input.get("method").cloned().unwrap_or(Value::Null),
+        "path": input.get("path").cloned().unwrap_or(Value::Null),
         // Preserve the original query for SSR URL hooks; the legacy query map
         // cannot represent repeated keys or distinguish encoded values.
         "search": uri.query().map(|query| format!("?{query}")).unwrap_or_default(),
@@ -25492,8 +25499,8 @@ fn safe_headers(headers: &HeaderMap) -> Value {
 
 /// Build the structured webhook payload.
 ///
-/// User-submitted data lives under `input.body` — never at root.
-/// Server request context (`query`, `params`, `path`, `method`) lives at root.
+/// User-submitted data lives under `body` — never beside the request context.
+/// Server request context (`query`, `params`, `path`, `method`) lives beside it.
 /// This prevents collisions when user body contains fields like "query" or "path".
 fn build_structured_payload(
     body: Value,
@@ -29116,7 +29123,7 @@ mod webhook_sse_tests {
 
         let webhook = execute_graph(
             "trigger.webhook",
-            serde_json::json!({ "path": "/hook", "method": "post" }),
+            serde_json::json!({ "route": "/hook", "method": "post" }),
         );
         let resolved = resolve_execute_trigger(&webhook, &execute_request(None));
         assert_eq!(resolved.trigger, PipelineExecuteTrigger::Webhook);
@@ -29139,7 +29146,7 @@ mod webhook_sse_tests {
     fn an_explicit_trigger_and_route_still_win() {
         let webhook = execute_graph(
             "trigger.webhook",
-            serde_json::json!({ "path": "/hook", "method": "POST" }),
+            serde_json::json!({ "route": "/hook", "method": "POST" }),
         );
         // Explicit manual on a webhook graph is validated as manual, as today.
         let explicit = execute_request(Some(PipelineExecuteTrigger::Manual));

@@ -1,4 +1,4 @@
-//! `input.file` — one FileRef at `files.<name>`; `--accept` names the kinds, mimes or extensions it must match.
+//! `input.file` — one FileRef at `$trigger.files.<name>`; `--accept` names the kinds, mimes or extensions it must match.
 //!
 //! One member of the `input.*` family; the checks, the flags and the handler
 //! live in the parent module. This file is the kind's name and its

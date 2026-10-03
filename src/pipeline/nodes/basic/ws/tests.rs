@@ -29,9 +29,18 @@ fn input(payload: Value) -> NodeExecutionInput {
     }
 }
 
-/// What `trigger.room` hands the next node.
-fn from_room(room: &str, session: &str) -> Value {
-    json!({ "room_id": room, "session_id": session, "event": "move", "payload": { "x": 1 }, "kept": 1 })
+/// The envelope the WS route handler builds for one event.
+fn room_envelope(room: &str, session: &str) -> Value {
+    json!({ "room_id": room, "session_id": session, "event": "move", "payload": { "x": 1 } })
+}
+
+/// What a node after `trigger.room` receives: the envelope under `room`,
+/// and the same envelope as the run's `$trigger`.
+fn from_room(room: &str, session: &str) -> NodeExecutionInput {
+    let envelope = room_envelope(room, session);
+    let mut input = input(json!({ "room": envelope.clone(), "kept": 1 }));
+    input.metadata["trigger"] = envelope;
+    input
 }
 
 /// A hub with one socket joined to `room` of the test project.
@@ -110,11 +119,11 @@ async fn a_room_send_reaches_the_rooms_sockets_and_answers_message() {
     let (hub, handle, _guard) = hub_with("lobby");
     let mut rx = handle.subscribe();
     let node = send_node(json!({ "body": { "text": "hi" }, "event": "chat" }), Some(hub), None).unwrap();
-    let out = node.execute_async(input(from_room("lobby", "s1"))).await.unwrap();
+    let out = node.execute_async(from_room("lobby", "s1")).await.unwrap();
 
     assert_eq!(out.payload["message"], json!({ "sent": true, "room": "lobby", "event": "chat" }));
     assert_eq!(out.payload["kept"], 1, "the rest of the payload is kept");
-    assert_eq!(out.payload["room_id"], "lobby");
+    assert_eq!(out.payload["room"]["room_id"], "lobby");
     let got = rx.recv().await.expect("event");
     assert!(got.is_for("s1") && got.is_for("s2"), "all is the default recipient");
     let wire: Value = serde_json::from_str(&got.text).unwrap();
@@ -146,7 +155,7 @@ async fn a_session_or_others_send_targets_the_triggering_socket() {
     let mut rx = handle.subscribe();
     for (recipient, to_s1, to_s2) in [("session", true, false), ("others", false, true)] {
         let node = send_node(json!({ "body": "x", "recipient": recipient }), Some(hub.clone()), None).unwrap();
-        node.execute_async(input(from_room("lobby", "s1"))).await.unwrap();
+        node.execute_async(from_room("lobby", "s1")).await.unwrap();
         let got = rx.recv().await.unwrap();
         assert_eq!((got.is_for("s1"), got.is_for("s2")), (to_s1, to_s2), "{recipient}");
     }
@@ -209,9 +218,9 @@ async fn put_update_and_delete_change_the_rooms_state() {
     let run = |verb: Verb, config: Value| {
         let node = state_node(verb, config, &hub).unwrap();
         async move {
-            let out = node.execute_async(input(from_room("lobby", "s1"))).await.unwrap();
+            let out = node.execute_async(from_room("lobby", "s1")).await.unwrap();
             assert_eq!(out.payload["kept"], 1, "the rest of the payload is kept");
-            assert_eq!(out.payload["room_id"], "lobby");
+            assert_eq!(out.payload["room"]["room_id"], "lobby");
         }
     };
 
@@ -247,7 +256,7 @@ async fn a_key_part_from_the_payload_is_written_with_braces_and_resolved_by_the_
     let (hub, handle, _guard) = hub_with("lobby");
     let graph = build_pipeline_graph(
         "ws-state",
-        r#"| trigger.room | ws.state.update --key "/players/{{ input.session_id }}" --value "{{ input.payload }}""#,
+        r#"| trigger.room | ws.state.update --key "/players/{{ input.room.session_id }}" --value "{{ input.room.payload }}""#,
     )
     .expect("graph");
     let ctx = PipelineContext {
@@ -256,7 +265,7 @@ async fn a_key_part_from_the_payload_is_written_with_braces_and_resolved_by_the_
         pipeline: "ws-state".into(),
         request_id: "r".into(),
         route: String::new(),
-        input: from_room("lobby", "s1"),
+        input: room_envelope("lobby", "s1"),
         trigger: None,
         placeholder: None,
     };
@@ -272,6 +281,39 @@ async fn a_key_part_from_the_payload_is_written_with_braces_and_resolved_by_the_
     let ctx = PipelineContext { input: json!({ "room_id": "lobby", "payload": { "x": 1 } }), ..ctx };
     let err = engine.execute_async(&graph, &ctx).await.expect_err("an empty segment");
     assert_eq!(err.code, Verb::Update.codes().key);
+}
+
+/// The room and the session of a run started by `trigger.room` are read
+/// from `$trigger`, so a send without `--room` still reaches the room once
+/// the trigger answers under `room`.
+#[tokio::test]
+async fn a_room_send_after_trigger_room_reaches_the_triggering_room() {
+    let (hub, handle, _guard) = hub_with("lobby");
+    let graph = build_pipeline_graph(
+        "ws-send",
+        r#"| trigger.room --event move | ws.message.send --event moved --recipient others --body "{{ input.room.payload }}""#,
+    )
+    .expect("graph");
+    let envelope = room_envelope("lobby", "s1");
+    let ctx = PipelineContext {
+        owner: "demo".into(),
+        project: "site-a".into(),
+        pipeline: "ws-send".into(),
+        request_id: "r".into(),
+        route: String::new(),
+        input: envelope.clone(),
+        trigger: Some(envelope),
+        placeholder: None,
+    };
+    let engine = BasicPipelineEngine::default().with_ws_hub(hub);
+    let mut rx = handle.subscribe();
+    let out = engine.execute_async(&graph, &ctx).await.expect("run");
+    assert_eq!(out.value["message"], json!({ "sent": true, "room": "lobby", "event": "moved" }));
+    assert_eq!(out.value["room"]["session_id"], "s1", "the trigger's answer stays");
+    let got = rx.recv().await.expect("event");
+    assert_eq!((got.is_for("s1"), got.is_for("s2")), (false, true), "others: everyone but the sender");
+    let wire: Value = serde_json::from_str(&got.text).unwrap();
+    assert_eq!(wire["payload"], json!({ "x": 1 }));
 }
 
 #[test]

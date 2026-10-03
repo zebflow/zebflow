@@ -16,7 +16,7 @@
 //! # Example
 //!
 //! ```text
-//! | trigger.webhook --path /click --method POST
+//! | trigger.webhook --route /click --method POST
 //! | kv.entry.increment --key "clicks:{{ input.button }}" --out-key total
 //! | script.result.run -- "return { total: input.total };"
 //! ```

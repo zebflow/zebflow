@@ -7,7 +7,7 @@ Google, comes back with an authorization code, the pipeline exchanges that code
 for the visitor's identity, checks that the e-mail is an accepted member, and
 issues the same HttpOnly session cookie that
 `help("pipeline/examples/cookie-jwt-auth")` describes. Every protected route
-after that is plain `--auth-type jwt`; nothing downstream knows Google was
+after that is plain `--auth jwt`; nothing downstream knows Google was
 involved.
 
 Two pipelines, two credentials, one table.
@@ -78,7 +78,7 @@ Same credential as in `cookie-jwt-auth`. For a browser flow set these on it:
 }
 ```
 
-`--auth-type jwt` reads the session cookie named `zebflow_session` by default.
+`--auth jwt` reads the session cookie named `zebflow_session` by default.
 `auth_redirect` is where an unauthenticated *browser* is sent (an API call
 gets 401 JSON instead).
 
@@ -102,7 +102,7 @@ proves *who* the visitor is; this table decides *whether they may enter*.
 
 ```zf
 register auth/google-start --
-| trigger.webhook --path /auth/google/start --method GET
+| trigger.webhook --route /auth/google/start --method GET
 | crypto.random.generate --size 16B
 | kv.entry.put --key "oauth:state:{{ input.random.value }}" --ttl 600
 | script.result.run -- "const q = { client_id: 'YOUR_CLIENT_ID.apps.googleusercontent.com', redirect_uri: 'https://your.site/wh/OWNER/PROJECT/auth/google/callback', response_type: 'code', scope: 'openid email profile', state: input.random.value, access_type: 'online', prompt: 'select_account' }; const qs = Object.keys(q).map(function (k) { return encodeURIComponent(k) + '=' + encodeURIComponent(q[k]); }).join('&'); return { auth_url: 'https://accounts.google.com/o/oauth2/v2/auth?' + qs };"
@@ -123,9 +123,9 @@ Graph form, because "is this e-mail a member" is a real branch.
 
 ```zf
 register auth/google-callback --
-[in] trigger.webhook --path /auth/google/callback --method GET
-[state] kv.entry.get --key "oauth:state:{{ input.query.state }}" --out-key state_record
-[check] script.result.run -- "if (!input.query || !input.query.code) throw new Error('no authorization code in the callback'); if (input.state_record === null || input.state_record === undefined) throw new Error('unknown or expired state: this callback did not come from a sign-in this server started'); return { code: input.query.code, state: input.query.state };"
+[in] trigger.webhook --route /auth/google/callback --method GET
+[state] kv.entry.get --key "oauth:state:{{ $trigger.query.state }}" --out-key state_record
+[check] script.result.run -- "if (!$trigger.query || !$trigger.query.code) throw new Error('no authorization code in the callback'); if (input.state_record === null || input.state_record === undefined) throw new Error('unknown or expired state: this callback did not come from a sign-in this server started'); return { code: $trigger.query.code, state: $trigger.query.state };"
 [burn] kv.entry.delete --key "oauth:state:{{ input.state }}"
 [exchange] http.response.fetch --credential google-token-exchange --bind CODE=input.code
 [identity] script.result.run -- "const b = (input.response && input.response.body) || {}; const idt = b.id_token; if (!idt) throw new Error('google returned no id_token'); const seg = idt.split('.')[1]; const claims = JSON.parse(atob(seg.replace(/-/g, '+').replace(/_/g, '/'))); if (!claims.email) throw new Error('id_token carried no email'); return { email: String(claims.email).toLowerCase(), name: claims.name || '' };"
@@ -150,8 +150,8 @@ register auth/google-callback --
 
 Node by node:
 
-- `[state]` — `kv.entry.get` merges `{ state_record }` into the payload; `input.query`
-  is still there for the next node.
+- `[state]` — `kv.entry.get` merges `{ state_record }` into the payload; `$trigger.query`
+  is still reachable for the next node.
 - `[check]` — a script that throws stops the pipeline with that message in the
   trace. It is the right tool for "this request is malformed, refuse it".
 - `[burn]` — a state is single-use. Delete it before the exchange so a replayed
@@ -168,21 +168,21 @@ Node by node:
 - `[member]` → `[known]` — a `logic.if` with `true`/`false` pins. The 403 is a
   `web.response.send` on the `false` pin, not a status returned from a script.
 - `[token]` → `[welcome]` — from here on it is `cookie-jwt-auth`: `sub` is the
-  member's e-mail, `roles` is the array `--auth-required-role` checks, and only
+  member's e-mail, `roles` is the array `--role` checks, and only
   `name` is `:public`.
 
 ## Protected routes
 
 ```zf
 register auth/me --
-| trigger.webhook --path /me --method GET --auth-type jwt --auth-credential session-signing-key
-| sqlite.query.run --query "SELECT email, name, accepted_at FROM members WHERE email = ?1" --param "1={{ input.auth.sub }}"
+| trigger.webhook --route /me --method GET --auth jwt --credential session-signing-key
+| sqlite.query.run --query "SELECT email, name, accepted_at FROM members WHERE email = ?1" --param "1={{ $trigger.auth.sub }}"
 | web.response.send --template pages/me.tsx
 ```
 
 ```zf
 register auth/admin --
-| trigger.webhook --path /auth/admin --method GET --auth-type jwt --auth-credential session-signing-key --auth-required-role admin
+| trigger.webhook --route /auth/admin --method GET --auth jwt --credential session-signing-key --role admin
 | sqlite.query.run --query "SELECT email, name, roles, accepted_at FROM members ORDER BY accepted_at DESC"
 | web.response.send --template pages/auth-admin.tsx
 ```

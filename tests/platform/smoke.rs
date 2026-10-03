@@ -2478,7 +2478,7 @@ export default function SpatialBlogPage({ input }) {
   "id":"spatial-blog",
   "entry_nodes":["trigger"],
   "nodes":[
-    {"id":"trigger","kind":"trigger.webhook","input_pins":[],"output_pins":["out"],"config":{"path":"/blog","method":"GET"}},
+    {"id":"trigger","kind":"trigger.webhook","input_pins":[],"output_pins":["out"],"config":{"route":"/blog","method":"GET"}},
     {"id":"query","kind":"sekejap.query.run","input_pins":["in"],"output_pins":["out"],"config":{"query":"SELECT * FROM posts LIMIT 20","limit":20}},
     {"id":"response","kind":"web.response.send","input_pins":["in"],"output_pins":["out"],"config":{"template":"pages/spatial-blog.tsx"}}
   ],
@@ -2837,7 +2837,7 @@ async fn hub_add_reviews_risks_and_respects_target_folders() {
   "id":"safety-demo",
   "entry_nodes":["wh"],
   "nodes":[
-    {"id":"wh","kind":"trigger.webhook","config":{"path":"/unsafe-public-hook"}},
+    {"id":"wh","kind":"trigger.webhook","config":{"route":"/unsafe-public-hook"}},
     {"id":"http","kind":"http.response.fetch","config":{"url":"https://api.example.com/v1/items","credential":"secure-egress"}},
     {"id":"pg","kind":"pg.query.run","config":{"credential":"pg-main"}},
     {"id":"fs","kind":"fs.file.put","config":{"path":"exports/out.json"}}
@@ -3603,7 +3603,7 @@ async fn platform_tts_upload_credential_and_execute_smoke() {
 
     let dsl = r#"register pipelines/tests/tts-api
 [a] trigger.manual
-[b] ai.audio.generate --provider piper --credential narrator-tts --text "{{ input.text }}" --filename "{{ input.slug }}" --return both
+[b] ai.audio.generate --provider piper --credential narrator-tts --text "{{ input.manual.text }}" --filename "{{ input.manual.slug }}" --return both
 [a] -> [b]
 && activate pipelines/tests/tts-api.zf.json"#;
     let dsl_response = app
@@ -3953,7 +3953,7 @@ async fn a_declared_source_root_moves_templates_pipelines_and_assets() {
                         "title": "Feed",
                         "description": "",
                         "trigger_kind": "webhook",
-                        "source": r#"{"apiVersion":"zebflow.com/v1","kind":"Pipeline","metadata":{"name":"feed"},"spec":{"id":"feed","entry_nodes":["wh"],"nodes":[{"id":"wh","kind":"trigger.webhook","input_pins":[],"output_pins":["out"],"config":{"path":"/feed","method":"GET"}}],"edges":[]}}"#
+                        "source": r#"{"apiVersion":"zebflow.com/v1","kind":"Pipeline","metadata":{"name":"feed"},"spec":{"id":"feed","entry_nodes":["wh"],"nodes":[{"id":"wh","kind":"trigger.webhook","input_pins":[],"output_pins":["out"],"config":{"route":"/feed","method":"GET"}}],"edges":[]}}"#
                     })
                     .to_string(),
                 ))
@@ -4401,7 +4401,7 @@ fn webhook_pipeline(name: &str) -> Value {
                 "entry_nodes": ["t"],
                 "nodes": [
                     {"id": "t", "kind": "trigger.webhook", "output_pins": ["out"],
-                     "config": {"path": format!("/{name}"), "method": "GET"}},
+                     "config": {"route": format!("/{name}"), "method": "GET"}},
                     {"id": "s", "kind": "script.result.run", "input_pins": ["in"], "output_pins": ["out"],
                      "config": {"source": "return { ok: true };"}}
                 ],
@@ -5141,7 +5141,7 @@ async fn a_static_repository_installs_through_the_same_review_and_pins_its_relea
   "id":"home",
   "entry_nodes":["trigger"],
   "nodes":[
-    {"id":"trigger","kind":"trigger.webhook","input_pins":[],"output_pins":["out"],"config":{"path":"/","method":"GET"}},
+    {"id":"trigger","kind":"trigger.webhook","input_pins":[],"output_pins":["out"],"config":{"route":"/","method":"GET"}},
     {"id":"response","kind":"web.response.send","input_pins":["in"],"output_pins":["out"],"config":{"template":"pages/home.tsx"}}
   ],
   "edges":[
@@ -6257,7 +6257,7 @@ async fn registering_a_pipeline_always_requires_the_write_capability() {
             "title": "Backdoor",
             "description": "",
             "trigger_kind": "webhook",
-            "source": r#"{"apiVersion":"zebflow.com/v1","kind":"Pipeline","metadata":{"name":"backdoor"},"spec":{"id":"backdoor","entry_nodes":["wh"],"nodes":[{"id":"wh","kind":"trigger.webhook","output_pins":["out"],"input_pins":[],"config":{"path":"/backdoor","method":"POST"}}],"edges":[]}}"#
+            "source": r#"{"apiVersion":"zebflow.com/v1","kind":"Pipeline","metadata":{"name":"backdoor"},"spec":{"id":"backdoor","entry_nodes":["wh"],"nodes":[{"id":"wh","kind":"trigger.webhook","output_pins":["out"],"input_pins":[],"config":{"route":"/backdoor","method":"POST"}}],"edges":[]}}"#
         })
         .to_string()
     };
@@ -7100,9 +7100,9 @@ async fn an_uncaught_failure_hides_by_default_and_is_one_error_group() {
     let cookie = login_cookie(app.clone(), "superadmin", "test-pass").await;
 
     for dsl in [
-        r#"register pipelines/tests/boom -- | trigger.webhook --path /boom --method GET | script.result.run -- "throw new Error('column \"x\" does not exist at row ' + (input.query.n || 0))" | web.response.send"#,
+        r#"register pipelines/tests/boom -- | trigger.webhook --route /boom --method GET | script.result.run -- "throw new Error('column \"x\" does not exist at row ' + ($trigger.query.n || 0))" | web.response.send"#,
         "activate pipeline pipelines/tests/boom.zf.json",
-        r#"register pipelines/tests/boom-shown -- | trigger.webhook --path /boom-shown --method GET --errors show | script.result.run -- "throw new Error('shown on purpose')" | web.response.send"#,
+        r#"register pipelines/tests/boom-shown -- | trigger.webhook --route /boom-shown --method GET --errors show | script.result.run -- "throw new Error('shown on purpose')" | web.response.send"#,
         "activate pipeline pipelines/tests/boom-shown.zf.json",
     ] {
         let r = app.clone().oneshot(Request::builder().uri("/api/projects/superadmin/default/pipelines/dsl").method("POST")
@@ -7528,7 +7528,7 @@ async fn instance_scope_is_one_prefix_and_never_answers_an_anonymous_caller() {
 }
 
 /// `--auth-optional`: a public page that knows who is signed in. The same
-/// route answers a guest with `input.auth` null and a member with the claims;
+/// route answers a guest with `webhook.auth` null and a member with the claims;
 /// an expired or foreign token is a guest, never a 401.
 #[tokio::test]
 async fn an_auth_optional_webhook_answers_guests_and_reads_a_valid_token() {
@@ -7563,7 +7563,7 @@ async fn an_auth_optional_webhook_answers_guests_and_reads_a_valid_token() {
     assert_eq!(cred.status(), StatusCode::OK);
 
     for dsl in [
-        r#"register pipelines/tests/whoami -- | trigger.webhook --path /whoami --method GET --auth-type jwt --auth-credential auth_member --auth-optional | script.result.run -- "return { who: input.auth ? input.auth.sub : 'guest' }" | web.response.send"#,
+        r#"register pipelines/tests/whoami -- | trigger.webhook --route /whoami --method GET --auth jwt --credential auth_member --auth-optional | script.result.run -- "return { who: input.webhook.auth ? input.webhook.auth.sub : 'guest' }" | web.response.send"#,
         "activate pipeline pipelines/tests/whoami.zf.json",
     ] {
         let dsl_response = app
@@ -7614,7 +7614,7 @@ async fn an_auth_optional_webhook_answers_guests_and_reads_a_valid_token() {
     let valid = encode(&Header::default(), &json!({ "sub": "m_1", "exp": now + 600 }), &key).expect("jwt");
     let (status, body) = ask(Some(format!("site_member={valid}"))).await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(body["who"], json!("m_1"), "a valid token fills input.auth: {body}");
+    assert_eq!(body["who"], json!("m_1"), "a valid token fills webhook.auth: {body}");
 
     let expired = encode(&Header::default(), &json!({ "sub": "m_1", "exp": now - 600 }), &key).expect("jwt");
     let (status, body) = ask(Some(format!("site_member={expired}"))).await;
@@ -7631,7 +7631,7 @@ async fn an_auth_optional_webhook_answers_guests_and_reads_a_valid_token() {
     // browser navigation is sent to the credential's auth_redirect carrying
     // the page it wanted, so the sign-in can bring the visitor back.
     for dsl in [
-        r#"register pipelines/tests/mine -- | trigger.webhook --path /mine/:slug --method GET --auth-type jwt --auth-credential auth_member | web.response.send --body ok"#,
+        r#"register pipelines/tests/mine -- | trigger.webhook --route /mine/:slug --method GET --auth jwt --credential auth_member | web.response.send --body ok"#,
         "activate pipeline pipelines/tests/mine.zf.json",
     ] {
         let response = app
@@ -7670,7 +7670,7 @@ async fn an_auth_optional_webhook_answers_guests_and_reads_a_valid_token() {
     );
 }
 
-/// A designed 404: `trigger.error --code 404 | web.response.send --template`
+/// A designed 404: `trigger.error --status 404 | web.response.send --template`
 /// answers an unknown route with the page, not the JSON fallback. The two
 /// halves this exercises: the DSL types `404` as a number and the node must
 /// take it; the weberror dispatcher must load the template's markup before
@@ -7683,7 +7683,7 @@ async fn a_weberror_template_page_answers_an_unknown_route() {
     let app = build_router(config).await.expect("platform router");
     let cookie = login_cookie(app.clone(), "superadmin", "test-pass").await;
 
-    let page = r#"export default function NotFound(input) { return <main><h1>Nothing here</h1><p id="path">{input.path}</p></main>; }
+    let page = r#"export default function NotFound(input) { return <main><h1>Nothing here</h1><p id="path">{input.error.path}</p></main>; }
 export function getPage() { return { head: { title: "Not found" } }; }"#;
     let put = app
         .clone()
@@ -7700,7 +7700,7 @@ export function getPage() { return { head: { title: "Not found" } }; }"#;
         .expect("put");
     assert_eq!(put.status(), StatusCode::OK);
     for dsl in [
-        "register pipelines/not-found -- | trigger.error --code 404 | web.response.send --status 404 --template not-found.tsx",
+        "register pipelines/not-found -- | trigger.error --status 404 | web.response.send --status 404 --template not-found.tsx",
         "activate pipeline pipelines/not-found.zf.json",
     ] {
         let response = app

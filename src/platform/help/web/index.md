@@ -4,7 +4,7 @@ A page is a TSX file in the project, rendered to HTML on the server and
 hydrated in the browser. A pipeline serves it:
 
 ```
-| trigger.webhook --path /posts/:slug --method GET
+| trigger.webhook --route /posts/:slug --method GET
 | sekejap.query.run --param "1={{ $trigger.params.slug }}" -- "SELECT * FROM posts WHERE slug = $1"
 | web.response.send --template pages/post.tsx
 ```

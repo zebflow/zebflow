@@ -207,4 +207,4 @@ finish, exit code 0.
 
 Every active `trigger.webhook` answers at `{method} /wh/{owner}/{project}{path}`;
 `GET /wh/acme/shop/blog` runs the pipeline whose trigger declares
-`--path /blog --method GET`. The DSL that registers it: `help("pipeline/dsl")`.
+`--route /blog --method GET`. The DSL that registers it: `help("pipeline/dsl")`.

@@ -387,6 +387,14 @@ fn should_retain_node_output(node_id: &str, retention: &NodesRetentionPlan) -> b
     retention.retained_nodes.contains(node_id)
 }
 
+/// `$trigger` for the run: the snapshot the ingress set, else the envelope
+/// the run started with (`ctx.input`, what the trigger answers under its
+/// source key) — so `$trigger` is the envelope for every trigger, not only
+/// the ones whose ingress builds a snapshot of its own.
+fn trigger_envelope(ctx: &PipelineContext) -> Value {
+    ctx.trigger.clone().unwrap_or_else(|| ctx.input.clone())
+}
+
 fn execution_metadata(
     ctx: &PipelineContext,
     nodes_scope: Value,
@@ -398,7 +406,7 @@ fn execution_metadata(
         "pipeline": ctx.pipeline,
         "request_id": ctx.request_id,
         "route": ctx.route,
-        "trigger": ctx.trigger,
+        "trigger": trigger_envelope(ctx),
         "nodes": nodes_scope,
         "placeholder": placeholder,
     })
@@ -1243,16 +1251,16 @@ impl BasicPipelineEngine {
         match node.kind.as_str() {
             webhook::NODE_KIND => Ok(NodeDispatch::Webhook(webhook::Node::new(
                 serde_json::from_value(node.config.clone())
-                    .map_err(|err| PipelineError::new("FW_NODE_WEBHOOK_CONFIG", err.to_string()))?,
+                    .map_err(|err| PipelineError::new("FW_NODE_TRIGGER_WEBHOOK_CONFIG", err.to_string()))?,
             ))),
             schedule::NODE_KIND => Ok(NodeDispatch::Schedule(schedule::Node::new(
                 serde_json::from_value(node.config.clone()).map_err(|err| {
-                    PipelineError::new("FW_NODE_SCHEDULE_CONFIG", err.to_string())
+                    PipelineError::new("FW_NODE_TRIGGER_SCHEDULE_CONFIG", err.to_string())
                 })?,
             ))),
             manual::NODE_KIND => Ok(NodeDispatch::Manual(manual::Node::new(
                 serde_json::from_value(node.config.clone())
-                    .map_err(|err| PipelineError::new("FW_NODE_MANUAL_CONFIG", err.to_string()))?,
+                    .map_err(|err| PipelineError::new("FW_NODE_TRIGGER_MANUAL_CONFIG", err.to_string()))?,
             ))),
             script::NODE_KIND => Ok(NodeDispatch::Script(script::Node::new(
                 &node.id,
@@ -1488,12 +1496,12 @@ impl BasicPipelineEngine {
             }
             weberror::NODE_KIND => Ok(NodeDispatch::WebError(weberror::Node::new(
                 serde_json::from_value(node.config.clone()).map_err(|err| {
-                    PipelineError::new("FW_NODE_WEBERROR_CONFIG", err.to_string())
+                    PipelineError::new("FW_NODE_TRIGGER_ERROR_CONFIG", err.to_string())
                 })?,
             ))),
             ws::trigger::NODE_KIND => Ok(NodeDispatch::WsTrigger(ws::trigger::Node::new(
                 serde_json::from_value(node.config.clone()).map_err(|err| {
-                    PipelineError::new("FW_NODE_WS_TRIGGER_CONFIG", err.to_string())
+                    PipelineError::new("FW_NODE_TRIGGER_ROOM_CONFIG", err.to_string())
                 })?,
             ))),
             ws::message_send::NODE_KIND => Ok(NodeDispatch::WsMessageSend(ws::message_send::Node::new(
@@ -1829,17 +1837,17 @@ impl BasicPipelineEngine {
             }
             mcp_trigger::NODE_KIND => Ok(NodeDispatch::McpTrigger(mcp_trigger::Node::new(
                 serde_json::from_value(node.config.clone()).map_err(|err| {
-                    PipelineError::new("FW_NODE_MCP_TRIGGER_CONFIG", err.to_string())
+                    PipelineError::new("FW_NODE_TRIGGER_MCP_CONFIG", err.to_string())
                 })?,
             ))),
             kv_subscribe::NODE_KIND => Ok(NodeDispatch::KvSubscribe(kv_subscribe::Node::new(
                 serde_json::from_value(node.config.clone()).map_err(|e| {
-                    PipelineError::new("FW_NODE_KV_SUBSCRIBE_CONFIG", e.to_string())
+                    PipelineError::new("FW_NODE_TRIGGER_TOPIC_CONFIG", e.to_string())
                 })?,
             ))),
             trigger_ws_client::NODE_KIND => Ok(NodeDispatch::WsClientTrigger(
                 trigger_ws_client::Node::new(serde_json::from_value(node.config.clone()).map_err(
-                    |e| PipelineError::new("FW_NODE_WS_CLIENT_TRIGGER_CONFIG", e.to_string()),
+                    |e| PipelineError::new("FW_NODE_TRIGGER_SOCKET_CONFIG", e.to_string()),
                 )?),
             )),
             // Anything the arms above did not claim is not a native node, so it
@@ -2483,20 +2491,11 @@ impl BasicPipelineEngine {
                             None => trace_capture.outputs(&outs),
                         }
                     };
-                    let mut nodes_output_value = if processed_payloads.len() == 1 {
+                    let nodes_output_value = if processed_payloads.len() == 1 {
                         processed_payloads[0].clone()
                     } else {
                         Value::Array(processed_payloads)
                     };
-                    // An input node passes the envelope through untouched, but
-                    // *its* value — what `$nodes.<id>` answers — is the field it
-                    // checked. The family's own reader says which, on the same
-                    // payload it just passed, so nothing new rides the output.
-                    if let Some(checked) =
-                        input::scope_value(&trace_node_kind, &effective_config, &nodes_output_value)
-                    {
-                        nodes_output_value = checked;
-                    }
                     // A declared image preview of a temporary file keeps a
                     // small copy in the record, since the file itself is
                     // deleted with the run. Read off the stored config, like
@@ -3055,7 +3054,7 @@ mod tests {
             r#"
 [a] trigger.manual
 [b] logic.if --expr "1 == 1"
-[c] script.result.run -- "return { count: input.rows.length, last: input.rows[input.rows.length - 1] };"
+[c] script.result.run -- "return { count: input.manual.rows.length, last: input.manual.rows[input.manual.rows.length - 1] };"
 [a] -> [b]
 [b]:true -> [c]
 "#,
@@ -3093,8 +3092,11 @@ mod tests {
             .expect("sampled execution");
         assert_eq!(sampled.value, json!({"count":100,"last":99}));
         for trace in &sampled.node_trace {
-            assert_eq!(trace.input["rows"]["len"], 100);
-            assert_eq!(trace.input["rows"]["preview"], json!([0]));
+            // The trigger records the envelope it was given; every node
+            // after it reads that envelope under `manual`.
+            let rows = trace.input.get("manual").map_or(&trace.input["rows"], |m| &m["rows"]);
+            assert_eq!(rows["len"], 100);
+            assert_eq!(rows["preview"], json!([0]));
         }
         graph
             .metadata
@@ -3156,7 +3158,7 @@ mod tests {
                 .expect("execution")
         }
 
-        let ok_body = "return { seen: input.canary };";
+        let ok_body = "return { seen: input.manual.canary };";
 
         // full — everything is there.
         let out = run_at(CaptureLevel::Full, ok_body).await;
@@ -3241,7 +3243,7 @@ mod tests {
         async fn run_at(level: CaptureLevel) -> crate::pipeline::model::PipelineOutput {
             let mut graph = build_pipeline_graph(
                 "preview-levels",
-                "[a] trigger.manual\n[b] script.result.run --preview json -- \"return { seen: input.canary };\"\n[a] -> [b]\n",
+                "[a] trigger.manual\n[b] script.result.run --preview json -- \"return { seen: input.manual.canary };\"\n[a] -> [b]\n",
             )
             .expect("graph");
             assert_eq!(graph.nodes[1].config["preview"]["out"], json!({ "as": "json" }));
@@ -3392,7 +3394,7 @@ mod tests {
         );
         let mut graph = build_pipeline_graph(
             "preview-rule3",
-            "[a] trigger.manual\n[b] script.result.run --preview json -- \"return { token: input.secret, note: 'ok' };\"\n[a] -> [b]\n",
+            "[a] trigger.manual\n[b] script.result.run --preview json -- \"return { token: input.manual.secret, note: 'ok' };\"\n[a] -> [b]\n",
         )
         .expect("graph");
         graph.metadata = Some(PipelineGraphMetadata {
@@ -4334,7 +4336,7 @@ mod tests {
 
         let dsl = r#"
 [a] trigger.manual
-[b] table.data.convert --from "{{ input.rows }}" --path datasets/posts.parquet
+[b] table.data.convert --from "{{ input.manual.rows }}" --path datasets/posts.parquet
 [c] table.data.convert --from datasets/posts.parquet --to-json --preview-rows 2
 
 [a] -> [b]
@@ -4414,7 +4416,7 @@ mod tests {
 
         let dsl = r#"
 [a] trigger.manual
-[b] table.query.run --from "datasets/posts.csv as posts" --from "datasets/authors.csv as authors" --params "{{ [input.post_id] }}" --to-json --preview-rows 1 --query "select p.id, p.title, a.name from posts p join authors a on p.author_id = a.id where p.id = $1"
+[b] table.query.run --from "datasets/posts.csv as posts" --from "datasets/authors.csv as authors" --params "{{ [input.manual.post_id] }}" --to-json --preview-rows 1 --query "select p.id, p.title, a.name from posts p join authors a on p.author_id = a.id where p.id = $1"
 
 [a] -> [b]
 "#;
@@ -4571,7 +4573,7 @@ mod tests {
                             { "source": "datasets/posts.csv", "alias": "posts" }
                         ],
                         "query": "select * from posts where id = $1",
-                        "params": "{{ [input.post_id] }}",
+                        "params": "{{ [input.manual.post_id] }}",
                         "to_json": true,
                         "preview_rows": 1
                     }),
@@ -4631,7 +4633,7 @@ mod tests {
 
         let dsl = r#"
 [a] trigger.manual
-[b] table.query.run --engine geodatafusion --from "$input.rows as points" --to-json --preview-rows 1 --query "select id, ST_AsText(ST_Point(x, y)) as geom from points where id = 1"
+[b] table.query.run --engine geodatafusion --from "$input.manual.rows as points" --to-json --preview-rows 1 --query "select id, ST_AsText(ST_Point(x, y)) as geom from points where id = 1"
 
 [a] -> [b]
 "#;
@@ -4742,16 +4744,16 @@ mod tests {
         assert_eq!(out.value["lane"], "billing");
     }
 
-    /// An input node leaves the envelope alone for the next node and answers
-    /// `$nodes.<id>` with the value it checked; a required field that was not
-    /// sent refuses the run naming the field.
+    /// An input node reads the envelope (`$trigger`) and answers the value
+    /// it checked at its `--name`, the rest of the payload kept; a required
+    /// field that was not sent refuses the run naming the field.
     #[tokio::test]
-    async fn input_nodes_pass_the_envelope_through_and_expose_the_checked_value() {
+    async fn input_nodes_answer_the_checked_value_at_their_name() {
         let dsl = r#"
 [a] trigger.manual
 [b] input.text prompt --label "Caption"
 [c] input.number count --default 3
-[d] script.result.run -- "return { echoed: input.body.prompt, prompt: $nodes.b, count: $nodes.c, keys: Object.keys(input).sort() };"
+[d] script.result.run -- "return { echoed: input.manual.body.prompt, prompt: $nodes.b.prompt, count: input.count, keys: Object.keys(input).sort() };"
 
 [a] -> [b]
 [b] -> [c]
@@ -4776,7 +4778,7 @@ mod tests {
         assert_eq!(out.value["echoed"], "hello");
         assert_eq!(out.value["prompt"], "hello");
         assert_eq!(out.value["count"], 3.0);
-        assert_eq!(out.value["keys"], json!(["body"]));
+        assert_eq!(out.value["keys"], json!(["count", "manual", "prompt"]));
 
         let err = engine
             .execute_async(&graph, &ctx(json!({ "body": {} })))
@@ -4791,7 +4793,7 @@ mod tests {
     async fn logic_foreach_emits_one_run_per_item() {
         let dsl = r#"
 [a] trigger.manual
-[b] logic.foreach --items-expr "$input.rows"
+[b] logic.foreach --items-expr "$input.manual.rows"
 
 [a] -> [b]
 "#;
@@ -4850,7 +4852,7 @@ mod tests {
     async fn logic_foreach_keep_input_preserves_parent_payload_when_requested() {
         let dsl = r#"
 [a] trigger.manual
-[b] logic.foreach --items-expr "$input.rows" --keep-input
+[b] logic.foreach --items-expr "$input.manual.rows" --keep-input
 
 [a] -> [b]
 "#;
@@ -4881,8 +4883,8 @@ mod tests {
             .expect("execute");
 
         assert_eq!(out.value["item"]["id"], "r2");
-        assert_eq!(out.value["batch_marker"], "kept-only-when-requested");
-        assert_eq!(out.value["rows"][0]["id"], "r1");
+        assert_eq!(out.value["manual"]["batch_marker"], "kept-only-when-requested");
+        assert_eq!(out.value["manual"]["rows"][0]["id"], "r1");
     }
 
     #[tokio::test]
@@ -4891,7 +4893,7 @@ mod tests {
         // this run started from, not null and not another run's.
         let dsl = r#"
 [a] trigger.manual
-[b] logic.foreach --items-expr "$input.rows"
+[b] logic.foreach --items-expr "$input.manual.rows"
 [c] script.result.run -- "return { unrelated: true };"
 [d] script.result.run --source-expr "'return { key: ' + JSON.stringify($item.key) + ' };'"
 [e] logic.reduce --init-expr "{ keys: [] }" --step-expr "{ keys: $acc.keys.concat([$input.key]) }"
@@ -4928,7 +4930,7 @@ mod tests {
         // reduce must still fold all three runs, not fire after each one.
         let dsl = r#"
 [a] trigger.manual
-[b] logic.foreach --items-expr "$input.rows"
+[b] logic.foreach --items-expr "$input.manual.rows"
 [c] script.result.run -- "return { v: input.item.amount * 10 };"
 [d] logic.reduce --init-expr "{ vs: [] }" --step-expr "{ vs: $acc.vs.concat([$input.v]) }"
 
@@ -4961,7 +4963,7 @@ mod tests {
     async fn logic_reduce_accumulates_foreach_series() {
         let dsl = r#"
 [a] trigger.manual
-[b] logic.foreach --items-expr "$input.rows"
+[b] logic.foreach --items-expr "$input.manual.rows"
 [c] logic.reduce --init-expr "{ total: 0 }" --step-expr "{ total: $acc.total + $input.item.amount }"
 
 [a] -> [b]
@@ -5124,15 +5126,55 @@ mod tests {
         assert_eq!(out.value["attempt"], 2);
     }
 
-    /// `input.* --default` reaches the envelope on every path: an execute that
-    /// omits the field finds the default at `input.body.<name>` downstream,
-    /// the same as `$nodes.<id>`; a sent value wins.
+    /// `$trigger` is the envelope the trigger answers under its source key:
+    /// the ingress snapshot when one is set, else the run's input — in a
+    /// flag's `{{ }}` and in a script alike, after a node replaced the payload.
     #[tokio::test]
-    async fn an_input_default_is_written_into_the_envelope_when_the_field_is_omitted() {
+    async fn trigger_still_resolves_to_the_envelope() {
+        let dsl = r#"
+[t] trigger.webhook --route /hello --method POST
+[a] script.result.run -- "return { replaced: true };"
+[b] logic.if --expr "$trigger.body.name === 'Ana'"
+[c] script.result.run -- "return { name: $trigger.body.name, sub: $trigger.auth ? $trigger.auth.sub : null, kept: input.replaced, answer: ctx.nodes.t.webhook.body.name };"
+[t] -> [a]
+[a] -> [b]
+[b]:true -> [c]
+"#;
+        let graph = build_pipeline_graph("trigger-scope-test", dsl).expect("graph");
+        let envelope = json!({ "body": { "name": "Ana" }, "query": {}, "params": {}, "path": "/hello", "method": "POST", "auth": { "sub": "u_1" } });
+        let ctx = |trigger: Option<serde_json::Value>| PipelineContext {
+            owner: "test".to_string(),
+            project: "test".to_string(),
+            pipeline: "trigger-scope-test".to_string(),
+            request_id: "req-trigger".to_string(),
+            route: "/hello".to_string(),
+            input: envelope.clone(),
+            trigger,
+            placeholder: None,
+        };
+        for trigger in [Some(envelope.clone()), None] {
+            let out = BasicPipelineEngine::default()
+                .execute_async(&graph, &ctx(trigger.clone()))
+                .await
+                .expect("execute");
+            assert_eq!(
+                out.value,
+                json!({ "name": "Ana", "sub": "u_1", "kept": true, "answer": "Ana" }),
+                "snapshot set: {}",
+                trigger.is_some()
+            );
+        }
+    }
+
+    /// `input.* --default` answers on every path: an execute that omits the
+    /// field finds the default at `input.<name>` downstream, the same as
+    /// `$nodes.<id>.<name>`; a sent value wins.
+    #[tokio::test]
+    async fn an_input_default_answers_when_the_field_is_omitted() {
         let dsl = r#"
 [t] trigger.manual
 [who] input.text who --optional --default world
-[s] script.result.run -- "return { hi: input.body.who, own: ctx.nodes.who };"
+[s] script.result.run -- "return { hi: input.who, own: ctx.nodes.who.who, sent: input.manual.body ? input.manual.body.who : null };"
 [t] -> [who]
 [who] -> [s]
 "#;
@@ -5165,6 +5207,7 @@ mod tests {
         assert_eq!(omitted.value["own"], "world");
         let empty_body = run(json!({ "body": {} })).await;
         assert_eq!(empty_body.value["hi"], "world");
+        assert_eq!(empty_body.value["sent"], serde_json::Value::Null, "the envelope is not written");
         let sent = run(json!({ "body": { "who": "x" } })).await;
         assert_eq!(sent.value["hi"], "x");
         assert_eq!(sent.value["own"], "x");

@@ -64,11 +64,10 @@ impl WsClientManager {
                     &trigger.node_id,
                     &trigger.url,
                     &trigger.credential_id,
-                    trigger.reconnect,
-                    trigger.reconnect_delay_ms,
-                    trigger.max_reconnect_attempts,
-                    trigger.heartbeat_interval_ms,
-                    &trigger.message_format,
+                    trigger.delay_ms,
+                    trigger.max_attempts,
+                    trigger.heartbeat_ms,
+                    &trigger.parse,
                 )
                 .await;
             }
@@ -106,11 +105,10 @@ impl WsClientManager {
                     &trigger.node_id,
                     &trigger.url,
                     &trigger.credential_id,
-                    trigger.reconnect,
-                    trigger.reconnect_delay_ms,
-                    trigger.max_reconnect_attempts,
-                    trigger.heartbeat_interval_ms,
-                    &trigger.message_format,
+                    trigger.delay_ms,
+                    trigger.max_attempts,
+                    trigger.heartbeat_ms,
+                    &trigger.parse,
                 )
                 .await;
             }
@@ -185,9 +183,8 @@ impl WsClientManager {
         node_id: &str,
         url: &str,
         credential_id: &str,
-        reconnect: bool,
         reconnect_delay_ms: u64,
-        max_reconnect_attempts: u64,
+        max_attempts: Option<u64>,
         heartbeat_interval_ms: u64,
         message_format: &str,
     ) {
@@ -431,19 +428,15 @@ impl WsClientManager {
                     return;
                 }
 
-                if !reconnect {
-                    println!(
-                        "🔌 WsClient: reconnect disabled, stopping connection to {}",
-                        url_s
-                    );
-                    return;
-                }
-
+                // `--max-attempts`: omitted = unlimited, 0 = never
+                // reconnect, N = at most N reconnects.
                 attempt += 1;
-                if max_reconnect_attempts > 0 && attempt > max_reconnect_attempts {
+                if let Some(max) = max_attempts
+                    && attempt > max
+                {
                     eprintln!(
                         "❌ WsClient: max reconnect attempts ({}) reached for {}",
-                        max_reconnect_attempts, url_s
+                        max, url_s
                     );
                     return;
                 }

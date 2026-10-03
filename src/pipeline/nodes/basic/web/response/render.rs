@@ -37,17 +37,32 @@ pub fn compile_page(
     })
 }
 
-/// Strip private JWT claims from `payload["auth"]` before it reaches the browser.
+/// Strip private JWT claims before they reach the browser: from
+/// `payload["auth"]`, and from the `auth` of a trigger's answer the page
+/// state still carries (`webhook.auth`, `room.auth`, …).
 ///
 /// Only keys listed in `_zf_public` survive. If no keys are marked public,
 /// `auth` is set to `null` (secure by default). Pipeline nodes upstream still
 /// see the full claims — this filtering only applies at the render boundary.
 fn strip_private_auth_claims(mut payload: Value) -> Value {
-    let auth = match payload.get("auth") {
-        Some(Value::Object(m)) => m.clone(),
-        _ => return payload,
-    };
+    if let Some(obj) = payload.as_object_mut() {
+        public_auth_only(obj);
+        for source in crate::pipeline::nodes::basic::trigger::SOURCE_KEYS {
+            if let Some(Value::Object(envelope)) = obj.get_mut(source) {
+                public_auth_only(envelope);
+            }
+        }
+    }
+    payload
+}
 
+/// `holder["auth"]` cut down to the claims its `_zf_public` names (null when
+/// none are).
+fn public_auth_only(holder: &mut Map<String, Value>) {
+    let auth = match holder.get("auth") {
+        Some(Value::Object(m)) => m.clone(),
+        _ => return,
+    };
     let public_keys: Vec<String> = match auth.get("_zf_public") {
         Some(Value::Array(arr)) => arr
             .iter()
@@ -55,22 +70,17 @@ fn strip_private_auth_claims(mut payload: Value) -> Value {
             .collect(),
         _ => vec![],
     };
-
-    if let Some(obj) = payload.as_object_mut() {
-        if public_keys.is_empty() {
-            obj.insert("auth".to_string(), Value::Null);
-        } else {
-            let mut public_auth = Map::new();
-            for key in &public_keys {
-                if let Some(v) = auth.get(key) {
-                    public_auth.insert(key.clone(), v.clone());
-                }
+    if public_keys.is_empty() {
+        holder.insert("auth".to_string(), Value::Null);
+    } else {
+        let mut public_auth = Map::new();
+        for key in &public_keys {
+            if let Some(v) = auth.get(key) {
+                public_auth.insert(key.clone(), v.clone());
             }
-            obj.insert("auth".to_string(), Value::Object(public_auth));
         }
+        holder.insert("auth".to_string(), Value::Object(public_auth));
     }
-
-    payload
 }
 
 /// Inject trigger-context fields into state so templates always have
@@ -239,5 +249,18 @@ mod tests {
             })
         );
         assert!(filtered["auth"].get("secret").is_none());
+    }
+
+    /// The trigger's answer rides in the page state (`webhook.auth`), so its
+    /// claims are cut at the same boundary as the root `auth`.
+    #[test]
+    fn claims_inside_a_trigger_answer_are_filtered_too() {
+        let state = json!({
+            "webhook": { "body": null, "auth": { "sub": "user-1", "team": "staff-only", "_zf_public": ["sub"] } },
+            "room": { "auth": { "sub": "user-2", "team": "staff-only" } }
+        });
+        let filtered = super::strip_private_auth_claims(state);
+        assert_eq!(filtered["webhook"]["auth"], json!({ "sub": "user-1" }));
+        assert_eq!(filtered["room"]["auth"], json!(null), "nothing public: null");
     }
 }

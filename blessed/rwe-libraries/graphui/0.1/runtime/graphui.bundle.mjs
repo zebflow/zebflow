@@ -3886,8 +3886,8 @@ function resolveNodeTitle(kind, config, catalogTitle) {
   // 2. Special formatting for certain kinds
   if (kind === "trigger.webhook") {
     const method = String(cfg.method || "GET").toUpperCase();
-    const path = String(cfg.path || "/").trim() || "/";
-    return `${method} ${path}`;
+    const route = String(cfg.route || "/").trim() || "/";
+    return `${method} ${route}`;
   }
   // 3. Definition title (from catalog)
   if (catalogTitle) {

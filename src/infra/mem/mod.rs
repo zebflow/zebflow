@@ -11,19 +11,19 @@
 //! # Quick use in pipelines
 //!
 //! ```text
-//! | trigger.webhook --path /counter --method POST
+//! | trigger.webhook --route /counter --method POST
 //! | kv.entry.increment --key visits --out-key count
 //! | script.result.run -- "return { count: input.count };"
 //! ```
 //!
 //! ```text
-//! | trigger.webhook --path /notify --method POST
+//! | trigger.webhook --route /notify --method POST
 //! | kv.message.publish --channel alerts
 //! ```
 //!
 //! ```text
-//! | trigger.topic --channel alerts
-//! | script.result.run -- "return { received: input.message };"
+//! | trigger.topic --topic alerts
+//! | script.result.run -- "return { received: input.topic.message };"
 //! ```
 
 pub mod subscriber;

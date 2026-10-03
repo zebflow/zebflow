@@ -270,7 +270,7 @@ The nodes are **`fs.file.put`** and **`fs.image.thumbnail`**. (`fs.save`,
 an `--access` flag; visibility is not a node setting.
 
 `fs.file.put` — exactly one source: `--from` (the file, e.g.
-`"{{ input.files.photo }}"` for an upload field named `photo`), `--text`
+`"{{ $trigger.files.photo }}"` for an upload field named `photo`), `--text`
 (`--encoding base64` for bytes) or `--value` (JSON); `--accept`
 (repeat; `image|pdf|csv|json|glb|audio|video|archive`, default `image`,
 `--from` only), `--max-size` (with a unit, default `10MB`), `--folder`
@@ -287,7 +287,7 @@ in the payload, default `saved`; after `fs.file.put` it is `file`), `--delete-so
 # Register. Always write the JSON to a file and use -d @file: the DSL is full
 # of `--flags` and shell quoting mangles them.
 cat > /tmp/reg.json << 'EOJSON'
-{"dsl": "register pipelines/test/fs-thumb-check -- | trigger.webhook --path /test/fs-thumb --method POST | fs.file.put --from \"{{ input.files.photo }}\" --folder test-uploads | fs.image.thumbnail --source-key file --width 200 --height 200 --fit cover --format jpg --quality 80 --folder test-thumbs --delete-source"}
+{"dsl": "register pipelines/test/fs-thumb-check -- | trigger.webhook --route /test/fs-thumb --method POST | fs.file.put --from \"{{ $trigger.files.photo }}\" --folder test-uploads | fs.image.thumbnail --source-key file --width 200 --height 200 --fit cover --format jpg --quality 80 --folder test-thumbs --delete-source"}
 EOJSON
 curl -s -b /tmp/zf.txt -X POST -H "Content-Type: application/json" \
   -d @/tmp/reg.json \
@@ -320,8 +320,8 @@ curl -s -b /tmp/zf.txt -X POST -F photo=@/tmp/test_img.png \
   http://localhost:10610/wh/superadmin/default/test/fs-thumb
 ```
 
-The answer is the request payload (`body`, `files`, `file`, …) plus
-`thumbnail`, a FileRef. A node never removes a payload key: with
+The answer is the payload: `webhook: { body, files, … }` plus each node's
+answer — `file` (from `fs.file.put`) and `thumbnail`, a FileRef. A node never removes a payload key: with
 `--delete-source` the source object is gone but `file` stays, and
 `thumbnail.source_deleted` is `true`. The FileRef:
 

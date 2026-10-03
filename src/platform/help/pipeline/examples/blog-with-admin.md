@@ -45,7 +45,7 @@ run
 ### blog-list — public post listing
 
 ```
-| trigger.webhook --path /blog --method GET
+| trigger.webhook --route /blog --method GET
 | sekejap.query.run -- "SELECT * FROM posts WHERE published = true ORDER BY created_at DESC LIMIT 20"
 | script.result.run -- "return { posts: input.query.rows }"
 | web.response.send --template pages/blog-home.tsx
@@ -55,8 +55,8 @@ run
 
 ```zf
 register blog/detail --
-[a] trigger.webhook --path /blog/:slug --method GET
-[b] sekejap.query.run --param "1={{ input.params.slug }}" -- "SELECT * FROM posts WHERE _key = $1 AND published = true"
+[a] trigger.webhook --route /blog/:slug --method GET
+[b] sekejap.query.run --param "1={{ input.webhook.params.slug }}" -- "SELECT * FROM posts WHERE _key = $1 AND published = true"
 [c] logic.if --expr "input.query.rows.length > 0"
 [d] script.result.run -- "return { post: input.query.rows[0] };"
 [e] web.response.send --template pages/blog-detail.tsx
@@ -75,7 +75,7 @@ Authenticate at the door: the trigger itself checks the JWT, so the rest of
 the pipeline only ever runs for someone already verified.
 
 ```
-| trigger.webhook --path /admin/posts --method GET --auth-type jwt --auth-credential blog-jwt --auth-required-role admin
+| trigger.webhook --route /admin/posts --method GET --auth jwt --credential blog-jwt --role admin
 | sekejap.query.run -- "SELECT * FROM posts ORDER BY created_at DESC"
 | script.result.run -- "return { posts: input.query.rows }"
 | web.response.send --template pages/admin-posts.tsx
@@ -87,10 +87,10 @@ Sekejap has no `UPSERT`/`ON CONFLICT`. Look the slug up first, then branch:
 
 ```zf
 register blog/api-post-upsert --
-[trig] trigger.webhook --path /api/posts --method POST --auth-type jwt --auth-credential blog-jwt --auth-required-role admin
-[has_title] logic.if --expr "!!(input.body && input.body.title)"
+[trig] trigger.webhook --route /api/posts --method POST --auth jwt --credential blog-jwt --role admin
+[has_title] logic.if --expr "!!(input.webhook.body && input.webhook.body.title)"
 [bad] web.response.send --status 400 --body "{{ { ok: false, error: 'title required' } }}"
-[draft] script.result.run -- "const slug = input.body.slug || String(input.body.title).toLowerCase().replace(/[^a-z0-9]+/g,'-'); return { slug, title: input.body.title, body: input.body.body || '', published: !!input.body.published };"
+[draft] script.result.run -- "const slug = $trigger.body.slug || String($trigger.body.title).toLowerCase().replace(/[^a-z0-9]+/g,'-'); return { slug, title: $trigger.body.title, body: $trigger.body.body || '', published: !!$trigger.body.published };"
 [find] sekejap.query.run --param "1={{ $nodes.draft.slug }}" -- "SELECT _key FROM posts WHERE _key = $1"
 [exists] logic.if --expr "input.query.rows.length > 0"
 [update] sekejap.query.run --write --param "1={{ $nodes.draft.title }}" --param "2={{ $nodes.draft.body }}" --param "3={{ $nodes.draft.published }}" --param "4={{ Date.now() }}" --param "5={{ $nodes.draft.slug }}" -- "UPDATE posts SET title = $1, body = $2, published = $3, updated_at = $4 WHERE _key = $5"
@@ -115,8 +115,8 @@ graph id — it still resolves after `[find]`'s `sekejap.query.run` has replaced
 ### api-post-delete — delete post
 
 ```
-| trigger.webhook --path /api/posts/:slug --method DELETE --auth-type jwt --auth-credential blog-jwt --auth-required-role admin
-| sekejap.query.run --write --param "1={{ input.params.slug }}" -- "DELETE FROM posts WHERE _key = $1"
+| trigger.webhook --route /api/posts/:slug --method DELETE --auth jwt --credential blog-jwt --role admin
+| sekejap.query.run --write --param "1={{ input.webhook.params.slug }}" -- "DELETE FROM posts WHERE _key = $1"
 | script.result.run -- "return { ok: true }"
 ```
 
@@ -124,10 +124,10 @@ graph id — it still resolves after `[find]`'s `sekejap.query.run` has replaced
 
 ```zf
 register blog/auth-login --
-[trig] trigger.webhook --path /auth/login --method POST
-[lookup] sekejap.query.run --param "1={{ input.body.username }}" -- "SELECT _key, password_hash, roles FROM users WHERE _key = $1"
+[trig] trigger.webhook --route /auth/login --method POST
+[lookup] sekejap.query.run --param "1={{ input.webhook.body.username }}" -- "SELECT _key, password_hash, roles FROM users WHERE _key = $1"
 [found] logic.if --expr "input.query.rows.length > 0"
-[verify] crypto.password.verify --from "{{ input.body.password }}" --hash "{{ input.query.rows[0]?.password_hash }}"
+[verify] crypto.password.verify --from "{{ $trigger.body.password }}" --hash "{{ input.query.rows[0]?.password_hash }}"
 [token] auth.token.create --credential blog-jwt --claim "sub={{ input.query.rows[0]._key }}" --claim "roles:public={{ input.query.rows[0].roles }}" --expires-in 86400
 [welcome] web.response.send --status 302 --header "Location=/admin" --header "Set-Cookie=session={{ input.access_token }}; Path=/; Max-Age=86400; SameSite=Lax; HttpOnly"
 [denied] web.response.send --status 401 --body "invalid credentials"
@@ -151,7 +151,7 @@ constant-time.
 
 ## Nodes Used
 
-- `trigger.webhook` — HTTP endpoints (GET, POST, DELETE); `--auth-type jwt` gates admin routes
+- `trigger.webhook` — HTTP endpoints (GET, POST, DELETE); `--auth jwt` gates admin routes
 - `sekejap.query.run` — SQL against Sekejap; no `--table`/`--op`, just `SELECT`/`INSERT`/`UPDATE`/`DELETE` with `--param`, and `--write` for a write
 - `logic.if` — branch on "does this slug/user already exist"
 - `script` — slugify, validate, shape rows

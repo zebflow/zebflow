@@ -153,7 +153,7 @@ impl AssistantPlatformTools {
             ToolDef {
                 name: "pipeline_register".to_string(),
                 description: "Register (create or update) a pipeline by pipe-chained node body. \
-                    Body format: '| trigger.webhook --path /x | pg.query.run --credential db -- \"SQL\"'. \
+                    Body format: '| trigger.webhook --route /x | pg.query.run --credential db -- \"SQL\"'. \
                     After registering, call pipeline_activate to make it live.".to_string(),
                 parameters: json!({
                     "type": "object",

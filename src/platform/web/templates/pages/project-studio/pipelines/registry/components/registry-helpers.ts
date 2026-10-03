@@ -85,7 +85,7 @@ export function peEmptyPipelineDocument(name, triggerKind) {
       nodes: [{ id: "trigger_manual", kind: "trigger.manual", input_pins: [], output_pins: ["out"], config: {} }], edges: [] };
   } else {
     graph = { id, entry_nodes: ["trigger_webhook"],
-      nodes: [{ id: "trigger_webhook", kind: "trigger.webhook", input_pins: [], output_pins: ["out"], config: { path: `/${id}`, method: "GET" } }], edges: [] };
+      nodes: [{ id: "trigger_webhook", kind: "trigger.webhook", input_pins: [], output_pins: ["out"], config: { route: `/${id}`, method: "GET" } }], edges: [] };
   }
   return pePipelineDocument(graph);
 }

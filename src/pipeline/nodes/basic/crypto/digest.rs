@@ -47,7 +47,7 @@ pub fn definition() -> NodeDefinition {
         ],
         layout: vec![LayoutItem::Field("text".to_string()), LayoutItem::Field("algorithm".to_string())],
         examples: vec![
-            NodeExample::dsl("A content fingerprint", r#"crypto.digest.create --text "{{ input.body.content }}""#)
+            NodeExample::dsl("A content fingerprint", r#"crypto.digest.create --text "{{ $trigger.body.content }}""#)
                 .output(json!({ "digest": { "algorithm": "sha256", "value": "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824" } })),
         ],
         ..Default::default()

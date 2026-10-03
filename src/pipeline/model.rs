@@ -164,9 +164,9 @@
 //! [`NodeDefinition::input_schema`] and [`NodeDefinition::output_schema`] document these
 //! payload shapes — they describe the *flowing data*, not the static config.
 //!
-//! The trigger node is special: it receives the raw request payload and passes it through
-//! unchanged (or enriched).  Downstream nodes transform the payload until a terminal node
-//! (e.g. `web.response.send`) produces the final HTTP response.
+//! The trigger node is special: it receives the envelope the ingress built and answers it
+//! under one key, its source (`webhook: { body, query, … }`).  Downstream nodes add their
+//! answers until a terminal node (e.g. `web.response.send`) produces the final HTTP response.
 
 use std::fmt::{Display, Formatter};
 
@@ -1537,15 +1537,18 @@ pub struct PipelineContext {
     /// without requiring a `route` field on the node config itself.
     #[serde(default)]
     pub route: String,
-    /// The raw trigger payload that started this pipeline run.  Passed into the entry
-    /// node and forwarded downstream through edges.
+    /// The envelope that started this pipeline run. Passed into the entry
+    /// node, which answers it under its source key (`webhook: { … }`).
     pub input: Value,
-    /// Immutable trigger-event snapshot carried to every node in the run.
+    /// Immutable trigger-event snapshot carried to every node in the run
+    /// (`$trigger`).
     ///
-    /// Set once at pipeline entry by the trigger type; never mutated by nodes.
-    /// For webhook triggers: contains `auth` (decoded JWT claims), `params` (path
-    /// params), `query` (query string), `headers` (safe subset of request headers).
-    /// For schedule/manual/WS triggers: `None`.
+    /// Set once at pipeline entry by the ingress; never mutated by nodes.
+    /// For webhook triggers: the envelope plus `search`, `pathname` and the
+    /// safe `headers`. For manual runs: the input with empty `params`,
+    /// `query`, `auth`. For room events: the envelope with `auth`. `None`
+    /// makes the engine use `input` itself, so `$trigger` is always the
+    /// envelope.
     #[serde(default)]
     pub trigger: Option<Value>,
     /// Credential placeholder map for composite/WASM node execution.

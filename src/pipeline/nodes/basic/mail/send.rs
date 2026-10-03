@@ -196,7 +196,7 @@ pub fn definition() -> NodeDefinition {
             LayoutItem::Field("embed".to_string()),
         ],
         examples: vec![
-            crate::pipeline::model::NodeExample::dsl("Confirmation after a form", r#"mail.message.send --credential smtp_main --to "{{ input.body.email }}" --subject "We got your message" --text "Thanks {{ input.body.name }}, we will reply within a day.""#)
+            crate::pipeline::model::NodeExample::dsl("Confirmation after a form", r#"mail.message.send --credential smtp_main --to "{{ $trigger.body.email }}" --subject "We got your message" --text "Thanks {{ $trigger.body.name }}, we will reply within a day.""#)
                 .output(serde_json::json!({ "mail": { "sent": true, "attached": [], "to": "a@x.io", "subject": "We got your message" } }))
                 .note("Adds `mail` to the payload and keeps the rest. The credential is created by the owner in Studio → Credentials (kind smtp)."),
         ],

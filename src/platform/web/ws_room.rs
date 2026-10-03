@@ -283,6 +283,12 @@ async fn run_event(ctx: &SessionCtx, auth: &mut AuthCache, event: &str, payload:
         if let (Some(c), Value::Object(map)) = (&claims, &mut input) {
             map.insert("auth".to_string(), c.clone());
         }
+        // `$trigger` is the envelope `trigger.room` answers under `room`, with
+        // `auth` always present (null for an open trigger).
+        let mut snapshot = input.clone();
+        if let Value::Object(map) = &mut snapshot {
+            map.entry("auth".to_string()).or_insert(Value::Null);
+        }
         let pctx = PipelineContext {
             owner: ctx.owner.clone(),
             project: ctx.project.clone(),
@@ -290,7 +296,7 @@ async fn run_event(ctx: &SessionCtx, auth: &mut AuthCache, event: &str, payload:
             request_id: format!("{}-{}", ctx.session_id, uuid::Uuid::new_v4().simple()),
             route: Default::default(),
             input,
-            trigger: Some(json!({ "auth": claims.unwrap_or(Value::Null) })),
+            trigger: Some(snapshot),
             placeholder: None,
         };
         let state = &ctx.state;

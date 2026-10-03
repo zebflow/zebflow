@@ -4,7 +4,7 @@
 
 A forum with threaded discussion rooms. Each room has a WebSocket connection
 for live chat. Messages persist in Sekejap. Public read, open write (add
-`--auth-type jwt` to the webhook and WS triggers below to require sign-in).
+`--auth jwt` to the webhook and WS triggers below to require sign-in).
 
 ---
 
@@ -32,7 +32,7 @@ CREATE TABLE forum_messages (_key TEXT PRIMARY KEY, room TEXT, user TEXT, text T
 ### forum-list — public room listing
 
 ```
-| trigger.webhook --path /forum --method GET
+| trigger.webhook --route /forum --method GET
 | sekejap.query.run -- "SELECT * FROM forum_rooms ORDER BY last_activity DESC"
 | script.result.run -- "return { rooms: input.query.rows }"
 | web.response.send --template pages/forum-home.tsx
@@ -45,9 +45,9 @@ being overwritten by the messages query:
 
 ```zf
 register forum/room --
-[a] trigger.webhook --path /forum/:room --method GET
-[room] sekejap.query.run --param "1={{ input.params.room }}" -- "SELECT * FROM forum_rooms WHERE _key = $1"
-[msgs] sekejap.query.run --param "1={{ input.params.room }}" -- "SELECT * FROM forum_messages WHERE room = $1 ORDER BY ts DESC LIMIT 50"
+[a] trigger.webhook --route /forum/:room --method GET
+[room] sekejap.query.run --param "1={{ input.webhook.params.room }}" -- "SELECT * FROM forum_rooms WHERE _key = $1"
+[msgs] sekejap.query.run --param "1={{ $trigger.params.room }}" -- "SELECT * FROM forum_messages WHERE room = $1 ORDER BY ts DESC LIMIT 50"
 [merge] script.result.run -- "return { room: $nodes.room.query.rows[0] || null, messages: input.query.rows.slice().reverse() };"
 [b] web.response.send --template pages/forum-room.tsx
 
@@ -61,10 +61,10 @@ register forum/room --
 
 ```zf
 register forum/api-room-create --
-[trig] trigger.webhook --path /api/forum/rooms --method POST
-[has_name] logic.if --expr "!!(input.body && input.body.name)"
+[trig] trigger.webhook --route /api/forum/rooms --method POST
+[has_name] logic.if --expr "!!(input.webhook.body && input.webhook.body.name)"
 [bad] web.response.send --status 400 --body "{{ { ok: false, error: 'name required' } }}"
-[draft] script.result.run -- "const id = String(input.body.name).toLowerCase().replace(/[^a-z0-9]+/g,'-'); return { id, name: input.body.name };"
+[draft] script.result.run -- "const id = String($trigger.body.name).toLowerCase().replace(/[^a-z0-9]+/g,'-'); return { id, name: $trigger.body.name };"
 [ins] sekejap.query.run --write --param "1={{ $nodes.draft.id }}" --param "2={{ $nodes.draft.name }}" --param "3={{ Date.now() }}" --param "4={{ Date.now() }}" -- "INSERT INTO forum_rooms (_key, name, created_at, last_activity) VALUES ($1, $2, $3, $4)"
 [ok] script.result.run -- "return { ok: true, id: $nodes.draft.id };"
 
@@ -78,14 +78,15 @@ register forum/api-room-create --
 ### ws-chat-message — WebSocket chat handler
 
 `trigger.room --room` is a literal filter, never an expression, so it is left
-off here and every room's traffic reaches this one pipeline; `input.room_id`
-(set by the trigger) says which room a given event came from.
+off here and every room's traffic reaches this one pipeline; the trigger
+answers under `room` — `input.room.room_id` right after the trigger, or
+`$trigger.room_id` anywhere later — says which room a given event came from.
 
 ```zf
 register forum/ws-chat-message --
 [a] trigger.room --event chat.message
-[guard] logic.if --expr "!!(input.payload && input.payload.user && input.payload.text)"
-[save] script.result.run -- "return { id: Date.now().toString(), room: input.room_id, user: input.payload.user, text: input.payload.text, ts: Date.now() };"
+[guard] logic.if --expr "!!(input.room.payload && input.room.payload.user && input.room.payload.text)"
+[save] script.result.run -- "return { id: Date.now().toString(), room: $trigger.room_id, user: $trigger.payload.user, text: $trigger.payload.text, ts: Date.now() };"
 [ins] sekejap.query.run --write --param "1={{ $nodes.save.id }}" --param "2={{ $nodes.save.room }}" --param "3={{ $nodes.save.user }}" --param "4={{ $nodes.save.text }}" --param "5={{ $nodes.save.ts }}" -- "INSERT INTO forum_messages (_key, room, user, text, ts) VALUES ($1, $2, $3, $4, $5)"
 [emit] ws.message.send --room "{{ $nodes.save.room }}" --event chat.message --body "{{ $nodes.save }}"
 

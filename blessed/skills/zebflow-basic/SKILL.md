@@ -49,10 +49,10 @@ worked.
   `<!-- RWE component error: … -->` and the response is still 200; a page
   whose hydration failed still serves correct HTML. `route_fetch` and read the body;
   open it in a browser. `skill_read name="zebflow-verify"` has the checks.
-- **Webhook data is under `input.body`.** A form field is `input.body.email`;
-  the route's parameters are `input.params`, the query `input.query`. In `{{ }}`
-  the request is `$trigger.params`, `$trigger.query`, `$trigger.auth` — there
-  is no `$trigger.body`.
+- **Webhook data is under `input.webhook.body`.** A form field is
+  `input.webhook.body.email`; the route's parameters are `input.webhook.params`,
+  the query `input.webhook.query`. In `{{ }}` the request is `$trigger.body`,
+  `$trigger.params`, `$trigger.query`, `$trigger.auth`.
 - **Every file imports what it uses** from `"zeb/react"`, `"zeb/ui/<name>"` or
   `"@/…"`. Nothing is inherited from the page that imports it.
 - **Quote any flag value that contains `{{ }}` or a space** as one argument.

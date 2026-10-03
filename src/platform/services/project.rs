@@ -157,7 +157,7 @@ pub fn webhook_triggers_from_graph(graph: &PipelineGraph) -> Vec<ProjectWebhookT
         .map(|node| ProjectWebhookTrigger {
             node_id: node.id.clone(),
             path: canonical_webhook_path(
-                node.config.get("path").and_then(serde_json::Value::as_str),
+                node.config.get("route").and_then(serde_json::Value::as_str),
             ),
             method: canonical_webhook_method(
                 node.config
@@ -1565,7 +1565,7 @@ impl ProjectService {
                         "kind": "trigger.webhook",
                         "input_pins": [],
                         "output_pins": ["out"],
-                        "config": { "path": "/sample", "method": "GET" }
+                        "config": { "route": "/sample", "method": "GET" }
                     },
                     {
                         "id": "reply",
@@ -1595,7 +1595,7 @@ impl ProjectService {
                         "kind": "trigger.webhook",
                         "input_pins": [],
                         "output_pins": ["out"],
-                        "config": { "path": "/p/sample", "method": "GET" }
+                        "config": { "route": "/p/sample", "method": "GET" }
                     },
                     {
                         "id": "page",
@@ -3762,7 +3762,7 @@ mod tests {
   "id":"invalid-router",
   "entry_nodes":["trigger_webhook"],
   "nodes":[
-    {"id":"trigger_webhook","kind":"trigger.webhook","input_pins":[],"output_pins":["out"],"config":{"path":"/router","method":"POST"}},
+    {"id":"trigger_webhook","kind":"trigger.webhook","input_pins":[],"output_pins":["out"],"config":{"route":"/router","method":"POST"}},
     {"id":"kind_route","kind":"logic.match","input_pins":["in"],"output_pins":["csv","geojson","archive","default"],"config":{"expression":"$input.input_kind","cases":["csv","geojson","archive"],"default":"default"}},
     {"id":"csv_branch","kind":"web.response.send","input_pins":["in"],"output_pins":["out"],"config":{}}
   ],
@@ -3782,7 +3782,7 @@ mod tests {
   "id":"valid-router",
   "entry_nodes":["trigger_webhook"],
   "nodes":[
-    {"id":"trigger_webhook","kind":"trigger.webhook","input_pins":[],"output_pins":["out"],"config":{"path":"/router","method":"POST"}},
+    {"id":"trigger_webhook","kind":"trigger.webhook","input_pins":[],"output_pins":["out"],"config":{"route":"/router","method":"POST"}},
     {"id":"kind_route","kind":"logic.match","input_pins":["in"],"output_pins":["csv","geojson","archive","default"],"config":{"expression":"$input.input_kind","cases":["csv","geojson","archive"],"default":"default"}},
     {"id":"csv_branch","kind":"web.response.send","input_pins":["in"],"output_pins":["out"],"config":{}}
   ],
@@ -3936,7 +3936,7 @@ mod tests {
   "id":"pipeline-canvas",
   "entry_nodes":["trigger_webhook"],
   "nodes":[
-    {"id":"trigger_webhook","kind":"trigger.webhook","input_pins":[],"output_pins":["out"],"config":{"path":"/a"}},
+    {"id":"trigger_webhook","kind":"trigger.webhook","input_pins":[],"output_pins":["out"],"config":{"route":"/a"}},
     {"id":"web-response","kind":"web.response.send","input_pins":["in"],"output_pins":["out"],"config":{"template":"pages/home/home.tsx"}}
   ],
   "edges":[{"from_node":"trigger_webhook","from_pin":"out","to_node":"web-response","to_pin":"in"}]}
@@ -4183,7 +4183,7 @@ mod tests {
   "id":"pipeline-canvas",
   "entry_nodes":["trigger_webhook"],
   "nodes":[
-    {"id":"trigger_webhook","kind":"trigger.webhook","input_pins":[],"output_pins":["out"],"config":{"path":"/a"}},
+    {"id":"trigger_webhook","kind":"trigger.webhook","input_pins":[],"output_pins":["out"],"config":{"route":"/a"}},
     {"id":"web-response","kind":"web.response.send","input_pins":["in"],"output_pins":["out"],"config":{"template":"pages/home/home.tsx"}}
   ],
   "edges":[{"from_node":"trigger_webhook","from_pin":"out","to_node":"web-response","to_pin":"in"}]}
@@ -4246,7 +4246,7 @@ mod tests {
   "id":"pipeline-canvas",
   "entry_nodes":["trigger_webhook"],
   "nodes":[
-    {"id":"trigger_webhook","kind":"trigger.webhook","input_pins":[],"output_pins":["out"],"config":{"path":"/same","method":"GET"}},
+    {"id":"trigger_webhook","kind":"trigger.webhook","input_pins":[],"output_pins":["out"],"config":{"route":"/same","method":"GET"}},
     {"id":"web-response","kind":"web.response.send","input_pins":["in"],"output_pins":["out"],"config":{"template":"pages/home/home.tsx"}}
   ],
   "edges":[{"from_node":"trigger_webhook","from_pin":"out","to_node":"web-response","to_pin":"in"}]}
@@ -4304,7 +4304,7 @@ mod tests {
   "id":"pipeline-canvas",
   "entry_nodes":["trigger_webhook"],
   "nodes":[
-    {"id":"trigger_webhook","kind":"trigger.webhook","input_pins":[],"output_pins":["out"],"config":{"path":"/same","method":"POST"}},
+    {"id":"trigger_webhook","kind":"trigger.webhook","input_pins":[],"output_pins":["out"],"config":{"route":"/same","method":"POST"}},
     {"id":"web-response","kind":"web.response.send","input_pins":["in"],"output_pins":["out"],"config":{"template":"pages/home/home.tsx"}}
   ],
   "edges":[{"from_node":"trigger_webhook","from_pin":"out","to_node":"web-response","to_pin":"in"}]}
@@ -4358,7 +4358,7 @@ mod tests {
   "id":"pipeline-canvas",
   "entry_nodes":["trigger_webhook"],
   "nodes":[
-    {"id":"trigger_webhook","kind":"trigger.webhook","input_pins":[],"output_pins":["out"],"config":{"path":"/same","method":"POST"}},
+    {"id":"trigger_webhook","kind":"trigger.webhook","input_pins":[],"output_pins":["out"],"config":{"route":"/same","method":"POST"}},
     {"id":"web-response","kind":"web.response.send","input_pins":["in"],"output_pins":["out"],"config":{"template":"pages/home/home.tsx"}}
   ],
   "edges":[{"from_node":"trigger_webhook","from_pin":"out","to_node":"web-response","to_pin":"in"}]}
@@ -4440,7 +4440,7 @@ mod tests {
   "id":"pipeline-canvas",
   "entry_nodes":["trigger_webhook"],
   "nodes":[
-    {"id":"trigger_webhook","kind":"trigger.webhook","input_pins":[],"output_pins":["out"],"config":{"path":"/locked"}},
+    {"id":"trigger_webhook","kind":"trigger.webhook","input_pins":[],"output_pins":["out"],"config":{"route":"/locked"}},
     {"id":"web-response","kind":"web.response.send","input_pins":["in"],"output_pins":["out"],"config":{"template":"pages/home/home.tsx"}}
   ],
   "edges":[{"from_node":"trigger_webhook","from_pin":"out","to_node":"web-response","to_pin":"in"}]}
@@ -4577,7 +4577,7 @@ mod tests {
   "spec":{{
   "id":"{id}",
   "entry_nodes":["wh"],
-  "nodes":[{{"id":"wh","kind":"trigger.webhook","input_pins":[],"output_pins":["out"],"config":{{"path":"{path}","method":"POST"}}}}],
+  "nodes":[{{"id":"wh","kind":"trigger.webhook","input_pins":[],"output_pins":["out"],"config":{{"route":"{path}","method":"POST"}}}}],
   "edges":[]}}
 }}"#
         )

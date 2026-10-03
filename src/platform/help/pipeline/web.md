@@ -55,7 +55,7 @@ unless a `Content-Type` header says otherwise. At most one of `--body`,
 **JSON**
 
 ```
-| trigger.webhook --path /api/posts --method GET
+| trigger.webhook --route /api/posts --method GET
 | sekejap.query.run -- "SELECT id, title FROM posts ORDER BY created_at DESC"
 | web.response.send --body "{{ input.query.rows }}"
 ```
@@ -63,7 +63,7 @@ unless a `Content-Type` header says otherwise. At most one of `--body`,
 **A page**
 
 ```
-| trigger.webhook --path /blog --method GET
+| trigger.webhook --route /blog --method GET
 | sekejap.query.run -- "SELECT id, title, published_at FROM posts ORDER BY published_at DESC LIMIT 20"
 | web.response.send --template pages/blog-home.tsx
 ```
@@ -71,7 +71,7 @@ unless a `Content-Type` header says otherwise. At most one of `--body`,
 **Found or 404** — branch, then answer on each pin
 
 ```
-[a] trigger.webhook --path /blog/:slug --method GET
+[a] trigger.webhook --route /blog/:slug --method GET
 [b] sekejap.query.run --param "1={{ $trigger.params.slug }}" -- "SELECT * FROM posts WHERE slug = $1"
 [c] logic.if --expr "input.query.rows.length > 0"
 [d] web.response.send --template pages/post.tsx
@@ -83,28 +83,30 @@ unless a `Content-Type` header says otherwise. At most one of `--body`,
 ```
 
 **A designed 404 for paths nobody registered** — a `trigger.error`
-pipeline, not a webhook. A webhook `--path /*` or `/:path` is not a
+pipeline, not a webhook. A webhook `--route /*` or `/:path` is not a
 catch-all; it never sees a path that matched nothing.
 
 ```
-| trigger.error --code 404
+| trigger.error --status 404
 | web.response.send --status 404 --template pages/not-found.tsx
 ```
 
-`--code 4xx`, `5xx` or empty widen it; the most specific active one wins.
-The payload is `{ error_code, error_message, original_path, method }`.
+`--status 4xx`, `5xx` or empty widen it; the most specific active one wins.
+The trigger answers under `error`: `input.error.error_code`,
+`input.error.error_message`, `input.error.original_path`, `input.error.path`,
+`input.error.method` (`$trigger.error_code` … anywhere later in the chain).
 
 **Redirect**
 
 ```
-| trigger.webhook --path /go/signup --method GET
+| trigger.webhook --route /go/signup --method GET
 | web.response.send --status 302 --header "Location=/auth/register?source=landing"
 ```
 
 **Redirect to a computed URL**
 
 ```
-| trigger.webhook --path /after-login --method GET --auth-type jwt --auth-credential jwt_main
+| trigger.webhook --route /after-login --method GET --auth jwt --credential jwt_main
 | sekejap.query.run --param "1={{ $trigger.auth.sub }}" -- "SELECT home FROM users WHERE id = $1"
 | web.response.send --status 302 --header "Location={{ input.query.rows[0]?.home || '/home' }}"
 ```
@@ -112,10 +114,10 @@ The payload is `{ error_code, error_message, original_path, method }`.
 **Login — mint a token, set the cookie**
 
 ```
-[a] trigger.webhook --path /auth/login --method POST
-[b] sekejap.query.run --param "1={{ input.body.email }}" -- "SELECT id, name, password_hash, roles FROM users WHERE email = $1"
+[a] trigger.webhook --route /auth/login --method POST
+[b] sekejap.query.run --param "1={{ input.webhook.body.email }}" -- "SELECT id, name, password_hash, roles FROM users WHERE email = $1"
 [c] logic.if --expr "input.query.rows.length === 1"
-[d] crypto.password.verify --from "{{ $nodes.a.body.password }}" --hash "{{ input.query.rows[0]?.password_hash }}"
+[d] crypto.password.verify --from "{{ $nodes.a.webhook.body.password }}" --hash "{{ input.query.rows[0]?.password_hash }}"
 [e] script.result.run -- "const u = input.query.rows[0]; return { id: u.id, name: u.name, roles: u.roles || ['member'] }"
 [f] auth.token.create --credential jwt_main --claim "sub={{ input.id }}" --claim "name:public={{ input.name }}" --claim "roles:public={{ input.roles }}"
 [g] web.response.send --status 302 --header "Location=/home" --header "Set-Cookie=zebflow_session={{ input.access_token }}; Path=/; Max-Age=86400; SameSite=Lax; HttpOnly"
@@ -134,7 +136,7 @@ The payload is `{ error_code, error_message, original_path, method }`.
 hash from `--hash`, routes to `true`/`false`, and adds `password: { valid }`
 to the payload, keeping `input.query.rows` for `[e]`. An empty hash is
 refused to `:error`, never `true`. The submitted password is no longer in `input` after the query, so
-it is read from the trigger's own output, `$nodes.a.body.password`. `roles`
+it is read from the trigger's own output, `$nodes.a.webhook.body.password`. `roles`
 must be an array. `:public` goes on the claim's name (`roles:public=`), so
 the value is a whole `{{ }}` and keeps the type its expression gives: a list
 stays a list, an 18-digit NIM or NIP stays the text it was. The full
@@ -143,7 +145,7 @@ recipe with registration: `help("pipeline/examples/cookie-jwt-auth")`.
 **Headers**
 
 ```
-| trigger.webhook --path /api/data --method GET
+| trigger.webhook --route /api/data --method GET
 | sekejap.query.run -- "SELECT * FROM data"
 | web.response.send --body "{{ input.query.rows }}" --header Cache-Control=max-age=60 --header X-Version=2
 ```
@@ -191,9 +193,9 @@ service worker is: every script served this way starts with
 worker can key its cache on them.
 
 ```text
-register pipelines/pwa/manifest -- | trigger.webhook --path /manifest.webmanifest --method GET | web.response.send --file pwa/manifest.webmanifest
-register pipelines/pwa/worker   -- | trigger.webhook --path /sw.js --method GET               | web.response.send --file pwa/site.sw.ts
-register pipelines/pwa/icons    -- | trigger.webhook --path /pwa/{file} --method GET          | web.response.send --root pwa/icons --file "{{ input.params.file }}"
+register pipelines/pwa/manifest -- | trigger.webhook --route /manifest.webmanifest --method GET | web.response.send --file pwa/manifest.webmanifest
+register pipelines/pwa/worker   -- | trigger.webhook --route /sw.js --method GET               | web.response.send --file pwa/site.sw.ts
+register pipelines/pwa/icons    -- | trigger.webhook --route /pwa/{file} --method GET          | web.response.send --root pwa/icons --file "{{ input.webhook.params.file }}"
 ```
 
 - The manifest is a JSON file you write (`name`, `id`, `start_url`, `scope`

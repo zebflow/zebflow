@@ -300,7 +300,7 @@
 //! //!
 //! //! # DSL
 //! //! ```text
-//! //! | trigger.webhook --path /ping
+//! //! | trigger.webhook --route /ping
 //! //! | n.example.echo --tag hello
 //! //! ```
 //!

@@ -5,20 +5,19 @@
 //! node config.  When the MCP server receives `tools/list`, dynamic tools
 //! from active pipelines are merged with the static tool set.  When an
 //! agent calls the tool, the pipeline executes with the tool arguments as
-//! input payload.  The node itself is a passthrough — the arguments flow
-//! downstream unchanged.
+//! input.  The node answers one key, `mcp`: `{ tool_name, arguments }`.
 //!
 //! # Config flags
 //!
 //! | Flag | Type | Required | Description |
 //! |---|---|---|---|
-//! | `--tool-name` | string | yes | MCP tool name (e.g. `greet_user`) |
-//! | `--tool-description` | string | no | Human-readable tool description |
+//! | `--name` | string | yes | MCP tool name (e.g. `greet_user`) |
+//! | `--description` | string | no | Human-readable tool description |
 //! | `--params` | csv | no | Comma-separated `name:type` pairs (e.g. `name:string,age:number`) |
 //!
-//! # Injected payload fields
+//! # The answer: `mcp: { … }`
 //!
-//! The MCP dispatch handler populates the initial payload before execution:
+//! The MCP dispatch handler builds the envelope before execution:
 //!
 //! | Field | Type | Description |
 //! |---|---|---|
@@ -29,15 +28,15 @@
 //!
 //! **Greeting tool:**
 //! ```text
-//! | trigger.mcp --tool-name greet_user --tool-description "Greet a user by name" --params name:string
-//! | script.result.run -- "return { greeting: 'Hello, ' + input.arguments.name + '!' };"
+//! | trigger.mcp --name greet_user --description "Greet a user by name" --params name:string
+//! | script.result.run -- "return { greeting: 'Hello, ' + input.mcp.arguments.name + '!' };"
 //! | web.response.send
 //! ```
 //!
 //! **Database lookup tool:**
 //! ```text
-//! | trigger.mcp --tool-name lookup_user --tool-description "Look up user by email" --params email:string
-//! | pg.query.run --credential main-db --param "1={{ input.arguments.email }}" -- "SELECT * FROM users WHERE email = $1"
+//! | trigger.mcp --name lookup_user --description "Look up user by email" --params email:string
+//! | pg.query.run --credential main-db --param "1={{ input.mcp.arguments.email }}" -- "SELECT * FROM users WHERE email = $1"
 //! | web.response.send
 //! ```
 
@@ -53,15 +52,18 @@ use crate::pipeline::{
 
 pub const NODE_KIND: &str = "trigger.mcp";
 const OUTPUT_PIN_OUT: &str = "out";
+/// The key this trigger answers under.
+pub const ANSWER_KEY: &str = "mcp";
 
 /// Return the [`NodeDefinition`] for `trigger.mcp`.
 pub fn definition() -> NodeDefinition {
     NodeDefinition {
         kind: NODE_KIND.to_string(),
         title: "MCP Tool Trigger".to_string(),
-        description: "Makes this pipeline a tool on the project's MCP endpoint: once active, `--tool-name` appears in `tools/list` and an \
-            agent calling it runs the pipeline with the tool arguments as the payload (`input.<param>`). `--params` declares the \
-            arguments as `name:type` pairs (`string`, `number`, `boolean`, `object`, `array`); `--tool-description` is what the agent \
+        description: "Makes this pipeline a tool on the project's MCP endpoint: once active, `--name` appears in `tools/list` and an \
+            agent calling it runs the pipeline. Answers one key, `mcp`: `{ tool_name, arguments }` — an argument is \
+            `input.mcp.arguments.<param>` (`$trigger.arguments.<param>`). `--params` declares the \
+            arguments as `name:type` pairs (`string`, `number`, `boolean`, `object`, `array`); `--description` is what the agent \
             reads to decide when to call it — write it as a trigger, not a label. The answer the agent receives is the last node's \
             payload as JSON; do not end in a page."
             .to_string(),
@@ -80,7 +82,15 @@ pub fn definition() -> NodeDefinition {
         }),
         output_schema: json!({
             "type": "object",
-            "description": "Unmodified input payload for downstream nodes."
+            "properties": {
+                "mcp": {
+                    "type": "object",
+                    "properties": {
+                        "tool_name": { "type": "string" },
+                        "arguments": { "type": "object" }
+                    }
+                }
+            }
         }),
         input_pins: vec![],
         output_pins: vec![OUTPUT_PIN_OUT.to_string()],
@@ -88,13 +98,13 @@ pub fn definition() -> NodeDefinition {
         script_bridge: None,
         config_schema: json!({
             "type": "object",
-            "required": ["tool_name"],
+            "required": ["name"],
             "properties": {
-                "tool_name": {
+                "name": {
                     "type": "string",
                     "description": "MCP tool name. Must be a valid identifier (letters, digits, underscores). This is how AI agents will call this tool."
                 },
-                "tool_description": {
+                "description": {
                     "type": "string",
                     "description": "Human-readable description shown to AI agents explaining what this tool does."
                 },
@@ -106,20 +116,22 @@ pub fn definition() -> NodeDefinition {
         }),
         dsl_flags: vec![
             DslFlag {
-                flag: "--tool-name".to_string(),
-                config_key: "tool_name".to_string(),
+                flag: "--name".to_string(),
+                config_key: "name".to_string(),
                 description: "MCP tool name (e.g. greet_user). Must be a valid identifier."
                     .to_string(),
                 kind: DslFlagKind::Scalar,
                 required: true,
+                value: "text".to_string(),
                 ..Default::default()
             },
             DslFlag {
-                flag: "--tool-description".to_string(),
-                config_key: "tool_description".to_string(),
-                description: "Human-readable description for the tool.".to_string(),
+                flag: "--description".to_string(),
+                config_key: "description".to_string(),
+                description: "What the tool does and when an agent should call it.".to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
+                value: "text".to_string(),
                 ..Default::default()
             },
             DslFlag {
@@ -130,12 +142,13 @@ pub fn definition() -> NodeDefinition {
                         .to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
+                value: "text".to_string(),
                 ..Default::default()
             },
         ],
         fields: vec![
             NodeFieldDef {
-                name: "tool_name".to_string(),
+                name: "name".to_string(),
                 label: "Tool Name".to_string(),
                 field_type: NodeFieldType::Text,
                 help: Some(
@@ -144,7 +157,7 @@ pub fn definition() -> NodeDefinition {
                 ..Default::default()
             },
             NodeFieldDef {
-                name: "tool_description".to_string(),
+                name: "description".to_string(),
                 label: "Description".to_string(),
                 field_type: NodeFieldType::Textarea,
                 help: Some("Human-readable description shown to AI agents.".to_string()),
@@ -161,16 +174,16 @@ pub fn definition() -> NodeDefinition {
             },
         ],
         layout: vec![
-            LayoutItem::Field("tool_name".to_string()),
-            LayoutItem::Field("tool_description".to_string()),
+            LayoutItem::Field("name".to_string()),
+            LayoutItem::Field("description".to_string()),
             LayoutItem::Field("parameters".to_string()),
         ],
         ai_tool: Default::default(),
         examples: vec![
-            crate::pipeline::model::NodeExample::dsl("A tool that looks up stock", r#"trigger.mcp --tool-name stock_lookup --tool-description "Current stock level for one SKU. Use before promising availability." --params sku:string"#)
-                .input(serde_json::json!({ "sku": "MUG-01" }))
-                .output(serde_json::json!({ "sku": "MUG-01" }))
-                .note("Then `| sekejap.query.run --param \"1={{ input.sku }}\" -- \"SELECT sku, on_hand FROM stock WHERE sku = $1\"`."),
+            crate::pipeline::model::NodeExample::dsl("A tool that looks up stock", r#"trigger.mcp --name stock_lookup --description "Current stock level for one SKU. Use before promising availability." --params sku:string"#)
+                .input(serde_json::json!({ "tool_name": "stock_lookup", "arguments": { "sku": "MUG-01" } }))
+                .output(serde_json::json!({ "mcp": { "tool_name": "stock_lookup", "arguments": { "sku": "MUG-01" } } }))
+                .note("Then `| sekejap.query.run --param \"1={{ input.mcp.arguments.sku }}\" -- \"SELECT sku, on_hand FROM stock WHERE sku = $1\"`."),
         ],
         ..Default::default()
     }
@@ -180,11 +193,11 @@ pub fn definition() -> NodeDefinition {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Config {
     /// MCP tool name — the identifier used in `tools/list` and `tools/call`.
-    pub tool_name: String,
+    pub name: String,
 
     /// Human-readable tool description shown to AI agents.
     #[serde(default)]
-    pub tool_description: String,
+    pub description: String,
 
     /// Comma-separated `name:type` pairs defining the input schema.
     /// Example: `"name:string,age:number,active:boolean"`
@@ -220,15 +233,11 @@ impl NodeHandler for Node {
         &self,
         input: NodeExecutionInput,
     ) -> Result<NodeExecutionOutput, PipelineError> {
-        // Passthrough — the MCP dispatch handler injected tool_name and
-        // arguments into the payload before pipeline execution.
+        // The MCP dispatch handler built `{ tool_name, arguments }`.
         Ok(NodeExecutionOutput {
             output_pins: vec![OUTPUT_PIN_OUT.to_string()],
-            payload: input.payload,
-            trace: vec![format!(
-                "trigger.mcp: passthrough (tool={})",
-                self.config.tool_name
-            )],
+            payload: super::answer_under(ANSWER_KEY, input.payload),
+            trace: vec![format!("trigger.mcp: tool={}", self.config.name)],
         })
     }
 }

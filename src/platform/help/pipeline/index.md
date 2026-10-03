@@ -4,7 +4,7 @@ A pipeline is a function: a trigger produces an input, a chain of nodes
 transforms it, the last node answers.
 
 ```
-| trigger.webhook --path /posts/:slug --method GET
+| trigger.webhook --route /posts/:slug --method GET
 | sekejap.query.run --param "1={{ $trigger.params.slug }}" -- "SELECT * FROM posts WHERE slug = $1"
 | web.response.send --template pages/post.tsx
 ```
@@ -19,7 +19,7 @@ Nothing flows unless a node passes it on.
 | | What it is | Where |
 |---|---|---|
 | **`input`** | The business payload flowing along the edges. Each node transforms it. | `input` in scripts; `input`/`$input` in `{{ }}` |
-| **request context** | The triggering event, frozen at entry: path params, query, headers, verified identity. Never changed by any node. | `ctx.trigger.*` in scripts; `$trigger.*` in `{{ }}` |
+| **request context** | The triggering event, frozen at entry: its whole envelope — body/files, path params, query, headers, verified identity. Never changed by any node. | `ctx.trigger.*` in scripts; `$trigger.*` in `{{ }}` |
 
 So when `sekejap.query.run` has replaced the payload, the caller's identity is
 still `ctx.trigger.auth.sub` in a script and `$trigger.auth.sub` in a flag.
@@ -27,36 +27,38 @@ still `ctx.trigger.auth.sub` in a script and `$trigger.auth.sub` in a flag.
 
 ### What a webhook puts in `input`
 
-User-submitted data lives under **`input.body`**; request context sits beside
-it. Nothing is merged to the root.
+The trigger adds exactly one key, **`webhook`**, holding the whole request
+envelope. Nothing is merged to the root.
 
 | Key | Content |
 |---|---|
-| `input.body` | JSON body as parsed; form fields for `application/x-www-form-urlencoded`; text fields of a multipart form. `null` on GET. |
-| `input.files.<field>` | Uploaded files as FileRef objects (`ref`, `filename`, `mime`, `size`, `sha256`, …) |
-| `input.params` | Path parameters: `/posts/:slug` → `input.params.slug` |
-| `input.query` | Parsed query string |
-| `input.path`, `input.method` | The request line |
-| `input.auth` | Verified token claims, when the trigger has `--auth-type` |
+| `input.webhook.body` | JSON body as parsed; form fields for `application/x-www-form-urlencoded`; text fields of a multipart form. `null` on GET. |
+| `input.webhook.files.<field>` | Uploaded files as FileRef objects (`ref`, `filename`, `mime`, `size`, `sha256`, …) |
+| `input.webhook.params` | Path parameters: `/posts/:slug` → `input.webhook.params.slug` |
+| `input.webhook.query` | Parsed query string |
+| `input.webhook.path`, `input.webhook.method` | The request line |
+| `input.webhook.auth` | Verified token claims, when the trigger has `--auth` |
 
-A login form is therefore `input.body.email` and `input.body.password`.
-In `{{ }}` the same request is `$trigger.params`, `$trigger.query`,
-`$trigger.auth`, `$trigger.headers`, `$trigger.search`, `$trigger.pathname`
-— `$trigger` has no `body`; reach the body as `{{ input.body.email }}` while
-`input` is still the trigger payload, or in a script.
+A login form is therefore `input.webhook.body.email` and
+`input.webhook.body.password` right after the trigger. `$trigger` is this
+same envelope for the whole run, so deeper in a chain the same fields read as
+`$trigger.body.email`, `$trigger.params`, `$trigger.query`, `$trigger.auth`,
+`$trigger.headers` — plus `$trigger.search` and `$trigger.pathname`, which
+only a webhook trigger adds.
 
 ### JWT on a route
 
 ```
-| trigger.webhook --path /admin --method GET --auth-type jwt --auth-credential jwt_main --auth-required-role admin
+| trigger.webhook --route /admin --method GET --auth jwt --credential jwt_main --role admin
 ```
 
 The token comes from `Authorization: Bearer …` or, for browsers, the
 `zebflow_session` cookie. Its `roles` **array** claim must contain one of the
 required roles. A browser navigation that fails is redirected (303) to the
 credential's `auth_redirect`; a `fetch` gets 401/403 JSON. Verified claims
-appear as `input.auth`, `ctx.trigger.auth` and `$trigger.auth`; only claims
-minted with `:public` reach the browser as `input.auth` in a page.
+appear as `input.webhook.auth` right after the trigger, or `ctx.trigger.auth`
+and `$trigger.auth` anywhere in the run; only claims minted with `:public`
+reach the browser as `input.auth` in a page.
 Full recipe: `help(topic="pipeline/examples/cookie-jwt-auth")`.
 
 ---
@@ -66,7 +68,7 @@ Full recipe: `help(topic="pipeline/examples/cookie-jwt-auth")`.
 **Pipe mode** — a straight chain, one node per `|`. Most pipelines.
 
 ```
-| trigger.webhook --path /api/notes --method GET
+| trigger.webhook --route /api/notes --method GET
 | sekejap.query.run -- "SELECT id, title FROM notes ORDER BY created_at DESC LIMIT 50"
 | script.result.run -- "return { notes: input.query.rows }"
 ```
@@ -75,11 +77,11 @@ Full recipe: `help(topic="pipeline/examples/cookie-jwt-auth")`.
 For branching, fan-out and loops.
 
 ```
-[a] trigger.webhook --path /ingest --method POST
-[b] logic.match --expr "input.body.type" --cases normal,urgent --default other
-[c] sekejap.query.run --param "1={{ input.body.id }}" --param "2={{ input.body }}" --write -- "INSERT INTO normal_queue (id, data) VALUES ($1, $2)"
-[d] http.response.fetch --url https://alert.example.com/send --method POST --body "{{ input.body }}"
-[e] sekejap.query.run --param "1={{ input.body.id }}" --param "2={{ input.body }}" --write -- "INSERT INTO other_queue (id, data) VALUES ($1, $2)"
+[a] trigger.webhook --route /ingest --method POST
+[b] logic.match --expr "input.webhook.body.type" --cases normal,urgent --default other
+[c] sekejap.query.run --param "1={{ $trigger.body.id }}" --param "2={{ $trigger.body }}" --write -- "INSERT INTO normal_queue (id, data) VALUES ($1, $2)"
+[d] http.response.fetch --url https://alert.example.com/send --method POST --body "{{ $trigger.body }}"
+[e] sekejap.query.run --param "1={{ $trigger.body.id }}" --param "2={{ $trigger.body }}" --write -- "INSERT INTO other_queue (id, data) VALUES ($1, $2)"
 [a] -> [b]
 [b]:normal -> [c]
 [b]:urgent -> [d]
@@ -127,7 +129,7 @@ pages/blog-home  →  pages/blog-home.zf.json
 **Register** saves a draft; **activate** promotes it to live traffic.
 
 ```
-pipeline_register  file_rel_path="api/posts"  title="Posts"  body="| trigger.webhook --path /api/posts --method GET | sekejap.query.run -- \"SELECT * FROM posts\""
+pipeline_register  file_rel_path="api/posts"  title="Posts"  body="| trigger.webhook --route /api/posts --method GET | sekejap.query.run -- \"SELECT * FROM posts\""
 pipeline_activate  file_rel_path="api/posts"
 ```
 
@@ -157,7 +159,7 @@ To try a body without saving anything: `pipeline_run body="| trigger.function | 
 **GET page from the database**
 
 ```
-| trigger.webhook --path /blog --method GET
+| trigger.webhook --route /blog --method GET
 | sekejap.query.run -- "SELECT id, title, slug, created_at FROM posts ORDER BY created_at DESC LIMIT 20"
 | web.response.send --template pages/blog-home.tsx
 ```
@@ -165,9 +167,9 @@ To try a body without saving anything: `pipeline_run body="| trigger.function | 
 **POST JSON API — validate, insert, answer**
 
 ```
-[a] trigger.webhook --path /api/posts --method POST
-[b] logic.if --expr "typeof input.body?.title === 'string' && input.body.title.length > 0"
-[c] sekejap.query.run --param "1={{ input.body.title }}" --param "2={{ input.body.title.toLowerCase().replace(/\s+/g, '-') }}" --write -- "INSERT INTO posts (title, slug) VALUES ($1, $2)"
+[a] trigger.webhook --route /api/posts --method POST
+[b] logic.if --expr "typeof input.webhook.body?.title === 'string' && input.webhook.body.title.length > 0"
+[c] sekejap.query.run --param "1={{ $trigger.body.title }}" --param "2={{ $trigger.body.title.toLowerCase().replace(/\s+/g, '-') }}" --write -- "INSERT INTO posts (title, slug) VALUES ($1, $2)"
 [d] script.result.run -- "return { ok: true }"
 [e] web.response.send --status 400 --body "{{ { error: 'title is required' } }}"
 [a] -> [b]
@@ -179,7 +181,7 @@ To try a body without saving anything: `pipeline_run body="| trigger.function | 
 **Authenticated route**
 
 ```
-| trigger.webhook --path /dashboard --method GET --auth-type jwt --auth-credential jwt_main
+| trigger.webhook --route /dashboard --method GET --auth jwt --credential jwt_main
 | sekejap.query.run --param "1={{ $trigger.auth.sub }}" -- "SELECT id, name FROM users WHERE id = $1"
 | web.response.send --template pages/dashboard.tsx
 ```
@@ -187,7 +189,7 @@ To try a body without saving anything: `pipeline_run body="| trigger.function | 
 **Redirect**
 
 ```
-| trigger.webhook --path /go/signup --method GET
+| trigger.webhook --route /go/signup --method GET
 | web.response.send --status 302 --header "Location=/auth/register?source=landing"
 ```
 
@@ -211,13 +213,13 @@ the pipeline either — `null` simply becomes the next `input`.
 
 Any flag value may contain `{{ js_expression }}`, resolved right before the
 node runs. A value that is **only** an expression keeps its JSON type
-(`"{{ [input.body.id] }}"` is a real array); an expression inside a longer
+(`"{{ [input.id] }}"` is a real array); an expression inside a longer
 string is stringified.
 
 | Name | Meaning |
 |---|---|
 | `input`, `$input` | the payload flowing into this node |
-| `$trigger` | the trigger snapshot: `params`, `query`, `search`, `pathname`, `headers`, `auth` |
+| `$trigger` | the trigger's envelope for the whole run — for a webhook: `body`, `query`, `params`, `headers`, `files`, `method`, `path`, `auth`, plus `search` and `pathname` |
 | `$nodes.<id>` | the output of an upstream node by graph id |
 | `$item`, `$index`, `$count` | inside `logic.foreach` |
 

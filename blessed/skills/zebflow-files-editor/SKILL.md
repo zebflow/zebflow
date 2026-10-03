@@ -17,23 +17,23 @@ and **rich text is a JSON document, HTML is derived from it**. Facts:
 
 1. A `<form method="post" enctype="multipart/form-data">` with
    `<input type="file" name="photo">`, or a `fetch` with `FormData`.
-2. The webhook delivers the file as `input.files.photo` — a FileRef
+2. The webhook delivers the file as `input.webhook.files.photo` — a FileRef
    (`ref`, `filename`, `mime`, `kind`, `size`, `sha256`, `lifecycle: temporary`).
    It is discarded after the run unless a node keeps it.
-3. Keep it: `fs.file.put --from "{{ input.files.photo }}" --folder uploads --accept image --max-size 10MB`
+3. Keep it: `fs.file.put --from "{{ input.webhook.files.photo }}" --folder uploads --accept image --max-size 10MB`
    checks the file by its content (the claimed type must agree, `--accept`
    must allow it, the stored extension follows the detected type) and adds
    `file` — a durable FileRef (`ref`, `store`, `filename`, `mime`, `kind`,
    `size`, `sha256`, `lifecycle: durable`, `origin: fs.file.put`, `trust`) —
-   to the payload; `input.body.caption` from the same form is still there.
+   to the payload; `input.webhook.body.caption` from the same form is still there.
 4. Derive what you need: `fs.image.thumbnail --source-key file --width 320 --height 320 --fit cover --format webp --folder thumbs`
    reads `file` and adds `thumbnail` (a FileRef, `thumbnail.ref`) the same way.
 5. Store the **store path** (`file.ref`) in your table, not a URL — URLs
    depend on owner, project and visibility.
 
 ```
-| trigger.webhook --path /api/upload --method POST --auth-type jwt --auth-credential jwt_main
-| fs.file.put --from "{{ input.files.file }}" --folder uploads --accept image --max-size 10MB
+| trigger.webhook --route /api/upload --method POST --auth jwt --credential jwt_main
+| fs.file.put --from "{{ input.webhook.files.file }}" --folder uploads --accept image --max-size 10MB
 ```
 
 The response carries `file` (a FileRef). Store its **`ref`**; a page
@@ -50,7 +50,7 @@ renderer makes it absolute (`docs/contracts/addressing.md`).
 
 No node answers a URL — `file` carries only `ref`. A folder name never
 decides visibility, and no node can expose anything: the owner does, per
-folder, in Studio → Files. Never put `input.files` or base64 into a payload, a script
+folder, in Studio → Files. Never put `$trigger.files` or base64 into a payload, a script
 return, or a database column.
 
 ## Rich text: the editor
