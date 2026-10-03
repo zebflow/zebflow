@@ -6,11 +6,8 @@ listing settled after the Astra and Fable review the same day). Code caught up
 2026-10-03: the document, the three levels, `serve` validation, the store-tier
 location, the lifetime rules, the dev file host and `public_execute` on its
 origins (`src/platform/web/file_host.rs`), and §Authority for the Studio file
-routes (`files.publish`, `updated_by_role`) — pipelines still write without a
-role. Still owed: the platform-form
-addresses `/files/…` and `/fs/…` and the project-host `/_files/…` answer
-through the same gateway (rules only, inert, no cookie) but are not yet
-deleted, because nodes still answer `/fs/…` URLs; a named file host in
+routes (`files.publish`, `updated_by_role`); `/files/…` and `/fs/…` are
+deleted. Still owed: pipelines write without a role; a named file host in
 production.
 
 Which of a project's files are exposed, and how. One document per project.

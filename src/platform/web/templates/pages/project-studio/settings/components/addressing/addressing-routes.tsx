@@ -51,7 +51,7 @@ export default function AddressingRoutes({ data, hosts, routes, disabled, onAddR
           <div>
             <p className="text-[0.78rem] leading-[1.45] text-muted-foreground">
               What each host serves. Without a route a host serves the whole project: pages at <code>/</code> and the
-              other surfaces under <code>/_files</code>, <code>/_ws</code>, <code>/_static</code>, <code>/_ms</code>, <code>/_fs</code>, <code>/_mcp</code>.
+              other surfaces under <code>/_ws</code>, <code>/_static</code>, <code>/_ms</code>, <code>/_mcp</code>, and exposed files (off by default) under <code>/_files</code>.
               A route mounts one surface at a host and path of your choosing; a host with any route serves only its routes.
               Pages can only be a root.
             </p>

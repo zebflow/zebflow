@@ -3258,8 +3258,12 @@ async fn stored_files_are_exposed_only_by_a_rule_never_by_a_name_or_a_cookie() {
     fs::write(project_files.join("public").join("hello.txt"), "hello").expect("public file");
     fs::write(project_files.join("private").join("secret.txt"), "secret").expect("private file");
 
+    // Every read is on the project's own file host: there is no other door.
     let get = |uri: &str, cookie: Option<&str>| {
-        let mut builder = Request::builder().uri(uri).method("GET");
+        let mut builder = Request::builder()
+            .uri(uri)
+            .method("GET")
+            .header(header::HOST, "default.superadmin.fs.localhost");
         if let Some(cookie) = cookie {
             builder = builder.header(header::COOKIE, cookie);
         }
@@ -3269,7 +3273,7 @@ async fn stored_files_are_exposed_only_by_a_rule_never_by_a_name_or_a_cookie() {
     };
 
     // A folder called `public` is private like any other until a rule says so.
-    assert_eq!(get("/files/superadmin/default/public/hello.txt", None).await.status(), StatusCode::NOT_FOUND);
+    assert_eq!(get("/public/hello.txt", None).await.status(), StatusCode::NOT_FOUND);
 
     let superadmin_cookie = login_cookie(app.clone(), "superadmin", "test-pass").await;
     let grant = app
@@ -3287,38 +3291,46 @@ async fn stored_files_are_exposed_only_by_a_rule_never_by_a_name_or_a_cookie() {
         .expect("grant response");
     assert_eq!(grant.status(), StatusCode::OK);
 
-    let public = get("/files/superadmin/default/public/hello.txt", None).await;
+    let public = get("/public/hello.txt", None).await;
     assert_eq!(public.status(), StatusCode::OK);
     assert_eq!(public.headers()["content-security-policy"], "sandbox");
     assert_eq!(response_text(public).await, "hello");
-    let on_file_host = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .uri("/public/hello.txt")
-                .header(header::HOST, "default.superadmin.fs.localhost")
-                .body(Body::empty())
-                .expect("request"),
-        )
-        .await
-        .expect("file host response");
-    assert_eq!(on_file_host.status(), StatusCode::OK);
+    // The platform forms are gone: no file answers on the Studio's address.
+    for old in ["/files/superadmin/default/public/hello.txt", "/fs/superadmin/default/public/hello.txt"] {
+        let response = app
+            .clone()
+            .oneshot(Request::builder().uri(old).body(Body::empty()).expect("request"))
+            .await
+            .expect("response");
+        assert_ne!(response.status(), StatusCode::OK, "{old}");
+    }
 
     // A private file answers like a missing one — to strangers, to a forged
     // cookie, and to the signed-in owner alike: the cookie is not a key here.
     for cookie in [None, Some("zebflow_session=superadmin"), Some(superadmin_cookie.as_str())] {
         assert_eq!(
-            get("/files/superadmin/default/private/secret.txt", cookie).await.status(),
-            StatusCode::NOT_FOUND
-        );
-        assert_eq!(
-            get("/fs/superadmin/default/private/secret.txt", cookie).await.status(),
+            get("/private/secret.txt", cookie).await.status(),
             StatusCode::NOT_FOUND
         );
     }
 
-    // The owner reads it through the Studio's own route.
-    let studio = get("/api/projects/superadmin/default/files/object?ref=private/secret.txt", Some(&superadmin_cookie)).await;
+    // The file host answers nothing else, not even the Studio's API...
+    assert_eq!(
+        get("/api/projects/superadmin/default/files/object?ref=private/secret.txt", Some(&superadmin_cookie)).await.status(),
+        StatusCode::NOT_FOUND
+    );
+    // ...which the owner reads on the platform address.
+    let studio = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/projects/superadmin/default/files/object?ref=private/secret.txt")
+                .header(header::COOKIE, &superadmin_cookie)
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("studio response");
     assert_eq!(studio.status(), StatusCode::OK);
     assert_eq!(response_text(studio).await, "secret");
 
@@ -3326,7 +3338,7 @@ async fn stored_files_are_exposed_only_by_a_rule_never_by_a_name_or_a_cookie() {
     {
         std::os::unix::fs::symlink("/etc/passwd", project_files.join("public").join("escape"))
             .expect("symlink");
-        let symlink_escape = get("/files/superadmin/default/public/escape", None).await;
+        let symlink_escape = get("/public/escape", None).await;
         assert_ne!(symlink_escape.status(), StatusCode::OK);
     }
 }

@@ -448,14 +448,6 @@ pub async fn router(platform: Arc<PlatformService>) -> Router {
             "/p/{owner}/{project}/assets/{*path}",
             get(project_static_asset).layer(axum::middleware::map_response(harden_byte_response)),
         )
-        .route(
-            "/files/{owner}/{project}/{*path}",
-            get(project_legacy_file_serve).layer(axum::middleware::map_response(harden_byte_response)),
-        )
-        .route(
-            "/fs/{owner}/{project}/{*path}",
-            get(project_fs_serve).layer(axum::middleware::map_response(harden_byte_response)),
-        )
         .route("/login", get(login_page).post(login_submit))
         .route("/logout", post(logout_submit))
         .route("/home", get(home_page))
@@ -1380,9 +1372,9 @@ pub struct ProjectHost {
 }
 
 /// Rewrites a request on a project host to the platform form it is served
-/// as (`northside.superadmin.localhost/book` → `/wh/superadmin/northside/book`,
-/// `/_files/a.jpg` → `/files/superadmin/northside/a.jpg`), refuses a surface
-/// the project switched off, and leaves every other request alone.
+/// as (`northside.superadmin.localhost/book` → `/wh/superadmin/northside/book`),
+/// answers `files` through the ZebFS gateway, refuses a surface the project
+/// switched off, and leaves every other request alone.
 async fn addressing_gate(
     State(state): State<PlatformAppState>,
     mut request: axum::extract::Request,
@@ -1443,10 +1435,8 @@ async fn addressing_gate(
         let mut own_prefixes = vec![
             format!("/wh/{}/{}", resolution.owner, resolution.project),
             format!("/ws/{}/{}", resolution.owner, resolution.project),
-            format!("/files/{}/{}", resolution.owner, resolution.project),
             format!("/static/{}/{}", resolution.owner, resolution.project),
             format!("/ms/{}/{}", resolution.owner, resolution.project),
-            format!("/fs/{}/{}", resolution.owner, resolution.project),
         ];
         if api_allowed {
             own_prefixes.push(format!("/api/projects/{}/{}", resolution.owner, resolution.project));
@@ -1465,6 +1455,20 @@ async fn addressing_gate(
                     ),
                 )
                     .into_response();
+            }
+            // Files answer through the gateway itself — inert, rules only;
+            // there is no platform form to rewrite to.
+            if resolution.surface == crate::platform::services::addressing::Surface::Files {
+                if request.method() != Method::GET && request.method() != Method::HEAD {
+                    return StatusCode::METHOD_NOT_ALLOWED.into_response();
+                }
+                return file_host::file_host_response(
+                    &state,
+                    &resolution.owner,
+                    &resolution.project,
+                    &resolution.rest,
+                )
+                .await;
             }
             let query = request
                 .uri()
@@ -2692,65 +2696,6 @@ async fn project_static_asset(
         resp.headers_mut().insert(CONTENT_TYPE, v);
     }
     resp
-}
-
-/// Route: GET /files/{owner}/{project}/{*path} and GET /fs/{owner}/{project}/{*path}
-///
-/// Both are the ZebFS gateway under an older address: the project's exposure
-/// rules decide, never a folder name and never the session cookie, and the
-/// answer is inert (`file_host`). The project's own file host is the address
-/// to use; these remain until the URLs nodes answer are moved to it.
-async fn project_legacy_file_serve(
-    State(state): State<PlatformAppState>,
-    headers: HeaderMap,
-    Path((owner, project, path)): Path<(String, String, String)>,
-    uri: Uri,
-) -> Response {
-    gateway_route(&state, &headers, &owner, &project, &path, &uri).await
-}
-
-/// Route: GET /fs/{owner}/{project}/{*path} — see [`project_legacy_file_serve`].
-async fn project_fs_serve(
-    State(state): State<PlatformAppState>,
-    headers: HeaderMap,
-    Path((owner, project, path)): Path<(String, String, String)>,
-    uri: Uri,
-) -> Response {
-    gateway_route(&state, &headers, &owner, &project, &path, &uri).await
-}
-
-async fn gateway_route(
-    state: &PlatformAppState,
-    headers: &HeaderMap,
-    owner: &str,
-    project: &str,
-    path: &str,
-    uri: &Uri,
-) -> Response {
-    let valid_segment = |value: &str| {
-        value
-            .bytes()
-            .all(|ch| ch.is_ascii_alphanumeric() || ch == b'-' || ch == b'_')
-    };
-    if !valid_segment(owner) || !valid_segment(project) {
-        return (StatusCode::BAD_REQUEST, "invalid project scope").into_response();
-    }
-    if let Ok(Some(worker_id)) = remote_project_worker_id(state, owner, project) {
-        return match forward_project_api_request_to_worker(
-            state,
-            uri,
-            &Method::GET,
-            headers,
-            Bytes::new(),
-            &worker_id,
-        )
-        .await
-        {
-            Ok(response) => response,
-            Err(err) => internal_error(err),
-        };
-    }
-    file_host::file_host_response(state, owner, project, path).await
 }
 
 fn asset_response(content_type: &'static str, bytes: &[u8]) -> Response {

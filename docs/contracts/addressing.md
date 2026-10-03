@@ -37,16 +37,15 @@ A host that carries any custom route serves only its routes.
 |---|---|---|---|
 | `pages` — active `trigger.webhook` routes | on | `/` (**root**; the only surface that can be) | `/wh/{o}/{p}/…` |
 | `ws` — `trigger.ws` rooms | on | `/_ws/rooms/{room}` | `/ws/{o}/{p}/rooms/{room}` |
-| `files` — objects [`ZebFsAcl`](./kinds/zebfs-acl/README.md) exposes | on | **not on a project host**: the project's own file host, `{p}.{o}.fs.localhost/…` (a named file host in production) | — |
+| `files` — objects [`ZebFsAcl`](./kinds/zebfs-acl/README.md) exposes, through the ZebFS gateway | **off** | `/_files/…` when switched on; always on the project's file host `{p}.{o}.fs.localhost/…` | — (no platform form) |
 | `static` — project assets, `_rwe/lib`, `_rwe/scripts` | on | `/_static/…` | `/static/{o}/{p}/…` |
 | `ms` — published map layers | **off** | `/_ms/…` | `/ms/{o}/{p}/…` |
 | `mcp` | **off** | `/_mcp` | `/api/projects/{o}/{p}/mcp` — always served on the platform address |
 
-Target 2026-10-02: `files` no longer means a `public/` folder, and
-`/_files/…`, `/files/…`, `/_fs/…`, `/fs/…` are deleted. Code 2026-10-03: the
-`public/` insertion is gone and all four answer through the ZebFS gateway
-(rules only, inert, no cookie); the routes themselves remain until nodes stop
-answering `/fs/…` URLs. Exposure
+`files` answers only what `ZebFsAcl` exposes, through the ZebFS gateway
+(inert, no cookie): always on the project's file host, and on a project host
+under `/_files/…` only when switched on (off by default). The `fs` surface and
+the platform forms `/files/…` and `/fs/…` are deleted (2026-10-03). Exposure
 is only what `ZebFsAcl` says; `public_read` answers on the cookie-less file
 host, `public_execute` on the hosts in its `serve`, each of which answers only
 that folder (as a host with a custom route does).

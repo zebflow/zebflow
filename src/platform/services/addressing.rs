@@ -44,18 +44,16 @@ pub enum Surface {
     Files,
     Static,
     Ms,
-    Fs,
     Mcp,
 }
 
 impl Surface {
-    pub const ALL: [Surface; 7] = [
+    pub const ALL: [Surface; 6] = [
         Surface::Pages,
         Surface::Ws,
         Surface::Files,
         Surface::Static,
         Surface::Ms,
-        Surface::Fs,
         Surface::Mcp,
     ];
 
@@ -66,7 +64,6 @@ impl Surface {
             Surface::Files => "files",
             Surface::Static => "static",
             Surface::Ms => "ms",
-            Surface::Fs => "fs",
             Surface::Mcp => "mcp",
         }
     }
@@ -83,7 +80,6 @@ impl Surface {
             Surface::Files => "/_files/",
             Surface::Static => "/_static/",
             Surface::Ms => "/_ms/",
-            Surface::Fs => "/_fs/",
             Surface::Mcp => "/_mcp",
         }
     }
@@ -96,7 +92,6 @@ impl Surface {
             Surface::Files => format!("/files/{owner}/{project}"),
             Surface::Static => format!("/static/{owner}/{project}"),
             Surface::Ms => format!("/ms/{owner}/{project}"),
-            Surface::Fs => format!("/fs/{owner}/{project}"),
             Surface::Mcp => format!("/api/projects/{owner}/{project}/mcp"),
         }
     }
@@ -106,17 +101,16 @@ impl Surface {
     /// endpoint on a public host is a door nobody asked for — agents work
     /// through the platform address, which this switch never touches.
     pub fn enabled_by_default(self) -> bool {
-        !matches!(self, Surface::Ms | Surface::Fs | Surface::Mcp)
+        !matches!(self, Surface::Ms | Surface::Files | Surface::Mcp)
     }
 
     pub fn title(self) -> &'static str {
         match self {
             Surface::Pages => "Pages",
             Surface::Ws => "WebSocket rooms",
-            Surface::Files => "Public files",
+            Surface::Files => "Exposed files (sandboxed)",
             Surface::Static => "Static assets and scripts",
             Surface::Ms => "Map tiles",
-            Surface::Fs => "Private files",
             Surface::Mcp => "MCP",
         }
     }
@@ -143,7 +137,7 @@ pub struct ProjectAddressing {
     /// Surfaces switched off. A project starts with the ones that are off by
     /// default (`Surface::enabled_by_default`); the list is what is stored,
     /// so switching one on is removing it from here.
-    #[serde(default = "default_disabled")]
+    #[serde(default = "default_disabled", deserialize_with = "known_surfaces")]
     pub disabled: Vec<Surface>,
     /// The platform API (`/api/projects/{o}/{p}/…`) answers on the project's
     /// hosts. Off by default; the platform address always serves it
@@ -164,6 +158,16 @@ pub enum ErrorDetail {
     #[default]
     Hidden,
     Shown,
+}
+
+/// The stored switch list, keeping only surfaces this build has: a word for a
+/// surface that no longer exists (`fs`) is a switch for nothing.
+fn known_surfaces<'de, D>(deserializer: D) -> Result<Vec<Surface>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let words: Vec<String> = Vec::deserialize(deserializer)?;
+    Ok(words.iter().filter_map(|word| Surface::parse(word)).collect())
 }
 
 fn default_disabled() -> Vec<Surface> {
@@ -503,10 +507,8 @@ impl AddressingService {
         let surface = match first {
             "wh" => Surface::Pages,
             "ws" => Surface::Ws,
-            "files" => Surface::Files,
             "static" => Surface::Static,
             "ms" => Surface::Ms,
-            "fs" => Surface::Fs,
             _ => return false,
         };
         let project = project.split(['?', '#']).next().unwrap_or(project);
@@ -620,16 +622,18 @@ mod tests {
     fn a_pages_route_off_the_root_is_refused_and_prefixes_are_normalised() {
         assert!(normalize_route_path("/shop/", Surface::Pages).is_err());
         assert_eq!(normalize_route_path("service", Surface::Ms).unwrap(), "/service/");
-        assert_eq!(normalize_route_path("", Surface::Fs).unwrap(), "/");
+        assert_eq!(normalize_route_path("", Surface::Files).unwrap(), "/");
         assert_eq!(normalize_route_path("/_mcp", Surface::Mcp).unwrap(), "/_mcp");
     }
 
     #[test]
-    fn a_fresh_project_has_tiles_and_private_files_off() {
+    fn a_fresh_project_has_tiles_and_files_off_on_its_hosts() {
         let fresh = ProjectAddressing::default();
         assert!(!fresh.is_enabled(Surface::Ms));
-        assert!(!fresh.is_enabled(Surface::Fs));
-        assert!(fresh.is_enabled(Surface::Pages) && fresh.is_enabled(Surface::Files));
+        assert!(!fresh.is_enabled(Surface::Files));
+        assert!(fresh.is_enabled(Surface::Pages));
+        let old: ProjectAddressing = serde_json::from_str(r#"{"disabled":["ms","fs","mcp"]}"#).unwrap();
+        assert_eq!(old.disabled, vec![Surface::Ms, Surface::Mcp], "a word for a removed surface is dropped");
         let stored: ProjectAddressing = serde_json::from_str(r#"{"hosts":["a.example"]}"#).unwrap();
         assert_eq!(stored.disabled, fresh.disabled, "an old file without the key gets the defaults");
         let explicit: ProjectAddressing = serde_json::from_str(r#"{"disabled":[]}"#).unwrap();

@@ -109,7 +109,7 @@ GET    /files/list  ·  POST /files/upload  ·  /files/mkdir  ·  /files/rm  · 
 PUT    /files/access   {path, access: private|public_read|public_execute, scope: object|prefix, serve?: [origins]}
 GET    /files/object?ref=<path>                   one object's bytes, private or exposed, with the session or the MCP bearer; inline, sandboxed, never cached
 GET    <project>.<owner>.fs.localhost/<path>      (file host) exposed objects only, inert, no session
-GET    /files/{owner}/{project}/{*path}  ·  /fs/{owner}/{project}/{*path}   (root path) the same gateway under older addresses
+GET    <project-host>/_files/<path>           the same gateway on a project host, when its files surface is switched on (off by default)
 ```
 
 Credential values are returned only to the owner's session (`GET /credentials/{id}`, for the Studio's edit form); the list carries `has_secret` only, and MCP, pipelines and pages never see a value — nodes reference a credential by id.
