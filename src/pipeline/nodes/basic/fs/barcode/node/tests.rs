@@ -5,12 +5,8 @@ use serde_json::{Value, json};
 use super::*;
 use crate::pipeline::nodes::shared::project_store::open_store;
 
-fn platform() -> Arc<PlatformService> {
-    let tmp = tempfile::tempdir().expect("tempdir");
-    let mut config = crate::platform::model::PlatformConfig::default();
-    config.data_root = tmp.keep().join("platform");
-    config.default_password = "secret".to_string();
-    Arc::new(PlatformService::from_config(config).expect("platform"))
+fn platform() -> crate::pipeline::nodes::shared::test_platform::TestPlatform {
+    crate::pipeline::nodes::shared::test_platform::test_platform()
 }
 
 async fn run(platform: &Arc<PlatformService>, config: Value, payload: Value) -> Result<Value, PipelineError> {

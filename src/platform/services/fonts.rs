@@ -246,15 +246,9 @@ fn resolve_in(fonts: &ProjectFonts, family: &str, weight: u16) -> Option<FontRef
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::platform::model::PlatformConfig;
-    use crate::platform::services::PlatformService;
 
-    fn platform() -> Arc<PlatformService> {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let mut config = PlatformConfig::default();
-        config.data_root = tmp.keep().join("platform");
-        config.default_password = "secret".to_string();
-        Arc::new(PlatformService::from_config(config).expect("platform"))
+    fn platform() -> crate::pipeline::nodes::shared::test_platform::TestPlatform {
+        crate::pipeline::nodes::shared::test_platform::test_platform()
     }
 
     #[test]

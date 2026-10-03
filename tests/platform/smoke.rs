@@ -23,12 +23,37 @@ use zebflow::platform::{
     ProjectCapability, build_router,
 };
 
-fn temp_test_dir(name: &str) -> std::path::PathBuf {
+/// A test's data root under the system temp folder, removed when the value
+/// is dropped at the end of the test — a root left behind per test is
+/// gigabytes a day of runs.
+struct TestDir(std::path::PathBuf);
+
+impl std::ops::Deref for TestDir {
+    type Target = std::path::PathBuf;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl AsRef<std::path::Path> for TestDir {
+    fn as_ref(&self) -> &std::path::Path {
+        &self.0
+    }
+}
+
+impl Drop for TestDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+fn temp_test_dir(name: &str) -> TestDir {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_nanos();
-    std::env::temp_dir().join(format!("zebflow-platform-{name}-{now}"))
+    TestDir(std::env::temp_dir().join(format!("zebflow-platform-{name}-{now}")))
 }
 
 async fn response_json(response: axum::response::Response) -> Value {
@@ -1249,7 +1274,8 @@ fn multipart_body_with_type(
 #[tokio::test]
 async fn platform_bootstrap_and_login_flow_works() {
     let mut config = PlatformConfig::default();
-    config.data_root = temp_test_dir("login-flow");
+    let test_root_1 = temp_test_dir("login-flow");
+    config.data_root = test_root_1.to_path_buf();
     config.default_password = "test-pass".to_string();
     let data_root = config.data_root.clone();
 
@@ -1382,7 +1408,8 @@ async fn platform_bootstrap_and_login_flow_works() {
 #[tokio::test]
 async fn public_hub_requires_service_and_hides_project_internals() {
     let mut config = PlatformConfig::default();
-    config.data_root = temp_test_dir("public-hub-boundary");
+    let test_root_2 = temp_test_dir("public-hub-boundary");
+    config.data_root = test_root_2.to_path_buf();
     config.default_password = "test-pass".to_string();
     let data_root = config.data_root.clone();
     let platform = Arc::new(PlatformService::from_config(config).expect("platform service"));
@@ -2144,7 +2171,8 @@ async fn public_hub_requires_service_and_hides_project_internals() {
 #[tokio::test]
 async fn hub_scoped_tokens_split_prosumer_and_consumer_projects() {
     let mut config = PlatformConfig::default();
-    config.data_root = temp_test_dir("hub-prosumer-consumer");
+    let test_root_3 = temp_test_dir("hub-prosumer-consumer");
+    config.data_root = test_root_3.to_path_buf();
     config.default_password = "test-pass".to_string();
     let platform = Arc::new(PlatformService::from_config(config).expect("platform service"));
     let app = zebflow::platform::web::router(platform.clone()).await;
@@ -2348,7 +2376,8 @@ async fn project_bundle_installs_spatial_blog_with_sekejap_schema_across_two_ins
     }
 
     let mut publisher_config = PlatformConfig::default();
-    publisher_config.data_root = temp_test_dir("hub-project-bundle-publisher");
+    let test_root_4 = temp_test_dir("hub-project-bundle-publisher");
+    publisher_config.data_root = test_root_4.to_path_buf();
     publisher_config.default_password = "test-pass".to_string();
     let publisher = Arc::new(PlatformService::from_config(publisher_config).expect("publisher"));
     let publisher_app = zebflow::platform::web::router(publisher.clone()).await;
@@ -2559,7 +2588,8 @@ export default function SpatialBlogPage({ input }) {
         .expect("publish project bundle");
 
     let mut consumer_config = PlatformConfig::default();
-    consumer_config.data_root = temp_test_dir("hub-project-bundle-consumer");
+    let test_root_5 = temp_test_dir("hub-project-bundle-consumer");
+    consumer_config.data_root = test_root_5.to_path_buf();
     consumer_config.default_password = "test-pass".to_string();
     let consumer = Arc::new(PlatformService::from_config(consumer_config).expect("consumer"));
     let consumer_app = zebflow::platform::web::router(consumer.clone()).await;
@@ -2760,7 +2790,8 @@ export default function SpatialBlogPage({ input }) {
 #[tokio::test]
 async fn hub_add_reviews_risks_and_respects_target_folders() {
     let mut config = PlatformConfig::default();
-    config.data_root = temp_test_dir("hub-add-review");
+    let test_root_6 = temp_test_dir("hub-add-review");
+    config.data_root = test_root_6.to_path_buf();
     config.default_password = "test-pass".to_string();
     let platform = Arc::new(PlatformService::from_config(config).expect("platform service"));
     let app = zebflow::platform::web::router(platform.clone()).await;
@@ -3089,7 +3120,8 @@ async fn hub_add_reviews_risks_and_respects_target_folders() {
 #[tokio::test]
 async fn project_hub_ui_is_project_surface_with_explicit_grant() {
     let mut config = PlatformConfig::default();
-    config.data_root = temp_test_dir("project-hub-surface");
+    let test_root_7 = temp_test_dir("project-hub-surface");
+    config.data_root = test_root_7.to_path_buf();
     config.default_password = "test-pass".to_string();
     let app = build_router(config).await.expect("platform router");
     let cookie = login_cookie(app.clone(), "superadmin", "test-pass").await;
@@ -3243,7 +3275,8 @@ async fn project_hub_ui_is_project_surface_with_explicit_grant() {
 #[tokio::test]
 async fn stored_files_are_exposed_only_by_a_rule_never_by_a_name_or_a_cookie() {
     let mut config = PlatformConfig::default();
-    config.data_root = temp_test_dir("private-file-authz");
+    let test_root_8 = temp_test_dir("private-file-authz");
+    config.data_root = test_root_8.to_path_buf();
     config.default_password = "test-pass".to_string();
     let data_root = config.data_root.clone();
 
@@ -3424,7 +3457,8 @@ async fn stored_files_are_exposed_only_by_a_rule_never_by_a_name_or_a_cookie() {
 #[tokio::test]
 async fn a_site_needs_a_maintainer_and_a_rule_answers_to_the_role_that_set_it() {
     let mut config = PlatformConfig::default();
-    config.data_root = temp_test_dir("exposure-authority");
+    let test_root_9 = temp_test_dir("exposure-authority");
+    config.data_root = test_root_9.to_path_buf();
     config.default_password = "test-pass".to_string();
     let app = build_router(config).await.expect("platform router");
 
@@ -3504,7 +3538,8 @@ async fn platform_tts_upload_credential_and_execute_smoke() {
     }
 
     let mut config = PlatformConfig::default();
-    config.data_root = temp_test_dir("tts-api-smoke");
+    let test_root_10 = temp_test_dir("tts-api-smoke");
+    config.data_root = test_root_10.to_path_buf();
     config.default_password = "test-pass".to_string();
     let data_root = config.data_root.clone();
     let app = build_router(config).await.expect("platform router");
@@ -3706,7 +3741,8 @@ async fn platform_tts_upload_credential_and_execute_smoke() {
 #[tokio::test]
 async fn a_markdown_file_lives_anywhere_and_the_registry_renders_its_folder() {
     let mut config = PlatformConfig::default();
-    config.data_root = temp_test_dir("docs-nested-registry");
+    let test_root_11 = temp_test_dir("docs-nested-registry");
+    config.data_root = test_root_11.to_path_buf();
     config.default_password = "test-pass".to_string();
     let app = build_router(config).await.expect("router starts");
     let cookie = login_cookie(app.clone(), "superadmin", "test-pass").await;
@@ -3782,7 +3818,8 @@ async fn a_markdown_file_lives_anywhere_and_the_registry_renders_its_folder() {
 #[tokio::test]
 async fn platform_sidebar_active_classes_have_tailwind_utilities_on_section_pages() {
     let mut config = PlatformConfig::default();
-    config.data_root = temp_test_dir("sidebar-tailwind");
+    let test_root_12 = temp_test_dir("sidebar-tailwind");
+    config.data_root = test_root_12.to_path_buf();
     config.default_password = "test-pass".to_string();
 
     let app = build_router(config).await.expect("platform router");
@@ -3814,7 +3851,8 @@ async fn platform_sidebar_active_classes_have_tailwind_utilities_on_section_page
 #[tokio::test]
 async fn platform_templates_workspace_renders_seeded_tree_and_editor_bootstrap() {
     let mut config = PlatformConfig::default();
-    config.data_root = temp_test_dir("templates-workspace");
+    let test_root_13 = temp_test_dir("templates-workspace");
+    config.data_root = test_root_13.to_path_buf();
     config.default_password = "test-pass".to_string();
 
     let app = build_router(config).await.expect("platform router");
@@ -3848,7 +3886,8 @@ async fn platform_templates_workspace_renders_seeded_tree_and_editor_bootstrap()
 #[tokio::test]
 async fn platform_serves_local_codemirror_library_asset() {
     let mut config = PlatformConfig::default();
-    config.data_root = temp_test_dir("templates-library-asset");
+    let test_root_14 = temp_test_dir("templates-library-asset");
+    config.data_root = test_root_14.to_path_buf();
     config.default_password = "test-pass".to_string();
 
     let app = build_router(config).await.expect("platform router");
@@ -3883,7 +3922,8 @@ async fn platform_serves_local_codemirror_library_asset() {
 #[tokio::test]
 async fn a_declared_source_root_moves_templates_pipelines_and_assets() {
     let mut config = PlatformConfig::default();
-    config.data_root = temp_test_dir("declared-source-root");
+    let test_root_15 = temp_test_dir("declared-source-root");
+    config.data_root = test_root_15.to_path_buf();
     config.default_password = "test-pass".to_string();
     let platform = Arc::new(PlatformService::from_config(config).expect("platform service"));
     let app = zebflow::platform::web::router(platform.clone()).await;
@@ -4014,7 +4054,8 @@ async fn a_declared_source_root_moves_templates_pipelines_and_assets() {
 #[tokio::test]
 async fn the_repository_api_creates_saves_moves_and_deletes_a_file() {
     let mut config = PlatformConfig::default();
-    config.data_root = temp_test_dir("repo-file-api");
+    let test_root_16 = temp_test_dir("repo-file-api");
+    config.data_root = test_root_16.to_path_buf();
     config.default_password = "test-pass".to_string();
     let app = build_router(config).await.expect("router starts");
     let cookie = login_cookie(app.clone(), "superadmin", "test-pass").await;
@@ -4100,7 +4141,8 @@ async fn the_repository_api_creates_saves_moves_and_deletes_a_file() {
 #[tokio::test]
 async fn import_reports_unresolved_function_targets_without_refusing() {
     let mut config = PlatformConfig::default();
-    config.data_root = temp_test_dir("import-function-report");
+    let test_root_17 = temp_test_dir("import-function-report");
+    config.data_root = test_root_17.to_path_buf();
     config.default_password = "test-pass".to_string();
     let data_root = config.data_root.clone();
 
@@ -4219,7 +4261,8 @@ async fn import_reports_unresolved_function_targets_without_refusing() {
 #[tokio::test]
 async fn project_transfer_export_import_roundtrip_restores_repo_and_files() {
     let mut config = PlatformConfig::default();
-    config.data_root = temp_test_dir("transfer-roundtrip");
+    let test_root_18 = temp_test_dir("transfer-roundtrip");
+    config.data_root = test_root_18.to_path_buf();
     config.default_password = "test-pass".to_string();
     let data_root = config.data_root.clone();
 
@@ -4414,7 +4457,8 @@ fn webhook_pipeline(name: &str) -> Value {
 #[tokio::test]
 async fn a_full_import_makes_the_active_set_what_the_archive_recorded() {
     let mut config = PlatformConfig::default();
-    config.data_root = temp_test_dir("transfer-activation");
+    let test_root_19 = temp_test_dir("transfer-activation");
+    config.data_root = test_root_19.to_path_buf();
     config.default_password = "test-pass".to_string();
     let data_root = config.data_root.clone();
     let app = build_router(config).await.expect("platform router");
@@ -4525,7 +4569,8 @@ async fn set_hosts(app: &axum::Router, cookie: &str, hosts: &[&str]) {
 #[tokio::test]
 async fn a_full_transfer_never_carries_or_replaces_where_the_project_answers() {
     let mut config = PlatformConfig::default();
-    config.data_root = temp_test_dir("transfer-addressing");
+    let test_root_20 = temp_test_dir("transfer-addressing");
+    config.data_root = test_root_20.to_path_buf();
     config.default_password = "test-pass".to_string();
     let data_root = config.data_root.clone();
     let app = build_router(config).await.expect("platform router");
@@ -4570,7 +4615,8 @@ async fn a_full_transfer_never_carries_or_replaces_where_the_project_answers() {
 #[tokio::test]
 async fn platform_import_creates_project_and_auto_initiates_repo_only_store() {
     let mut config = PlatformConfig::default();
-    config.data_root = temp_test_dir("platform-import");
+    let test_root_21 = temp_test_dir("platform-import");
+    config.data_root = test_root_21.to_path_buf();
     config.default_password = "test-pass".to_string();
     let data_root = config.data_root.clone();
 
@@ -4778,7 +4824,8 @@ async fn platform_import_creates_project_and_auto_initiates_repo_only_store() {
 #[tokio::test]
 async fn project_transfer_import_records_provenance_and_failures() {
     let mut config = PlatformConfig::default();
-    config.data_root = temp_test_dir("transfer-failure");
+    let test_root_22 = temp_test_dir("transfer-failure");
+    config.data_root = test_root_22.to_path_buf();
     config.default_password = "test-pass".to_string();
     let data_root = config.data_root.clone();
 
@@ -4929,7 +4976,8 @@ async fn project_transfer_import_records_provenance_and_failures() {
 #[test]
 fn platform_project_authorization_is_policy_based_and_shared() {
     let mut config = PlatformConfig::default();
-    config.data_root = temp_test_dir("project-authz");
+    let test_root_23 = temp_test_dir("project-authz");
+    config.data_root = test_root_23.to_path_buf();
     config.default_password = "test-pass".to_string();
 
     let platform = PlatformService::from_config(config).expect("platform service");
@@ -4997,7 +5045,8 @@ fn platform_project_authorization_is_policy_based_and_shared() {
 #[tokio::test]
 async fn platform_template_diagnostics_reports_compile_errors() {
     let mut config = PlatformConfig::default();
-    config.data_root = temp_test_dir("template-diagnostics");
+    let test_root_24 = temp_test_dir("template-diagnostics");
+    config.data_root = test_root_24.to_path_buf();
     config.default_password = "test-pass".to_string();
 
     let app = build_router(config).await.expect("platform router");
@@ -5030,7 +5079,8 @@ async fn platform_template_diagnostics_reports_compile_errors() {
 #[tokio::test]
 async fn platform_registry_is_hierarchical_from_virtual_path() {
     let mut config = PlatformConfig::default();
-    config.data_root = temp_test_dir("registry-tree");
+    let test_root_25 = temp_test_dir("registry-tree");
+    config.data_root = test_root_25.to_path_buf();
     config.default_password = "test-pass".to_string();
 
     let app = build_router(config).await.expect("platform router");
@@ -5100,7 +5150,8 @@ async fn a_static_repository_installs_through_the_same_review_and_pins_its_relea
 
     // --- a publisher, only so the fixture is a real project bundle ---------
     let mut publisher_config = PlatformConfig::default();
-    publisher_config.data_root = temp_test_dir("static-repo-publisher");
+    let test_root_26 = temp_test_dir("static-repo-publisher");
+    publisher_config.data_root = test_root_26.to_path_buf();
     publisher_config.default_password = "test-pass".to_string();
     let publisher = Arc::new(PlatformService::from_config(publisher_config).expect("publisher"));
     publisher
@@ -5269,7 +5320,8 @@ async fn a_static_repository_installs_through_the_same_review_and_pins_its_relea
 
     // --- a consumer that has that directory as its second source -----------
     let mut consumer_config = PlatformConfig::default();
-    consumer_config.data_root = temp_test_dir("static-repo-consumer");
+    let test_root_27 = temp_test_dir("static-repo-consumer");
+    consumer_config.data_root = test_root_27.to_path_buf();
     consumer_config.default_password = "test-pass".to_string();
     let consumer = Arc::new(PlatformService::from_config(consumer_config).expect("consumer"));
     let consumer_app = zebflow::platform::web::router(consumer.clone()).await;
@@ -6245,7 +6297,8 @@ async fn the_material_a_controller_stores_forges_nothing_at_its_office() {
 #[tokio::test]
 async fn registering_a_pipeline_always_requires_the_write_capability() {
     let mut config = PlatformConfig::default();
-    config.data_root = temp_test_dir("pipeline-upsert-authz");
+    let test_root_28 = temp_test_dir("pipeline-upsert-authz");
+    config.data_root = test_root_28.to_path_buf();
     config.default_password = "test-pass".to_string();
     let data_root = config.data_root.clone();
 
@@ -6368,7 +6421,8 @@ async fn registering_a_pipeline_always_requires_the_write_capability() {
 #[tokio::test]
 async fn a_web_published_layer_serves_and_shows_only_the_chosen_properties() {
     let mut config = PlatformConfig::default();
-    config.data_root = temp_test_dir("mapserver-publish-serving");
+    let test_root_29 = temp_test_dir("mapserver-publish-serving");
+    config.data_root = test_root_29.to_path_buf();
     config.default_password = "test-pass".to_string();
     let data_root = config.data_root.clone();
 
@@ -6626,7 +6680,8 @@ async fn a_web_published_layer_serves_and_shows_only_the_chosen_properties() {
 #[test]
 fn the_file_storage_backend_is_declared_and_an_unknown_one_is_refused() {
     let mut config = PlatformConfig::default();
-    config.data_root = temp_test_dir("files-backend-declaration");
+    let test_root_30 = temp_test_dir("files-backend-declaration");
+    config.data_root = test_root_30.to_path_buf();
     config.default_password = "test-pass".to_string();
     let data_root = config.data_root.clone();
     let platform = PlatformService::from_config(config).expect("platform service");
@@ -6784,7 +6839,8 @@ fn the_file_storage_backend_is_declared_and_an_unknown_one_is_refused() {
 #[tokio::test]
 async fn preview_refuses_a_subject_without_project_capabilities() {
     let mut config = PlatformConfig::default();
-    config.data_root = temp_test_dir("preview-authz");
+    let test_root_31 = temp_test_dir("preview-authz");
+    config.data_root = test_root_31.to_path_buf();
     config.default_password = "test-pass".to_string();
 
     let app = build_router(config).await.expect("platform router");
@@ -6893,7 +6949,8 @@ async fn preview_refuses_a_subject_without_project_capabilities() {
 #[tokio::test]
 async fn a_named_host_serves_only_the_site_until_mcp_is_switched_on() {
     let mut config = PlatformConfig::default();
-    config.data_root = temp_test_dir("addressing-named-host-api");
+    let test_root_32 = temp_test_dir("addressing-named-host-api");
+    config.data_root = test_root_32.to_path_buf();
     config.default_password = "test-pass".to_string();
     let app = build_router(config).await.expect("platform router");
     let cookie = login_cookie(app.clone(), "superadmin", "test-pass").await;
@@ -6958,7 +7015,8 @@ async fn a_named_host_serves_only_the_site_until_mcp_is_switched_on() {
 #[tokio::test]
 async fn a_git_conflict_is_resolved_in_the_studio_not_locally() {
     let mut config = PlatformConfig::default();
-    config.data_root = temp_test_dir("git-sync-conflict");
+    let test_root_33 = temp_test_dir("git-sync-conflict");
+    config.data_root = test_root_33.to_path_buf();
     config.default_password = "test-pass".to_string();
     let data_root = config.data_root.clone();
     let app = build_router(config).await.expect("platform router");
@@ -7094,7 +7152,8 @@ async fn a_git_conflict_is_resolved_in_the_studio_not_locally() {
 #[tokio::test]
 async fn an_uncaught_failure_hides_by_default_and_is_one_error_group() {
     let mut config = PlatformConfig::default();
-    config.data_root = temp_test_dir("errors-switch-and-groups");
+    let test_root_34 = temp_test_dir("errors-switch-and-groups");
+    config.data_root = test_root_34.to_path_buf();
     config.default_password = "test-pass".to_string();
     let app = build_router(config).await.expect("platform router");
     let cookie = login_cookie(app.clone(), "superadmin", "test-pass").await;
@@ -7176,7 +7235,8 @@ async fn an_uncaught_failure_hides_by_default_and_is_one_error_group() {
 #[tokio::test]
 async fn a_deleted_user_leaves_no_footprint_and_takes_no_hostages() {
     let mut config = PlatformConfig::default();
-    config.data_root = temp_test_dir("user-delete-lifecycle");
+    let test_root_35 = temp_test_dir("user-delete-lifecycle");
+    config.data_root = test_root_35.to_path_buf();
     config.default_password = "test-pass".to_string();
     let data_root = config.data_root.clone();
     let app = build_router(config).await.expect("platform router");
@@ -7467,7 +7527,8 @@ async fn a_deleted_user_leaves_no_footprint_and_takes_no_hostages() {
 #[tokio::test]
 async fn instance_scope_is_one_prefix_and_never_answers_an_anonymous_caller() {
     let mut config = PlatformConfig::default();
-    config.data_root = temp_test_dir("instance-scope-prefix");
+    let test_root_36 = temp_test_dir("instance-scope-prefix");
+    config.data_root = test_root_36.to_path_buf();
     config.default_password = "test-pass".to_string();
     let app = build_router(config).await.expect("platform router");
 
@@ -7533,7 +7594,8 @@ async fn instance_scope_is_one_prefix_and_never_answers_an_anonymous_caller() {
 #[tokio::test]
 async fn an_auth_optional_webhook_answers_guests_and_reads_a_valid_token() {
     let mut config = PlatformConfig::default();
-    config.data_root = temp_test_dir("auth-optional");
+    let test_root_37 = temp_test_dir("auth-optional");
+    config.data_root = test_root_37.to_path_buf();
     config.default_password = "test-pass".to_string();
     let app = build_router(config).await.expect("platform router");
     let cookie = login_cookie(app.clone(), "superadmin", "test-pass").await;
@@ -7678,7 +7740,8 @@ async fn an_auth_optional_webhook_answers_guests_and_reads_a_valid_token() {
 #[tokio::test]
 async fn a_weberror_template_page_answers_an_unknown_route() {
     let mut config = PlatformConfig::default();
-    config.data_root = temp_test_dir("weberror-template");
+    let test_root_38 = temp_test_dir("weberror-template");
+    config.data_root = test_root_38.to_path_buf();
     config.default_password = "test-pass".to_string();
     let app = build_router(config).await.expect("platform router");
     let cookie = login_cookie(app.clone(), "superadmin", "test-pass").await;

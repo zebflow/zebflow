@@ -495,12 +495,8 @@ mod tests {
 
     const PNG: &[u8] = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR\0\0\0\x01\0\0\0\x01\x08\x02\0\0\0";
 
-    fn platform() -> Arc<PlatformService> {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let mut config = crate::platform::model::PlatformConfig::default();
-        config.data_root = tmp.keep().join("platform");
-        config.default_password = "secret".to_string();
-        Arc::new(PlatformService::from_config(config).expect("platform"))
+    fn platform() -> crate::pipeline::nodes::shared::test_platform::TestPlatform {
+        crate::pipeline::nodes::shared::test_platform::test_platform()
     }
 
     /// An upload as the webhook delivers it: a temporary FileRef in the store.

@@ -19,5 +19,7 @@ pub mod limits;
 pub mod project_store;
 pub mod query;
 pub mod store_scratch;
+#[cfg(test)]
+pub mod test_platform;
 pub mod units;
 pub mod util;

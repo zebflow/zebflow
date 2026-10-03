@@ -536,12 +536,7 @@ impl NodeHandler for Node {
 mod node_tests {
     use super::*;
 
-    fn test_platform() -> Arc<PlatformService> {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let mut config = crate::platform::model::PlatformConfig::default();
-        config.data_root = tmp.keep().join("platform");
-        Arc::new(PlatformService::from_config(config).expect("platform"))
-    }
+    use crate::pipeline::nodes::shared::test_platform::test_platform;
 
     #[test]
     fn the_config_is_checked_and_numbers_arrive_as_numbers_or_text() {
@@ -559,7 +554,7 @@ mod node_tests {
         assert_eq!((ok.target.width, ok.target.height, ok.target.fit), (Some(512), Some(512), Fit::Contain));
         assert_eq!((ok.format, ok.quality), (OutputFormat::Jpg, 90));
         assert_eq!(ok.folder(), DEFAULT_FOLDER);
-        let plain = Node::new(Config::default(), platform).unwrap();
+        let plain = Node::new(Config::default(), platform.clone()).unwrap();
         assert_eq!((plain.target.width, plain.target.height, plain.format, plain.quality), (None, None, OutputFormat::Png, DEFAULT_QUALITY as u8));
     }
 

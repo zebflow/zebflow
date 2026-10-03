@@ -361,11 +361,8 @@ impl NodeHandler for Node {
 mod tests {
     use super::*;
 
-    fn platform() -> Arc<PlatformService> {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let mut config = crate::platform::model::PlatformConfig::default();
-        config.data_root = tmp.keep().join("platform");
-        Arc::new(PlatformService::from_config(config).expect("platform"))
+    fn platform() -> crate::pipeline::nodes::shared::test_platform::TestPlatform {
+        crate::pipeline::nodes::shared::test_platform::test_platform()
     }
 
     #[test]
@@ -380,7 +377,7 @@ mod tests {
         assert!(bad(json!({ "soften": 900 })).message.contains("--soften"));
         assert!(bad(json!({ "format": "jpg" })).message.contains("jpg"));
         assert_eq!(bad(json!({ "on_conflict": "replace" })).code, CONFIG_CODE);
-        let ok = Node::new(serde_json::from_value(json!({ "tolerance": "80", "format": "WEBP" })).unwrap(), p).unwrap();
+        let ok = Node::new(serde_json::from_value(json!({ "tolerance": "80", "format": "WEBP" })).unwrap(), p.clone()).unwrap();
         assert_eq!((ok.key, ok.tolerance, ok.soften, ok.webp), ([0, 177, 64], 80.0, DEFAULT_SOFTEN, true));
         let def = definition();
         let flags: Vec<&str> = def.dsl_flags.iter().map(|f| f.flag.as_str()).collect();

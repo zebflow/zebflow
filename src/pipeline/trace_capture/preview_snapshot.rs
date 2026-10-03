@@ -175,11 +175,7 @@ mod tests {
 
     #[test]
     fn nothing_is_recorded_without_a_declared_image_preview_or_for_a_durable_file() {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let mut config = crate::platform::model::PlatformConfig::default();
-        config.data_root = tmp.keep().join("platform");
-        config.default_password = "secret".to_string();
-        let platform = Arc::new(PlatformService::from_config(config).expect("platform"));
+        let platform = crate::pipeline::nodes::shared::test_platform::test_platform();
         let out = json!({ "image": file_ref("durable", "image/png") });
         assert!(snapshot_for(Some(&platform), "o", "p", &json!({ "preview": { "out": { "as": "image" } } }), &Value::Null, &out).is_none());
         let out = json!({ "image": file_ref("temporary", "image/png") });
