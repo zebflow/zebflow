@@ -29,6 +29,7 @@ explicitly.
 | 17 | [`Credential`](./credential/README.md) | Database record | Review |
 | 18 | [`OfficeTopology`](./office-topology/README.md) | Database records plus one provisioning file | Review |
 | 19 | [`HubRepositoryIndex`](./hub-repository-index/README.md) | Envelope, transferred index | Candidate |
+| 20 | [`ProcessRef`](./process-ref/README.md) | Inline payload, with a per-project process record | Candidate |
 
 ## Required Contents
 

@@ -1,189 +1,317 @@
 # Node Conventions
 
-Status: **review** — decided 2026-10-03 from an inventory of every official
-node under `src/pipeline/nodes/basic/`. Code caught up the same day for §1–§6
-on every file node (`src/pipeline/nodes/shared/project_store.rs`), and in a
-second sweep for the rest: `ms.publish --route/--from`, `fs.put --source-key`,
-`sekejap.insert --records-key/--edges-key/--record-key`, `crypto --value`
-(no payload fallback), `fs.list` without `--prefix`, `ms.*` without `url`,
-and one `with_answer` for §5. `function.call --input` stays: it supplies what
-`trigger.function --input` declares.
+Status: **decided for 0.11** — 2026-10-03, by the owner, from an inventory of
+all 84 official nodes, a five-model usability survey and two adversarial
+reviews of this text. The code catches up in 0.11 (ledger:
+`zebflow › security › fs › zf-0-11-grammar`). From 0.11 the grammar is
+**frozen**: a node may gain an optional flag, a dictionary word, a verb or a
+field inside its answer, and nothing is ever renamed or removed. A redesign is
+a new kind.
 
-How an official node spells what it takes and what it answers.
+How an official node is named, what it takes, how it runs and what it answers.
 [`NodeDefinition`](./kinds/node-definition/README.md) is the shape of a
 definition and [`NodeIO`](./kinds/node-io/README.md) the wire between nodes;
-this page is the grammar every official node uses inside them. A new node
-adheres before it is registered.
+the DSL's own syntax is `help("pipeline/dsl")`. Every node — official, hub,
+third party — adheres before it is registered, and its definition is the one
+source its help line, editor form and save-time checks are generated from.
 
-## 1. One word, one meaning
+## 1. Kinds
 
-Flags are kebab-case. A word means the same thing in every node, and a concept
-has exactly one word.
+```
+family.noun.verb      acting node    fs.image.thumbnail    ai.video.generate
+trigger.<source>      entry node     trigger.webhook       trigger.process
+input.<type>          run input      input.image           input.text
+logic.<verb>          control node   logic.if              logic.foreach
+```
 
-| Concept | Flag | Meaning |
-| --- | --- | --- |
-| Where a written file goes | `--folder` | a store folder; every writing node has a default named after its noun |
-| Its name | `--filename` | default: a uuid, or the source's name where the node has a source |
-| The exact key | `--path` | a full store key; overrides `--folder` and `--filename` |
-| Which store | `--store` | a store id of the project; see §3 |
-| An existing target | `--on-conflict` | `overwrite`, `skip` or `error`; see §4 |
-| A site's root | `--site-root` | site generators only; their `--path` is relative to it |
-| A file the node reads | `--source-key` | a dot-path into the payload holding a FileRef or a store key |
-| A source given directly | `--from` | a store key, or a FileRef through `{{ }}` (`fs.copy`, `fs.move`, `table.convert`, `geo.*`) |
-| A secret the node uses | `--credential` | a credential id, never a value |
-| A secret that checks a caller | `--auth-credential` | triggers only |
-| Output encoding | `--format`, `--quality`, `--width`, `--height` | the same units everywhere |
-| A switch | bare `--flag` | boolean; there is no `--no-flag`; a negative is named for what it does (`--skip-optimize`) |
+- One lowercase word per segment, no prefix (`n.` is gone). The **noun** is
+  what the node produces or acts on and is its **answer key** (§6); the
+  **verb** says what happens to it. An entry node's answer key is its source
+  (`trigger.webhook` → `webhook`); a run input's is its `--name`.
+- The **family** is a domain from the closed list; only the owner adds one. A
+  provider is never a family (§11). An engine whose own language is the node's
+  grammar keeps its family (`pg`, `sqlite`, `sekejap`).
+- **Same task, same answer — one kind.** A difference of format is a flag
+  (`fs.barcode.render --symbology qr|code128`); a task only some providers
+  offer is a new noun or verb (`ai.video.edit`), never `vendor.*`.
+- `logic.*` is closed: `if` `match` `foreach` `reduce` `collect` `retry`
+  `concept` (a stand-in for a step not built yet; passes its input on).
 
-`--path` is a store key and nothing else: a dot-path into state or payload is
-spelled `--key` (`--source-key`, `--out-key`), and no other flag ends in
-`-path`. A config key has one name — no aliases. `--output`, `--output-path`
-and `--output-dir` are retired, and so is `--to` as a destination;
-`mail.send --to` stays, because there it names recipients.
+| Families | |
+| --- | --- |
+| Now | `ai` `auth` `browser` `chat` `crypto` `fs` `function` `geo` `http` `input` `kv` `logic` `mail` `mcp` `ms` `pg` `pipeline` `script` `sekejap` `sqlite` `table` `trigger` `web` `ws` |
+| Reserved | `cloud` (provider-neutral resources: queue, function, bucket — `--provider aws\|gcp\|azure`) · `job` (external commands) · `sec` (scanning, detection) |
 
-## 2. Values
+| Verbs | |
+| --- | --- |
+| Read | `get` `list` `head` `inspect` `fetch` `query` |
+| Write | `put` `create` `update` `delete` `copy` `move` |
+| Make | `generate` (a model's or engine's output) · `render` (deterministic drawing) · `convert` `extract` `encode` `decode` `thumbnail` |
+| Talk | `send` `publish` |
+| Act | `run` `call` `scan` `sign` `verify` `hash` `wait` `cancel` |
 
-Every scalar flag takes a literal or a `{{ expression }}`, resolved as
-[`NodeIO` §Value resolution](./kinds/node-io/README.md) says. There is no
-second `-value` flag beside a literal one. A flag that must stay literal says
-so in its definition and is refused if it holds `{{ }}`.
+A verb two kinds share is in this list; a verb only one kind uses stays local
+(`chromakey`, `increment`, `expire`, `publish` on `ms.layer`).
 
-- **A choice is closed.** A flag with a fixed set of words lists them in its
-  definition, and an unknown word is refused — never mapped to a default
-  word.
-- **Empty is not a value.** A value the node needs that resolves empty is
-  refused, never replaced by a default or hashed, written or sent as `""`.
-- **No hidden payload reads.** A node reads the payload only where a flag
-  points (`--source-key`); there is no fallback to a well-known payload
-  field.
-- **Every size has a ceiling.** A dimension, count or length a node produces
-  (pixels, dpi, rows held inline, bytes generated) has a declared maximum and
-  is refused above it.
+## 2. Flags
 
-## 3. Files
+Kebab-case. A flag is a **role** (an input), a **setting** or a **switch**:
+
+- **A role is a singular noun** naming what the value is for, never its origin
+  or position (`--source-key`, `--input1` are gone). A repeatable role is
+  repeated (`--image a --image b`) or given one `{{ [list] }}`.
+- **`--from` or a typed role.** A node's subject of the same type as its noun
+  is `--from` (`fs.image.thumbnail --from <image>`, `pipeline.process.get
+  --from <process>`); an input of another type takes its typed role
+  (`ai.video.generate --image <image>`).
+- **A map is repeated `key=value`**, split at the first `=`
+  (`--header "Accept=application/json"`).
+- **A switch is a bare flag named for the behaviour it turns on**
+  (`--write`, `--skip-optimize`); there is no `--no-x`.
+- **No units, verbs or owner prefixes in a name** — units travel in the value
+  (§3); the owner is the kind (`--name`, not `--tool-name`).
+- `--path` is a store key and nothing else; no other flag ends in `-path`.
+  `-expr`, `-value` pairs, `-key` pointers and `--output*` are retired. A
+  config key has one name — no aliases.
+- **Three presentation flags every kind takes** — `--title` (the label on the
+  canvas), `--preview <as>[:<path>][@WxH]` (draw the node's answer under its
+  box) and `--preview-in` (draw its input). They are stored beside
+  `config.ui`, never read by the engine, and are the only flags not in a
+  node's definition; a content title uses its own word (`--subject`,
+  `--name`). `as` is closed: `image` `video` `audio` `pdf` `json` `text`
+  `table` `html`; a ProcessRef previews its status until the outcome exists,
+  then the outcome.
+
+### The dictionary
+
+A word two or more nodes share is here, with one meaning everywhere. A flag
+only one node needs stays local and obeys the rules above; it joins the
+dictionary the moment a second node needs the concept, and from then both use
+it. Before adding a word: does a word here mean it? Can a word here plus a
+closed choice say it (`--format json`, `--header Content-Type=…`)? Only then
+add a singular, unit-free noun.
+
+| Area | Words |
+| --- | --- |
+| Who | `--credential` (a secret's id, never a value) `--provider` `--model` `--name` `--description` `--auth` `--role` |
+| Subject | `--from` (the subject, §2) `--id` (an existing object of this kind's noun: a message, record, layer) |
+| Typed inputs | `--image` `--video` `--audio` `--file` (repeat) · `--text` (text content) `--html` · `--body` (what goes over a wire) · `--value` (what a store write holds) · `--argument` (k=v: what a callable receives) · `--default` |
+| Generation | `--prompt` `--system-prompt` `--seed` `--duration` `--aspect` `--first-frame` `--last-frame` `--mask` `--reference` (repeat) `--schema` (a JSON schema) `--tool` (repeat) `--budget` `--option` (k=v) |
+| Destination | `--folder` `--filename` `--path` `--store` `--on-conflict` (`error\|skip\|overwrite`) `--delete-source` `--recursive` |
+| Shape | `--format` (what is produced) `--parse` (how input is read, else sniffed) `--encoding` (`text\|base64`) `--width` `--height` `--fit` `--quality` `--return` (`inline\|file\|process`) |
+| Ceilings and time | `--timeout` `--ttl` `--delay` `--backoff` `--max-attempts` · `--max-size` `--max-length` `--max-items` (refusal ceilings) · `--limit` `--offset` (rows returned) · `--min` `--max` (numeric bounds) `--batch-size` |
+| Selection | `--query` (a statement in the target's own language) `--param` (k=v bindings; `1=` for `$1`) `--filter` `--field` (repeat) `--accept` (allowed file kinds) `--kind` (a node kind) `--layer` `--when` `--template` `--write` `--cron` `--algorithm` |
+| Addressing | `--url` `--route` (a path this project serves) `--method` `--header` (k=v) `--status` `--room` `--connection` `--event` `--topic` |
+| Messaging | `--recipient` (repeat: an address, a chat, a channel) `--sender` `--subject` |
+| Records | `--key` `--table` `--record` `--edge` `--issuer` `--audience` `--claim` (k=v) `--context` (k=v kept with a process) |
+
+Provider settings go through `--option key=value`, typed and closed in the
+provider's profile (§11); a setting becomes a word only when a second provider
+needs the same meaning.
+
+## 3. Values
+
+Every scalar flag takes a literal or a `{{ expression }}` (NodeIO §Value
+resolution; JavaScript expressions, so `??` and `?.` work). A flag that must
+stay literal — `--return`, `--provider`, `--write` — says so and refuses
+`{{ }}`.
+
+- **A choice is closed**: its words are in the definition; an unknown word is
+  refused at save and at run.
+- **Empty is not a value**: a needed value that resolves empty is refused.
+- **Every source is explicit**: a node reads the payload only through a flag.
+- **Every size has a ceiling**, declared and refused above it.
+- **Units**: durations `ms` `s` `m` `h` `d` (`--timeout 30s`); sizes `B` `KB`
+  `MB` `GB` (×1000) and `KiB` `MiB` `GiB` (×1024). One parser reads both
+  everywhere.
+
+## 4. Flow
+
+The DSL already writes the flow: pipe mode chains nodes `n0, n1, …`; graph
+mode labels nodes `[id]` and wires edges, `[a]:true -> [b]` for a pin; every
+node has an `:error` pin. On top of that:
+
+- **A node runs once, when every incoming edge has delivered or been
+  skipped.** A node with several incoming edges waits for all of them — two
+  branches meeting is a join, not two runs.
+- **Skip propagates.** A node on a branch not taken is skipped; a node all of
+  whose incoming edges are skipped is skipped. A reference to a skipped node
+  is `null` — `{{ $nodes.big.text ?? $nodes.small.text }}` joins two branches.
+- **`input` at a join** is the delivered payloads merged in DSL text order: a
+  key from a later line wins. "Later" always means later in the text, never
+  later in time. Every answer stays at `$nodes.<id>.<key>`.
+- **References** — `{{ $nodes.<id>.<key> }}`, `{{ input.<key> }}`,
+  `{{ $trigger.<key> }}` — must point upstream; a reference to a node no edge
+  path leads from is refused at save, so waiting never deadlocks.
+- **Loops**: the nodes between `logic.foreach`'s `:item` and the
+  `logic.reduce` or `logic.collect` that closes it run per item, and their
+  answers are per item; after the close, only its answer is visible.
+  `logic.retry` re-enters the node that failed.
+- **Failure**: a node that fails delivers to its `:error` pin if one is wired;
+  otherwise the run fails there.
+- **A run ends** when every node has answered or been skipped.
+  `web.response.send` answers the caller at once and later nodes keep running.
+
+The definition declares every role — flag, type (`text` `json`
+`file:image` …), `one` `repeat` or `map`, required, a ceiling on repeats. At
+save: an unknown role, a missing required role, a second value for a `one`
+role, a file of the wrong kind, a reference to a key no upstream node answers
+("did you mean …") and an `input.<key>` two upstream nodes answer (naming both
+`$nodes` paths) are refused, and an ordinary node with two incoming edges is
+fine — it is a join.
+
+## 5. Files
 
 ```
 node writes ──▶ project store (the one named by --store) ──▶ answers a FileRef
                 key = normalise(expand(--path | --folder/--filename))
 ```
 
-- Every read and write goes through the project's store service — never a
-  path on this machine's disk. An engine that needs a path pulls into a run
-  scratch folder and pushes back.
-- **The store is explicit.** A node saved without `--store` is saved with the
-  project's default store id at that moment; changing the default later moves
-  no existing pipeline.
-- Expansion happens first, then one shared normaliser: `..` and absolute keys
-  are refused, before the store and its exposure rules decide.
-- A node that writes one file answers a FileRef (with `store`,
-  [`FileRef`](./kinds/file-ref/README.md)); a node that writes a tree takes
-  `--folder` only and answers the folder plus a list of FileRefs.
-- No node answers a `url`. Where a file can be reached is the owner's
-  exposure decision ([`ZebFsAcl`](./kinds/zebfs-acl/README.md)), not a node's.
-- A node never exposes anything.
-- A store registered `read_only` (an `s3` credential with `access: read_only`)
-  refuses every write itself (`ZEBFS_READ_ONLY`) and cannot be the project's
-  default store; a node may read from it, never write.
+- Every read and write goes through the project's store service; an engine
+  that needs a path pulls into a run scratch folder and pushes back.
+- **The store is explicit**: every node that declares `--store` — reader,
+  writer or deleter — is saved with the project's default store at that
+  moment.
+- One shared normaliser runs after expansion: `..` and absolute keys are
+  refused.
+- A node writing one file answers a FileRef (with `store`); a node writing a
+  tree answers `{ folder, items, count }`.
+- **A writer takes the whole destination set**: every node that writes a file
+  declares `--store`, `--folder`, `--filename`, `--path` and `--on-conflict`
+  (a tree writer: `--store`, `--folder`, `--on-conflict`), with the same
+  meaning and defaults rule everywhere.
+- No node answers a `url` and no node exposes anything
+  ([`ZebFsAcl`](./kinds/zebfs-acl/README.md)).
+- A `read_only` store refuses every write itself and is never the default.
 
-**One door.** A node reaches stored bytes only through
-`src/pipeline/nodes/shared/project_store.rs`: `open_store`, `open_source`,
-capped reads, streaming pulls and pushes, owned deletes. In particular:
+**One door.** Stored bytes are reached only through
+`src/pipeline/nodes/shared/project_store.rs`. A FileRef is validated and read
+from the store it names (one without `store` is refused); reads into memory
+are capped (`MAX_NODE_OBJECT_BYTES`) and a received body is capped as it
+arrives; no node joins a key onto a local path; repository files are read
+through a reader that refuses links; an external program gets keys after `--`.
 
-- A FileRef is validated and read from the store it names; a FileRef without
-  `store` is refused, never read from the default store.
-- Every node that takes `--store` — readers and deleters as well as writers —
-  is pinned at registration.
-- A read into memory is capped (`MAX_NODE_OBJECT_BYTES`); larger work streams
-  through a scratch file. A received body (an upload, an HTTP response) is
-  capped while it arrives, not after.
-- A node never joins a key or a name onto a local path itself. Repository
-  files are read through the repository's own reader, which refuses links.
-- An external program receives store keys after `--`, never as options.
+**Side effects.** A node deletes only what its run names — its own source
+under `--delete-source`, once its output is written and is not that source; a
+delete also forgets the object's exposure rule; a failed delete fails the node.
 
-**Side effects.** A node deletes only what its run names: its own source
-under `--delete-source`, and only once its output is written and is not that
-source. A delete also forgets the object's exposure rule. A failed delete
-fails the node; it is never logged and ignored.
+## 6. Answers
 
-## 4. Collisions
+Every node adds **one key** to the payload — its noun (§1) — and keeps the
+rest, through `with_answer`. Everything about the result nests inside it:
+
+```
+trigger.webhook        → webhook: { body, query, params, headers, files, method, path }
+fs.image.thumbnail     → image:   { …FileRef…, width, height, source_deleted }
+pg.query.run           → query:   { rows, columns, row_count }
+kv.entry.get           → entry:   { key, value, ttl }
+auth.token.create      → token:   { access_token, token_type, expires_in, profile }
+fs.folder.list         → folder:  { path, items, count }
+script.result.run      → result:  <what the code returned>
+```
+
+- A list answers `{ items, count }` (and `next` when `--offset` applies).
+- An `:error` delivery answers the same key: `{ ok: false, error: { code, message } }`.
+  A node with routed outcomes (`logic.if`, `crypto.password.verify`) states
+  them in its answer (`password: { valid: true }`) as well as its pin.
+- A control node passes its payload on; `logic.reduce` and `logic.collect`
+  answer `reduce` and `collect`.
+
+## 7. Long tasks and processes
+
+Work that can outlast a run — a generated video, a cloud job, an external
+command, a pipeline started in the background — runs as a **process** the
+platform records. A [**ProcessRef**](./kinds/process-ref/README.md) is a
+value like a FileRef: stored, passed, shown on a page, handed to another
+pipeline.
+
+```json
+{ "__zf_type": "process_ref", "id": "prc_7c1e…", "kind": "ai.video.generate",
+  "provider": "seedance", "name": "clip", "pipeline": "media/clip", "run": "run_91a…",
+  "context": { "email": "ana@example.com" }, "status": "running",
+  "started_at": "2026-10-03T08:00:00Z" }
+```
+
+- `status` is closed: `queued` `running` `done` `failed` `cancelled`. An
+  outcome is kept 7 days, then the ref answers `expired`.
+- A node whose work can outlast a run lists `process` among its `--return`
+  words (literal, never `{{ }}`). With `--return process` it answers at once,
+  its noun holding the ProcessRef, and `--name` and `--context` travel with it;
+  otherwise it waits up to `--timeout` (default 60s, ceiling 1h) and answers
+  the result, or fails with `…_TIMEOUT` naming the process still running.
+- The finished process keeps the answer the node would have given, under the
+  same noun (`video: FileRef`), or `{ ok: false, error }`.
+
+```
+pipeline.process.get     --from REF   → process: { status, result?, error? }   never blocks
+pipeline.process.wait    --from REF   → process: { status, result | error }    up to --timeout
+pipeline.process.cancel  --from REF   → process: { status: cancelled }
+pipeline.process.list    [--kind K] [--name N] [--filter status=running] → process: { items, count }
+pipeline.run.start       --route|--name PIPELINE --argument k=v --return process   (a pipeline in the background)
+trigger.process          [--kind K] [--name N] [--pipeline P] → process: { …ref, status, result | error }
+```
+
+A run started by `trigger.process` never fires `trigger.process` for a process
+it started itself.
+
+## 8. Collisions
 
 | Writes | Default `--on-conflict` |
 | --- | --- |
 | a named file (`--filename`, `--path`) | `error` |
-| a tree (`--folder` of a tree node) | `error` when the folder is not empty |
-| a site page (`web.static.generate`, `web.docs.generate`) | `overwrite` |
-| a uuid name | — never collides |
+| a tree | `error` when the folder is not empty |
+| a site page (`web.site.generate`) | `overwrite` |
+| a uuid name | never collides |
 
-## 5. Answers
+## 9. Errors
 
-A node adds one top-level key to the payload, named after what it produced
-(`saved`, `thumbnail`, `compressed`, `audio`, `table`, `rows`), and keeps the
-rest of the payload — through the one helper, `with_answer`. The key is fixed
-and documented in its definition. Details of the same result nest under it
-(`image.layout`, `audio.word_timings`). A node never removes another key; a
-deleted source is recorded in the answer (`source_deleted: true`).
+`FW_NODE_<FAMILY>_<NOUN>_<VERB>_<WHAT>` from the kind
+(`fs.image.thumbnail` → `FW_NODE_FS_IMAGE_THUMBNAIL_SOURCE`), registered in
+the NodeIO registry; a shared helper raises the calling node's code. `ZEBFS_*`
+and `FW_FILE_REF_*` pass through because they name a contract.
 
-Outside this rule, by name:
+## 10. Addresses
 
-- a **router** (`logic.*`) passes its payload through unchanged on the pin it
-  chooses;
-- a **terminal** node (`web.response`) answers the response envelope that
-  ends the run;
-- a **transform** (`script`) answers exactly what its code returns — that is
-  its job.
+A node never holds the project's own address ([Addressing](./addressing.md)
+§0). A site generator needing an absolute URL takes the `serve` origin of the
+folder it writes; with none, it writes host-relative links and no sitemap.
 
-Every other node merges. Seven answers predate the one-key rule and keep
-their top-level names until the owner decides their key (ledger:
-`zf-answer-keys`): `pg.query` and `sqlite.query` (`rows`), `sqlite.mutate`
-(`affected_rows`), `sekejap.query` (`rows`, `columns`, `row_count`, …),
-`sekejap.insert` (`inserted_records`, …), `auth.token.create`
-(`access_token`, `token_type`, `expires_in`, `profile`), `ai.agent`
-(`response`, `data`, …). They merge like the rest; no new node joins the
-list.
+## 11. Providers
 
-## 6. Errors
+One kind serves every provider of a task. Its definition holds the shared
+roles and, per provider and model, a **profile**: which roles it accepts
+(required, optional, how many), the allowed values of its choices
+(`--duration 5s|10s`), and its own settings as typed, closed `--option` keys.
+At save, a role the provider does not take, a value outside its list, an
+unknown option, and a `--credential` whose provider disagrees with
+`--provider` are refused, naming what it does take. `zeb help <kind>
+--provider <name>` prints that provider's signature. The answer has one shape
+for every provider. A profile is added or extended, never changed.
 
-`FW_NODE_<FAMILY>_<NODE>_<WHAT>`, upper snake case from the node kind
-(`n.fs.image.thumbnail` → `FW_NODE_FS_IMAGE_THUMBNAIL_SOURCE`), registered in
-the NodeIO error-code registry. A credential of the wrong kind is
-`…_CREDENTIAL_KIND`, raised by one shared check. A shared helper raises the
-calling node's code. Two families pass through unchanged because they name a
-contract, not a node: `ZEBFS_*` (the store's own refusal) and `FW_FILE_REF_*`
-(an invalid FileRef).
+## 12. Enforcement
 
-## 7. Addresses
-
-A node never holds or writes the project's own address
-([Addressing](./addressing.md) §0). A site generator that needs an absolute
-URL (a sitemap, a canonical link) takes it from the `serve` origin of the
-folder it writes ([`ZebFsAcl`](./kinds/zebfs-acl/README.md)); with none, it
-writes host-relative links and no sitemap.
-
-## 8. Registration
-
-A node is registered only when it is built. `n.concept` is built: it is the
-deliberate stand-in for a step a pipeline describes but does not do yet, and it
-passes its input through untouched.
-
-## 9. Enforcement
-
-A rule that is not tested is a wish. `src/pipeline/nodes/conventions.rs` holds
-the tests, and a new node passes them before it is registered:
+`src/pipeline/nodes/conventions.rs` holds the tests every node passes before
+it is registered:
 
 | Test | Checks, over every official node |
 | --- | --- |
-| `flags_follow_the_grammar` | no `--no-*`, no `-path` but `--path`, no `url` in an output schema, every choice flag lists its words |
-| `nodes_use_one_door` | no `open_files()`, no store `get(`, no `std::fs::read` outside `project_store.rs` and named engine adapters |
-| `answers_go_through_with_answer` | no hand-built `payload:` outside routers and terminals |
-| `config_keys_have_one_name` | no `serde(alias)` in node configs |
-| `codes_carry_the_node_family` | every raised code is `FW_NODE_<FAMILY>_…`, `ZEBFS_*` or `FW_FILE_REF_*`, and registered |
+| `kinds_follow_the_shapes` | §1 shapes, family and verb lists, no prefix |
+| `flags_follow_the_grammar` | singular roles, `--from` rule, no `--no-*`, no `-path` but `--path`, no units in names, every choice lists its words |
+| `shared_words_mean_one_thing` | a flag two nodes share is in the dictionary with the same type and cardinality |
+| `nodes_use_one_door` | no default store, no unbounded read, no `std::fs::read` outside the door |
+| `answers_go_through_with_answer` | one key, the kind's noun, through the helper |
+| `config_keys_have_one_name` | no `serde(alias)` |
+| `codes_carry_the_node_family` | every raised code is the kind's or a pass-through, and registered |
+| `store_nodes_declare_their_store` | every node that opens a store declares `--store`; every file writer declares the whole destination set |
+| `providers_declare_profiles` | a kind with `--provider` has a profile per provider |
+| `long_tasks_can_return_a_process` | a node waiting on outside work offers `--return process` |
 
 ## Evidence
 
-Inventory 2026-10-03 (ledger: `zebflow › security › fs`): six names for a
-destination, `--to` and `--input` with two meanings each, `-value` pairs on
-two nodes only, `--on-conflict` on one node, and error prefixes outside
-`FW_NODE_` in nine families. Review 2026-10-03 by two independent models
-(77 findings) traced to six causes: five roads to the store, 36 hand-built
-payloads, 23 open choice flags, no limit or side-effect rule, a hand-kept
-pinning list, and no enforcement — §2, §3, §5 and §9 answer them.
+Inventory 2026-10-03: 84 nodes, 181 distinct flags — six names for a source,
+five for a format, three for a lifetime, units in eleven names, answers
+replacing the payload in twelve families. A 77-finding review traced to six
+causes. A five-model survey rated the 0.10 grammar 3–4/10 and this one 8–9/10
+for a correct first pipeline; four of five chose named roles. Two reviews of
+the draft (Opus, Fable) found the flow, join, loop, failure, correlation and
+answer-collision gaps that §4, §6 and §7 now close.
